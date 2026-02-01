@@ -15,7 +15,21 @@ Visualize MySQL query execution plans as interactive flame graphs and bar charts
 ## Prerequisites
 
 - Perl 5.x (included on most Unix/Linux/macOS systems)
-- MySQL 8.0+ with `EXPLAIN ANALYZE` support
+- MySQL 8.4+ with `EXPLAIN ANALYZE FORMAT=JSON` and JSON format version 2
+
+### MySQL Configuration
+
+This tool requires the new JSON format version 2 for EXPLAIN output, available in MySQL 8.4+:
+
+```sql
+SET explain_json_format_version = 2;
+```
+
+To make it permanent, add to your `my.cnf`:
+```ini
+[mysqld]
+explain_json_format_version = 2
+```
 
 ## Installation
 
@@ -43,6 +57,39 @@ Save the JSON output to a file:
 ```bash
 mysql -u user -p database -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
 ```
+
+### Example JSON Output
+
+The JSON output from `EXPLAIN ANALYZE FORMAT=JSON` looks like this:
+
+```json
+{
+  "query": "/* select#1 */ select ... from `employees`.`employees` where ...",
+  "covering": false,
+  "operation": "Index lookup on employees using idx_covered_last_first_name (last_name='Facello', first_name='Georgi')",
+  "index_name": "idx_covered_last_first_name",
+  "query_type": "select",
+  "table_name": "employees",
+  "access_type": "index",
+  "actual_rows": 2.0,
+  "schema_name": "employees",
+  "actual_loops": 1,
+  "used_columns": ["emp_no", "birth_date", "first_name", "last_name", "gender", "hire_date"],
+  "estimated_rows": 2.0,
+  "lookup_condition": "last_name='Facello', first_name='Georgi'",
+  "index_access_type": "index_lookup",
+  "actual_last_row_ms": 0.111209,
+  "actual_first_row_ms": 0.107751,
+  "estimated_total_cost": 0.7
+}
+```
+
+Key fields used by the visualization:
+- `operation`: The operation being performed
+- `actual_rows`: Actual number of rows processed
+- `actual_loops`: Number of times this operation was executed
+- `actual_last_row_ms`: Time in milliseconds to complete the operation
+- `table_name`, `index_name`: Table and index being accessed
 
 ### Step 2: Generate Visualizations
 
