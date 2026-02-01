@@ -1,0 +1,38 @@
+{
+  "query": "/* select#1 */ select `test`.`joinit`.`g` AS `g` from `test`.`joinit` where (`test`.`joinit`.`i` > 50)",
+  "inputs": [
+    {
+      "ranges": [
+        "(50 < i)"
+      ],
+      "covering": false,
+      "operation": "Index range scan on joinit using PRIMARY over (50 < i)",
+      "index_name": "PRIMARY",
+      "table_name": "joinit",
+      "access_type": "index",
+      "actual_rows": 16352.0,
+      "schema_name": "test",
+      "actual_loops": 1,
+      "used_columns": [
+        "i",
+        "g"
+      ],
+      "estimated_rows": 8288.0,
+      "index_access_type": "index_range_scan",
+      "actual_last_row_ms": 11.064878,
+      "actual_first_row_ms": 0.415969,
+      "estimated_total_cost": 1660.4294707236004
+    }
+  ],
+  "condition": "(joinit.i > 50)",
+  "operation": "Filter: (joinit.i > 50)",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 16352.0,
+  "actual_loops": 1,
+  "estimated_rows": 8288.0,
+  "actual_last_row_ms": 13.683966,
+  "actual_first_row_ms": 0.41922299999999996,
+  "estimated_total_cost": 1660.4294707236004
+}
+

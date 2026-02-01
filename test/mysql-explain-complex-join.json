@@ -1,0 +1,153 @@
+{
+  "query": "/* select#1 */ select `d`.`dept_name` AS `dept_name`,round(AVG(s.salary),2) AS `avg_salary` from `employees`.`salaries` `s` join `employees`.`dept_emp` `de` join `employees`.`departments` `d` where ((`s`.`emp_no` = `de`.`emp_no`) and (`d`.`dept_no` = `de`.`dept_no`) and (`de`.`to_date` = DATE'9999-01-01') and (`s`.`to_date` = DATE'9999-01-01')) group by `employees`.`d`.`dept_name` order by `avg_salary` desc",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "alias": "de",
+                          "operation": "Table scan on de",
+                          "table_name": "dept_emp",
+                          "access_type": "table",
+                          "actual_rows": 331603.0,
+                          "schema_name": "employees",
+                          "actual_loops": 1,
+                          "used_columns": [
+                            "emp_no",
+                            "dept_no",
+                            "to_date"
+                          ],
+                          "estimated_rows": 331143.0,
+                          "actual_last_row_ms": 210.97773,
+                          "actual_first_row_ms": 2.7282830000000002,
+                          "estimated_total_cost": 33298.55
+                        }
+                      ],
+                      "condition": "(de.to_date = DATE'9999-01-01')",
+                      "operation": "Filter: (de.to_date = DATE'9999-01-01')",
+                      "access_type": "filter",
+                      "actual_rows": 240124.0,
+                      "actual_loops": 1,
+                      "estimated_rows": 33114.30049344152,
+                      "actual_last_row_ms": 319.156004,
+                      "actual_first_row_ms": 2.732052,
+                      "estimated_total_cost": 33298.55
+                    },
+                    {
+                      "inputs": [
+                        {
+                          "alias": "s",
+                          "covering": false,
+                          "operation": "Index lookup on s using PRIMARY (emp_no=de.emp_no)",
+                          "index_name": "PRIMARY",
+                          "table_name": "salaries",
+                          "access_type": "index",
+                          "actual_rows": 10.514305109027003,
+                          "schema_name": "employees",
+                          "actual_loops": 240124,
+                          "used_columns": [
+                            "emp_no",
+                            "salary",
+                            "from_date",
+                            "to_date"
+                          ],
+                          "estimated_rows": 1.0,
+                          "lookup_condition": "emp_no=de.emp_no",
+                          "index_access_type": "index_lookup",
+                          "actual_last_row_ms": 0.014857051502557013,
+                          "actual_first_row_ms": 0.009003923418733654,
+                          "estimated_total_cost": 0.39141195055294725
+                        }
+                      ],
+                      "condition": "(s.to_date = DATE'9999-01-01')",
+                      "operation": "Filter: (s.to_date = DATE'9999-01-01')",
+                      "access_type": "filter",
+                      "actual_rows": 1.0,
+                      "actual_loops": 240124,
+                      "estimated_rows": 0.10000000149011612,
+                      "actual_last_row_ms": 0.016532324474021757,
+                      "actual_first_row_ms": 0.014534164186003899,
+                      "estimated_total_cost": 0.39141195055294725
+                    }
+                  ],
+                  "join_type": "inner join",
+                  "operation": "Nested loop inner join",
+                  "access_type": "join",
+                  "actual_rows": 240124.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 3311.430098688305,
+                  "join_algorithm": "nested_loop",
+                  "actual_last_row_ms": 4377.821271,
+                  "actual_first_row_ms": 3.32607,
+                  "estimated_total_cost": 49571.30299667838
+                },
+                {
+                  "alias": "d",
+                  "covering": false,
+                  "operation": "Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)",
+                  "index_name": "PRIMARY",
+                  "table_name": "departments",
+                  "access_type": "index",
+                  "actual_rows": 1.0,
+                  "schema_name": "employees",
+                  "actual_loops": 240124,
+                  "used_columns": [
+                    "dept_no",
+                    "dept_name"
+                  ],
+                  "estimated_rows": 1.0,
+                  "lookup_condition": "dept_no=de.dept_no",
+                  "index_access_type": "index_lookup",
+                  "actual_last_row_ms": 0.004801783445219969,
+                  "actual_first_row_ms": 0.004752575032066766,
+                  "estimated_total_cost": 1.000030198433009
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "actual_rows": 240124.0,
+              "actual_loops": 1,
+              "estimated_rows": 3311.430098688305,
+              "join_algorithm": "nested_loop",
+              "actual_last_row_ms": 5624.850364,
+              "actual_first_row_ms": 22.857639,
+              "estimated_total_cost": 53213.87610523551
+            }
+          ],
+          "operation": "Aggregate using temporary table",
+          "access_type": "temp_table_aggregate",
+          "actual_rows": 9.0,
+          "actual_loops": 1,
+          "actual_last_row_ms": 6357.160337,
+          "actual_first_row_ms": 6357.160337
+        }
+      ],
+      "operation": "Table scan on <temporary>",
+      "table_name": "<temporary>",
+      "access_type": "table",
+      "actual_rows": 9.0,
+      "actual_loops": 1,
+      "actual_last_row_ms": 6357.163949000001,
+      "actual_first_row_ms": 6357.1620219999995
+    }
+  ],
+  "operation": "Sort: avg_salary DESC",
+  "query_type": "select",
+  "access_type": "sort",
+  "actual_rows": 9.0,
+  "sort_fields": [
+    "avg_salary DESC"
+  ],
+  "actual_loops": 1,
+  "actual_last_row_ms": 6357.2305,
+  "actual_first_row_ms": 6357.2297180000005
+}
+

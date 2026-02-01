@@ -1,0 +1,27 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1600" height="180" xmlns="http://www.w3.org/2000/svg">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 13px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .label { font-size: 12px; }
+  .value { font-size: 12px; font-weight: bold; }
+  .bar:hover { opacity: 0.8; cursor: pointer; }
+  .header { font-size: 11px; fill: #666; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="800" y="30" text-anchor="middle" class="title">MySQL Query Performance</text>
+<text x="800" y="48" text-anchor="middle" class="header">Self-time per operation (sorted by time, slowest first) | Total: 0.373 ms</text>
+<text x="500" y="80" text-anchor="end" class="label">Index lookup on employees using idx_last (last_name='Facello') [employees.idx_last]</text>
+<rect class="bar" x="510" y="60" width="900.840281218614" height="32" fill="rgb(255,90,90)" rx="3" ry="3"><title>Index lookup on employees using idx_last (last_name='Facello') [employees.idx_last]
+Self-time: 0 ms (96.9%)
+Rows: 186
+Loops: 1</title></rect>
+<text x="1418.84028121861" y="80" class="value">0.362 ms (96.9%)</text>
+<text x="500" y="120" text-anchor="end" class="label">Filter: (employees.first_name = 'Georgi')</text>
+<rect class="bar" x="510" y="100" width="29.1597187813861" height="32" fill="rgb(255,130,70)" rx="3" ry="3"><title>Filter: (employees.first_name = 'Georgi')
+Self-time: 0 ms (3.1%)
+Rows: 2
+Loops: 1</title></rect>
+<text x="547.159718781386" y="120" class="value">0.012 ms (3.1%)</text>
+</svg>

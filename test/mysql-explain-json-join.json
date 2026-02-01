@@ -1,0 +1,49 @@
+{
+  "query": "SELECT * FROM orders o JOIN customers c ON o.customer_id = c.id WHERE c.status = 'active'",
+  "operation": "Nested loop inner join",
+  "access_type": "join",
+  "actual_rows": 5000,
+  "actual_loops": 1,
+  "estimated_rows": 4500,
+  "actual_last_row_ms": 250.5,
+  "actual_first_row_ms": 1.2,
+  "estimated_total_cost": 12500.0,
+  "inputs": [
+    {
+      "operation": "Filter: (c.status = 'active')",
+      "access_type": "filter",
+      "actual_rows": 500,
+      "actual_loops": 1,
+      "estimated_rows": 450,
+      "actual_last_row_ms": 45.3,
+      "actual_first_row_ms": 0.8,
+      "estimated_total_cost": 2500.0,
+      "inputs": [
+        {
+          "operation": "Table scan on customers",
+          "table_name": "customers",
+          "access_type": "ALL",
+          "actual_rows": 10000,
+          "actual_loops": 1,
+          "estimated_rows": 10000,
+          "actual_last_row_ms": 35.2,
+          "actual_first_row_ms": 0.1,
+          "estimated_total_cost": 1500.0
+        }
+      ]
+    },
+    {
+      "operation": "Index lookup on orders using idx_customer_id (customer_id = c.id)",
+      "table_name": "orders",
+      "index_name": "idx_customer_id",
+      "access_type": "ref",
+      "actual_rows": 10,
+      "actual_loops": 500,
+      "estimated_rows": 10,
+      "actual_last_row_ms": 0.4,
+      "actual_first_row_ms": 0.05,
+      "estimated_total_cost": 5.0
+    }
+  ]
+}
+

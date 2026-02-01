@@ -1,0 +1,26 @@
+{
+  "query": "/* select#1 */ select `employees`.`employees`.`emp_no` AS `emp_no`,`employees`.`employees`.`birth_date` AS `birth_date`,`employees`.`employees`.`first_name` AS `first_name`,`employees`.`employees`.`last_name` AS `last_name`,`employees`.`employees`.`gender` AS `gender`,`employees`.`employees`.`hire_date` AS `hire_date` from `employees`.`employees` where ((`employees`.`employees`.`first_name` = 'Georgi') and (`employees`.`employees`.`last_name` = 'Facello'))",
+  "covering": false,
+  "operation": "Index lookup on employees using idx_covered_last_first_name (last_name='Facello', first_name='Georgi')",
+  "index_name": "idx_covered_last_first_name",
+  "query_type": "select",
+  "table_name": "employees",
+  "access_type": "index",
+  "actual_rows": 2.0,
+  "schema_name": "employees",
+  "actual_loops": 1,
+  "used_columns": [
+    "emp_no",
+    "birth_date",
+    "first_name",
+    "last_name",
+    "gender",
+    "hire_date"
+  ],
+  "estimated_rows": 2.0,
+  "lookup_condition": "last_name='Facello', first_name='Georgi'",
+  "index_access_type": "index_lookup",
+  "actual_last_row_ms": 0.111209,
+  "actual_first_row_ms": 0.107751,
+  "estimated_total_cost": 0.7
+}
