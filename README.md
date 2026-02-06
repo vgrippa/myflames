@@ -1,8 +1,17 @@
 # MySQL EXPLAIN Flame Graphs
 
-Visualize MySQL query execution plans as interactive flame graphs and bar charts. Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) project and [Tanel Põder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
+Visualize MySQL query execution plans as interactive flame graphs and bar charts. Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) project and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
-![Flame Graph Example](docs/flamegraph-example.png)
+## Examples
+
+### Flame Graph (default)
+![Flame Graph Example](demos/mysql-query-example-1.svg)
+
+### Icicle Graph (inverted)
+![Icicle Graph Example](demos/mysql-query-example-2-inverted.svg)
+
+### Custom Colors (green)
+![Green Flame Graph Example](demos/mysql-query-example-3-green.svg)
 
 ## Features
 
@@ -44,7 +53,7 @@ chmod +x *.pl
 ### Step 1: Get EXPLAIN ANALYZE output from MySQL
 
 ```sql
-EXPLAIN ANALYZE FORMAT=JSON 
+EXPLAIN ANALYZE FORMAT=JSON
 SELECT e.first_name, e.last_name, d.dept_name
 FROM employees e
 JOIN dept_emp de ON e.emp_no = de.emp_no
@@ -127,6 +136,7 @@ start query.svg       # Windows
 | `--height N` | 32 | Frame height in pixels |
 | `--colors SCHEME` | hot | Color scheme: hot, mem, io, red, green, blue |
 | `--title TEXT` | "MySQL Query Plan" | Chart title |
+| `--inverted` | (off) | Generate icicle graph (inverted flame graph) |
 | `--no-enhance` | (enabled) | Disable detailed tooltips |
 
 **Examples:**
@@ -136,6 +146,12 @@ start query.svg       # Windows
 
 # Custom title and width
 ./mysql-explain-flamegraph.pl --title "Slow Query Analysis" --width 2400 explain.json > query.svg
+
+# Icicle graph (inverted)
+./mysql-explain-flamegraph.pl --title "Slow Query Analysis" --inverted explain.json > query-inverted.svg
+
+# Green color scheme
+./mysql-explain-flamegraph.pl --title "Slow Query Analysis" --colors green explain.json > query-green.svg
 
 # Memory-style colors
 ./mysql-explain-flamegraph.pl --colors mem explain.json > query.svg
@@ -169,7 +185,7 @@ start query.svg       # Windows
 - **Width = Time**: Wider bars took more total time (including children)
 - **Self-time**: The visible "top" of each bar represents time spent in that operation alone
 
-### Labels (Tanel Põder style)
+### Labels (Tanel Poder style)
 Each operation shows:
 ```
 OPERATION [table.index] starts=X rows=Y
@@ -272,7 +288,7 @@ If you see XML parsing errors, ensure your MySQL version outputs valid JSON. Som
 ## Credits
 
 - [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) - Original flame graph implementation
-- [Tanel Põder](https://tanelpoder.com/) - SQL Plan FlameGraph concept and label format inspiration
+- [Tanel Poder](https://tanelpoder.com/) - SQL Plan FlameGraph concept and label format inspiration
 
 ## License
 

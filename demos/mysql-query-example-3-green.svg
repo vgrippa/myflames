@@ -1,12 +1,12 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="100%" height="118" onload="init(evt)" viewBox="0 0 1200 118" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1800" height="358" onload="init(evt)" viewBox="0 0 1800 358" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
 <!-- NOTES:  -->
 <defs>
 	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
-		<stop stop-color="#eeeeee" offset="5%" />
-		<stop stop-color="#e0e0ff" offset="95%" />
+		<stop stop-color="#f8f8f8" offset="5%" />
+		<stop stop-color="#e8e8e8" offset="95%" />
 	</linearGradient>
 </defs>
 <style type="text/css">
@@ -422,25 +422,69 @@
 	}
 ]]>
 </script>
-<rect x="0.0" y="0" width="1200.0" height="118.0" fill="url(#background)"  />
-<text id="title" x="600.00" y="24" >MySQL Query Performance</text>
-<text id="details" x="10.00" y="101" > </text>
+<rect x="0.0" y="0" width="1800.0" height="358.0" fill="url(#background)"  />
+<text id="title" x="900.00" y="24" >Slow Query Analysis</text>
+<text id="details" x="10.00" y="341" > </text>
 <text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
-<text id="search" x="1090.00" y="24" >Search</text>
-<text id="ignorecase" x="1174.00" y="24" >ic</text>
-<text id="matched" x="1090.00" y="101" > </text>
+<text id="search" x="1690.00" y="24" >Search</text>
+<text id="ignorecase" x="1774.00" y="24" >ic</text>
+<text id="matched" x="1690.00" y="341" > </text>
 <g id="frames">
 <g >
-<title>all (14 ms, 100%)</title><rect x="10.0" y="69" width="1180.0" height="15.0" fill="rgb(90,90,199)" rx="2" ry="2" />
-<text  x="13.00" y="79.5" ></text>
+<title>NESTED LOOP INNER starts=1 rows=27198 (627 ms, 98.58%)&#10;&#10;Access: join&#10;Rows: 27198 actual (11037 estimated) [UNDERESTIMATE]&#10;Time: 416.584 ms (last row), 7.092 ms (first row)&#10;Cost: 56553.42</title><rect x="35.2" y="165" width="1754.8" height="31.0" fill="rgb(101,247,101)" rx="2" ry="2" />
+<text  x="38.19" y="183.5" >NESTED LOOP INNER starts=1 rows=27198</text>
 </g>
 <g >
-<title>Index range scan on joinit using PRIMARY over (50 &lt; i) | index | joinit (11 ms, 78.57%)</title><rect x="262.9" y="37" width="927.1" height="15.0" fill="rgb(99,99,207)" rx="2" ry="2" />
-<text  x="265.86" y="47.5" >Index range scan on joinit using PRIMARY over (50 &lt; i) | index | joinit</text>
+<title>SORT starts=1 rows=100 (635 ms, 99.84%)&#10;&#10;Access: sort&#10;Rows: 100 actual&#10;Time: 635.148 ms (last row), 635.144 ms (first row)</title><rect x="12.8" y="229" width="1777.2" height="31.0" fill="rgb(76,224,76)" rx="2" ry="2" />
+<text  x="15.80" y="247.5" >SORT starts=1 rows=100</text>
 </g>
 <g >
-<title>Filter: (joinit.i &gt; 50) | filter | (14 ms, 100.00%)</title><rect x="10.0" y="53" width="1180.0" height="15.0" fill="rgb(118,118,225)" rx="2" ry="2" />
-<text  x="13.00" y="63.5" >Filter: (joinit.i &gt; 50) | filter |</text>
+<title>NESTED LOOP INNER starts=1 rows=240124 (217 ms, 34.12%)&#10;&#10;Access: join&#10;Rows: 240124 actual (33114 estimated) [UNDERESTIMATE]&#10;Time: 217.729 ms (last row), 7.010 ms (first row)&#10;Cost: 44963.41</title><rect x="1182.7" y="101" width="607.3" height="31.0" fill="rgb(78,225,78)" rx="2" ry="2" />
+<text  x="1185.67" y="119.5" >NESTED LOOP INNER starts=1 rows=240124</text>
+</g>
+<g >
+<title>STREAM starts=1 rows=27198 (632 ms, 99.37%)&#10;&#10;Access: stream&#10;Rows: 27198 actual (10371 estimated) [UNDERESTIMATE]&#10;Time: 632.629 ms (last row), 8.370 ms (first row)&#10;Cost: 70620.20</title><rect x="21.2" y="197" width="1768.8" height="31.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="24.19" y="215.5" >STREAM starts=1 rows=27198</text>
+</g>
+<g >
+<title>LIMIT starts=1 rows=100 (636 ms, 100.00%)&#10;&#10;Access: limit&#10;Rows: 100 actual&#10;Time: 635.153 ms (last row), 635.145 ms (first row)</title><rect x="10.0" y="261" width="1780.0" height="31.0" fill="rgb(70,218,70)" rx="2" ry="2" />
+<text  x="13.00" y="279.5" >LIMIT starts=1 rows=100</text>
+</g>
+<g >
+<title>FILTER ((s.to_date = DATE'9999-01-01')) starts=27198 rows=1 (208 ms, 32.70%)&#10;&#10;Access: filter&#10;Rows: 1 actual (1 estimated)&#10;Loops: 27198&#10;Time: 0.008 ms (last row), 0.007 ms (first row)&#10;Cost: 0.33&#10;Condition: (s.to_date = DATE'9999-01-01')</title><rect x="43.6" y="133" width="582.1" height="31.0" fill="rgb(57,206,57)" rx="2" ry="2" />
+<text  x="46.58" y="151.5" >FILTER ((s.to_date = DATE'9999-01-01')) starts=27198 rows=1</text>
+</g>
+<g >
+<title>FILTER ((e.hire_date &gt; DATE'1995-01-01')) starts=240124 rows=0 (184 ms, 28.93%)&#10;&#10;Access: filter&#10;Rows: 0 actual (0 estimated) [OVERESTIMATE]&#10;Loops: 240124&#10;Time: 0.001 ms (last row), 0.001 ms (first row)&#10;Cost: 0.25&#10;Condition: (e.hire_date &gt; DATE'1995-01-01')</title><rect x="667.7" y="101" width="515.0" height="31.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="670.70" y="119.5" >FILTER ((e.hire_date &gt; DATE'1995-01-01')) starts=240124 rows=0</text>
+</g>
+<g >
+<title>FILTER ((de.to_date = DATE'9999-01-01')) starts=1 rows=240124 (80 ms, 12.58%)&#10;&#10;Access: filter&#10;Rows: 240124 actual (33114 estimated) [UNDERESTIMATE]&#10;Time: 80.347 ms (last row), 6.959 ms (first row)&#10;Cost: 33373.41&#10;Condition: (de.to_date = DATE'9999-01-01')</title><rect x="1244.2" y="69" width="223.9" height="31.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1247.25" y="87.5" >FILTER ((de.to_date = DATE'99..</text>
+</g>
+<g >
+<title>TABLE SCAN [dept_emp] starts=1 rows=331603 (66 ms, 10.38%)&#10;&#10;Table: employees.dept_emp&#10;Access: table&#10;Rows: 331603 actual (331143 estimated)&#10;Time: 65.886 ms (last row), 6.948 ms (first row)&#10;Cost: 33373.41</title><rect x="1283.4" y="37" width="184.7" height="31.0" fill="rgb(84,231,84)" rx="2" ry="2" />
+<text  x="1286.43" y="55.5" >TABLE SCAN [dept_emp] st..</text>
+</g>
+<g >
+<title>all (636 ms, 100%)</title><rect x="10.0" y="293" width="1780.0" height="31.0" fill="rgb(60,209,60)" rx="2" ry="2" />
+<text  x="13.00" y="311.5" ></text>
+</g>
+<g >
+<title>SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1 (115 ms, 18.08%)&#10;&#10;Table: employees.departments (index: PRIMARY)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 240124&#10;Time: 0.000 ms (last row), 0.000 ms (first row)&#10;Cost: 0.25&#10;Covering: No</title><rect x="1468.1" y="69" width="321.9" height="31.0" fill="rgb(77,225,77)" rx="2" ry="2" />
+<text  x="1471.14" y="87.5" >SINGLE ROW LOOKUP [departments.PRIMARY] sta..</text>
+</g>
+<g >
+<title>SINGLE ROW LOOKUP [employees.PRIMARY] starts=240124 rows=1 (158 ms, 24.84%)&#10;&#10;Table: employees.employees (index: PRIMARY)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 240124&#10;Time: 0.001 ms (last row), 0.001 ms (first row)&#10;Cost: 0.25&#10;Covering: No</title><rect x="740.5" y="69" width="442.2" height="31.0" fill="rgb(100,246,100)" rx="2" ry="2" />
+<text  x="743.47" y="87.5" >SINGLE ROW LOOKUP [employees.PRIMARY] starts=240124 rows=1</text>
+</g>
+<g >
+<title>INDEX LOOKUP [salaries.PRIMARY] starts=27198 rows=6 (201 ms, 31.60%)&#10;&#10;Table: employees.salaries (index: PRIMARY)&#10;Access: index&#10;Rows: 6 actual (9 estimated)&#10;Loops: 27198&#10;Time: 0.007 ms (last row), 0.007 ms (first row)&#10;Cost: 0.33&#10;Covering: No</title><rect x="63.2" y="101" width="562.5" height="31.0" fill="rgb(94,240,94)" rx="2" ry="2" />
+<text  x="66.18" y="119.5" >INDEX LOOKUP [salaries.PRIMARY] starts=27198 rows=6</text>
+</g>
+<g >
+<title>NESTED LOOP INNER starts=1 rows=27198 (416 ms, 65.41%)&#10;&#10;Access: join&#10;Rows: 27198 actual (11037 estimated) [UNDERESTIMATE]&#10;Time: 416.584 ms (last row), 7.092 ms (first row)&#10;Cost: 56553.42</title><rect x="625.7" y="133" width="1164.3" height="31.0" fill="rgb(101,247,101)" rx="2" ry="2" />
+<text  x="628.72" y="151.5" >NESTED LOOP INNER starts=1 rows=27198</text>
 </g>
 </g>
 </svg>

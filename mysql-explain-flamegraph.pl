@@ -24,6 +24,7 @@ my $height = 32;
 my $colors = "hot";
 my $title = "MySQL Query Plan";
 my $enhance_tooltips = 1;
+my $inverted = 0;
 my $help = 0;
 
 GetOptions(
@@ -32,6 +33,7 @@ GetOptions(
     'colors=s'   => \$colors,
     'title=s'    => \$title,
     'enhance!'   => \$enhance_tooltips,
+    'inverted'   => \$inverted,
     'help'       => \$help,
 ) or die "Error in command line arguments\n";
 
@@ -44,6 +46,7 @@ Options:
   --height N       Frame height (default: 32)
   --colors SCHEME  Color scheme: hot, mem, io, etc. (default: hot)
   --title TEXT     Title text (default: "MySQL Query Plan")
+  --inverted       Generate icicle graph (inverted flame graph)
   --enhance        Enable enhanced tooltips (default: on)
   --no-enhance     Disable enhanced tooltips
   --help           Show this help
@@ -51,6 +54,7 @@ Options:
 Example:
   ./mysql-explain-flamegraph.pl explain.json > query.svg
   ./mysql-explain-flamegraph.pl --title "Slow Query" --colors mem explain.json > query.svg
+  ./mysql-explain-flamegraph.pl --inverted explain.json > query-icicle.svg
 USAGE
     exit 0;
 }
@@ -392,6 +396,7 @@ my @fg_cmd = (
     "--title", $title,
     "--countname", $unit
 );
+push @fg_cmd, "--inverted" if $inverted;
 
 my $pid = open2(my $fg_out, my $fg_in, @fg_cmd)
     or die "Cannot run flamegraph.pl: $!\n";
