@@ -37,6 +37,83 @@ my $data = decode_json($json_text);
 
 my @operations = ();
 
+# Format number with commas (e.g., 27198 -> 27,198)
+sub format_number {
+    my ($n) = @_;
+    $n = int($n);
+    my $s = "$n";
+    $s =~ s/(\d)(?=(\d{3})+$)/$1,/g;
+    return $s;
+}
+
+# Build a short, clean label for display
+sub build_short_label {
+    my ($op, $table, $index, $condition) = @_;
+    
+    $table //= '';
+    $index //= '';
+    $condition //= '';
+    
+    my $label;
+    
+    if ($op =~ /^Table scan/i) {
+        $label = "Table scan" . ($table ? " [$table]" : "");
+    }
+    elsif ($op =~ /^Index range scan/i) {
+        $label = "Index range scan" . ($table && $index ? " [$table.$index]" : "");
+    }
+    elsif ($op =~ /^Index scan/i) {
+        $label = "Index scan" . ($table && $index ? " [$table.$index]" : "");
+    }
+    elsif ($op =~ /^Index lookup/i) {
+        $label = "Index lookup" . ($table && $index ? " [$table.$index]" : "");
+    }
+    elsif ($op =~ /^Single-row index lookup/i) {
+        $label = "Single-row lookup" . ($table && $index ? " [$table.$index]" : "");
+    }
+    elsif ($op =~ /^Covering index/i) {
+        $label = "Covering index" . ($table && $index ? " [$table.$index]" : "");
+    }
+    elsif ($op =~ /^Filter/i) {
+        my $cond = $condition;
+        $cond =~ s/`//g;
+        $cond = substr($cond, 0, 40) . "..." if length($cond) > 43;
+        $label = "Filter: ($cond)";
+    }
+    elsif ($op =~ /^Sort/i) {
+        if ($op =~ /limit input to (\d+)/i) {
+            $label = "Sort (limit $1)";
+        } else {
+            $label = "Sort";
+        }
+    }
+    elsif ($op =~ /^Nested loop/i) {
+        if ($op =~ /inner/i) { $label = "Nested loop inner join"; }
+        elsif ($op =~ /left/i) { $label = "Nested loop left join"; }
+        elsif ($op =~ /semi/i) { $label = "Nested loop semi join"; }
+        else { $label = "Nested loop join"; }
+    }
+    elsif ($op =~ /^Aggregate/i) { $label = "Aggregate"; }
+    elsif ($op =~ /^Group/i) { $label = "Group"; }
+    elsif ($op =~ /^Materialize/i) { $label = "Materialize"; }
+    elsif ($op =~ /^Stream results/i) { $label = "Stream results"; }
+    elsif ($op =~ /^Limit/i) { 
+        if ($op =~ /(\d+) row/i) {
+            $label = "Limit: $1 rows";
+        } else {
+            $label = "Limit";
+        }
+    }
+    elsif ($op =~ /^Intersect/i) { $label = "Intersect (row ID)"; }
+    elsif ($op =~ /^Union/i) { $label = "Union"; }
+    else {
+        $label = $op;
+        $label = substr($label, 0, 50) . "..." if length($label) > 53;
+    }
+    
+    return $label;
+}
+
 sub process_node {
     my ($node, $depth) = @_;
     return unless ref $node eq 'HASH';
@@ -71,17 +148,12 @@ sub process_node {
     $op =~ s/`//g;
     $op =~ s/DATE'(\d{4}-\d{2}-\d{2})'/$1/g;  # DATE'9999-01-01' -> 9999-01-01
     
-    # Build label
-    my $label = $op;
-    if ($table && $table !~ /temporary/) {
-        $label .= " [$table" . ($index ? ".$index" : "") . "]";
-    }
-    if ($loops > 1) {
-        $label .= " x$loops";
-    }
+    # Build clean, short label based on operation type
+    my $label = build_short_label($op, $table, $index, $node->{condition});
 
     push @operations, {
         label => $label,
+        full_label => $op,  # Keep original for tooltip
         self_time => $self_time,
         total_time => $time_ms,
         rows => $rows,
@@ -116,14 +188,16 @@ if ($use_microseconds) {
 }
 
 # SVG dimensions
-my $bar_height = 32;
-my $bar_gap = 8;
+my $bar_height = 28;
+my $bar_gap = 6;
 my $left_margin = 10;
 my $right_margin = 10;
-my $top_margin = 60;
+my $top_margin = 80;
 my $bottom_margin = 40;
-my $label_width = 500;
-my $bar_area_width = $width - $left_margin - $right_margin - $label_width - 150;
+my $label_width = 320;
+my $loops_width = 80;
+my $time_width = 120;
+my $bar_area_width = $width - $left_margin - $right_margin - $label_width - $loops_width - $time_width - 20;
 
 my $num_bars = scalar @operations;
 my $height = $top_margin + ($num_bars * ($bar_height + $bar_gap)) + $bottom_margin;
@@ -140,21 +214,35 @@ my @colors = (
     'rgb(100,180,180)',  # teal
 );
 
+# Column positions
+my $col_label_x = $left_margin;
+my $col_loops_x = $left_margin + $label_width;
+my $col_bar_x = $col_loops_x + $loops_width;
+my $col_time_x = $col_bar_x + $bar_area_width + 10;
+
 # Start SVG
 print qq{<?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg version="1.1" width="$width" height="$height" xmlns="http://www.w3.org/2000/svg">
 <style>
-  text { font-family: Arial, sans-serif; font-size: 13px; }
+  text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
-  .label { font-size: 12px; }
-  .value { font-size: 12px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-header { font-size: 10px; fill: #999; font-weight: bold; }
+  .label { font-size: 11px; }
+  .loops { font-size: 10px; fill: #666; }
+  .value { font-size: 11px; font-weight: bold; }
   .bar:hover { opacity: 0.8; cursor: pointer; }
-  .header { font-size: 11px; fill: #666; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
-<text x="${\($width/2)}" y="30" text-anchor="middle" class="title">$title</text>
-<text x="${\($width/2)}" y="48" text-anchor="middle" class="header">Self-time per operation (sorted by time, slowest first) | Total: ${\($total_time >= 1 ? sprintf("%.0f", $total_time) : sprintf("%.3f", $total_time))} $unit</text>
+<text x="${\($width/2)}" y="28" text-anchor="middle" class="title">$title</text>
+<text x="${\($width/2)}" y="46" text-anchor="middle" class="subtitle">Self-time per operation (sorted by slowest first) | Total: ${\($total_time >= 1 ? sprintf("%.0f", $total_time) : sprintf("%.3f", $total_time))} $unit</text>
+
+<!-- Column headers -->
+<text x="${\($col_label_x + $label_width - 10)}" y="68" text-anchor="end" class="col-header">OPERATION</text>
+<text x="${\($col_loops_x + $loops_width/2)}" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="${\($col_bar_x + $bar_area_width/2)}" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<line x1="$left_margin" y1="72" x2="${\($width - $right_margin)}" y2="72" stroke="#ddd" stroke-width="1"/>
 };
 
 # Draw bars
@@ -168,30 +256,32 @@ foreach my $op (@operations) {
 
     my $color = $colors[$i % scalar(@colors)];
     my $label = $op->{label};
-    $label = substr($label, 0, 85) . "..." if length($label) > 88;
+    $label = substr($label, 0, 45) . "..." if length($label) > 48;  # Shorter truncation
 
-    my $bar_x = $left_margin + $label_width;
     my $text_y = $y + ($bar_height / 2) + 4;
 
-    # Label (escaped for XML)
+    # Operation label (escaped for XML)
     my $label_escaped = xml_escape($label);
-    print qq{<text x="${\($left_margin + $label_width - 10)}" y="$text_y" text-anchor="end" class="label">$label_escaped</text>\n};
+    print qq{<text x="${\($col_label_x + $label_width - 10)}" y="$text_y" text-anchor="end" class="label">$label_escaped</text>\n};
+    
+    # Loops column
+    my $loops_text = format_number($op->{loops});
+    print qq{<text x="${\($col_loops_x + $loops_width/2)}" y="$text_y" text-anchor="middle" class="loops">$loops_text</text>\n};
 
     # Bar
-    my $title_label_escaped = xml_escape($op->{label});
-    print qq{<rect class="bar" x="$bar_x" y="$y" width="$bar_width" height="$bar_height" fill="$color" rx="3" ry="3">};
-    print qq{<title>$title_label_escaped\nSelf-time: ${\($op->{self_time} >= 1 ? sprintf("%.0f", $op->{self_time}) : sprintf("%.3f", $op->{self_time}))} $unit (${\(sprintf "%.1f", $pct)}%)\nRows: ${\(sprintf "%.0f", $op->{rows})}\nLoops: $op->{loops}</title>};
+    my $full_label_escaped = xml_escape($op->{full_label} // $op->{label});
+    print qq{<rect class="bar" x="$col_bar_x" y="$y" width="$bar_width" height="$bar_height" fill="$color" rx="3" ry="3">};
+    print qq{<title>$full_label_escaped\nSelf-time: ${\($op->{self_time} >= 1 ? sprintf("%.0f", $op->{self_time}) : sprintf("%.3f", $op->{self_time}))} $unit (${\(sprintf "%.1f", $pct)}%)\nRows: ${\(sprintf "%.0f", $op->{rows})}\nLoops: ${\(format_number($op->{loops}))}</title>};
     print qq{</rect>\n};
 
     # Value label (show decimals for fast queries)
-    my $value_x = $bar_x + $bar_width + 8;
     my $value_text;
     if ($op->{self_time} >= 1) {
         $value_text = sprintf("%.0f $unit (%.1f%%)", $op->{self_time}, $pct);
     } else {
         $value_text = sprintf("%.3f $unit (%.1f%%)", $op->{self_time}, $pct);
     }
-    print qq{<text x="$value_x" y="$text_y" class="value">$value_text</text>\n};
+    print qq{<text x="$col_time_x" y="$text_y" class="value">$value_text</text>\n};
 
     $y += $bar_height + $bar_gap;
     $i++;

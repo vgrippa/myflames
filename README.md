@@ -13,6 +13,9 @@ Visualize MySQL query execution plans as interactive flame graphs and bar charts
 ### Custom Colors (green)
 ![Green Flame Graph Example](demos/mysql-query-example-3-green.svg)
 
+### Bar Chart (self-time breakdown)
+![Bar Chart Example](demos/mysql-query-bargraph.svg)
+
 ## Features
 
 - **Flame Graph**: Hierarchical visualization showing query execution flow and time distribution

@@ -1,0 +1,114 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="562" xmlns="http://www.w3.org/2000/svg">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 12px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-header { font-size: 10px; fill: #999; font-weight: bold; }
+  .label { font-size: 11px; }
+  .loops { font-size: 10px; fill: #666; }
+  .value { font-size: 11px; font-weight: bold; }
+  .bar:hover { opacity: 0.8; cursor: pointer; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600" y="28" text-anchor="middle" class="title">MySQL Query Performance</text>
+<text x="600" y="46" text-anchor="middle" class="subtitle">Self-time per operation (sorted by slowest first) | Total: 635 ms</text>
+
+<!-- Column headers -->
+<text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
+<text x="370" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="730" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<line x1="10" y1="72" x2="1190" y2="72" stroke="#ddd" stroke-width="1"/>
+<text x="320" y="98" text-anchor="end" class="label">Index lookup [salaries.PRIMARY]</text>
+<text x="370" y="98" text-anchor="middle" class="loops">27,198</text>
+<rect class="bar" x="410" y="80" width="202.401418891266" height="28" fill="rgb(255,90,90)" rx="3" ry="3"><title>Index lookup on s using PRIMARY (emp_no=de.emp_no)
+Self-time: 201 ms (31.6%)
+Rows: 6
+Loops: 27,198</title></rect>
+<text x="1060" y="98" class="value">201 ms (31.6%)</text>
+<text x="320" y="132" text-anchor="end" class="label">Single-row lookup [employees.PRIMARY]</text>
+<text x="370" y="132" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="410" y="114" width="159.596213842253" height="28" fill="rgb(255,130,70)" rx="3" ry="3"><title>Single-row index lookup on e using PRIMARY (emp_no=de.emp_no)
+Self-time: 158 ms (24.9%)
+Rows: 1
+Loops: 240,124</title></rect>
+<text x="1060" y="132" class="value">158 ms (24.9%)</text>
+<text x="320" y="166" text-anchor="end" class="label">Single-row lookup [departments.PRIMARY]</text>
+<text x="370" y="166" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="410" y="148" width="116.265322398911" height="28" fill="rgb(255,165,50)" rx="3" ry="3"><title>Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)
+Self-time: 115 ms (18.2%)
+Rows: 1
+Loops: 240,124</title></rect>
+<text x="1060" y="166" class="value">115 ms (18.2%)</text>
+<text x="320" y="200" text-anchor="end" class="label">Table scan [dept_emp]</text>
+<text x="370" y="200" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="182" width="66.3887962410206" height="28" fill="rgb(255,200,50)" rx="3" ry="3"><title>Table scan on de
+Self-time: 66 ms (10.4%)
+Rows: 331603
+Loops: 1</title></rect>
+<text x="1060" y="200" class="value">66 ms (10.4%)</text>
+<text x="320" y="234" text-anchor="end" class="label">Filter: ((e.hire_date &gt; DATE'1995-01-01'))</text>
+<text x="370" y="234" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="410" y="216" width="25.8325682838651" height="28" fill="rgb(255,220,80)" rx="3" ry="3"><title>Filter: (e.hire_date &gt; 1995-01-01)
+Self-time: 26 ms (4.0%)
+Rows: 0
+Loops: 240,124</title></rect>
+<text x="1060" y="234" class="value">26 ms (4.0%)</text>
+<text x="320" y="268" text-anchor="end" class="label">Nested loop inner join</text>
+<text x="370" y="268" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="250" width="22.165368993681" height="28" fill="rgb(200,200,100)" rx="3" ry="3"><title>Nested loop inner join
+Self-time: 22 ms (3.5%)
+Rows: 240124
+Loops: 1</title></rect>
+<text x="1060" y="268" class="value">22 ms (3.5%)</text>
+<text x="320" y="302" text-anchor="end" class="label">Nested loop inner join</text>
+<text x="370" y="302" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="284" width="14.9434261197999" height="28" fill="rgb(150,200,150)" rx="3" ry="3"><title>Nested loop inner join
+Self-time: 15 ms (2.3%)
+Rows: 27198
+Loops: 1</title></rect>
+<text x="1060" y="302" class="value">15 ms (2.3%)</text>
+<text x="320" y="336" text-anchor="end" class="label">Filter: ((de.to_date = DATE'9999-01-01'))</text>
+<text x="370" y="336" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="318" width="14.571041790276" height="28" fill="rgb(100,180,180)" rx="3" ry="3"><title>Filter: (de.to_date = 9999-01-01)
+Self-time: 14 ms (2.3%)
+Rows: 240124
+Loops: 1</title></rect>
+<text x="1060" y="336" class="value">14 ms (2.3%)</text>
+<text x="320" y="370" text-anchor="end" class="label">Filter: ((s.to_date = DATE'9999-01-01'))</text>
+<text x="370" y="370" text-anchor="middle" class="loops">27,198</text>
+<rect class="bar" x="410" y="352" width="7.12511049387943" height="28" fill="rgb(255,90,90)" rx="3" ry="3"><title>Filter: (s.to_date = 9999-01-01)
+Self-time: 7 ms (1.1%)
+Rows: 1
+Loops: 27,198</title></rect>
+<text x="1060" y="370" class="value">7 ms (1.1%)</text>
+<text x="320" y="404" text-anchor="end" class="label">Stream results</text>
+<text x="370" y="404" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="386" width="5.17877753982067" height="28" fill="rgb(255,130,70)" rx="3" ry="3"><title>Stream results
+Self-time: 5 ms (0.8%)
+Rows: 27198
+Loops: 1</title></rect>
+<text x="1060" y="404" class="value">5 ms (0.8%)</text>
+<text x="320" y="438" text-anchor="end" class="label">Nested loop inner join</text>
+<text x="370" y="438" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="420" width="3" height="28" fill="rgb(255,165,50)" rx="3" ry="3"><title>Nested loop inner join
+Self-time: 3 ms (0.5%)
+Rows: 27198
+Loops: 1</title></rect>
+<text x="1060" y="438" class="value">3 ms (0.5%)</text>
+<text x="320" y="472" text-anchor="end" class="label">Sort (limit 100)</text>
+<text x="370" y="472" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="454" width="3" height="28" fill="rgb(255,200,50)" rx="3" ry="3"><title>Sort: s.salary DESC, limit input to 100 row(s) per chunk
+Self-time: 3 ms (0.4%)
+Rows: 100
+Loops: 1</title></rect>
+<text x="1060" y="472" class="value">3 ms (0.4%)</text>
+<text x="320" y="506" text-anchor="end" class="label">Limit: 100 rows</text>
+<text x="370" y="506" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="488" width="3" height="28" fill="rgb(255,220,80)" rx="3" ry="3"><title>Limit: 100 row(s)
+Self-time: 0.005 ms (0.0%)
+Rows: 100
+Loops: 1</title></rect>
+<text x="1060" y="506" class="value">0.005 ms (0.0%)</text>
+</svg>
