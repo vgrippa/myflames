@@ -1,26 +1,206 @@
 {
-  "query": "/* select#1 */ select `employees`.`employees`.`emp_no` AS `emp_no`,`employees`.`employees`.`birth_date` AS `birth_date`,`employees`.`employees`.`first_name` AS `first_name`,`employees`.`employees`.`last_name` AS `last_name`,`employees`.`employees`.`gender` AS `gender`,`employees`.`employees`.`hire_date` AS `hire_date` from `employees`.`employees` where ((`employees`.`employees`.`first_name` = 'Georgi') and (`employees`.`employees`.`last_name` = 'Facello'))",
-  "covering": false,
-  "operation": "Index lookup on employees using idx_covered_last_first_name (last_name='Facello', first_name='Georgi')",
-  "index_name": "idx_covered_last_first_name",
-  "query_type": "select",
-  "table_name": "employees",
-  "access_type": "index",
-  "actual_rows": 2.0,
-  "schema_name": "employees",
-  "actual_loops": 1,
-  "used_columns": [
-    "emp_no",
-    "birth_date",
-    "first_name",
-    "last_name",
-    "gender",
-    "hire_date"
+  "limit": 100,
+  "query": "/* select#1 */ select `e`.`first_name` AS `first_name`,`e`.`last_name` AS `last_name`,`d`.`dept_name` AS `dept_name`,`s`.`salary` AS `salary` from `employees`.`employees` `e` join `employees`.`dept_emp` `de` join `employees`.`departments` `d` join `employees`.`salaries` `s` where ((`d`.`dept_no` = `de`.`dept_no`) and (`e`.`emp_no` = `de`.`emp_no`) and (`s`.`emp_no` = `de`.`emp_no`) and (`s`.`to_date` = DATE'9999-01-01') and (`de`.`to_date` = DATE'9999-01-01') and (`e`.`hire_date` > DATE'1995-01-01')) order by `employees`.`s`.`salary` desc limit 100",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "inputs": [
+                            {
+                              "alias": "de",
+                              "operation": "Table scan on de",
+                              "table_name": "dept_emp",
+                              "access_type": "table",
+                              "actual_rows": 331603.0,
+                              "schema_name": "employees",
+                              "actual_loops": 1,
+                              "used_columns": [
+                                "emp_no",
+                                "dept_no",
+                                "to_date"
+                              ],
+                              "estimated_rows": 331143.0,
+                              "actual_last_row_ms": 65.885987,
+                              "actual_first_row_ms": 6.947958,
+                              "estimated_total_cost": 33373.40943912449
+                            }
+                          ],
+                          "condition": "(de.to_date = DATE'9999-01-01')",
+                          "operation": "Filter: (de.to_date = DATE'9999-01-01')",
+                          "access_type": "filter",
+                          "actual_rows": 240124.0,
+                          "actual_loops": 1,
+                          "estimated_rows": 33114.30049344152,
+                          "actual_last_row_ms": 80.346672,
+                          "actual_first_row_ms": 6.958958,
+                          "estimated_total_cost": 33373.40943912449
+                        },
+                        {
+                          "alias": "d",
+                          "covering": false,
+                          "operation": "Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)",
+                          "index_name": "PRIMARY",
+                          "table_name": "departments",
+                          "access_type": "index",
+                          "actual_rows": 1.0,
+                          "schema_name": "employees",
+                          "actual_loops": 240124,
+                          "used_columns": [
+                            "dept_no",
+                            "dept_name"
+                          ],
+                          "estimated_rows": 1.0,
+                          "lookup_condition": "dept_no=de.dept_no",
+                          "index_access_type": "index_lookup",
+                          "actual_last_row_ms": 0.00048052157635221804,
+                          "actual_first_row_ms": 0.00046327117239426294,
+                          "estimated_total_cost": 0.25000301984334594
+                        }
+                      ],
+                      "join_type": "inner join",
+                      "operation": "Nested loop inner join",
+                      "access_type": "join",
+                      "actual_rows": 240124.0,
+                      "actual_loops": 1,
+                      "estimated_rows": 33114.30049344152,
+                      "join_algorithm": "nested_loop",
+                      "actual_last_row_ms": 217.72893,
+                      "actual_first_row_ms": 7.009542,
+                      "estimated_total_cost": 44963.41461182902
+                    },
+                    {
+                      "inputs": [
+                        {
+                          "alias": "e",
+                          "covering": false,
+                          "operation": "Single-row index lookup on e using PRIMARY (emp_no=de.emp_no)",
+                          "index_name": "PRIMARY",
+                          "table_name": "employees",
+                          "access_type": "index",
+                          "actual_rows": 1.0,
+                          "schema_name": "employees",
+                          "actual_loops": 240124,
+                          "used_columns": [
+                            "emp_no",
+                            "first_name",
+                            "last_name",
+                            "hire_date"
+                          ],
+                          "estimated_rows": 1.0,
+                          "lookup_condition": "emp_no=de.emp_no",
+                          "index_access_type": "index_lookup",
+                          "actual_last_row_ms": 0.00065960703220003,
+                          "actual_first_row_ms": 0.0006421741308657194,
+                          "estimated_total_cost": 0.2500010065137705
+                        }
+                      ],
+                      "condition": "(e.hire_date > DATE'1995-01-01')",
+                      "operation": "Filter: (e.hire_date > DATE'1995-01-01')",
+                      "access_type": "filter",
+                      "actual_rows": 0.1132664789858573,
+                      "actual_loops": 240124,
+                      "estimated_rows": 0.33329999446868896,
+                      "actual_last_row_ms": 0.0007663723701087771,
+                      "actual_first_row_ms": 0.0007604248388332696,
+                      "estimated_total_cost": 0.2500010065137705
+                    }
+                  ],
+                  "join_type": "inner join",
+                  "operation": "Nested loop inner join",
+                  "access_type": "join",
+                  "actual_rows": 27198.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 11036.996171298564,
+                  "join_algorithm": "nested_loop",
+                  "actual_last_row_ms": 416.583578,
+                  "actual_first_row_ms": 7.091666,
+                  "estimated_total_cost": 56553.41978453356
+                },
+                {
+                  "inputs": [
+                    {
+                      "alias": "s",
+                      "covering": false,
+                      "operation": "Index lookup on s using PRIMARY (emp_no=de.emp_no)",
+                      "index_name": "PRIMARY",
+                      "table_name": "salaries",
+                      "access_type": "index",
+                      "actual_rows": 5.5501139789690415,
+                      "schema_name": "employees",
+                      "actual_loops": 27198,
+                      "used_columns": [
+                        "emp_no",
+                        "salary",
+                        "from_date",
+                        "to_date"
+                      ],
+                      "estimated_rows": 9.39639663696289,
+                      "lookup_condition": "emp_no=de.emp_no",
+                      "index_access_type": "index_lookup",
+                      "actual_last_row_ms": 0.007385414001029488,
+                      "actual_first_row_ms": 0.007023748290315464,
+                      "estimated_total_cost": 0.3348809163473922
+                    }
+                  ],
+                  "condition": "(s.to_date = DATE'9999-01-01')",
+                  "operation": "Filter: (s.to_date = DATE'9999-01-01')",
+                  "access_type": "filter",
+                  "actual_rows": 1.0,
+                  "actual_loops": 27198,
+                  "estimated_rows": 0.9396396776980112,
+                  "actual_last_row_ms": 0.007645401757482168,
+                  "actual_first_row_ms": 0.0074350734612839186,
+                  "estimated_total_cost": 0.3348809163473922
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "actual_rows": 27198.0,
+              "actual_loops": 1,
+              "estimated_rows": 10370.799525153167,
+              "join_algorithm": "nested_loop",
+              "actual_last_row_ms": 627.489902,
+              "actual_first_row_ms": 8.353124999999999,
+              "estimated_total_cost": 70620.20458274912
+            }
+          ],
+          "operation": "Stream results",
+          "access_type": "stream",
+          "actual_rows": 27198.0,
+          "actual_loops": 1,
+          "estimated_rows": 10370.799525153167,
+          "actual_last_row_ms": 632.629457,
+          "actual_first_row_ms": 8.369917,
+          "estimated_total_cost": 70620.20458274912
+        }
+      ],
+      "operation": "Sort: s.salary DESC, limit input to 100 row(s) per chunk",
+      "access_type": "sort",
+      "actual_rows": 100.0,
+      "sort_fields": [
+        "s.salary DESC"
+      ],
+      "actual_loops": 1,
+      "per_chunk_limit": 100,
+      "actual_last_row_ms": 635.148249,
+      "actual_first_row_ms": 635.144083
+    }
   ],
-  "estimated_rows": 2.0,
-  "lookup_condition": "last_name='Facello', first_name='Georgi'",
-  "index_access_type": "index_lookup",
-  "actual_last_row_ms": 0.111209,
-  "actual_first_row_ms": 0.107751,
-  "estimated_total_cost": 0.7
+  "operation": "Limit: 100 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 100.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "actual_last_row_ms": 635.152828,
+  "actual_first_row_ms": 635.1452909999999
 }
