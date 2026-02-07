@@ -6,19 +6,19 @@ Visualize MySQL query execution plans as interactive flame graphs and bar charts
 
 ### Flame Graph (default)
 ![Flame Graph Example](demos/mysql-query-example-1.svg)  
-<a href="https://vgrippa.github.io/myflames/demos/mysql-query-example-1.svg" target="_blank" rel="noopener">**Open interactive**</a> — zoom, search, tooltips
+<a href="https://github.com/vgrippa/myflames/blob/master/demos/mysql-query-example-1.svg" target="_blank" rel="noopener">**Open interactive**</a> — zoom, search, tooltips
 
 ### Icicle Graph (inverted)
 ![Icicle Graph Example](demos/mysql-query-example-2-inverted.svg)  
-<a href="https://vgrippa.github.io/myflames/demos/mysql-query-example-2-inverted.svg" target="_blank" rel="noopener">**Open interactive**</a>
+<a href="https://github.com/vgrippa/myflames/blob/master/demos/mysql-query-example-2-inverted.svg" target="_blank" rel="noopener">**Open interactive**</a>
 
 ### Custom Colors (green)
 ![Green Flame Graph Example](demos/mysql-query-example-3-green.svg)  
-<a href="https://vgrippa.github.io/myflames/demos/mysql-query-example-3-green.svg" target="_blank" rel="noopener">**Open interactive**</a>
+<a href="https://github.com/vgrippa/myflames/blob/master/demos/mysql-query-example-3-green.svg" target="_blank" rel="noopener">**Open interactive**</a>
 
 ### Bar Chart (self-time breakdown)
 ![Bar Chart Example](demos/mysql-query-bargraph.svg)  
-<a href="https://vgrippa.github.io/myflames/demos/mysql-query-bargraph.svg" target="_blank" rel="noopener">**Open interactive**</a>
+<a href="https://github.com/vgrippa/myflames/blob/master/demos/mysql-query-bargraph.svg" target="_blank" rel="noopener">**Open interactive**</a>
 
 ### Viewing the demos (interactive zoom, search, tooltips)
 
@@ -28,7 +28,8 @@ Use one of these so the SVG works properly:
 
 | Where | How |
 |-------|-----|
-| **GitHub Pages** | **[Open interactive demos](https://vgrippa.github.io/myflames/)** — same-origin hosting so the script runs. Enable in repo: *Settings → Pages → Source: Deploy from branch → Branch: master, Folder: /docs*. |
+| **GitHub (blob)** | The “Open interactive” links above open the SVG on GitHub; zoom, search, and tooltips work there. |
+| **GitHub Pages** | **[All demos](https://vgrippa.github.io/myflames/)** — if the direct SVG links above fail, try the index page. Enable in repo: *Settings → Pages → Source: Deploy from branch → Branch: master, Folder: /docs*. |
 | **Locally** | After cloning, open a demo in your browser (same-origin as `file://`): |
 | | `open demos/mysql-query-example-1.svg` (macOS) |
 | | `xdg-open demos/mysql-query-example-1.svg` (Linux) |
