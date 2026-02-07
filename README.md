@@ -5,16 +5,34 @@ Visualize MySQL query execution plans as interactive flame graphs and bar charts
 ## Examples
 
 ### Flame Graph (default)
-![Flame Graph Example](demos/mysql-query-example-1.svg)
+![Flame Graph Example](demos/mysql-query-example-1.svg)  
+**[Open interactive](https://vgrippa.github.io/myflames/demos/mysql-query-example-1.svg)** — zoom, search, tooltips
 
 ### Icicle Graph (inverted)
-![Icicle Graph Example](demos/mysql-query-example-2-inverted.svg)
+![Icicle Graph Example](demos/mysql-query-example-2-inverted.svg)  
+**[Open interactive](https://vgrippa.github.io/myflames/demos/mysql-query-example-2-inverted.svg)**
 
 ### Custom Colors (green)
-![Green Flame Graph Example](demos/mysql-query-example-3-green.svg)
+![Green Flame Graph Example](demos/mysql-query-example-3-green.svg)  
+**[Open interactive](https://vgrippa.github.io/myflames/demos/mysql-query-example-3-green.svg)**
 
 ### Bar Chart (self-time breakdown)
-![Bar Chart Example](demos/mysql-query-bargraph.svg)
+![Bar Chart Example](demos/mysql-query-bargraph.svg)  
+**[Open interactive](https://vgrippa.github.io/myflames/demos/mysql-query-bargraph.svg)**
+
+### Viewing the demos (interactive zoom, search, tooltips)
+
+The SVGs contain JavaScript for zoom, search, and tooltips. **Opening the raw file URL** (e.g. `raw.githubusercontent.com/.../file.svg`) does **not** run that script—browsers block inline script in SVGs from that origin for security.
+
+Use one of these so the SVG works properly:
+
+| Where | How |
+|-------|-----|
+| **GitHub Pages** | **[Open interactive demos](https://vgrippa.github.io/myflames/)** — same-origin hosting so the script runs. Enable in repo: *Settings → Pages → Source: Deploy from branch → Branch: master, Folder: /docs*. |
+| **Locally** | After cloning, open a demo in your browser (same-origin as `file://`): |
+| | `open demos/mysql-query-example-1.svg` (macOS) |
+| | `xdg-open demos/mysql-query-example-1.svg` (Linux) |
+| | `start demos/mysql-query-example-1.svg` (Windows) |
 
 ## Features
 

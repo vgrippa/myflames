@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MySQL EXPLAIN Flame Graphs – Demos</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 1rem; background: #f5f5f5; }
+    h1 { margin-top: 0; }
+    section { background: #fff; padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    section h2 { margin-top: 0; font-size: 1.1rem; }
+    .embed-wrap { overflow: auto; border: 1px solid #ddd; border-radius: 4px; background: #fff; }
+    object { display: block; max-width: 100%; }
+    a.view-full { font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>MySQL EXPLAIN Flame Graphs – Interactive demos</h1>
+  <p>These demos are served from GitHub Pages so the SVG JavaScript (zoom, search, tooltips) runs correctly. Opening the raw SVG URL from <code>raw.githubusercontent.com</code> can block inline scripts for security reasons.</p>
+
+  <section>
+    <h2>Flame graph (default)</h2>
+    <div class="embed-wrap">
+      <object data="demos/mysql-query-example-1.svg" type="image/svg+xml" width="100%" height="280" style="min-height: 280px;"></object>
+    </div>
+    <a class="view-full" href="demos/mysql-query-example-1.svg" target="_blank" rel="noopener">Open full page →</a>
+  </section>
+
+  <section>
+    <h2>Icicle graph (inverted)</h2>
+    <div class="embed-wrap">
+      <object data="demos/mysql-query-example-2-inverted.svg" type="image/svg+xml" width="100%" height="280" style="min-height: 280px;"></object>
+    </div>
+    <a class="view-full" href="demos/mysql-query-example-2-inverted.svg" target="_blank" rel="noopener">Open full page →</a>
+  </section>
+
+  <section>
+    <h2>Custom colors (green)</h2>
+    <div class="embed-wrap">
+      <object data="demos/mysql-query-example-3-green.svg" type="image/svg+xml" width="100%" height="280" style="min-height: 280px;"></object>
+    </div>
+    <a class="view-full" href="demos/mysql-query-example-3-green.svg" target="_blank" rel="noopener">Open full page →</a>
+  </section>
+
+  <section>
+    <h2>Bar chart (self-time)</h2>
+    <div class="embed-wrap">
+      <object data="demos/mysql-query-bargraph.svg" type="image/svg+xml" width="100%" height="600" style="min-height: 600px;"></object>
+    </div>
+    <a class="view-full" href="demos/mysql-query-bargraph.svg" target="_blank" rel="noopener">Open full page →</a>
+  </section>
+
+  <p><a href="https://github.com/vgrippa/myflames">Repository and README</a></p>
+</body>
+</html>
