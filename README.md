@@ -6,19 +6,19 @@ Visualize MySQL query execution plans as interactive flame graphs and bar charts
 
 ### Flame Graph (default)
 ![Flame Graph Example](demos/mysql-query-example-1.svg)  
-**[Open interactive](https://vgrippa.github.io/myflames/demos/mysql-query-example-1.svg)** — zoom, search, tooltips
+<a href="https://vgrippa.github.io/myflames/demos/mysql-query-example-1.svg" target="_blank" rel="noopener">**Open interactive**</a> — zoom, search, tooltips
 
 ### Icicle Graph (inverted)
 ![Icicle Graph Example](demos/mysql-query-example-2-inverted.svg)  
-**[Open interactive](https://vgrippa.github.io/myflames/demos/mysql-query-example-2-inverted.svg)**
+<a href="https://vgrippa.github.io/myflames/demos/mysql-query-example-2-inverted.svg" target="_blank" rel="noopener">**Open interactive**</a>
 
 ### Custom Colors (green)
 ![Green Flame Graph Example](demos/mysql-query-example-3-green.svg)  
-**[Open interactive](https://vgrippa.github.io/myflames/demos/mysql-query-example-3-green.svg)**
+<a href="https://vgrippa.github.io/myflames/demos/mysql-query-example-3-green.svg" target="_blank" rel="noopener">**Open interactive**</a>
 
 ### Bar Chart (self-time breakdown)
 ![Bar Chart Example](demos/mysql-query-bargraph.svg)  
-**[Open interactive](https://vgrippa.github.io/myflames/demos/mysql-query-bargraph.svg)**
+<a href="https://vgrippa.github.io/myflames/demos/mysql-query-bargraph.svg" target="_blank" rel="noopener">**Open interactive**</a>
 
 ### Viewing the demos (interactive zoom, search, tooltips)
 
