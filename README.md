@@ -314,4 +314,4 @@ If you see XML parsing errors, ensure your MySQL version outputs valid JSON. Som
 
 ## License
 
-This project extends Brendan Gregg's FlameGraph project. See [LICENSE](LICENSE) for details.
+This project extends Brendan Gregg's FlameGraph project. See [/docs/cddl1.txt](/docs/cddl1.txt) for details.
