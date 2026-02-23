@@ -1,6 +1,6 @@
 # MySQL EXPLAIN Flame Graphs
 
-Visualize MySQL query execution plans as interactive flame graphs and bar charts. Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) project and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
+Visualize MySQL query execution plans as interactive flame graphs, bar charts, and treemaps. All views use a **single unified parser**. Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) project and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
 ## Examples
 
@@ -19,6 +19,9 @@ Visualize MySQL query execution plans as interactive flame graphs and bar charts
 ### Bar Chart (self-time breakdown)
 ![Bar Chart Example](demos/mysql-query-bargraph.svg)  
 <a href="https://vgrippa.github.io/myflames/demos/mysql-query-bargraph.html" target="_blank" rel="noopener">**Open interactive**</a>
+
+### Treemap (hierarchy by total time)
+Generate with: `./mysql-explain.pl --type treemap explain.json > query-treemap.svg`
 
 ### Viewing the demos (interactive zoom, search, tooltips)
 
@@ -39,6 +42,8 @@ Use one of these so the SVG works properly:
 
 - **Flame Graph**: Hierarchical visualization showing query execution flow and time distribution
 - **Bar Chart**: Simple horizontal bar chart sorted by self-time (slowest operations first)
+- **Treemap**: Hierarchical rectangles by total time (area = time)
+- **Single parser**: One code path parses the JSON; flamegraph, bargraph, and treemap share the same data
 - **Auto-scaling**: Automatically switches between milliseconds (ms) and microseconds (µs) for fast queries
 - **Rich Tooltips**: Hover to see detailed metrics (rows, loops, cost, conditions, etc.)
 - **Interactive**: Click to zoom, search operations, keyboard shortcuts
@@ -124,15 +129,20 @@ Key fields used by the visualization:
 
 ### Step 2: Generate Visualizations
 
-**Flame Graph** (recommended):
+Use the unified command (one parser, choose output with `--type`; default is flame graph):
+
 ```bash
-./mysql-explain-flamegraph.pl explain.json > query.svg
+# Flame graph (default)
+./mysql-explain.pl explain.json > query.svg
+
+# Bar chart (self-time focused)
+./mysql-explain.pl --type bargraph explain.json > query-bar.svg
+
+# Treemap (hierarchy by total time)
+./mysql-explain.pl --type treemap explain.json > query-treemap.svg
 ```
 
-**Bar Chart** (self-time focused):
-```bash
-./mysql-explain-bargraph.pl explain.json > query-bar.svg
-```
+You can still call the legacy scripts: `./mysql-explain-flamegraph.pl ...` and `./mysql-explain-bargraph.pl ...` (they are thin wrappers around the unified script).
 
 ### Step 3: View Results
 
@@ -145,7 +155,28 @@ start query.svg       # Windows
 
 ## Usage
 
-### Flame Graph Generator
+### Unified command (recommended)
+
+All output types use the **same parser**: one code path reads the JSON and builds the plan tree; then flamegraph, bargraph, or treemap is generated from that tree.
+
+```bash
+./mysql-explain.pl [--type flamegraph|bargraph|treemap] [options] explain.json > output.svg
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--type TYPE` | flamegraph | Output type: `flamegraph`, `bargraph`, or `treemap` |
+
+Examples:
+
+```bash
+./mysql-explain.pl explain.json > query.svg
+./mysql-explain.pl --type bargraph explain.json > query-bar.svg
+./mysql-explain.pl --type treemap explain.json > query-treemap.svg
+./mysql-explain.pl --title "Slow Query" --colors mem explain.json > query.svg
+```
+
+### Flame Graph (default)
 
 ```bash
 ./mysql-explain-flamegraph.pl [options] explain.json > output.svg
@@ -179,7 +210,7 @@ start query.svg       # Windows
 ./mysql-explain-flamegraph.pl --colors mem explain.json > query.svg
 ```
 
-### Bar Chart Generator
+### Bar Chart
 
 ```bash
 ./mysql-explain-bargraph.pl [options] explain.json > output.svg
@@ -198,6 +229,24 @@ start query.svg       # Windows
 
 # Custom title
 ./mysql-explain-bargraph.pl --title "Query Bottlenecks" explain.json > query-bar.svg
+```
+
+### Treemap
+
+```bash
+./mysql-explain.pl --type treemap [options] explain.json > output.svg
+```
+
+Hierarchical treemap: each node is a rectangle; area is proportional to total time (including children). Good for seeing both hierarchy and relative cost at a glance.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--width N` | 1200 | SVG width in pixels |
+| `--title TEXT` | "MySQL Query Plan" | Chart title |
+
+```bash
+./mysql-explain.pl --type treemap explain.json > query-treemap.svg
+./mysql-explain.pl --type treemap --title "Query plan" explain.json > out.svg
 ```
 
 ## How to Read the Flame Graph

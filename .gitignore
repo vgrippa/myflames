@@ -1,0 +1,8 @@
+# Generated EXPLAIN input/output
+explain.json
+query.svg
+query-bar.svg
+query-treemap.svg
+
+# OS
+.DS_Store
