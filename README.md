@@ -22,7 +22,7 @@ Visualize MySQL query execution plans as interactive flame graphs, bar charts, a
 
 ### Treemap (hierarchy by total time)
 ![Treemap Example](demos/mysql-query-treemap.svg)  
-<a href="https://vgrippa.github.io/myflames/demos/mysql-query-treemap.html" target="_blank" rel="noopener">**Open interactive**</a>
+<a href="https://vgrippa.github.io/myflames/demos/mysql-query-treemap.html" target="_blank" rel="noopener">**Open interactive**</a> — click to zoom, search, tooltips
 
 ### Viewing the demos (interactive zoom, search, tooltips)
 
@@ -164,9 +164,17 @@ All output types use the **same parser**: one code path reads the JSON and build
 ./mysql-explain.pl [--type flamegraph|bargraph|treemap] [options] explain.json > output.svg
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--type TYPE` | flamegraph | Output type: `flamegraph`, `bargraph`, or `treemap` |
+**Options (unified):**
+
+| Option | Default | Applies to | Description |
+|--------|---------|------------|-------------|
+| `--type TYPE` | flamegraph | all | Output: `flamegraph`, `bargraph`, or `treemap` |
+| `--width N` | 1800 (fg), 1200 (bar/treemap) | all | SVG width in pixels |
+| `--height N` | 32 | flamegraph | Frame height in pixels |
+| `--colors SCHEME` | hot | flamegraph | Color scheme: hot, mem, io, red, green, blue |
+| `--title TEXT` | "MySQL Query Plan" | all | Chart title |
+| `--inverted` | off | flamegraph | Icicle graph (inverted) |
+| `--enhance` / `--no-enhance` | on | flamegraph | Detailed tooltips |
 
 Examples:
 
@@ -178,6 +186,8 @@ Examples:
 ```
 
 ### Flame Graph (default)
+
+Same as `./mysql-explain.pl` or `./mysql-explain.pl --type flamegraph`. Legacy script:
 
 ```bash
 ./mysql-explain-flamegraph.pl [options] explain.json > output.svg
@@ -213,6 +223,8 @@ Examples:
 
 ### Bar Chart
 
+Same as `./mysql-explain.pl --type bargraph`. Legacy script:
+
 ```bash
 ./mysql-explain-bargraph.pl [options] explain.json > output.svg
 ```
@@ -238,12 +250,9 @@ Examples:
 ./mysql-explain.pl --type treemap [options] explain.json > output.svg
 ```
 
-Hierarchical treemap: each node is a rectangle; area is proportional to total time (including children). Good for seeing both hierarchy and relative cost at a glance.
+Hierarchical treemap: each node is a rectangle; area is proportional to total time (including children). Interactive: click a cell to zoom, use Search to highlight by regex, hover for details.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--width N` | 1200 | SVG width in pixels |
-| `--title TEXT` | "MySQL Query Plan" | Chart title |
+Uses the same `--width` and `--title` options as other types (see unified options table above).
 
 ```bash
 ./mysql-explain.pl --type treemap explain.json > query-treemap.svg
@@ -274,10 +283,10 @@ INDEX LOOKUP [orders.idx_customer] starts=1000 rows=5
 ```
 This means: The index lookup ran **1000 times** (nested loop), returning **5 rows** each time.
 
-### Interactive Features
+### Interactive Features (flame graph and treemap)
 - **Hover**: See detailed metrics (actual vs estimated rows, timing, cost, conditions)
-- **Click**: Zoom into a specific operation
-- **Search**: Press `/` or click "Search" to find operations
+- **Click**: Zoom into a specific operation (treemap: click cell to zoom; click again or "Reset Zoom" to reset)
+- **Search**: Click "Search" or press Ctrl+F, enter a regex to highlight matching operations
 - **Reset**: Click "Reset Zoom" to return to full view
 
 ## How to Read the Bar Chart
@@ -290,7 +299,7 @@ The bar chart shows operations sorted by **self-time** (time spent in that opera
 
 ## Time Unit Auto-Detection
 
-Both tools automatically detect query speed and adjust units:
+All output types (flamegraph, bargraph, treemap) automatically detect query speed and adjust units:
 
 | Total Query Time | Unit Used |
 |------------------|-----------|
@@ -319,37 +328,53 @@ When hovering over operations, you'll see:
 
 ### Using with MySQL Client
 
+Pipe EXPLAIN output directly into the unified command. Use `--type` to choose the visualization:
+
 ```bash
-# Direct pipe from MySQL
+# Flame graph (default)
 mysql -u user -p -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." database | \
-  ./mysql-explain-flamegraph.pl > query.svg
+  ./mysql-explain.pl > query.svg
+
+# Bar chart or treemap
+mysql -u user -p -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." database | \
+  ./mysql-explain.pl --type bargraph > query-bar.svg
+mysql -u user -p -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." database | \
+  ./mysql-explain.pl --type treemap > query-treemap.svg
 ```
 
 ### Comparing Multiple Queries
 
+Generate before/after views in any type:
+
 ```bash
-# Generate multiple flame graphs
-./mysql-explain-flamegraph.pl --title "Before Optimization" before.json > before.svg
-./mysql-explain-flamegraph.pl --title "After Optimization" after.json > after.svg
+# Flame graphs
+./mysql-explain.pl --title "Before Optimization" before.json > before.svg
+./mysql-explain.pl --title "After Optimization" after.json > after.svg
+
+# Same with bar chart or treemap
+./mysql-explain.pl --type bargraph --title "Before" before.json > before-bar.svg
+./mysql-explain.pl --type treemap --title "After" after.json > after-treemap.svg
 ```
 
 ### Lower-Level Tools
 
-For advanced use cases, you can use the individual components:
+The unified script uses a single parser; for custom pipelines you can still use the stackcollapse script and `flamegraph.pl`:
 
 ```bash
 # Generate folded stacks only (for use with other tools)
 ./stackcollapse-mysql-explain-json.pl explain.json > stacks.txt
 
-# Use with original flamegraph.pl
+# Pipe to original flamegraph.pl (no enhanced tooltips; use mysql-explain.pl for that)
 ./stackcollapse-mysql-explain-json.pl explain.json | \
   ./flamegraph.pl --colors hot --title "Query" > query.svg
 ```
 
+For normal use, prefer `./mysql-explain.pl` so you get the same parsed data and options (e.g. `--enhance` for flame graph tooltips).
+
 ## Troubleshooting
 
 ### "Cannot find flamegraph.pl"
-Ensure `flamegraph.pl` is in the same directory as `mysql-explain-flamegraph.pl`.
+Ensure `flamegraph.pl` is in the same directory as `mysql-explain.pl` (needed for `--type flamegraph`).
 
 ### Empty or minimal output
 Make sure you're using `EXPLAIN ANALYZE FORMAT=JSON`, not just `EXPLAIN FORMAT=JSON`. The `ANALYZE` keyword is required for actual execution timing.
