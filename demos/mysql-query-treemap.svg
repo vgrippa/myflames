@@ -1,0 +1,163 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="690" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .treemap-cell { stroke: #fff; stroke-width: 1; cursor: pointer; }
+  .treemap-cell:hover { opacity: 0.9; stroke: #333; stroke-width: 1.5; }
+  .treemap-cell.highlight { stroke: rgb(230,0,230); stroke-width: 2; }
+  .treemap-cell.zoomed { stroke: #111; stroke-width: 2; }
+  #unzoom, #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #unzoom:hover, #search:hover { fill: #000; }
+  #unzoom.hide { display: none; }
+  #details { font-size: 11px; fill: #333; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600" y="26" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600" y="48" text-anchor="middle" class="subtitle">Treemap by total time (hierarchy) | Total: 2135 ms</text>
+<text id="unzoom" class="hide" x="2" y="64" text-anchor="start">Reset Zoom</text>
+<text id="search" x="1138" y="64" text-anchor="end">Search</text>
+<text id="details" x="2" y="66" text-anchor="start">Click a cell to zoom; Ctrl+F to search</text>
+<g id="zoomable">
+<rect id="cell-0" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Limit: 100 rows" data-info="Limit: 100 rows&#10;Self: 0.007 ms | Total: 2135 ms&#10;Rows: 100 | Loops: 1"><title>Limit: 100 rows
+Self: 0.007 ms | Total: 2135 ms
+Rows: 100 | Loops: 1</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Limit: 100 rows</text>
+<rect id="cell-1" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Sort (limit 100)" data-info="Sort (limit 100)&#10;Self: 4 ms | Total: 2135 ms&#10;Rows: 100 | Loops: 1"><title>Sort (limit 100)
+Self: 4 ms | Total: 2135 ms
+Rows: 100 | Loops: 1</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Sort (limit 100)</text>
+<rect id="cell-2" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,218,185)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Stream results" data-info="Stream results&#10;Self: 9 ms | Total: 2131 ms&#10;Rows: 30938 | Loops: 1"><title>Stream results
+Self: 9 ms | Total: 2131 ms
+Rows: 30938 | Loops: 1</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Stream results</text>
+<rect id="cell-3" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(176,224,230)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Group" data-info="Group&#10;Self: 83 ms | Total: 2122 ms&#10;Rows: 30938 | Loops: 1"><title>Group
+Self: 83 ms | Total: 2122 ms
+Rows: 30938 | Loops: 1</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Group</text>
+<rect id="cell-4" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(135,206,250)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Sort" data-info="Sort&#10;Self: 153 ms | Total: 2039 ms&#10;Rows: 249097 | Loops: 1"><title>Sort
+Self: 153 ms | Total: 2039 ms
+Rows: 249097 | Loops: 1</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Sort</text>
+<rect id="cell-5" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(173,216,230)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Stream results" data-info="Stream results&#10;Self: 69 ms | Total: 1886 ms&#10;Rows: 249097 | Loops: 1"><title>Stream results
+Self: 69 ms | Total: 1886 ms
+Rows: 249097 | Loops: 1</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Stream results</text>
+<rect id="cell-6" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(144,238,144)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Nested loop left join" data-info="Nested loop left join&#10;Self: 19 ms | Total: 1817 ms&#10;Rows: 249097 | Loops: 1"><title>Nested loop left join
+Self: 19 ms | Total: 1817 ms
+Rows: 249097 | Loops: 1</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Nested loop left join</text>
+<rect id="cell-7" class="treemap-cell" x="2" y="70" width="671" height="600" fill="rgb(152,251,152)" data-x="2" data-y="70" data-w="671" data-h="600" data-label="Nested loop left join" data-info="Nested loop left join&#10;Self: 5 ms | Total: 1008 ms&#10;Rows: 30938 | Loops: 1"><title>Nested loop left join
+Self: 5 ms | Total: 1008 ms
+Rows: 30938 | Loops: 1</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Nested loop left join</text>
+<rect id="cell-8" class="treemap-cell" x="2" y="70" width="416" height="600" fill="rgb(255,250,205)" data-x="2" data-y="70" data-w="416" data-h="600" data-label="Filter: ((t.to_date = DATE'9999-01-01'))" data-info="Filter: ((t.to_date = DATE'9999-01-01'))&#10;Self: 8 ms | Total: 621 ms&#10;Rows: 1 | Loops: 30938"><title>Filter: ((t.to_date = DATE'9999-01-01'))
+Self: 8 ms | Total: 621 ms
+Rows: 1 | Loops: 30938</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Filter: ((t.to_date = DAT...</text>
+<rect id="cell-9" class="treemap-cell" x="2" y="70" width="416" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="416" data-h="600" data-label="Index lookup [titles.PRIMARY]" data-info="Index lookup [titles.PRIMARY]&#10;Self: 613 ms | Total: 613 ms&#10;Rows: 1.42992436485875 | Loops: 30938"><title>Index lookup [titles.PRIMARY]
+Self: 613 ms | Total: 613 ms
+Rows: 1.42992436485875 | Loops: 30938</title></rect>
+<text x="6" y="373" fill="#333" font-size="10" pointer-events="none">Index lookup [titles.PRIM...</text>
+<rect id="cell-10" class="treemap-cell" x="418" y="70" width="255" height="600" fill="rgb(255,250,205)" data-x="418" data-y="70" data-w="255" data-h="600" data-label="Nested loop inner join" data-info="Nested loop inner join&#10;Self: 12 ms | Total: 382 ms&#10;Rows: 30938 | Loops: 1"><title>Nested loop inner join
+Self: 12 ms | Total: 382 ms
+Rows: 30938 | Loops: 1</title></rect>
+<text x="422" y="373" fill="#333" font-size="10" pointer-events="none">Nested loop inner join</text>
+<rect id="cell-11" class="treemap-cell" x="418" y="70" width="255" height="376" fill="rgb(255,99,71)" data-x="418" data-y="70" data-w="255" data-h="376" data-label="Nested loop inner join" data-info="Nested loop inner join&#10;Self: 5 ms | Total: 232 ms&#10;Rows: 113929 | Loops: 1"><title>Nested loop inner join
+Self: 5 ms | Total: 232 ms
+Rows: 113929 | Loops: 1</title></rect>
+<text x="422" y="261" fill="#333" font-size="10" pointer-events="none">Nested loop inner join</text>
+<rect id="cell-12" class="treemap-cell" x="418" y="70" width="255" height="373" fill="rgb(255,160,122)" data-x="418" data-y="70" data-w="255" data-h="373" data-label="Filter: ((de.to_date = DATE'9999-01-01'))" data-info="Filter: ((de.to_date = DATE'9999-01-01'))&#10;Self: 12 ms | Total: 225 ms&#10;Rows: 37976.3333333333 | Loops: 3"><title>Filter: ((de.to_date = DATE'9999-01-01'))
+Self: 12 ms | Total: 225 ms
+Rows: 37976.3333333333 | Loops: 3</title></rect>
+<text x="422" y="259.5" fill="#333" font-size="10" pointer-events="none">Filter: ((de.to_date = DA...</text>
+<rect id="cell-13" class="treemap-cell" x="418" y="70" width="255" height="373" fill="rgb(255,218,185)" data-x="418" data-y="70" data-w="255" data-h="373" data-label="Index lookup [dept_emp.dept_no]" data-info="Index lookup [dept_emp.dept_no]&#10;Self: 213 ms | Total: 213 ms&#10;Rows: 52721 | Loops: 3"><title>Index lookup [dept_emp.dept_no]
+Self: 213 ms | Total: 213 ms
+Rows: 52721 | Loops: 3</title></rect>
+<text x="422" y="259.5" fill="#333" font-size="10" pointer-events="none">Index lookup [dept_emp.de...</text>
+<rect id="cell-14" class="treemap-cell" x="418" y="446" width="255" height="224" fill="rgb(255,99,71)" data-x="418" data-y="446" data-w="255" data-h="224" data-label="Filter: (((e.gender = 'M') and (e.hire_date &gt;= DA...)" data-info="Filter: (((e.gender = 'M') and (e.hire_date &gt;= DA...)&#10;Self: 25 ms | Total: 138 ms&#10;Rows: 0.27155509132881 | Loops: 113929"><title>Filter: (((e.gender = 'M') and (e.hire_date &gt;= DA...)
+Self: 25 ms | Total: 138 ms
+Rows: 0.27155509132881 | Loops: 113929</title></rect>
+<text x="422" y="561" fill="#333" font-size="10" pointer-events="none">Filter: (((e.gender = 'M'...</text>
+<rect id="cell-15" class="treemap-cell" x="418" y="446" width="255" height="224" fill="rgb(255,160,122)" data-x="418" data-y="446" data-w="255" data-h="224" data-label="Single-row lookup [employees.PRIMARY]" data-info="Single-row lookup [employees.PRIMARY]&#10;Self: 113 ms | Total: 113 ms&#10;Rows: 1 | Loops: 113929"><title>Single-row lookup [employees.PRIMARY]
+Self: 113 ms | Total: 113 ms
+Rows: 1 | Loops: 113929</title></rect>
+<text x="422" y="561" fill="#333" font-size="10" pointer-events="none">Single-row lookup [employ...</text>
+<rect id="cell-16" class="treemap-cell" x="673" y="70" width="525" height="600" fill="rgb(152,251,152)" data-x="673" data-y="70" data-w="525" data-h="600" data-label="Index lookup [salaries.PRIMARY]" data-info="Index lookup [salaries.PRIMARY]&#10;Self: 789 ms | Total: 789 ms&#10;Rows: 8.05149007692805 | Loops: 30938"><title>Index lookup [salaries.PRIMARY]
+Self: 789 ms | Total: 789 ms
+Rows: 8.05149007692805 | Loops: 30938</title></rect>
+<text x="677" y="373" fill="#333" font-size="10" pointer-events="none">Index lookup [salaries.PR...</text>
+</g>
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 690;
+  var zoomable, unzoomBtn, searchBtn, detailsEl;
+  var zoomState = { scale: 1, tx: pad, ty: topMargin };
+
+  function init(evt) {
+    zoomable = document.getElementById("zoomable");
+    unzoomBtn = document.getElementById("unzoom");
+    searchBtn = document.getElementById("search");
+    detailsEl = document.getElementById("details");
+    if (!zoomable) return;
+    zoomState = { scale: 1, tx: 0, ty: 0 };
+    document.addEventListener("click", function(e) {
+      var t = e.target;
+      if (t.id === "unzoom") { resetZoom(); return; }
+      if (t.id === "search") { searchPrompt(); return; }
+      if (t.classList && t.classList.contains("treemap-cell")) {
+        var x = parseFloat(t.getAttribute("data-x")), y = parseFloat(t.getAttribute("data-y")), w = parseFloat(t.getAttribute("data-w")), h = parseFloat(t.getAttribute("data-h"));
+        if (zoomState.scale !== 1 && t.classList.contains("zoomed")) { resetZoom(); return; }
+        zoomTo(x, y, w, h);
+        t.classList.add("zoomed");
+        detailsEl.textContent = t.getAttribute("data-info").replace(/&#10;/g, " | ");
+      }
+    });
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("treemap-cell"))
+        detailsEl.textContent = e.target.getAttribute("data-info").replace(/&#10;/g, " | ");
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+  function zoomTo(x, y, w, h) {
+    var scale = Math.min(tmWidth / w, tmHeight / h);
+    var tx = pad - x * scale;
+    var ty = topMargin - y * scale;
+    zoomable.setAttribute("transform", "translate(" + tx + "," + ty + ") scale(" + scale + ")");
+    zoomState = { scale: scale, tx: tx, ty: ty };
+    unzoomBtn.classList.remove("hide");
+  }
+  function resetZoom() {
+    zoomable.setAttribute("transform", "");
+    zoomState = { scale: 1, tx: 0, ty: 0 };
+    unzoomBtn.classList.add("hide");
+    var cells = document.querySelectorAll(".treemap-cell.zoomed");
+    for (var i = 0; i < cells.length; i++) cells[i].classList.remove("zoomed");
+    detailsEl.textContent = "Click a cell to zoom; Ctrl+F to search";
+  }
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var cells = document.querySelectorAll(".treemap-cell");
+      for (var i = 0; i < cells.length; i++) cells[i].classList.remove("highlight");
+      searchBtn.textContent = "Search";
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var cells = document.querySelectorAll(".treemap-cell");
+    for (var i = 0; i < cells.length; i++) {
+      var label = cells[i].getAttribute("data-label") || "";
+      cells[i].classList.toggle("highlight", re.test(label));
+    }
+    searchBtn.textContent = "Reset Search";
+  }
+  window.init = init;
+})();
+]]></script>
+</svg>

@@ -21,7 +21,8 @@ Visualize MySQL query execution plans as interactive flame graphs, bar charts, a
 <a href="https://vgrippa.github.io/myflames/demos/mysql-query-bargraph.html" target="_blank" rel="noopener">**Open interactive**</a>
 
 ### Treemap (hierarchy by total time)
-Generate with: `./mysql-explain.pl --type treemap explain.json > query-treemap.svg`
+![Treemap Example](demos/mysql-query-treemap.svg)  
+<a href="https://vgrippa.github.io/myflames/demos/mysql-query-treemap.html" target="_blank" rel="noopener">**Open interactive**</a>
 
 ### Viewing the demos (interactive zoom, search, tooltips)
 
