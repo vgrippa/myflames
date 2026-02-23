@@ -1,8 +1,16 @@
-# Generated EXPLAIN input/output
-explain.json
-query.svg
-query-bar.svg
-query-treemap.svg
+# Generated EXPLAIN input/output (root directory only)
+/explain.json
+/query.svg
+/query-bar.svg
+/query-treemap.svg
+/before.svg
+/after.svg
 
-# OS
+# OS and editors
 .DS_Store
+*.log
+*.swp
+*~
+
+# Local test output (optional; uncomment to ignore)
+# test/results/
