@@ -2,6 +2,8 @@
 
 Visualize MySQL query execution plans as interactive flame graphs, bar charts, and treemaps. All views use a **single unified parser**. Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) project and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
+**Migration:** The project now uses **Python** as the main implementation. The original **Perl** scripts are still in the repo; for instructions and options specific to the Perl version, see **[LEGACY-PERL.md](LEGACY-PERL.md)**.
+
 ## Examples
 
 ### Flame Graph (default)
@@ -44,15 +46,17 @@ Use one of these so the SVG works properly:
 - **Flame Graph**: Hierarchical visualization showing query execution flow and time distribution
 - **Bar Chart**: Simple horizontal bar chart sorted by self-time (slowest operations first)
 - **Treemap**: Hierarchical rectangles by total time (area = time)
-- **Single parser**: One code path parses the JSON; flamegraph, bargraph, and treemap share the same data
+- **Diagram**: Visual Explain–style execution plan (left-to-right flow, access boxes, nested-loop diamonds, costs and row counts)
+- **Single parser**: One code path parses the JSON; all output types share the same data
 - **Auto-scaling**: Automatically switches between milliseconds (ms) and microseconds (µs) for fast queries
 - **Rich Tooltips**: Hover to see detailed metrics (rows, loops, cost, conditions, etc.)
 - **Interactive**: Click to zoom, search operations, keyboard shortcuts
 
 ## Prerequisites
 
-- Perl 5.x (included on most Unix/Linux/macOS systems)
-- MySQL 8.4+ with `EXPLAIN ANALYZE FORMAT=JSON` and JSON format version 2
+- **Python 3.7+** — no extra packages required
+- MySQL 8.4+ with `EXPLAIN ANALYZE FORMAT=JSON` and JSON format version 2  
+  *(For the legacy Perl scripts instead, see [LEGACY-PERL.md](LEGACY-PERL.md).)*
 
 ### MySQL Configuration
 
@@ -73,10 +77,13 @@ explain_json_format_version = 2
 ```bash
 git clone https://github.com/vgrippa/myflames.git
 cd myflames
-chmod +x *.pl
 ```
 
-**Testing:** Run `./mysql-explain.pl` on the sample JSON files in `test/` (see [test/README.md](test/README.md)). The repo also includes upstream FlameGraph tests: `./test.sh` (requires `test/results/`).
+No install step for Python: run from the repo root with `python3 -m myflames` or `python3 mysql_explain.py`.
+
+**Testing:** `python3 -m myflames test/mysql-explain-json-sample.json > out.svg`. See [test/README.md](test/README.md). Upstream FlameGraph tests: `./test.sh` (requires `test/results/`).
+
+**Using the old Perl scripts?** See [LEGACY-PERL.md](LEGACY-PERL.md) for Perl-only installation and usage.
 
 ## Quick Start
 
@@ -130,22 +137,24 @@ Key fields used by the visualization:
 - `actual_last_row_ms`: Time in milliseconds to complete the operation
 - `table_name`, `index_name`: Table and index being accessed
 
-### Step 2: Generate Visualizations
+### Step 2: Generate visualizations (Python myflames)
 
-Use the unified command (one parser, choose output with `--type`; default is flame graph):
+One parser, choose output with `--type`:
 
 ```bash
 # Flame graph (default)
-./mysql-explain.pl explain.json > query.svg
+python3 -m myflames explain.json > query.svg
+# or: python3 mysql_explain.py explain.json > query.svg
 
 # Bar chart (self-time focused)
-./mysql-explain.pl --type bargraph explain.json > query-bar.svg
+python3 -m myflames --type bargraph explain.json > query-bar.svg
 
 # Treemap (hierarchy by total time)
-./mysql-explain.pl --type treemap explain.json > query-treemap.svg
-```
+python3 -m myflames --type treemap explain.json > query-treemap.svg
 
-You can still call the legacy scripts: `./mysql-explain-flamegraph.pl ...` and `./mysql-explain-bargraph.pl ...` (they are thin wrappers around the unified script).
+# Diagram (Visual Explain–style flow)
+python3 -m myflames --type diagram explain.json > query-diagram.svg
+```
 
 ### Step 3: View Results
 
@@ -160,18 +169,19 @@ start query.svg       # Windows
 
 ### Unified command (recommended)
 
-All output types use the **same parser**: one code path reads the JSON and builds the plan tree; then flamegraph, bargraph, or treemap is generated from that tree.
+All output types use the **same parser**: one code path reads the JSON and builds the plan tree; then the chosen visualization is generated.
 
 ```bash
-./mysql-explain.pl [--type flamegraph|bargraph|treemap] [options] explain.json > output.svg
+python3 -m myflames [--type flamegraph|bargraph|treemap|diagram] [options] explain.json > output.svg
 ```
 
 **Options (unified):**
 
 | Option | Default | Applies to | Description |
 |--------|---------|------------|-------------|
-| `--type TYPE` | flamegraph | all | Output: `flamegraph`, `bargraph`, or `treemap` |
-| `--width N` | 1800 (fg), 1200 (bar/treemap) | all | SVG width in pixels |
+| `--type TYPE` | flamegraph | all | Output: `flamegraph`, `bargraph`, `treemap`, or `diagram` |
+| `--diagram-engine ENGINE` | svg | diagram | Layout: `svg` (built-in) or `graphviz` (requires [Graphviz](https://graphviz.org/) installed) |
+| `--width N` | 1800 (fg), 1200 (bar/treemap/diagram) | all | SVG width in pixels |
 | `--height N` | 32 | flamegraph | Frame height in pixels |
 | `--colors SCHEME` | hot | flamegraph | Color scheme: hot, mem, io, red, green, blue |
 | `--title TEXT` | "MySQL Query Plan" | all | Chart title |
@@ -181,19 +191,16 @@ All output types use the **same parser**: one code path reads the JSON and build
 Examples:
 
 ```bash
-./mysql-explain.pl explain.json > query.svg
-./mysql-explain.pl --type bargraph explain.json > query-bar.svg
-./mysql-explain.pl --type treemap explain.json > query-treemap.svg
-./mysql-explain.pl --title "Slow Query" --colors mem explain.json > query.svg
+python3 -m myflames explain.json > query.svg
+python3 -m myflames --type bargraph explain.json > query-bar.svg
+python3 -m myflames --type treemap explain.json > query-treemap.svg
+python3 -m myflames --type diagram explain.json > query-diagram.svg
+python3 -m myflames --title "Slow Query" --colors hot explain.json > query.svg
 ```
 
 ### Flame Graph (default)
 
-Same as `./mysql-explain.pl` or `./mysql-explain.pl --type flamegraph`. Legacy script:
-
-```bash
-./mysql-explain-flamegraph.pl [options] explain.json > output.svg
-```
+Same as `python3 -m myflames` or `python3 -m myflames --type flamegraph`. Wrapper: `python3 mysql_explain_flamegraph.py [options] explain.json > output.svg`.
 
 **Options:**
 | Option | Default | Description |
@@ -208,28 +215,21 @@ Same as `./mysql-explain.pl` or `./mysql-explain.pl --type flamegraph`. Legacy s
 **Examples:**
 ```bash
 # Basic usage
-./mysql-explain-flamegraph.pl explain.json > query.svg
+python3 -m myflames explain.json > query.svg
 
 # Custom title and width
-./mysql-explain-flamegraph.pl --title "Slow Query Analysis" --width 2400 explain.json > query.svg
+python3 -m myflames --title "Slow Query Analysis" --width 2400 explain.json > query.svg
 
 # Icicle graph (inverted)
-./mysql-explain-flamegraph.pl --title "Slow Query Analysis" --inverted explain.json > query-inverted.svg
+python3 -m myflames --inverted explain.json > query-inverted.svg
 
-# Green color scheme
-./mysql-explain-flamegraph.pl --title "Slow Query Analysis" --colors green explain.json > query-green.svg
-
-# Memory-style colors
-./mysql-explain-flamegraph.pl --colors mem explain.json > query.svg
+# Color scheme (hot is default)
+python3 -m myflames --colors hot explain.json > query.svg
 ```
 
 ### Bar Chart
 
-Same as `./mysql-explain.pl --type bargraph`. Legacy script:
-
-```bash
-./mysql-explain-bargraph.pl [options] explain.json > output.svg
-```
+Same as `python3 -m myflames --type bargraph`. Wrapper: `python3 mysql_explain_bargraph.py [options] explain.json > output.svg`.
 
 **Options:**
 | Option | Default | Description |
@@ -239,26 +239,31 @@ Same as `./mysql-explain.pl --type bargraph`. Legacy script:
 
 **Examples:**
 ```bash
-# Basic usage
-./mysql-explain-bargraph.pl explain.json > query-bar.svg
-
-# Custom title
-./mysql-explain-bargraph.pl --title "Query Bottlenecks" explain.json > query-bar.svg
+python3 -m myflames --type bargraph explain.json > query-bar.svg
+python3 -m myflames --type bargraph --title "Query Bottlenecks" explain.json > query-bar.svg
 ```
 
 ### Treemap
-
-```bash
-./mysql-explain.pl --type treemap [options] explain.json > output.svg
-```
 
 Hierarchical treemap: each node is a rectangle; area is proportional to total time (including children). Interactive: click a cell to zoom, use Search to highlight by regex, hover for details.
 
 Uses the same `--width` and `--title` options as other types (see unified options table above).
 
 ```bash
-./mysql-explain.pl --type treemap explain.json > query-treemap.svg
-./mysql-explain.pl --type treemap --title "Query plan" explain.json > out.svg
+python3 -m myflames --type treemap explain.json > query-treemap.svg
+python3 -m myflames --type treemap --title "Query plan" explain.json > out.svg
+```
+
+### Diagram
+
+Visual Explain–style execution plan aligned with **MySQL Workbench’s Visual Explain**: left-to-right flow, **table access** boxes (operation, table, index), **nested loop** diamonds with two inputs (outer on main line, inner from below), row counts on arrows and at boxes, time/cost in tooltips. Color is **time-based** (hot = more time, cold = less). Layout and conventions follow the replication guide in `mysql-workbench/docs/VISUAL_EXPLAIN_PLAN_CONTEXT.md`; see [docs/VISUAL_EXPLAIN_REFERENCE.md](docs/VISUAL_EXPLAIN_REFERENCE.md) for the mapping.
+
+Uses the same `--width` and `--title` options as other types. By default the diagram uses the built-in SVG layout. If you have [Graphviz](https://graphviz.org/) installed, you can use `--diagram-engine graphviz` for automatic layout; if `dot` is not on PATH, the tool falls back to the built-in diagram and prints a warning.
+
+```bash
+python3 -m myflames --type diagram explain.json > query-diagram.svg
+python3 -m myflames --type diagram --title "Execution plan" explain.json > plan.svg
+python3 -m myflames --type diagram --diagram-engine graphviz explain.json > query-diagram.svg
 ```
 
 ## How to Read the Flame Graph
@@ -335,13 +340,12 @@ Pipe EXPLAIN output directly into the unified command. Use `--type` to choose th
 ```bash
 # Flame graph (default)
 mysql -u user -p -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." database | \
-  ./mysql-explain.pl > query.svg
+  python3 -m myflames > query.svg
 
-# Bar chart or treemap
-mysql -u user -p -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." database | \
-  ./mysql-explain.pl --type bargraph > query-bar.svg
-mysql -u user -p -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." database | \
-  ./mysql-explain.pl --type treemap > query-treemap.svg
+# Bar chart, treemap, or diagram
+mysql ... | python3 -m myflames --type bargraph > query-bar.svg
+mysql ... | python3 -m myflames --type treemap > query-treemap.svg
+mysql ... | python3 -m myflames --type diagram > query-diagram.svg
 ```
 
 ### Comparing Multiple Queries
@@ -349,40 +353,38 @@ mysql -u user -p -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." database | \
 Generate before/after views in any type:
 
 ```bash
-# Flame graphs
-./mysql-explain.pl --title "Before Optimization" before.json > before.svg
-./mysql-explain.pl --title "After Optimization" after.json > after.svg
-
-# Same with bar chart or treemap
-./mysql-explain.pl --type bargraph --title "Before" before.json > before-bar.svg
-./mysql-explain.pl --type treemap --title "After" after.json > after-treemap.svg
+python3 -m myflames --title "Before Optimization" before.json > before.svg
+python3 -m myflames --title "After Optimization" after.json > after.svg
+python3 -m myflames --type bargraph --title "Before" before.json > before-bar.svg
+python3 -m myflames --type treemap --title "After" after.json > after-treemap.svg
 ```
 
 ### Lower-Level Tools
 
-The unified script uses a single parser; for custom pipelines you can still use the stackcollapse script and `flamegraph.pl`:
+Generate folded stacks only (for use with other tools):
 
 ```bash
-# Generate folded stacks only (for use with other tools)
-./stackcollapse-mysql-explain-json.pl explain.json > stacks.txt
-
-# Pipe to original flamegraph.pl (no enhanced tooltips; use mysql-explain.pl for that)
-./stackcollapse-mysql-explain-json.pl explain.json | \
-  ./flamegraph.pl --colors hot --title "Query" > query.svg
+python3 stackcollapse_mysql_explain_json.py explain.json > stacks.txt
 ```
 
-For normal use, prefer `./mysql-explain.pl` so you get the same parsed data and options (e.g. `--enhance` for flame graph tooltips).
+For normal use, prefer `python3 -m myflames` for the full parser and options (e.g. enhanced tooltips). For the Perl stack-collapse script, see [LEGACY-PERL.md](LEGACY-PERL.md).
 
 ## Troubleshooting
 
-### "Cannot find flamegraph.pl"
-Ensure `flamegraph.pl` is in the same directory as `mysql-explain.pl` (needed for `--type flamegraph`).
+### "No module named 'myflames'"
+Run from the repo root so the `myflames` package is on the path, or use `python3 mysql_explain.py` from the repo root.
 
 ### Empty or minimal output
 Make sure you're using `EXPLAIN ANALYZE FORMAT=JSON`, not just `EXPLAIN FORMAT=JSON`. The `ANALYZE` keyword is required for actual execution timing.
 
 ### SVG rendering errors
 If you see XML parsing errors, ensure your MySQL version outputs valid JSON. Some special characters in table names may need escaping.
+
+## Documentation
+
+- **[LEGACY-PERL.md](LEGACY-PERL.md)** — Perl scripts and options (legacy).
+- **[docs/VISUAL_EXPLAIN_REFERENCE.md](docs/VISUAL_EXPLAIN_REFERENCE.md)** — Visual Explain diagram mapping and conventions.
+- **[docs/prompts/](docs/prompts/)** — Context and prompts used to create myflames (for reproducibility and contributors).
 
 ## Credits
 

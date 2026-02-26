@@ -1,9 +1,11 @@
-Flame Graph demos from the talk "Blazing Performance with Flame Graphs"
-(USENIX/LISA 2013), plus MySQL EXPLAIN demos for this project.
+# Demos
 
-MySQL EXPLAIN demos (mysql-query-*.svg):
-  Flame graph, bar chart, and treemap examples from EXPLAIN ANALYZE JSON.
-  See the main README for how to generate them.
+Flame Graph demos from the talk "Blazing Performance with Flame Graphs" (USENIX/LISA 2013), plus MySQL EXPLAIN demos for this project.
 
-These SVGs cannot be viewed on GitHub directly; clone or download the repo,
-then open them in a browser (file://...) or use the docs index on GitHub Pages.
+## MySQL EXPLAIN demos (`mysql-query-*.svg`)
+
+Flame graph, bar chart, treemap, and diagram examples from `EXPLAIN ANALYZE FORMAT=JSON`. See the [main README](../README.md) for how to generate them.
+
+## Viewing
+
+These SVGs cannot be viewed on GitHub directly (inline script is blocked). Clone or download the repo and open them in a browser (`file://...`), or use the [docs index](https://vgrippa.github.io/myflames/) on GitHub Pages.
