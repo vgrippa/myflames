@@ -1,0 +1,29 @@
+{
+  "query": "/* select#1 */ select `testdb`.`products`.`id` AS `id`,`testdb`.`products`.`name` AS `name`,`testdb`.`products`.`category_id` AS `category_id`,`testdb`.`products`.`price` AS `price`,`testdb`.`products`.`stock` AS `stock`,`testdb`.`products`.`created_at` AS `created_at` from `testdb`.`products` where (`testdb`.`products`.`price` between 50.00 and 200.00)",
+  "ranges": [
+    "(50.00 <= price <= 200.00)"
+  ],
+  "covering": false,
+  "operation": "Index range scan on products using idx_price over (50.00 <= price <= 200.00), with index condition: (products.price between 50.00 and 200.00)",
+  "index_name": "idx_price",
+  "query_type": "select",
+  "table_name": "products",
+  "access_type": "index",
+  "actual_rows": 231.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "used_columns": [
+    "id",
+    "name",
+    "category_id",
+    "price",
+    "stock",
+    "created_at"
+  ],
+  "estimated_rows": 231.0,
+  "index_access_type": "index_range_scan",
+  "actual_last_row_ms": 0.200753,
+  "actual_first_row_ms": 0.049458,
+  "estimated_total_cost": 104.21000000000001,
+  "pushed_index_condition": "(products.price between 50.00 and 200.00)"
+}

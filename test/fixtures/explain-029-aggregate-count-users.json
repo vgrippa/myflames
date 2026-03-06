@@ -1,0 +1,12 @@
+{
+  "query": "/* select#1 */ select count(0) AS `COUNT(*)` from `testdb`.`users`",
+  "operation": "Count rows in users",
+  "query_type": "select",
+  "table_name": "users",
+  "access_type": "count_rows",
+  "actual_rows": 1.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "actual_last_row_ms": 0.223667,
+  "actual_first_row_ms": 0.223667
+}

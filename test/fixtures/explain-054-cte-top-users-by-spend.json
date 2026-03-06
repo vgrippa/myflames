@@ -1,0 +1,143 @@
+{
+  "query": "with `top_users` as (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id` order by `total_spent` desc limit 100) /* select#1 */ select `u`.`name` AS `name`,`t`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join `top_users` `t` where (`u`.`id` = `t`.`user_id`)",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "cte": true,
+          "inputs": [
+            {
+              "limit": 100,
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "inputs": [
+                            {
+                              "covering": false,
+                              "operation": "Index scan on orders using idx_user",
+                              "index_name": "idx_user",
+                              "table_name": "orders",
+                              "access_type": "index",
+                              "actual_rows": 12000.0,
+                              "schema_name": "testdb",
+                              "actual_loops": 1,
+                              "used_columns": [
+                                "id",
+                                "user_id",
+                                "total"
+                              ],
+                              "estimated_rows": 11834.0,
+                              "index_access_type": "index_scan",
+                              "actual_last_row_ms": 6.9032,
+                              "actual_first_row_ms": 0.709959,
+                              "estimated_total_cost": 1191.4
+                            }
+                          ],
+                          "group_by": true,
+                          "functions": [
+                            "sum(orders.total)"
+                          ],
+                          "operation": "Group aggregate: sum(orders.total)",
+                          "access_type": "aggregate",
+                          "actual_rows": 3000.0,
+                          "actual_loops": 1,
+                          "estimated_rows": 3000.0,
+                          "actual_last_row_ms": 7.777989,
+                          "actual_first_row_ms": 0.715666,
+                          "estimated_total_cost": 2374.8
+                        }
+                      ],
+                      "operation": "Stream results",
+                      "access_type": "stream",
+                      "actual_rows": 3000.0,
+                      "actual_loops": 1,
+                      "estimated_rows": 3000.0,
+                      "actual_last_row_ms": 8.020154,
+                      "actual_first_row_ms": 0.718,
+                      "estimated_total_cost": 2374.8
+                    }
+                  ],
+                  "operation": "Sort: total_spent DESC, limit input to 100 row(s) per chunk",
+                  "access_type": "sort",
+                  "actual_rows": 100.0,
+                  "sort_fields": [
+                    "total_spent DESC"
+                  ],
+                  "actual_loops": 1,
+                  "per_chunk_limit": 100,
+                  "actual_last_row_ms": 8.301045,
+                  "actual_first_row_ms": 8.298833
+                }
+              ],
+              "operation": "Limit: 100 row(s)",
+              "access_type": "limit",
+              "actual_rows": 100.0,
+              "actual_loops": 1,
+              "limit_offset": 0,
+              "actual_last_row_ms": 8.305299999999999,
+              "actual_first_row_ms": 8.299418
+            }
+          ],
+          "operation": "Materialize CTE top_users",
+          "access_type": "materialize",
+          "actual_rows": 100.0,
+          "actual_loops": 1,
+          "estimated_rows": 0.0,
+          "actual_last_row_ms": 8.320083,
+          "actual_first_row_ms": 8.320083,
+          "estimated_total_cost": 0.0,
+          "estimated_first_row_cost": 0.0
+        }
+      ],
+      "operation": "Table scan on t",
+      "table_name": "t",
+      "access_type": "table",
+      "actual_rows": 100.0,
+      "actual_loops": 1,
+      "used_columns": [
+        "user_id",
+        "total_spent"
+      ],
+      "estimated_rows": 0.0,
+      "actual_last_row_ms": 8.327834,
+      "actual_first_row_ms": 8.321792,
+      "estimated_total_cost": 2.5,
+      "estimated_first_row_cost": 2.5
+    },
+    {
+      "alias": "u",
+      "covering": false,
+      "operation": "Single-row index lookup on u using PRIMARY (id=t.user_id)",
+      "index_name": "PRIMARY",
+      "table_name": "users",
+      "access_type": "index",
+      "actual_rows": 1.0,
+      "schema_name": "testdb",
+      "actual_loops": 100,
+      "used_columns": [
+        "id",
+        "name"
+      ],
+      "estimated_rows": 1.0,
+      "lookup_condition": "id=t.user_id",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.0008537999999999999,
+      "actual_first_row_ms": 0.0008342099999999999,
+      "estimated_total_cost": 0.251
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Nested loop inner join",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 100.0,
+  "actual_loops": 1,
+  "estimated_rows": 0.0,
+  "join_algorithm": "nested_loop",
+  "actual_last_row_ms": 8.424414,
+  "actual_first_row_ms": 8.332917,
+  "estimated_total_cost": 27.5
+}

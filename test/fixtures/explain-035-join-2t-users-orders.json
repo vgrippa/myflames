@@ -1,0 +1,74 @@
+{
+  "limit": 100,
+  "query": "/* select#1 */ select `u`.`name` AS `name`,`o`.`total` AS `total` from `testdb`.`users` `u` join `testdb`.`orders` `o` where ((`o`.`user_id` = `u`.`id`) and (`u`.`country` = 'US')) limit 100",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "alias": "u",
+          "covering": false,
+          "operation": "Index lookup on u using idx_country (country='US'), with index condition: (u.country = 'US')",
+          "index_name": "idx_country",
+          "table_name": "users",
+          "access_type": "index",
+          "actual_rows": 25.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "name",
+            "country"
+          ],
+          "estimated_rows": 600.0,
+          "lookup_condition": "country='US'",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.060041000000000004,
+          "actual_first_row_ms": 0.058417,
+          "estimated_total_cost": 70.5,
+          "pushed_index_condition": "(u.country = 'US')"
+        },
+        {
+          "alias": "o",
+          "covering": false,
+          "operation": "Index lookup on o using idx_user (user_id=u.id)",
+          "index_name": "idx_user",
+          "table_name": "orders",
+          "access_type": "index",
+          "actual_rows": 4.0,
+          "schema_name": "testdb",
+          "actual_loops": 25,
+          "used_columns": [
+            "user_id",
+            "total"
+          ],
+          "estimated_rows": 3.944666624069214,
+          "lookup_condition": "user_id=u.id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.00480148,
+          "actual_first_row_ms": 0.00448488,
+          "estimated_total_cost": 0.9868241004546483
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 100.0,
+      "actual_loops": 1,
+      "estimated_rows": 2366.7999744415283,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 0.187876,
+      "actual_first_row_ms": 0.076375,
+      "estimated_total_cost": 898.8799910545349
+    }
+  ],
+  "operation": "Limit: 100 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 100.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 100.0,
+  "actual_last_row_ms": 0.191376,
+  "actual_first_row_ms": 0.076709,
+  "estimated_total_cost": 898.8799910545349
+}

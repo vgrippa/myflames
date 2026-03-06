@@ -1,0 +1,51 @@
+{
+  "query": "/* select#1 */ select `testdb`.`products`.`id` AS `id`,`testdb`.`products`.`name` AS `name`,`testdb`.`products`.`category_id` AS `category_id`,`testdb`.`products`.`price` AS `price`,rank() OVER (PARTITION BY `testdb`.`products`.`category_id` ORDER BY `testdb`.`products`.`price` desc )  AS `price_rank` from `testdb`.`products`",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "operation": "Table scan on products",
+          "table_name": "products",
+          "access_type": "table",
+          "actual_rows": 1500.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "name",
+            "category_id",
+            "price"
+          ],
+          "estimated_rows": 1500.0,
+          "actual_last_row_ms": 0.23325900000000002,
+          "actual_first_row_ms": 0.042749,
+          "estimated_total_cost": 151.75
+        }
+      ],
+      "operation": "Sort: products.category_id, products.price DESC",
+      "access_type": "sort",
+      "actual_rows": 1500.0,
+      "sort_fields": [
+        "products.category_id",
+        "products.price DESC"
+      ],
+      "actual_loops": 1,
+      "estimated_rows": 1500.0,
+      "actual_last_row_ms": 0.470672,
+      "actual_first_row_ms": 0.41483200000000003,
+      "estimated_total_cost": 151.75
+    }
+  ],
+  "functions": [
+    "rank() OVER (PARTITION BY products.category_id ORDER BY products.price desc ) "
+  ],
+  "operation": "Window aggregate: rank() OVER (PARTITION BY products.category_id ORDER BY products.price desc ) ",
+  "query_type": "select",
+  "access_type": "window",
+  "actual_rows": 1500.0,
+  "actual_loops": 1,
+  "estimated_rows": 1500.0,
+  "actual_last_row_ms": 0.736167,
+  "actual_first_row_ms": 0.419959,
+  "estimated_total_cost": 0.0
+}

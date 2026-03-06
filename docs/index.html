@@ -58,6 +58,17 @@
     <a class="view-full" href="demos/mysql-query-treemap.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
+  <section>
+    <h2>Query Analysis panel demos</h2>
+    <p>Each view shows a <strong>Query Analysis</strong> panel below the chart: optimizer features, warnings (full scans, hash joins, temp tables, filesorts), and suggestions.</p>
+    <ul>
+      <li><a href="demos/mysql-query-analysis-hash-join.html" target="_blank" rel="noopener">Hash join (bar)</a> — two full table scans, join_buffer_size suggestion</li>
+      <li><a href="demos/mysql-query-analysis-full-scan.html" target="_blank" rel="noopener">Full table scan (bar)</a> — index suggestion</li>
+      <li><a href="demos/mysql-query-analysis-derived-sort.html" target="_blank" rel="noopener">Derived table + sort (treemap)</a> — temp table and sort_buffer suggestions</li>
+      <li><a href="demos/mysql-query-analysis-icp.html" target="_blank" rel="noopener">Index condition pushdown (diagram)</a> — optimizer features</li>
+    </ul>
+  </section>
+
   <p><a href="https://github.com/vgrippa/myflames">Repository and README</a></p>
 </body>
 </html>

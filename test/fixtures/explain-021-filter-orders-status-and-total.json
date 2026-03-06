@@ -1,0 +1,39 @@
+{
+  "query": "/* select#1 */ select `testdb`.`orders`.`id` AS `id`,`testdb`.`orders`.`user_id` AS `user_id`,`testdb`.`orders`.`status` AS `status`,`testdb`.`orders`.`total` AS `total`,`testdb`.`orders`.`created_at` AS `created_at` from `testdb`.`orders` where ((`testdb`.`orders`.`status` = 'delivered') and (`testdb`.`orders`.`total` > 500.00))",
+  "inputs": [
+    {
+      "covering": false,
+      "operation": "Index lookup on orders using idx_status (status='delivered'), with index condition: (orders.`status` = 'delivered')",
+      "index_name": "idx_status",
+      "table_name": "orders",
+      "access_type": "index",
+      "actual_rows": 2400.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "user_id",
+        "status",
+        "total",
+        "created_at"
+      ],
+      "estimated_rows": 2400.0,
+      "lookup_condition": "status='delivered'",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 1.65294,
+      "actual_first_row_ms": 0.18537499999999998,
+      "estimated_total_cost": 103.99199867248534,
+      "pushed_index_condition": "(orders.`status` = 'delivered')"
+    }
+  ],
+  "condition": "(orders.total > 500.00)",
+  "operation": "Filter: (orders.total > 500.00)",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 1212.0,
+  "actual_loops": 1,
+  "estimated_rows": 799.9199867248535,
+  "actual_last_row_ms": 1.7987000000000002,
+  "actual_first_row_ms": 0.190083,
+  "estimated_total_cost": 103.99199867248534
+}

@@ -1,10 +1,19 @@
 # Generated EXPLAIN input/output (root directory only)
 /explain.json
+/query.sql
 /query.svg
 /query-bar.svg
 /query-treemap.svg
+/query-diagram.svg
+/test.svg
 /before.svg
 /after.svg
+
+# Python
+__pycache__/
+*.py[cod]
+.eggs/
+*.egg-info/
 
 # OS and editors
 .DS_Store

@@ -1,0 +1,24 @@
+{
+  "query": "/* select#1 */ select `testdb`.`products`.`id` AS `id`,`testdb`.`products`.`name` AS `name`,`testdb`.`products`.`price` AS `price` from `testdb`.`products` where (`testdb`.`products`.`category_id` = 3)",
+  "covering": false,
+  "operation": "Index lookup on products using idx_category (category_id=3)",
+  "index_name": "idx_category",
+  "query_type": "select",
+  "table_name": "products",
+  "access_type": "index",
+  "actual_rows": 30.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "used_columns": [
+    "id",
+    "name",
+    "category_id",
+    "price"
+  ],
+  "estimated_rows": 30.0,
+  "lookup_condition": "category_id=3",
+  "index_access_type": "index_lookup",
+  "actual_last_row_ms": 0.050619,
+  "actual_first_row_ms": 0.028624,
+  "estimated_total_cost": 8.25
+}

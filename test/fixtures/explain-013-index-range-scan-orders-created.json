@@ -1,0 +1,34 @@
+{
+  "query": "/* select#1 */ select `testdb`.`orders`.`id` AS `id`,`testdb`.`orders`.`user_id` AS `user_id`,`testdb`.`orders`.`status` AS `status`,`testdb`.`orders`.`total` AS `total`,`testdb`.`orders`.`created_at` AS `created_at` from `testdb`.`orders` where (`testdb`.`orders`.`created_at` >= TIMESTAMP'2023-01-01 00:00:00')",
+  "inputs": [
+    {
+      "operation": "Table scan on orders",
+      "table_name": "orders",
+      "access_type": "table",
+      "actual_rows": 12000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "user_id",
+        "status",
+        "total",
+        "created_at"
+      ],
+      "estimated_rows": 11834.0,
+      "actual_last_row_ms": 1.53699,
+      "actual_first_row_ms": 0.137293,
+      "estimated_total_cost": 1191.4
+    }
+  ],
+  "condition": "(orders.created_at >= TIMESTAMP'2023-01-01 00:00:00')",
+  "operation": "Filter: (orders.created_at >= TIMESTAMP'2023-01-01 00:00:00')",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 5962.0,
+  "actual_loops": 1,
+  "estimated_rows": 5961.999939084053,
+  "actual_last_row_ms": 2.01628,
+  "actual_first_row_ms": 0.148125,
+  "estimated_total_cost": 1191.4
+}

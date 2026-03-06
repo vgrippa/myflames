@@ -1,0 +1,91 @@
+{
+  "query": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,`testdb`.`users`.`email` AS `email`,`testdb`.`users`.`country` AS `country`,`testdb`.`users`.`created_at` AS `created_at` from `testdb`.`users` semi join (`testdb`.`orders`) where ((`<subquery2>`.`user_id` = `testdb`.`users`.`id`) and (`testdb`.`orders`.`status` = 'delivered'))",
+  "inputs": [
+    {
+      "operation": "Table scan on users",
+      "table_name": "users",
+      "access_type": "table",
+      "actual_rows": 3000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "name",
+        "email",
+        "country",
+        "created_at"
+      ],
+      "estimated_rows": 3000.0,
+      "actual_last_row_ms": 0.5504009999999999,
+      "actual_first_row_ms": 0.042542,
+      "estimated_total_cost": 303.5
+    },
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "covering": false,
+              "operation": "Index lookup on orders using idx_status (status='delivered'), with index condition: (orders.`status` = 'delivered')",
+              "index_name": "idx_status",
+              "table_name": "orders",
+              "access_type": "index",
+              "actual_rows": 2400.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "user_id",
+                "status"
+              ],
+              "estimated_rows": 2400.0,
+              "lookup_condition": "status='delivered'",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 1.543913,
+              "actual_first_row_ms": 0.262292,
+              "estimated_total_cost": 264.0,
+              "pushed_index_condition": "(orders.`status` = 'delivered')"
+            }
+          ],
+          "operation": "Materialize with deduplication",
+          "access_type": "materialize",
+          "actual_rows": 600.0,
+          "actual_loops": 1,
+          "deduplication": true,
+          "estimated_rows": 2400.0,
+          "actual_last_row_ms": 1.7634580000000002,
+          "actual_first_row_ms": 1.7634580000000002,
+          "estimated_total_cost": 504.0,
+          "estimated_first_row_cost": 504.0
+        }
+      ],
+      "covering": false,
+      "operation": "Single-row index lookup on <subquery2> using <auto_distinct_key> (user_id=users.id)",
+      "index_name": "<auto_distinct_key>",
+      "table_name": "<subquery2>",
+      "access_type": "index",
+      "actual_rows": 0.2,
+      "actual_loops": 3000,
+      "used_columns": [
+        "user_id"
+      ],
+      "estimated_rows": 1.0,
+      "lookup_condition": "user_id=users.id",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.0008007986666666667,
+      "actual_first_row_ms": 0.0007894110000000001,
+      "estimated_total_cost": 504.1250416666667,
+      "estimated_first_row_cost": 504.1250416666667
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Nested loop inner join",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 600.0,
+  "actual_loops": 1,
+  "estimated_rows": 7200000.0,
+  "join_algorithm": "nested_loop",
+  "actual_last_row_ms": 3.16417,
+  "actual_first_row_ms": 1.811293,
+  "estimated_total_cost": 720603.5
+}

@@ -1,0 +1,65 @@
+{
+  "limit": 100,
+  "query": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,`testdb`.`users`.`country` AS `country`,row_number() OVER (PARTITION BY `testdb`.`users`.`country` ORDER BY `testdb`.`users`.`created_at` )  AS `rn` from `testdb`.`users` limit 100",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "operation": "Table scan on users",
+              "table_name": "users",
+              "access_type": "table",
+              "actual_rows": 3000.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "id",
+                "name",
+                "country",
+                "created_at"
+              ],
+              "estimated_rows": 3000.0,
+              "actual_last_row_ms": 0.476304,
+              "actual_first_row_ms": 0.051708,
+              "estimated_total_cost": 303.5
+            }
+          ],
+          "operation": "Sort: users.country, users.created_at",
+          "access_type": "sort",
+          "actual_rows": 100.0,
+          "sort_fields": [
+            "users.country",
+            "users.created_at"
+          ],
+          "actual_loops": 1,
+          "estimated_rows": 3000.0,
+          "actual_last_row_ms": 1.173793,
+          "actual_first_row_ms": 1.169208,
+          "estimated_total_cost": 303.5
+        }
+      ],
+      "functions": [
+        "row_number() OVER (PARTITION BY users.country ORDER BY users.created_at ) "
+      ],
+      "operation": "Window aggregate: row_number() OVER (PARTITION BY users.country ORDER BY users.created_at ) ",
+      "access_type": "window",
+      "actual_rows": 100.0,
+      "actual_loops": 1,
+      "estimated_rows": 3000.0,
+      "actual_last_row_ms": 1.208963,
+      "actual_first_row_ms": 1.185916,
+      "estimated_total_cost": 0.0
+    }
+  ],
+  "operation": "Limit: 100 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 100.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 100.0,
+  "actual_last_row_ms": 1.21346,
+  "actual_first_row_ms": 1.186917,
+  "estimated_total_cost": 0.0
+}

@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="473" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="554" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -20,42 +20,45 @@
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
 <text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
-<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 14 ms</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 441 µs</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
 <text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
 <text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="339" x2="1190" y2="339" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="343" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="351" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="365" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="379" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="393" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="407" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="421" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="435" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="449" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="420" x2="1190" y2="420" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="424" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="432" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="446" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="460" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="474" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="488" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="502" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="516" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="530" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
-<text x="320" y="98.0" text-anchor="end" class="label">Index range scan [joinit.PRIMARY]</text>
+<text x="320" y="98.0" text-anchor="end" class="label">Table scan [users]</text>
 <text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="80" width="517.5050800330839" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index range scan on joinit using PRIMARY over (50 &lt; i)  ·  Self: 11 ms (80.9%)  ·  Rows: 16352  ·  Loops: 1  ·  Table: joinit  ·  Index: PRIMARY  ·  Access: index  ·  Est.rows: 8288" data-label="Index range scan [joinit.PRIMARY]"/>
-<text x="1060" y="98.0" class="value">11 ms (80.9%)</text>
-<text x="320" y="132.0" text-anchor="end" class="label">Filter: ((joinit.i &gt; 50))</text>
-<text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="114" width="122.49491996691602" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Filter: (joinit.i &gt; 50)  ·  Self: 3 ms (19.1%)  ·  Total: 14 ms  ·  Rows: 16352  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 8288  ·  Cond: (joinit.i &gt; 50)" data-label="Filter: ((joinit.i &gt; 50))"/>
-<text x="1060" y="132.0" class="value">3 ms (19.1%)</text>
-<rect x="10" y="296" width="1180" height="177" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
-<rect x="10" y="306" width="1180" height="30" fill="#e8eaf6" rx="6"/>
-<rect x="10" y="312" width="1180" height="24" fill="#e8eaf6"/>
-<text x="26" y="325" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="14" y="344" width="1172" height="22" fill="#f1f8e9" rx="4"/>
-<text x="26" y="359" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="36" y="383" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
-<text x="36" y="400" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
-<rect x="14" y="410" width="1172" height="22" fill="#e3f2fd" rx="4"/>
-<text x="26" y="425" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="36" y="449" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">None detected</text>
+<rect class="bar in-query-analysis" x="410" y="80" width="640.0" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Table scan on users  ·  Self: 441 µs (100.0%)  ·  Total: 0.441 µs  ·  Rows: 3000  ·  Loops: 1  ·  Table: users  ·  Access: table  ·  Est.rows: 3000" data-label="Table scan [users]" data-analysis-msg="Full table scan: users (3000 rows)"/>
+<text x="1060" y="98.0" class="value">441 µs (100.0%)</text>
+<rect x="10" y="262" width="1180" height="292" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="10" y="272" width="1180" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="10" y="278" width="1180" height="24" fill="#e8eaf6"/>
+<text x="26" y="291" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="14" y="310" width="1172" height="22" fill="#f1f8e9" rx="4"/>
+<text x="26" y="325" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="36" y="349" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
+<text x="36" y="366" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
+<rect x="14" y="376" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="391" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="36" y="415" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">None detected</text>
+<rect x="14" y="425" width="1172" height="22" fill="#fff3f3" rx="4"/>
+<text x="26" y="440" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="36" y="464" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows)</text>
+<text x="36" y="481" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”</text>
+<rect x="14" y="491" width="1172" height="22" fill="#e8f5e9" rx="4"/>
+<text x="26" y="506" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="36" y="530" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];

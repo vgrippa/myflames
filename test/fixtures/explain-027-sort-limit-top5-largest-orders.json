@@ -1,0 +1,51 @@
+{
+  "limit": 5,
+  "query": "/* select#1 */ select `testdb`.`orders`.`id` AS `id`,`testdb`.`orders`.`user_id` AS `user_id`,`testdb`.`orders`.`status` AS `status`,`testdb`.`orders`.`total` AS `total`,`testdb`.`orders`.`created_at` AS `created_at` from `testdb`.`orders` order by `testdb`.`orders`.`total` desc limit 5",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "operation": "Table scan on orders",
+          "table_name": "orders",
+          "access_type": "table",
+          "actual_rows": 12000.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "user_id",
+            "status",
+            "total",
+            "created_at"
+          ],
+          "estimated_rows": 11834.0,
+          "actual_last_row_ms": 1.6319590000000002,
+          "actual_first_row_ms": 0.139792,
+          "estimated_total_cost": 1191.4
+        }
+      ],
+      "operation": "Sort: orders.total DESC, limit input to 5 row(s) per chunk",
+      "access_type": "sort",
+      "actual_rows": 5.0,
+      "sort_fields": [
+        "orders.total DESC"
+      ],
+      "actual_loops": 1,
+      "estimated_rows": 11834.0,
+      "per_chunk_limit": 5,
+      "actual_last_row_ms": 2.656334,
+      "actual_first_row_ms": 2.656125,
+      "estimated_total_cost": 1191.4
+    }
+  ],
+  "operation": "Limit: 5 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 5.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 5.0,
+  "actual_last_row_ms": 2.656958,
+  "actual_first_row_ms": 2.6565410000000003,
+  "estimated_total_cost": 1191.4
+}

@@ -1,0 +1,158 @@
+{
+  "query": "/* select#1 */ select `cat`.`name` AS `name`,`top`.`cnt` AS `cnt`,`top`.`avg_price` AS `avg_price` from `testdb`.`categories` `cat` join (/* select#2 */ select `testdb`.`products`.`category_id` AS `category_id`,count(0) AS `cnt`,avg(`testdb`.`products`.`price`) AS `avg_price` from `testdb`.`products` where (`testdb`.`products`.`stock` > 0) group by `testdb`.`products`.`category_id` having (`cnt` >= 5)) `top` where (`top`.`category_id` = `cat`.`id`) order by `top`.`avg_price` desc",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "alias": "cat",
+              "operation": "Table scan on cat",
+              "table_name": "categories",
+              "access_type": "table",
+              "actual_rows": 50.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "id",
+                "name"
+              ],
+              "estimated_rows": 50.0,
+              "actual_last_row_ms": 0.020458999999999998,
+              "actual_first_row_ms": 0.015000000000000001,
+              "estimated_total_cost": 5.25
+            },
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "inputs": [
+                            {
+                              "inputs": [
+                                {
+                                  "covering": false,
+                                  "operation": "Index scan on products using idx_category",
+                                  "index_name": "idx_category",
+                                  "table_name": "products",
+                                  "access_type": "index",
+                                  "actual_rows": 1500.0,
+                                  "schema_name": "testdb",
+                                  "actual_loops": 1,
+                                  "used_columns": [
+                                    "id",
+                                    "category_id",
+                                    "price",
+                                    "stock"
+                                  ],
+                                  "estimated_rows": 1500.0,
+                                  "index_access_type": "index_scan",
+                                  "actual_last_row_ms": 0.6920189999999999,
+                                  "actual_first_row_ms": 0.089,
+                                  "estimated_total_cost": 151.75
+                                }
+                              ],
+                              "condition": "(products.stock > 0)",
+                              "operation": "Filter: (products.stock > 0)",
+                              "access_type": "filter",
+                              "actual_rows": 1497.0,
+                              "actual_loops": 1,
+                              "estimated_rows": 1497.0000386238098,
+                              "actual_last_row_ms": 0.7743300000000001,
+                              "actual_first_row_ms": 0.089959,
+                              "estimated_total_cost": 151.75
+                            }
+                          ],
+                          "group_by": true,
+                          "functions": [
+                            "count(0)",
+                            "avg(products.price)"
+                          ],
+                          "operation": "Group aggregate: count(0), avg(products.price)",
+                          "access_type": "aggregate",
+                          "actual_rows": 50.0,
+                          "actual_loops": 1,
+                          "estimated_rows": 50.0,
+                          "actual_last_row_ms": 0.857415,
+                          "actual_first_row_ms": 0.097791,
+                          "estimated_total_cost": 301.450003862381
+                        }
+                      ],
+                      "condition": "(cnt >= 5)",
+                      "operation": "Filter: (cnt >= 5)",
+                      "access_type": "filter",
+                      "actual_rows": 50.0,
+                      "actual_loops": 1,
+                      "estimated_rows": 50.0,
+                      "actual_last_row_ms": 0.86046,
+                      "actual_first_row_ms": 0.09816599999999999,
+                      "estimated_total_cost": 301.450003862381
+                    }
+                  ],
+                  "operation": "Materialize",
+                  "access_type": "materialize",
+                  "actual_rows": 50.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 50.0,
+                  "actual_last_row_ms": 0.883916,
+                  "actual_first_row_ms": 0.883916,
+                  "estimated_total_cost": 306.450003862381,
+                  "estimated_first_row_cost": 306.450003862381
+                }
+              ],
+              "covering": false,
+              "operation": "Index lookup on top using <auto_key0> (category_id=cat.id)",
+              "index_name": "<auto_key0>",
+              "table_name": "top",
+              "access_type": "index",
+              "actual_rows": 1.0,
+              "actual_loops": 50,
+              "used_columns": [
+                "category_id",
+                "cnt",
+                "avg_price"
+              ],
+              "estimated_rows": 14.97,
+              "lookup_condition": "category_id=cat.id",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.01801844,
+              "actual_first_row_ms": 0.0179426,
+              "estimated_total_cost": 310.222443862381,
+              "estimated_first_row_cost": 306.702003862381
+            }
+          ],
+          "join_type": "inner join",
+          "operation": "Nested loop inner join",
+          "access_type": "join",
+          "actual_rows": 50.0,
+          "actual_loops": 1,
+          "estimated_rows": 2500.0,
+          "join_algorithm": "nested_loop",
+          "actual_last_row_ms": 0.928164,
+          "actual_first_row_ms": 0.903375,
+          "estimated_total_cost": 442.375
+        }
+      ],
+      "operation": "Stream results",
+      "access_type": "stream",
+      "actual_rows": 50.0,
+      "actual_loops": 1,
+      "estimated_rows": 2500.0,
+      "actual_last_row_ms": 0.935293,
+      "actual_first_row_ms": 0.905958,
+      "estimated_total_cost": 442.375
+    }
+  ],
+  "operation": "Sort: top.avg_price DESC",
+  "query_type": "select",
+  "access_type": "sort",
+  "actual_rows": 50.0,
+  "sort_fields": [
+    "top.avg_price DESC"
+  ],
+  "actual_loops": 1,
+  "actual_last_row_ms": 0.9512499999999999,
+  "actual_first_row_ms": 0.950083
+}

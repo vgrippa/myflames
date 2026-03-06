@@ -1,0 +1,13 @@
+{
+  "query": "/* select#1 */ select '42' AS `id`,'User 42' AS `name`,'user42@example.com' AS `email`,'DE' AS `country`,'2020-10-21' AS `created_at` from `testdb`.`users` where true",
+  "operation": "Rows fetched before execution",
+  "query_type": "select",
+  "access_type": "rows_fetched_before_execution",
+  "actual_rows": 1.0,
+  "actual_loops": 1,
+  "estimated_rows": 1.0,
+  "actual_last_row_ms": 0.000083,
+  "actual_first_row_ms": 0.000042,
+  "estimated_total_cost": 0.0,
+  "estimated_first_row_cost": 0.0
+}

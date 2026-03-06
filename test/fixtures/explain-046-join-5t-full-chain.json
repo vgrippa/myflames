@@ -1,0 +1,196 @@
+{
+  "limit": 20,
+  "query": "/* select#1 */ select `u`.`name` AS `name`,`c`.`name` AS `cat`,`p`.`name` AS `prod`,`oi`.`quantity` AS `quantity`,`o`.`total` AS `total` from `testdb`.`users` `u` join `testdb`.`orders` `o` join `testdb`.`order_items` `oi` join `testdb`.`products` `p` join `testdb`.`categories` `c` where ((`o`.`user_id` = `u`.`id`) and (`oi`.`order_id` = `o`.`id`) and (`p`.`id` = `oi`.`product_id`) and (`c`.`id` = `p`.`category_id`) and (`u`.`country` = 'US') and (`o`.`status` = 'delivered')) limit 20",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "alias": "u",
+                      "covering": false,
+                      "operation": "Index lookup on u using idx_country (country='US'), with index condition: (u.country = 'US')",
+                      "index_name": "idx_country",
+                      "table_name": "users",
+                      "access_type": "index",
+                      "actual_rows": 600.0,
+                      "schema_name": "testdb",
+                      "actual_loops": 1,
+                      "used_columns": [
+                        "id",
+                        "name",
+                        "country"
+                      ],
+                      "estimated_rows": 600.0,
+                      "lookup_condition": "country='US'",
+                      "index_access_type": "index_lookup",
+                      "actual_last_row_ms": 0.430568,
+                      "actual_first_row_ms": 0.053834,
+                      "estimated_total_cost": 70.5,
+                      "pushed_index_condition": "(u.country = 'US')"
+                    },
+                    {
+                      "inputs": [
+                        {
+                          "alias": "o",
+                          "covering": false,
+                          "operation": "Index lookup on o using idx_user (user_id=u.id)",
+                          "index_name": "idx_user",
+                          "table_name": "orders",
+                          "access_type": "index",
+                          "actual_rows": 4.0,
+                          "schema_name": "testdb",
+                          "actual_loops": 600,
+                          "used_columns": [
+                            "id",
+                            "user_id",
+                            "status",
+                            "total"
+                          ],
+                          "estimated_rows": 3.944666624069214,
+                          "lookup_condition": "user_id=u.id",
+                          "index_access_type": "index_lookup",
+                          "actual_last_row_ms": 0.0033072933333333334,
+                          "actual_first_row_ms": 0.0030313416666666666,
+                          "estimated_total_cost": 0.9862999893483113
+                        }
+                      ],
+                      "condition": "(o.`status` = 'delivered')",
+                      "operation": "Filter: (o.`status` = 'delivered')",
+                      "access_type": "filter",
+                      "actual_rows": 0.0,
+                      "actual_loops": 600,
+                      "estimated_rows": 0.7999999860462559,
+                      "actual_last_row_ms": 0.003559,
+                      "actual_first_row_ms": 0.003559,
+                      "estimated_total_cost": 0.9862999893483113
+                    }
+                  ],
+                  "join_type": "inner join",
+                  "operation": "Nested loop inner join",
+                  "access_type": "join",
+                  "actual_rows": 0.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 479.9999916277535,
+                  "join_algorithm": "nested_loop",
+                  "actual_last_row_ms": 2.606417,
+                  "actual_first_row_ms": 2.606417,
+                  "estimated_total_cost": 898.8799910545349
+                },
+                {
+                  "alias": "oi",
+                  "covering": false,
+                  "operation": "Index lookup on oi using idx_order (order_id=o.id)",
+                  "index_name": "idx_order",
+                  "table_name": "order_items",
+                  "access_type": "index",
+                  "actual_rows": null,
+                  "schema_name": "testdb",
+                  "actual_loops": null,
+                  "used_columns": [
+                    "order_id",
+                    "product_id",
+                    "quantity"
+                  ],
+                  "estimated_rows": 10.135746955871582,
+                  "lookup_condition": "order_id=o.id",
+                  "index_access_type": "index_lookup",
+                  "actual_last_row_ms": null,
+                  "actual_first_row_ms": null,
+                  "estimated_total_cost": 2.536048352953866
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "actual_rows": 0.0,
+              "actual_loops": 1,
+              "estimated_rows": 4865.158453959388,
+              "join_algorithm": "nested_loop",
+              "actual_last_row_ms": 2.6065,
+              "actual_first_row_ms": 2.6065,
+              "estimated_total_cost": 2601.6854499403207
+            },
+            {
+              "alias": "p",
+              "covering": false,
+              "operation": "Single-row index lookup on p using PRIMARY (id=oi.product_id)",
+              "index_name": "PRIMARY",
+              "table_name": "products",
+              "access_type": "index",
+              "actual_rows": null,
+              "schema_name": "testdb",
+              "actual_loops": null,
+              "used_columns": [
+                "id",
+                "name",
+                "category_id"
+              ],
+              "estimated_rows": 1.0,
+              "lookup_condition": "id=oi.product_id",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": null,
+              "actual_first_row_ms": null,
+              "estimated_total_cost": 0.2500205543151259
+            }
+          ],
+          "join_type": "inner join",
+          "operation": "Nested loop inner join",
+          "access_type": "join",
+          "actual_rows": 0.0,
+          "actual_loops": 1,
+          "estimated_rows": 4865.158453959388,
+          "join_algorithm": "nested_loop",
+          "actual_last_row_ms": 2.606667,
+          "actual_first_row_ms": 2.606667,
+          "estimated_total_cost": 4304.4909088261065
+        },
+        {
+          "alias": "c",
+          "covering": false,
+          "operation": "Single-row index lookup on c using PRIMARY (id=p.category_id)",
+          "index_name": "PRIMARY",
+          "table_name": "categories",
+          "access_type": "index",
+          "actual_rows": null,
+          "schema_name": "testdb",
+          "actual_loops": null,
+          "used_columns": [
+            "id",
+            "name"
+          ],
+          "estimated_rows": 1.0,
+          "lookup_condition": "id=p.category_id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": null,
+          "actual_first_row_ms": null,
+          "estimated_total_cost": 0.2500205543151259
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 0.0,
+      "actual_loops": 1,
+      "estimated_rows": 4865.158453959388,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 2.6068749999999996,
+      "actual_first_row_ms": 2.6068749999999996,
+      "estimated_total_cost": 6007.296367711892
+    }
+  ],
+  "operation": "Limit: 20 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 0.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 20.0,
+  "actual_last_row_ms": 2.60725,
+  "actual_first_row_ms": 2.60725,
+  "estimated_total_cost": 6007.296367711892
+}

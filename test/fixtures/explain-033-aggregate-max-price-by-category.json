@@ -1,0 +1,23 @@
+{
+  "query": "/* select#1 */ select `testdb`.`products`.`category_id` AS `category_id`,max(`testdb`.`products`.`price`) AS `max_price`,min(`testdb`.`products`.`price`) AS `min_price` from `testdb`.`products` group by `testdb`.`products`.`category_id`",
+  "ranges": [],
+  "covering": true,
+  "operation": "Covering index skip scan for grouping on products using idx_cat_price",
+  "index_name": "idx_cat_price",
+  "query_type": "select",
+  "table_name": "products",
+  "access_type": "index",
+  "actual_rows": 50.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "used_columns": [
+    "id",
+    "category_id",
+    "price"
+  ],
+  "estimated_rows": 51.0,
+  "index_access_type": "group_index_skip_scan",
+  "actual_last_row_ms": 0.077832,
+  "actual_first_row_ms": 0.025375,
+  "estimated_total_cost": 16.05
+}

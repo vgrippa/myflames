@@ -1,0 +1,36 @@
+{
+  "query": "/* select#1 */ select `testdb`.`orders`.`id` AS `id`,`testdb`.`orders`.`user_id` AS `user_id`,`testdb`.`orders`.`status` AS `status`,`testdb`.`orders`.`total` AS `total`,`testdb`.`orders`.`created_at` AS `created_at` from `testdb`.`orders` order by `testdb`.`orders`.`total` desc",
+  "inputs": [
+    {
+      "operation": "Table scan on orders",
+      "table_name": "orders",
+      "access_type": "table",
+      "actual_rows": 12000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "user_id",
+        "status",
+        "total",
+        "created_at"
+      ],
+      "estimated_rows": 11834.0,
+      "actual_last_row_ms": 1.64314,
+      "actual_first_row_ms": 0.140875,
+      "estimated_total_cost": 1191.4
+    }
+  ],
+  "operation": "Sort: orders.total DESC",
+  "query_type": "select",
+  "access_type": "sort",
+  "actual_rows": 12000.0,
+  "sort_fields": [
+    "orders.total DESC"
+  ],
+  "actual_loops": 1,
+  "estimated_rows": 11834.0,
+  "actual_last_row_ms": 4.1612919999999995,
+  "actual_first_row_ms": 3.670625,
+  "estimated_total_cost": 1191.4
+}

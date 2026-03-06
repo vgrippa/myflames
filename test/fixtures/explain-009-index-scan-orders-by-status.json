@@ -1,0 +1,24 @@
+{
+  "query": "/* select#1 */ select `testdb`.`orders`.`id` AS `id`,`testdb`.`orders`.`total` AS `total` from `testdb`.`orders` where (`testdb`.`orders`.`status` = 'shipped')",
+  "covering": false,
+  "operation": "Index lookup on orders using idx_status (status='shipped'), with index condition: (orders.`status` = 'shipped')",
+  "index_name": "idx_status",
+  "query_type": "select",
+  "table_name": "orders",
+  "access_type": "index",
+  "actual_rows": 2400.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "used_columns": [
+    "id",
+    "status",
+    "total"
+  ],
+  "estimated_rows": 2400.0,
+  "lookup_condition": "status='shipped'",
+  "index_access_type": "index_lookup",
+  "actual_last_row_ms": 1.574324,
+  "actual_first_row_ms": 0.16783299999999998,
+  "estimated_total_cost": 264.0,
+  "pushed_index_condition": "(orders.`status` = 'shipped')"
+}

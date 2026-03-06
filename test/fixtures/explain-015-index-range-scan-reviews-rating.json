@@ -1,0 +1,35 @@
+{
+  "query": "/* select#1 */ select `testdb`.`reviews`.`id` AS `id`,`testdb`.`reviews`.`product_id` AS `product_id`,`testdb`.`reviews`.`user_id` AS `user_id`,`testdb`.`reviews`.`rating` AS `rating`,`testdb`.`reviews`.`body` AS `body`,`testdb`.`reviews`.`created_at` AS `created_at` from `testdb`.`reviews` where (`testdb`.`reviews`.`rating` >= 4)",
+  "inputs": [
+    {
+      "operation": "Table scan on reviews",
+      "table_name": "reviews",
+      "access_type": "table",
+      "actual_rows": 10000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "product_id",
+        "user_id",
+        "rating",
+        "body",
+        "created_at"
+      ],
+      "estimated_rows": 9921.0,
+      "actual_last_row_ms": 1.988488,
+      "actual_first_row_ms": 0.015333000000000001,
+      "estimated_total_cost": 998.35
+    }
+  ],
+  "condition": "(reviews.rating >= 4)",
+  "operation": "Filter: (reviews.rating >= 4)",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 4000.0,
+  "actual_loops": 1,
+  "estimated_rows": 3306.669245123863,
+  "actual_last_row_ms": 2.366285,
+  "actual_first_row_ms": 0.019417,
+  "estimated_total_cost": 998.35
+}

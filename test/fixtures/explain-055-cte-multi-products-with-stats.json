@@ -1,0 +1,201 @@
+{
+  "query": "with `prod_stats` as (/* select#2 */ select `testdb`.`reviews`.`product_id` AS `product_id`,count(0) AS `cnt`,avg(`testdb`.`reviews`.`rating`) AS `avg_r` from `testdb`.`reviews` group by `testdb`.`reviews`.`product_id`),  /* select#1 */ select `p`.`name` AS `name`,`ps`.`avg_r` AS `avg_r` from `testdb`.`products` `p` join `prod_stats` `ps` semi join (`prod_stats`) where ((`p`.`id` = `<subquery3>`.`product_id`) and (`ps`.`product_id` = `<subquery3>`.`product_id`) and (`prod_stats`.`avg_r` >= 4.0000) and (`prod_stats`.`cnt` >= 3))",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "cte": true,
+                          "inputs": [
+                            {
+                              "inputs": [
+                                {
+                                  "covering": true,
+                                  "operation": "Covering index scan on reviews using idx_prod_rating",
+                                  "index_name": "idx_prod_rating",
+                                  "table_name": "reviews",
+                                  "access_type": "index",
+                                  "actual_rows": 10000.0,
+                                  "schema_name": "testdb",
+                                  "actual_loops": 1,
+                                  "used_columns": [
+                                    "id",
+                                    "product_id",
+                                    "rating"
+                                  ],
+                                  "estimated_rows": 9921.0,
+                                  "index_access_type": "index_scan",
+                                  "actual_last_row_ms": 0.9761340000000001,
+                                  "actual_first_row_ms": 0.077291,
+                                  "estimated_total_cost": 998.3499999999999
+                                }
+                              ],
+                              "group_by": true,
+                              "functions": [
+                                "count(0)",
+                                "avg(reviews.rating)"
+                              ],
+                              "operation": "Group aggregate: count(0), avg(reviews.rating)",
+                              "access_type": "aggregate",
+                              "actual_rows": 1500.0,
+                              "actual_loops": 1,
+                              "estimated_rows": 1500.0,
+                              "actual_last_row_ms": 1.494079,
+                              "actual_first_row_ms": 0.08258399999999999,
+                              "estimated_total_cost": 1990.4499999999998
+                            }
+                          ],
+                          "operation": "Materialize CTE prod_stats if needed",
+                          "access_type": "materialize",
+                          "actual_rows": 1500.0,
+                          "actual_loops": 1,
+                          "estimated_rows": 1500.0,
+                          "actual_last_row_ms": 1.999583,
+                          "actual_first_row_ms": 1.999583,
+                          "estimated_total_cost": 2140.45,
+                          "estimated_first_row_cost": 2140.45
+                        }
+                      ],
+                      "operation": "Table scan on prod_stats",
+                      "table_name": "prod_stats",
+                      "access_type": "table",
+                      "actual_rows": 1500.0,
+                      "actual_loops": 1,
+                      "used_columns": [
+                        "product_id",
+                        "cnt",
+                        "avg_r"
+                      ],
+                      "estimated_rows": 1500.0,
+                      "actual_last_row_ms": 2.0879510000000003,
+                      "actual_first_row_ms": 2.0011669999999997,
+                      "estimated_total_cost": 2161.7,
+                      "estimated_first_row_cost": 2140.4641666666666
+                    }
+                  ],
+                  "condition": "((prod_stats.avg_r >= 4.0000) and (prod_stats.cnt >= 3))",
+                  "operation": "Filter: ((prod_stats.avg_r >= 4.0000) and (prod_stats.cnt >= 3))",
+                  "access_type": "filter",
+                  "actual_rows": 600.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 1102.112772591412,
+                  "actual_last_row_ms": 2.18561,
+                  "actual_first_row_ms": 2.003833,
+                  "estimated_total_cost": 1118.61248425896,
+                  "estimated_first_row_cost": 2139.5228376068644
+                }
+              ],
+              "operation": "Materialize with deduplication",
+              "access_type": "materialize",
+              "actual_rows": 600.0,
+              "actual_loops": 1,
+              "deduplication": true,
+              "estimated_rows": 1102.112772591412,
+              "actual_last_row_ms": 2.239541,
+              "actual_first_row_ms": 2.239541,
+              "estimated_total_cost": 1228.8237615181013,
+              "estimated_first_row_cost": 1228.8237615181013
+            }
+          ],
+          "operation": "Table scan on <subquery3>",
+          "table_name": "<subquery3>",
+          "access_type": "table",
+          "actual_rows": 600.0,
+          "actual_loops": 1,
+          "used_columns": [
+            "product_id"
+          ],
+          "estimated_rows": 1102.112772591412,
+          "actual_last_row_ms": 2.2755549999999998,
+          "actual_first_row_ms": 2.239749,
+          "estimated_total_cost": 1245.0987615181014,
+          "estimated_first_row_cost": 1228.8385286094594
+        },
+        {
+          "alias": "p",
+          "covering": false,
+          "operation": "Single-row index lookup on p using PRIMARY (id=`<subquery3>`.product_id)",
+          "index_name": "PRIMARY",
+          "table_name": "products",
+          "access_type": "index",
+          "actual_rows": 1.0,
+          "schema_name": "testdb",
+          "actual_loops": 600,
+          "used_columns": [
+            "id",
+            "name"
+          ],
+          "estimated_rows": 1.0,
+          "lookup_condition": "id=`<subquery3>`.product_id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.0005636583333333334,
+          "actual_first_row_ms": 0.0005474133333333333,
+          "estimated_total_cost": 275.6281952043944
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 600.0,
+      "actual_loops": 1,
+      "estimated_rows": 1102.112772591412,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 2.671325,
+      "actual_first_row_ms": 2.251041,
+      "estimated_total_cost": 1630.8382339816371
+    },
+    {
+      "inputs": [
+        {
+          "cte": true,
+          "operation": "Materialize CTE prod_stats if needed (query plan printed elsewhere)",
+          "access_type": "materialize",
+          "actual_rows": null,
+          "actual_loops": null,
+          "estimated_rows": 1500.0,
+          "actual_last_row_ms": null,
+          "actual_first_row_ms": null,
+          "estimated_total_cost": 2140.45,
+          "estimated_first_row_cost": 2140.45
+        }
+      ],
+      "covering": false,
+      "operation": "Index lookup on ps using <auto_key0> (product_id=`<subquery3>`.product_id)",
+      "index_name": "<auto_key0>",
+      "table_name": "ps",
+      "access_type": "index",
+      "actual_rows": 1.0,
+      "actual_loops": 600,
+      "used_columns": [
+        "product_id",
+        "cnt",
+        "avg_r"
+      ],
+      "estimated_rows": 17.648837760910816,
+      "lookup_condition": "product_id=`<subquery3>`.product_id",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.000416385,
+      "actual_first_row_ms": 0.00032897833333333333,
+      "estimated_total_cost": 2146.627093216319,
+      "estimated_first_row_cost": 2140.7999999999997
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Nested loop inner join",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 600.0,
+  "actual_loops": 1,
+  "estimated_rows": 1653169.158887118,
+  "join_algorithm": "nested_loop",
+  "actual_last_row_ms": 2.987655,
+  "actual_first_row_ms": 2.2545830000000002,
+  "estimated_total_cost": 166952.16633213367
+}

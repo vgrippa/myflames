@@ -1,0 +1,84 @@
+{
+  "limit": 50,
+  "query": "/* select#1 */ select `p`.`name` AS `name`,`r`.`rating` AS `rating` from `testdb`.`products` `p` join `testdb`.`reviews` `r` where ((`p`.`id` = `r`.`product_id`) and (`r`.`rating` = 5)) limit 50",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "alias": "r",
+              "covering": true,
+              "operation": "Covering index scan on r using idx_prod_rating",
+              "index_name": "idx_prod_rating",
+              "table_name": "reviews",
+              "access_type": "index",
+              "actual_rows": 257.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "product_id",
+                "rating"
+              ],
+              "estimated_rows": 9921.0,
+              "index_access_type": "index_scan",
+              "actual_last_row_ms": 0.088581,
+              "actual_first_row_ms": 0.06925,
+              "estimated_total_cost": 998.35
+            }
+          ],
+          "condition": "(r.rating = 5)",
+          "operation": "Filter: (r.rating = 5)",
+          "access_type": "filter",
+          "actual_rows": 50.0,
+          "actual_loops": 1,
+          "estimated_rows": 992.100014783442,
+          "actual_last_row_ms": 0.09833399999999999,
+          "actual_first_row_ms": 0.081,
+          "estimated_total_cost": 998.35
+        },
+        {
+          "alias": "p",
+          "covering": false,
+          "operation": "Single-row index lookup on p using PRIMARY (id=r.product_id)",
+          "index_name": "PRIMARY",
+          "table_name": "products",
+          "access_type": "index",
+          "actual_rows": 1.0,
+          "schema_name": "testdb",
+          "actual_loops": 50,
+          "used_columns": [
+            "id",
+            "name"
+          ],
+          "estimated_rows": 1.0,
+          "lookup_condition": "id=r.product_id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.00034834,
+          "actual_first_row_ms": 0.00032499999999999993,
+          "estimated_total_cost": 0.2501007962891945
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 50.0,
+      "actual_loops": 1,
+      "estimated_rows": 992.100014783442,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 0.121419,
+      "actual_first_row_ms": 0.091458,
+      "estimated_total_cost": 1345.5850051742045
+    }
+  ],
+  "operation": "Limit: 50 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 50.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 50.0,
+  "actual_last_row_ms": 0.12379599999999999,
+  "actual_first_row_ms": 0.091791,
+  "estimated_total_cost": 1345.5850051742045
+}

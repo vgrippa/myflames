@@ -1,0 +1,109 @@
+{
+  "limit": 50,
+  "query": "/* select#1 */ select `u`.`name` AS `name`,`o`.`id` AS `id`,`oi`.`product_id` AS `product_id` from `testdb`.`users` `u` join `testdb`.`orders` `o` join `testdb`.`order_items` `oi` where ((`o`.`user_id` = `u`.`id`) and (`oi`.`order_id` = `o`.`id`) and (`u`.`country` = 'JP')) limit 50",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "alias": "u",
+              "covering": false,
+              "operation": "Index lookup on u using idx_country (country='JP'), with index condition: (u.country = 'JP')",
+              "index_name": "idx_country",
+              "table_name": "users",
+              "access_type": "index",
+              "actual_rows": 6.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "id",
+                "name",
+                "country"
+              ],
+              "estimated_rows": 600.0,
+              "lookup_condition": "country='JP'",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.056373,
+              "actual_first_row_ms": 0.056,
+              "estimated_total_cost": 70.5,
+              "pushed_index_condition": "(u.country = 'JP')"
+            },
+            {
+              "alias": "o",
+              "covering": true,
+              "operation": "Covering index lookup on o using idx_user (user_id=u.id)",
+              "index_name": "idx_user",
+              "table_name": "orders",
+              "access_type": "index",
+              "actual_rows": 3.5,
+              "schema_name": "testdb",
+              "actual_loops": 6,
+              "used_columns": [
+                "id",
+                "user_id"
+              ],
+              "estimated_rows": 3.944666624069214,
+              "lookup_condition": "user_id=u.id",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.0021811666666666668,
+              "actual_first_row_ms": 0.0017156666666666666,
+              "estimated_total_cost": 0.25137565580906907
+            }
+          ],
+          "join_type": "inner join",
+          "operation": "Nested loop inner join",
+          "access_type": "join",
+          "actual_rows": 21.0,
+          "actual_loops": 1,
+          "estimated_rows": 2366.7999744415283,
+          "join_algorithm": "nested_loop",
+          "actual_last_row_ms": 0.071461,
+          "actual_first_row_ms": 0.061918,
+          "estimated_total_cost": 457.61092426718733
+        },
+        {
+          "alias": "oi",
+          "covering": false,
+          "operation": "Index lookup on oi using idx_order (order_id=o.id)",
+          "index_name": "idx_order",
+          "table_name": "order_items",
+          "access_type": "index",
+          "actual_rows": 2.380952380952381,
+          "schema_name": "testdb",
+          "actual_loops": 21,
+          "used_columns": [
+            "order_id",
+            "product_id"
+          ],
+          "estimated_rows": 10.135746955871582,
+          "lookup_condition": "order_id=o.id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.004702428571428572,
+          "actual_first_row_ms": 0.004587380952380952,
+          "estimated_total_cost": 2.5343649858440713
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 50.0,
+      "actual_loops": 1,
+      "estimated_rows": 23989.285636102657,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 0.17449800000000001,
+      "actual_first_row_ms": 0.10024999999999999,
+      "estimated_total_cost": 8853.860896903117
+    }
+  ],
+  "operation": "Limit: 50 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 50.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 50.0,
+  "actual_last_row_ms": 0.176542,
+  "actual_first_row_ms": 0.10054099999999999,
+  "estimated_total_cost": 8853.860896903117
+}

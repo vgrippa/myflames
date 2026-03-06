@@ -1,0 +1,101 @@
+{
+  "query": "/* select#1 */ select `u`.`id` AS `id`,`u`.`name` AS `name`,`u`.`email` AS `email`,`u`.`country` AS `country`,`u`.`created_at` AS `created_at` from `testdb`.`users` `u` semi join (`testdb`.`orders` `o`) where ((`<subquery2>`.`user_id` = `u`.`id`) and (`o`.`total` > 500.00))",
+  "inputs": [
+    {
+      "alias": "u",
+      "operation": "Table scan on u",
+      "table_name": "users",
+      "access_type": "table",
+      "actual_rows": 3000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "name",
+        "email",
+        "country",
+        "created_at"
+      ],
+      "estimated_rows": 3000.0,
+      "actual_last_row_ms": 0.510359,
+      "actual_first_row_ms": 0.032792,
+      "estimated_total_cost": 303.5
+    },
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "alias": "o",
+                  "operation": "Table scan on o",
+                  "table_name": "orders",
+                  "access_type": "table",
+                  "actual_rows": 12000.0,
+                  "schema_name": "testdb",
+                  "actual_loops": 1,
+                  "used_columns": [
+                    "user_id",
+                    "total"
+                  ],
+                  "estimated_rows": 11834.0,
+                  "actual_last_row_ms": 1.108488,
+                  "actual_first_row_ms": 0.076166,
+                  "estimated_total_cost": 1191.4
+                }
+              ],
+              "condition": "(o.total > 500.00)",
+              "operation": "Filter: (o.total > 500.00)",
+              "access_type": "filter",
+              "actual_rows": 6059.0,
+              "actual_loops": 1,
+              "estimated_rows": 3944.272134542465,
+              "actual_last_row_ms": 1.728084,
+              "actual_first_row_ms": 0.080916,
+              "estimated_total_cost": 1191.4
+            }
+          ],
+          "operation": "Materialize with deduplication",
+          "access_type": "materialize",
+          "actual_rows": 3000.0,
+          "actual_loops": 1,
+          "deduplication": true,
+          "estimated_rows": 3944.272134542465,
+          "actual_last_row_ms": 2.3159579999999997,
+          "actual_first_row_ms": 2.3159579999999997,
+          "estimated_total_cost": 1585.8272134542467,
+          "estimated_first_row_cost": 1585.8272134542467
+        }
+      ],
+      "covering": false,
+      "operation": "Single-row index lookup on <subquery2> using <auto_distinct_key> (user_id=u.id)",
+      "index_name": "<auto_distinct_key>",
+      "table_name": "<subquery2>",
+      "access_type": "index",
+      "actual_rows": 1.0,
+      "actual_loops": 3000,
+      "used_columns": [
+        "user_id"
+      ],
+      "estimated_rows": 1.0,
+      "lookup_condition": "user_id=u.id",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.0010333956666666666,
+      "actual_first_row_ms": 0.0009732596666666667,
+      "estimated_total_cost": 1585.9032984681005,
+      "estimated_first_row_cost": 1585.9032984681005
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Nested loop inner join",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 3000.0,
+  "actual_loops": 1,
+  "estimated_rows": 11832816.403627396,
+  "join_algorithm": "nested_loop",
+  "actual_last_row_ms": 3.902928,
+  "actual_first_row_ms": 2.353042,
+  "estimated_total_cost": 1183885.1403627396
+}

@@ -1,0 +1,86 @@
+{
+  "limit": 100,
+  "query": "/* select#1 */ select `o`.`id` AS `id`,`oi`.`product_id` AS `product_id`,`oi`.`quantity` AS `quantity` from `testdb`.`orders` `o` join `testdb`.`order_items` `oi` where ((`oi`.`order_id` = `o`.`id`) and (`o`.`status` = 'shipped')) limit 100",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "alias": "o",
+              "covering": true,
+              "operation": "Covering index lookup on o using idx_status (status='shipped')",
+              "index_name": "idx_status",
+              "table_name": "orders",
+              "access_type": "index",
+              "actual_rows": 29.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "id",
+                "status"
+              ],
+              "estimated_rows": 2400.0,
+              "lookup_condition": "status='shipped'",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.036454,
+              "actual_first_row_ms": 0.034125,
+              "estimated_total_cost": 240.61592434411227
+            }
+          ],
+          "condition": "(o.`status` = 'shipped')",
+          "operation": "Filter: (o.`status` = 'shipped')",
+          "access_type": "filter",
+          "actual_rows": 29.0,
+          "actual_loops": 1,
+          "estimated_rows": 2400.0,
+          "actual_last_row_ms": 0.040291,
+          "actual_first_row_ms": 0.035501,
+          "estimated_total_cost": 240.61592434411227
+        },
+        {
+          "alias": "oi",
+          "covering": false,
+          "operation": "Index lookup on oi using idx_order (order_id=o.id)",
+          "index_name": "idx_order",
+          "table_name": "order_items",
+          "access_type": "index",
+          "actual_rows": 3.4482758620689653,
+          "schema_name": "testdb",
+          "actual_loops": 29,
+          "used_columns": [
+            "order_id",
+            "product_id",
+            "quantity"
+          ],
+          "estimated_rows": 10.135746955871582,
+          "lookup_condition": "order_id=o.id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.003586206896551724,
+          "actual_first_row_ms": 0.0033907586206896553,
+          "estimated_total_cost": 2.5343590617577236
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 100.0,
+      "actual_loops": 1,
+      "estimated_rows": 24325.792694091797,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 0.15183500000000003,
+      "actual_first_row_ms": 0.06995799999999999,
+      "estimated_total_cost": 8754.643367276241
+    }
+  ],
+  "operation": "Limit: 100 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 100.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 100.0,
+  "actual_last_row_ms": 0.155875,
+  "actual_first_row_ms": 0.07037500000000001,
+  "estimated_total_cost": 8754.643367276241
+}

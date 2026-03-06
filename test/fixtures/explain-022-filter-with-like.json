@@ -1,0 +1,34 @@
+{
+  "query": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,`testdb`.`users`.`email` AS `email`,`testdb`.`users`.`country` AS `country`,`testdb`.`users`.`created_at` AS `created_at` from `testdb`.`users` where (`testdb`.`users`.`name` like 'User 1%')",
+  "inputs": [
+    {
+      "operation": "Table scan on users",
+      "table_name": "users",
+      "access_type": "table",
+      "actual_rows": 3000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "name",
+        "email",
+        "country",
+        "created_at"
+      ],
+      "estimated_rows": 3000.0,
+      "actual_last_row_ms": 0.46809199999999995,
+      "actual_first_row_ms": 0.0455,
+      "estimated_total_cost": 303.5
+    }
+  ],
+  "condition": "(users.`name` like 'User 1%')",
+  "operation": "Filter: (users.`name` like 'User 1%')",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 1111.0,
+  "actual_loops": 1,
+  "estimated_rows": 333.30000936985016,
+  "actual_last_row_ms": 0.646956,
+  "actual_first_row_ms": 0.047666,
+  "estimated_total_cost": 303.5
+}

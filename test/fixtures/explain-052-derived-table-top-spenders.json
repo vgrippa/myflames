@@ -1,0 +1,134 @@
+{
+  "limit": 10,
+  "query": "/* select#1 */ select `u`.`name` AS `name`,`agg`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id`) `agg` where (`u`.`id` = `agg`.`user_id`) order by `agg`.`total_spent` desc limit 10",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "covering": false,
+                          "operation": "Index scan on orders using idx_user",
+                          "index_name": "idx_user",
+                          "table_name": "orders",
+                          "access_type": "index",
+                          "actual_rows": 12000.0,
+                          "schema_name": "testdb",
+                          "actual_loops": 1,
+                          "used_columns": [
+                            "id",
+                            "user_id",
+                            "total"
+                          ],
+                          "estimated_rows": 11834.0,
+                          "index_access_type": "index_scan",
+                          "actual_last_row_ms": 5.699897,
+                          "actual_first_row_ms": 0.588167,
+                          "estimated_total_cost": 1191.4
+                        }
+                      ],
+                      "group_by": true,
+                      "functions": [
+                        "sum(orders.total)"
+                      ],
+                      "operation": "Group aggregate: sum(orders.total)",
+                      "access_type": "aggregate",
+                      "actual_rows": 3000.0,
+                      "actual_loops": 1,
+                      "estimated_rows": 3000.0,
+                      "actual_last_row_ms": 6.423088000000001,
+                      "actual_first_row_ms": 0.59275,
+                      "estimated_total_cost": 2374.8
+                    }
+                  ],
+                  "operation": "Materialize",
+                  "access_type": "materialize",
+                  "actual_rows": 3000.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 3000.0,
+                  "actual_last_row_ms": 6.615792,
+                  "actual_first_row_ms": 6.615792,
+                  "estimated_total_cost": 2674.8,
+                  "estimated_first_row_cost": 2674.8
+                }
+              ],
+              "operation": "Table scan on agg",
+              "table_name": "agg",
+              "access_type": "table",
+              "actual_rows": 3000.0,
+              "actual_loops": 1,
+              "used_columns": [
+                "user_id",
+                "total_spent"
+              ],
+              "estimated_rows": 3000.0,
+              "actual_last_row_ms": 6.766947,
+              "actual_first_row_ms": 6.617418,
+              "estimated_total_cost": 2714.8,
+              "estimated_first_row_cost": 2674.8133333333335
+            }
+          ],
+          "operation": "Sort: agg.total_spent DESC",
+          "access_type": "sort",
+          "actual_rows": 10.0,
+          "sort_fields": [
+            "agg.total_spent DESC"
+          ],
+          "actual_loops": 1,
+          "estimated_rows": 3000.0,
+          "actual_last_row_ms": 7.104043,
+          "actual_first_row_ms": 7.103708,
+          "estimated_total_cost": 6480.024035614973,
+          "estimated_first_row_cost": 6480.024035614973
+        },
+        {
+          "alias": "u",
+          "covering": false,
+          "operation": "Single-row index lookup on u using PRIMARY (id=agg.user_id)",
+          "index_name": "PRIMARY",
+          "table_name": "users",
+          "access_type": "index",
+          "actual_rows": 1.0,
+          "schema_name": "testdb",
+          "actual_loops": 10,
+          "used_columns": [
+            "id",
+            "name"
+          ],
+          "estimated_rows": 1.0,
+          "lookup_condition": "id=agg.user_id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.0020375000000000002,
+          "actual_first_row_ms": 0.0020166999999999997,
+          "estimated_total_cost": 0.25000845022815615
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 10.0,
+      "actual_loops": 1,
+      "estimated_rows": 3000.0,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 7.126416,
+      "actual_first_row_ms": 7.114792,
+      "estimated_total_cost": 9738.524035614973
+    }
+  ],
+  "operation": "Limit: 10 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 10.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 10.0,
+  "actual_last_row_ms": 7.127416,
+  "actual_first_row_ms": 7.115583,
+  "estimated_total_cost": 9738.524035614973
+}

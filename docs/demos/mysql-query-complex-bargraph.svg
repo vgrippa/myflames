@@ -1,0 +1,216 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="911" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 12px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-header { font-size: 10px; fill: #888; font-weight: bold; letter-spacing: 0.5px; }
+  .label { font-size: 11px; fill: #333; }
+  .loops { font-size: 10px; fill: #777; }
+  .value { font-size: 11px; font-weight: bold; fill: #222; }
+  .bar { transition: opacity 0.12s; }
+  .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
+  .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
+  .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
+  .details-line.dim { fill: #999; }
+  #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #search:hover { fill: #111; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 6357 ms</text>
+<text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
+<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text id="search" x="1190" y="68" text-anchor="end">Search</text>
+<line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="10" y1="777" x2="1190" y2="777" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="781" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="789" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="803" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="817" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="831" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="845" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="859" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="873" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="887" text-anchor="start" class="details-line"></text>
+<!-- end details area -->
+<text x="320" y="98.0" text-anchor="end" class="label">Index lookup [salaries.PRIMARY]</text>
+<text x="370.0" y="98.0" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="410" y="80" width="359.1535915521704" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index lookup on s using PRIMARY (emp_no=de.emp_no)  ·  Self: 3568 ms (56.1%)  ·  Rows: 11  ·  Loops: 240,124  ·  Table: salaries  ·  Index: PRIMARY  ·  Access: index  ·  Est.rows: 1  ⚠ Optimizer underestimate (10.5×)" data-label="Index lookup [salaries.PRIMARY]"/>
+<text x="1060" y="98.0" class="value">3568 ms (56.1%)</text>
+<text x="320" y="132.0" text-anchor="end" class="label">Single-row lookup [departments.PRIMARY]</text>
+<text x="370.0" y="132.0" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="410" y="114" width="116.07806366624585" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)  ·  Self: 1153 ms (18.1%)  ·  Rows: 1  ·  Loops: 240,124  ·  Table: departments  ·  Index: PRIMARY  ·  Access: index  ·  Est.rows: 1" data-label="Single-row lookup [departments.PRIMARY]"/>
+<text x="1060" y="132.0" class="value">1153 ms (18.1%)</text>
+<text x="320" y="166.0" text-anchor="end" class="label">Aggregate</text>
+<text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="148" width="73.72367302396857" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Aggregate using temporary table  ·  Self: 732 ms (11.5%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Access: temp_table_aggregate" data-label="Aggregate"/>
+<text x="1060" y="166.0" class="value">732 ms (11.5%)</text>
+<text x="320" y="200.0" text-anchor="end" class="label">Filter: ((s.to_date = DATE'9999-01-01'))</text>
+<text x="370.0" y="200.0" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="410" y="182" width="40.49796182158258" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Filter: (s.to_date = 9999-01-01)  ·  Self: 402 ms (6.3%)  ·  Total: 3970 ms  ·  Rows: 1  ·  Loops: 240,124  ·  Access: filter  ·  Est.rows: 0  ⚠ Optimizer underestimate (10.0×)  ·  Cond: (s.to_date = DATE'9999-01-01')" data-label="Filter: ((s.to_date = DATE'9999-01-01'))"/>
+<text x="1060" y="200.0" class="value">402 ms (6.3%)</text>
+<text x="320" y="234.0" text-anchor="end" class="label">Table scan [dept_emp]</text>
+<text x="370.0" y="234.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="410" y="216" width="21.239712355875724" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Table scan on de  ·  Self: 211 ms (3.3%)  ·  Rows: 331603  ·  Loops: 1  ·  Table: dept_emp  ·  Access: table  ·  Est.rows: 331143" data-label="Table scan [dept_emp]" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)"/>
+<text x="1060" y="234.0" class="value">211 ms (3.3%)</text>
+<text x="320" y="268.0" text-anchor="end" class="label">Filter: ((de.to_date = DATE'9999-01-01'))</text>
+<text x="370.0" y="268.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="250" width="10.890606429954047" height="28" fill="rgb(200,200,100)" rx="3" ry="3" data-info="Filter: (de.to_date = 9999-01-01)  ·  Self: 108 ms (1.7%)  ·  Total: 319 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 33114  ⚠ Optimizer underestimate (7.3×)  ·  Cond: (de.to_date = DATE'9999-01-01')" data-label="Filter: ((de.to_date = DATE'9999-01-01'))"/>
+<text x="1060" y="268.0" class="value">108 ms (1.7%)</text>
+<text x="320" y="302.0" text-anchor="end" class="label">Nested loop inner join</text>
+<text x="370.0" y="302.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="284" width="9.46380861917782" height="28" fill="rgb(150,200,150)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 94 ms (1.5%)  ·  Total: 5625 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: join  ·  Est.rows: 3311  ⚠ Optimizer underestimate (72.5×)" data-label="Nested loop inner join"/>
+<text x="1060" y="302.0" class="value">94 ms (1.5%)</text>
+<text x="320" y="336.0" text-anchor="end" class="label">Nested loop inner join</text>
+<text x="370.0" y="336.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="318" width="8.945519027507274" height="28" fill="rgb(100,180,180)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 89 ms (1.4%)  ·  Total: 4378 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: join  ·  Est.rows: 3311  ⚠ Optimizer underestimate (72.5×)" data-label="Nested loop inner join"/>
+<text x="1060" y="336.0" class="value">89 ms (1.4%)</text>
+<text x="320" y="370.0" text-anchor="end" class="label">Sort</text>
+<text x="370.0" y="370.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="410" y="352" width="3" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Sort: avg_salary DESC  ·  Self: 0.067 ms (0.0%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Access: sort" data-label="Sort" data-analysis-msg="1 sort operation(s) — 9 rows; may use disk-based filesort"/>
+<text x="1060" y="370.0" class="value">0.067 ms (0.0%)</text>
+<text x="320" y="404.0" text-anchor="end" class="label">Table scan [&lt;temporary&gt;]</text>
+<text x="370.0" y="404.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="410" y="386" width="3" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Table scan on &lt;temporary&gt;  ·  Self: 0.004 ms (0.0%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Table: &lt;temporary&gt;  ·  Access: table" data-label="Table scan [&lt;temporary&gt;]" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)"/>
+<text x="1060" y="404.0" class="value">0.004 ms (0.0%)</text>
+<rect x="10" y="568" width="1180" height="343" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="10" y="578" width="1180" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="10" y="584" width="1180" height="24" fill="#e8eaf6"/>
+<text x="26" y="597" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="14" y="616" width="1172" height="22" fill="#f1f8e9" rx="4"/>
+<text x="26" y="631" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="36" y="655" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
+<text x="36" y="672" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
+<rect x="14" y="682" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="697" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="36" y="721" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
+<rect x="14" y="731" width="1172" height="22" fill="#fff3f3" rx="4"/>
+<text x="26" y="746" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="36" y="770" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
+<text x="36" y="787" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
+<text x="36" y="804" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
+<text x="36" y="821" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="14" y="831" width="1172" height="22" fill="#e8f5e9" rx="4"/>
+<text x="26" y="846" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="36" y="870" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="36" y="887" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var detailLines = [];
+  var N_LINES = 8;
+  var searchBtn;
+  var defaultHint = "Hover a bar for details; click a bar to pin details  ·  Ctrl+F to search";
+  var searching = false;
+  var pinnedBar = null;
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+      detailLines[i].setAttribute("class", "details-line" + (i > 0 && i >= parts.length - 1 && parts.length > 1 ? " dim" : ""));
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) { detailLines[i].textContent = ""; detailLines[i].setAttribute("class", "details-line"); }
+    }
+  }
+
+  function setDetailsForBar(bar) {
+    if (!bar || !detailLines[0]) return;
+    var info = bar.getAttribute("data-info") || "";
+    var analysisMsg = bar.getAttribute("data-analysis-msg");
+    if (analysisMsg)
+      info = info + "  ·  ⚠ In Query Analysis: " + analysisMsg;
+    var sep = "  ·  ";
+    var parts = info.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    searchBtn = document.getElementById("search");
+    if (!detailLines[0]) return;
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        if (!pinnedBar) setDetailsForBar(e.target);
+      }
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar") && !searching && !pinnedBar)
+        clearDetails();
+    });
+    document.addEventListener("click", function(e) {
+      if (e.target.id === "search") { searchPrompt(); return; }
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        var bars = document.querySelectorAll(".bar.pinned");
+        for (var i = 0; i < bars.length; i++) bars[i].classList.remove("pinned");
+        if (pinnedBar === e.target) {
+          pinnedBar = null;
+          clearDetails();
+        } else {
+          pinnedBar = e.target;
+          pinnedBar.classList.add("pinned");
+          setDetailsForBar(pinnedBar);
+        }
+        return;
+      }
+      if (pinnedBar) {
+        pinnedBar.classList.remove("pinned");
+        pinnedBar = null;
+        clearDetails();
+      }
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var bars = document.querySelectorAll(".bar");
+      for (var i = 0; i < bars.length; i++) {
+        bars[i].style.opacity = "";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+      searchBtn.textContent = "Search";
+      if (!pinnedBar) clearDetails();
+      searching = false;
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var bars = document.querySelectorAll(".bar");
+    for (var i = 0; i < bars.length; i++) {
+      var label = bars[i].getAttribute("data-label") || "";
+      if (re.test(label)) {
+        bars[i].style.opacity = "1";
+        bars[i].style.stroke = "rgb(230,0,230)";
+        bars[i].style.strokeWidth = "2";
+      } else {
+        bars[i].style.opacity = "0.3";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+    }
+    searchBtn.textContent = "Reset Search";
+    searching = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+</svg>

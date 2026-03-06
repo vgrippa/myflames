@@ -1,0 +1,22 @@
+{
+  "query": "/* select#1 */ select `testdb`.`products`.`id` AS `id`,`testdb`.`products`.`name` AS `name`,`testdb`.`products`.`category_id` AS `category_id`,`testdb`.`products`.`price` AS `price`,`testdb`.`products`.`stock` AS `stock`,`testdb`.`products`.`created_at` AS `created_at` from `testdb`.`products`",
+  "operation": "Table scan on products",
+  "query_type": "select",
+  "table_name": "products",
+  "access_type": "table",
+  "actual_rows": 1500.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "used_columns": [
+    "id",
+    "name",
+    "category_id",
+    "price",
+    "stock",
+    "created_at"
+  ],
+  "estimated_rows": 1500.0,
+  "actual_last_row_ms": 0.255405,
+  "actual_first_row_ms": 0.04629200000000001,
+  "estimated_total_cost": 151.75
+}

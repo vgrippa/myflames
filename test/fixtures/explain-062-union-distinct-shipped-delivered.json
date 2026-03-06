@@ -1,0 +1,76 @@
+{
+  "query": "/* select#1 */ select `testdb`.`orders`.`user_id` AS `user_id` from `testdb`.`orders` where (`testdb`.`orders`.`status` = 'shipped') union /* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id` from `testdb`.`orders` where (`testdb`.`orders`.`status` = 'delivered')",
+  "inputs": [
+    {
+      "union": true,
+      "inputs": [
+        {
+          "covering": false,
+          "operation": "Index lookup on orders using idx_status (status='shipped'), with index condition: (orders.`status` = 'shipped')",
+          "index_name": "idx_status",
+          "table_name": "orders",
+          "access_type": "index",
+          "actual_rows": 2400.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "user_id",
+            "status"
+          ],
+          "estimated_rows": 2400.0,
+          "lookup_condition": "status='shipped'",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 1.4044400000000001,
+          "actual_first_row_ms": 0.219751,
+          "estimated_total_cost": 264.0,
+          "pushed_index_condition": "(orders.`status` = 'shipped')"
+        },
+        {
+          "covering": false,
+          "operation": "Index lookup on orders using idx_status (status='delivered'), with index condition: (orders.`status` = 'delivered')",
+          "index_name": "idx_status",
+          "table_name": "orders",
+          "access_type": "index",
+          "actual_rows": 2400.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "user_id",
+            "status"
+          ],
+          "estimated_rows": 2400.0,
+          "lookup_condition": "status='delivered'",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 1.3406030000000002,
+          "actual_first_row_ms": 0.223792,
+          "estimated_total_cost": 264.0,
+          "pushed_index_condition": "(orders.`status` = 'delivered')"
+        }
+      ],
+      "operation": "Union materialize with deduplication",
+      "access_type": "materialize",
+      "actual_rows": 1200.0,
+      "actual_loops": 1,
+      "deduplication": true,
+      "estimated_rows": 4800.0,
+      "actual_last_row_ms": 3.1658749999999998,
+      "actual_first_row_ms": 3.1658749999999998,
+      "estimated_total_cost": 1008.0,
+      "estimated_first_row_cost": 1008.0
+    }
+  ],
+  "operation": "Table scan on <union temporary>",
+  "query_type": "select",
+  "table_name": "<union temporary>",
+  "access_type": "table",
+  "actual_rows": 1200.0,
+  "actual_loops": 1,
+  "used_columns": [
+    "user_id"
+  ],
+  "estimated_rows": 4800.0,
+  "actual_last_row_ms": 3.2292520000000002,
+  "actual_first_row_ms": 3.1674580000000003,
+  "estimated_total_cost": 1070.5,
+  "estimated_first_row_cost": 1008.0130208333334
+}

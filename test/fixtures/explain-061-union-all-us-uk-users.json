@@ -1,0 +1,110 @@
+{
+  "query": "(/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,'US' AS `src` from `testdb`.`users` where (`testdb`.`users`.`country` = 'US') limit 10) union all (/* select#2 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,'UK' AS `UK` from `testdb`.`users` where (`testdb`.`users`.`country` = 'UK') limit 10)",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "limit": 10,
+          "inputs": [
+            {
+              "covering": false,
+              "operation": "Index lookup on users using idx_country (country='US'), with index condition: (users.country = 'US')",
+              "index_name": "idx_country",
+              "table_name": "users",
+              "access_type": "index",
+              "actual_rows": 10.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "id",
+                "name",
+                "country"
+              ],
+              "estimated_rows": 600.0,
+              "lookup_condition": "country='US'",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.054456000000000004,
+              "actual_first_row_ms": 0.053333,
+              "estimated_total_cost": 70.5,
+              "pushed_index_condition": "(users.country = 'US')"
+            }
+          ],
+          "operation": "Limit: 10 row(s)",
+          "access_type": "limit",
+          "actual_rows": 10.0,
+          "actual_loops": 1,
+          "limit_offset": 0,
+          "estimated_rows": 10.0,
+          "actual_last_row_ms": 0.055498000000000006,
+          "actual_first_row_ms": 0.053958,
+          "estimated_total_cost": 70.5
+        }
+      ],
+      "operation": "Stream results",
+      "access_type": "stream",
+      "actual_rows": 10.0,
+      "actual_loops": 1,
+      "estimated_rows": 10.0,
+      "actual_last_row_ms": 0.059580999999999995,
+      "actual_first_row_ms": 0.056958,
+      "estimated_total_cost": 70.5
+    },
+    {
+      "inputs": [
+        {
+          "limit": 10,
+          "inputs": [
+            {
+              "covering": false,
+              "operation": "Index lookup on users using idx_country (country='UK'), with index condition: (users.country = 'UK')",
+              "index_name": "idx_country",
+              "table_name": "users",
+              "access_type": "index",
+              "actual_rows": 10.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "id",
+                "name",
+                "country"
+              ],
+              "estimated_rows": 600.0,
+              "lookup_condition": "country='UK'",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.039708,
+              "actual_first_row_ms": 0.039208999999999994,
+              "estimated_total_cost": 70.5,
+              "pushed_index_condition": "(users.country = 'UK')"
+            }
+          ],
+          "operation": "Limit: 10 row(s)",
+          "access_type": "limit",
+          "actual_rows": 10.0,
+          "actual_loops": 1,
+          "limit_offset": 0,
+          "estimated_rows": 10.0,
+          "actual_last_row_ms": 0.040248,
+          "actual_first_row_ms": 0.039374,
+          "estimated_total_cost": 70.5
+        }
+      ],
+      "operation": "Stream results",
+      "access_type": "stream",
+      "actual_rows": 10.0,
+      "actual_loops": 1,
+      "estimated_rows": 10.0,
+      "actual_last_row_ms": 0.041413,
+      "actual_first_row_ms": 0.039666,
+      "estimated_total_cost": 70.5
+    }
+  ],
+  "operation": "Append",
+  "query_type": "select",
+  "access_type": "append",
+  "actual_rows": 20.0,
+  "actual_loops": 1,
+  "estimated_rows": 20.0,
+  "actual_last_row_ms": 0.102997,
+  "actual_first_row_ms": 0.0575,
+  "estimated_total_cost": 141.0
+}

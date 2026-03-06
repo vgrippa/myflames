@@ -1,0 +1,76 @@
+{
+  "limit": 20,
+  "query": "/* select#1 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id` order by `total_spent` desc limit 20",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "covering": false,
+                  "operation": "Index scan on orders using idx_user",
+                  "index_name": "idx_user",
+                  "table_name": "orders",
+                  "access_type": "index",
+                  "actual_rows": 12000.0,
+                  "schema_name": "testdb",
+                  "actual_loops": 1,
+                  "used_columns": [
+                    "id",
+                    "user_id",
+                    "total"
+                  ],
+                  "estimated_rows": 11834.0,
+                  "index_access_type": "index_scan",
+                  "actual_last_row_ms": 6.618532,
+                  "actual_first_row_ms": 0.698292,
+                  "estimated_total_cost": 1191.4
+                }
+              ],
+              "group_by": true,
+              "functions": [
+                "sum(orders.total)"
+              ],
+              "operation": "Group aggregate: sum(orders.total)",
+              "access_type": "aggregate",
+              "actual_rows": 3000.0,
+              "actual_loops": 1,
+              "estimated_rows": 3000.0,
+              "actual_last_row_ms": 7.509294,
+              "actual_first_row_ms": 0.703125,
+              "estimated_total_cost": 2374.8
+            }
+          ],
+          "operation": "Stream results",
+          "access_type": "stream",
+          "actual_rows": 3000.0,
+          "actual_loops": 1,
+          "estimated_rows": 3000.0,
+          "actual_last_row_ms": 7.748622999999999,
+          "actual_first_row_ms": 0.705459,
+          "estimated_total_cost": 2374.8
+        }
+      ],
+      "operation": "Sort: total_spent DESC, limit input to 20 row(s) per chunk",
+      "access_type": "sort",
+      "actual_rows": 20.0,
+      "sort_fields": [
+        "total_spent DESC"
+      ],
+      "actual_loops": 1,
+      "per_chunk_limit": 20,
+      "actual_last_row_ms": 8.036712999999999,
+      "actual_first_row_ms": 8.035917
+    }
+  ],
+  "operation": "Limit: 20 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 20.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "actual_last_row_ms": 8.037799,
+  "actual_first_row_ms": 8.036417
+}

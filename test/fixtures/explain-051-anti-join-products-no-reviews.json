@@ -1,0 +1,55 @@
+{
+  "query": "/* select#1 */ select `testdb`.`products`.`id` AS `id`,`testdb`.`products`.`name` AS `name`,`testdb`.`products`.`category_id` AS `category_id`,`testdb`.`products`.`price` AS `price`,`testdb`.`products`.`stock` AS `stock`,`testdb`.`products`.`created_at` AS `created_at` from `testdb`.`products` anti join (`testdb`.`reviews`) on((`testdb`.`reviews`.`product_id` = `testdb`.`products`.`id`)) where true",
+  "inputs": [
+    {
+      "operation": "Table scan on products",
+      "table_name": "products",
+      "access_type": "table",
+      "actual_rows": 1500.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "name",
+        "category_id",
+        "price",
+        "stock",
+        "created_at"
+      ],
+      "estimated_rows": 1500.0,
+      "actual_last_row_ms": 0.316566,
+      "actual_first_row_ms": 0.050624999999999996,
+      "estimated_total_cost": 151.75
+    },
+    {
+      "covering": true,
+      "operation": "Covering index lookup on reviews using idx_product (product_id=products.id)",
+      "index_name": "idx_product",
+      "table_name": "reviews",
+      "access_type": "index",
+      "actual_rows": 1.0,
+      "schema_name": "testdb",
+      "actual_loops": 1500,
+      "used_columns": [
+        "product_id"
+      ],
+      "estimated_rows": 6.613999843597412,
+      "lookup_condition": "product_id=products.id",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.000848128,
+      "actual_first_row_ms": 0.000848128,
+      "estimated_total_cost": 1.6654726338494368
+    }
+  ],
+  "join_type": "antijoin",
+  "operation": "Nested loop antijoin",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 0.0,
+  "actual_loops": 1,
+  "estimated_rows": 9920.999765396118,
+  "join_algorithm": "nested_loop",
+  "actual_last_row_ms": 1.682458,
+  "actual_first_row_ms": 1.682458,
+  "estimated_total_cost": 1520.9038789214158
+}

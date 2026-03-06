@@ -1,0 +1,184 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1103" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .treemap-cell { stroke: #fff; stroke-width: 1; cursor: pointer; }
+  .treemap-cell:hover { opacity: 0.9; stroke: #333; stroke-width: 1.5; }
+  .treemap-cell.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
+  .treemap-cell.highlight { stroke: rgb(230,0,230); stroke-width: 2; }
+  .treemap-cell.zoomed { stroke: #111; stroke-width: 2; }
+  #unzoom, #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #unzoom:hover, #search:hover { fill: #111; }
+  #unzoom.hide { display: none; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
+  .details-line.dim { fill: #999; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="26" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="48" text-anchor="middle" class="subtitle">Treemap by total time (hierarchy)  ·  Total: 16 ms</text>
+<text id="unzoom" class="hide" x="2" y="64" text-anchor="start">Reset Zoom</text>
+<text id="breadcrumb" x="600.0" y="64" text-anchor="middle" class="subtitle"></text>
+<text id="search" x="1138" y="64" text-anchor="end">Search</text>
+<g id="zoomable">
+<rect id="cell-0" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Nested loop inner join" data-info="Nested loop inner join  ·  Self: 2 ms | Total: 16 ms  ·  Rows: 150 | Loops: 1"><title>Nested loop inner join
+Self: 2 ms | Total: 16 ms
+Rows: 150 | Loops: 1</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Nested loop inner join</text>
+<rect id="cell-1" class="treemap-cell in-query-analysis" x="2" y="70" width="460" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="460" data-h="600" data-label="Table scan [t1]" data-info="Table scan [t1]  ·  Self: 5 ms | Total: 5 ms  ·  Rows: 100 | Loops: 1  ·  Table: t1  ·  ⚠ In Query Analysis: Full table scan: t1 (100 rows), t2 (150 rows)" data-analysis-msg="Full table scan: t1 (100 rows), t2 (150 rows)"><title>Table scan [t1]
+Self: 5 ms | Total: 5 ms
+Rows: 100 | Loops: 1
+Table: t1
+⚠ In Query Analysis: Full table scan: t1 (100 rows), t2 (150 rows)</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [t1]</text>
+<rect id="cell-2" class="treemap-cell in-query-analysis" x="462" y="70" width="736" height="600" fill="rgb(255,160,122)" data-x="462" data-y="70" data-w="736" data-h="600" data-label="Table scan [t2]" data-info="Table scan [t2]  ·  Self: 8 ms | Total: 8 ms  ·  Rows: 150 | Loops: 100  ·  Table: t2  ·  ⚠ In Query Analysis: Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)" data-analysis-msg="Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)"><title>Table scan [t2]
+Self: 8 ms | Total: 8 ms
+Rows: 150 | Loops: 100
+Table: t2
+⚠ In Query Analysis: Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)</title></rect>
+<text x="466" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [t2]</text>
+</g>
+<line x1="2" y1="676" x2="1198" y2="676" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="2" y="680" width="1196" height="74" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="12" y="690" text-anchor="start" class="details-line">Hover a cell for details; click a cell to zoom and pin details  ·  Ctrl+F to search</text>
+<text id="details-l1" x="12" y="704" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="12" y="718" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="12" y="732" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="12" y="746" text-anchor="start" class="details-line"></text>
+<!-- end details area -->
+<rect x="2" y="760" width="1196" height="343" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="2" y="770" width="1196" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="2" y="776" width="1196" height="24" fill="#e8eaf6"/>
+<text x="18" y="789" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="6" y="808" width="1188" height="22" fill="#f1f8e9" rx="4"/>
+<text x="18" y="823" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="28" y="847" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Cell area = total time (including children). Click a cell to zoom.</text>
+<text x="28" y="864" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the cell — the details bar shows “In Query Analysis” and the label that appears in the panel below.</text>
+<rect x="6" y="874" width="1188" height="22" fill="#e3f2fd" rx="4"/>
+<text x="18" y="889" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="28" y="913" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">block_nested_loop=on (join buffer in use)</text>
+<rect x="6" y="923" width="1188" height="22" fill="#fff3f3" rx="4"/>
+<text x="18" y="938" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="28" y="962" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: t1 (100 rows), t2 (150 rows)</text>
+<text x="28" y="979" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t1]”, “Table scan [t2]”</text>
+<text x="28" y="996" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)</text>
+<text x="28" y="1013" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t2]”</text>
+<rect x="6" y="1023" width="1188" height="22" fill="#e8f5e9" rx="4"/>
+<text x="18" y="1038" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="28" y="1062" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="28" y="1079" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes to eliminate BNL full/index scans, or increase join_buffer_size. In MySQL 8.0.20+, set block_nested_loop=off to force hash join instead</text>
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 1103;
+  var N_LINES = 5;
+  var zoomable, unzoomBtn, searchBtn, pinnedCell = null;
+  var detailLines = [];
+  var zoomState = { scale: 1, tx: pad, ty: topMargin };
+  var defaultDetailsHint = "Hover a cell for details; click a cell to zoom and pin details  ·  Ctrl+F to search";
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultDetailsHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) detailLines[i].textContent = "";
+    }
+  }
+
+  function setDetailsForCell(cell) {
+    var info = (cell.getAttribute("data-info") || "").replace(/&#10;/g, " | ");
+    var sep = "  ·  ";
+    var parts = info.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    zoomable = document.getElementById("zoomable");
+    unzoomBtn = document.getElementById("unzoom");
+    searchBtn = document.getElementById("search");
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    if (!zoomable) return;
+    zoomState = { scale: 1, tx: 0, ty: 0 };
+    document.addEventListener("click", function(e) {
+      var t = e.target;
+      if (t.id === "unzoom") { resetZoom(); return; }
+      if (t.id === "search") { searchPrompt(); return; }
+      if (t.classList && t.classList.contains("treemap-cell")) {
+        var x = parseFloat(t.getAttribute("data-x")), y = parseFloat(t.getAttribute("data-y")), w = parseFloat(t.getAttribute("data-w")), h = parseFloat(t.getAttribute("data-h"));
+        if (zoomState.scale !== 1 && t.classList.contains("zoomed")) { resetZoom(); return; }
+        var label = t.getAttribute("data-label") || "";
+        zoomTo(x, y, w, h, label);
+        t.classList.add("zoomed");
+        pinnedCell = t;
+        setDetailsForCell(t);
+      }
+    });
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("treemap-cell")) {
+        if (pinnedCell === null) setDetailsForCell(e.target);
+        else if (e.target === pinnedCell) setDetailsForCell(e.target);
+      }
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (e.target.classList && e.target.classList.contains("treemap-cell") && !e.relatedTarget?.classList?.contains("treemap-cell"))
+        if (pinnedCell === null) clearDetails();
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+  function zoomTo(x, y, w, h, label) {
+    var scale = Math.min(tmWidth / w, tmHeight / h);
+    var tx = pad - x * scale;
+    var ty = topMargin - y * scale;
+    zoomable.setAttribute("transform", "translate(" + tx + "," + ty + ") scale(" + scale + ")");
+    zoomState = { scale: scale, tx: tx, ty: ty };
+    unzoomBtn.classList.remove("hide");
+    var bcEl = document.getElementById("breadcrumb");
+    if (bcEl) bcEl.textContent = label ? "All › " + label : "";
+  }
+  function resetZoom() {
+    zoomable.setAttribute("transform", "");
+    zoomState = { scale: 1, tx: 0, ty: 0 };
+    unzoomBtn.classList.add("hide");
+    var cells = document.querySelectorAll(".treemap-cell.zoomed");
+    for (var i = 0; i < cells.length; i++) cells[i].classList.remove("zoomed");
+    pinnedCell = null;
+    clearDetails();
+    var bcEl = document.getElementById("breadcrumb");
+    if (bcEl) bcEl.textContent = "";
+  }
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var cells = document.querySelectorAll(".treemap-cell");
+      for (var i = 0; i < cells.length; i++) cells[i].classList.remove("highlight");
+      searchBtn.textContent = "Search";
+      if (!pinnedCell) clearDetails();
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var cells = document.querySelectorAll(".treemap-cell");
+    for (var i = 0; i < cells.length; i++) {
+      var label = cells[i].getAttribute("data-label") || "";
+      cells[i].classList.toggle("highlight", re.test(label));
+    }
+    searchBtn.textContent = "Reset Search";
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+  window.init = init;
+})();
+]]></script>
+</svg>

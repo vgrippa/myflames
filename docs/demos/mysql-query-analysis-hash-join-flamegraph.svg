@@ -1,0 +1,326 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1800" height="534" onload="init(evt)" viewBox="0 0 1800 534" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs>
+<style type="text/css">text { font-family: Verdana; font-size: 12px; fill: rgb(0,0,0); }
+#search, #ignorecase { opacity:0.1; cursor:pointer; } #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+#title { text-anchor:middle; font-size:17px } #unzoom { cursor:pointer; } #frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; } .hide { display:none; } .parent { opacity:0.5; }</style>
+<script type="text/ecmascript"><![CDATA[
+
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn, pinnedDetails = null;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+		if (params.s) search(params.s);
+	}
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) { pinnedDetails = null; unzoom(true); }
+			else {
+			zoom(target);
+			pinnedDetails = "Function: " + g_to_text(target);
+			}
+			if (!document.querySelector('.parent')) {
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params();
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false);
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = (pinnedDetails !== null ? pinnedDetails : "Function: " + g_to_text(target));
+	}, false);
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target && pinnedDetails === null) details.nodeValue = ' ';
+	}, false);
+	window.addEventListener("keydown", function(e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) { e.preventDefault(); search_prompt(); }
+		else if (e.ctrlKey && e.keyCode === 73) { e.preventDefault(); toggle_ignorecase(); }
+	}, false);
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]] = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) { uri += key + '=' + encodeURIComponent(params[key]) + '&'; }
+		if (uri.slice(-1) == "&") uri = uri.substring(0, uri.length - 1);
+		if (uri == '?') uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title");
+		return text ? text.firstChild.nodeValue : "";
+	}
+	function g_to_func(e) { return g_to_text(e); }
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		if (!r || !t) return;
+		var w = parseFloat(r.attributes.width.value) - 3;
+		var txt = (find_child(e, "title") ? find_child(e, "title").textContent : "").replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+		if (w < 2 * 12 * 0.59) { t.textContent = ""; return; }
+		t.textContent = txt;
+		var sl = t.getSubStringLength ? t.getSubStringLength(0, txt.length) : txt.length * 7;
+		if (/^ *$/.test(txt) || sl < w) return;
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if ((t.getSubStringLength ? t.getSubStringLength(0, x + 2) : (x+2)*7) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+	function zoom_reset(e) {
+		if (e.attributes != undefined) { orig_load(e, "x"); orig_load(e, "width"); }
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_reset(c[i]);
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text" && e.parentNode) {
+					var rect = find_child(e.parentNode, "rect[x]") || find_child(e.parentNode, "rect");
+					if (rect) e.attributes.x.value = parseFloat(rect.attributes.x.value) + 3;
+				}
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_child(c[i], x - 10, ratio);
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) { orig_save(e, "x"); e.attributes.x.value = 10; }
+			if (e.attributes.width != undefined) { orig_save(e, "width"); e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2); }
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_parent(c[i]);
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+		var fudge = 0.0001;
+		unzoombtn.classList.remove("hide");
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack = (0 == 0) ? (parseFloat(a.y.value) > ymin) : (parseFloat(a.y.value) < ymin);
+			if (upstack) {
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				} else e.classList.add("hide");
+			} else {
+				if (ex < xmin || ex + fudge >= xmax) e.classList.add("hide");
+				else { zoom_child(e, xmin, ratio); update_text(e); }
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if (!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		pinnedDetails = null;
+		unzoom();
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		ignorecaseBtn.classList.toggle("show", ignorecase);
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) orig_load(el[i], "fill");
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp allowed)" + (ignorecase ? ", ignoring case" : "") + "\\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search";
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = "";
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = {};
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null) continue;
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth) maxwidth = w;
+			if (func.match(re)) {
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+				matches[x] = (matches[x] === undefined || w > matches[x]) ? w : matches[x];
+				searching = 1;
+			}
+		}
+		if (!searching) return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+		var count = 0, lastx = -1, lastw = 0, keys = [];
+		for (var k in matches) { if (matches.hasOwnProperty(k)) keys.push(k); }
+		keys.sort(function(a,b){ return a - b; });
+		var fudge = 0.0001;
+		for (var ki = 0; ki < keys.length; ki++) {
+			var x = parseFloat(keys[ki]);
+			var w = matches[keys[ki]];
+			if (x >= lastx + lastw - fudge) { count += w; lastx = x; lastw = w; }
+		}
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1);
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+
+]]></script>
+<rect width="100%" height="100%" fill="url(#background)"/>
+<text id="title" x="900" y="24">MySQL Query Plan</text>
+<text id="details" x="10" y="149"> </text>
+<text id="unzoom" class="hide" x="10" y="24">Reset Zoom</text>
+<text id="search" x="1690" y="24">Search</text>
+<text id="ignorecase" x="1774" y="24">ic</text>
+<text id="matched" x="1690" y="149"> </text>
+<g id="frames">
+<g><title>Inner hash join (orders.user_id = users.id) starts=1 rows=12000 (9 ms, 100.00%)&#10;&#10;Access: join&#10;Rows: 12000 actual&#10;Time: 8.250 ms (last row)&#10;Cost: 1025.50</title>
+<rect x="10.0" y="69.0" width="1780.0" height="31.0" fill="rgb(243,34,46)" rx="2" ry="2"/>
+<text x="13.00" y="87.50">Inner hash join (orders.user_id = users.id) starts=1 rows=12000</text>
+</g>
+<g><title>TABLE SCAN [orders] starts=1 rows=12000 (4 ms, 44.44%)&#10;&#10;Table: testdb.orders&#10;Access: table&#10;Rows: 12000 actual (11834 estimated)&#10;Time: 3.810 ms (last row)&#10;Cost: 1191.40</title>
+<rect x="405.6" y="37.0" width="791.1" height="31.0" fill="rgb(240,48,42)" rx="2" ry="2"/>
+<text x="408.56" y="55.50">TABLE SCAN [orders] starts=1 rows=12000</text>
+</g>
+<g><title>TABLE SCAN [users] starts=1 rows=3000 (3 ms, 33.33%)&#10;&#10;Table: testdb.users&#10;Access: table&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 2.540 ms (last row)&#10;Cost: 303.50</title>
+<rect x="1196.7" y="37.0" width="593.3" height="31.0" fill="rgb(232,118,7)" rx="2" ry="2"/>
+<text x="1199.67" y="55.50">TABLE SCAN [users] starts=1 rows=3000</text>
+</g>
+</g>
+<rect x="4" y="174" width="1792" height="360" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="4" y="184" width="1792" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="4" y="190" width="1792" height="24" fill="#e8eaf6"/>
+<text x="20" y="203" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="8" y="222" width="1784" height="22" fill="#f1f8e9" rx="4"/>
+<text x="20" y="237" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="30" y="261" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Width = time for that operation (wider = slower). Bottom = query root; top = leaf table access.</text>
+<text x="30" y="278" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.</text>
+<text x="30" y="295" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
+<rect x="8" y="305" width="1784" height="22" fill="#e3f2fd" rx="4"/>
+<text x="20" y="320" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="30" y="344" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on</text>
+<rect x="8" y="354" width="1784" height="22" fill="#fff3f3" rx="4"/>
+<text x="20" y="369" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="30" y="393" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows), orders (12000 rows)</text>
+<text x="30" y="410" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”, “Table scan [orders]”</text>
+<text x="30" y="427" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</text>
+<text x="30" y="444" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (orders.user_id = users.id)”</text>
+<rect x="8" y="454" width="1784" height="22" fill="#e8f5e9" rx="4"/>
+<text x="20" y="469" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="30" y="493" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="30" y="510" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
+</svg>

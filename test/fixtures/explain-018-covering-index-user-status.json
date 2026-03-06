@@ -1,0 +1,22 @@
+{
+  "query": "/* select#1 */ select `testdb`.`orders`.`user_id` AS `user_id`,`testdb`.`orders`.`status` AS `status` from `testdb`.`orders` where (`testdb`.`orders`.`user_id` = 100)",
+  "covering": true,
+  "operation": "Covering index lookup on orders using idx_user_status (user_id=100)",
+  "index_name": "idx_user_status",
+  "query_type": "select",
+  "table_name": "orders",
+  "access_type": "index",
+  "actual_rows": 4.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "used_columns": [
+    "user_id",
+    "status"
+  ],
+  "estimated_rows": 4.0,
+  "lookup_condition": "user_id=100",
+  "index_access_type": "index_lookup",
+  "actual_last_row_ms": 0.017624,
+  "actual_first_row_ms": 0.014583,
+  "estimated_total_cost": 0.6508232711306257
+}

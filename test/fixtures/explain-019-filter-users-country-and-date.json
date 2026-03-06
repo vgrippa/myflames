@@ -1,0 +1,39 @@
+{
+  "query": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,`testdb`.`users`.`email` AS `email`,`testdb`.`users`.`country` AS `country`,`testdb`.`users`.`created_at` AS `created_at` from `testdb`.`users` where ((`testdb`.`users`.`country` = 'DE') and (`testdb`.`users`.`created_at` > DATE'2022-01-01'))",
+  "inputs": [
+    {
+      "covering": false,
+      "operation": "Index lookup on users using idx_country (country='DE'), with index condition: (users.country = 'DE')",
+      "index_name": "idx_country",
+      "table_name": "users",
+      "access_type": "index",
+      "actual_rows": 600.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "name",
+        "email",
+        "country",
+        "created_at"
+      ],
+      "estimated_rows": 600.0,
+      "lookup_condition": "country='DE'",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.47375,
+      "actual_first_row_ms": 0.06162599999999999,
+      "estimated_total_cost": 39.619999408721924,
+      "pushed_index_condition": "(users.country = 'DE')"
+    }
+  ],
+  "condition": "(users.created_at > DATE'2022-01-01')",
+  "operation": "Filter: (users.created_at > DATE'2022-01-01')",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 292.0,
+  "actual_loops": 1,
+  "estimated_rows": 291.19999408721924,
+  "actual_last_row_ms": 0.501374,
+  "actual_first_row_ms": 0.066666,
+  "estimated_total_cost": 39.619999408721924
+}

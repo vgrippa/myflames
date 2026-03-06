@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m unittest test.test_myflames.TestOutputs.test_diagram_explain_046_join_5t_full_chain test.test_myflames.TestOutputs.test_diagram_explain_055_cte_multi_products_with_stats -v)",
+      "Bash(python3 -m unittest discover -s test -p \"test_myflames.py\" -v)",
+      "Bash(python3 -m unittest discover -s test -p \"test_myflames.py\")",
+      "Bash(wc -l /Users/viniciusgrippa/Downloads/git/myflames/*.pl)",
+      "Read(//Users/viniciusgrippa/Downloads/git/myflames/**)",
+      "Bash(ls -1 /Users/viniciusgrippa/Downloads/git/myflames/*.pl)",
+      "Bash(ls -d /Users/viniciusgrippa/Downloads/git/myflames/.*)",
+      "Bash(grep -v \"^\\\\.$\")",
+      "Bash(grep -v \"^\\\\.\\\\.$\")",
+      "Bash(pip install -e . -q)",
+      "Bash(myflames --help)",
+      "Bash(pip3 install -e . -q)",
+      "Bash(python3 -m venv /tmp/myflames-venv)",
+      "Bash(/tmp/myflames-venv/bin/pip install -e . -q)",
+      "Bash(/tmp/myflames-venv/bin/myflames --help)",
+      "Bash(python3 -m venv /tmp/myflames-venv2)",
+      "Bash(/tmp/myflames-venv2/bin/pip install -e . -q)",
+      "Bash(/tmp/myflames-venv2/bin/myflames --help)",
+      "Bash(python3 -m myflames --type diagram test/fixtures/explain-068-complex-5t-aggregate.json)",
+      "Bash(python3 -m myflames --type flamegraph --title \"MySQL EXPLAIN - 5-Table Aggregate\" test/fixtures/explain-068-complex-5t-aggregate.json)",
+      "Bash(python3 -m myflames --type bargraph test/fixtures/explain-068-complex-5t-aggregate.json)",
+      "Bash(python3 -m myflames --type treemap test/fixtures/explain-068-complex-5t-aggregate.json)",
+      "Bash(python3 -m unittest test.test_myflames.TestAnalysis -v)",
+      "Bash(grep -rl \"hash_join\\\\|Hash Join\" /Users/viniciusgrippa/Downloads/git/myflames/test/mysql-explain-*.json)",
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -m myflames --type flamegraph test/mysql-explain-hash-join.json)"
+    ]
+  }
+}

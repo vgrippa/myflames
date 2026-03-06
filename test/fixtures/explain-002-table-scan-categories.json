@@ -1,0 +1,19 @@
+{
+  "query": "/* select#1 */ select `testdb`.`categories`.`id` AS `id`,`testdb`.`categories`.`name` AS `name`,`testdb`.`categories`.`parent_id` AS `parent_id` from `testdb`.`categories`",
+  "operation": "Table scan on categories",
+  "query_type": "select",
+  "table_name": "categories",
+  "access_type": "table",
+  "actual_rows": 50.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "used_columns": [
+    "id",
+    "name",
+    "parent_id"
+  ],
+  "estimated_rows": 50.0,
+  "actual_last_row_ms": 0.01946,
+  "actual_first_row_ms": 0.012709,
+  "estimated_total_cost": 5.25
+}

@@ -1,0 +1,59 @@
+{
+  "query": "/* select#1 */ select `testdb`.`orders`.`id` AS `id`,`testdb`.`orders`.`user_id` AS `user_id`,`testdb`.`orders`.`total` AS `total`,sum(`testdb`.`orders`.`total`) OVER (PARTITION BY `testdb`.`orders`.`user_id` ORDER BY `testdb`.`orders`.`created_at` )  AS `running_total` from `testdb`.`orders` where (`testdb`.`orders`.`user_id` <= 100)",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "ranges": [
+            "(user_id <= 100)"
+          ],
+          "covering": false,
+          "operation": "Index range scan on orders using idx_user over (user_id <= 100), with index condition: (orders.user_id <= 100)",
+          "index_name": "idx_user",
+          "table_name": "orders",
+          "access_type": "index",
+          "actual_rows": 400.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "user_id",
+            "total",
+            "created_at"
+          ],
+          "estimated_rows": 400.0,
+          "index_access_type": "index_range_scan",
+          "actual_last_row_ms": 0.30719599999999997,
+          "actual_first_row_ms": 0.166333,
+          "estimated_total_cost": 180.26,
+          "pushed_index_condition": "(orders.user_id <= 100)"
+        }
+      ],
+      "operation": "Sort: orders.user_id, orders.created_at",
+      "access_type": "sort",
+      "actual_rows": 400.0,
+      "sort_fields": [
+        "orders.user_id",
+        "orders.created_at"
+      ],
+      "actual_loops": 1,
+      "estimated_rows": 400.0,
+      "actual_last_row_ms": 0.36862100000000003,
+      "actual_first_row_ms": 0.354251,
+      "estimated_total_cost": 180.26
+    }
+  ],
+  "buffering": true,
+  "functions": [
+    "sum(orders.total) OVER (PARTITION BY orders.user_id ORDER BY orders.created_at ) "
+  ],
+  "operation": "Window aggregate with buffering: sum(orders.total) OVER (PARTITION BY orders.user_id ORDER BY orders.created_at ) ",
+  "query_type": "select",
+  "access_type": "window",
+  "actual_rows": 400.0,
+  "actual_loops": 1,
+  "estimated_rows": 400.0,
+  "actual_last_row_ms": 0.7160890000000001,
+  "actual_first_row_ms": 0.37479100000000004,
+  "estimated_total_cost": 0.0
+}

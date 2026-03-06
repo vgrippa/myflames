@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "myflames"
+version = "1.0.0"
+description = "MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, treemaps, and diagrams"
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "CDDL-1.0" }
+
+[project.scripts]
+myflames = "myflames.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["myflames*"]

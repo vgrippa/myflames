@@ -1,0 +1,40 @@
+{
+  "query": "/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2",
+  "operation": "Nested loop inner join",
+  "join_type": "inner join",
+  "access_type": "join",
+  "join_algorithm": "nested_loop",
+  "actual_rows": 150.0,
+  "actual_loops": 1,
+  "estimated_rows": 200.0,
+  "actual_last_row_ms": 15.5,
+  "actual_first_row_ms": 0.5,
+  "estimated_total_cost": 500.0,
+  "inputs": [
+    {
+      "operation": "Table scan on t1",
+      "table_name": "t1",
+      "access_type": "table",
+      "actual_rows": 100.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "estimated_rows": 100.0,
+      "actual_last_row_ms": 5.0,
+      "actual_first_row_ms": 0.1,
+      "estimated_total_cost": 100.0
+    },
+    {
+      "operation": "Table scan on t2 (BNL join buffer)",
+      "table_name": "t2",
+      "access_type": "table",
+      "using_join_buffer": "Block Nested Loop",
+      "actual_rows": 150.0,
+      "schema_name": "testdb",
+      "actual_loops": 100,
+      "estimated_rows": 200.0,
+      "actual_last_row_ms": 0.08,
+      "actual_first_row_ms": 0.08,
+      "estimated_total_cost": 2.0
+    }
+  ]
+}

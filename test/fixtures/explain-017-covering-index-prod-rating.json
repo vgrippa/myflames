@@ -1,0 +1,22 @@
+{
+  "query": "/* select#1 */ select `testdb`.`reviews`.`product_id` AS `product_id`,`testdb`.`reviews`.`rating` AS `rating` from `testdb`.`reviews` where (`testdb`.`reviews`.`product_id` = 10)",
+  "covering": true,
+  "operation": "Covering index lookup on reviews using idx_prod_rating (product_id=10)",
+  "index_name": "idx_prod_rating",
+  "query_type": "select",
+  "table_name": "reviews",
+  "access_type": "index",
+  "actual_rows": 6.0,
+  "schema_name": "testdb",
+  "actual_loops": 1,
+  "used_columns": [
+    "product_id",
+    "rating"
+  ],
+  "estimated_rows": 6.0,
+  "lookup_condition": "product_id=10",
+  "index_access_type": "index_lookup",
+  "actual_last_row_ms": 0.01554,
+  "actual_first_row_ms": 0.013,
+  "estimated_total_cost": 0.8513721185510429
+}

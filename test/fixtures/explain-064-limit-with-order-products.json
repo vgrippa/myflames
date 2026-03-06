@@ -1,0 +1,52 @@
+{
+  "limit": 25,
+  "query": "/* select#1 */ select `testdb`.`products`.`id` AS `id`,`testdb`.`products`.`name` AS `name`,`testdb`.`products`.`category_id` AS `category_id`,`testdb`.`products`.`price` AS `price`,`testdb`.`products`.`stock` AS `stock`,`testdb`.`products`.`created_at` AS `created_at` from `testdb`.`products` order by `testdb`.`products`.`created_at` desc limit 25",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "operation": "Table scan on products",
+          "table_name": "products",
+          "access_type": "table",
+          "actual_rows": 1500.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "name",
+            "category_id",
+            "price",
+            "stock",
+            "created_at"
+          ],
+          "estimated_rows": 1500.0,
+          "actual_last_row_ms": 0.255104,
+          "actual_first_row_ms": 0.0465,
+          "estimated_total_cost": 151.75
+        }
+      ],
+      "operation": "Sort: products.created_at DESC, limit input to 25 row(s) per chunk",
+      "access_type": "sort",
+      "actual_rows": 25.0,
+      "sort_fields": [
+        "products.created_at DESC"
+      ],
+      "actual_loops": 1,
+      "estimated_rows": 1500.0,
+      "per_chunk_limit": 25,
+      "actual_last_row_ms": 0.353792,
+      "actual_first_row_ms": 0.352959,
+      "estimated_total_cost": 151.75
+    }
+  ],
+  "operation": "Limit: 25 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 25.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 25.0,
+  "actual_last_row_ms": 0.354916,
+  "actual_first_row_ms": 0.353292,
+  "estimated_total_cost": 151.75
+}

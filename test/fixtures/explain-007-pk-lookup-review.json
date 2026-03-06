@@ -1,0 +1,13 @@
+{
+  "query": "/* select#1 */ select '1' AS `id`,'8' AS `product_id`,'14' AS `user_id`,'2' AS `rating`,NULL AS `body`,'2022-06-06' AS `created_at` from `testdb`.`reviews` where true",
+  "operation": "Rows fetched before execution",
+  "query_type": "select",
+  "access_type": "rows_fetched_before_execution",
+  "actual_rows": 1.0,
+  "actual_loops": 1,
+  "estimated_rows": 1.0,
+  "actual_last_row_ms": 0.0,
+  "actual_first_row_ms": 0.0,
+  "estimated_total_cost": 0.0,
+  "estimated_first_row_cost": 0.0
+}

@@ -1,0 +1,54 @@
+{
+  "query": "/* select#1 */ select `c`.`name` AS `name`,`p`.`name` AS `parent` from `testdb`.`categories` `c` left join `testdb`.`categories` `p` on((`p`.`id` = `c`.`parent_id`)) where true",
+  "inputs": [
+    {
+      "alias": "c",
+      "operation": "Table scan on c",
+      "table_name": "categories",
+      "access_type": "table",
+      "actual_rows": 50.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "name",
+        "parent_id"
+      ],
+      "estimated_rows": 50.0,
+      "actual_last_row_ms": 0.025509,
+      "actual_first_row_ms": 0.017541,
+      "estimated_total_cost": 5.25
+    },
+    {
+      "alias": "p",
+      "covering": false,
+      "operation": "Single-row index lookup on p using PRIMARY (id=c.parent_id)",
+      "index_name": "PRIMARY",
+      "table_name": "categories",
+      "access_type": "index",
+      "actual_rows": 0.8,
+      "schema_name": "testdb",
+      "actual_loops": 50,
+      "used_columns": [
+        "id",
+        "name"
+      ],
+      "estimated_rows": 1.0,
+      "lookup_condition": "id=c.parent_id",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.00023992,
+      "actual_first_row_ms": 0.00022336000000000003,
+      "estimated_total_cost": 0.252
+    }
+  ],
+  "join_type": "left join",
+  "operation": "Nested loop left join",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 50.0,
+  "actual_loops": 1,
+  "estimated_rows": 50.0,
+  "join_algorithm": "nested_loop",
+  "actual_last_row_ms": 0.04379,
+  "actual_first_row_ms": 0.021124,
+  "estimated_total_cost": 22.75
+}

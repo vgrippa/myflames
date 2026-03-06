@@ -1,0 +1,87 @@
+{
+  "limit": 100,
+  "query": "/* select#1 */ select `u`.`id` AS `id`,`u`.`name` AS `name`,count(`o`.`id`) AS `order_count` from `testdb`.`users` `u` left join `testdb`.`orders` `o` on((`o`.`user_id` = `u`.`id`)) where true group by `testdb`.`u`.`id`,`testdb`.`u`.`name` limit 100",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "alias": "u",
+                  "operation": "Table scan on u",
+                  "table_name": "users",
+                  "access_type": "table",
+                  "actual_rows": 3000.0,
+                  "schema_name": "testdb",
+                  "actual_loops": 1,
+                  "used_columns": [
+                    "id",
+                    "name"
+                  ],
+                  "estimated_rows": 3000.0,
+                  "actual_last_row_ms": 0.375034,
+                  "actual_first_row_ms": 0.047459,
+                  "estimated_total_cost": 303.5
+                },
+                {
+                  "alias": "o",
+                  "covering": true,
+                  "operation": "Covering index lookup on o using idx_user (user_id=u.id)",
+                  "index_name": "idx_user",
+                  "table_name": "orders",
+                  "access_type": "index",
+                  "actual_rows": 4.0,
+                  "schema_name": "testdb",
+                  "actual_loops": 3000,
+                  "used_columns": [
+                    "id",
+                    "user_id"
+                  ],
+                  "estimated_rows": 3.944666624069214,
+                  "lookup_condition": "user_id=u.id",
+                  "index_access_type": "index_lookup",
+                  "actual_last_row_ms": 0.0009358166666666665,
+                  "actual_first_row_ms": 0.000682992,
+                  "estimated_total_cost": 0.2508497002591931
+                }
+              ],
+              "join_type": "left join",
+              "operation": "Nested loop left join",
+              "access_type": "join",
+              "actual_rows": 12000.0,
+              "actual_loops": 1,
+              "estimated_rows": 11833.999872207642,
+              "join_algorithm": "nested_loop",
+              "actual_last_row_ms": 3.7903860000000003,
+              "actual_first_row_ms": 0.058584,
+              "estimated_total_cost": 2239.0546213359366
+            }
+          ],
+          "operation": "Aggregate using temporary table",
+          "access_type": "temp_table_aggregate",
+          "actual_rows": 3000.0,
+          "actual_loops": 1,
+          "actual_last_row_ms": 7.137667,
+          "actual_first_row_ms": 7.137667
+        }
+      ],
+      "operation": "Table scan on <temporary>",
+      "table_name": "<temporary>",
+      "access_type": "table",
+      "actual_rows": 100.0,
+      "actual_loops": 1,
+      "actual_last_row_ms": 7.153495,
+      "actual_first_row_ms": 7.142417
+    }
+  ],
+  "operation": "Limit: 100 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 100.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "actual_last_row_ms": 7.157661,
+  "actual_first_row_ms": 7.143666
+}

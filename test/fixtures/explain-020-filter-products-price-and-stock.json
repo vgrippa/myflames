@@ -1,0 +1,42 @@
+{
+  "query": "/* select#1 */ select `testdb`.`products`.`id` AS `id`,`testdb`.`products`.`name` AS `name`,`testdb`.`products`.`category_id` AS `category_id`,`testdb`.`products`.`price` AS `price`,`testdb`.`products`.`stock` AS `stock`,`testdb`.`products`.`created_at` AS `created_at` from `testdb`.`products` where ((`testdb`.`products`.`price` < 100.00) and (`testdb`.`products`.`stock` > 50))",
+  "inputs": [
+    {
+      "ranges": [
+        "(price < 100.00)"
+      ],
+      "covering": false,
+      "operation": "Index range scan on products using idx_price over (price < 100.00), with index condition: (products.price < 100.00)",
+      "index_name": "idx_price",
+      "table_name": "products",
+      "access_type": "index",
+      "actual_rows": 144.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "name",
+        "category_id",
+        "price",
+        "stock",
+        "created_at"
+      ],
+      "estimated_rows": 144.0,
+      "index_access_type": "index_range_scan",
+      "actual_last_row_ms": 0.121795,
+      "actual_first_row_ms": 0.035792,
+      "estimated_total_cost": 65.06,
+      "pushed_index_condition": "(products.price < 100.00)"
+    }
+  ],
+  "condition": "(products.stock > 50)",
+  "operation": "Filter: (products.stock > 50)",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 126.0,
+  "actual_loops": 1,
+  "estimated_rows": 129.3120002746582,
+  "actual_last_row_ms": 0.129374,
+  "actual_first_row_ms": 0.037041,
+  "estimated_total_cost": 65.06
+}

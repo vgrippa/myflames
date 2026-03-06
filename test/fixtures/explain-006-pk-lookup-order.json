@@ -1,0 +1,13 @@
+{
+  "query": "/* select#1 */ select '500' AS `id`,'501' AS `user_id`,'pending' AS `status`,'590.99' AS `total`,'2022-02-10 00:00:00' AS `created_at` from `testdb`.`orders` where true",
+  "operation": "Rows fetched before execution",
+  "query_type": "select",
+  "access_type": "rows_fetched_before_execution",
+  "actual_rows": 1.0,
+  "actual_loops": 1,
+  "estimated_rows": 1.0,
+  "actual_last_row_ms": 0.0,
+  "actual_first_row_ms": 0.0,
+  "estimated_total_cost": 0.0,
+  "estimated_first_row_cost": 0.0
+}

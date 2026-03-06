@@ -1,0 +1,37 @@
+{
+  "query": "/* select#1 */ select `testdb`.`users`.`country` AS `country`,count(0) AS `cnt` from `testdb`.`users` group by `testdb`.`users`.`country`",
+  "inputs": [
+    {
+      "covering": true,
+      "operation": "Covering index scan on users using idx_country",
+      "index_name": "idx_country",
+      "table_name": "users",
+      "access_type": "index",
+      "actual_rows": 3000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "country"
+      ],
+      "estimated_rows": 3000.0,
+      "index_access_type": "index_scan",
+      "actual_last_row_ms": 0.322718,
+      "actual_first_row_ms": 0.036792000000000005,
+      "estimated_total_cost": 303.5
+    }
+  ],
+  "group_by": true,
+  "functions": [
+    "count(0)"
+  ],
+  "operation": "Group aggregate: count(0)",
+  "query_type": "select",
+  "access_type": "aggregate",
+  "actual_rows": 5.0,
+  "actual_loops": 1,
+  "estimated_rows": 5.0,
+  "actual_last_row_ms": 0.49229000000000006,
+  "actual_first_row_ms": 0.13525,
+  "estimated_total_cost": 603.5
+}

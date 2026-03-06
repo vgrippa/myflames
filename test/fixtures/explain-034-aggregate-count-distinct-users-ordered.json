@@ -1,0 +1,38 @@
+{
+  "query": "/* select#1 */ select count(distinct `testdb`.`orders`.`user_id`) AS `COUNT(DISTINCT user_id)` from `testdb`.`orders` where (`testdb`.`orders`.`status` = 'delivered')",
+  "inputs": [
+    {
+      "covering": false,
+      "operation": "Index lookup on orders using idx_status (status='delivered'), with index condition: (orders.`status` = 'delivered')",
+      "index_name": "idx_status",
+      "table_name": "orders",
+      "access_type": "index",
+      "actual_rows": 2400.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "user_id",
+        "status"
+      ],
+      "estimated_rows": 2400.0,
+      "lookup_condition": "status='delivered'",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 1.486397,
+      "actual_first_row_ms": 0.241917,
+      "estimated_total_cost": 264.0,
+      "pushed_index_condition": "(orders.`status` = 'delivered')"
+    }
+  ],
+  "functions": [
+    "count(distinct orders.user_id)"
+  ],
+  "operation": "Aggregate: count(distinct orders.user_id)",
+  "query_type": "select",
+  "access_type": "aggregate",
+  "actual_rows": 1.0,
+  "actual_loops": 1,
+  "estimated_rows": 1.0,
+  "actual_last_row_ms": 1.723625,
+  "actual_first_row_ms": 1.723625,
+  "estimated_total_cost": 504.0
+}

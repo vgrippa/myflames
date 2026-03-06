@@ -1,0 +1,161 @@
+{
+  "limit": 30,
+  "query": "with `ranked` as (/* select#2 */ select `testdb`.`reviews`.`product_id` AS `product_id`,`testdb`.`reviews`.`rating` AS `rating`,row_number() OVER (PARTITION BY `testdb`.`reviews`.`product_id` ORDER BY `testdb`.`reviews`.`created_at` desc )  AS `rn` from `testdb`.`reviews`) /* select#1 */ select `p`.`name` AS `name`,`r`.`rating` AS `rating` from `testdb`.`products` `p` join `ranked` `r` where ((`r`.`rn` = 1) and (`p`.`id` = `r`.`product_id`) and (`p`.`price` > 100.00)) limit 30",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "cte": true,
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "inputs": [
+                            {
+                              "operation": "Table scan on reviews",
+                              "table_name": "reviews",
+                              "access_type": "table",
+                              "actual_rows": 10000.0,
+                              "schema_name": "testdb",
+                              "actual_loops": 1,
+                              "used_columns": [
+                                "id",
+                                "product_id",
+                                "rating",
+                                "created_at"
+                              ],
+                              "estimated_rows": 9921.0,
+                              "actual_last_row_ms": 1.009275,
+                              "actual_first_row_ms": 0.083083,
+                              "estimated_total_cost": 998.3499999999999
+                            }
+                          ],
+                          "operation": "Sort: reviews.product_id, reviews.created_at DESC",
+                          "access_type": "sort",
+                          "actual_rows": 10000.0,
+                          "sort_fields": [
+                            "reviews.product_id",
+                            "reviews.created_at DESC"
+                          ],
+                          "actual_loops": 1,
+                          "estimated_rows": 9921.0,
+                          "actual_last_row_ms": 2.609957,
+                          "actual_first_row_ms": 2.276792,
+                          "estimated_total_cost": 998.3499999999999
+                        }
+                      ],
+                      "functions": [
+                        "row_number() OVER (PARTITION BY reviews.product_id ORDER BY reviews.created_at desc ) "
+                      ],
+                      "operation": "Window aggregate: row_number() OVER (PARTITION BY reviews.product_id ORDER BY reviews.created_at desc ) ",
+                      "access_type": "window",
+                      "actual_rows": 10000.0,
+                      "actual_loops": 1,
+                      "estimated_rows": 9921.0,
+                      "actual_last_row_ms": 3.7507539999999997,
+                      "actual_first_row_ms": 2.2807090000000003,
+                      "estimated_total_cost": 0.0
+                    }
+                  ],
+                  "operation": "Materialize CTE ranked",
+                  "access_type": "materialize",
+                  "actual_rows": 10000.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 9921.0,
+                  "actual_last_row_ms": 4.469083,
+                  "actual_first_row_ms": 4.469083,
+                  "estimated_total_cost": 992.1,
+                  "estimated_first_row_cost": 992.1
+                }
+              ],
+              "operation": "Table scan on r",
+              "table_name": "r",
+              "access_type": "table",
+              "actual_rows": 242.0,
+              "actual_loops": 1,
+              "used_columns": [
+                "product_id",
+                "rating",
+                "rn"
+              ],
+              "estimated_rows": 9921.0,
+              "actual_last_row_ms": 4.48266,
+              "actual_first_row_ms": 4.47,
+              "estimated_total_cost": 1118.6125,
+              "estimated_first_row_cost": 992.1127519907268
+            }
+          ],
+          "condition": "(r.rn = 1)",
+          "operation": "Filter: (r.rn = 1)",
+          "access_type": "filter",
+          "actual_rows": 37.0,
+          "actual_loops": 1,
+          "estimated_rows": 992.100014783442,
+          "actual_last_row_ms": 4.490583,
+          "actual_first_row_ms": 4.471832999999999,
+          "estimated_total_cost": 1118.6125,
+          "estimated_first_row_cost": 992.2275199053672
+        },
+        {
+          "inputs": [
+            {
+              "alias": "p",
+              "covering": false,
+              "operation": "Single-row index lookup on p using PRIMARY (id=r.product_id)",
+              "index_name": "PRIMARY",
+              "table_name": "products",
+              "access_type": "index",
+              "actual_rows": 1.0,
+              "schema_name": "testdb",
+              "actual_loops": 37,
+              "used_columns": [
+                "id",
+                "name",
+                "price"
+              ],
+              "estimated_rows": 1.0,
+              "lookup_condition": "id=r.product_id",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.0007409999999999999,
+              "actual_first_row_ms": 0.0007251621621621622,
+              "estimated_total_cost": 0.25009111984384574
+            }
+          ],
+          "condition": "(p.price > 100.00)",
+          "operation": "Filter: (p.price > 100.00)",
+          "access_type": "filter",
+          "actual_rows": 0.8108108108108109,
+          "actual_loops": 37,
+          "estimated_rows": 0.9039999842643738,
+          "actual_last_row_ms": 0.000901891891891892,
+          "actual_first_row_ms": 0.0008624324324324324,
+          "estimated_total_cost": 0.25009111984384574
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 30.0,
+      "actual_loops": 1,
+      "estimated_rows": 896.8583977529166,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 4.527875,
+      "actual_first_row_ms": 4.492125,
+      "estimated_total_cost": 1465.8475051742046
+    }
+  ],
+  "operation": "Limit: 30 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 30.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 30.0,
+  "actual_last_row_ms": 4.529413000000001,
+  "actual_first_row_ms": 4.492583,
+  "estimated_total_cost": 1465.8475051742046
+}

@@ -1,0 +1,37 @@
+{
+  "query": "/* select#1 */ select `testdb`.`products`.`id` AS `id`,`testdb`.`products`.`name` AS `name`,`testdb`.`products`.`category_id` AS `category_id`,`testdb`.`products`.`price` AS `price`,`testdb`.`products`.`stock` AS `stock`,`testdb`.`products`.`created_at` AS `created_at` from `testdb`.`products` order by `testdb`.`products`.`price` desc",
+  "inputs": [
+    {
+      "operation": "Table scan on products",
+      "table_name": "products",
+      "access_type": "table",
+      "actual_rows": 1500.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "name",
+        "category_id",
+        "price",
+        "stock",
+        "created_at"
+      ],
+      "estimated_rows": 1500.0,
+      "actual_last_row_ms": 0.29525599999999996,
+      "actual_first_row_ms": 0.06691599999999999,
+      "estimated_total_cost": 151.75
+    }
+  ],
+  "operation": "Sort: products.price DESC",
+  "query_type": "select",
+  "access_type": "sort",
+  "actual_rows": 1500.0,
+  "sort_fields": [
+    "products.price DESC"
+  ],
+  "actual_loops": 1,
+  "estimated_rows": 1500.0,
+  "actual_last_row_ms": 0.550618,
+  "actual_first_row_ms": 0.474417,
+  "estimated_total_cost": 151.75
+}

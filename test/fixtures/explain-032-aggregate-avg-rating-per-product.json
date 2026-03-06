@@ -1,0 +1,53 @@
+{
+  "query": "/* select#1 */ select `testdb`.`reviews`.`product_id` AS `product_id`,avg(`testdb`.`reviews`.`rating`) AS `avg_rating`,count(0) AS `review_count` from `testdb`.`reviews` group by `testdb`.`reviews`.`product_id` having (count(0) >= 5)",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "covering": true,
+          "operation": "Covering index scan on reviews using idx_prod_rating",
+          "index_name": "idx_prod_rating",
+          "table_name": "reviews",
+          "access_type": "index",
+          "actual_rows": 10000.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "product_id",
+            "rating"
+          ],
+          "estimated_rows": 9921.0,
+          "index_access_type": "index_scan",
+          "actual_last_row_ms": 1.02946,
+          "actual_first_row_ms": 0.089,
+          "estimated_total_cost": 998.3499999999999
+        }
+      ],
+      "group_by": true,
+      "functions": [
+        "count(0)",
+        "avg(reviews.rating)",
+        "count(0)"
+      ],
+      "operation": "Group aggregate: count(0), avg(reviews.rating), count(0)",
+      "access_type": "aggregate",
+      "actual_rows": 1500.0,
+      "actual_loops": 1,
+      "estimated_rows": 1500.0,
+      "actual_last_row_ms": 1.618703,
+      "actual_first_row_ms": 0.095541,
+      "estimated_total_cost": 1990.4499999999998
+    }
+  ],
+  "condition": "(count(0) >= 5)",
+  "operation": "Filter: (count(0) >= 5)",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 1500.0,
+  "actual_loops": 1,
+  "estimated_rows": 1500.0,
+  "actual_last_row_ms": 1.685758,
+  "actual_first_row_ms": 0.096458,
+  "estimated_total_cost": 1990.4499999999998
+}

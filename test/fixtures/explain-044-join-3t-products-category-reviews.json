@@ -1,0 +1,124 @@
+{
+  "limit": 20,
+  "query": "/* select#1 */ select `p`.`name` AS `name`,`c`.`name` AS `cat`,avg(`r`.`rating`) AS `avg_r` from `testdb`.`products` `p` join `testdb`.`categories` `c` join `testdb`.`reviews` `r` where ((`p`.`category_id` = `c`.`id`) and (`r`.`product_id` = `p`.`id`)) group by `testdb`.`p`.`id`,`testdb`.`p`.`name`,`testdb`.`c`.`name` limit 20",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "alias": "c",
+                      "operation": "Table scan on c",
+                      "table_name": "categories",
+                      "access_type": "table",
+                      "actual_rows": 50.0,
+                      "schema_name": "testdb",
+                      "actual_loops": 1,
+                      "used_columns": [
+                        "id",
+                        "name"
+                      ],
+                      "estimated_rows": 50.0,
+                      "actual_last_row_ms": 0.023963,
+                      "actual_first_row_ms": 0.01475,
+                      "estimated_total_cost": 5.25
+                    },
+                    {
+                      "alias": "p",
+                      "covering": false,
+                      "operation": "Index lookup on p using idx_category (category_id=c.id)",
+                      "index_name": "idx_category",
+                      "table_name": "products",
+                      "access_type": "index",
+                      "actual_rows": 30.0,
+                      "schema_name": "testdb",
+                      "actual_loops": 50,
+                      "used_columns": [
+                        "id",
+                        "name",
+                        "category_id"
+                      ],
+                      "estimated_rows": 30.0,
+                      "lookup_condition": "category_id=c.id",
+                      "index_access_type": "index_lookup",
+                      "actual_last_row_ms": 0.0191106,
+                      "actual_first_row_ms": 0.00441252,
+                      "estimated_total_cost": 5.31
+                    }
+                  ],
+                  "join_type": "inner join",
+                  "operation": "Nested loop inner join",
+                  "access_type": "join",
+                  "actual_rows": 1500.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 1500.0,
+                  "join_algorithm": "nested_loop",
+                  "actual_last_row_ms": 1.053099,
+                  "actual_first_row_ms": 0.031,
+                  "estimated_total_cost": 417.75
+                },
+                {
+                  "alias": "r",
+                  "covering": true,
+                  "operation": "Covering index lookup on r using idx_prod_rating (product_id=p.id)",
+                  "index_name": "idx_prod_rating",
+                  "table_name": "reviews",
+                  "access_type": "index",
+                  "actual_rows": 6.666666666666667,
+                  "schema_name": "testdb",
+                  "actual_loops": 1500,
+                  "used_columns": [
+                    "id",
+                    "product_id",
+                    "rating"
+                  ],
+                  "estimated_rows": 6.613999843597412,
+                  "lookup_condition": "product_id=p.id",
+                  "index_access_type": "index_lookup",
+                  "actual_last_row_ms": 0.0015048580000000002,
+                  "actual_first_row_ms": 0.0011054993333333334,
+                  "estimated_total_cost": 0.2519815479890967
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "actual_rows": 10000.0,
+              "actual_loops": 1,
+              "estimated_rows": 9920.999765396118,
+              "join_algorithm": "nested_loop",
+              "actual_last_row_ms": 3.812841,
+              "actual_first_row_ms": 0.036292,
+              "estimated_total_cost": 1787.160898538897
+            }
+          ],
+          "operation": "Aggregate using temporary table",
+          "access_type": "temp_table_aggregate",
+          "actual_rows": 1500.0,
+          "actual_loops": 1,
+          "actual_last_row_ms": 8.475125,
+          "actual_first_row_ms": 8.475125
+        }
+      ],
+      "operation": "Table scan on <temporary>",
+      "table_name": "<temporary>",
+      "access_type": "table",
+      "actual_rows": 20.0,
+      "actual_loops": 1,
+      "actual_last_row_ms": 8.478042,
+      "actual_first_row_ms": 8.476125
+    }
+  ],
+  "operation": "Limit: 20 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 20.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "actual_last_row_ms": 8.48,
+  "actual_first_row_ms": 8.477375
+}

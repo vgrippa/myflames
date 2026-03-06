@@ -1,0 +1,40 @@
+{
+  "query": "/* select#1 */ select `u`.`name` AS `name`, `o`.`total` AS `total` from `testdb`.`users` `u` join `testdb`.`orders` `o` on (`o`.`user_id` = `u`.`id`)",
+  "inputs": [
+    {
+      "operation": "Table scan on users",
+      "table_name": "users",
+      "access_type": "table",
+      "actual_rows": 3000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": ["id", "name"],
+      "estimated_rows": 3000.0,
+      "actual_last_row_ms": 2.540000,
+      "actual_first_row_ms": 0.102000,
+      "estimated_total_cost": 303.5
+    },
+    {
+      "operation": "Table scan on orders (hash build)",
+      "table_name": "orders",
+      "access_type": "table",
+      "actual_rows": 12000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": ["user_id", "total"],
+      "estimated_rows": 11834.0,
+      "actual_last_row_ms": 3.810000,
+      "actual_first_row_ms": 0.190000,
+      "estimated_total_cost": 1191.4
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Inner hash join (orders.user_id = users.id)",
+  "access_type": "join",
+  "actual_rows": 12000.0,
+  "actual_loops": 1,
+  "join_algorithm": "hash",
+  "actual_last_row_ms": 8.250000,
+  "actual_first_row_ms": 4.310000,
+  "estimated_total_cost": 1025.5
+}

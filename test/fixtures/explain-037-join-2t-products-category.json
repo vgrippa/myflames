@@ -1,0 +1,68 @@
+{
+  "query": "/* select#1 */ select `p`.`name` AS `name`,`c`.`name` AS `cat` from `testdb`.`products` `p` join `testdb`.`categories` `c` where ((`c`.`id` = `p`.`category_id`) and (`p`.`price` > 500.00))",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "alias": "p",
+          "operation": "Table scan on p",
+          "table_name": "products",
+          "access_type": "table",
+          "actual_rows": 1500.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "name",
+            "category_id",
+            "price"
+          ],
+          "estimated_rows": 1500.0,
+          "actual_last_row_ms": 0.229991,
+          "actual_first_row_ms": 0.038333,
+          "estimated_total_cost": 151.75
+        }
+      ],
+      "condition": "(p.price > 500.00)",
+      "operation": "Filter: (p.price > 500.00)",
+      "access_type": "filter",
+      "actual_rows": 739.0,
+      "actual_loops": 1,
+      "estimated_rows": 738.999992609024,
+      "actual_last_row_ms": 0.32795799999999997,
+      "actual_first_row_ms": 0.045166,
+      "estimated_total_cost": 151.75
+    },
+    {
+      "alias": "c",
+      "covering": false,
+      "operation": "Single-row index lookup on c using PRIMARY (id=p.category_id)",
+      "index_name": "PRIMARY",
+      "table_name": "categories",
+      "access_type": "index",
+      "actual_rows": 1.0,
+      "schema_name": "testdb",
+      "actual_loops": 739,
+      "used_columns": [
+        "id",
+        "name"
+      ],
+      "estimated_rows": 1.0,
+      "lookup_condition": "id=p.category_id",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.00043312313937753723,
+      "actual_first_row_ms": 0.00041091204330175914,
+      "estimated_total_cost": 0.25013531799864697
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Nested loop inner join",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 739.0,
+  "actual_loops": 1,
+  "estimated_rows": 738.999992609024,
+  "join_algorithm": "nested_loop",
+  "actual_last_row_ms": 0.71913,
+  "actual_first_row_ms": 0.052917,
+  "estimated_total_cost": 410.3999974131584
+}

@@ -1,0 +1,263 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="909" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker></defs>
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 16px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .cost { font-size: 10px; fill: #555; }
+  .node-label { font-weight: bold; font-size: 11px; }
+  .node-sublabel { font-size: 9px; }
+  .row-count { font-size: 10px; }
+  .arrow-label { font-size: 9px; fill: #444; }
+  .diagram-node { cursor: pointer; }
+  .diagram-node:hover rect, .diagram-node:hover polygon { opacity: 0.9; stroke-width: 2; }
+  .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }
+  .loops-line { font-size: 9px; fill: #555; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
+  .details-line.dim { fill: #999; }
+  #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #search:hover { fill: #000; }
+  .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6; stroke-width: 3; }
+  .diagram-node.dim { opacity: 0.25; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Execution plan (left → right)  ·  Total: 8.25 ms  ·  Darker = slower  ·  Click node to pin details</text>
+<line x1="20" y1="488" x2="1180" y2="488" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="20" y="492" width="1160" height="112" fill="#f5f5f5" rx="4"/>
+<text id="search" x="1172" y="500" text-anchor="end">Search</text>
+<text id="details-l0" x="30" y="500" text-anchor="start" class="details-line">Click a node to pin details  ·  Scroll to zoom (graph only)  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
+<text id="details-l1" x="30" y="516" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="30" y="532" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="30" y="548" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="30" y="564" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="30" y="580" text-anchor="start" class="details-line"></text>
+<g id="diagram-content">
+<g class="diagram-node" data-info="Table scan on users  ·  Total: 2.54 ms  ·  Cost: 303.50  ·  Rows: 3.00K  ·  Loops: 1  ·  Table: users  ·  Est.rows: 3000  ·  ⚠ In Query Analysis: Full table scan: users (3000 rows), orders (12000 rows)" data-analysis-msg="Full table scan: users (3000 rows), orders (12000 rows)">
+<title>Table scan on users  ·  Total: 2.54 ms  ·  Cost: 303.50  ·  Rows: 3.00K  ·  Loops: 1  ·  Table: users  ·  Est.rows: 3000  ·  ⚠ In Query Analysis: Full table scan: users (3000 rows), orders (12000 rows)</title>
+<defs><clipPath id="clipbox-0"><rect x="20" y="156" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
+<g clip-path="url(#clipbox-0)">
+<rect x="20" y="156" width="240" height="112" fill="#4588c1" stroke="#333" stroke-width="1" rx="6" ry="6"/>
+<text x="140.0" y="172" text-anchor="middle" class="cost" fill="#111111">2.54 ms</text>
+<text x="140.0" y="190" text-anchor="middle" class="node-label" fill="#111111">Full Table Scan</text>
+<text x="140.0" y="208" text-anchor="middle" class="node-sublabel" fill="#111111">users</text>
+<text x="140.0" y="258" text-anchor="middle" class="row-count" fill="#111111">3.00K rows</text>
+</g>
+</g>
+<line x1="260" y1="212.0" x2="310" y2="212.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="285.0" y="206.0" text-anchor="middle" class="arrow-label">3.00K rows</text>
+<g class="diagram-node" data-info="Inner hash join (orders.user_id = users.id)  ·  Total: 8.25 ms  ·  Self: 1.90 ms  ·  Cost: 1025.50  ·  Rows: 12.00K  ·  Loops: 1  ·  ⚠ In Query Analysis: 1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)" data-analysis-msg="1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)">
+<title>Inner hash join (orders.user_id = users.id)  ·  Total: 8.25 ms  ·  Self: 1.90 ms  ·  Cost: 1025.50  ·  Rows: 12.00K  ·  Loops: 1  ·  ⚠ In Query Analysis: 1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</title>
+<text x="366" y="150.0" text-anchor="middle" class="cost">1.90 ms</text>
+<polygon points="366,156.0 422,212.0 366,268.0 310,212.0" fill="#5d98ca" stroke="#333" stroke-width="1"/>
+<text x="366" y="208.0" text-anchor="middle" class="node-label" fill="#111111">hash join</text>
+<text x="366" y="224.0" text-anchor="middle" class="node-sublabel" fill="#111111">12.00K rows</text>
+</g>
+<g class="diagram-node" data-info="Table scan on orders (hash build)  ·  Total: 3.81 ms  ·  Cost: 1191.40  ·  Rows: 12.00K  ·  Loops: 1  ·  Table: orders  ·  Est.rows: 11834  ·  ⚠ In Query Analysis: Full table scan: users (3000 rows), orders (12000 rows)" data-analysis-msg="Full table scan: users (3000 rows), orders (12000 rows)">
+<title>Table scan on orders (hash build)  ·  Total: 3.81 ms  ·  Cost: 1191.40  ·  Rows: 12.00K  ·  Loops: 1  ·  Table: orders  ·  Est.rows: 11834  ·  ⚠ In Query Analysis: Full table scan: users (3000 rows), orders (12000 rows)</title>
+<defs><clipPath id="clipbox-1"><rect x="246.0" y="318" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
+<g clip-path="url(#clipbox-1)">
+<rect x="246.0" y="318" width="240" height="112" fill="#2171b5" stroke="#333" stroke-width="1" rx="6" ry="6"/>
+<text x="366.0" y="334" text-anchor="middle" class="cost" fill="#ffffff">3.81 ms</text>
+<text x="366.0" y="352" text-anchor="middle" class="node-label" fill="#ffffff">Full Table Scan</text>
+<text x="366.0" y="370" text-anchor="middle" class="node-sublabel" fill="#ffffff">orders</text>
+<text x="366.0" y="420" text-anchor="middle" class="row-count" fill="#ffffff">12.00K rows</text>
+</g>
+</g>
+<line x1="366" y1="318" x2="366" y2="268.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="380" y="293.0" text-anchor="start" class="arrow-label">12.00K rows</text>
+<line x1="422" y1="212.0" x2="600" y2="212.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="511.0" y="206.0" text-anchor="middle" class="arrow-label">12.00K rows</text>
+<g class="diagram-node" data-info="Total: 8.25 ms | Cost: 1025.50">
+<title>Total: 8.25 ms | Cost: 1025.50</title>
+<rect x="600" y="184.0" width="160" height="56" fill="#5d98ca" stroke="#333" stroke-width="1" rx="6"/>
+<text x="680.0" y="204.0" text-anchor="middle" class="node-label" fill="#111111">query_block #1</text>
+<text x="680.0" y="222.0" text-anchor="middle" class="cost" fill="#111111">1.90 ms</text>
+</g>
+</g>
+<script type="text/javascript"><![CDATA[
+(function() {
+  var N_LINES = 6;
+  var detailLines = [];
+  var searchBtn, content, svgEl;
+  var diagramBottom = 558;
+  var defaultHint = "Click a node to pin details  ·  Scroll (graph only) to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
+  var pinned = false, searchActive = false;
+  var vx = 0, vy = 0, vs = 1;
+  var dragging = false, dragStart = {x:0,y:0}, dragOrigin = {x:0,y:0};
+
+  function svgYFromEvent(e) {
+    var rect = svgEl.getBoundingClientRect();
+    var svgH = parseFloat(svgEl.getAttribute('height')) || rect.height;
+    var scale = rect.height > 0 ? svgH / rect.height : 1;
+    return (e.clientY - rect.top) * scale;
+  }
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) detailLines[i].textContent = "";
+    }
+  }
+
+  function setDetailsForNode(infoStr) {
+    if (!infoStr) { clearDetails(); return; }
+    var sep = "  ·  ";
+    var parts = infoStr.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    svgEl = document.querySelector("svg");
+    content = document.getElementById("diagram-content");
+    searchBtn = document.getElementById("search");
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    if (!content) return;
+
+    // Zoom: only within diagram area (not title bar or info panel below)
+    svgEl.addEventListener("wheel", function(e) {
+      if (svgYFromEvent(e) > diagramBottom) return;
+      e.preventDefault();
+      var delta = e.deltaY > 0 ? 0.85 : 1.18;
+      var rect = svgEl.getBoundingClientRect();
+      var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      vx = mx + (vx - mx) * delta;
+      vy = my + (vy - my) * delta;
+      vs *= delta;
+      applyTransform();
+    }, {passive: false});
+
+    // Drag: only in diagram area, not on text and not on nodes
+    svgEl.addEventListener("mousedown", function(e) {
+      var tag = e.target.tagName ? e.target.tagName.toLowerCase() : '';
+      if (tag === 'text' || tag === 'tspan') return;
+      if (e.target.closest && e.target.closest(".diagram-node")) return;
+      if (svgYFromEvent(e) > diagramBottom) return;
+      dragging = true;
+      dragStart = {x: e.clientX, y: e.clientY};
+      dragOrigin = {x: vx, y: vy};
+      svgEl.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", function(e) {
+      if (!dragging) return;
+      vx = dragOrigin.x + (e.clientX - dragStart.x);
+      vy = dragOrigin.y + (e.clientY - dragStart.y);
+      applyTransform();
+    });
+    document.addEventListener("mouseup", function() {
+      if (dragging) { dragging = false; svgEl.style.cursor = ""; }
+    });
+    svgEl.addEventListener("dblclick", function(e) {
+      if (e.target.closest && e.target.closest(".diagram-node")) return;
+      if (svgYFromEvent(e) > diagramBottom) return;
+      vx = 0; vy = 0; vs = 1;
+      applyTransform();
+    });
+
+    // Hover and click-to-pin on nodes
+    var nodes = document.querySelectorAll(".diagram-node");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].addEventListener("mouseover", onHover);
+      nodes[i].addEventListener("mouseout", onOut);
+      nodes[i].addEventListener("click", onNodeClick);
+    }
+    svgEl.addEventListener("click", function(e) {
+      if (pinned && !(e.target.closest && e.target.closest(".diagram-node"))) unpinAll();
+    });
+
+    if (searchBtn) searchBtn.addEventListener("click", searchPrompt);
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function applyTransform() {
+    content.setAttribute("transform", "translate(" + vx + "," + vy + ") scale(" + vs + ")");
+  }
+
+  function onHover(e) {
+    if (!pinned) setDetailsForNode(e.currentTarget.getAttribute("data-info") || "");
+  }
+  function onOut() {
+    if (!pinned) clearDetails();
+  }
+  function onNodeClick(e) {
+    var g = e.currentTarget;
+    if (g.classList.contains("pinned")) {
+      unpinAll();
+    } else {
+      unpinAll();
+      g.classList.add("pinned");
+      pinned = true;
+      setDetailsForNode(g.getAttribute("data-info") || "");
+    }
+    e.stopPropagation();
+  }
+  function unpinAll() {
+    var prev = document.querySelectorAll(".diagram-node.pinned");
+    for (var i = 0; i < prev.length; i++) prev[i].classList.remove("pinned");
+    pinned = false;
+    clearDetails();
+  }
+
+  function searchPrompt() {
+    if (searchActive) {
+      var all = document.querySelectorAll(".diagram-node");
+      for (var i = 0; i < all.length; i++) all[i].classList.remove("dim");
+      searchBtn.textContent = "Search";
+      searchActive = false;
+      clearDetails();
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var all = document.querySelectorAll(".diagram-node");
+    for (var i = 0; i < all.length; i++) {
+      var info = all[i].getAttribute("data-info") || "";
+      all[i].classList.toggle("dim", !re.test(info));
+    }
+    searchBtn.textContent = "Reset Search";
+    searchActive = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+<rect x="20" y="566" width="1160" height="343" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="20" y="576" width="1160" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="20" y="582" width="1160" height="24" fill="#e8eaf6"/>
+<text x="36" y="595" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="24" y="614" width="1152" height="22" fill="#f1f8e9" rx="4"/>
+<text x="36" y="629" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="46" y="653" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Left→right = execution order. Darker = more self-time. Click a node to pin details.</text>
+<text x="46" y="670" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover or click the node — details show “In Query Analysis”; the panel below lists the node label.</text>
+<rect x="24" y="680" width="1152" height="22" fill="#e3f2fd" rx="4"/>
+<text x="36" y="695" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="46" y="719" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on</text>
+<rect x="24" y="729" width="1152" height="22" fill="#fff3f3" rx="4"/>
+<text x="36" y="744" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="46" y="768" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows), orders (12000 rows)</text>
+<text x="46" y="785" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”, “Table scan [orders]”</text>
+<text x="46" y="802" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</text>
+<text x="46" y="819" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (orders.user_id = users.id)”</text>
+<rect x="24" y="829" width="1152" height="22" fill="#e8f5e9" rx="4"/>
+<text x="36" y="844" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="46" y="868" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="46" y="885" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
+</svg>

@@ -1,0 +1,59 @@
+{
+  "query": "/* select#1 */ select `testdb`.`orders`.`id` AS `id`,`testdb`.`orders`.`user_id` AS `user_id`,`testdb`.`orders`.`total` AS `total`,lag(`testdb`.`orders`.`total`) OVER (PARTITION BY `testdb`.`orders`.`user_id` ORDER BY `testdb`.`orders`.`created_at` )  AS `prev_total` from `testdb`.`orders` where (`testdb`.`orders`.`user_id` between 1 and 50)",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "ranges": [
+            "(1 <= user_id <= 50)"
+          ],
+          "covering": false,
+          "operation": "Index range scan on orders using idx_user over (1 <= user_id <= 50), with index condition: (orders.user_id between 1 and 50)",
+          "index_name": "idx_user",
+          "table_name": "orders",
+          "access_type": "index",
+          "actual_rows": 200.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "user_id",
+            "total",
+            "created_at"
+          ],
+          "estimated_rows": 200.0,
+          "index_access_type": "index_range_scan",
+          "actual_last_row_ms": 0.203423,
+          "actual_first_row_ms": 0.190834,
+          "estimated_total_cost": 90.26,
+          "pushed_index_condition": "(orders.user_id between 1 and 50)"
+        }
+      ],
+      "operation": "Sort: orders.user_id, orders.created_at",
+      "access_type": "sort",
+      "actual_rows": 200.0,
+      "sort_fields": [
+        "orders.user_id",
+        "orders.created_at"
+      ],
+      "actual_loops": 1,
+      "estimated_rows": 200.0,
+      "actual_last_row_ms": 0.24024800000000002,
+      "actual_first_row_ms": 0.233417,
+      "estimated_total_cost": 90.26
+    }
+  ],
+  "buffering": true,
+  "functions": [
+    "lag(orders.total) OVER (PARTITION BY orders.user_id ORDER BY orders.created_at ) "
+  ],
+  "operation": "Window aggregate with buffering: lag(orders.total) OVER (PARTITION BY orders.user_id ORDER BY orders.created_at ) ",
+  "query_type": "select",
+  "access_type": "window",
+  "actual_rows": 200.0,
+  "actual_loops": 1,
+  "estimated_rows": 200.0,
+  "actual_last_row_ms": 0.459666,
+  "actual_first_row_ms": 0.25166700000000003,
+  "estimated_total_cost": 0.0
+}

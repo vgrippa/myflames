@@ -1,0 +1,126 @@
+{
+  "query": "with recursive `cat_tree` as (/* select#2 */ select `testdb`.`categories`.`id` AS `id`,`testdb`.`categories`.`name` AS `name`,`testdb`.`categories`.`parent_id` AS `parent_id`,0 AS `depth` from `testdb`.`categories` where (`testdb`.`categories`.`parent_id` is null) union all /* select#3 */ select `c`.`id` AS `id`,`c`.`name` AS `name`,`c`.`parent_id` AS `parent_id`,(`ct`.`depth` + 1) AS `ct.depth+1` from `testdb`.`categories` `c` join `cat_tree` `ct` where (`c`.`parent_id` = `ct`.`id`)) /* select#1 */ select `cat_tree`.`id` AS `id`,`cat_tree`.`name` AS `name`,`cat_tree`.`parent_id` AS `parent_id`,`cat_tree`.`depth` AS `depth` from `cat_tree`",
+  "inputs": [
+    {
+      "cte": true,
+      "inputs": [
+        {
+          "covering": false,
+          "operation": "Index lookup on categories using idx_parent (parent_id=NULL), with index condition: (categories.parent_id is null)",
+          "index_name": "idx_parent",
+          "table_name": "categories",
+          "access_type": "index",
+          "actual_rows": 10.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "name",
+            "parent_id"
+          ],
+          "estimated_rows": 10.0,
+          "lookup_condition": "parent_id=NULL",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.025875,
+          "actual_first_row_ms": 0.024083999999999998,
+          "estimated_total_cost": 1.75,
+          "pushed_index_condition": "(categories.parent_id is null)"
+        },
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "operation": "Scan new records on ct",
+                  "table_name": "ct",
+                  "access_type": "scan_new_records",
+                  "actual_rows": 25.0,
+                  "actual_loops": 2,
+                  "used_columns": [
+                    "id",
+                    "name",
+                    "parent_id",
+                    "depth"
+                  ],
+                  "estimated_rows": 10.0,
+                  "actual_last_row_ms": 0.001374,
+                  "actual_first_row_ms": 0.000645,
+                  "estimated_total_cost": 3.625
+                }
+              ],
+              "condition": "(ct.id is not null)",
+              "operation": "Filter: (ct.id is not null)",
+              "access_type": "filter",
+              "actual_rows": 25.0,
+              "actual_loops": 2,
+              "estimated_rows": 10.0,
+              "actual_last_row_ms": 0.0029375,
+              "actual_first_row_ms": 0.001062,
+              "estimated_total_cost": 3.625
+            },
+            {
+              "alias": "c",
+              "covering": false,
+              "operation": "Index lookup on c using idx_parent (parent_id=ct.id)",
+              "index_name": "idx_parent",
+              "table_name": "categories",
+              "access_type": "index",
+              "actual_rows": 0.8,
+              "schema_name": "testdb",
+              "actual_loops": 50,
+              "used_columns": [
+                "id",
+                "name",
+                "parent_id"
+              ],
+              "estimated_rows": 5.55555534362793,
+              "lookup_condition": "parent_id=ct.id",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.00070578,
+              "actual_first_row_ms": 0.0006408,
+              "estimated_total_cost": 0.8055555534362793
+            }
+          ],
+          "heading": "Repeat until convergence",
+          "join_type": "inner join",
+          "operation": "Nested loop inner join",
+          "access_type": "join",
+          "actual_rows": 20.0,
+          "actual_loops": 2,
+          "estimated_rows": 55.5555534362793,
+          "join_algorithm": "nested_loop",
+          "actual_last_row_ms": 0.0237075,
+          "actual_first_row_ms": 0.0036665,
+          "estimated_total_cost": 16.68055534362793
+        }
+      ],
+      "operation": "Materialize recursive CTE cat_tree",
+      "recursive": true,
+      "access_type": "materialize",
+      "actual_rows": 50.0,
+      "actual_loops": 1,
+      "estimated_rows": 65.5555534362793,
+      "actual_last_row_ms": 0.098792,
+      "actual_first_row_ms": 0.098792,
+      "estimated_total_cost": 24.98611068725586,
+      "estimated_first_row_cost": 24.98611068725586
+    }
+  ],
+  "operation": "Table scan on cat_tree",
+  "query_type": "select",
+  "table_name": "cat_tree",
+  "access_type": "table",
+  "actual_rows": 50.0,
+  "actual_loops": 1,
+  "used_columns": [
+    "id",
+    "name",
+    "parent_id",
+    "depth"
+  ],
+  "estimated_rows": 65.5555534362793,
+  "actual_last_row_ms": 0.103461,
+  "actual_first_row_ms": 0.099918,
+  "estimated_total_cost": 28.29861068725586,
+  "estimated_first_row_cost": 25.036640349906328
+}
