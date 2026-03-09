@@ -997,6 +997,52 @@ class TestDocumentation(unittest.TestCase):
             self.assertIn("Query Analysis", svg, f"Query Analysis panel missing from {label}")
             self.assertIn("How to read", svg, f"How to read section missing from {label}")
 
+    # ---- GitHub Pages index and demo integrity ----
+
+    def test_docs_index_html_exists(self):
+        """docs/index.html must exist so https://vgrippa.github.io/myflames/ loads."""
+        self.assertTrue(
+            os.path.exists(os.path.join(REPO_DIR, "docs", "index.html")),
+            "docs/index.html is missing — root GitHub Pages URL will return 404",
+        )
+
+    def test_docs_index_html_references_exist(self):
+        """Every href/data in docs/index.html that points to demos/ must exist locally."""
+        import re
+        index_path = os.path.join(REPO_DIR, "docs", "index.html")
+        if not os.path.exists(index_path):
+            self.skipTest("docs/index.html does not exist")
+        with open(index_path, encoding="utf-8") as f:
+            content = f.read()
+        refs = re.findall(r'(?:data|href)="(demos/[^"]+)"', content)
+        self.assertGreater(len(refs), 0, "No demos/ references found in docs/index.html")
+        for ref in refs:
+            local = os.path.join(REPO_DIR, "docs", ref)
+            self.assertTrue(
+                os.path.exists(local),
+                f"docs/index.html references '{ref}' but docs/{ref} does not exist",
+            )
+
+    def test_all_demo_html_files_reference_existing_svgs(self):
+        """Every .html in docs/demos/ that embeds an SVG must have that SVG file present."""
+        import re
+        demos_dir = self.DOCS_DEMOS
+        if not os.path.isdir(demos_dir):
+            self.skipTest("docs/demos/ directory does not exist")
+        html_files = [f for f in os.listdir(demos_dir) if f.endswith(".html")]
+        self.assertGreater(len(html_files), 0, "No HTML files found in docs/demos/")
+        for fname in sorted(html_files):
+            html_path = os.path.join(demos_dir, fname)
+            with open(html_path, encoding="utf-8") as f:
+                content = f.read()
+            svgs = re.findall(r'<object[^>]+data="([^"]+\.svg)"', content)
+            for svg_ref in svgs:
+                svg_path = os.path.join(demos_dir, svg_ref)
+                self.assertTrue(
+                    os.path.exists(svg_path),
+                    f"docs/demos/{fname} references '{svg_ref}' which does not exist",
+                )
+
 
 # ---------------------------------------------------------------------------
 

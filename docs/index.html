@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MySQL EXPLAIN Flame Graphs – Demos</title>
+  <title>myflames — MySQL Query Plan Visualizer demos</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 1rem; background: #f5f5f5; }
     h1 { margin-top: 0; }
@@ -12,61 +12,93 @@
     .embed-wrap { overflow: auto; border: 1px solid #ddd; border-radius: 4px; background: #fff; }
     object { display: block; max-width: 100%; }
     a.view-full { font-size: 0.9rem; }
+    .demo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 700px) { .demo-grid { grid-template-columns: 1fr; } }
+    ul { margin: 0.25rem 0 0 0; padding-left: 1.4rem; }
+    li { margin-bottom: 0.3rem; }
   </style>
 </head>
 <body>
-  <h1>MySQL EXPLAIN Flame Graphs – Interactive demos</h1>
-  <p>These demos are served from GitHub Pages so the SVG JavaScript (zoom, search, tooltips) runs correctly. Opening the raw SVG URL from <code>raw.githubusercontent.com</code> can block inline scripts for security reasons.</p>
+  <h1>myflames — MySQL Query Plan Visualizer</h1>
+  <p>
+    Visualize <code>EXPLAIN ANALYZE FORMAT=JSON</code> output as interactive SVG charts.
+    These demos are served from GitHub Pages so the embedded JavaScript (zoom, search, tooltips) works correctly.
+    <a href="https://github.com/vgrippa/myflames">View on GitHub →</a>
+  </p>
 
   <section>
-    <h2>Flame graph (default)</h2>
+    <h2>Flame graph — full execution hierarchy (default view)</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-example-1.svg" type="image/svg+xml" width="100%" height="280" style="min-height: 280px;"></object>
+      <object data="demos/mysql-query-complex-flamegraph.svg" type="image/svg+xml" width="100%" height="300" style="min-height: 300px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-example-1.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-query-complex-flamegraph.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
-    <h2>Icicle graph (inverted)</h2>
+    <h2>Bar chart — slowest operations first</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-example-2-inverted.svg" type="image/svg+xml" width="100%" height="280" style="min-height: 280px;"></object>
+      <object data="demos/mysql-query-complex-bargraph.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-example-2-inverted.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-query-complex-bargraph.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
-    <h2>Custom colors (green)</h2>
+    <h2>Treemap — area proportional to total time</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-example-3-green.svg" type="image/svg+xml" width="100%" height="280" style="min-height: 280px;"></object>
+      <object data="demos/mysql-query-complex-treemap.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-example-3-green.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-query-complex-treemap.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
-    <h2>Bar chart (self-time)</h2>
+    <h2>Diagram — Visual Explain-style flow</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-bargraph.svg" type="image/svg+xml" width="100%" height="600" style="min-height: 600px;"></object>
+      <object data="demos/mysql-query-complex-diagram.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-bargraph.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-query-complex-diagram.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
-    <h2>Treemap (hierarchy by total time)</h2>
-    <div class="embed-wrap">
-      <object data="demos/mysql-query-treemap.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
+    <h2>Query Analysis panel — scenario demos</h2>
+    <p>Each view includes a <strong>Query Analysis</strong> panel: optimizer features detected, warnings, and concrete tuning suggestions.</p>
+    <div class="demo-grid">
+      <div>
+        <strong>Full table scan</strong>
+        <ul>
+          <li><a href="demos/mysql-query-analysis-full-scan-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-query-analysis-full-scan-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-query-analysis-full-scan-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-query-analysis-full-scan-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>Hash join</strong>
+        <ul>
+          <li><a href="demos/mysql-query-analysis-hash-join-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-query-analysis-hash-join-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-query-analysis-hash-join-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-query-analysis-hash-join-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>BNL join buffer</strong>
+        <ul>
+          <li><a href="demos/mysql-query-analysis-bnl-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-query-analysis-bnl-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-query-analysis-bnl-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-query-analysis-bnl-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>Index Condition Pushdown</strong>
+        <ul>
+          <li><a href="demos/mysql-query-analysis-icp-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-query-analysis-icp-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-query-analysis-icp-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-query-analysis-icp-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+        </ul>
+      </div>
     </div>
-    <a class="view-full" href="demos/mysql-query-treemap.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
-  </section>
-
-  <section>
-    <h2>Query Analysis panel demos</h2>
-    <p>Each view shows a <strong>Query Analysis</strong> panel below the chart: optimizer features, warnings (full scans, hash joins, temp tables, filesorts), and suggestions.</p>
-    <ul>
-      <li><a href="demos/mysql-query-analysis-hash-join.html" target="_blank" rel="noopener">Hash join (bar)</a> — two full table scans, join_buffer_size suggestion</li>
-      <li><a href="demos/mysql-query-analysis-full-scan.html" target="_blank" rel="noopener">Full table scan (bar)</a> — index suggestion</li>
-      <li><a href="demos/mysql-query-analysis-derived-sort.html" target="_blank" rel="noopener">Derived table + sort (treemap)</a> — temp table and sort_buffer suggestions</li>
-      <li><a href="demos/mysql-query-analysis-icp.html" target="_blank" rel="noopener">Index condition pushdown (diagram)</a> — optimizer features</li>
-    </ul>
   </section>
 
   <p><a href="https://github.com/vgrippa/myflames">Repository and README</a></p>
