@@ -149,21 +149,22 @@ python3 -m myflames [--type TYPE] [options] explain.json > output.svg
 |--------|--------|
 | Hover frame | Shows operation details: rows, loops, time, cost, index conditions |
 | Click frame | Zoom into that operation |
+| Click Reset Zoom button | Reset zoom |
 | Ctrl+F | Search frames by regex |
-| Double-click background | Reset zoom |
 
 ### Bar chart
 | Action | Result |
 |--------|--------|
 | Hover bar | Shows multi-line details in the strip below the chart |
-| Click bar | Highlights the bar |
+| Click bar | Pins the details in the strip (click again or click background to unpin) |
+| Ctrl+F | Search bars by regex |
 
 ### Treemap
 | Action | Result |
 |--------|--------|
 | Hover cell | Shows multi-line details below the chart |
-| Click cell | Zoom into that node |
-| Double-click background | Reset zoom |
+| Click cell | Zoom into that node and pin its details |
+| Click Reset Zoom button | Reset zoom |
 | Ctrl+F | Search cells by regex |
 
 ### Diagram

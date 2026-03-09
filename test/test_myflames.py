@@ -816,6 +816,189 @@ class TestAnalysis(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestDocumentation — README links, doc files, and interactive JS claims
+# ---------------------------------------------------------------------------
+
+class TestDocumentation(unittest.TestCase):
+    """Validate that README-documented features and links match the actual project state."""
+
+    DOCS_DEMOS = os.path.join(REPO_DIR, "docs", "demos")
+    README_PATH = os.path.join(REPO_DIR, "README.md")
+    HASH_JOIN = os.path.join(TEST_DIR, "mysql-explain-hash-join.json")
+
+    def _readme(self):
+        with open(self.README_PATH, encoding="utf-8") as f:
+            return f.read()
+
+    # ---- Documentation files exist ----
+
+    def test_readme_exists(self):
+        self.assertTrue(os.path.exists(self.README_PATH))
+
+    def test_readme_referenced_doc_files_exist(self):
+        """Every file/dir listed in the README Documentation table must exist."""
+        refs = [
+            "LEGACY-PERL.md",
+            "docs/VISUAL_EXPLAIN_REFERENCE.md",
+            "docs/prompts/",
+            "test/README.md",
+            "docs/cddl1.txt",
+        ]
+        for ref in refs:
+            self.assertTrue(
+                os.path.exists(os.path.join(REPO_DIR, ref)),
+                f"README references {ref!r} but it does not exist",
+            )
+
+    # ---- Demo HTML links ----
+
+    def test_readme_demo_html_files_exist_locally(self):
+        """Every GitHub Pages demo URL in the README must have a matching local file."""
+        import re
+        readme = self._readme()
+        linked = re.findall(
+            r'\(https://vgrippa\.github\.io/myflames/demos/([^)]+\.html)\)', readme
+        )
+        self.assertGreater(len(linked), 0, "No demo HTML links found in README")
+        for fname in linked:
+            local = os.path.join(self.DOCS_DEMOS, fname)
+            self.assertTrue(
+                os.path.exists(local),
+                f"README links to {fname!r} but docs/demos/{fname} does not exist",
+            )
+
+    # ---- CLI options match README ----
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_readme_all_four_output_types_work(self):
+        """README documents 4 output types; all must succeed via CLI."""
+        for t in ("flamegraph", "bargraph", "treemap", "diagram"):
+            result = subprocess.run(
+                [sys.executable, "-m", "myflames", "--type", t, self.HASH_JOIN],
+                cwd=REPO_DIR, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, f"--type {t} failed: {result.stderr[:300]}")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_readme_documented_cli_flags_work(self):
+        """README-documented flags must not produce errors."""
+        for extra in (
+            ["--width", "1400", "--title", "Test Plan"],
+            ["--no-enhance"],
+            ["--type", "flamegraph", "--inverted"],
+            ["--type", "diagram", "--diagram-engine", "svg"],
+        ):
+            result = subprocess.run(
+                [sys.executable, "-m", "myflames"] + extra + [self.HASH_JOIN],
+                cwd=REPO_DIR, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, f"Flags {extra} failed: {result.stderr[:300]}")
+
+    # ---- Interactive feature claims ----
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_bargraph_has_ctrlf_search(self):
+        """README: Bar chart supports Ctrl+F search."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_bargraph(root)
+        self.assertIn("searchPrompt", svg, "Ctrl+F search JS missing from bargraph")
+        self.assertIn('key === "f"', svg)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_bargraph_has_click_to_pin(self):
+        """README: Click bar pins the details."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_bargraph(root)
+        self.assertIn("pinnedBar", svg, "Click-to-pin JS missing from bargraph")
+        self.assertIn("details-l0", svg, "Pre-allocated details strip missing from bargraph")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_treemap_has_ctrlf_search(self):
+        """README: Treemap supports Ctrl+F search."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_treemap(root)
+        self.assertIn("searchPrompt", svg, "Ctrl+F search JS missing from treemap")
+        self.assertIn('key === "f"', svg)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_treemap_has_breadcrumb(self):
+        """Treemap must include a breadcrumb element that updates on zoom."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_treemap(root)
+        self.assertIn('id="breadcrumb"', svg, "Breadcrumb element missing from treemap")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_has_scroll_zoom(self):
+        """README: Diagram supports scroll-wheel zoom."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root)
+        self.assertIn("wheel", svg, "Scroll-wheel zoom JS missing from diagram")
+        self.assertIn("svgYFromEvent", svg, "Diagram-area zoom guard missing")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_has_drag_to_pan(self):
+        """README: Diagram supports drag-to-pan."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root)
+        self.assertIn("mousedown", svg, "Drag-to-pan JS missing from diagram")
+        self.assertIn("mousemove", svg)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_has_dblclick_reset(self):
+        """README: Double-click background resets zoom/pan in diagram."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root)
+        self.assertIn("dblclick", svg, "Double-click reset JS missing from diagram")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_has_click_to_pin(self):
+        """README: Click node pins details in diagram."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root)
+        self.assertIn("pinned", svg, "Click-to-pin JS missing from diagram")
+        self.assertIn("details-l0", svg, "Pre-allocated details strip missing from diagram")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_details_text_is_selectable(self):
+        """README: Text in details strip is always selectable."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root)
+        self.assertIn("user-select: text", svg, "Details strip is not selectable in diagram")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_flamegraph_height_equals_viewbox(self):
+        """Flamegraph height attribute must equal viewBox height to prevent clipping."""
+        import re
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "--type", "flamegraph", self.HASH_JOIN],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        svg = result.stdout
+        m_h = re.search(r'height="(\d+)"', svg)
+        m_vb = re.search(r'viewBox="0 0 \d+ (\d+)"', svg)
+        self.assertIsNotNone(m_h, "height attribute missing from flamegraph SVG")
+        self.assertIsNotNone(m_vb, "viewBox attribute missing from flamegraph SVG")
+        self.assertEqual(
+            int(m_h.group(1)), int(m_vb.group(1)),
+            f"Flamegraph height ({m_h.group(1)}) != viewBox height ({m_vb.group(1)})",
+        )
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_all_outputs_have_query_analysis_panel(self):
+        """README: Every output type includes a Query Analysis panel."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        a = analyze_plan(root)
+        for label, svg in [
+            ("bargraph", render_bargraph(root, analysis=a)),
+            ("treemap", render_treemap(root, analysis=a)),
+            ("diagram", render_diagram(root, analysis=a)),
+        ]:
+            self.assertIn("Query Analysis", svg, f"Query Analysis panel missing from {label}")
+            self.assertIn("How to read", svg, f"How to read section missing from {label}")
+
+
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
