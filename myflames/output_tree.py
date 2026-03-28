@@ -81,7 +81,8 @@ def _row_info(node, root_total, unit_display):
         parts.append(est_str)
     cond = details.get("condition")
     if cond:
-        parts.append(f"Cond: {(cond[:50] + '\u2026') if len(cond) > 52 else cond}")
+        ellipsis = "\u2026"
+        parts.append(f"Cond: {cond[:50] + ellipsis if len(cond) > 52 else cond}")
     return sep.join(parts)
 
 
