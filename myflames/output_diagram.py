@@ -291,7 +291,7 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         '<?xml version="1.0" standalone="no"?>',
         '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">',
         f'<svg version="1.1" width="{total_width}" height="{height}" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
-        '<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker></defs>',
+        f'<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="{total_width}" height="{diagram_height}"/></clipPath></defs>',
         "<style>",
         "  text { font-family: Arial, sans-serif; font-size: 11px; }",
         "  .title { font-size: 16px; font-weight: bold; }",
@@ -323,13 +323,13 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     # Pre-allocate detail lines
     for di in range(details_lines_n):
         dy = details_y_start + di * details_line_h
-        default_text = "Click a node to pin details  \u00b7  Scroll to zoom (graph only)  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search" if di == 0 else ""
+        default_text = "Click a node to pin details  \u00b7  Ctrl+Scroll to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search" if di == 0 else ""
         lines.append(
             f'<text id="details-l{di}" x="{pad + 10}" y="{dy}" '
             f'text-anchor="start" class="details-line">{xml_escape(default_text)}</text>'
         )
 
-    lines.append('<g id="diagram-content">')
+    lines.append('<g id="diagram-content" clip-path="url(#diagram-clip)">')
 
     clip_counter = [0]
 
@@ -479,7 +479,7 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
   var detailLines = [];
   var searchBtn, content, svgEl;
   var diagramBottom = {diagram_height};
-  var defaultHint = "Click a node to pin details  \u00b7  Scroll (graph only) to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search";
+  var defaultHint = "Click a node to pin details  \u00b7  Ctrl+Scroll to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search";
   var pinned = false, searchActive = false;
   var vx = 0, vy = 0, vs = 1;
   var dragging = false, dragStart = {{x:0,y:0}}, dragOrigin = {{x:0,y:0}};
@@ -522,8 +522,10 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     }}
     if (!content) return;
 
-    // Zoom: only within diagram area (not title bar or info panel below)
+    // Zoom: Ctrl+scroll only, and only within diagram area
+    // Without Ctrl the event is not consumed, so the page can scroll normally.
     svgEl.addEventListener("wheel", function(e) {{
+      if (!e.ctrlKey && !e.metaKey) return;
       if (svgYFromEvent(e) > diagramBottom) return;
       e.preventDefault();
       var delta = e.deltaY > 0 ? 0.85 : 1.18;

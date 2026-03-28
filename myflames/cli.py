@@ -5,6 +5,8 @@ import argparse
 import sys
 from .parser import (
     parse_explain,
+    load_explain_json,
+    format_sql,
     build_flame_entries,
     flatten_nodes,
     enhance_tooltip_flame,
@@ -15,6 +17,7 @@ from .flamegraph import folded_to_svg
 from .output_bargraph import render_bargraph
 from .output_treemap import render_treemap
 from .output_diagram import render_diagram
+from .output_tree import render_tree
 
 
 def main():
@@ -27,20 +30,13 @@ Examples:
   python -m myflames --type bargraph explain.json > query-bar.svg
   python -m myflames --type treemap explain.json > query-treemap.svg
   python -m myflames --type diagram explain.json > query-diagram.svg
-  python -m myflames --type diagram --diagram-engine graphviz explain.json > query-diagram.svg
         """,
     )
     parser.add_argument(
         "--type",
-        choices=["flamegraph", "bargraph", "treemap", "diagram"],
+        choices=["flamegraph", "bargraph", "treemap", "diagram", "tree"],
         default="flamegraph",
-        help="Output type: flamegraph, bargraph, treemap, diagram (default: flamegraph)",
-    )
-    parser.add_argument(
-        "--diagram-engine",
-        choices=["svg", "graphviz"],
-        default="svg",
-        help="Diagram layout: svg (built-in) or graphviz (requires Graphviz installed; default: svg)",
+        help="Output type: flamegraph, bargraph, treemap, diagram, tree (default: flamegraph)",
     )
     parser.add_argument(
         "--width",
@@ -76,6 +72,19 @@ Examples:
         help="Disable detailed tooltips on flame graph",
     )
     parser.add_argument(
+        "--query",
+        default=None,
+        metavar="SQL",
+        help="SQL query text to embed in the output (overrides the query embedded in the EXPLAIN JSON)",
+    )
+    parser.add_argument(
+        "--query-file",
+        default=None,
+        metavar="PATH",
+        dest="query_file",
+        help="Path to a file containing the SQL query to embed",
+    )
+    parser.add_argument(
         "input",
         nargs="?",
         default="-",
@@ -85,7 +94,7 @@ Examples:
 
     # Type-specific width default
     if args.width is None:
-        args.width = 1200 if args.type in ("bargraph", "treemap", "diagram") else 1800
+        args.width = 1200 if args.type in ("bargraph", "treemap", "diagram", "tree") else 1800
 
     # Read input
     if args.input == "-":
@@ -106,6 +115,25 @@ Examples:
     multiplier = 1000 if use_microseconds else 1
 
     analysis = analyze_plan(root)
+
+    # Resolve query text: explicit CLI flag > --query-file > embedded in JSON
+    query_text = ""
+    if args.query:
+        query_text = args.query.strip()
+    elif args.query_file:
+        try:
+            with open(args.query_file, "r", encoding="utf-8") as qf:
+                query_text = qf.read().strip()
+        except OSError as e:
+            sys.stderr.write(f"Cannot read --query-file: {e}\n")
+    if not query_text:
+        try:
+            raw_data = load_explain_json(json_text)
+            query_text = (raw_data.get("query") or "").strip()
+        except Exception:
+            query_text = ""
+    if query_text:
+        analysis["query_text_lines"] = format_sql(query_text)
 
     if args.type == "flamegraph":
         entries = list(build_flame_entries(root))
@@ -176,14 +204,12 @@ Examples:
         return
 
     if args.type == "diagram":
-        if args.diagram_engine == "graphviz":
-            from .output_diagram_graphviz import render_diagram_graphviz
-            svg = render_diagram_graphviz(root, width=args.width, title=args.title, unit_display=unit)
-            if svg is None:
-                sys.stderr.write("Graphviz not found (install it and ensure 'dot' is on PATH); using built-in diagram.\n")
-                svg = render_diagram(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis)
-        else:
-            svg = render_diagram(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis)
+        svg = render_diagram(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis)
+        sys.stdout.write(svg)
+        return
+
+    if args.type == "tree":
+        svg = render_tree(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis)
         sys.stdout.write(svg)
         return
 

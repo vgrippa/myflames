@@ -14,6 +14,7 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 | **Bar chart** | Quickly finding the slowest individual operations | `python3 -m myflames --type bargraph explain.json` |
 | **Treemap** | Comparing relative cost of all operations at a glance | `python3 -m myflames --type treemap explain.json` |
 | **Diagram** | Understanding join order and access paths (like MySQL Workbench Visual Explain) | `python3 -m myflames --type diagram explain.json` |
+| **Execution tree** | Navigating complex plans — collapsible per-subtree with self/total time per row | `python3 -m myflames --type tree explain.json` |
 
 Every view includes a **Query Analysis panel** below the chart with optimizer features detected, warnings (full table scans, hash joins, BNL join buffers, temp tables, filesorts), and tuning suggestions.
 
@@ -21,7 +22,7 @@ Every view includes a **Query Analysis panel** below the chart with optimizer fe
 
 ## Live demos
 
-### Complex join — all four views
+### Complex join — all five views
 
 | View | Interactive demo |
 |------|-----------------|
@@ -29,6 +30,7 @@ Every view includes a **Query Analysis panel** below the chart with optimizer fe
 | Bar chart | [mysql-query-complex-bargraph.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-bargraph.html) |
 | Treemap | [mysql-query-complex-treemap.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-treemap.html) |
 | Diagram | [mysql-query-complex-diagram.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-diagram.html) |
+| Execution tree | [mysql-query-complex-tree.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-tree.html) |
 
 ### Query Analysis panel demos
 
@@ -100,6 +102,9 @@ python3 -m myflames --type treemap explain.json > query-treemap.svg
 
 # Diagram — Visual Explain-style flow
 python3 -m myflames --type diagram explain.json > query-diagram.svg
+
+# Execution tree — collapsible per-subtree
+python3 -m myflames --type tree explain.json > query-tree.svg
 ```
 
 ### 3. Open in a browser
@@ -131,8 +136,7 @@ python3 -m myflames [--type TYPE] [options] explain.json > output.svg
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--type` | `flamegraph` | Output type: `flamegraph`, `bargraph`, `treemap`, `diagram` |
-| `--diagram-engine` | `svg` | Diagram layout engine: `svg` (built-in) or `graphviz` (requires [Graphviz](https://graphviz.org/) on PATH) |
+| `--type` | `flamegraph` | Output type: `flamegraph`, `bargraph`, `treemap`, `diagram`, `tree` |
 | `--width N` | 1800 (fg), 1200 (others) | SVG width in pixels |
 | `--height N` | 32 | Frame height in pixels (flamegraph only) |
 | `--colors SCHEME` | `hot` | Color scheme (flamegraph only): `hot`, `mem`, `io`, `red`, `green`, `blue` |
@@ -173,10 +177,19 @@ python3 -m myflames [--type TYPE] [options] explain.json > output.svg
 | Hover node | Shows details in the strip below the diagram |
 | Click node | Pins the details (stays visible while you scroll) |
 | Click pinned node | Unpins |
-| Scroll wheel (diagram area only) | Zoom in/out |
+| Ctrl + scroll wheel (diagram area only) | Zoom in/out |
 | Drag background | Pan the diagram |
 | Double-click background | Reset zoom and pan |
 | Ctrl+F | Search nodes by regex |
+
+### Execution tree
+| Action | Result |
+|--------|--------|
+| Hover row | Shows multi-line details in the strip below the tree |
+| Click row | Pins the details (click again or click background to unpin) |
+| Click ▾ / ▸ | Collapse / expand that subtree |
+| Expand All / Collapse All | Expand or collapse the entire tree at once |
+| Ctrl+F | Search rows by regex |
 
 > Text in the details strip is always selectable — you can copy/paste it freely.
 
@@ -274,9 +287,6 @@ Make sure you're using `EXPLAIN ANALYZE FORMAT=JSON` (not just `EXPLAIN FORMAT=J
 
 **Interactive features not working**
 Open the `.html` wrapper file instead of the raw `.svg`. Browsers block inline scripts in SVGs loaded from `raw.githubusercontent.com`. Local `file://` access works fine.
-
-**Graphviz diagram falls back to built-in**
-Install [Graphviz](https://graphviz.org/) and ensure `dot` is on your PATH, then use `--diagram-engine graphviz`.
 
 ---
 

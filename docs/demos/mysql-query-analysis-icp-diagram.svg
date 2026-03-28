@@ -1,7 +1,7 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg version="1.1" width="1200" height="743" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
-<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker></defs>
+<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="558"/></clipPath></defs>
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 16px; font-weight: bold; }
@@ -28,13 +28,13 @@
 <line x1="20" y1="488" x2="1180" y2="488" stroke="#e0e0e0" stroke-width="1"/>
 <rect x="20" y="492" width="1160" height="112" fill="#f5f5f5" rx="4"/>
 <text id="search" x="1172" y="500" text-anchor="end">Search</text>
-<text id="details-l0" x="30" y="500" text-anchor="start" class="details-line">Click a node to pin details  ·  Scroll to zoom (graph only)  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
+<text id="details-l0" x="30" y="500" text-anchor="start" class="details-line">Click a node to pin details  ·  Ctrl+Scroll to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
 <text id="details-l1" x="30" y="516" text-anchor="start" class="details-line"></text>
 <text id="details-l2" x="30" y="532" text-anchor="start" class="details-line"></text>
 <text id="details-l3" x="30" y="548" text-anchor="start" class="details-line"></text>
 <text id="details-l4" x="30" y="564" text-anchor="start" class="details-line"></text>
 <text id="details-l5" x="30" y="580" text-anchor="start" class="details-line"></text>
-<g id="diagram-content">
+<g id="diagram-content" clip-path="url(#diagram-clip)">
 <g class="diagram-node" data-info="Index lookup on users using idx_country (country='US'), with index con…  ·  Total: 419.5 µs  ·  Cost: 70.50  ·  Rows: 600  ·  Loops: 1  ·  Table: users  ·  Index: idx_country  ·  Est.rows: 600  ·  Covering: no">
 <title>Index lookup on users using idx_country (country='US'), with index con…  ·  Total: 419.5 µs  ·  Cost: 70.50  ·  Rows: 600  ·  Loops: 1  ·  Table: users  ·  Index: idx_country  ·  Est.rows: 600  ·  Covering: no</title>
 <defs><clipPath id="clipbox-0"><rect x="20" y="156" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
@@ -62,7 +62,7 @@
   var detailLines = [];
   var searchBtn, content, svgEl;
   var diagramBottom = 558;
-  var defaultHint = "Click a node to pin details  ·  Scroll (graph only) to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
+  var defaultHint = "Click a node to pin details  ·  Ctrl+Scroll to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
   var pinned = false, searchActive = false;
   var vx = 0, vy = 0, vs = 1;
   var dragging = false, dragStart = {x:0,y:0}, dragOrigin = {x:0,y:0};
@@ -105,8 +105,10 @@
     }
     if (!content) return;
 
-    // Zoom: only within diagram area (not title bar or info panel below)
+    // Zoom: Ctrl+scroll only, and only within diagram area
+    // Without Ctrl the event is not consumed, so the page can scroll normally.
     svgEl.addEventListener("wheel", function(e) {
+      if (!e.ctrlKey && !e.metaKey) return;
       if (svgYFromEvent(e) > diagramBottom) return;
       e.preventDefault();
       var delta = e.deltaY > 0 ? 0.85 : 1.18;

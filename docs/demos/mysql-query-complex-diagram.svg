@@ -1,7 +1,7 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="909" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
-<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker></defs>
+<svg version="1.1" width="1200" height="1060" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="558"/></clipPath></defs>
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 16px; font-weight: bold; }
@@ -28,13 +28,13 @@
 <line x1="20" y1="488" x2="1180" y2="488" stroke="#e0e0e0" stroke-width="1"/>
 <rect x="20" y="492" width="1160" height="112" fill="#f5f5f5" rx="4"/>
 <text id="search" x="1172" y="500" text-anchor="end">Search</text>
-<text id="details-l0" x="30" y="500" text-anchor="start" class="details-line">Click a node to pin details  ·  Scroll to zoom (graph only)  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
+<text id="details-l0" x="30" y="500" text-anchor="start" class="details-line">Click a node to pin details  ·  Ctrl+Scroll to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
 <text id="details-l1" x="30" y="516" text-anchor="start" class="details-line"></text>
 <text id="details-l2" x="30" y="532" text-anchor="start" class="details-line"></text>
 <text id="details-l3" x="30" y="548" text-anchor="start" class="details-line"></text>
 <text id="details-l4" x="30" y="564" text-anchor="start" class="details-line"></text>
 <text id="details-l5" x="30" y="580" text-anchor="start" class="details-line"></text>
-<g id="diagram-content">
+<g id="diagram-content" clip-path="url(#diagram-clip)">
 <g class="diagram-node" data-info="Table scan on de  ·  Total: 211 ms  ·  Cost: 33298.55  ·  Rows: 331.60K  ·  Loops: 1  ·  Table: dept_emp  ·  Est.rows: 331143  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)">
 <title>Table scan on de  ·  Total: 211 ms  ·  Cost: 33298.55  ·  Rows: 331.60K  ·  Loops: 1  ·  Table: dept_emp  ·  Est.rows: 331143  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</title>
 <defs><clipPath id="clipbox-0"><rect x="20" y="156" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
@@ -109,7 +109,7 @@
   var detailLines = [];
   var searchBtn, content, svgEl;
   var diagramBottom = 558;
-  var defaultHint = "Click a node to pin details  ·  Scroll (graph only) to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
+  var defaultHint = "Click a node to pin details  ·  Ctrl+Scroll to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
   var pinned = false, searchActive = false;
   var vx = 0, vy = 0, vs = 1;
   var dragging = false, dragStart = {x:0,y:0}, dragOrigin = {x:0,y:0};
@@ -152,8 +152,10 @@
     }
     if (!content) return;
 
-    // Zoom: only within diagram area (not title bar or info panel below)
+    // Zoom: Ctrl+scroll only, and only within diagram area
+    // Without Ctrl the event is not consumed, so the page can scroll normally.
     svgEl.addEventListener("wheel", function(e) {
+      if (!e.ctrlKey && !e.metaKey) return;
       if (svgYFromEvent(e) > diagramBottom) return;
       e.preventDefault();
       var delta = e.deltaY > 0 ? 0.85 : 1.18;
@@ -265,25 +267,34 @@
   window.init = init;
 })();
 ]]></script>
-<rect x="20" y="566" width="1160" height="343" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="20" y="566" width="1160" height="494" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
 <rect x="20" y="576" width="1160" height="30" fill="#e8eaf6" rx="6"/>
 <rect x="20" y="582" width="1160" height="24" fill="#e8eaf6"/>
 <text x="36" y="595" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="24" y="614" width="1152" height="22" fill="#f1f8e9" rx="4"/>
-<text x="36" y="629" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="46" y="653" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Left→right = execution order. Darker = more self-time. Click a node to pin details.</text>
-<text x="46" y="670" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover or click the node — details show “In Query Analysis”; the panel below lists the node label.</text>
-<rect x="24" y="680" width="1152" height="22" fill="#e3f2fd" rx="4"/>
-<text x="36" y="695" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="46" y="719" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
-<rect x="24" y="729" width="1152" height="22" fill="#fff3f3" rx="4"/>
-<text x="36" y="744" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="46" y="768" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
-<text x="46" y="785" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
-<text x="46" y="802" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
-<text x="46" y="819" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
-<rect x="24" y="829" width="1152" height="22" fill="#e8f5e9" rx="4"/>
-<text x="36" y="844" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="46" y="868" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="46" y="885" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<rect x="24" y="614" width="1152" height="22" fill="#f5f5f5" rx="4"/>
+<text x="36" y="629" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="46" y="653" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
+<text x="46" y="670" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
+<text x="46" y="687" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
+<text x="46" y="704" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
+<text x="46" y="721" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
+<text x="46" y="738" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
+<text x="46" y="755" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
+<rect x="24" y="765" width="1152" height="22" fill="#f1f8e9" rx="4"/>
+<text x="36" y="780" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="46" y="804" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Left→right = execution order. Darker = more self-time. Click a node to pin details.</text>
+<text x="46" y="821" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover or click the node — details show “In Query Analysis”; the panel below lists the node label.</text>
+<rect x="24" y="831" width="1152" height="22" fill="#e3f2fd" rx="4"/>
+<text x="36" y="846" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="46" y="870" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
+<rect x="24" y="880" width="1152" height="22" fill="#fff3f3" rx="4"/>
+<text x="36" y="895" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="46" y="919" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
+<text x="46" y="936" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
+<text x="46" y="953" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
+<text x="46" y="970" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="24" y="980" width="1152" height="22" fill="#e8f5e9" rx="4"/>
+<text x="36" y="995" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="46" y="1019" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="46" y="1036" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
 </svg>

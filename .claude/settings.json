@@ -26,7 +26,30 @@
       "Bash(python3 -m unittest test.test_myflames.TestAnalysis -v)",
       "Bash(grep -rl \"hash_join\\\\|Hash Join\" /Users/viniciusgrippa/Downloads/git/myflames/test/mysql-explain-*.json)",
       "Bash(python3 -c \":*)",
-      "Bash(python3 -m myflames --type flamegraph test/mysql-explain-hash-join.json)"
+      "Bash(python3 -m myflames --type flamegraph test/mysql-explain-hash-join.json)",
+      "Bash(git rm -r stackcollapse-aix.pl stackcollapse-bpftrace.pl stackcollapse-chrome-tracing.py stackcollapse-elfutils.pl stackcollapse-faulthandler.pl stackcollapse-gdb.pl stackcollapse-go.pl stackcollapse-ibmjava.pl stackcollapse-instruments.pl stackcollapse-java-exceptions.pl stackcollapse-jstack.pl stackcollapse-ljp.awk stackcollapse-perf-sched.awk stackcollapse-perf.pl stackcollapse-pmc.pl stackcollapse-recursive.pl stackcollapse-sample.awk stackcollapse-stap.pl stackcollapse-vsprof.pl stackcollapse-vtune-mc.pl stackcollapse-vtune.pl stackcollapse-wcp.pl stackcollapse-xdebug.php stackcollapse.pl aix-perf.pl difffolded.pl files.pl pkgsplit-perf.pl range-perf.pl jmaps example-dtrace-stacks.txt example-dtrace.svg example-perf-stacks.txt.gz example-perf.svg demos/ dev/)",
+      "Bash(git commit:*)",
+      "Bash(git push origin master)",
+      "Bash(ls /Users/viniciusgrippa/Downloads/git/myflames/docs/demos/*.html)",
+      "Bash(ls /Users/viniciusgrippa/Downloads/git/myflames/test/mysql-explain-*.json)",
+      "Bash(python3 -:*)",
+      "Bash(python3 -m unittest test.test_myflames.TestDocumentation.test_docs_index_html_exists test.test_myflames.TestDocumentation.test_docs_index_html_references_exist test.test_myflames.TestDocumentation.test_all_demo_html_files_reference_existing_svgs -v)",
+      "Bash(python3 -m unittest test.test_myflames.TestDocumentation -v)",
+      "Bash(python3 -m unittest discover -s test -p \"test_myflames.py\" -k \"TestDocumentation\" -v)",
+      "Bash(git add docs/index.html test/test_myflames.py)",
+      "Bash(git push)",
+      "Bash(python3 -m myflames --type diagram test/mysql-explain-hash-join.json)",
+      "Bash(python3 -m myflames --type diagram test/mysql-explain-full-scan.json)",
+      "Bash(python3 -m myflames --type diagram test/mysql-explain-bnl.json)",
+      "Bash(python3 -m myflames --type diagram test/mysql-explain-icp.json)",
+      "Bash(ls /Users/viniciusgrippa/Downloads/git/myflames/test/*.json)",
+      "Bash(python3 -m myflames --type diagram test/fixtures/explain-001-table-scan-users-no-filter.json)",
+      "Bash(python3 -m myflames --type diagram test/fixtures/explain-016-covering-index-cat-price.json)",
+      "Bash(python3 -m myflames --type diagram test/mysql-explain-complex-join.json)",
+      "Bash(python3 -m myflames --type diagram --diagram-engine graphviz test/mysql-explain-hash-join.json)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
     ]
   }
 }
