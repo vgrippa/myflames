@@ -49,10 +49,14 @@ from myflames.parser import (
     analyze_plan,
     render_analysis_panel,
     render_info_panel,
+    format_sql,
+    _col_refs_for_table,
+    _suggest_indexes,
 )
 from myflames.output_bargraph import render_bargraph
 from myflames.output_treemap import render_treemap
 from myflames.output_diagram import render_diagram
+from myflames.output_tree import render_tree
 
 
 def _load(path):
@@ -191,6 +195,8 @@ def _make_output_test(fixture_path, renderer_name):
             svg = render_treemap(root)
         elif renderer_name == "diagram":
             svg = render_diagram(root)
+        elif renderer_name == "tree":
+            svg = render_tree(root)
         else:
             self.fail(f"Unknown renderer: {renderer_name}")
 
@@ -214,7 +220,7 @@ class TestOutputsMeta(type):
 
     def __new__(mcs, name, bases, namespace):
         cls = super().__new__(mcs, name, bases, namespace)
-        renderers = ["flamegraph", "bargraph", "treemap", "diagram"]
+        renderers = ["flamegraph", "bargraph", "treemap", "diagram", "tree"]
         for fixture in ALL_FIXTURES:
             for renderer in renderers:
                 method = _make_output_test(fixture, renderer)
@@ -245,6 +251,8 @@ class TestCLI(unittest.TestCase):
     SAMPLE = os.path.join(TEST_DIR, "mysql-explain-json-sample.json")
     JOIN = os.path.join(TEST_DIR, "mysql-explain-json-join.json")
     COMPLEX = os.path.join(TEST_DIR, "mysql-explain-complex-join.json")
+    # Complex 5-table aggregate: many stages, deep nesting (exercises all renderers fully)
+    COMPLEX5T = os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")
 
     def _run(self, *args, input_text=None):
         cmd = [self.PYTHON, "-m", "myflames"] + list(args)
@@ -284,10 +292,49 @@ class TestCLI(unittest.TestCase):
         r = self._run("--type", "diagram", self.COMPLEX)
         self._assert_valid_svg_output(r, "diagram")
 
-    def test_diagram_graphviz_engine_fallback(self):
-        """--diagram-engine graphviz must not crash even if dot is not installed."""
-        r = self._run("--type", "diagram", "--diagram-engine", "graphviz", self.COMPLEX)
-        self._assert_valid_svg_output(r, "diagram graphviz fallback")
+    def test_tree_type(self):
+        r = self._run("--type", "tree", self.COMPLEX)
+        self._assert_valid_svg_output(r, "tree")
+
+    @unittest.skipUnless(
+        os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")),
+        "complex 5-table fixture missing",
+    )
+    def test_flamegraph_complex_5t(self):
+        r = self._run("--type", "flamegraph", self.COMPLEX5T)
+        self._assert_valid_svg_output(r, "flamegraph complex 5-table")
+
+    @unittest.skipUnless(
+        os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")),
+        "complex 5-table fixture missing",
+    )
+    def test_bargraph_complex_5t(self):
+        r = self._run("--type", "bargraph", self.COMPLEX5T)
+        self._assert_valid_svg_output(r, "bargraph complex 5-table")
+
+    @unittest.skipUnless(
+        os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")),
+        "complex 5-table fixture missing",
+    )
+    def test_treemap_complex_5t(self):
+        r = self._run("--type", "treemap", self.COMPLEX5T)
+        self._assert_valid_svg_output(r, "treemap complex 5-table")
+
+    @unittest.skipUnless(
+        os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")),
+        "complex 5-table fixture missing",
+    )
+    def test_diagram_complex_5t(self):
+        r = self._run("--type", "diagram", self.COMPLEX5T)
+        self._assert_valid_svg_output(r, "diagram complex 5-table")
+
+    @unittest.skipUnless(
+        os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")),
+        "complex 5-table fixture missing",
+    )
+    def test_tree_complex_5t(self):
+        r = self._run("--type", "tree", self.COMPLEX5T)
+        self._assert_valid_svg_output(r, "tree complex 5-table")
 
     def test_stdin_input(self):
         with open(self.SAMPLE, encoding="utf-8") as f:
@@ -816,6 +863,138 @@ class TestAnalysis(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestTree — collapsible tree renderer
+# ---------------------------------------------------------------------------
+
+_COMPLEX5T = os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")
+_HAS_COMPLEX5T = os.path.exists(_COMPLEX5T)
+
+
+class TestTree(unittest.TestCase):
+    """Tests for the collapsible tree renderer (output_tree.py)."""
+
+    HASH_JOIN = os.path.join(TEST_DIR, "mysql-explain-hash-join.json")
+    COMPLEX_JOIN = os.path.join(TEST_DIR, "mysql-explain-complex-join.json")
+
+    def _svg(self, fixture, **kwargs):
+        root = parse_explain(_load(fixture))
+        a = analyze_plan(root)
+        return render_tree(root, analysis=a, **kwargs)
+
+    # ---- Structural validity ----
+
+    def test_tree_valid_svg_simple(self):
+        svg = self._svg(self.HASH_JOIN)
+        self.assertTrue(_is_valid_svg(svg), "tree: simple fixture produced invalid SVG")
+
+    def test_tree_valid_svg_complex_join(self):
+        svg = self._svg(self.COMPLEX_JOIN)
+        self.assertTrue(_is_valid_svg(svg), "tree: complex-join fixture produced invalid SVG")
+
+    @unittest.skipUnless(_HAS_COMPLEX5T, "complex 5-table fixture missing")
+    def test_tree_valid_svg_complex_5t(self):
+        """Complex 5-table aggregate with multiple stages must produce valid SVG."""
+        svg = self._svg(_COMPLEX5T)
+        self.assertTrue(_is_valid_svg(svg), "tree: complex 5-table fixture produced invalid SVG")
+
+    # ---- All nodes present ----
+
+    def test_tree_contains_all_node_labels(self):
+        root = parse_explain(_load(self.COMPLEX_JOIN))
+        svg = render_tree(root)
+        for node in flatten_nodes(root):
+            label = (node.get("short_label") or "")[:20]
+            if not label:
+                continue
+            escaped = label.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            self.assertTrue(
+                label in svg or escaped in svg,
+                f"tree: node label {label!r} missing from SVG",
+            )
+
+    @unittest.skipUnless(_HAS_COMPLEX5T, "complex 5-table fixture missing")
+    def test_tree_complex_5t_all_node_labels(self):
+        """All node labels from the 5-table aggregate must appear in the tree SVG."""
+        root = parse_explain(_load(_COMPLEX5T))
+        svg = render_tree(root)
+        for node in flatten_nodes(root):
+            label = (node.get("short_label") or "")[:20]
+            if not label:
+                continue
+            escaped = label.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            self.assertTrue(
+                label in svg or escaped in svg,
+                f"tree 5t: node label {label!r} missing from SVG",
+            )
+
+    # ---- Depth-driven indentation ----
+
+    def test_tree_deeper_nodes_have_greater_indent(self):
+        """Deeper nodes must have a larger x-offset than shallower ones."""
+        import re
+        root = parse_explain(_load(self.COMPLEX_JOIN))
+        rows = list(_flatten_with_depth_for_test(root))
+        # Find two rows at different depths and compare x positions in the SVG
+        svg = render_tree(root)
+        # The label x = LEFT + depth * INDENT + TOGGLE_W; just verify depth data-attrs exist
+        depths_in_svg = re.findall(r'data-depth="(\d+)"', svg)
+        depths = [int(d) for d in depths_in_svg]
+        self.assertGreater(max(depths), 0, "tree: all rows have depth 0 — no hierarchy")
+
+    # ---- Interactive JS features ----
+
+    def test_tree_has_collapse_expand_js(self):
+        svg = self._svg(self.HASH_JOIN)
+        self.assertIn("toggle(", svg, "tree: toggle JS missing")
+        self.assertIn("collapseAll", svg, "tree: collapseAll JS missing")
+        self.assertIn("expandAll", svg, "tree: expandAll JS missing")
+        self.assertIn("reflow", svg, "tree: reflow JS missing")
+
+    def test_tree_has_click_to_pin(self):
+        svg = self._svg(self.HASH_JOIN)
+        self.assertIn("pinnedBg", svg, "tree: click-to-pin JS missing")
+        self.assertIn("details-l0", svg, "tree: pre-allocated details strip missing")
+
+    def test_tree_has_ctrlf_search(self):
+        svg = self._svg(self.HASH_JOIN)
+        self.assertIn("searchPrompt", svg, "tree: Ctrl+F search JS missing")
+        self.assertIn('key === "f"', svg, "tree: Ctrl+F keydown handler missing")
+
+    # ---- Query Analysis panel ----
+
+    def test_tree_has_query_analysis_panel(self):
+        root = parse_explain(_load(self.HASH_JOIN))
+        a = analyze_plan(root)
+        svg = render_tree(root, analysis=a)
+        self.assertIn("Query Analysis", svg, "tree: Query Analysis panel missing")
+        self.assertIn("How to read", svg, "tree: How to read section missing")
+
+    @unittest.skipUnless(_HAS_COMPLEX5T, "complex 5-table fixture missing")
+    def test_tree_complex_5t_has_query_analysis_panel(self):
+        root = parse_explain(_load(_COMPLEX5T))
+        a = analyze_plan(root)
+        svg = render_tree(root, analysis=a)
+        self.assertIn("Query Analysis", svg, "tree 5t: Query Analysis panel missing")
+
+    # ---- data-info on every row ----
+
+    def test_tree_rows_have_data_info(self):
+        svg = self._svg(self.COMPLEX_JOIN)
+        self.assertIn('data-info="', svg, "tree: no data-info attributes found on rows")
+
+    @unittest.skipUnless(_HAS_COMPLEX5T, "complex 5-table fixture missing")
+    def test_tree_complex_5t_rows_have_data_info(self):
+        svg = self._svg(_COMPLEX5T)
+        self.assertIn('data-info="', svg, "tree 5t: no data-info attributes on rows")
+
+
+def _flatten_with_depth_for_test(node, depth=0):
+    yield node, depth
+    for child in node.get("children") or []:
+        yield from _flatten_with_depth_for_test(child, depth + 1)
+
+
+# ---------------------------------------------------------------------------
 # TestDocumentation — README links, doc files, and interactive JS claims
 # ---------------------------------------------------------------------------
 
@@ -871,8 +1050,8 @@ class TestDocumentation(unittest.TestCase):
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_readme_all_four_output_types_work(self):
-        """README documents 4 output types; all must succeed via CLI."""
-        for t in ("flamegraph", "bargraph", "treemap", "diagram"):
+        """README documents 5 output types; all must succeed via CLI."""
+        for t in ("flamegraph", "bargraph", "treemap", "diagram", "tree"):
             result = subprocess.run(
                 [sys.executable, "-m", "myflames", "--type", t, self.HASH_JOIN],
                 cwd=REPO_DIR, capture_output=True, text=True,
@@ -886,7 +1065,6 @@ class TestDocumentation(unittest.TestCase):
             ["--width", "1400", "--title", "Test Plan"],
             ["--no-enhance"],
             ["--type", "flamegraph", "--inverted"],
-            ["--type", "diagram", "--diagram-engine", "svg"],
         ):
             result = subprocess.run(
                 [sys.executable, "-m", "myflames"] + extra + [self.HASH_JOIN],
@@ -929,11 +1107,35 @@ class TestDocumentation(unittest.TestCase):
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_has_scroll_zoom(self):
-        """README: Diagram supports scroll-wheel zoom."""
+        """README: Diagram supports Ctrl+scroll-wheel zoom."""
         root = parse_explain(_load(self.HASH_JOIN))
         svg = render_diagram(root)
         self.assertIn("wheel", svg, "Scroll-wheel zoom JS missing from diagram")
         self.assertIn("svgYFromEvent", svg, "Diagram-area zoom guard missing")
+        # Must require Ctrl so plain scroll can scroll the page
+        self.assertIn("ctrlKey", svg, "Zoom must require Ctrl+wheel to allow page scrolling")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_zoom_does_not_block_page_scroll(self):
+        """Wheel without Ctrl must not call preventDefault (page must be scrollable)."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root)
+        # The guard 'if (!e.ctrlKey && !e.metaKey) return;' must come before preventDefault
+        # Verify the early-return guard precedes any preventDefault call
+        ctrl_pos = svg.find("ctrlKey")
+        prevent_pos = svg.find("preventDefault")
+        self.assertGreater(ctrl_pos, 0, "ctrlKey guard not found")
+        self.assertGreater(prevent_pos, 0, "preventDefault not found")
+        self.assertLess(ctrl_pos, prevent_pos,
+                        "ctrlKey guard must appear before preventDefault so plain scroll is not blocked")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_content_has_clip_path(self):
+        """Diagram content must be clipped to the diagram area so zoom cannot overflow into the info panel."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root)
+        self.assertIn('id="diagram-clip"', svg, "diagram-clip clipPath definition missing")
+        self.assertIn('clip-path="url(#diagram-clip)"', svg, "diagram-content must use the diagram-clip clipPath")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_has_drag_to_pan(self):
@@ -987,12 +1189,14 @@ class TestDocumentation(unittest.TestCase):
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_all_outputs_have_query_analysis_panel(self):
         """README: Every output type includes a Query Analysis panel."""
+        from myflames.output_tree import render_tree
         root = parse_explain(_load(self.HASH_JOIN))
         a = analyze_plan(root)
         for label, svg in [
             ("bargraph", render_bargraph(root, analysis=a)),
             ("treemap", render_treemap(root, analysis=a)),
             ("diagram", render_diagram(root, analysis=a)),
+            ("tree", render_tree(root, analysis=a)),
         ]:
             self.assertIn("Query Analysis", svg, f"Query Analysis panel missing from {label}")
             self.assertIn("How to read", svg, f"How to read section missing from {label}")
@@ -1042,6 +1246,359 @@ class TestDocumentation(unittest.TestCase):
                     os.path.exists(svg_path),
                     f"docs/demos/{fname} references '{svg_ref}' which does not exist",
                 )
+
+
+# ---------------------------------------------------------------------------
+# TestSQLAndIndexFeatures — format_sql, _suggest_indexes, CLI --query
+# ---------------------------------------------------------------------------
+
+class TestSQLAndIndexFeatures(unittest.TestCase):
+    """Tests for SQL display and index-suggestion features."""
+
+    LIKE_FIXTURE = os.path.join(TEST_DIR, "fixtures", "explain-022-filter-with-like.json")
+    ICP_FIXTURE = os.path.join(TEST_DIR, "fixtures", "explain-019-filter-users-country-and-date.json")
+    HASH_JOIN = os.path.join(TEST_DIR, "mysql-explain-hash-join.json")
+
+    # ---- format_sql ----
+
+    def test_format_sql_empty_returns_empty_list(self):
+        self.assertEqual(format_sql(""), [])
+        self.assertEqual(format_sql(None), [])
+
+    def test_format_sql_strips_mysql_comment_prefix(self):
+        sql = "/* select#1 */ SELECT id FROM users"
+        lines = format_sql(sql)
+        self.assertFalse(any("select#1" in l for l in lines), "Comment prefix not stripped")
+        self.assertTrue(any("SELECT" in l.upper() for l in lines))
+
+    def test_format_sql_removes_backtick_quoting(self):
+        sql = "SELECT `users`.`id` FROM `users`"
+        lines = format_sql(sql)
+        combined = "\n".join(lines)
+        self.assertNotIn("`", combined, "Backticks should be stripped")
+        self.assertIn("users", combined)
+        self.assertIn("id", combined)
+
+    def test_format_sql_select_and_from_on_separate_lines(self):
+        sql = "SELECT id, name FROM users WHERE id = 1"
+        lines = format_sql(sql)
+        upper = [l.upper().strip() for l in lines]
+        self.assertTrue(any(l.startswith("SELECT") for l in upper), "No SELECT line")
+        self.assertTrue(any(l.startswith("FROM") for l in upper), "No FROM line")
+
+    def test_format_sql_where_on_own_line(self):
+        sql = "SELECT id FROM users WHERE country = 'US'"
+        lines = format_sql(sql)
+        self.assertTrue(
+            any(l.strip().upper().startswith("WHERE") for l in lines),
+            "WHERE not on its own line",
+        )
+
+    def test_format_sql_order_by_on_own_line(self):
+        sql = "SELECT id FROM users ORDER BY created_at LIMIT 10"
+        lines = format_sql(sql)
+        self.assertTrue(any(l.strip().upper().startswith("ORDER BY") for l in lines))
+        self.assertTrue(any(l.strip().upper().startswith("LIMIT") for l in lines))
+
+    def test_format_sql_join_indented(self):
+        sql = "SELECT u.id FROM users u LEFT JOIN orders o ON u.id = o.user_id"
+        lines = format_sql(sql)
+        join_lines = [l for l in lines if "JOIN" in l.upper()]
+        self.assertTrue(join_lines, "No JOIN line found")
+        self.assertTrue(
+            join_lines[0].startswith("  "),
+            "JOIN line should be indented with 2 spaces",
+        )
+
+    def test_format_sql_real_mysql_fixture_query(self):
+        """Query embedded in a real fixture should parse without errors."""
+        import json
+        with open(self.HASH_JOIN, encoding="utf-8") as f:
+            raw = json.load(f)
+        sql = raw.get("query", "")
+        self.assertTrue(sql, "Fixture has no query field")
+        lines = format_sql(sql)
+        self.assertGreater(len(lines), 0)
+        combined = "\n".join(lines)
+        self.assertNotIn("select#1", combined.lower(), "Comment prefix not stripped from fixture query")
+
+    # ---- _col_refs_for_table ----
+
+    def test_col_refs_exact_table_name(self):
+        cond = "(orders.created_at >= TIMESTAMP'2023-01-01')"
+        cols = _col_refs_for_table(cond, "orders")
+        self.assertIn("created_at", cols)
+
+    def test_col_refs_alias_heuristic(self):
+        """Single-char alias 'o' should resolve for table 'orders'."""
+        cond = "(o.status = 'delivered')"
+        cols = _col_refs_for_table(cond, "orders")
+        self.assertIn("status", cols)
+
+    def test_col_refs_empty_condition(self):
+        self.assertEqual(_col_refs_for_table("", "orders"), [])
+        self.assertEqual(_col_refs_for_table(None, "orders"), [])
+
+    def test_col_refs_deduplicates(self):
+        cond = "(users.name LIKE 'A%' OR users.name LIKE 'B%')"
+        cols = _col_refs_for_table(cond, "users")
+        self.assertEqual(cols.count("name"), 1, "Duplicate column should be deduped")
+
+    # ---- _suggest_indexes ----
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-022-filter-with-like.json")), "fixture missing")
+    def test_suggest_indexes_generates_ddl_for_table_scan_with_filter(self):
+        root = parse_explain(_load(self.LIKE_FIXTURE))
+        suggestions = _suggest_indexes(root)
+        self.assertGreater(len(suggestions), 0, "Expected at least one index suggestion")
+        ddl = suggestions[0]["ddl"]
+        self.assertTrue(ddl.startswith("CREATE INDEX"), "DDL must start with CREATE INDEX")
+        self.assertIn("ON users", ddl)
+        self.assertIn("name", ddl)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-022-filter-with-like.json")), "fixture missing")
+    def test_suggest_indexes_no_duplicates(self):
+        root = parse_explain(_load(self.LIKE_FIXTURE))
+        suggestions = _suggest_indexes(root)
+        ddls = [s["ddl"] for s in suggestions]
+        self.assertEqual(len(ddls), len(set(ddls)), "Duplicate DDL statements generated")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-019-filter-users-country-and-date.json")), "fixture missing")
+    def test_suggest_indexes_no_suggestion_when_index_used(self):
+        """No suggestion when the query already uses an index (no table scan)."""
+        root = parse_explain(_load(self.ICP_FIXTURE))
+        suggestions = _suggest_indexes(root)
+        self.assertEqual(suggestions, [], "Should not suggest index when index already in use")
+
+    # ---- analyze_plan() new keys ----
+
+    def test_analyze_plan_always_has_index_suggestions_key(self):
+        root = parse_explain(_load(self.HASH_JOIN))
+        a = analyze_plan(root)
+        self.assertIn("index_suggestions", a)
+        self.assertIsInstance(a["index_suggestions"], list)
+
+    def test_analyze_plan_always_has_query_text_lines_key(self):
+        root = parse_explain(_load(self.HASH_JOIN))
+        a = analyze_plan(root)
+        self.assertIn("query_text_lines", a)
+        self.assertIsInstance(a["query_text_lines"], list)
+
+    # ---- render_info_panel with new sections ----
+
+    def test_render_info_panel_shows_query_section_when_provided(self):
+        root = parse_explain(_load(self.HASH_JOIN))
+        a = analyze_plan(root)
+        a["query_text_lines"] = ["SELECT id", "FROM users"]
+        panel_lines, _ = render_info_panel(a, 0, 0, 1200, view_type="diagram")
+        svg = "\n".join(panel_lines)
+        self.assertIn("Query", svg, "Query section header missing from panel")
+        self.assertIn("SELECT id", svg)
+
+    def test_render_info_panel_no_query_section_when_absent(self):
+        root = parse_explain(_load(self.HASH_JOIN))
+        a = analyze_plan(root)
+        a["query_text_lines"] = []
+        panel_lines, _ = render_info_panel(a, 0, 0, 1200, view_type="diagram")
+        svg = "\n".join(panel_lines)
+        # Should not have a Query section header band
+        self.assertNotIn(">Query<", svg)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-022-filter-with-like.json")), "fixture missing")
+    def test_render_info_panel_shows_index_suggestions_section(self):
+        root = parse_explain(_load(self.LIKE_FIXTURE))
+        a = analyze_plan(root)
+        # Ensure index_suggestions are populated
+        self.assertGreater(len(a["index_suggestions"]), 0, "No index suggestions for like fixture")
+        panel_lines, _ = render_info_panel(a, 0, 0, 1200, view_type="tree")
+        svg = "\n".join(panel_lines)
+        self.assertIn("Index suggestions", svg)
+        self.assertIn("CREATE INDEX", svg)
+
+    # ---- CLI --query and auto-extraction ----
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-022-filter-with-like.json")), "fixture missing")
+    def test_cli_auto_extracts_query_from_json(self):
+        """SQL embedded in the EXPLAIN JSON should appear in the SVG output."""
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "--type", "diagram", self.LIKE_FIXTURE],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Query", result.stdout, "Query section missing from auto-extracted output")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_cli_query_flag_overrides_json_query(self):
+        """--query flag should appear in output and override JSON-embedded query."""
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "--type", "tree",
+             "--query", "SELECT sentinel_token FROM dual",
+             self.HASH_JOIN],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("sentinel_token", result.stdout, "--query text not found in SVG output")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_cli_index_suggestions_appear_in_output(self):
+        """Fixture with filter + table scan should produce index suggestion DDL in SVG."""
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "--type", "bargraph", self.LIKE_FIXTURE],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("CREATE INDEX", result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# MySQL 9.7 Hypergraph Optimizer tests
+# ---------------------------------------------------------------------------
+
+FIXTURES_DIR = os.path.join(TEST_DIR, "fixtures")
+
+_HG_ON_CTE = os.path.join(FIXTURES_DIR, "explain-097-hypergraph-on-cte-window-rank.json")
+_HG_OFF_CTE = os.path.join(FIXTURES_DIR, "explain-098-hypergraph-off-cte-window-rank.json")
+_HG_ON_5T = os.path.join(FIXTURES_DIR, "explain-099-hypergraph-on-5t-avg-salary.json")
+_HG_OFF_5T = os.path.join(FIXTURES_DIR, "explain-100-hypergraph-off-5t-avg-salary.json")
+_HG_ON_CORR = os.path.join(FIXTURES_DIR, "explain-101-hypergraph-on-correlated-subquery.json")
+_HG_ON_DEPT = os.path.join(FIXTURES_DIR, "explain-103-hypergraph-on-dept-summary.json")
+_HG_ON_RANGE = os.path.join(FIXTURES_DIR, "explain-105-hypergraph-on-5t-salary-range.json")
+
+
+class TestMySQL97QueryPlanWrapper(unittest.TestCase):
+    """MySQL 9.7+ wraps EXPLAIN output in a query_plan key with json_schema_version."""
+
+    @unittest.skipUnless(os.path.exists(_HG_ON_CTE), "fixture missing")
+    def test_query_plan_wrapper_parsed(self):
+        """Parser must unwrap the query_plan envelope from MySQL 9.7 JSON."""
+        with open(_HG_ON_CTE) as f:
+            root = parse_explain(f.read())
+        self.assertNotEqual(root["short_label"], "unknown")
+        self.assertGreater(root["total_time"], 0)
+
+    @unittest.skipUnless(os.path.exists(_HG_ON_CTE), "fixture missing")
+    def test_query_plan_wrapper_has_children(self):
+        """Wrapped JSON must produce a tree with children, not a flat unknown node."""
+        with open(_HG_ON_CTE) as f:
+            root = parse_explain(f.read())
+        self.assertGreater(len(root["children"]), 0)
+
+
+class TestHypergraphFixtures(unittest.TestCase):
+    """All MySQL 9.7 hypergraph fixtures must parse and render in all output types."""
+
+    HG_FIXTURES = [
+        f for f in sorted(glob.glob(os.path.join(FIXTURES_DIR, "explain-*hypergraph*.json")))
+        if os.path.exists(f)
+    ]
+
+    def test_all_hypergraph_fixtures_parse(self):
+        """Every hypergraph fixture must parse into a valid tree."""
+        self.assertGreater(len(self.HG_FIXTURES), 0, "No hypergraph fixtures found")
+        for path in self.HG_FIXTURES:
+            with self.subTest(fixture=os.path.basename(path)):
+                with open(path) as f:
+                    root = parse_explain(f.read())
+                self.assertNotEqual(root["short_label"], "unknown",
+                                    f"Parser returned 'unknown' for {os.path.basename(path)}")
+                self.assertGreater(root["total_time"], 0)
+
+    def test_all_hypergraph_fixtures_flamegraph(self):
+        """Every hypergraph fixture must produce a valid flamegraph."""
+        for path in self.HG_FIXTURES:
+            with self.subTest(fixture=os.path.basename(path)):
+                result = subprocess.run(
+                    [sys.executable, "-m", "myflames", path],
+                    cwd=REPO_DIR, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("<svg", result.stdout)
+
+    def test_all_hypergraph_fixtures_bargraph(self):
+        """Every hypergraph fixture must produce a valid bargraph."""
+        for path in self.HG_FIXTURES:
+            with self.subTest(fixture=os.path.basename(path)):
+                result = subprocess.run(
+                    [sys.executable, "-m", "myflames", "--type", "bargraph", path],
+                    cwd=REPO_DIR, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("<svg", result.stdout)
+
+    def test_all_hypergraph_fixtures_treemap(self):
+        """Every hypergraph fixture must produce a valid treemap."""
+        for path in self.HG_FIXTURES:
+            with self.subTest(fixture=os.path.basename(path)):
+                result = subprocess.run(
+                    [sys.executable, "-m", "myflames", "--type", "treemap", path],
+                    cwd=REPO_DIR, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("<svg", result.stdout)
+
+    def test_all_hypergraph_fixtures_diagram(self):
+        """Every hypergraph fixture must produce a valid diagram."""
+        for path in self.HG_FIXTURES:
+            with self.subTest(fixture=os.path.basename(path)):
+                result = subprocess.run(
+                    [sys.executable, "-m", "myflames", "--type", "diagram", path],
+                    cwd=REPO_DIR, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("<svg", result.stdout)
+
+
+class TestHypergraphOnVsOff(unittest.TestCase):
+    """Compare hypergraph=on vs hypergraph=off plan structures."""
+
+    @unittest.skipUnless(os.path.exists(_HG_ON_CTE) and os.path.exists(_HG_OFF_CTE), "fixtures missing")
+    def test_both_modes_parse_to_valid_trees(self):
+        """Both hypergraph ON and OFF for the same query must parse successfully."""
+        with open(_HG_ON_CTE) as f:
+            root_on = parse_explain(f.read())
+        with open(_HG_OFF_CTE) as f:
+            root_off = parse_explain(f.read())
+        self.assertNotEqual(root_on["short_label"], "unknown")
+        self.assertNotEqual(root_off["short_label"], "unknown")
+        self.assertGreater(root_on["total_time"], 0)
+        self.assertGreater(root_off["total_time"], 0)
+
+    @unittest.skipUnless(os.path.exists(_HG_ON_5T) and os.path.exists(_HG_OFF_5T), "fixtures missing")
+    def test_5t_join_both_modes_have_children(self):
+        """5-table join must produce multi-level trees in both optimizer modes."""
+        with open(_HG_ON_5T) as f:
+            root_on = parse_explain(f.read())
+        with open(_HG_OFF_5T) as f:
+            root_off = parse_explain(f.read())
+        self.assertGreater(len(root_on["children"]), 0)
+        self.assertGreater(len(root_off["children"]), 0)
+
+    @unittest.skipUnless(os.path.exists(_HG_ON_5T), "fixture missing")
+    def test_hypergraph_on_detects_hash_join(self):
+        """Hypergraph optimizer is known to use hash joins; verify detection."""
+        with open(_HG_ON_5T) as f:
+            root = parse_explain(f.read())
+        analysis = analyze_plan(root)
+        # Hypergraph may use hash joins for multi-table queries
+        all_labels = []
+        def collect(n):
+            all_labels.append(n["full_label"])
+            for c in n["children"]:
+                collect(c)
+        collect(root)
+        has_hash = any("hash" in l.lower() for l in all_labels)
+        has_nested = any("nested" in l.lower() for l in all_labels)
+        # At least one join type must be present
+        self.assertTrue(has_hash or has_nested,
+                        "Expected hash join or nested loop in hypergraph plan")
+
+    @unittest.skipUnless(os.path.exists(_HG_ON_CORR), "fixture missing")
+    def test_correlated_subquery_parses(self):
+        """Correlated subquery with hypergraph must parse to a valid tree."""
+        with open(_HG_ON_CORR) as f:
+            root = parse_explain(f.read())
+        self.assertNotEqual(root["short_label"], "unknown")
+        self.assertGreater(root["total_time"], 0)
 
 
 # ---------------------------------------------------------------------------

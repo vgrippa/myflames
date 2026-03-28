@@ -1,0 +1,173 @@
+{
+  "query": "/* select#1 */ select `d`.`dept_name` AS `dept_name`,count(0) AS `emp_count`,min(`s`.`salary`) AS `min_sal`,max(`s`.`salary`) AS `max_sal` from `hypergraph_test`.`departments` `d` join `hypergraph_test`.`dept_emp` `de` join `hypergraph_test`.`salaries` `s` where ((`d`.`dept_no` = `de`.`dept_no`) and (`s`.`emp_no` = `de`.`emp_no`) and (`s`.`to_date` = DATE'9999-01-01') and (`de`.`to_date` = DATE'9999-01-01')) group by `hypergraph_test`.`d`.`dept_name` order by `emp_count` desc",
+  "query_plan": {
+    "inputs": [
+      {
+        "inputs": [
+          {
+            "inputs": [
+              {
+                "inputs": [
+                  {
+                    "inputs": [
+                      {
+                        "inputs": [
+                          {
+                            "alias": "de",
+                            "operation": "Table scan on de",
+                            "table_name": "dept_emp",
+                            "access_type": "table",
+                            "actual_rows": 11774.0,
+                            "schema_name": "hypergraph_test",
+                            "actual_loops": 1,
+                            "used_columns": [
+                              "emp_no",
+                              "dept_no",
+                              "to_date"
+                            ],
+                            "estimated_rows": 11774.0,
+                            "actual_last_row_ms": 2.277618,
+                            "actual_first_row_ms": 0.13125,
+                            "estimated_total_cost": 1185.65
+                          }
+                        ],
+                        "condition": "(de.to_date = DATE'9999-01-01')",
+                        "operation": "Filter: (de.to_date = DATE'9999-01-01')",
+                        "access_type": "filter",
+                        "actual_rows": 10000.0,
+                        "actual_loops": 1,
+                        "estimated_rows": 1177.4000175446272,
+                        "filter_columns": [
+                          "de.to_date"
+                        ],
+                        "actual_last_row_ms": 3.1010429999999998,
+                        "actual_first_row_ms": 0.134,
+                        "estimated_total_cost": 1185.65
+                      },
+                      {
+                        "inputs": [
+                          {
+                            "alias": "s",
+                            "covering": false,
+                            "operation": "Index lookup on s using PRIMARY (emp_no = de.emp_no)",
+                            "index_name": "PRIMARY",
+                            "table_name": "salaries",
+                            "access_type": "index",
+                            "actual_rows": 1.4999,
+                            "key_columns": [
+                              "emp_no"
+                            ],
+                            "schema_name": "hypergraph_test",
+                            "actual_loops": 10000,
+                            "used_columns": [
+                              "emp_no",
+                              "salary",
+                              "from_date",
+                              "to_date"
+                            ],
+                            "estimated_rows": 1.499899983406067,
+                            "lookup_condition": "emp_no = de.emp_no",
+                            "index_access_type": "index_lookup",
+                            "lookup_references": [
+                              "hypergraph_test.de.emp_no"
+                            ],
+                            "actual_last_row_ms": 0.0009904684,
+                            "actual_first_row_ms": 0.0007140998,
+                            "estimated_total_cost": 0.25001273908598104
+                          }
+                        ],
+                        "condition": "(s.to_date = DATE'9999-01-01')",
+                        "operation": "Filter: (s.to_date = DATE'9999-01-01')",
+                        "access_type": "filter",
+                        "actual_rows": 1.0,
+                        "actual_loops": 10000,
+                        "estimated_rows": 0.14999000057563183,
+                        "filter_columns": [
+                          "s.to_date"
+                        ],
+                        "actual_last_row_ms": 0.0011929114,
+                        "actual_first_row_ms": 0.0009129583000000001,
+                        "estimated_total_cost": 0.25001273908598104
+                      }
+                    ],
+                    "join_type": "inner join",
+                    "operation": "Nested loop inner join",
+                    "access_type": "join",
+                    "actual_rows": 10000.0,
+                    "actual_loops": 1,
+                    "estimated_rows": 176.59822930926757,
+                    "join_algorithm": "nested_loop",
+                    "actual_last_row_ms": 16.423267,
+                    "actual_first_row_ms": 0.151083,
+                    "estimated_total_cost": 1656.5982310639058
+                  },
+                  {
+                    "alias": "d",
+                    "covering": false,
+                    "operation": "Single-row index lookup on d using PRIMARY (dept_no = de.dept_no)",
+                    "index_name": "PRIMARY",
+                    "table_name": "departments",
+                    "access_type": "index",
+                    "actual_rows": 1.0,
+                    "key_columns": [
+                      "dept_no"
+                    ],
+                    "schema_name": "hypergraph_test",
+                    "actual_loops": 10000,
+                    "used_columns": [
+                      "dept_no",
+                      "dept_name"
+                    ],
+                    "estimated_rows": 1.0,
+                    "lookup_condition": "dept_no = de.dept_no",
+                    "index_access_type": "index_lookup",
+                    "lookup_references": [
+                      "hypergraph_test.de.dept_no"
+                    ],
+                    "actual_last_row_ms": 0.0008458622,
+                    "actual_first_row_ms": 0.000816808,
+                    "estimated_total_cost": 0.25056625709324004
+                  }
+                ],
+                "join_type": "inner join",
+                "operation": "Nested loop inner join",
+                "access_type": "join",
+                "actual_rows": 10000.0,
+                "actual_loops": 1,
+                "estimated_rows": 176.59822930926757,
+                "join_algorithm": "nested_loop",
+                "actual_last_row_ms": 26.290485999999998,
+                "actual_first_row_ms": 0.161249,
+                "estimated_total_cost": 1718.4076113221495
+              }
+            ],
+            "operation": "Aggregate using temporary table",
+            "access_type": "temp_table_aggregate",
+            "actual_rows": 9.0,
+            "actual_loops": 1,
+            "actual_last_row_ms": 29.444875,
+            "actual_first_row_ms": 29.444875
+          }
+        ],
+        "operation": "Table scan on <temporary>",
+        "table_name": "<temporary>",
+        "access_type": "table",
+        "actual_rows": 9.0,
+        "actual_loops": 1,
+        "actual_last_row_ms": 29.447707,
+        "actual_first_row_ms": 29.446749
+      }
+    ],
+    "operation": "Sort: emp_count DESC",
+    "access_type": "sort",
+    "actual_rows": 9.0,
+    "sort_fields": [
+      "emp_count DESC"
+    ],
+    "actual_loops": 1,
+    "actual_last_row_ms": 29.466369999999998,
+    "actual_first_row_ms": 29.465875
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

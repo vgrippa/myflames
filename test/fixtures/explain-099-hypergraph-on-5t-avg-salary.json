@@ -1,0 +1,317 @@
+{
+  "query": "/* select#1 */ select `d`.`dept_name` AS `dept_name`,`t`.`title` AS `title`,count(0) AS `cnt`,avg(`s`.`salary`) AS `avg_salary` from `hypergraph_test`.`employees` `e` join `hypergraph_test`.`dept_emp` `de` join `hypergraph_test`.`departments` `d` join `hypergraph_test`.`titles` `t` join `hypergraph_test`.`salaries` `s` where ((`de`.`to_date` = DATE'9999-01-01') and (`t`.`to_date` = DATE'9999-01-01') and (`s`.`to_date` = DATE'9999-01-01') and multiple equal(`e`.`emp_no`, `s`.`emp_no`, `t`.`emp_no`, `de`.`emp_no`) and (`de`.`dept_no` = `d`.`dept_no`)) group by `d`.`dept_name`,`t`.`title` order by `hypergraph_test`.`d`.`dept_name`,`avg_salary` desc",
+  "query_plan": {
+    "inputs": [
+      {
+        "inputs": [
+          {
+            "inputs": [
+              {
+                "inputs": [
+                  {
+                    "inputs": [
+                      {
+                        "inputs": [
+                          {
+                            "inputs": [
+                              {
+                                "inputs": [
+                                  {
+                                    "inputs": [
+                                      {
+                                        "alias": "de",
+                                        "covering": false,
+                                        "operation": "Index scan on de using PRIMARY",
+                                        "index_name": "PRIMARY",
+                                        "table_name": "dept_emp",
+                                        "access_type": "index",
+                                        "actual_rows": 11774.0,
+                                        "schema_name": "hypergraph_test",
+                                        "actual_loops": 1,
+                                        "used_columns": [
+                                          "emp_no",
+                                          "dept_no",
+                                          "to_date"
+                                        ],
+                                        "estimated_rows": 11774.0,
+                                        "index_access_type": "index_scan",
+                                        "actual_last_row_ms": 2.03339,
+                                        "actual_first_row_ms": 0.109416,
+                                        "estimated_total_cost": 5208.774193548387,
+                                        "estimated_first_row_cost": 0.4423963133640553
+                                      }
+                                    ],
+                                    "condition": "(de.to_date = DATE'9999-01-01')",
+                                    "operation": "Filter: (de.to_date = DATE'9999-01-01')",
+                                    "access_type": "filter",
+                                    "actual_rows": 10000.0,
+                                    "actual_loops": 1,
+                                    "estimated_rows": 1177.4000175446272,
+                                    "filter_columns": [
+                                      "de.to_date"
+                                    ],
+                                    "actual_last_row_ms": 2.828264,
+                                    "actual_first_row_ms": 0.111667,
+                                    "estimated_total_cost": 5887.0,
+                                    "estimated_first_row_cost": 4.999999925494195
+                                  },
+                                  {
+                                    "inputs": [
+                                      {
+                                        "alias": "s",
+                                        "covering": false,
+                                        "operation": "Index lookup on s using PRIMARY (emp_no = de.emp_no)",
+                                        "index_name": "PRIMARY",
+                                        "table_name": "salaries",
+                                        "access_type": "index",
+                                        "actual_rows": 1.4999,
+                                        "key_columns": [
+                                          "emp_no"
+                                        ],
+                                        "schema_name": "hypergraph_test",
+                                        "actual_loops": 10000,
+                                        "used_columns": [
+                                          "emp_no",
+                                          "salary",
+                                          "to_date"
+                                        ],
+                                        "estimated_rows": 1.5306663945300543,
+                                        "lookup_condition": "emp_no = de.emp_no",
+                                        "index_access_type": "index_lookup",
+                                        "lookup_references": [
+                                          "hypergraph_test.de.emp_no"
+                                        ],
+                                        "actual_last_row_ms": 0.0009357888,
+                                        "actual_first_row_ms": 0.0006820709,
+                                        "estimated_total_cost": 2.7786346109802422,
+                                        "estimated_first_row_cost": 1.8153103908924189
+                                      }
+                                    ],
+                                    "condition": "(s.to_date = DATE'9999-01-01')",
+                                    "operation": "Filter: (s.to_date = DATE'9999-01-01')",
+                                    "access_type": "filter",
+                                    "actual_rows": 1.0,
+                                    "actual_loops": 10000,
+                                    "estimated_rows": 0.1530666417338761,
+                                    "filter_columns": [
+                                      "s.to_date"
+                                    ],
+                                    "actual_last_row_ms": 0.0011303583000000002,
+                                    "actual_first_row_ms": 0.0008753811000000001,
+                                    "estimated_total_cost": 2.8668066383149227,
+                                    "estimated_first_row_cost": 2.8668066383149227
+                                  }
+                                ],
+                                "join_type": "inner join",
+                                "operation": "Nested loop inner join",
+                                "access_type": "join",
+                                "actual_rows": 10000.0,
+                                "actual_loops": 1,
+                                "estimated_rows": 180.22066666296288,
+                                "join_algorithm": "nested_loop",
+                                "actual_last_row_ms": 15.504842,
+                                "actual_first_row_ms": 0.126249,
+                                "estimated_total_cost": 9262.378186249043,
+                                "estimated_first_row_cost": 51.394650556758556
+                              },
+                              {
+                                "inputs": [
+                                  {
+                                    "alias": "t",
+                                    "covering": false,
+                                    "operation": "Index lookup on t using PRIMARY (emp_no = de.emp_no)",
+                                    "index_name": "PRIMARY",
+                                    "table_name": "titles",
+                                    "access_type": "index",
+                                    "actual_rows": 1.0,
+                                    "key_columns": [
+                                      "emp_no"
+                                    ],
+                                    "schema_name": "hypergraph_test",
+                                    "actual_loops": 10000,
+                                    "used_columns": [
+                                      "emp_no",
+                                      "title",
+                                      "to_date"
+                                    ],
+                                    "estimated_rows": 1.020512297173181,
+                                    "lookup_condition": "emp_no = de.emp_no",
+                                    "index_access_type": "index_lookup",
+                                    "lookup_references": [
+                                      "hypergraph_test.de.emp_no"
+                                    ],
+                                    "actual_last_row_ms": 0.0009922995999999999,
+                                    "actual_first_row_ms": 0.0007702869000000001,
+                                    "estimated_total_cost": 3.5760990611757153,
+                                    "estimated_first_row_cost": 3.504219470046083
+                                  }
+                                ],
+                                "condition": "(t.to_date = DATE'9999-01-01')",
+                                "operation": "Filter: (t.to_date = DATE'9999-01-01')",
+                                "access_type": "filter",
+                                "actual_rows": 1.0,
+                                "actual_loops": 10000,
+                                "estimated_rows": 0.10205123123799993,
+                                "filter_columns": [
+                                  "t.to_date"
+                                ],
+                                "actual_last_row_ms": 0.0011639783,
+                                "actual_first_row_ms": 0.0008926192000000001,
+                                "estimated_total_cost": 3.6348843317502073,
+                                "estimated_first_row_cost": 3.6348843317502073
+                              }
+                            ],
+                            "join_type": "inner join",
+                            "operation": "Nested loop inner join",
+                            "access_type": "join",
+                            "actual_rows": 10000.0,
+                            "actual_loops": 1,
+                            "estimated_rows": 18.39174092748853,
+                            "join_algorithm": "nested_loop",
+                            "actual_last_row_ms": 28.660631,
+                            "actual_first_row_ms": 0.131417,
+                            "estimated_total_cost": 9917.459463759824,
+                            "estimated_first_row_cost": 539.2344043372785
+                          },
+                          {
+                            "alias": "d",
+                            "heading": "Hash",
+                            "covering": false,
+                            "operation": "Index scan on d using PRIMARY",
+                            "index_name": "PRIMARY",
+                            "table_name": "departments",
+                            "access_type": "index",
+                            "actual_rows": 9.0,
+                            "schema_name": "hypergraph_test",
+                            "actual_loops": 1,
+                            "used_columns": [
+                              "dept_no",
+                              "dept_name"
+                            ],
+                            "estimated_rows": 9.0,
+                            "index_access_type": "index_scan",
+                            "actual_last_row_ms": 0.030207,
+                            "actual_first_row_ms": 0.024916,
+                            "estimated_total_cost": 6.71889400921659,
+                            "estimated_first_row_cost": 0.7465437788018433
+                          }
+                        ],
+                        "join_type": "inner join",
+                        "operation": "Inner hash join (de.dept_no = d.dept_no)",
+                        "access_type": "join",
+                        "actual_rows": 10000.0,
+                        "actual_loops": 1,
+                        "join_columns": [
+                          "d.dept_no",
+                          "de.dept_no"
+                        ],
+                        "estimated_rows": 18.39174092748853,
+                        "hash_condition": [
+                          "(de.dept_no = d.dept_no)"
+                        ],
+                        "join_algorithm": "hash",
+                        "actual_last_row_ms": 30.263499,
+                        "actual_first_row_ms": 0.191958,
+                        "estimated_total_cost": 9930.880650774054,
+                        "estimated_first_row_cost": 549.7663342911956
+                      }
+                    ],
+                    "operation": "Sort: d.dept_name, t.title",
+                    "access_type": "sort",
+                    "actual_rows": 10000.0,
+                    "sort_fields": [
+                      "d.dept_name",
+                      "t.title"
+                    ],
+                    "actual_loops": 1,
+                    "estimated_rows": 18.39174092748853,
+                    "actual_last_row_ms": 35.889556000000006,
+                    "actual_first_row_ms": 34.8835,
+                    "estimated_total_cost": 9939.729612576592,
+                    "estimated_first_row_cost": 9939.729612576592
+                  },
+                  {
+                    "alias": "e",
+                    "covering": true,
+                    "operation": "Single-row covering index lookup on e using PRIMARY (emp_no = de.emp_no)",
+                    "index_name": "PRIMARY",
+                    "table_name": "employees",
+                    "access_type": "index",
+                    "actual_rows": 1.0,
+                    "key_columns": [
+                      "emp_no"
+                    ],
+                    "schema_name": "hypergraph_test",
+                    "actual_loops": 10000,
+                    "used_columns": [
+                      "emp_no"
+                    ],
+                    "estimated_rows": 1.0,
+                    "lookup_condition": "emp_no = de.emp_no",
+                    "index_access_type": "index_lookup",
+                    "lookup_references": [
+                      "hypergraph_test.de.emp_no"
+                    ],
+                    "actual_last_row_ms": 0.0006463395000000001,
+                    "actual_first_row_ms": 0.0006202082,
+                    "estimated_total_cost": 2.749308755760369,
+                    "estimated_first_row_cost": 2.749308755760369
+                  }
+                ],
+                "join_type": "inner join",
+                "operation": "Nested loop inner join",
+                "access_type": "join",
+                "actual_rows": 10000.0,
+                "actual_loops": 1,
+                "estimated_rows": 18.391740927488534,
+                "join_algorithm": "nested_loop",
+                "actual_last_row_ms": 43.714136,
+                "actual_first_row_ms": 34.895916,
+                "estimated_total_cost": 9990.294186942212,
+                "estimated_first_row_cost": 9942.478921332351
+              }
+            ],
+            "group_by": true,
+            "functions": [
+              "count(0)",
+              "avg(s.salary)"
+            ],
+            "operation": "Group aggregate: count(0), avg(s.salary)",
+            "access_type": "aggregate",
+            "actual_rows": 63.0,
+            "actual_loops": 1,
+            "estimated_rows": 13.745500457293709,
+            "actual_last_row_ms": 46.365873,
+            "actual_first_row_ms": 35.114667000000004,
+            "estimated_total_cost": 9998.123884005481,
+            "estimated_first_row_cost": 9943.977858874376
+          }
+        ],
+        "operation": "Stream results",
+        "access_type": "stream",
+        "actual_rows": 63.0,
+        "actual_loops": 1,
+        "estimated_rows": 13.745500457293709,
+        "actual_last_row_ms": 46.422830999999995,
+        "actual_first_row_ms": 35.148584,
+        "estimated_total_cost": 10002.677779482186,
+        "estimated_first_row_cost": 9944.309159687384
+      }
+    ],
+    "operation": "Sort: d.dept_name, avg_salary DESC",
+    "access_type": "sort",
+    "actual_rows": 63.0,
+    "sort_fields": [
+      "d.dept_name",
+      "avg_salary DESC"
+    ],
+    "actual_loops": 1,
+    "estimated_rows": 13.745500457293709,
+    "actual_last_row_ms": 46.479667,
+    "actual_first_row_ms": 46.476291,
+    "estimated_total_cost": 10009.10498627093,
+    "estimated_first_row_cost": 10009.10498627093
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

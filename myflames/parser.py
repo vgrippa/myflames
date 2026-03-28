@@ -6,6 +6,132 @@ import re
 import json
 
 
+# ---------------------------------------------------------------------------
+# SQL formatting
+# ---------------------------------------------------------------------------
+
+def format_sql(sql):
+    """Best-effort SQL beautifier. Returns a list of display lines.
+
+    Handles MySQL's ``/* select#N */`` comment prefix and backtick-quoted
+    identifiers. No external dependencies required.
+    """
+    if not sql:
+        return []
+    # Strip MySQL's /* select#N */ comment prefix
+    sql = re.sub(r'^/\*.*?\*/\s*', '', sql.strip(), flags=re.DOTALL)
+    # Remove backtick quoting for readability: `table` -> table
+    sql = re.sub(r'`([^`]+)`', r'\1', sql)
+    # Normalize whitespace
+    sql = re.sub(r'\s+', ' ', sql.strip())
+
+    # Keywords that begin a new line (longer variants first to avoid partial matches)
+    BREAK_BEFORE = sorted([
+        "SELECT", "FROM",
+        "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL OUTER JOIN", "CROSS JOIN", "JOIN",
+        "WHERE", "GROUP BY", "HAVING", "ORDER BY",
+        "LIMIT", "OFFSET", "UNION ALL", "UNION", "WITH",
+        "INSERT INTO", "UPDATE", "DELETE FROM", "SET", "VALUES",
+    ], key=len, reverse=True)
+
+    for kw in BREAK_BEFORE:
+        sql = re.sub(
+            r'(?<![.\w])(' + re.escape(kw) + r')(?![.\w])',
+            r'\n\1', sql, flags=re.IGNORECASE,
+        )
+
+    raw_lines = [l.strip() for l in sql.split('\n') if l.strip()]
+    result = []
+    for line in raw_lines:
+        upper = line.upper()
+        if any(upper.startswith(kw) for kw in ('AND ', 'OR ', 'ON ')):
+            result.append('    ' + line)
+        elif any(upper.startswith(kw) for kw in (
+            'INNER JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'CROSS JOIN', 'FULL OUTER JOIN', 'JOIN',
+        )):
+            result.append('  ' + line)
+        else:
+            result.append(line)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Index suggestion heuristics
+# ---------------------------------------------------------------------------
+
+def _col_refs_for_table(condition, table_name):
+    """Extract column names referenced for *table_name* in a condition string.
+
+    Tries the exact table name first (``table.col`` or `` `table`.`col` ``),
+    then falls back to a single-letter alias matching the first letter of the
+    table name (common in MySQL auto-generated EXPLAIN output, e.g. ``o.status``
+    when the table is ``orders``).  Returns a deduped, order-preserving list.
+    """
+    if not condition or not table_name:
+        return []
+    def _find(prefix):
+        pat = r'`?' + re.escape(prefix) + r'`?\.`?(\w+)`?'
+        return re.findall(pat, condition, re.IGNORECASE)
+
+    cols = _find(table_name)
+    if not cols and len(table_name) >= 2:
+        cols = _find(table_name[0])  # single-char alias heuristic
+    # Deduplicate, preserve order, skip obvious non-column names
+    seen = set()
+    result = []
+    for c in cols:
+        lc = c.lower()
+        if lc not in seen:
+            seen.add(lc)
+            result.append(c)
+    return result
+
+
+def _suggest_indexes(root):
+    """Walk the parsed EXPLAIN tree and return concrete index suggestions.
+
+    Looks for Filter nodes whose conditions sit above full-table-scan nodes.
+    Returns a list of dicts: ``{"table", "columns", "ddl", "reason"}``.
+    """
+    suggestions = []
+    seen_ddl = set()
+
+    def _walk(node, inherited_condition=None):
+        details = node.get("details") or {}
+        access_type = (details.get("access_type") or "").lower()
+        condition = details.get("condition") or ""
+        table_name = details.get("table_name") or ""
+        children = node.get("children") or []
+
+        # Effective condition: own condition takes priority; fall back to parent filter
+        effective_cond = condition or inherited_condition or ""
+
+        if access_type == "table" and table_name and effective_cond:
+            cols = _col_refs_for_table(effective_cond, table_name)
+            if cols:
+                idx_name = "idx_{}_{}".format(table_name, "_".join(cols[:3]))
+                cols_ddl = ", ".join(cols[:3])
+                ddl = "CREATE INDEX {} ON {} ({});".format(idx_name, table_name, cols_ddl)
+                if ddl not in seen_ddl:
+                    seen_ddl.add(ddl)
+                    suggestions.append({
+                        "table": table_name,
+                        "columns": cols[:3],
+                        "ddl": ddl,
+                        "reason": "Full scan on {} with filter on ({})".format(
+                            table_name, cols_ddl
+                        ),
+                    })
+
+        # Pass filter condition down so child table-scan nodes can see it
+        child_cond = condition if condition else inherited_condition
+        for child in children:
+            _walk(child, inherited_condition=child_cond)
+
+    _walk(root)
+    return suggestions
+
+
 def xml_escape(s):
     if s is None:
         return ""
@@ -200,6 +326,9 @@ def load_explain_json(text):
 def parse_explain(text):
     """Parse EXPLAIN JSON text into root tree node."""
     data = load_explain_json(text)
+    # MySQL 9.7+ wraps the plan in a "query_plan" key
+    if "query_plan" in data and isinstance(data["query_plan"], dict):
+        data = data["query_plan"]
     root = parse_node(data)
     if not root:
         raise ValueError("Failed to parse EXPLAIN JSON")
@@ -491,6 +620,8 @@ def analyze_plan(root):
             lbl = b.get("short_label") or "Table scan"
             node_highlights.append({"short_label": lbl, "message": bnl_msg})
 
+    index_suggestions = _suggest_indexes(root)
+
     return {
         "full_scans": full_scans,
         "hash_joins": hash_joins,
@@ -501,6 +632,8 @@ def analyze_plan(root):
         "warnings": warnings,
         "suggestions": suggestions,
         "node_highlights": node_highlights,
+        "index_suggestions": index_suggestions,
+        "query_text_lines": [],   # populated by CLI via load_explain_json + format_sql
     }
 
 
@@ -599,6 +732,12 @@ def _how_to_read_lines(view_type):
             "Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.",
             "Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).",
         ]
+    if view_type == "tree":
+        return "How to read", [
+            "Each row = one plan operation. Indentation shows parent\u2192child (outer\u2192inner). Self = time in this op only; Total = including children.",
+            "Click \u25be/\u25b8 to collapse/expand a subtree. Click a row to pin its details. Ctrl+F to search.",
+            "Orange rows \u26a0 have a warning in the Query Analysis panel below.",
+        ]
     return "How to read", ["Hover or select elements to see details. Warnings below refer to specific bars, cells, or nodes by label."]
 
 
@@ -620,7 +759,15 @@ def render_info_panel(analysis, x, y, width, view_type="bargraph"):
     suggestions = analysis.get("suggestions") or []
     node_highlights = analysis.get("node_highlights") or []
 
+    query_text_lines = analysis.get("query_text_lines") or []
+    index_suggestions = analysis.get("index_suggestions") or []
+
     sections = []
+
+    # SQL query section — shown first so the artifact is self-contained
+    if query_text_lines:
+        sections.append(("Query", list(query_text_lines), "query"))
+
     how_title, how_lines = _how_to_read_lines(view_type)
     sections.append((how_title, how_lines, "how"))
     sections.append(("Optimizer features in this plan", features if features else ["None detected"], "feature"))
@@ -640,6 +787,13 @@ def render_info_panel(analysis, x, y, width, view_type="bargraph"):
 
     if suggestions:
         sections.append(("Suggestions", ["\u2022  " + s for s in suggestions], "suggest"))
+
+    if index_suggestions:
+        idx_lines = []
+        for hint in index_suggestions:
+            idx_lines.append("\u2022  " + hint["reason"])
+            idx_lines.append("    " + hint["ddl"])
+        sections.append(("\U0001f4c8  Index suggestions (heuristic — verify before applying)", idx_lines, "index"))
 
     # Word-wrap text to fit panel width (approx 6.2px per char for 11px Arial)
     max_chars = max(60, int((width - pad_x * 2 - 30) / 6.2))
@@ -698,16 +852,19 @@ def render_info_panel(analysis, x, y, width, view_type="bargraph"):
     )
     cy += title_h + 12
 
-    # Section style map: (header_bg, header_text_color, content_text_color)
+    # Section style map: (header_bg, header_text_color, content_text_color, content_font)
     _STYLES = {
-        "how":     ("#f1f8e9", "#33691e", "#455a64"),
-        "feature": ("#e3f2fd", "#0d47a1", "#1565c0"),
-        "warning": ("#fff3f3", "#b71c1c", "#c62828"),
-        "suggest": ("#e8f5e9", "#1b5e20", "#2e7d32"),
+        "how":     ("#f1f8e9", "#33691e", "#455a64",  "Arial,sans-serif"),
+        "feature": ("#e3f2fd", "#0d47a1", "#1565c0",  "Arial,sans-serif"),
+        "warning": ("#fff3f3", "#b71c1c", "#c62828",  "Arial,sans-serif"),
+        "suggest": ("#e8f5e9", "#1b5e20", "#2e7d32",  "Arial,sans-serif"),
+        "query":   ("#f5f5f5", "#37474f", "#263238",  "Courier New,Courier,monospace"),
+        "index":   ("#fff8e1", "#e65100", "#bf360c",  "Courier New,Courier,monospace"),
     }
 
     for sec_title, content, kind in wrapped_sections:
-        hdr_bg, hdr_color, content_color = _STYLES.get(kind, ("#f5f5f5", "#333", "#555"))
+        style = _STYLES.get(kind, ("#f5f5f5", "#333", "#555", "Arial,sans-serif"))
+        hdr_bg, hdr_color, content_color, content_font = style
         # Section header band
         lines.append(
             f'<rect x="{x + 4}" y="{cy}" width="{width - 8}" height="{section_hdr_h}" '
@@ -720,7 +877,7 @@ def render_info_panel(analysis, x, y, width, view_type="bargraph"):
         cy += section_hdr_h + 4
         for line_text in content:
             lines.append(
-                f'<text x="{x + pad_x + 10}" y="{cy + line_h - 4}" font-family="Arial,sans-serif" '
+                f'<text x="{x + pad_x + 10}" y="{cy + line_h - 4}" font-family="{content_font}" '
                 f'font-size="11" fill="{content_color}">{xml_escape(line_text)}</text>'
             )
             cy += line_h
