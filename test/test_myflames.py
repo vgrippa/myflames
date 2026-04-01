@@ -1106,28 +1106,16 @@ class TestDocumentation(unittest.TestCase):
         self.assertIn('id="breadcrumb"', svg, "Breadcrumb element missing from treemap")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_has_scroll_zoom(self):
-        """README: Diagram supports Ctrl+scroll-wheel zoom."""
+    def test_diagram_has_zoom_buttons(self):
+        """Diagram supports +/- button zoom instead of scroll-wheel zoom."""
         root = parse_explain(_load(self.HASH_JOIN))
         svg = render_diagram(root)
-        self.assertIn("wheel", svg, "Scroll-wheel zoom JS missing from diagram")
-        self.assertIn("svgYFromEvent", svg, "Diagram-area zoom guard missing")
-        # Must require Ctrl so plain scroll can scroll the page
-        self.assertIn("ctrlKey", svg, "Zoom must require Ctrl+wheel to allow page scrolling")
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_zoom_does_not_block_page_scroll(self):
-        """Wheel without Ctrl must not call preventDefault (page must be scrollable)."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root)
-        # The guard 'if (!e.ctrlKey && !e.metaKey) return;' must come before preventDefault
-        # Verify the early-return guard precedes any preventDefault call
-        ctrl_pos = svg.find("ctrlKey")
-        prevent_pos = svg.find("preventDefault")
-        self.assertGreater(ctrl_pos, 0, "ctrlKey guard not found")
-        self.assertGreater(prevent_pos, 0, "preventDefault not found")
-        self.assertLess(ctrl_pos, prevent_pos,
-                        "ctrlKey guard must appear before preventDefault so plain scroll is not blocked")
+        self.assertIn('id="zoom-in"', svg, "Zoom-in button missing from diagram")
+        self.assertIn('id="zoom-out"', svg, "Zoom-out button missing from diagram")
+        self.assertIn('id="zoom-reset"', svg, "Zoom-reset button missing from diagram")
+        self.assertIn("zoomBy", svg, "zoomBy function missing from diagram JS")
+        # Must NOT have scroll-wheel zoom
+        self.assertNotIn("wheel", svg, "Scroll-wheel zoom should be removed from diagram")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_content_has_clip_path(self):
@@ -1599,6 +1587,357 @@ class TestHypergraphOnVsOff(unittest.TestCase):
             root = parse_explain(f.read())
         self.assertNotEqual(root["short_label"], "unknown")
         self.assertGreater(root["total_time"], 0)
+
+
+# ---------------------------------------------------------------------------
+# MySQL CLI output format tolerance tests
+# ---------------------------------------------------------------------------
+
+class TestMySQLOutputFormats(unittest.TestCase):
+    """Parser must handle common MySQL CLI output quirks."""
+
+    @classmethod
+    def setUpClass(cls):
+        p = os.path.join(TEST_DIR, "mysql-explain-hash-join.json")
+        if not os.path.exists(p):
+            raise unittest.SkipTest("fixture missing")
+        with open(p) as f:
+            cls.original = f.read().strip()
+        cls.expected_op = "Inner hash join"
+
+    def test_escaped_newlines(self):
+        """mysql -N -e without -r escapes newlines as literal backslash-n."""
+        escaped = self.original.replace("\n", "\\n").replace("\t", "\\t")
+        root = parse_explain(escaped)
+        self.assertIn(self.expected_op, root["full_label"])
+
+    def test_explain_column_header(self):
+        """mysql -e without -N prepends an EXPLAIN column header."""
+        with_header = "EXPLAIN\n" + self.original
+        root = parse_explain(with_header)
+        self.assertIn(self.expected_op, root["full_label"])
+
+    def test_table_borders(self):
+        """mysql --table wraps output in +---+ borders and | ... | rows."""
+        single = self.original.replace("\n", " ")
+        table = (
+            "+--------------------------------------------+\n"
+            "| EXPLAIN                                    |\n"
+            "+--------------------------------------------+\n"
+            "| " + single + " |\n"
+            "+--------------------------------------------+"
+        )
+        root = parse_explain(table)
+        self.assertIn(self.expected_op, root["full_label"])
+
+    def test_utf8_bom(self):
+        """Files saved with BOM (e.g. from Windows editors) must parse."""
+        bom = "\ufeff" + self.original
+        root = parse_explain(bom)
+        self.assertIn(self.expected_op, root["full_label"])
+
+    def test_leading_whitespace(self):
+        """Leading blank lines and spaces must be tolerated."""
+        padded = "\n\n   \n" + self.original + "\n\n"
+        root = parse_explain(padded)
+        self.assertIn(self.expected_op, root["full_label"])
+
+    def test_garbage_gives_helpful_error(self):
+        """Non-JSON input must raise ValueError with mysql flag hint."""
+        with self.assertRaises(ValueError) as ctx:
+            parse_explain("this is not json")
+        self.assertIn("-s", str(ctx.exception))
+        self.assertIn("-r", str(ctx.exception))
+
+    def test_junk_before_json(self):
+        """Random text before JSON (e.g. warnings) must be stripped."""
+        junk = "Warning: password on command line\n" + self.original
+        root = parse_explain(junk)
+        self.assertIn(self.expected_op, root["full_label"])
+
+    def test_cli_with_escaped_newlines(self):
+        """End-to-end CLI test: piping escaped-newline JSON must work."""
+        escaped = self.original.replace("\n", "\\n").replace("\t", "\\t")
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "--type", "bargraph"],
+            input=escaped, cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0,
+                         "CLI failed on escaped input: %s" % result.stderr)
+        self.assertIn("<svg", result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# New feature tests: HTML report, compare, guide, --version, --output, sample
+# ---------------------------------------------------------------------------
+
+SAMPLE_JSON = os.path.join(REPO_DIR, "sample.json")
+HASH_JOIN_FIXTURE = os.path.join(TEST_DIR, "mysql-explain-hash-join.json")
+SIMPLE_FIXTURE = os.path.join(TEST_DIR, "mysql-explain-json-sample.json")
+
+
+class TestSampleJSON(unittest.TestCase):
+    """The repo must include a sample.json for quick-start."""
+
+    def test_sample_json_exists(self):
+        self.assertTrue(os.path.exists(SAMPLE_JSON), "sample.json missing from repo root")
+
+    def test_sample_json_is_valid(self):
+        with open(SAMPLE_JSON) as f:
+            data = json.load(f)
+        self.assertIn("operation", data, "sample.json must have an operation key")
+        self.assertIn("inputs", data, "sample.json must have inputs")
+
+    def test_sample_json_renders_all_types(self):
+        with open(SAMPLE_JSON) as f:
+            text = f.read()
+        root = parse_explain(text)
+        self.assertGreater(root["total_time"], 0)
+        for view in ["flamegraph", "bargraph", "treemap", "diagram", "tree"]:
+            if view == "flamegraph":
+                from myflames.parser import build_flame_entries
+                entries = list(build_flame_entries(root))
+                self.assertGreater(len(entries), 0, "No flame entries from sample.json")
+            elif view == "bargraph":
+                svg = render_bargraph(root, title="test")
+                self.assertIn("<svg", svg)
+            elif view == "treemap":
+                svg = render_treemap(root, title="test")
+                self.assertIn("<svg", svg)
+            elif view == "diagram":
+                svg = render_diagram(root, title="test")
+                self.assertIn("<svg", svg)
+            elif view == "tree":
+                svg = render_tree(root, title="test")
+                self.assertIn("<svg", svg)
+
+
+class TestCLIVersion(unittest.TestCase):
+    """myflames --version must print version string."""
+
+    def test_version_flag(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "--version"],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("myflames", result.stdout)
+        # Version should be a dotted number
+        import re
+        self.assertTrue(re.search(r'\d+\.\d+\.\d+', result.stdout),
+                        "Version output missing semver: %s" % result.stdout.strip())
+
+
+class TestCLIGuide(unittest.TestCase):
+    """myflames guide must print view recommendations."""
+
+    def test_guide_subcommand(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "guide"],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("flamegraph", result.stdout)
+        self.assertIn("bargraph", result.stdout)
+        self.assertIn("diagram", result.stdout)
+        self.assertIn("treemap", result.stdout)
+        self.assertIn("tree", result.stdout)
+        self.assertIn("Which view", result.stdout)
+
+
+class TestCLIOutputFlag(unittest.TestCase):
+    """myflames --output PATH must write to a file instead of stdout."""
+
+    @unittest.skipUnless(os.path.exists(SIMPLE_FIXTURE), "fixture missing")
+    def test_output_flag_writes_svg_file(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "myflames", "--output", tmp_path, SIMPLE_FIXTURE],
+                cwd=REPO_DIR, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            with open(tmp_path) as f:
+                content = f.read()
+            self.assertIn("<svg", content, "SVG content missing from output file")
+        finally:
+            os.unlink(tmp_path)
+
+    @unittest.skipUnless(os.path.exists(SIMPLE_FIXTURE), "fixture missing")
+    def test_output_flag_stdout_is_empty(self):
+        """When --output is used, stdout should be empty (content goes to file)."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "myflames", "--output", tmp_path, SIMPLE_FIXTURE],
+                cwd=REPO_DIR, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "", "stdout should be empty when --output is used")
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestHTMLReport(unittest.TestCase):
+    """myflames --output report.html must produce a self-contained HTML report."""
+
+    @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
+    def test_html_report_has_required_sections(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "myflames", "--output", tmp_path, HASH_JOIN_FIXTURE],
+                cwd=REPO_DIR, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, "CLI failed: %s" % result.stderr)
+            with open(tmp_path) as f:
+                html = f.read()
+            self.assertIn("<!DOCTYPE html>", html, "Missing HTML doctype")
+            self.assertIn("<svg", html, "Missing embedded SVG")
+            self.assertIn("Export SVG", html, "Missing SVG export button")
+            self.assertIn("Export Analysis JSON", html, "Missing JSON export button")
+            self.assertIn("Print", html, "Missing print button")
+            self.assertIn("Warnings", html, "Missing warnings section")
+            self.assertIn("Suggestions", html, "Missing suggestions section")
+        finally:
+            os.unlink(tmp_path)
+
+    @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
+    def test_html_report_all_view_types(self):
+        """HTML report must work for all 5 view types."""
+        import tempfile
+        for view in ["flamegraph", "bargraph", "treemap", "diagram", "tree"]:
+            with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "myflames", "--type", view,
+                     "--output", tmp_path, HASH_JOIN_FIXTURE],
+                    cwd=REPO_DIR, capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0,
+                                 "HTML report failed for %s: %s" % (view, result.stderr))
+                with open(tmp_path) as f:
+                    html = f.read()
+                self.assertIn("<svg", html,
+                              "SVG missing from HTML report for %s" % view)
+                self.assertIn("<!DOCTYPE html>", html)
+            finally:
+                os.unlink(tmp_path)
+
+    @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
+    def test_html_report_python_api(self):
+        """render_html_report() must return valid HTML with SVG."""
+        from myflames.output_html_report import render_html_report
+        with open(HASH_JOIN_FIXTURE) as f:
+            json_text = f.read()
+        html = render_html_report(json_text, view_type="diagram", title="Test Report")
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("<svg", html)
+        self.assertIn("Test Report", html)
+
+
+class TestCompare(unittest.TestCase):
+    """myflames compare must produce a before/after HTML diff."""
+
+    @unittest.skipUnless(
+        os.path.exists(SIMPLE_FIXTURE) and os.path.exists(HASH_JOIN_FIXTURE),
+        "fixtures missing")
+    def test_compare_cli_produces_html(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "compare",
+             SIMPLE_FIXTURE, HASH_JOIN_FIXTURE],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, "compare failed: %s" % result.stderr)
+        html = result.stdout
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("What changed", html)
+        self.assertIn("Operator comparison", html)
+
+    @unittest.skipUnless(
+        os.path.exists(SIMPLE_FIXTURE) and os.path.exists(HASH_JOIN_FIXTURE),
+        "fixtures missing")
+    def test_compare_cli_output_flag(self):
+        """compare --output PATH must write to a file."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "myflames", "compare",
+                 SIMPLE_FIXTURE, HASH_JOIN_FIXTURE,
+                 "--output", tmp_path],
+                cwd=REPO_DIR, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, "compare --output failed: %s" % result.stderr)
+            with open(tmp_path) as f:
+                html = f.read()
+            self.assertIn("Operator comparison", html)
+        finally:
+            os.unlink(tmp_path)
+
+    @unittest.skipUnless(
+        os.path.exists(SIMPLE_FIXTURE) and os.path.exists(HASH_JOIN_FIXTURE),
+        "fixtures missing")
+    def test_compare_shows_time_delta(self):
+        """Comparison report must show time change indicators."""
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "compare",
+             SIMPLE_FIXTURE, HASH_JOIN_FIXTURE],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        html = result.stdout
+        # Must contain before and after time values
+        self.assertIn("Before", html)
+        self.assertIn("After", html)
+        self.assertIn("Change", html)
+
+    @unittest.skipUnless(
+        os.path.exists(SIMPLE_FIXTURE) and os.path.exists(HASH_JOIN_FIXTURE),
+        "fixtures missing")
+    def test_compare_custom_title(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "myflames", "compare",
+             SIMPLE_FIXTURE, HASH_JOIN_FIXTURE,
+             "--title", "Custom Diff Title"],
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Custom Diff Title", result.stdout)
+
+    @unittest.skipUnless(
+        os.path.exists(HASH_JOIN_FIXTURE),
+        "fixture missing")
+    def test_compare_same_file(self):
+        """Comparing a file to itself should show no change."""
+        from myflames.output_compare import render_compare
+        with open(HASH_JOIN_FIXTURE) as f:
+            json_text = f.read()
+        html = render_compare(json_text, json_text)
+        self.assertIn("no change", html)
+
+    @unittest.skipUnless(
+        os.path.exists(SIMPLE_FIXTURE) and os.path.exists(HASH_JOIN_FIXTURE),
+        "fixtures missing")
+    def test_compare_python_api(self):
+        """render_compare() must return valid HTML."""
+        from myflames.output_compare import render_compare
+        with open(SIMPLE_FIXTURE) as f:
+            json_before = f.read()
+        with open(HASH_JOIN_FIXTURE) as f:
+            json_after = f.read()
+        html = render_compare(json_before, json_after, title="API Test")
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("API Test", html)
+        self.assertIn("<table>", html)
 
 
 # ---------------------------------------------------------------------------

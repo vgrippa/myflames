@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="1103" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="1186" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -49,30 +49,35 @@ Table: orders
 <text id="details-l3" x="12" y="732" text-anchor="start" class="details-line"></text>
 <text id="details-l4" x="12" y="746" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
-<rect x="2" y="760" width="1196" height="343" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="2" y="760" width="1196" height="426" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
 <rect x="2" y="770" width="1196" height="30" fill="#e8eaf6" rx="6"/>
 <rect x="2" y="776" width="1196" height="24" fill="#e8eaf6"/>
 <text x="18" y="789" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="6" y="808" width="1188" height="22" fill="#f1f8e9" rx="4"/>
-<text x="18" y="823" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="28" y="847" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Cell area = total time (including children). Click a cell to zoom.</text>
-<text x="28" y="864" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the cell — the details bar shows “In Query Analysis” and the label that appears in the panel below.</text>
-<rect x="6" y="874" width="1188" height="22" fill="#e3f2fd" rx="4"/>
-<text x="18" y="889" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="28" y="913" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on</text>
-<rect x="6" y="923" width="1188" height="22" fill="#fff3f3" rx="4"/>
-<text x="18" y="938" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="28" y="962" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows), orders (12000 rows)</text>
-<text x="28" y="979" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”, “Table scan [orders]”</text>
-<text x="28" y="996" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</text>
-<text x="28" y="1013" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (orders.user_id = users.id)”</text>
-<rect x="6" y="1023" width="1188" height="22" fill="#e8f5e9" rx="4"/>
-<text x="18" y="1038" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="28" y="1062" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="28" y="1079" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
+<rect x="6" y="808" width="1188" height="22" fill="#f5f5f5" rx="4"/>
+<text x="18" y="823" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="28" y="847" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select u.name AS name, o.total AS total</text>
+<text x="28" y="864" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from testdb.users u</text>
+<text x="28" y="881" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.orders o on (o.user_id = u.id)</text>
+<rect x="6" y="891" width="1188" height="22" fill="#f1f8e9" rx="4"/>
+<text x="18" y="906" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="28" y="930" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Cell area = total time (including children). Click a cell to zoom.</text>
+<text x="28" y="947" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the cell — the details bar shows “In Query Analysis” and the label that appears in the panel below.</text>
+<rect x="6" y="957" width="1188" height="22" fill="#e3f2fd" rx="4"/>
+<text x="18" y="972" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="28" y="996" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on</text>
+<rect x="6" y="1006" width="1188" height="22" fill="#fff3f3" rx="4"/>
+<text x="18" y="1021" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="28" y="1045" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows), orders (12000 rows)</text>
+<text x="28" y="1062" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”, “Table scan [orders]”</text>
+<text x="28" y="1079" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</text>
+<text x="28" y="1096" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (orders.user_id = users.id)”</text>
+<rect x="6" y="1106" width="1188" height="22" fill="#e8f5e9" rx="4"/>
+<text x="18" y="1121" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="28" y="1145" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="28" y="1162" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
 <script type="text/ecmascript"><![CDATA[
 (function() {
-  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 1103;
+  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 1186;
   var N_LINES = 5;
   var zoomable, unzoomBtn, searchBtn, pinnedCell = null;
   var detailLines = [];

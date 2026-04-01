@@ -1,0 +1,42 @@
+{
+  "query": "SELECT u.name, COUNT(o.id) AS order_count FROM users u JOIN orders o ON u.id = o.user_id WHERE u.country = 'US' GROUP BY u.name",
+  "inputs": [
+    {
+      "operation": "Table scan on users",
+      "table_name": "users",
+      "access_type": "table",
+      "actual_rows": 3000.0,
+      "schema_name": "shop",
+      "actual_loops": 1,
+      "used_columns": ["id", "name", "country"],
+      "estimated_rows": 3000.0,
+      "actual_last_row_ms": 2.54,
+      "actual_first_row_ms": 0.10,
+      "estimated_total_cost": 303.5
+    },
+    {
+      "operation": "Index lookup on orders using idx_user_id (user_id = users.id)",
+      "table_name": "orders",
+      "access_type": "index",
+      "index_name": "idx_user_id",
+      "actual_rows": 4.0,
+      "schema_name": "shop",
+      "actual_loops": 3000,
+      "used_columns": ["id", "user_id"],
+      "estimated_rows": 4.0,
+      "actual_last_row_ms": 0.005,
+      "actual_first_row_ms": 0.002,
+      "estimated_total_cost": 1.15
+    }
+  ],
+  "condition": "(users.country = 'US')",
+  "join_type": "inner join",
+  "operation": "Nested loop inner join",
+  "access_type": "join",
+  "join_algorithm": "nested_loop",
+  "actual_rows": 12000.0,
+  "actual_loops": 1,
+  "actual_last_row_ms": 18.75,
+  "actual_first_row_ms": 0.31,
+  "estimated_total_cost": 4850.0
+}

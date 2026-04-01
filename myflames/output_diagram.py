@@ -311,6 +311,11 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         "  #search:hover { fill: #000; }",
         "  .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6; stroke-width: 3; }",
         "  .diagram-node.dim { opacity: 0.25; }",
+        "  .zoom-controls { cursor: pointer; }",
+        "  .zoom-btn rect { fill: #fff; stroke: #bbb; stroke-width: 1; rx: 4; }",
+        "  .zoom-btn:hover rect { fill: #f0f0f0; stroke: #888; }",
+        "  .zoom-btn text { font-size: 18px; font-weight: bold; fill: #444; user-select: none; pointer-events: none; }",
+        "  .zoom-btn:hover text { fill: #111; }",
         "</style>",
         '<rect width="100%" height="100%" fill="#fafafa"/>',
         f'<text x="{total_width/2}" y="28" text-anchor="middle" class="title">{xml_escape(title)}</text>',
@@ -323,7 +328,7 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     # Pre-allocate detail lines
     for di in range(details_lines_n):
         dy = details_y_start + di * details_line_h
-        default_text = "Click a node to pin details  \u00b7  Ctrl+Scroll to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search" if di == 0 else ""
+        default_text = "Click a node to pin details  \u00b7  +/\u2212 to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search" if di == 0 else ""
         lines.append(
             f'<text id="details-l{di}" x="{pad + 10}" y="{dy}" '
             f'text-anchor="start" class="details-line">{xml_escape(default_text)}</text>'
@@ -473,13 +478,26 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
 
     lines.append("</g>")  # close diagram-content
 
+    # Zoom controls: + and - buttons in bottom-right of diagram area
+    zb_size = 30
+    zb_margin = 12
+    zb_x = total_width - pad - zb_size - zb_margin
+    zb_y_minus = int(details_sep_y) - zb_margin - zb_size
+    zb_y_plus = zb_y_minus - 4 - zb_size
+    zb_y_reset = zb_y_minus + zb_size + 4
+    lines.append(f'<g class="zoom-controls">')
+    lines.append(f'<g class="zoom-btn" id="zoom-in"><rect x="{zb_x}" y="{zb_y_plus}" width="{zb_size}" height="{zb_size}"/><text x="{zb_x + zb_size/2}" y="{zb_y_plus + zb_size/2 + 6}" text-anchor="middle">+</text></g>')
+    lines.append(f'<g class="zoom-btn" id="zoom-out"><rect x="{zb_x}" y="{zb_y_minus}" width="{zb_size}" height="{zb_size}"/><text x="{zb_x + zb_size/2}" y="{zb_y_minus + zb_size/2 + 6}" text-anchor="middle">\u2212</text></g>')
+    lines.append(f'<g class="zoom-btn" id="zoom-reset"><rect x="{zb_x}" y="{zb_y_reset}" width="{zb_size}" height="{zb_size}"/><text x="{zb_x + zb_size/2}" y="{zb_y_reset + zb_size/2 + 6}" text-anchor="middle">\u21ba</text></g>')
+    lines.append('</g>')
+
     lines.append(f"""<script type="text/javascript"><![CDATA[
 (function() {{
   var N_LINES = {details_lines_n};
   var detailLines = [];
   var searchBtn, content, svgEl;
   var diagramBottom = {diagram_height};
-  var defaultHint = "Click a node to pin details  \u00b7  Ctrl+Scroll to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search";
+  var defaultHint = "Click a node to pin details  \u00b7  +/\u2212 to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search";
   var pinned = false, searchActive = false;
   var vx = 0, vy = 0, vs = 1;
   var dragging = false, dragStart = {{x:0,y:0}}, dragOrigin = {{x:0,y:0}};
@@ -522,20 +540,22 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     }}
     if (!content) return;
 
-    // Zoom: Ctrl+scroll only, and only within diagram area
-    // Without Ctrl the event is not consumed, so the page can scroll normally.
-    svgEl.addEventListener("wheel", function(e) {{
-      if (!e.ctrlKey && !e.metaKey) return;
-      if (svgYFromEvent(e) > diagramBottom) return;
-      e.preventDefault();
-      var delta = e.deltaY > 0 ? 0.85 : 1.18;
+    // Zoom via +/- buttons (zoom toward center of diagram area)
+    function zoomBy(factor) {{
       var rect = svgEl.getBoundingClientRect();
-      var mx = e.clientX - rect.left, my = e.clientY - rect.top;
-      vx = mx + (vx - mx) * delta;
-      vy = my + (vy - my) * delta;
-      vs *= delta;
+      var svgW = parseFloat(svgEl.getAttribute('width')) || rect.width;
+      var cx = svgW / 2, cy = diagramBottom / 2;
+      vx = cx + (vx - cx) * factor;
+      vy = cy + (vy - cy) * factor;
+      vs *= factor;
       applyTransform();
-    }}, {{passive: false}});
+    }}
+    var zoomInBtn = document.getElementById("zoom-in");
+    var zoomOutBtn = document.getElementById("zoom-out");
+    var zoomResetBtn = document.getElementById("zoom-reset");
+    if (zoomInBtn) zoomInBtn.addEventListener("click", function() {{ zoomBy(1.25); }});
+    if (zoomOutBtn) zoomOutBtn.addEventListener("click", function() {{ zoomBy(0.8); }});
+    if (zoomResetBtn) zoomResetBtn.addEventListener("click", function() {{ vx = 0; vy = 0; vs = 1; applyTransform(); }});
 
     // Drag: only in diagram area, not on text and not on nodes
     svgEl.addEventListener("mousedown", function(e) {{

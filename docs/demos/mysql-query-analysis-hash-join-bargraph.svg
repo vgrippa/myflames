@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="673" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="756" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -26,16 +26,16 @@
 <text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="539" x2="1190" y2="539" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="543" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="551" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="565" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="579" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="593" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="607" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="621" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="635" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="649" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="622" x2="1190" y2="622" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="626" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="634" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="648" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="662" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="676" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="690" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="704" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="718" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="732" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
 <text x="320" y="98.0" text-anchor="end" class="label">Table scan [orders]</text>
 <text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
@@ -49,27 +49,32 @@
 <text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
 <rect class="bar in-query-analysis" x="410" y="148" width="147.39393939393943" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Inner hash join (orders.user_id = users.id)  ·  Self: 2 ms (23.0%)  ·  Total: 8 ms  ·  Rows: 12000  ·  Loops: 1  ·  Access: join" data-label="Inner hash join (orders.user_id = users.id)" data-analysis-msg="1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)"/>
 <text x="1060" y="166.0" class="value">2 ms (23.0%)</text>
-<rect x="10" y="330" width="1180" height="343" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="10" y="330" width="1180" height="426" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
 <rect x="10" y="340" width="1180" height="30" fill="#e8eaf6" rx="6"/>
 <rect x="10" y="346" width="1180" height="24" fill="#e8eaf6"/>
 <text x="26" y="359" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="14" y="378" width="1172" height="22" fill="#f1f8e9" rx="4"/>
-<text x="26" y="393" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="36" y="417" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
-<text x="36" y="434" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
-<rect x="14" y="444" width="1172" height="22" fill="#e3f2fd" rx="4"/>
-<text x="26" y="459" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="36" y="483" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on</text>
-<rect x="14" y="493" width="1172" height="22" fill="#fff3f3" rx="4"/>
-<text x="26" y="508" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="36" y="532" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows), orders (12000 rows)</text>
-<text x="36" y="549" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”, “Table scan [orders]”</text>
-<text x="36" y="566" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</text>
-<text x="36" y="583" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (orders.user_id = users.id)”</text>
-<rect x="14" y="593" width="1172" height="22" fill="#e8f5e9" rx="4"/>
-<text x="26" y="608" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="36" y="632" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="36" y="649" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
+<rect x="14" y="378" width="1172" height="22" fill="#f5f5f5" rx="4"/>
+<text x="26" y="393" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="36" y="417" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select u.name AS name, o.total AS total</text>
+<text x="36" y="434" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from testdb.users u</text>
+<text x="36" y="451" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.orders o on (o.user_id = u.id)</text>
+<rect x="14" y="461" width="1172" height="22" fill="#f1f8e9" rx="4"/>
+<text x="26" y="476" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="36" y="500" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
+<text x="36" y="517" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
+<rect x="14" y="527" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="542" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="36" y="566" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on</text>
+<rect x="14" y="576" width="1172" height="22" fill="#fff3f3" rx="4"/>
+<text x="26" y="591" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="36" y="615" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows), orders (12000 rows)</text>
+<text x="36" y="632" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”, “Table scan [orders]”</text>
+<text x="36" y="649" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</text>
+<text x="36" y="666" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (orders.user_id = users.id)”</text>
+<rect x="14" y="676" width="1172" height="22" fill="#e8f5e9" rx="4"/>
+<text x="26" y="691" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="36" y="715" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="36" y="732" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];

@@ -317,10 +317,70 @@ def parse_node(node):
 
 
 def load_explain_json(text):
-    """Load and strip EXPLAIN: prefix if present."""
+    """Load EXPLAIN JSON, tolerating common MySQL CLI output quirks.
+
+    Handles:
+    - ``EXPLAIN:`` prefix
+    - ``EXPLAIN`` column header (from ``mysql -e`` without ``-N``)
+    - Table-formatted output (``+---+`` borders and ``| ... |`` rows)
+    - Escaped newlines/tabs (from ``mysql -e`` without ``-r``)
+    - UTF-8 BOM
+    """
+    # Strip UTF-8 BOM
+    text = text.lstrip("\ufeff")
     text = text.strip()
+
+    # Strip EXPLAIN: prefix (e.g. from MySQL shell output)
     text = re.sub(r"^.*?EXPLAIN:\s*", "", text, flags=re.DOTALL)
-    return json.loads(text)
+
+    # Strip MySQL table borders:  +----...----+
+    text = re.sub(r"^\+[-+]+\+\s*", "", text, flags=re.MULTILINE)
+
+    # Strip leading/trailing pipe from table rows:  | ... |
+    lines = text.split("\n")
+    stripped = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("|") and line.endswith("|"):
+            line = line[1:-1].strip()
+        stripped.append(line)
+    text = "\n".join(stripped)
+
+    # Strip EXPLAIN column header (from mysql -e without -N)
+    text = text.strip()
+    text = re.sub(r"^EXPLAIN\s*\n", "", text)
+
+    # Try parsing as-is first
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Handle escaped newlines/tabs from mysql -e without -r:
+    # MySQL outputs literal \n and \t instead of real newlines/tabs.
+    # Replace literal backslash-n/t (outside of JSON string values) with
+    # real newlines — but only if the text looks like single-line JSON.
+    if "\n" not in text.strip() and "\\n" in text:
+        unescaped = text.replace("\\n", "\n").replace("\\t", "\t")
+        try:
+            return json.loads(unescaped)
+        except json.JSONDecodeError:
+            pass
+
+    # Nothing worked — raise a helpful error
+    # Find where the JSON likely starts
+    json_start = re.search(r'[{\[]', text)
+    if json_start and json_start.start() > 0:
+        try:
+            return json.loads(text[json_start.start():])
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(
+        "Cannot parse as JSON. If using mysql CLI, add -s -N -r flags: "
+        "mysql -s -N -r -e 'EXPLAIN ANALYZE FORMAT=JSON ...'"
+    )
 
 
 def parse_explain(text):

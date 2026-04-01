@@ -1,8 +1,43 @@
 # myflames — MySQL Query Plan Visualizer
 
-Visualize MySQL `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG charts. Four output types, one parser, no external dependencies.
+Visualize MySQL `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG charts. Five output types, one parser, no external dependencies.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
+
+---
+
+## Installation
+
+```bash
+pip install myflames
+```
+
+Or install from source:
+
+```bash
+git clone https://github.com/vgrippa/myflames.git
+cd myflames
+pip install .
+```
+
+No external dependencies — pure Python 3.7+ stdlib.
+
+---
+
+## Try it in 30 seconds
+
+A sample EXPLAIN JSON is included in the repo:
+
+```bash
+myflames sample.json > query.svg
+open query.svg
+```
+
+Or generate a self-contained HTML report:
+
+```bash
+myflames --output report.html sample.json
+```
 
 ---
 
@@ -10,11 +45,13 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 
 | Type | Best for | Command |
 |------|----------|---------|
-| **Flame graph** | Seeing the full execution hierarchy and time distribution | `python3 -m myflames explain.json` |
-| **Bar chart** | Quickly finding the slowest individual operations | `python3 -m myflames --type bargraph explain.json` |
-| **Treemap** | Comparing relative cost of all operations at a glance | `python3 -m myflames --type treemap explain.json` |
-| **Diagram** | Understanding join order and access paths (like MySQL Workbench Visual Explain) | `python3 -m myflames --type diagram explain.json` |
-| **Execution tree** | Navigating complex plans — collapsible per-subtree with self/total time per row | `python3 -m myflames --type tree explain.json` |
+| **Flame graph** | Seeing the full execution hierarchy and time distribution | `myflames explain.json` |
+| **Bar chart** | Quickly finding the slowest individual operations | `myflames --type bargraph explain.json` |
+| **Treemap** | Comparing relative cost of all operations at a glance | `myflames --type treemap explain.json` |
+| **Diagram** | Understanding join order and access paths (like MySQL Workbench Visual Explain) | `myflames --type diagram explain.json` |
+| **Execution tree** | Navigating complex plans — collapsible per-subtree with self/total time per row | `myflames --type tree explain.json` |
+
+Not sure which view to pick? Run `myflames guide` for a quick recommendation.
 
 Every view includes a **Query Analysis panel** below the chart with optimizer features detected, warnings (full table scans, hash joins, BNL join buffers, temp tables, filesorts), and tuning suggestions.
 
@@ -40,6 +77,13 @@ Every view includes a **Query Analysis panel** below the chart with optimizer fe
 | Hash join | [fg](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-hash-join-flamegraph.html) | [bar](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-hash-join-bargraph.html) | [tree](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-hash-join-treemap.html) | [diag](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-hash-join-diagram.html) |
 | BNL join buffer | [fg](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-bnl-flamegraph.html) | [bar](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-bnl-bargraph.html) | [tree](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-bnl-treemap.html) | [diag](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-bnl-diagram.html) |
 | Index Condition Pushdown | [fg](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-icp-flamegraph.html) | [bar](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-icp-bargraph.html) | [tree](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-icp-treemap.html) | [diag](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-icp-diagram.html) |
+
+### HTML report and comparison demos
+
+| Demo | Link |
+|------|------|
+| HTML report (diagram) | [mysql-query-report.html](https://vgrippa.github.io/myflames/demos/mysql-query-report.html) |
+| Before vs After comparison | [mysql-query-compare.html](https://vgrippa.github.io/myflames/demos/mysql-query-compare.html) |
 
 > **Note:** Interactive features (zoom, search, tooltips) require the SVG to be opened from an HTML wrapper or GitHub Pages — not from a raw GitHub URL, which blocks inline scripts.
 
@@ -76,35 +120,43 @@ WHERE u.country = 'US'
 GROUP BY u.id;
 ```
 
-Save to a file:
+Save to a file — any of these work:
 
 ```bash
+# Recommended: -s -N -r gives clean JSON
+mysql -u user -p mydb -s -N -r -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
+
+# Also works: myflames auto-strips table borders, headers, and escaped newlines
 mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
+mysql -u user -p mydb -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
 ```
 
 Or pipe directly (stdin supported):
 
 ```bash
-mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." | python3 -m myflames > query.svg
+mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." | myflames > query.svg
 ```
 
 ### 2. Generate a visualization
 
 ```bash
 # Flame graph (default)
-python3 -m myflames explain.json > query.svg
+myflames explain.json > query.svg
 
 # Bar chart — slowest operations first
-python3 -m myflames --type bargraph explain.json > query-bar.svg
+myflames --type bargraph explain.json > query-bar.svg
 
 # Treemap — area proportional to total time
-python3 -m myflames --type treemap explain.json > query-treemap.svg
+myflames --type treemap explain.json > query-treemap.svg
 
 # Diagram — Visual Explain-style flow
-python3 -m myflames --type diagram explain.json > query-diagram.svg
+myflames --type diagram explain.json > query-diagram.svg
 
 # Execution tree — collapsible per-subtree
-python3 -m myflames --type tree explain.json > query-tree.svg
+myflames --type tree explain.json > query-tree.svg
+
+# Self-contained HTML report (attach to a ticket, send to a teammate)
+myflames --output report.html explain.json
 ```
 
 ### 3. Open in a browser
@@ -117,32 +169,67 @@ start query.svg       # Windows
 
 ---
 
-## Installation
-
-```bash
-git clone https://github.com/vgrippa/myflames.git
-cd myflames
-```
-
-Run from the repo root. No `pip install` needed.
-
----
-
 ## All options
 
 ```
-python3 -m myflames [--type TYPE] [options] explain.json > output.svg
+myflames [--type TYPE] [--output PATH] [options] explain.json
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--type` | `flamegraph` | Output type: `flamegraph`, `bargraph`, `treemap`, `diagram`, `tree` |
+| `--output PATH` / `-o` | stdout | Write to file. Use `.html` extension for a self-contained HTML report |
 | `--width N` | 1800 (fg), 1200 (others) | SVG width in pixels |
 | `--height N` | 32 | Frame height in pixels (flamegraph only) |
 | `--colors SCHEME` | `hot` | Color scheme (flamegraph only): `hot`, `mem`, `io`, `red`, `green`, `blue` |
 | `--title TEXT` | `MySQL Query Plan` | Chart title |
 | `--inverted` | off | Icicle graph — flames grow downward (flamegraph only) |
 | `--no-enhance` | off | Disable detailed tooltips (flamegraph only) |
+| `--version` | | Show version and exit |
+
+### Subcommands
+
+```bash
+# Compare before/after optimization
+myflames compare before.json after.json
+myflames compare before.json after.json --output diff.html
+
+# Which view should I use?
+myflames guide
+```
+
+---
+
+## HTML report output
+
+Generate a self-contained HTML file you can attach to a ticket, send to a teammate, or publish:
+
+```bash
+myflames --output report.html explain.json
+myflames --type diagram --output report.html explain.json
+```
+
+The HTML report includes:
+- Embedded interactive SVG chart
+- Analysis sidebar with warnings, suggestions, and optimizer features
+- SQL query display
+- Export buttons (SVG, JSON, Print/PDF)
+
+---
+
+## Compare before/after optimization
+
+```bash
+myflames compare before.json after.json
+myflames compare before.json after.json --output diff.html
+```
+
+The comparison report shows:
+- Total query time delta
+- Per-operator self-time, rows, and loop count changes
+- New or removed full table scans
+- New or resolved warnings
+- Color-coded "what got better / worse" summary
 
 ---
 
@@ -177,7 +264,8 @@ python3 -m myflames [--type TYPE] [options] explain.json > output.svg
 | Hover node | Shows details in the strip below the diagram |
 | Click node | Pins the details (stays visible while you scroll) |
 | Click pinned node | Unpins |
-| Ctrl + scroll wheel (diagram area only) | Zoom in/out |
+| +/− buttons (bottom-right) | Zoom in/out |
+| ↺ button | Reset zoom |
 | Drag background | Pan the diagram |
 | Double-click background | Reset zoom and pan |
 | Ctrl+F | Search nodes by regex |
@@ -257,16 +345,6 @@ All views automatically switch units based on total query time:
 
 ## Advanced usage
 
-### Compare before/after optimization
-
-```bash
-python3 -m myflames --title "Before" before.json > before.svg
-python3 -m myflames --title "After"  after.json  > after.svg
-
-python3 -m myflames --type bargraph --title "Before" before.json > before-bar.svg
-python3 -m myflames --type bargraph --title "After"  after.json  > after-bar.svg
-```
-
 ### Generate folded stacks only
 
 ```bash
@@ -280,13 +358,13 @@ Useful for feeding into other FlameGraph-compatible tools.
 ## Troubleshooting
 
 **"No module named 'myflames'"**
-Run from the repo root, or use the wrapper scripts directly: `python3 mysql_explain.py`.
+Run `pip install myflames` or `pip install .` from the repo root.
 
-**Empty output or parse error**
-Make sure you're using `EXPLAIN ANALYZE FORMAT=JSON` (not just `EXPLAIN FORMAT=JSON`). The `ANALYZE` keyword is required for timing data.
+**"Failed to parse EXPLAIN JSON"**
+Make sure you're using `EXPLAIN ANALYZE FORMAT=JSON` (not just `EXPLAIN FORMAT=JSON`). The `ANALYZE` keyword is required for timing data. myflames automatically handles common MySQL CLI output quirks (escaped newlines, table borders, `EXPLAIN` column headers, BOM), so you don't need `-s -r` flags — but adding them gives the cleanest output: `mysql -s -N -r -e "EXPLAIN ANALYZE FORMAT=JSON ..." > explain.json`.
 
 **Interactive features not working**
-Open the `.html` wrapper file instead of the raw `.svg`. Browsers block inline scripts in SVGs loaded from `raw.githubusercontent.com`. Local `file://` access works fine.
+Open the `.html` wrapper file instead of the raw `.svg`. Browsers block inline scripts in SVGs loaded from `raw.githubusercontent.com`. Local `file://` access works fine. Or use `--output report.html` to generate a self-contained HTML report.
 
 ---
 

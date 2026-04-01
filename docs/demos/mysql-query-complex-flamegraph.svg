@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1800" height="694" onload="init(evt)" viewBox="0 0 1800 694" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1800" height="845" onload="init(evt)" viewBox="0 0 1800 845" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs>
 <style type="text/css">text { font-family: Verdana; font-size: 12px; fill: rgb(0,0,0); }
 #search, #ignorecase { opacity:0.1; cursor:pointer; } #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
@@ -329,26 +329,35 @@
 <text x="299.68" y="55.50">TABLE ..</text>
 </g>
 </g>
-<rect x="4" y="334" width="1792" height="360" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="4" y="334" width="1792" height="511" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
 <rect x="4" y="344" width="1792" height="30" fill="#e8eaf6" rx="6"/>
 <rect x="4" y="350" width="1792" height="24" fill="#e8eaf6"/>
 <text x="20" y="363" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="8" y="382" width="1784" height="22" fill="#f1f8e9" rx="4"/>
-<text x="20" y="397" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="30" y="421" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Width = time for that operation (wider = slower). Bottom = query root; top = leaf table access.</text>
-<text x="30" y="438" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.</text>
-<text x="30" y="455" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
-<rect x="8" y="465" width="1784" height="22" fill="#e3f2fd" rx="4"/>
-<text x="20" y="480" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="30" y="504" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
-<rect x="8" y="514" width="1784" height="22" fill="#fff3f3" rx="4"/>
-<text x="20" y="529" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="30" y="553" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
-<text x="30" y="570" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
-<text x="30" y="587" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
-<text x="30" y="604" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
-<rect x="8" y="614" width="1784" height="22" fill="#e8f5e9" rx="4"/>
-<text x="20" y="629" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="30" y="653" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="30" y="670" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<rect x="8" y="382" width="1784" height="22" fill="#f5f5f5" rx="4"/>
+<text x="20" y="397" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="30" y="421" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
+<text x="30" y="438" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
+<text x="30" y="455" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
+<text x="30" y="472" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
+<text x="30" y="489" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
+<text x="30" y="506" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
+<text x="30" y="523" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
+<rect x="8" y="533" width="1784" height="22" fill="#f1f8e9" rx="4"/>
+<text x="20" y="548" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="30" y="572" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Width = time for that operation (wider = slower). Bottom = query root; top = leaf table access.</text>
+<text x="30" y="589" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.</text>
+<text x="30" y="606" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
+<rect x="8" y="616" width="1784" height="22" fill="#e3f2fd" rx="4"/>
+<text x="20" y="631" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="30" y="655" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
+<rect x="8" y="665" width="1784" height="22" fill="#fff3f3" rx="4"/>
+<text x="20" y="680" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="30" y="704" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
+<text x="30" y="721" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
+<text x="30" y="738" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
+<text x="30" y="755" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="8" y="765" width="1784" height="22" fill="#e8f5e9" rx="4"/>
+<text x="20" y="780" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="30" y="804" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="30" y="821" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
 </svg>
