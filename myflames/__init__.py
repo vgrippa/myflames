@@ -1,2 +1,2 @@
-# MySQL EXPLAIN Flame Graphs - Python
-__version__ = "1.1.0"
+# MySQL & MariaDB EXPLAIN Flame Graphs - Python
+__version__ = "1.2.0"
