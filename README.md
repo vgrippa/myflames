@@ -1,6 +1,13 @@
-# myflames — MySQL & MariaDB Query Plan Visualizer
+<p align="center">
+  <img src="myflames.jpeg" alt="myflames logo" width="200">
+</p>
 
-Visualize MySQL `EXPLAIN ANALYZE FORMAT=JSON` and MariaDB `ANALYZE FORMAT=JSON` output as interactive SVG charts. Five output types, one parser, no external dependencies.
+<h1 align="center">myflames</h1>
+<p align="center"><strong>MySQL & MariaDB Query Plan Visualizer</strong></p>
+
+<p align="center">
+Visualize MySQL <code>EXPLAIN ANALYZE FORMAT=JSON</code> and MariaDB <code>ANALYZE FORMAT=JSON</code> output as interactive SVG charts. Five output types, one parser, no external dependencies.
+</p>
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
