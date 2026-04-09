@@ -403,6 +403,24 @@ class TestMariaDBParser(unittest.TestCase):
         self.assertIn("Index lookup", inner["short_label"])
         self.assertEqual(inner["details"]["access_type"], "ref")
 
+    def test_analyze_column_header_stripped(self):
+        """MariaDB -e outputs ANALYZE column header; parser must strip it."""
+        raw = self.scan_text.strip()
+        # Simulate: mariadb -e "ANALYZE FORMAT=JSON ..." (escaped newlines + header)
+        escaped = raw.replace("\n", "\\n").replace("\t", "\\t")
+        prefixed = "ANALYZE\n" + escaped
+        root = parse_explain(prefixed)
+        self.assertIsInstance(root, dict)
+        self.assertGreater(root["total_time"], 0)
+
+    def test_mariadb_escaped_newlines(self):
+        """MariaDB -e without -r outputs literal backslash-n; parser must unescape."""
+        raw = self.scan_text.strip()
+        escaped = raw.replace("\n", "\\n").replace("\t", "\\t")
+        root = parse_explain(escaped)
+        self.assertIsInstance(root, dict)
+        self.assertGreater(root["total_time"], 0)
+
     def test_mariadb_covering_index(self):
         """MariaDB using_index + INDEX access type should map to covering index."""
         covering_json = '''{

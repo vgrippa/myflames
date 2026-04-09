@@ -352,9 +352,9 @@ def load_explain_json(text):
         stripped.append(line)
     text = "\n".join(stripped)
 
-    # Strip EXPLAIN column header (from mysql -e without -N)
+    # Strip EXPLAIN/ANALYZE column header (from mysql/mariadb -e without -N)
     text = text.strip()
-    text = re.sub(r"^EXPLAIN\s*\n", "", text)
+    text = re.sub(r"^(?:EXPLAIN|ANALYZE)\s*\n", "", text)
 
     # Try parsing as-is first
     text = text.strip()
