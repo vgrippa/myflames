@@ -1,0 +1,56 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.088232689
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 0.812777297,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "<derived2>",
+          "access_type": "ALL",
+          "r_loops": 1,
+          "rows": 10076,
+          "r_rows": 0,
+          "r_table_time_ms": 2.925764e-4,
+          "r_other_time_ms": 0.001755459,
+          "filtered": 100,
+          "r_filtered": 100,
+          "attached_condition": "d.order_count > 5",
+          "materialized": {
+            "query_block": {
+              "select_id": 2,
+              "r_loops": 1,
+              "r_total_time_ms": 0.804585157,
+              "having_condition": "order_count > 5",
+              "nested_loop": [
+                {
+                  "table": {
+                    "table_name": "orders",
+                    "access_type": "index",
+                    "key": "idx_user",
+                    "key_length": "4",
+                    "used_key_parts": ["user_id"],
+                    "r_loops": 1,
+                    "rows": 10076,
+                    "r_rows": 10000,
+                    "r_table_time_ms": 0.536835936,
+                    "r_other_time_ms": 0.264238305,
+                    "r_engine_stats": {
+                      "pages_accessed": 12
+                    },
+                    "filtered": 100,
+                    "r_filtered": 100,
+                    "using_index": true
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.068904753
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 0.2604836,
+    "r_loops": 1,
+    "r_total_time_ms": 0.181312931,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "products",
+          "access_type": "ALL",
+          "possible_keys": ["idx_stock"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 1500,
+          "r_rows": 1500,
+          "cost": 0.2604836,
+          "r_table_time_ms": 0.132971158,
+          "r_other_time_ms": 0.044170783,
+          "r_engine_stats": {
+            "pages_accessed": 9
+          },
+          "filtered": 46.20000076,
+          "r_filtered": 46.2,
+          "attached_condition": "products.stock > 100"
+        }
+      }
+    ]
+  }
+}

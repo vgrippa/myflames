@@ -31,10 +31,16 @@ REPO_DIR = os.path.dirname(TEST_DIR)
 # Hand-crafted fixtures shipped with the repo
 BUILTIN_FIXTURES = sorted(glob.glob(os.path.join(TEST_DIR, "mysql-explain-*.json")))
 
+# Hand-crafted MariaDB fixtures
+MARIADB_BUILTIN_FIXTURES = sorted(glob.glob(os.path.join(TEST_DIR, "mariadb-explain-*.json")))
+
 # Generated fixtures (may not exist until generate-fixtures.sh is run)
 GENERATED_FIXTURES = sorted(glob.glob(os.path.join(TEST_DIR, "fixtures", "explain-*.json")))
 
-ALL_FIXTURES = BUILTIN_FIXTURES + GENERATED_FIXTURES
+# Generated MariaDB fixtures (may not exist until generate-mariadb-fixtures.sh is run)
+MARIADB_GENERATED_FIXTURES = sorted(glob.glob(os.path.join(TEST_DIR, "fixtures", "mariadb-*.json")))
+
+ALL_FIXTURES = BUILTIN_FIXTURES + MARIADB_BUILTIN_FIXTURES + GENERATED_FIXTURES + MARIADB_GENERATED_FIXTURES
 
 # ---------------------------------------------------------------------------
 # Import myflames (must be importable from repo root)
@@ -52,6 +58,8 @@ from myflames.parser import (
     format_sql,
     _col_refs_for_table,
     _suggest_indexes,
+    _is_mariadb_format,
+    _normalize_mariadb,
 )
 from myflames.output_bargraph import render_bargraph
 from myflames.output_treemap import render_treemap
@@ -164,6 +172,257 @@ class TestParser(unittest.TestCase):
         for node in flatten_nodes(root):
             with self.subTest(label=node.get("folded_label")):
                 self.assertTrue(required.issubset(node.keys()))
+
+
+# ---------------------------------------------------------------------------
+# TestMariaDBParser — unit tests for MariaDB ANALYZE FORMAT=JSON parsing
+# ---------------------------------------------------------------------------
+
+class TestMariaDBParser(unittest.TestCase):
+    """Unit tests for MariaDB ANALYZE FORMAT=JSON normalization and parsing."""
+
+    @classmethod
+    def setUpClass(cls):
+        scan = os.path.join(TEST_DIR, "mariadb-explain-simple-scan.json")
+        join = os.path.join(TEST_DIR, "mariadb-explain-join.json")
+        complex_ = os.path.join(TEST_DIR, "mariadb-explain-complex.json")
+        cls.scan_text = _load(scan)
+        cls.join_text = _load(join)
+        cls.complex_text = _load(complex_)
+
+    def test_detect_mariadb_format(self):
+        """MariaDB JSON with query_block key is detected correctly."""
+        import json
+        data = json.loads(self.scan_text)
+        self.assertTrue(_is_mariadb_format(data))
+
+    def test_detect_mysql_format_not_mariadb(self):
+        """MySQL JSON without query_block is not detected as MariaDB."""
+        sample = os.path.join(TEST_DIR, "mysql-explain-json-sample.json")
+        import json
+        data = json.loads(_load(sample))
+        self.assertFalse(_is_mariadb_format(data))
+
+    def test_parse_simple_scan_returns_root(self):
+        root = parse_explain(self.scan_text)
+        self.assertIsInstance(root, dict)
+
+    def test_parse_simple_scan_has_positive_time(self):
+        root = parse_explain(self.scan_text)
+        self.assertGreater(root["total_time"], 0)
+
+    def test_parse_simple_scan_table_name(self):
+        root = parse_explain(self.scan_text)
+        self.assertEqual(root["details"]["table_name"], "users")
+
+    def test_parse_simple_scan_access_type(self):
+        root = parse_explain(self.scan_text)
+        self.assertEqual(root["details"]["access_type"], "table")
+
+    def test_parse_simple_scan_condition(self):
+        root = parse_explain(self.scan_text)
+        self.assertIn("country", root["details"]["condition"])
+
+    def test_parse_simple_scan_has_rows(self):
+        root = parse_explain(self.scan_text)
+        self.assertGreater(root["rows"], 0)
+
+    def test_parse_simple_scan_short_label(self):
+        root = parse_explain(self.scan_text)
+        self.assertIn("Table scan", root["short_label"])
+
+    def test_parse_join_has_children(self):
+        root = parse_explain(self.join_text)
+        self.assertGreater(len(root.get("children", [])), 0)
+
+    def test_parse_join_is_nested_loop(self):
+        root = parse_explain(self.join_text)
+        self.assertIn("Nested loop", root["short_label"])
+
+    def test_parse_join_outer_table_scan(self):
+        root = parse_explain(self.join_text)
+        outer = root["children"][0]
+        self.assertIn("Table scan", outer["short_label"])
+        self.assertEqual(outer["details"]["table_name"], "o")
+
+    def test_parse_join_inner_index_lookup(self):
+        root = parse_explain(self.join_text)
+        inner = root["children"][1]
+        self.assertIn("Index lookup", inner["short_label"])
+        self.assertEqual(inner["details"]["table_name"], "u")
+
+    def test_parse_join_time_sums_correctly(self):
+        """Total time >= sum of children times."""
+        root = parse_explain(self.join_text)
+        children_time = sum(c["total_time"] for c in root["children"])
+        self.assertGreaterEqual(
+            round(root["total_time"], 6),
+            round(children_time, 6) - 0.001,  # small tolerance
+        )
+
+    def test_parse_complex_has_sort(self):
+        """Complex query with filesort should have a Sort node."""
+        root = parse_explain(self.complex_text)
+        self.assertIn("Sort", root["short_label"])
+
+    def test_parse_complex_has_children(self):
+        root = parse_explain(self.complex_text)
+        self.assertGreater(len(root.get("children", [])), 0)
+
+    def test_parse_complex_depth_at_least_2(self):
+        root = parse_explain(self.complex_text)
+        self.assertGreaterEqual(_tree_depth(root), 2)
+
+    def test_self_time_nonnegative_all_nodes(self):
+        for text in (self.scan_text, self.join_text, self.complex_text):
+            root = parse_explain(text)
+            for node in flatten_nodes(root):
+                with self.subTest(label=node["folded_label"]):
+                    self.assertGreaterEqual(node["self_time"], 0)
+
+    def test_total_time_ge_self_time(self):
+        for text in (self.scan_text, self.join_text, self.complex_text):
+            root = parse_explain(text)
+            for node in flatten_nodes(root):
+                with self.subTest(label=node["folded_label"]):
+                    self.assertGreaterEqual(
+                        round(node["total_time"], 9),
+                        round(node["self_time"], 9),
+                    )
+
+    def test_node_has_required_keys(self):
+        for text in (self.scan_text, self.join_text, self.complex_text):
+            root = parse_explain(text)
+            required = {"folded_label", "short_label", "full_label",
+                        "self_time", "total_time", "children", "details"}
+            for node in flatten_nodes(root):
+                with self.subTest(label=node.get("folded_label")):
+                    self.assertTrue(required.issubset(node.keys()))
+
+    def test_analyze_plan_detects_full_scan(self):
+        root = parse_explain(self.scan_text)
+        analysis = analyze_plan(root)
+        self.assertTrue(len(analysis["full_scans"]) > 0)
+        self.assertEqual(analysis["full_scans"][0]["table"], "users")
+
+    def test_analyze_plan_detects_nested_loop(self):
+        root = parse_explain(self.join_text)
+        analysis = analyze_plan(root)
+        self.assertIn("nested loop join", analysis["optimizer_features"])
+
+    def test_analyze_plan_detects_filesort(self):
+        root = parse_explain(self.complex_text)
+        analysis = analyze_plan(root)
+        self.assertTrue(len(analysis["filesorts"]) > 0)
+
+    def test_build_flame_entries_yields_tuples(self):
+        root = parse_explain(self.complex_text)
+        entries = list(build_flame_entries(root))
+        self.assertTrue(len(entries) > 0)
+        for path, t in entries:
+            self.assertIsInstance(path, list)
+            self.assertIsInstance(t, float)
+            self.assertGreater(len(path), 0)
+
+    def test_normalize_mariadb_union(self):
+        """UNION queries should produce a Union root with children."""
+        union_json = '''{
+          "query_block": {
+            "union_result": {
+              "query_specifications": [
+                {
+                  "query_block": {
+                    "select_id": 1,
+                    "r_loops": 1,
+                    "r_total_time_ms": 0.05,
+                    "nested_loop": [{"table": {
+                      "table_name": "t1", "access_type": "ALL",
+                      "r_loops": 1, "rows": 100, "r_rows": 100,
+                      "r_table_time_ms": 0.03, "r_other_time_ms": 0.01
+                    }}]
+                  }
+                },
+                {
+                  "query_block": {
+                    "select_id": 2,
+                    "r_loops": 1,
+                    "r_total_time_ms": 0.04,
+                    "nested_loop": [{"table": {
+                      "table_name": "t2", "access_type": "ALL",
+                      "r_loops": 1, "rows": 200, "r_rows": 200,
+                      "r_table_time_ms": 0.02, "r_other_time_ms": 0.01
+                    }}]
+                  }
+                }
+              ]
+            }
+          }
+        }'''
+        root = parse_explain(union_json)
+        self.assertIn("Union", root["short_label"])
+        self.assertEqual(len(root["children"]), 2)
+
+    def test_normalize_mariadb_derived_table(self):
+        """Derived tables (materialized subquery) should produce Materialize node."""
+        derived_json = '''{
+          "query_block": {
+            "select_id": 1,
+            "r_loops": 1,
+            "r_total_time_ms": 0.2,
+            "nested_loop": [{"table": {
+              "table_name": "<derived2>",
+              "access_type": "ALL",
+              "r_loops": 1, "rows": 100, "r_rows": 100,
+              "r_table_time_ms": 0.01, "r_other_time_ms": 0.02,
+              "materialized": {
+                "query_block": {
+                  "select_id": 2,
+                  "r_loops": 1,
+                  "r_total_time_ms": 0.15,
+                  "nested_loop": [{"table": {
+                    "table_name": "orders",
+                    "access_type": "index",
+                    "key": "idx_user",
+                    "r_loops": 1, "rows": 500, "r_rows": 500,
+                    "r_table_time_ms": 0.1, "r_other_time_ms": 0.04,
+                    "using_index": true
+                  }}]
+                }
+              }
+            }}]
+          }
+        }'''
+        root = parse_explain(derived_json)
+        self.assertIn("Materialize", root["short_label"])
+        self.assertTrue(len(root["children"]) > 0)
+
+    def test_mariadb_eq_ref_maps_to_index_lookup(self):
+        """MariaDB eq_ref should map to 'Index lookup' operation."""
+        root = parse_explain(self.join_text)
+        inner = root["children"][1]
+        self.assertIn("Index lookup", inner["short_label"])
+        self.assertEqual(inner["details"]["access_type"], "ref")
+
+    def test_mariadb_covering_index(self):
+        """MariaDB using_index + INDEX access type should map to covering index."""
+        covering_json = '''{
+          "query_block": {
+            "select_id": 1,
+            "r_loops": 1,
+            "r_total_time_ms": 0.05,
+            "nested_loop": [{"table": {
+              "table_name": "orders",
+              "access_type": "index",
+              "key": "idx_user",
+              "r_loops": 1, "rows": 100, "r_rows": 100,
+              "r_table_time_ms": 0.03, "r_other_time_ms": 0.01,
+              "using_index": true
+            }}]
+          }
+        }'''
+        root = parse_explain(covering_json)
+        self.assertIn("Covering index", root["short_label"])
+        self.assertTrue(root["details"]["covering"])
 
 
 # ---------------------------------------------------------------------------

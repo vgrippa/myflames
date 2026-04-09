@@ -1,0 +1,58 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.067695166
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 2.1639229,
+    "r_loops": 1,
+    "r_total_time_ms": 1.08170452,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "p",
+          "access_type": "ALL",
+          "possible_keys": ["PRIMARY"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 1500,
+          "r_rows": 1500,
+          "cost": 0.2604836,
+          "r_table_time_ms": 0.143398633,
+          "r_other_time_ms": 0.043169745,
+          "r_engine_stats": {
+            "pages_accessed": 7
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      },
+      {
+        "table": {
+          "table_name": "r",
+          "access_type": "ref",
+          "possible_keys": ["idx_product", "idx_prod_rating"],
+          "key": "idx_prod_rating",
+          "key_length": "4",
+          "used_key_parts": ["product_id"],
+          "ref": ["testdb.p.id"],
+          "loops": 1500,
+          "r_loops": 1500,
+          "rows": 3,
+          "r_rows": 2.4,
+          "cost": 1.9034393,
+          "r_table_time_ms": 0.792196111,
+          "r_other_time_ms": 0.099728368,
+          "r_engine_stats": {
+            "pages_accessed": 3009
+          },
+          "filtered": 33.33333206,
+          "r_filtered": 16.66666667,
+          "attached_condition": "r.rating >= 4",
+          "using_index": true,
+          "first_match": "p"
+        }
+      }
+    ]
+  }
+}

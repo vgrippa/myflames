@@ -1,0 +1,33 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.0703646
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 0.5109672,
+    "r_loops": 1,
+    "r_total_time_ms": 0.377808265,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "users",
+          "access_type": "ALL",
+          "possible_keys": ["idx_country", "idx_created"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 3000,
+          "r_rows": 3000,
+          "cost": 0.5109672,
+          "r_table_time_ms": 0.261938166,
+          "r_other_time_ms": 0.112825277,
+          "r_engine_stats": {
+            "pages_accessed": 19
+          },
+          "filtered": 9.706666946,
+          "r_filtered": 9.666666667,
+          "attached_condition": "users.country = 'US' and users.created_at > '2022-01-01'"
+        }
+      }
+    ]
+  }
+}

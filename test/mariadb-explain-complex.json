@@ -1,0 +1,61 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.106
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 2.135,
+    "r_loops": 1,
+    "r_total_time_ms": 1.600,
+    "filesort": {
+      "sort_key": "sum(o.total) desc",
+      "r_loops": 1,
+      "r_total_time_ms": 0.008,
+      "r_used_priority_queue": false,
+      "r_output_rows": 5,
+      "r_buffer_size": "480",
+      "r_sort_mode": "sort_key,rowid",
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ALL",
+              "possible_keys": ["idx_user"],
+              "loops": 1,
+              "r_loops": 1,
+              "rows": 2000,
+              "r_rows": 2000,
+              "cost": 0.343,
+              "r_table_time_ms": 0.162,
+              "r_other_time_ms": 0.096,
+              "filtered": 100,
+              "r_filtered": 100,
+              "attached_condition": "o.user_id IS NOT NULL"
+            }
+          },
+          {
+            "table": {
+              "table_name": "u",
+              "access_type": "eq_ref",
+              "possible_keys": ["PRIMARY"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "ref": ["testdb.o.user_id"],
+              "loops": 2000,
+              "r_loops": 2000,
+              "rows": 1,
+              "r_rows": 1,
+              "cost": 1.792,
+              "r_table_time_ms": 0.821,
+              "r_other_time_ms": 0.503,
+              "filtered": 100,
+              "r_filtered": 100
+            }
+          }
+        ]
+      }
+    }
+  }
+}

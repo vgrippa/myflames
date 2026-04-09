@@ -1,0 +1,51 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.095087337
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 2.120510305,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "ALL",
+          "possible_keys": ["idx_user", "idx_status", "idx_user_status"],
+          "r_loops": 1,
+          "rows": 10076,
+          "r_rows": 10000,
+          "r_table_time_ms": 0.839819718,
+          "r_other_time_ms": 0.339388648,
+          "r_engine_stats": {
+            "pages_accessed": 33
+          },
+          "filtered": 19.84914589,
+          "r_filtered": 20,
+          "attached_condition": "o.`status` = 'pending'"
+        }
+      },
+      {
+        "table": {
+          "table_name": "u",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["testdb.o.user_id"],
+          "r_loops": 2000,
+          "rows": 1,
+          "r_rows": 1,
+          "r_table_time_ms": 0.855827828,
+          "r_other_time_ms": 0.081963194,
+          "r_engine_stats": {
+            "pages_accessed": 4004
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.102652527
+  },
+  "query_block": {
+    "union_result": {
+      "query_specifications": [
+        {
+          "query_block": {
+            "select_id": 1,
+            "r_loops": 1,
+            "r_total_time_ms": 0.325971929,
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "users",
+                  "access_type": "ALL",
+                  "possible_keys": ["idx_country"],
+                  "r_loops": 1,
+                  "rows": 3000,
+                  "r_rows": 3000,
+                  "r_table_time_ms": 0.205932004,
+                  "r_other_time_ms": 0.116111042,
+                  "r_engine_stats": {
+                    "pages_accessed": 14
+                  },
+                  "filtered": 20,
+                  "r_filtered": 20,
+                  "attached_condition": "users.country = 'US'"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "query_block": {
+            "select_id": 2,
+            "operation": "UNION",
+            "r_loops": 1,
+            "r_total_time_ms": 0.213622584,
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "products",
+                  "access_type": "ALL",
+                  "possible_keys": ["idx_price"],
+                  "r_loops": 1,
+                  "rows": 1500,
+                  "r_rows": 1500,
+                  "r_table_time_ms": 0.114940737,
+                  "r_other_time_ms": 0.098263881,
+                  "r_engine_stats": {
+                    "pages_accessed": 7
+                  },
+                  "filtered": 60.79999924,
+                  "r_filtered": 60.8,
+                  "attached_condition": "products.price > 200"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

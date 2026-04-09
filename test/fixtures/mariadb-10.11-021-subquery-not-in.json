@@ -1,0 +1,66 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.117573925
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 1.698364326,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "users",
+          "access_type": "ALL",
+          "r_loops": 1,
+          "rows": 3000,
+          "r_rows": 3000,
+          "r_table_time_ms": 0.295920151,
+          "r_other_time_ms": 0.336253901,
+          "r_engine_stats": {
+            "pages_accessed": 14
+          },
+          "filtered": 100,
+          "r_filtered": 80,
+          "attached_condition": "!<in_optimizer>(users.`id`,users.`id` in (subquery#2))"
+        }
+      }
+    ],
+    "subqueries": [
+      {
+        "materialization": {
+          "r_strategy": "index_lookup",
+          "r_loops": 3000,
+          "query_block": {
+            "select_id": 2,
+            "r_loops": 1,
+            "r_total_time_ms": 1.053818471,
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "orders",
+                  "access_type": "ref",
+                  "possible_keys": ["idx_user", "idx_status", "idx_user_status"],
+                  "key": "idx_status",
+                  "key_length": "82",
+                  "used_key_parts": ["status"],
+                  "ref": ["const"],
+                  "r_loops": 1,
+                  "rows": 2000,
+                  "r_rows": 2000,
+                  "r_table_time_ms": 0.881072993,
+                  "r_other_time_ms": 0.171784156,
+                  "r_engine_stats": {
+                    "pages_accessed": 4004
+                  },
+                  "filtered": 100,
+                  "r_filtered": 100,
+                  "index_condition": "orders.`status` = 'cancelled'"
+                }
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

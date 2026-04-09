@@ -1,0 +1,129 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.124135996
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 39.23341132,
+    "filesort": {
+      "sort_key": "sum(oi.quantity) desc",
+      "r_loops": 1,
+      "r_total_time_ms": 0.009571429,
+      "r_limit": 10,
+      "r_used_priority_queue": true,
+      "r_output_rows": 11,
+      "r_sort_mode": "sort_key,rowid",
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "u",
+              "access_type": "index",
+              "possible_keys": ["PRIMARY"],
+              "key": "idx_country",
+              "key_length": "8",
+              "used_key_parts": ["country"],
+              "r_loops": 1,
+              "rows": 3000,
+              "r_rows": 3000,
+              "r_table_time_ms": 0.203006239,
+              "r_other_time_ms": 0.107375546,
+              "r_engine_stats": {
+                "pages_accessed": 5
+              },
+              "filtered": 100,
+              "r_filtered": 100,
+              "using_index": true
+            }
+          },
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ref",
+              "possible_keys": ["PRIMARY", "idx_user", "idx_user_status"],
+              "key": "idx_user",
+              "key_length": "4",
+              "used_key_parts": ["user_id"],
+              "ref": ["testdb.u.id"],
+              "r_loops": 3000,
+              "rows": 1,
+              "r_rows": 3.333333333,
+              "r_table_time_ms": 1.977607622,
+              "r_other_time_ms": 0.32112352,
+              "r_engine_stats": {
+                "pages_accessed": 6015
+              },
+              "filtered": 100,
+              "r_filtered": 100,
+              "using_index": true
+            }
+          },
+          {
+            "table": {
+              "table_name": "oi",
+              "access_type": "ref",
+              "possible_keys": ["idx_order", "idx_product"],
+              "key": "idx_order",
+              "key_length": "4",
+              "used_key_parts": ["order_id"],
+              "ref": ["testdb.o.id"],
+              "r_loops": 10000,
+              "rows": 1,
+              "r_rows": 2.5,
+              "r_table_time_ms": 15.52009241,
+              "r_other_time_ms": 0.866862138,
+              "r_engine_stats": {
+                "pages_accessed": 70047
+              },
+              "filtered": 100,
+              "r_filtered": 100
+            }
+          },
+          {
+            "table": {
+              "table_name": "p",
+              "access_type": "eq_ref",
+              "possible_keys": ["PRIMARY", "idx_category", "idx_cat_price"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "ref": ["testdb.oi.product_id"],
+              "r_loops": 25000,
+              "rows": 1,
+              "r_rows": 1,
+              "r_table_time_ms": 9.330094875,
+              "r_other_time_ms": 8.868785452,
+              "r_engine_stats": {
+                "pages_accessed": 50166
+              },
+              "filtered": 100,
+              "r_filtered": 100
+            }
+          },
+          {
+            "table": {
+              "table_name": "c",
+              "access_type": "eq_ref",
+              "possible_keys": ["PRIMARY"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "ref": ["testdb.p.category_id"],
+              "r_loops": 25000,
+              "rows": 1,
+              "r_rows": 1,
+              "r_table_time_ms": 0.807134752,
+              "r_other_time_ms": 1.205498447,
+              "r_engine_stats": {
+                "pages_accessed": 3000
+              },
+              "filtered": 100,
+              "r_filtered": 100
+            }
+          }
+        ]
+      }
+    }
+  }
+}

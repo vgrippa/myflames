@@ -1,0 +1,77 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.10336307
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 0.912462263,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "p",
+          "access_type": "ALL",
+          "possible_keys": ["PRIMARY"],
+          "r_loops": 1,
+          "rows": 1500,
+          "r_rows": 1500,
+          "r_table_time_ms": 0.181271991,
+          "r_other_time_ms": 0.062276981,
+          "r_engine_stats": {
+            "pages_accessed": 7
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      },
+      {
+        "table": {
+          "table_name": "<subquery2>",
+          "access_type": "eq_ref",
+          "possible_keys": ["distinct_key"],
+          "key": "distinct_key",
+          "key_length": "4",
+          "used_key_parts": ["product_id"],
+          "ref": ["func"],
+          "r_loops": 1500,
+          "rows": 1,
+          "r_rows": 0.4,
+          "r_table_time_ms": 0.185786027,
+          "r_other_time_ms": 0.051326264,
+          "filtered": 100,
+          "r_filtered": 100,
+          "materialized": {
+            "unique": 1,
+            "query_block": {
+              "select_id": 2,
+              "nested_loop": [
+                {
+                  "table": {
+                    "table_name": "r",
+                    "access_type": "index",
+                    "possible_keys": ["idx_product", "idx_prod_rating"],
+                    "key": "idx_prod_rating",
+                    "key_length": "5",
+                    "used_key_parts": ["product_id", "rating"],
+                    "r_loops": 1,
+                    "rows": 5090,
+                    "r_rows": 5000,
+                    "r_table_time_ms": 0.311175922,
+                    "r_other_time_ms": 0.115776669,
+                    "r_engine_stats": {
+                      "pages_accessed": 7
+                    },
+                    "filtered": 100,
+                    "r_filtered": 40,
+                    "attached_condition": "r.rating >= 4",
+                    "using_index": true
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  }
+}

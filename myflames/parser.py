@@ -1,6 +1,12 @@
 """
-Unified parser for MySQL EXPLAIN ANALYZE FORMAT=JSON.
+Unified parser for MySQL and MariaDB EXPLAIN ANALYZE FORMAT=JSON.
 Builds a single tree structure used by flamegraph, bargraph, and treemap.
+
+Supports:
+  - MySQL 8.0+ EXPLAIN ANALYZE FORMAT=JSON
+  - MySQL 9.7+ query_plan envelope
+  - MariaDB 10.5+ / 11.x ANALYZE FORMAT=JSON
+  - MariaDB SHOW ANALYZE FORMAT=JSON FOR <connection_id>
 """
 import re
 import json
@@ -276,7 +282,7 @@ def parse_node(node):
         if child:
             children.append(child)
             children_time += child["total_time"]
-    self_time = max(0, total_time - children_time)
+    self_time = max(0.0, total_time - children_time)
     short = build_short_label(
         op,
         node.get("table_name"),
@@ -379,8 +385,374 @@ def load_explain_json(text):
 
     raise ValueError(
         "Cannot parse as JSON. If using mysql CLI, add -s -N -r flags: "
-        "mysql -s -N -r -e 'EXPLAIN ANALYZE FORMAT=JSON ...'"
+        "mysql -s -N -r -e 'EXPLAIN ANALYZE FORMAT=JSON ...' or "
+        "mariadb -s -N -r -e 'ANALYZE FORMAT=JSON ...'"
     )
+
+
+def _is_mariadb_format(data):
+    """Detect MariaDB ANALYZE FORMAT=JSON by its distinctive structure."""
+    return isinstance(data, dict) and "query_block" in data
+
+
+def _mariadb_access_type_to_operation(access_type, table_name, key, using_index=False):
+    """Map MariaDB access_type + context to a MySQL-style operation string."""
+    at = (access_type or "").upper()
+    tbl = table_name or ""
+    idx = key or ""
+    if at == "ALL":
+        return "Table scan on {}".format(tbl) if tbl else "Table scan"
+    if at in ("EQ_REF", "REF", "REF_OR_NULL"):
+        if idx:
+            return "Index lookup on {} using {}".format(tbl, idx)
+        return "Index lookup on {}".format(tbl) if tbl else "Index lookup"
+    if at == "RANGE":
+        if idx:
+            return "Index range scan on {} using {}".format(tbl, idx)
+        return "Index range scan on {}".format(tbl) if tbl else "Index range scan"
+    if at == "INDEX":
+        if using_index:
+            if idx:
+                return "Covering index scan on {} using {}".format(tbl, idx)
+            return "Covering index scan on {}".format(tbl) if tbl else "Covering index scan"
+        if idx:
+            return "Index scan on {} using {}".format(tbl, idx)
+        return "Index scan on {}".format(tbl) if tbl else "Index scan"
+    if at == "CONST" or at == "SYSTEM":
+        if idx:
+            return "Single-row index lookup on {} using {}".format(tbl, idx)
+        return "Constant table lookup on {}".format(tbl) if tbl else "Constant lookup"
+    if at == "UNIQUE_SUBQUERY":
+        return "Index lookup on {} using {}".format(tbl, idx) if idx else "Unique subquery"
+    if at == "INDEX_SUBQUERY":
+        return "Index range scan on {} using {}".format(tbl, idx) if idx else "Index subquery"
+    if at == "FULLTEXT":
+        return "Fulltext index scan on {} using {}".format(tbl, idx) if idx else "Fulltext scan"
+    # Fallback
+    if tbl:
+        return "Table scan on {}".format(tbl)
+    return access_type or "unknown"
+
+
+def _normalize_mariadb_table(tbl):
+    """Convert a MariaDB ``table`` object into a MySQL-compatible node dict."""
+    table_name = tbl.get("table_name") or ""
+    access_type_raw = (tbl.get("access_type") or "").upper()
+    key = tbl.get("key") or ""
+    using_index = bool(tbl.get("using_index"))
+    condition = tbl.get("attached_condition") or ""
+
+    r_table_time = tbl.get("r_table_time_ms") or 0
+    r_other_time = tbl.get("r_other_time_ms") or 0
+    total_ms = r_table_time + r_other_time
+
+    r_rows = tbl.get("r_rows")
+    r_loops = tbl.get("r_loops") or tbl.get("loops") or 1
+
+    # MariaDB r_table_time_ms is TOTAL across all loops.  parse_node()
+    # multiplies actual_last_row_ms * actual_loops, so store per-loop time.
+    per_loop_ms = total_ms / r_loops if r_loops > 0 else total_ms
+    est_rows = tbl.get("rows")
+    cost = tbl.get("cost")
+
+    operation = _mariadb_access_type_to_operation(access_type_raw, table_name, key, using_index)
+
+    # Map MariaDB access_type to MySQL's internal access_type categories
+    mysql_access_type = "table"  # default for ALL
+    if access_type_raw in ("EQ_REF", "REF", "REF_OR_NULL", "CONST", "SYSTEM"):
+        mysql_access_type = "ref"
+    elif access_type_raw == "RANGE":
+        mysql_access_type = "range"
+    elif access_type_raw == "INDEX":
+        mysql_access_type = "index"
+    elif access_type_raw in ("UNIQUE_SUBQUERY", "INDEX_SUBQUERY"):
+        mysql_access_type = "ref"
+    elif access_type_raw == "FULLTEXT":
+        mysql_access_type = "fulltext"
+
+    node = {
+        "operation": operation,
+        "table_name": table_name,
+        "index_name": key,
+        "access_type": mysql_access_type,
+        "actual_rows": float(r_rows) if r_rows is not None else 0.0,
+        "actual_loops": int(r_loops),
+        "actual_last_row_ms": per_loop_ms,
+        "estimated_rows": float(est_rows) if est_rows is not None else None,
+        "estimated_total_cost": float(cost) if cost is not None else None,
+        "condition": condition,
+        "covering": using_index and access_type_raw == "INDEX",
+        "schema_name": "",
+        "inputs": [],
+    }
+
+    # Handle materialized subqueries/derived tables
+    mat = tbl.get("materialized")
+    if mat and isinstance(mat, dict):
+        qb = mat.get("query_block")
+        if qb:
+            child = _normalize_mariadb_query_block(qb)
+            if child:
+                node["operation"] = "Materialize"
+                node["access_type"] = "materialize"
+                node["inputs"] = [child]
+
+    return node
+
+
+def _normalize_mariadb_nested_loop(nested_loop):
+    """Convert MariaDB nested_loop array into a MySQL-compatible tree.
+
+    MariaDB stores the join as a flat array: [table1, table2, ...].
+    MySQL stores it as nested: {operation: "Nested loop", inputs: [outer, inner]}.
+    We fold the flat list into a right-deep nested tree to match MySQL style.
+
+    Entries can be ``{"table": {...}}``, ``{"read_sorted_file": {...}}``, or
+    other wrapper objects.
+    """
+    if not nested_loop:
+        return None
+
+    # Normalize each entry — can be table, read_sorted_file, etc.
+    table_nodes = []
+    for entry in nested_loop:
+        if not isinstance(entry, dict):
+            continue
+        if "table" in entry:
+            table_nodes.append(_normalize_mariadb_table(entry["table"]))
+        elif "read_sorted_file" in entry:
+            node = _normalize_mariadb_read_sorted_file(entry["read_sorted_file"])
+            if node:
+                table_nodes.append(node)
+
+    if not table_nodes:
+        return None
+    if len(table_nodes) == 1:
+        return table_nodes[0]
+
+    # Fold into a right-deep tree: ((t1 NL t2) NL t3) NL t4...
+    result = table_nodes[0]
+    for i in range(1, len(table_nodes)):
+        inner = table_nodes[i]
+        # Estimate total time from the query_block level (will be overridden later)
+        nl_time = max(
+            result.get("actual_last_row_ms", 0) * (result.get("actual_loops", 1) or 1),
+            inner.get("actual_last_row_ms", 0) * (inner.get("actual_loops", 1) or 1),
+        )
+        join_node = {
+            "operation": "Nested loop inner join",
+            "access_type": "join",
+            "join_algorithm": "nested_loop",
+            "actual_last_row_ms": 0.0,  # will be set from query_block r_total_time_ms
+            "actual_loops": 1,
+            "actual_rows": float(inner.get("actual_rows", 0)),
+            "inputs": [result, inner],
+        }
+        result = join_node
+
+    return result
+
+
+def _normalize_mariadb_read_sorted_file(rsf):
+    """Convert MariaDB read_sorted_file into a Sort node.
+
+    Structure: ``read_sorted_file: { r_rows, filesort: { table: {...} } }``
+    Used when MariaDB reads a sorted temp file (e.g. ORDER BY ... LIMIT).
+    """
+    if not isinstance(rsf, dict):
+        return None
+    filesort = rsf.get("filesort")
+    if not filesort or not isinstance(filesort, dict):
+        return None
+
+    # The table is directly inside the filesort (not in nested_loop)
+    child = None
+    tbl = filesort.get("table")
+    if tbl and isinstance(tbl, dict):
+        child = _normalize_mariadb_table(tbl)
+    elif filesort.get("nested_loop"):
+        child = _normalize_mariadb_nested_loop(filesort["nested_loop"])
+
+    sort_key = filesort.get("sort_key") or ""
+    r_time = filesort.get("r_total_time_ms") or 0
+    r_output_rows = filesort.get("r_output_rows") or rsf.get("r_rows") or 0
+
+    return {
+        "operation": "Sort: {}".format(sort_key) if sort_key else "Sort",
+        "access_type": "sort",
+        "actual_last_row_ms": float(r_time),
+        "actual_loops": filesort.get("r_loops") or 1,
+        "actual_rows": float(r_output_rows),
+        "inputs": [child] if child else [],
+    }
+
+
+def _normalize_mariadb_filesort(filesort, query_block_time=0):
+    """Convert MariaDB filesort structure into MySQL-compatible Sort node."""
+    child = None
+    temp = filesort.get("temporary_table")
+    if temp and isinstance(temp, dict):
+        nl = temp.get("nested_loop")
+        if nl:
+            child = _normalize_mariadb_nested_loop(nl)
+    elif filesort.get("nested_loop"):
+        child = _normalize_mariadb_nested_loop(filesort["nested_loop"])
+
+    sort_key = filesort.get("sort_key") or ""
+    r_time = filesort.get("r_total_time_ms") or 0
+    r_output_rows = filesort.get("r_output_rows") or 0
+
+    sort_node = {
+        "operation": "Sort: {}".format(sort_key) if sort_key else "Sort",
+        "access_type": "sort",
+        "actual_last_row_ms": float(r_time),
+        "actual_loops": filesort.get("r_loops") or 1,
+        "actual_rows": float(r_output_rows),
+        "inputs": [child] if child else [],
+    }
+    return sort_node
+
+
+def _normalize_mariadb_query_block(qb):
+    """Convert a MariaDB query_block into a MySQL-compatible tree node."""
+    if not isinstance(qb, dict):
+        return None
+
+    qb_time = qb.get("r_total_time_ms") or 0
+    qb_loops = qb.get("r_loops") or 1
+
+    # UNION handling
+    union_result = qb.get("union_result")
+    if union_result and isinstance(union_result, dict):
+        specs = union_result.get("query_specifications") or []
+        children = []
+        for spec in specs:
+            inner_qb = spec.get("query_block") if isinstance(spec, dict) else None
+            if inner_qb:
+                child = _normalize_mariadb_query_block(inner_qb)
+                if child:
+                    children.append(child)
+        if children:
+            # Union query_block often lacks r_total_time_ms; use sum of children
+            union_time = qb_time
+            if union_time == 0:
+                union_time = sum(
+                    c.get("actual_last_row_ms", 0) * (c.get("actual_loops", 1) or 1)
+                    for c in children
+                )
+            return {
+                "operation": "Union",
+                "access_type": "union",
+                "actual_last_row_ms": float(union_time),
+                "actual_loops": qb_loops,
+                "actual_rows": float(sum(c.get("actual_rows", 0) for c in children)),
+                "inputs": children,
+            }
+        return None
+
+    # Window functions: sorts[] + temporary_table with nested_loop
+    wfc = qb.get("window_functions_computation")
+    if wfc and isinstance(wfc, dict):
+        child = None
+        temp = wfc.get("temporary_table")
+        if temp and isinstance(temp, dict):
+            nl = temp.get("nested_loop")
+            if nl:
+                child = _normalize_mariadb_nested_loop(nl)
+
+        # Window sorts are overhead; sum their times
+        sorts = wfc.get("sorts") or []
+        sort_time = 0.0
+        for s in sorts:
+            fs = s.get("filesort") if isinstance(s, dict) else None
+            if fs:
+                sort_time += fs.get("r_total_time_ms") or 0
+
+        wf_node = {
+            "operation": "Window functions",
+            "access_type": "sort",
+            "actual_last_row_ms": float(qb_time),
+            "actual_loops": qb_loops,
+            "actual_rows": float(child.get("actual_rows", 0) if child else 0),
+            "inputs": [child] if child else [],
+        }
+        return wf_node
+
+    # Filesort wrapping
+    filesort = qb.get("filesort")
+    if filesort and isinstance(filesort, dict):
+        sort_node = _normalize_mariadb_filesort(filesort, qb_time)
+        # The sort node's time is just the sort overhead; propagate qb total time
+        if sort_node.get("inputs"):
+            # Set nested loop total time from qb level
+            _propagate_mariadb_time(sort_node, qb_time, qb_loops)
+        return sort_node
+
+    # Grouping (GROUP BY without filesort via temporary table)
+    group_by = qb.get("grouping_operation")
+    if group_by and isinstance(group_by, dict):
+        child = None
+        nl = group_by.get("nested_loop")
+        if nl:
+            child = _normalize_mariadb_nested_loop(nl)
+        group_node = {
+            "operation": "Group",
+            "access_type": "group",
+            "actual_last_row_ms": float(group_by.get("r_total_time_ms") or 0),
+            "actual_loops": group_by.get("r_loops") or 1,
+            "actual_rows": 0.0,
+            "inputs": [child] if child else [],
+        }
+        return group_node
+
+    # Plain nested_loop
+    nl = qb.get("nested_loop")
+    if nl:
+        result = _normalize_mariadb_nested_loop(nl)
+        if result:
+            _propagate_mariadb_time(result, qb_time, qb_loops)
+        return result
+
+    return None
+
+
+def _propagate_mariadb_time(node, qb_time, qb_loops):
+    """Set the root join node's actual_last_row_ms from the query_block total time.
+
+    MariaDB provides per-table r_table_time_ms but the join node itself has no
+    inherent timing; we use the query_block's r_total_time_ms.  parse_node()
+    will multiply by actual_loops, so store per-loop time.
+    """
+    if not node:
+        return
+    if node.get("access_type") in ("join", "sort", "group", "union"):
+        loops = node.get("actual_loops") or qb_loops or 1
+        # qb_time is already total across all qb_loops; store per-loop value
+        node["actual_last_row_ms"] = qb_time / loops if loops > 0 else qb_time
+
+
+def _normalize_mariadb(data):
+    """Convert MariaDB ANALYZE FORMAT=JSON into MySQL-compatible tree.
+
+    MariaDB uses a radically different JSON schema:
+      - query_block.nested_loop[].table instead of operation/inputs tree
+      - r_table_time_ms/r_other_time_ms instead of actual_last_row_ms
+      - r_rows/rows instead of actual_rows/estimated_rows
+      - attached_condition instead of condition
+      - filesort/temporary_table wrappers for ORDER BY
+      - materialized/query_block for subqueries and derived tables
+      - union_result/query_specifications for UNION
+
+    This function translates MariaDB's format into MySQL's tree format so the
+    rest of the parser works unchanged.
+    """
+    qb = data.get("query_block")
+    if not isinstance(qb, dict):
+        raise ValueError("MariaDB ANALYZE JSON missing query_block")
+    result = _normalize_mariadb_query_block(qb)
+    if not result:
+        raise ValueError("Failed to normalize MariaDB ANALYZE JSON")
+    return result
 
 
 def parse_explain(text):
@@ -389,6 +761,9 @@ def parse_explain(text):
     # MySQL 9.7+ wraps the plan in a "query_plan" key
     if "query_plan" in data and isinstance(data["query_plan"], dict):
         data = data["query_plan"]
+    # MariaDB 10.5+ / 11.x uses a completely different JSON schema
+    if _is_mariadb_format(data):
+        data = _normalize_mariadb(data)
     root = parse_node(data)
     if not root:
         raise ValueError("Failed to parse EXPLAIN JSON")

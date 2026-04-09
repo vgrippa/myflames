@@ -1,0 +1,107 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.113033826
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 9.75856532,
+    "r_loops": 1,
+    "r_total_time_ms": 0.067611746,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "u",
+          "access_type": "ref",
+          "possible_keys": ["PRIMARY", "idx_country"],
+          "key": "idx_country",
+          "key_length": "8",
+          "used_key_parts": ["country"],
+          "ref": ["const"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 600,
+          "r_rows": 2,
+          "cost": 0.60917872,
+          "r_table_time_ms": 0.013722557,
+          "r_other_time_ms": 0.001501556,
+          "r_engine_stats": {
+            "pages_accessed": 20
+          },
+          "filtered": 100,
+          "r_filtered": 100,
+          "index_condition": "u.country = 'US'"
+        }
+      },
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "ref",
+          "possible_keys": ["PRIMARY", "idx_user", "idx_user_status"],
+          "key": "idx_user",
+          "key_length": "4",
+          "used_key_parts": ["user_id"],
+          "ref": ["testdb.u.id"],
+          "loops": 600,
+          "r_loops": 2,
+          "rows": 3,
+          "r_rows": 4,
+          "cost": 0.7657994,
+          "r_table_time_ms": 0.004504669,
+          "r_other_time_ms": 7.924881e-4,
+          "r_engine_stats": {
+            "pages_accessed": 4
+          },
+          "filtered": 100,
+          "r_filtered": 100,
+          "using_index": true
+        }
+      },
+      {
+        "table": {
+          "table_name": "oi",
+          "access_type": "ref",
+          "possible_keys": ["idx_order", "idx_product"],
+          "key": "idx_order",
+          "key_length": "4",
+          "used_key_parts": ["order_id"],
+          "ref": ["testdb.o.id"],
+          "loops": 1800,
+          "r_loops": 8,
+          "rows": 2,
+          "r_rows": 2.5,
+          "cost": 5.1578688,
+          "r_table_time_ms": 0.027111434,
+          "r_other_time_ms": 0.001334717,
+          "r_engine_stats": {
+            "pages_accessed": 57
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      },
+      {
+        "table": {
+          "table_name": "p",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["testdb.oi.product_id"],
+          "loops": 3600,
+          "r_loops": 20,
+          "rows": 1,
+          "r_rows": 1,
+          "cost": 3.2257184,
+          "r_table_time_ms": 0.011428512,
+          "r_other_time_ms": 0.00429612,
+          "r_engine_stats": {
+            "pages_accessed": 40
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}

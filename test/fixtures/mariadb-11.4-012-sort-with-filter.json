@@ -1,0 +1,36 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.076203985
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 1.6805964,
+    "r_loops": 1,
+    "r_total_time_ms": 0.117747045,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "orders",
+          "access_type": "index",
+          "possible_keys": ["idx_status"],
+          "key": "idx_created",
+          "key_length": "5",
+          "used_key_parts": ["created_at"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 10076,
+          "r_rows": 128,
+          "cost": 1.6805964,
+          "r_table_time_ms": 0.10752812,
+          "r_other_time_ms": 0.007007263,
+          "r_engine_stats": {
+            "pages_accessed": 274
+          },
+          "filtered": 19.84914589,
+          "r_filtered": 15.625,
+          "attached_condition": "orders.`status` = 'pending'"
+        }
+      }
+    ]
+  }
+}

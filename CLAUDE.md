@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
-**myflames** visualizes MySQL `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG flame graphs, bar charts, treemaps, and Visual Explain–style diagrams. It requires MySQL 8.4+ and Python 3.7+ with no external dependencies.
+**myflames** visualizes MySQL and MariaDB `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG flame graphs, bar charts, treemaps, and Visual Explain–style diagrams. It requires MySQL 8.4+ or MariaDB 10.11+/11.4+ and Python 3.7+ with no external dependencies.
 
 ## 🛠 Skills & Specialized Agents
 - **Testing Specialist (`/test-pro`)**: Located at `.claude/skills/test-pro/SKILL.md`. Use for writing, running, and fixing Python/Perl tests.
@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Review**: Proactively use the `/viz-specialist` skill when modifying renderers (`output_*.py`) to audit visual hierarchy and accessibility.
 
 ## 🏗 Architecture (Python package: `myflames/`)
-1. **`parser.py`**: Single entry point. Builds a unified tree. `analyze_plan(root)` scans for full_scans, hash_joins, etc.
+1. **`parser.py`**: Single entry point. Builds a unified tree. Auto-detects MySQL vs MariaDB format. MariaDB normalization (`_normalize_mariadb*` functions) converts MariaDB's `query_block/nested_loop/table` structure into MySQL's `operation/inputs` tree before `parse_node` processes it. `analyze_plan(root)` scans for full_scans, hash_joins, etc.
 2. **`cli.py`**: Argument parsing and SVG height patching for the analysis panel.
 3. **Renderers**: `flamegraph.py`, `output_bargraph.py`, `output_treemap.py`, `output_diagram.py`.
 
@@ -38,4 +38,5 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 📖 Commands Reference
 - **Run**: `python3 -m myflames --type [flamegraph|bargraph|treemap|diagram] explain.json > output.svg`
-- **Fixtures**: `./scripts/generate-fixtures.sh` (requires Docker) to regenerate `test/fixtures/`.
+- **MySQL Fixtures**: `./scripts/generate-fixtures.sh` (requires Docker) to regenerate MySQL `test/fixtures/`.
+- **MariaDB Fixtures**: `./scripts/generate-mariadb-fixtures.sh` (requires Docker) to regenerate MariaDB `test/fixtures/`.

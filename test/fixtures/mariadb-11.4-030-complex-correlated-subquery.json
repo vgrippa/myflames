@@ -1,0 +1,77 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.07828948
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 0.03718352,
+    "r_loops": 1,
+    "r_total_time_ms": 0.071699316,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "p",
+          "access_type": "ref",
+          "possible_keys": ["idx_category", "idx_cat_price"],
+          "key": "idx_cat_price",
+          "key_length": "4",
+          "used_key_parts": ["category_id"],
+          "ref": ["const"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 30,
+          "r_rows": 10,
+          "cost": 0.03718352,
+          "r_table_time_ms": 0.02060469,
+          "r_other_time_ms": 0.018352356,
+          "r_engine_stats": {
+            "pages_accessed": 32
+          },
+          "filtered": 100,
+          "r_filtered": 100,
+          "attached_condition": "p.category_id <=> 1"
+        }
+      }
+    ],
+    "subqueries": [
+      {
+        "subquery_cache": {
+          "r_loops": 10,
+          "r_hit_ratio": 0,
+          "query_block": {
+            "select_id": 2,
+            "cost": 0.002085975,
+            "r_loops": 10,
+            "r_total_time_ms": 0.023023864,
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "r",
+                  "access_type": "ref",
+                  "possible_keys": ["idx_product", "idx_prod_rating"],
+                  "key": "idx_prod_rating",
+                  "key_length": "4",
+                  "used_key_parts": ["product_id"],
+                  "ref": ["testdb.p.id"],
+                  "loops": 1,
+                  "r_loops": 10,
+                  "rows": 3,
+                  "r_rows": 3.3,
+                  "cost": 0.002085975,
+                  "r_table_time_ms": 0.015057274,
+                  "r_other_time_ms": 0.005046898,
+                  "r_engine_stats": {
+                    "pages_accessed": 20
+                  },
+                  "filtered": 100,
+                  "r_filtered": 100,
+                  "using_index": true
+                }
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

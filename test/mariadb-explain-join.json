@@ -1,0 +1,50 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.079
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 0.942,
+    "r_loops": 1,
+    "r_total_time_ms": 0.495,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "ALL",
+          "possible_keys": ["idx_user", "idx_status"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 2000,
+          "r_rows": 2000,
+          "cost": 0.343,
+          "r_table_time_ms": 0.148,
+          "r_other_time_ms": 0.096,
+          "filtered": 33.3,
+          "r_filtered": 33.3,
+          "attached_condition": "o.status = 'pending' AND o.user_id IS NOT NULL"
+        }
+      },
+      {
+        "table": {
+          "table_name": "u",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["testdb.o.user_id"],
+          "loops": 666,
+          "r_loops": 666,
+          "rows": 1,
+          "r_rows": 1,
+          "cost": 0.599,
+          "r_table_time_ms": 0.226,
+          "r_other_time_ms": 0.023,
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.048400499
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 1.277973806,
+    "window_functions_computation": {
+      "sorts": [
+        {
+          "filesort": {
+            "sort_key": "reviews.product_id, reviews.rating desc",
+            "r_loops": 1,
+            "r_total_time_ms": 0.323714911,
+            "r_used_priority_queue": false,
+            "r_output_rows": 5000,
+            "r_buffer_size": "112Kb",
+            "r_sort_mode": "sort_key,rowid"
+          }
+        }
+      ],
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "reviews",
+              "access_type": "index",
+              "key": "idx_prod_rating",
+              "key_length": "5",
+              "used_key_parts": ["product_id", "rating"],
+              "r_loops": 1,
+              "rows": 5090,
+              "r_rows": 5000,
+              "r_table_time_ms": 0.298720526,
+              "r_other_time_ms": 0.188669995,
+              "r_engine_stats": {
+                "pages_accessed": 7
+              },
+              "filtered": 100,
+              "r_filtered": 100,
+              "using_index": true
+            }
+          }
+        ]
+      }
+    }
+  }
+}

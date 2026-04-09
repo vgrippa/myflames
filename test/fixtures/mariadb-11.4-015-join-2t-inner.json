@@ -1,0 +1,56 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.081167463
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 3.4809452,
+    "r_loops": 1,
+    "r_total_time_ms": 1.77542356,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "ALL",
+          "possible_keys": ["idx_user", "idx_status", "idx_user_status"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 10076,
+          "r_rows": 10000,
+          "cost": 1.6805964,
+          "r_table_time_ms": 0.65234282,
+          "r_other_time_ms": 0.308361283,
+          "r_engine_stats": {
+            "pages_accessed": 39
+          },
+          "filtered": 19.84914589,
+          "r_filtered": 20,
+          "attached_condition": "o.`status` = 'pending'"
+        }
+      },
+      {
+        "table": {
+          "table_name": "u",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["testdb.o.user_id"],
+          "loops": 2000,
+          "r_loops": 2000,
+          "rows": 1,
+          "r_rows": 1,
+          "cost": 1.8003488,
+          "r_table_time_ms": 0.750945021,
+          "r_other_time_ms": 0.061063292,
+          "r_engine_stats": {
+            "pages_accessed": 4004
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}

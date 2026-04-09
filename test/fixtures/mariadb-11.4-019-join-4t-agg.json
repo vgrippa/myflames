@@ -1,0 +1,141 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.089676283
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 61.87665232,
+    "r_loops": 1,
+    "r_total_time_ms": 38.38290889,
+    "filesort": {
+      "sort_key": "sum(oi.quantity) desc",
+      "r_loops": 1,
+      "r_total_time_ms": 0.010260635,
+      "r_limit": 10,
+      "r_used_priority_queue": true,
+      "r_output_rows": 11,
+      "r_sort_mode": "sort_key,rowid",
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "u",
+              "access_type": "index",
+              "possible_keys": ["PRIMARY"],
+              "key": "idx_country",
+              "key_length": "8",
+              "used_key_parts": ["country"],
+              "loops": 1,
+              "r_loops": 1,
+              "rows": 3000,
+              "r_rows": 3000,
+              "cost": 0.44841052,
+              "r_table_time_ms": 0.19837228,
+              "r_other_time_ms": 0.102648061,
+              "r_engine_stats": {
+                "pages_accessed": 5
+              },
+              "filtered": 100,
+              "r_filtered": 100,
+              "using_index": true
+            }
+          },
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ref",
+              "possible_keys": ["PRIMARY", "idx_user", "idx_user_status"],
+              "key": "idx_user",
+              "key_length": "4",
+              "used_key_parts": ["user_id"],
+              "ref": ["testdb.u.id"],
+              "loops": 3000,
+              "r_loops": 3000,
+              "rows": 3,
+              "r_rows": 3.333333333,
+              "cost": 3.8060594,
+              "r_table_time_ms": 1.85796745,
+              "r_other_time_ms": 0.362542442,
+              "r_engine_stats": {
+                "pages_accessed": 6015
+              },
+              "filtered": 100,
+              "r_filtered": 100,
+              "using_index": true
+            }
+          },
+          {
+            "table": {
+              "table_name": "oi",
+              "access_type": "ref",
+              "possible_keys": ["idx_order", "idx_product"],
+              "key": "idx_order",
+              "key_length": "4",
+              "used_key_parts": ["order_id"],
+              "ref": ["testdb.o.id"],
+              "loops": 9000,
+              "r_loops": 10000,
+              "rows": 2,
+              "r_rows": 2.5,
+              "cost": 25.4157888,
+              "r_table_time_ms": 14.635795,
+              "r_other_time_ms": 0.868608646,
+              "r_engine_stats": {
+                "pages_accessed": 70047
+              },
+              "filtered": 100,
+              "r_filtered": 100
+            }
+          },
+          {
+            "table": {
+              "table_name": "p",
+              "access_type": "eq_ref",
+              "possible_keys": ["PRIMARY", "idx_category", "idx_cat_price"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "ref": ["testdb.oi.product_id"],
+              "loops": 18000,
+              "r_loops": 25000,
+              "rows": 1,
+              "r_rows": 1,
+              "cost": 16.1056544,
+              "r_table_time_ms": 9.126251026,
+              "r_other_time_ms": 9.142184207,
+              "r_engine_stats": {
+                "pages_accessed": 50166
+              },
+              "filtered": 100,
+              "r_filtered": 100
+            }
+          },
+          {
+            "table": {
+              "table_name": "c",
+              "access_type": "eq_ref",
+              "possible_keys": ["PRIMARY"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "ref": ["testdb.p.category_id"],
+              "loops": 18000,
+              "r_loops": 25000,
+              "r_table_loops": 3000,
+              "rows": 1,
+              "r_rows": 1,
+              "cost": 16.1007392,
+              "r_table_time_ms": 0.822477498,
+              "r_other_time_ms": 1.243997737,
+              "r_engine_stats": {
+                "pages_accessed": 3000
+              },
+              "filtered": 100,
+              "r_filtered": 100
+            }
+          }
+        ]
+      }
+    }
+  }
+}

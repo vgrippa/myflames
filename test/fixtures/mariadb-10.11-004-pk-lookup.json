@@ -1,0 +1,31 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.060270743
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 0.002507798,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "users",
+          "access_type": "const",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["const"],
+          "r_loops": 0,
+          "rows": 1,
+          "r_rows": null,
+          "r_engine_stats": {
+            "pages_accessed": 2
+          },
+          "filtered": 100,
+          "r_filtered": null
+        }
+      }
+    ]
+  }
+}

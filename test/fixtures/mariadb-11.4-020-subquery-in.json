@@ -1,0 +1,61 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.089717993
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 3.01986218,
+    "r_loops": 1,
+    "r_total_time_ms": 1.029984245,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "orders",
+          "access_type": "index",
+          "possible_keys": ["idx_user", "idx_status", "idx_user_status"],
+          "key": "idx_user_status",
+          "key_length": "86",
+          "used_key_parts": ["user_id", "status"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 10076,
+          "r_rows": 8600,
+          "cost": 1.21951338,
+          "r_table_time_ms": 0.551404864,
+          "r_other_time_ms": 0.223565059,
+          "r_engine_stats": {
+            "pages_accessed": 26
+          },
+          "filtered": 19.84914589,
+          "r_filtered": 6.976744186,
+          "attached_condition": "orders.`status` = 'shipped'",
+          "using_index": true,
+          "loose_scan": true
+        }
+      },
+      {
+        "table": {
+          "table_name": "users",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["testdb.orders.user_id"],
+          "loops": 2000,
+          "r_loops": 600,
+          "rows": 1,
+          "r_rows": 1,
+          "cost": 1.8003488,
+          "r_table_time_ms": 0.225859103,
+          "r_other_time_ms": 0.026318946,
+          "r_engine_stats": {
+            "pages_accessed": 1202
+          },
+          "filtered": 0.050000001,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}

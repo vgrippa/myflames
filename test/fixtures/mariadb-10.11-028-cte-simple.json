@@ -1,0 +1,86 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.092579539
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 0.984854029,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "<derived2>",
+          "access_type": "ALL",
+          "r_loops": 1,
+          "rows": 10,
+          "r_rows": 10,
+          "r_table_time_ms": 0.003260137,
+          "r_other_time_ms": 0.007063631,
+          "filtered": 100,
+          "r_filtered": 100,
+          "materialized": {
+            "query_block": {
+              "select_id": 2,
+              "r_loops": 1,
+              "r_total_time_ms": 0.963788527,
+              "filesort": {
+                "sort_key": "count(0) desc",
+                "r_loops": 1,
+                "r_total_time_ms": 0.077072989,
+                "r_limit": 10,
+                "r_used_priority_queue": true,
+                "r_output_rows": 11,
+                "r_sort_mode": "sort_key,rowid",
+                "temporary_table": {
+                  "nested_loop": [
+                    {
+                      "table": {
+                        "table_name": "orders",
+                        "access_type": "index",
+                        "key": "idx_user",
+                        "key_length": "4",
+                        "used_key_parts": ["user_id"],
+                        "r_loops": 1,
+                        "rows": 10076,
+                        "r_rows": 10000,
+                        "r_table_time_ms": 0.541684345,
+                        "r_other_time_ms": 0.333202747,
+                        "r_engine_stats": {
+                          "pages_accessed": 12
+                        },
+                        "filtered": 100,
+                        "r_filtered": 100,
+                        "using_index": true
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "table": {
+          "table_name": "u",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["t.user_id"],
+          "r_loops": 10,
+          "rows": 1,
+          "r_rows": 1,
+          "r_table_time_ms": 0.011494074,
+          "r_other_time_ms": 0.001212102,
+          "r_engine_stats": {
+            "pages_accessed": 20
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}

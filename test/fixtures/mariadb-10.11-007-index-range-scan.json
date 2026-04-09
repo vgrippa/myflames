@@ -1,0 +1,33 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.090155334
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 0.119830943,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "products",
+          "access_type": "range",
+          "possible_keys": ["idx_price"],
+          "key": "idx_price",
+          "key_length": "5",
+          "used_key_parts": ["price"],
+          "r_loops": 1,
+          "rows": 153,
+          "r_rows": 153,
+          "r_table_time_ms": 0.103321273,
+          "r_other_time_ms": 0.010365565,
+          "r_engine_stats": {
+            "pages_accessed": 308
+          },
+          "filtered": 100,
+          "r_filtered": 100,
+          "index_condition": "products.price between 50 and 100"
+        }
+      }
+    ]
+  }
+}

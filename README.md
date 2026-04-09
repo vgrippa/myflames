@@ -1,6 +1,6 @@
-# myflames — MySQL Query Plan Visualizer
+# myflames — MySQL & MariaDB Query Plan Visualizer
 
-Visualize MySQL `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG charts. Five output types, one parser, no external dependencies.
+Visualize MySQL `EXPLAIN ANALYZE FORMAT=JSON` and MariaDB `ANALYZE FORMAT=JSON` output as interactive SVG charts. Five output types, one parser, no external dependencies.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
@@ -21,6 +21,26 @@ pip install .
 ```
 
 No external dependencies — pure Python 3.7+ stdlib.
+
+### macOS (Homebrew Python)
+
+Modern macOS with Homebrew Python blocks system-wide `pip install` (PEP 668). Use `pipx` instead:
+
+```bash
+brew install pipx
+pipx install myflames
+```
+
+Or install from source:
+
+```bash
+brew install pipx
+git clone https://github.com/vgrippa/myflames.git
+cd myflames
+pipx install .
+```
+
+The `myflames` command will be available globally without affecting your system Python.
 
 ---
 
@@ -94,7 +114,10 @@ Every view includes a **Query Analysis panel** below the chart with optimizer fe
 ## Requirements
 
 - **Python 3.7+** — no extra packages
-- **MySQL 8.4+** with `explain_json_format_version = 2`
+- **MySQL 8.4+** with `explain_json_format_version = 2`, **or**
+- **MariaDB 10.11+** / **11.4+**
+
+### MySQL setup
 
 Enable the required JSON format:
 
@@ -105,11 +128,19 @@ SET explain_json_format_version = 2;
 -- explain_json_format_version = 2
 ```
 
+### MariaDB setup
+
+No special configuration needed. MariaDB 10.5+ supports `ANALYZE FORMAT=JSON` natively.
+MariaDB also supports `SHOW ANALYZE FORMAT=JSON FOR <connection_id>` and
+`SHOW EXPLAIN FORMAT=JSON FOR <connection_id>` for live query analysis.
+
 ---
 
 ## Quick start
 
 ### 1. Get EXPLAIN ANALYZE output
+
+**MySQL:**
 
 ```sql
 EXPLAIN ANALYZE FORMAT=JSON
@@ -120,21 +151,39 @@ WHERE u.country = 'US'
 GROUP BY u.id;
 ```
 
+**MariaDB:**
+
+```sql
+ANALYZE FORMAT=JSON
+SELECT u.name, COUNT(o.id)
+FROM users u
+JOIN orders o ON u.id = o.user_id
+WHERE u.country = 'US'
+GROUP BY u.id;
+```
+
 Save to a file — any of these work:
 
 ```bash
-# Recommended: -s -N -r gives clean JSON
+# MySQL: Recommended: -s -N -r gives clean JSON
 mysql -u user -p mydb -s -N -r -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
 
-# Also works: myflames auto-strips table borders, headers, and escaped newlines
+# MySQL: Also works: myflames auto-strips table borders, headers, and escaped newlines
 mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
 mysql -u user -p mydb -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
+
+# MariaDB:
+mariadb -u user -p mydb -s -N -r -e "ANALYZE FORMAT=JSON SELECT ..." > explain.json
+
+# MariaDB: SHOW ANALYZE for a running query (from another session)
+mariadb -u user -p mydb -s -N -r -e "SHOW ANALYZE FORMAT=JSON FOR <connection_id>" > explain.json
 ```
 
 Or pipe directly (stdin supported):
 
 ```bash
 mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." | myflames > query.svg
+mariadb -u user -p mydb -N -e "ANALYZE FORMAT=JSON SELECT ..." | myflames > query.svg
 ```
 
 ### 2. Generate a visualization

@@ -1,0 +1,33 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.084930755
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 0.026875234,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "orders",
+          "access_type": "ref",
+          "possible_keys": ["idx_user", "idx_user_status"],
+          "key": "idx_user",
+          "key_length": "4",
+          "used_key_parts": ["user_id"],
+          "ref": ["const"],
+          "r_loops": 1,
+          "rows": 4,
+          "r_rows": 4,
+          "r_table_time_ms": 0.018056145,
+          "r_other_time_ms": 0.005015596,
+          "r_engine_stats": {
+            "pages_accessed": 10
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}
