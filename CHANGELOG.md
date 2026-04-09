@@ -5,6 +5,26 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-04-09
+
+### Added
+
+- **MariaDB 10.11 and 11.4 support** — myflames now auto-detects and visualizes
+  MariaDB `ANALYZE FORMAT=JSON` output alongside MySQL `EXPLAIN ANALYZE FORMAT=JSON`.
+  All five view types (flame graph, bar chart, treemap, diagram, tree) work with both
+  databases. Supported MariaDB input methods:
+  - `ANALYZE FORMAT=JSON SELECT ...`
+  - `SHOW ANALYZE FORMAT=JSON FOR <connection_id>` (live query analysis)
+  - `SHOW EXPLAIN FORMAT=JSON FOR <connection_id>`
+- **MariaDB normalization layer** — transparent conversion of MariaDB's
+  `query_block/nested_loop/table` JSON structure into the existing MySQL tree format.
+  Handles nested loops, filesort, unions, window functions, materialized subqueries,
+  derived tables, covering indexes, and correlated subqueries.
+- **MariaDB fixture generation** — `scripts/generate-mariadb-fixtures.sh` generates 60
+  test fixtures (30 per version) from Docker containers running MariaDB 10.11 and 11.4.
+- **28 new MariaDB-specific unit tests** covering format detection, normalization,
+  timing accuracy, access type mapping, and analysis plan detection.
+
 ## [1.1.0] — 2026-04-01
 
 ### Added
