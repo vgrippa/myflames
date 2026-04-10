@@ -23,7 +23,7 @@
   .ctrl-link:hover { fill: #0d47a1; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
-<text x="600.0" y="26" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="26" text-anchor="middle" class="title">Full Table Scan — MySQL query analysis</text>
 <text x="10" y="44" text-anchor="start" class="subtitle">Execution tree  ·  Total: 440.8 µs  ·  Click row to pin  ·  Ctrl+F to search</text>
 <text id="expand-all" class="ctrl-link" x="1100" y="44" text-anchor="start">Expand All</text>
 <text id="collapse-all" class="ctrl-link" x="1190" y="44" text-anchor="end">Collapse All</text>

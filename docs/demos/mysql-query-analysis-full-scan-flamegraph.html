@@ -1,15 +1,792 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MySQL EXPLAIN – Analysis Full Scan Flamegraph</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Full Table Scan — MySQL query analysis — myflames report</title>
+  <meta name="description" content="Query scans 1 table; returns 3,000 rows in 0.44 ms. Main finding: full scan of users (3,000 rows).">
+  <script type="application/ld+json">
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:09:16Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.441,
+    "rows_sent": 3000,
+    "rows_examined_estimate": 3000,
+    "operator_count": 1,
+    "max_depth": 1
+  },
+  "optimizer_switches": [],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: users (3000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [users]"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    }
+  ],
+  "executive_summary": "Query scans 1 table; returns 3,000 rows in 0.44 ms. Main finding: full scan of users (3,000 rows).",
+  "query": {
+    "raw": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,`testdb`.`users`.`email` AS `email`,`testdb`.`users`.`country` AS `country`,`testdb`.`users`.`created_at` AS `created_at` from `testdb`.`users`",
+    "beautified": "select testdb.users.id AS id,testdb.users.name AS name,testdb.users.email AS email,testdb.users.country AS country,testdb.users.created_at AS created_at\nfrom testdb.users"
+  },
+  "primary_action": {
+    "ref": "suggestions[0]"
+  }
+}
+  </script>
   <style>
-    html, body { margin: 0; padding: 0; }
-    object { display: block; width: 100%; }
-  </style>
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --fg: #1a1a2e;
+  --muted: #5a6475;
+  --border: #e0e4ec;
+  --accent: #283593;
+  --accent-soft: #e8eaf6;
+
+  /* Severity palette (from progressive-ux skill) */
+  --sev-error: #b71c1c;
+  --sev-warn: #ef6c00;
+  --sev-info: #0d47a1;
+  --sev-ok: #1b5e20;
+
+  --sev-high: var(--sev-error);
+  --sev-medium: var(--sev-warn);
+  --sev-low: var(--sev-info);
+
+  --code-bg: #263238;
+  --code-fg: #eceff1;
+  --code-str: #c3e88d;
+  --code-kw: #82aaff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; top: -40px; left: 0;
+  background: var(--accent); color: #fff; padding: 8px 16px;
+  z-index: 100; text-decoration: none;
+}
+.skip-link:focus { top: 0; }
+
+/* Header */
+.site-header {
+  background: #1a1a2e; color: #fff;
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.site-header h1 {
+  font-size: 17px; font-weight: 600; margin: 0;
+}
+.site-header nav.toolbar {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.site-header nav.toolbar button {
+  padding: 6px 14px; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; background: rgba(255,255,255,0.06);
+  color: #fff; font-size: 12px; cursor: pointer;
+}
+.site-header nav.toolbar button:hover { background: rgba(255,255,255,0.15); }
+.site-header nav.toolbar button:focus { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Main layout */
+main.report {
+  max-width: 1400px; margin: 24px auto; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+main.report > section,
+main.report > details,
+main.report > aside {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 22px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+main.report h2 {
+  font-size: 15px; font-weight: 600; color: var(--fg);
+  margin: 0 0 12px 0; display: inline-flex; align-items: baseline; gap: 8px;
+}
+main.report h2 .count {
+  color: var(--muted); font-weight: 400; font-size: 13px;
+}
+
+/* Exec summary strip */
+.exec-summary .exec-text {
+  font-size: 16px; font-weight: 500; color: var(--fg);
+  margin: 0 0 14px 0;
+}
+.exec-summary .quick-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin: 0;
+}
+.exec-summary .quick-stats > div {
+  background: var(--accent-soft); border-radius: 6px;
+  padding: 10px 14px; text-align: left;
+}
+.exec-summary .quick-stats dt {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--muted); margin-bottom: 2px;
+}
+.exec-summary .quick-stats dd {
+  font-size: 18px; font-weight: 700; color: var(--accent); margin: 0;
+}
+
+/* Primary action card */
+.primary-action {
+  border-left: 4px solid var(--sev-medium);
+  background: #fff9f3;
+}
+.primary-action.sev-high { border-left-color: var(--sev-high); background: #fff3f3; }
+.primary-action.sev-low  { border-left-color: var(--sev-low);  background: #f1f8ff; }
+.primary-action-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.primary-action-header h2 { margin: 0; font-size: 15px; }
+.primary-action .action-text {
+  font-size: 15px; color: var(--fg); margin: 8px 0;
+}
+.primary-action .sql-action {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 16px; border-radius: 6px; margin: 8px 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; overflow-x: auto;
+}
+.primary-action details.why-details {
+  margin-top: 10px; background: rgba(255,255,255,0.5);
+  border-radius: 6px; padding: 8px 12px;
+}
+.primary-action details.why-details summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted);
+}
+.primary-action details.why-details[open] summary { margin-bottom: 6px; }
+
+/* Severity badges */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 12px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; background: var(--muted); color: #fff;
+}
+.badge-high,  .badge-error { background: var(--sev-error); }
+.badge-medium, .badge-warn { background: var(--sev-warn); }
+.badge-low,   .badge-info  { background: var(--sev-info); }
+.badge-ok                  { background: var(--sev-ok); }
+
+/* Query card */
+.query-card pre {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 14px 18px; border-radius: 8px;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  overflow-x: auto; margin: 0;
+}
+
+/* Visualization */
+.viz-card .chart-panel {
+  overflow-x: auto; padding: 4px; background: #fff;
+  border-radius: 6px; border: 1px solid var(--border);
+}
+.viz-card svg { display: block; max-width: 100%; height: auto; }
+
+/* Warnings + suggestions lists */
+.warning-list, .suggestion-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.warning, .suggestion {
+  background: var(--bg); border-radius: 8px; padding: 12px 14px;
+  border-left: 3px solid var(--muted);
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 6px;
+}
+.warning.sev-error, .suggestion.sev-high    { border-left-color: var(--sev-high); }
+.warning.sev-warn,  .suggestion.sev-medium  { border-left-color: var(--sev-warn); }
+.warning.sev-info,  .suggestion.sev-low     { border-left-color: var(--sev-info); }
+.warning .text, .suggestion .action-text { margin: 0; grid-column: 2; }
+.warning .where { grid-column: 2; font-size: 12px; color: var(--muted); margin: 0; }
+.suggestion .sql-action {
+  grid-column: 1 / -1;
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 10px 14px; border-radius: 6px; margin: 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px; overflow-x: auto;
+}
+.suggestion details.why-details {
+  grid-column: 1 / -1; margin-top: 4px; background: var(--accent-soft);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px;
+}
+.suggestion details.why-details summary {
+  cursor: pointer; font-weight: 600; color: var(--accent);
+}
+.suggestion details.why-details p {
+  margin: 6px 0 0 0; color: var(--fg);
+}
+.node-label {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: rgba(40,53,147,0.1); color: var(--accent);
+  font-size: 11px;
+}
+
+/* Glossary chips (<abbr>) */
+abbr.glossary-chip {
+  text-decoration: underline dotted rgba(40,53,147,0.5);
+  cursor: help; text-underline-offset: 2px;
+}
+
+/* Environment section */
+details.env-section summary,
+details.raw-sidecar summary,
+aside.glossary-aside summary {
+  cursor: pointer; list-style: none;
+}
+details.env-section summary::-webkit-details-marker,
+details.raw-sidecar summary::-webkit-details-marker,
+aside.glossary-aside summary::-webkit-details-marker { display: none; }
+details.env-section summary::before,
+details.raw-sidecar summary::before,
+aside.glossary-aside summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px;
+  transition: transform 0.15s; color: var(--muted);
+}
+details.env-section[open] summary::before,
+details.raw-sidecar[open] summary::before,
+aside.glossary-aside details[open] summary::before { transform: rotate(90deg); }
+details.env-section summary h2,
+details.raw-sidecar summary h2,
+aside.glossary-aside summary h2 { display: inline; margin: 0; }
+.env-grid {
+  margin-top: 14px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.env-card { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.env-card h3 {
+  font-size: 13px; margin: 0 0 8px 0; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv-table th {
+  text-align: left; font-weight: 600; padding: 4px 6px;
+  vertical-align: top; color: var(--muted);
+}
+.kv-table td {
+  padding: 4px 6px; word-break: break-all;
+  font-family: "SFMono-Regular", Menlo, monospace; font-size: 12px;
+}
+.schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.schema-list li { padding: 3px 0; }
+
+/* Glossary aside */
+aside.glossary-aside { background: #f1f8ff; }
+.glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
+.glossary-item dt code {
+  background: var(--accent-soft); padding: 2px 6px;
+  border-radius: 4px; font-size: 12px; color: var(--accent);
+}
+.glossary-item dd { margin: 4px 0 0 0; font-size: 13px; }
+.glossary-item dd.newcomer { color: var(--fg); }
+.glossary-item dd.technical {
+  color: var(--muted); font-size: 12px; font-style: italic;
+}
+
+/* Raw sidecar JSON */
+.raw-json {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+  font-family: "SFMono-Regular", monospace; font-size: 11.5px;
+  max-height: 400px;
+}
+
+/* Print tweaks */
+@media print {
+  body { background: #fff; }
+  .site-header { background: #fff; color: #000; border-bottom: 2px solid #000; }
+  .site-header nav { display: none; }
+  details { page-break-inside: avoid; }
+  details > summary { display: none; }
+  details > *:not(summary) { display: block !important; }
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  main.report { padding: 0 12px; }
+  .site-header { padding: 10px 14px; }
+  .site-header h1 { font-size: 15px; }
+}
+</style>
 </head>
 <body>
-  <object data="mysql-query-analysis-full-scan-flamegraph.svg" type="image/svg+xml" width="100%"></object>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header" role="banner">
+    <h1>Full Table Scan — MySQL query analysis</h1>
+    <nav class="toolbar" aria-label="Report actions">
+      <button type="button" onclick="exportSVG()">Export SVG</button>
+      <button type="button" onclick="exportJSON()">Export Analysis JSON</button>
+      <button type="button" onclick="window.print()">Print / PDF</button>
+    </nav>
+  </header>
+  <main id="main-content" class="report" role="main">
+<section class="exec-summary" aria-labelledby="exec-heading">
+  <h2 id="exec-heading" class="visually-hidden">Summary</h2>
+  <p class="exec-text">Query scans 1 table; returns 3,000 rows in 0.44 ms. Main finding: <abbr class="glossary-chip" title="Reads every row of a table.">full scan</abbr> of users (3,000 rows).</p>
+  <dl class="quick-stats">
+    <div><dt>Total time</dt><dd>441 µs</dd></div>
+    <div><dt>Rows returned</dt><dd>3.00K</dd></div>
+    <div><dt>Rows examined</dt><dd>3.00K</dd></div>
+    <div><dt>Operators</dt><dd>1</dd></div>
+  </dl>
+</section>
+
+<section class="primary-action sev-high" aria-labelledby="primary-heading" role="region">
+  <header class="primary-action-header">
+    <span class="badge badge-high">Fix first</span>
+    <h2 id="primary-heading">Primary recommendation</h2>
+  </header>
+  <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+</section>
+
+<section class="query-card" aria-labelledby="query-heading">
+  <h2 id="query-heading">SQL</h2>
+  <pre class="sql-text"><code>select testdb.users.id AS id,testdb.users.name AS name,testdb.users.email AS email,testdb.users.country AS country,testdb.users.created_at AS created_at
+from testdb.users</code></pre>
+</section>
+
+<section class="viz-card" aria-labelledby="viz-heading">
+  <h2 id="viz-heading">Execution plan (flamegraph)</h2>
+  <div class="chart-panel" id="chart-panel">
+<svg version="1.1" width="1800" height="134" onload="init(evt)" viewBox="0 0 1800 134" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs>
+<style type="text/css">text { font-family: Verdana; font-size: 12px; fill: rgb(0,0,0); }
+#search, #ignorecase { opacity:0.1; cursor:pointer; } #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+#title { text-anchor:middle; font-size:17px } #unzoom { cursor:pointer; } #frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; } .hide { display:none; } .parent { opacity:0.5; }</style>
+<script type="text/ecmascript"><![CDATA[
+
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn, pinnedDetails = null;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+		if (params.s) search(params.s);
+	}
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) { pinnedDetails = null; unzoom(true); }
+			else {
+			zoom(target);
+			pinnedDetails = "Function: " + g_to_text(target);
+			}
+			if (!document.querySelector('.parent')) {
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params();
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false);
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = (pinnedDetails !== null ? pinnedDetails : "Function: " + g_to_text(target));
+	}, false);
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target && pinnedDetails === null) details.nodeValue = ' ';
+	}, false);
+	window.addEventListener("keydown", function(e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) { e.preventDefault(); search_prompt(); }
+		else if (e.ctrlKey && e.keyCode === 73) { e.preventDefault(); toggle_ignorecase(); }
+	}, false);
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]] = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) { uri += key + '=' + encodeURIComponent(params[key]) + '&'; }
+		if (uri.slice(-1) == "&") uri = uri.substring(0, uri.length - 1);
+		if (uri == '?') uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title");
+		return text ? text.firstChild.nodeValue : "";
+	}
+	function g_to_func(e) { return g_to_text(e); }
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		if (!r || !t) return;
+		var w = parseFloat(r.attributes.width.value) - 3;
+		var txt = (find_child(e, "title") ? find_child(e, "title").textContent : "").replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+		if (w < 2 * 12 * 0.59) { t.textContent = ""; return; }
+		t.textContent = txt;
+		var sl = t.getSubStringLength ? t.getSubStringLength(0, txt.length) : txt.length * 7;
+		if (/^ *$/.test(txt) || sl < w) return;
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if ((t.getSubStringLength ? t.getSubStringLength(0, x + 2) : (x+2)*7) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+	function zoom_reset(e) {
+		if (e.attributes != undefined) { orig_load(e, "x"); orig_load(e, "width"); }
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_reset(c[i]);
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text" && e.parentNode) {
+					var rect = find_child(e.parentNode, "rect[x]") || find_child(e.parentNode, "rect");
+					if (rect) e.attributes.x.value = parseFloat(rect.attributes.x.value) + 3;
+				}
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_child(c[i], x - 10, ratio);
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) { orig_save(e, "x"); e.attributes.x.value = 10; }
+			if (e.attributes.width != undefined) { orig_save(e, "width"); e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2); }
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_parent(c[i]);
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+		var fudge = 0.0001;
+		unzoombtn.classList.remove("hide");
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack = (0 == 0) ? (parseFloat(a.y.value) > ymin) : (parseFloat(a.y.value) < ymin);
+			if (upstack) {
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				} else e.classList.add("hide");
+			} else {
+				if (ex < xmin || ex + fudge >= xmax) e.classList.add("hide");
+				else { zoom_child(e, xmin, ratio); update_text(e); }
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if (!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		pinnedDetails = null;
+		unzoom();
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		ignorecaseBtn.classList.toggle("show", ignorecase);
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) orig_load(el[i], "fill");
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp allowed)" + (ignorecase ? ", ignoring case" : "") + "\\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search";
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = "";
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = {};
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null) continue;
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth) maxwidth = w;
+			if (func.match(re)) {
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+				matches[x] = (matches[x] === undefined || w > matches[x]) ? w : matches[x];
+				searching = 1;
+			}
+		}
+		if (!searching) return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+		var count = 0, lastx = -1, lastw = 0, keys = [];
+		for (var k in matches) { if (matches.hasOwnProperty(k)) keys.push(k); }
+		keys.sort(function(a,b){ return a - b; });
+		var fudge = 0.0001;
+		for (var ki = 0; ki < keys.length; ki++) {
+			var x = parseFloat(keys[ki]);
+			var w = matches[keys[ki]];
+			if (x >= lastx + lastw - fudge) { count += w; lastx = x; lastw = w; }
+		}
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1);
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+
+]]></script>
+<rect width="100%" height="100%" fill="url(#background)"/>
+<text id="title" x="900" y="24">Full Table Scan — MySQL query analysis</text>
+<text id="details" x="10" y="117"> </text>
+<text id="unzoom" class="hide" x="10" y="24">Reset Zoom</text>
+<text id="search" x="1690" y="24">Search</text>
+<text id="ignorecase" x="1774" y="24">ic</text>
+<text id="matched" x="1690" y="117"> </text>
+<g id="frames">
+<g><title>TABLE SCAN [users] starts=1 rows=3000 (441 µs, 100.00%)&#10;&#10;Table: testdb.users&#10;Access: table&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 0.441 ms (last row)&#10;Cost: 303.50</title>
+<rect x="10.0" y="37.0" width="1780.0" height="31.0" fill="rgb(232,118,7)" rx="2" ry="2"/>
+<text x="13.00" y="55.50">TABLE SCAN [users] starts=1 rows=3000</text>
+</g>
+</g>
+</svg>
+
+  </div>
+</section>
+
+<section class="warnings-section" aria-labelledby="warn-heading">
+  <h2 id="warn-heading">Warnings <span class="count">(1)</span></h2>
+  <ol class="warning-list">
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text"><abbr class="glossary-chip" title="Reads every row of a table.">Full table scan</abbr>: users (3000 rows)</p>
+      <p class="where">Labeled: <code class="node-label">Table scan [users]</code></p>
+    </li>
+  </ol>
+</section>
+
+<section class="suggestions-section" aria-labelledby="sug-heading">
+  <h2 id="sug-heading">Suggestions <span class="count">(1)</span></h2>
+  <ol class="suggestion-list">
+    <li class="suggestion sev-high">
+      <span class="badge badge-high">HIGH</span>
+      <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+      
+    </li>
+  </ol>
+</section>
+
+<aside class="glossary-aside" aria-labelledby="glossary-heading">
+  <details>
+    <summary><h2 id="glossary-heading">Glossary (1 terms)</h2></summary>
+    <dl class="glossary-list">
+      <div class="glossary-item">
+        <dt><code>full table scan</code></dt>
+        <dd class="newcomer">MySQL is reading every single row in this table, one by one, to check if it matches your WHERE clause. This is slow on big tables — an index on the filter column lets MySQL jump straight to the matching rows instead.</dd>
+        <dd class="technical">Access type ``ALL``: the storage engine returns every row of the table, applying the WHERE clause in the server layer. Cost is roughly (rows × row_evaluate_cost) + pages_read × io_block_read_cost. Signal: ``type=ALL`` in EXPLAIN, ``Handler_read_rnd_next`` climbs by the table row count. Almost always a sign of a missing index on the WHERE or join column.</dd>
+      </div>
+    </dl>
+  </details>
+</aside>
+
+<details class="raw-sidecar">
+  <summary><h2>Raw sidecar (JSON)</h2></summary>
+  <pre class="raw-json"><code>{
+  &quot;schema_version&quot;: &quot;1.0&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-10T20:09:16Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.2.0&quot;,
+  &quot;source&quot;: {
+    &quot;type&quot;: &quot;file&quot;
+  },
+  &quot;plan_summary&quot;: {
+    &quot;total_time_ms&quot;: 0.441,
+    &quot;rows_sent&quot;: 3000,
+    &quot;rows_examined_estimate&quot;: 3000,
+    &quot;operator_count&quot;: 1,
+    &quot;max_depth&quot;: 1
+  },
+  &quot;optimizer_switches&quot;: [],
+  &quot;warnings&quot;: [
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;full_scan&quot;,
+      &quot;text&quot;: &quot;Full table scan: users (3000 rows)&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Table scan [users]&quot;
+      ]
+    }
+  ],
+  &quot;suggestions&quot;: [
+    {
+      &quot;severity&quot;: &quot;high&quot;,
+      &quot;category&quot;: &quot;index&quot;,
+      &quot;action&quot;: &quot;Add indexes on filter/join columns to avoid full table scans&quot;,
+      &quot;source&quot;: &quot;plan&quot;
+    }
+  ],
+  &quot;executive_summary&quot;: &quot;Query scans 1 table; returns 3,000 rows in 0.44 ms. Main finding: full scan of users (3,000 rows).&quot;,
+  &quot;query&quot;: {
+    &quot;raw&quot;: &quot;/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,`testdb`.`users`.`email` AS `email`,`testdb`.`users`.`country` AS `country`,`testdb`.`users`.`created_at` AS `created_at` from `testdb`.`users`&quot;,
+    &quot;beautified&quot;: &quot;select testdb.users.id AS id,testdb.users.name AS name,testdb.users.email AS email,testdb.users.country AS country,testdb.users.created_at AS created_at\nfrom testdb.users&quot;
+  },
+  &quot;primary_action&quot;: {
+    &quot;ref&quot;: &quot;suggestions[0]&quot;
+  }
+}</code></pre>
+</details>
+  </main>
+  <script>
+function exportSVG() {
+  var svg = document.querySelector('#chart-panel svg');
+  if (!svg) { alert('No SVG found'); return; }
+  var data = new XMLSerializer().serializeToString(svg);
+  var blob = new Blob(['<?xml version="1.0" standalone="no"?>\n', data], {type: 'image/svg+xml'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-plan.svg';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function exportJSON() {
+  // Export the embedded sidecar (same data the JSON-LD script carries).
+  var script = document.querySelector('script[type="application/ld+json"]');
+  if (!script) { alert('No sidecar found'); return; }
+  var blob = new Blob([script.textContent], {type: 'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-analysis.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+</script>
 </body>
 </html>

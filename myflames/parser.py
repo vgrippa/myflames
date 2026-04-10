@@ -308,6 +308,13 @@ def parse_node(node):
         "join_algorithm": node.get("join_algorithm") or "",
         "pushed_index_condition": bool(node.get("pushed_index_condition")),
         "using_join_buffer": (node.get("using_join_buffer") or "").strip(),
+        # Fields used by optimizer_switch detection (see _detect_optimizer_switches).
+        "index_access_type": node.get("index_access_type") or "",
+        "hash_condition": node.get("hash_condition") or [],
+        "using_mrr": bool(node.get("using_mrr")),
+        "using_rowid_filter": bool(node.get("using_rowid_filter")),
+        "mariadb_block_nl_join": node.get("mariadb_block_nl_join") or {},
+        "mariadb_index_merge": node.get("mariadb_index_merge") or {},
     }
     return {
         "short_label": short,
@@ -441,6 +448,12 @@ def _normalize_mariadb_table(tbl):
     key = tbl.get("key") or ""
     using_index = bool(tbl.get("using_index"))
     condition = tbl.get("attached_condition") or ""
+    # Preserve optimizer-switch evidence that MariaDB exposes on the table node
+    # so _detect_optimizer_switches() can report it after normalization.
+    mariadb_index_merge = tbl.get("index_merge") or {}
+    has_rowid_filter = bool(tbl.get("rowid_filter"))
+    mrr_type = tbl.get("mrr_type") or ""
+    has_pushed_index_cond = bool(tbl.get("index_condition") or tbl.get("index_condition_bka"))
 
     r_table_time = tbl.get("r_table_time_ms") or 0
     r_other_time = tbl.get("r_other_time_ms") or 0
@@ -469,6 +482,22 @@ def _normalize_mariadb_table(tbl):
         mysql_access_type = "ref"
     elif access_type_raw == "FULLTEXT":
         mysql_access_type = "fulltext"
+    elif access_type_raw == "INDEX_MERGE":
+        # MariaDB's own access_type for index_merge. Use a MySQL-compatible marker
+        # ("rowid_union" / "rowid_intersection" / "rowid_sort_union") so both
+        # engines go through the same index_merge detection branch.
+        if "sort_intersect" in mariadb_index_merge:
+            mysql_access_type = "rowid_sort_intersection"
+            operation = "Intersect rows sorted by row ID on {}".format(table_name) if table_name else "Sort intersect index merge"
+        elif "intersect" in mariadb_index_merge:
+            mysql_access_type = "rowid_intersection"
+            operation = "Intersect rows sorted by row ID on {}".format(table_name) if table_name else "Intersect index merge"
+        elif "sort_union" in mariadb_index_merge:
+            mysql_access_type = "rowid_sort_union"
+            operation = "Deduplicate rows sorted by row ID on {}".format(table_name) if table_name else "Sort union index merge"
+        else:
+            mysql_access_type = "rowid_union"
+            operation = "Deduplicate rows sorted by row ID on {}".format(table_name) if table_name else "Union index merge"
 
     node = {
         "operation": operation,
@@ -484,6 +513,14 @@ def _normalize_mariadb_table(tbl):
         "covering": using_index and access_type_raw == "INDEX",
         "schema_name": "",
         "inputs": [],
+        # Optimizer-switch evidence preserved for _detect_optimizer_switches.
+        # mariadb_index_merge carries the variant name (union/sort_union/intersect/sort_intersect);
+        # using_rowid_filter signals MariaDB's rowid_filter pruning;
+        # using_mrr signals Multi-Range Read on the range access.
+        "mariadb_index_merge": mariadb_index_merge,
+        "using_rowid_filter": has_rowid_filter,
+        "using_mrr": bool(mrr_type),
+        "pushed_index_condition": has_pushed_index_cond,
     }
 
     # Handle materialized subqueries/derived tables
@@ -513,7 +550,7 @@ def _normalize_mariadb_nested_loop(nested_loop):
     if not nested_loop:
         return None
 
-    # Normalize each entry — can be table, read_sorted_file, etc.
+    # Normalize each entry — can be table, read_sorted_file, block-nl-join, etc.
     table_nodes = []
     for entry in nested_loop:
         if not isinstance(entry, dict):
@@ -524,6 +561,77 @@ def _normalize_mariadb_nested_loop(nested_loop):
             node = _normalize_mariadb_read_sorted_file(entry["read_sorted_file"])
             if node:
                 table_nodes.append(node)
+        elif "block-nl-join" in entry:
+            # MariaDB wraps the inner side of a join-buffer join here. The inner
+            # "table" can be reached via a classic BNL, BNLH (hash), BKA or BKAH
+            # depending on optimizer_switch (join_cache_* / outer_join_with_cache).
+            bnl_wrapper = entry["block-nl-join"] or {}
+            inner_tbl = bnl_wrapper.get("table")
+            if isinstance(inner_tbl, dict):
+                node = _normalize_mariadb_table(inner_tbl)
+                join_type = (bnl_wrapper.get("join_type") or "").upper()
+                buffer_type = bnl_wrapper.get("buffer_type") or ""
+                # Map MariaDB join_type ∈ {BNL, BNLH, BKA, BKAH} to the MySQL
+                # semantics that _detect_optimizer_switches already understands.
+                if "BNLH" in join_type or "hash" in (buffer_type or "").lower():
+                    node["join_algorithm"] = "hash"
+                    node["using_join_buffer"] = "Block Nested Loop (hash)"
+                elif join_type.startswith("BKA"):
+                    node["join_algorithm"] = "batch_key_access"
+                    node["using_join_buffer"] = "Batched Key Access"
+                else:
+                    node["using_join_buffer"] = "Block Nested Loop"
+                node["mariadb_block_nl_join"] = {
+                    "join_type": join_type,
+                    "buffer_type": buffer_type,
+                    "buffer_size": bnl_wrapper.get("buffer_size") or "",
+                }
+                # Preserve the BNL wrapper's attached_condition (the real ON
+                # predicate) so the advisor's non-sargable detection rule can
+                # see it. Without this, the condition is lost in the
+                # normalized tree and any CONCAT/CAST/LOWER join key goes
+                # undetected on MariaDB.
+                wrapper_cond = bnl_wrapper.get("attached_condition") or ""
+                if wrapper_cond and not node.get("condition"):
+                    node["condition"] = wrapper_cond
+                table_nodes.append(node)
+        elif "duplicates_removal" in entry:
+            # MariaDB's DuplicateWeedout semijoin strategy.
+            inner = _normalize_mariadb_nested_loop(entry["duplicates_removal"])
+            if inner:
+                weedout = {
+                    "operation": "Remove duplicates using temporary table (weedout)",
+                    "access_type": "weedout",
+                    "actual_last_row_ms": inner.get("actual_last_row_ms", 0),
+                    "actual_loops": inner.get("actual_loops", 1),
+                    "actual_rows": inner.get("actual_rows", 0),
+                    "inputs": [inner],
+                }
+                table_nodes.append(weedout)
+        elif "firstmatch" in entry:
+            inner = _normalize_mariadb_nested_loop(entry["firstmatch"])
+            if inner:
+                fm = {
+                    "operation": "FirstMatch semijoin",
+                    "access_type": "semijoin",
+                    "actual_last_row_ms": inner.get("actual_last_row_ms", 0),
+                    "actual_loops": inner.get("actual_loops", 1),
+                    "actual_rows": inner.get("actual_rows", 0),
+                    "inputs": [inner],
+                }
+                table_nodes.append(fm)
+        elif "loosescan" in entry:
+            inner = _normalize_mariadb_nested_loop(entry["loosescan"])
+            if inner:
+                ls = {
+                    "operation": "LooseScan semijoin",
+                    "access_type": "semijoin",
+                    "actual_last_row_ms": inner.get("actual_last_row_ms", 0),
+                    "actual_loops": inner.get("actual_loops", 1),
+                    "actual_rows": inner.get("actual_rows", 0),
+                    "inputs": [inner],
+                }
+                table_nodes.append(ls)
 
     if not table_nodes:
         return None
@@ -866,6 +974,404 @@ def enhance_tooltip_flame(original, op_details):
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# optimizer_switch detection
+# ---------------------------------------------------------------------------
+#
+# Each entry maps an @@optimizer_switch flag to a short explanation of what
+# happens when the optimizer actually *uses* it in a query. Explanations are
+# single-sentence and avoid buzzwords so they stay useful inside the SVG
+# analysis panel.
+#
+# Verified against live instances:
+#   - MySQL 8.4.8  (@@optimizer_switch — all default MySQL 8.4 switches)
+#   - MariaDB 11.4 (@@optimizer_switch — all default MariaDB 11.4 switches)
+#
+# Only flags with a plan-level signature we can actually detect are listed.
+OPTIMIZER_SWITCH_EXPLANATIONS = {
+    # Both engines
+    "hash_join": (
+        "Builds an in-memory hash table on the smaller (build) input and "
+        "probes it from the other side. Uses join_buffer_size; spills to a "
+        "tmp file (and tmpdir) if the build side does not fit."
+    ),
+    "block_nested_loop": (
+        "Buffers a batch of outer rows in a join buffer and scans the inner "
+        "table once per batch instead of once per row. Inner still does a "
+        "full/index/range scan — a missing index on the join column is the "
+        "root cause."
+    ),
+    "batched_key_access": (
+        "Collects keys from the outer table into the join buffer, sorts them, "
+        "then uses MRR to fetch inner rows in (mostly) index order — cuts "
+        "random I/O on large indexed joins."
+    ),
+    "mrr": (
+        "Multi-Range Read: sorts row IDs before fetching rows so InnoDB reads "
+        "pages in roughly primary-key order, turning random I/O into "
+        "sequential I/O on range scans."
+    ),
+    "index_condition_pushdown": (
+        "Parts of the WHERE clause are evaluated inside the storage engine "
+        "using index columns before fetching the full row — reduces rows "
+        "handed to the server layer."
+    ),
+    "index_merge": (
+        "Uses two or more index range scans on the same table and combines "
+        "row IDs (union/intersection/sort_union) instead of falling back to a "
+        "full scan. A composite index is usually faster."
+    ),
+    "index_merge_union": (
+        "Union variant of index_merge: OR'ed predicates are satisfied by "
+        "scanning each index separately, then UNION'ing their row IDs."
+    ),
+    "index_merge_sort_union": (
+        "Sort-union variant: like index_merge_union but row IDs are sorted "
+        "before de-duplication (used when scans are not already ordered)."
+    ),
+    "index_merge_intersection": (
+        "Intersection variant: AND'ed predicates are satisfied by scanning "
+        "each index and intersecting row IDs — useful when no single "
+        "composite index covers both predicates."
+    ),
+    "skip_scan": (
+        "Uses a composite index even though the query does not filter on the "
+        "leading column, by probing each distinct leading-column value. "
+        "Only pays off when the leading column has very low cardinality."
+    ),
+    "materialization": (
+        "A subquery or derived table is executed once and its result stored "
+        "in a temporary table for reuse. Watch tmp_table_size / "
+        "max_heap_table_size — it may spill to disk."
+    ),
+    "semijoin": (
+        "IN / EXISTS subqueries are rewritten into a semi-join with the outer "
+        "query and then resolved via one of the semijoin strategies "
+        "(firstmatch, loosescan, duplicateweedout, or materialization)."
+    ),
+    "firstmatch": (
+        "Semijoin strategy: stops scanning the inner table as soon as the "
+        "first matching row is found for each outer row."
+    ),
+    "loosescan": (
+        "Semijoin strategy: scans an index on the inner table exactly once, "
+        "skipping ahead per distinct group instead of emitting duplicates."
+    ),
+    "duplicateweedout": (
+        "Semijoin strategy: runs the subquery as a normal inner join and "
+        "then removes duplicate outer rows using a temporary table keyed on "
+        "their row IDs."
+    ),
+    "derived_merge": (
+        "A derived table or view is merged into the outer query block "
+        "instead of being materialized — the derived SELECT disappears from "
+        "the plan."
+    ),
+    "use_index_extensions": (
+        "The optimizer treats the primary-key columns appended to every "
+        "secondary index as additional key parts — enables covering reads "
+        "that would otherwise need a row fetch."
+    ),
+    # MySQL-only
+    "hash_set_operations": (
+        "UNION / INTERSECT / EXCEPT is resolved with an in-memory hash set "
+        "instead of a sorted temporary table (MySQL 8.4+)."
+    ),
+    # MariaDB-only
+    "rowid_filter": (
+        "Before the index lookup, MariaDB builds a sorted row-id filter from "
+        "a secondary index and uses it to prune non-matching rows — avoids "
+        "dereferencing rows that would fail the final filter."
+    ),
+    "join_cache_bka": (
+        "MariaDB variant of batched_key_access: inner rows are fetched in "
+        "batches keyed from the join buffer, using MRR to reorder I/O."
+    ),
+    "join_cache_hashed": (
+        "MariaDB variant of block_nested_loop: the join buffer is built as a "
+        "hash table (buffer_type='incremental, hashed') — effectively a hash "
+        "join on an indexed inner side."
+    ),
+    "outer_join_with_cache": (
+        "MariaDB allows LEFT / RIGHT joins to use the join cache; without it "
+        "MariaDB would fall back to per-row lookups on the inner side."
+    ),
+}
+
+
+def _detect_optimizer_switches(root):
+    """Walk the parsed EXPLAIN tree and return a list of detected
+    @@optimizer_switch flags with evidence and explanation.
+
+    Each entry is:
+      {"name": "<flag_name>", "value": "on",
+       "explanation": "<human readable impact>",
+       "short_labels": [<node labels where flag is observed>]}
+
+    Only flags with a concrete plan-level signature are reported — there is
+    no guessing.  Both MySQL (8.0+, 8.4+, 9.x) and MariaDB (10.11+, 11.x)
+    plans are supported because the MariaDB normalizer stashes MariaDB-
+    specific markers onto ``details`` before parse_node() runs.
+    """
+    found = {}  # name -> {"short_labels": [...]}
+
+    def _mark(name, label=None):
+        entry = found.setdefault(name, {"short_labels": []})
+        if label and label not in entry["short_labels"]:
+            entry["short_labels"].append(label)
+
+    def _walk(node):
+        details = node.get("details") or {}
+        op = (details.get("operation") or "").lower()
+        access = (details.get("access_type") or "").lower()
+        idx_access = (details.get("index_access_type") or "").lower()
+        join_algo = (details.get("join_algorithm") or "").lower()
+        buf = (details.get("using_join_buffer") or "").lower()
+        label = node.get("short_label") or ""
+
+        # hash_join — MySQL join_algorithm == "hash", or operation text.
+        if join_algo == "hash" or "hash join" in op:
+            _mark("hash_join", label)
+
+        # batched_key_access — MySQL join_algorithm == "batch_key_access",
+        # or MariaDB block-nl-join with BKA/BKAH buffer_type. The BKA plan
+        # also shows "multi_range_read" on the inner side.
+        if join_algo in ("batch_key_access", "batched_key_access"):
+            _mark("batched_key_access", label)
+            _mark("join_cache_bka", label)  # MariaDB equivalent
+        elif "batched key access" in op or "batch_key_access" in op:
+            _mark("batched_key_access", label)
+
+        # block_nested_loop — "Using join buffer (Block Nested Loop)" (MySQL)
+        # or MariaDB block-nl-join without BKA/BNLH (classic BNL).
+        if "block" in buf and "nested" in buf and "hash" not in buf:
+            _mark("block_nested_loop", label)
+        elif "block" in buf and "hash" in buf:
+            # MariaDB BNLH — buffer built as a hash table
+            _mark("join_cache_hashed", label)
+            _mark("hash_join", label)
+
+        mdb_bnl = details.get("mariadb_block_nl_join") or {}
+        if mdb_bnl:
+            if "OUTER" in (mdb_bnl.get("join_type") or "").upper() or access == "left_join":
+                _mark("outer_join_with_cache", label)
+
+        # mrr — MySQL "multi_range_read" index access, or MariaDB using_mrr.
+        if idx_access == "multi_range_read" or details.get("using_mrr") or "multi-range" in op:
+            _mark("mrr", label)
+
+        # index_condition_pushdown — pushed_index_condition or MariaDB index_condition.
+        if details.get("pushed_index_condition"):
+            _mark("index_condition_pushdown", label)
+
+        # index_merge and variants — MySQL rowid_* access types, or MariaDB
+        # mariadb_index_merge dict preserved by the normalizer.
+        mdb_im = details.get("mariadb_index_merge") or {}
+        if access == "rowid_union":
+            _mark("index_merge", label)
+            _mark("index_merge_union", label)
+        elif access == "rowid_sort_union":
+            _mark("index_merge", label)
+            _mark("index_merge_sort_union", label)
+        elif access == "rowid_intersection":
+            _mark("index_merge", label)
+            _mark("index_merge_intersection", label)
+        elif access == "rowid_sort_intersection":
+            _mark("index_merge", label)
+            _mark("index_merge_intersection", label)
+        elif "deduplicate rows sorted by row id" in op:
+            _mark("index_merge", label)
+            _mark("index_merge_union", label)
+        elif "intersect rows sorted by row id" in op:
+            _mark("index_merge", label)
+            _mark("index_merge_intersection", label)
+        if mdb_im:
+            _mark("index_merge", label)
+            if "intersect" in mdb_im:
+                _mark("index_merge_intersection", label)
+            if "sort_intersect" in mdb_im:
+                _mark("index_merge_intersection", label)
+            if "sort_union" in mdb_im:
+                _mark("index_merge_sort_union", label)
+            if "union" in mdb_im and "sort_union" not in mdb_im:
+                _mark("index_merge_union", label)
+
+        # skip_scan — index_access_type "index_skip_scan" or operation text.
+        if idx_access == "index_skip_scan" or "skip scan" in op:
+            _mark("skip_scan", label)
+
+        # materialization — Materialize op / access_type == "materialize".
+        if access == "materialize" or op.startswith("materialize"):
+            _mark("materialization", label)
+
+        # semijoin strategies. MySQL writes them as operations / access types;
+        # MariaDB also exposes distinct wrappers that we normalize earlier.
+        if "semi" in op and "join" in op:
+            _mark("semijoin", label)
+        if "first match" in op or "firstmatch" in op.replace(" ", ""):
+            _mark("semijoin", label)
+            _mark("firstmatch", label)
+        if "loose scan" in op or "loosescan" in op.replace(" ", ""):
+            _mark("semijoin", label)
+            _mark("loosescan", label)
+        if access == "weedout" or "weedout" in op or "remove duplicate" in op:
+            _mark("semijoin", label)
+            _mark("duplicateweedout", label)
+
+        # hash_set_operations — MySQL 8.4+ Hash Union / Intersect / Except.
+        if "hash union" in op or "hash intersect" in op or "hash except" in op:
+            _mark("hash_set_operations", label)
+
+        # use_index_extensions — covering reads on secondary indexes.
+        if details.get("covering") is True:
+            _mark("use_index_extensions", label)
+
+        # MariaDB rowid_filter
+        if details.get("using_rowid_filter"):
+            _mark("rowid_filter", label)
+
+        for child in node.get("children") or []:
+            _walk(child)
+
+    _walk(root)
+
+    # Materialize to an ordered list so tests and rendering are deterministic.
+    ordered_names = [
+        "hash_join", "block_nested_loop", "batched_key_access",
+        "join_cache_bka", "join_cache_hashed", "outer_join_with_cache",
+        "mrr", "index_condition_pushdown",
+        "index_merge", "index_merge_union", "index_merge_sort_union",
+        "index_merge_intersection",
+        "skip_scan", "materialization",
+        "semijoin", "firstmatch", "loosescan", "duplicateweedout",
+        "hash_set_operations", "use_index_extensions",
+        "rowid_filter",
+    ]
+    result = []
+    for name in ordered_names:
+        if name in found:
+            result.append({
+                "name": name,
+                "value": "on",
+                "explanation": OPTIMIZER_SWITCH_EXPLANATIONS.get(name, ""),
+                "short_labels": found[name]["short_labels"],
+            })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Non-sargable join-predicate detection
+# ---------------------------------------------------------------------------
+#
+# "Sargable" = **S**earch **ARG**ument-**able**. A predicate is sargable
+# when an index can be used to evaluate it; wrapping a column in a function
+# (CONCAT, CAST, LOWER, DATE, …) breaks sargability because the optimizer
+# would need a *functional index* on the exact expression to use one.
+#
+# myflames flags these because they're one of the single most impactful
+# issues a plan can have: a non-sargable join predicate forces a per-row
+# expression evaluation (O(outer × inner) CPU time), no index can help, and
+# the slowdown is often invisible on the flamegraph because MariaDB/MySQL
+# attribute the cost to the server layer instead of to any storage-engine
+# operator — producing a "wide base, no pyramid" shape that looks like a
+# rendering bug but is actually the server layer doing the work.
+
+#: Functions that break sargability when applied to a column reference.
+#: This set is intentionally MySQL-centric but works for MariaDB (same
+#: function names) and covers the cases the advisor actually sees in the
+#: wild. Extending it is additive — safe to do over time.
+_NONSARGABLE_FUNCS = (
+    "CONCAT", "CONCAT_WS", "CAST", "CONVERT",
+    "LOWER", "UPPER", "LCASE", "UCASE",
+    "SUBSTRING", "SUBSTR", "LEFT", "RIGHT", "MID", "TRIM",
+    "LTRIM", "RTRIM", "REPLACE", "REVERSE",
+    "DATE", "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
+    "DATE_FORMAT", "DATE_ADD", "DATE_SUB", "FROM_UNIXTIME", "UNIX_TIMESTAMP",
+    "MD5", "SHA1", "SHA2", "UNHEX", "HEX", "CRC32",
+    "COALESCE", "IFNULL", "NULLIF",
+    "ABS", "ROUND", "FLOOR", "CEILING", "CEIL",
+)
+
+# Join-predicate regex: a function call that mentions a qualified column
+# reference (``table.col`` / ``alias.col``) anywhere inside its top-level
+# arg list. We require at least one dot because constant-only calls
+# (``CONCAT('a','b')``, ``DATE('2024-01-01')``) are compile-time folded
+# and don't actually break sargability.
+#
+# The column can appear at ANY position in the arg list — ``CONCAT('u', o.id)``
+# is just as non-sargable as ``CONCAT(o.id, 'u')`` — so we use a non-greedy
+# ``[^)]*?`` to walk past any literals/whitespace up to the first dotted
+# identifier inside the parens.
+_NONSARGABLE_RE = re.compile(
+    r"\b(" + "|".join(_NONSARGABLE_FUNCS) + r")\s*\("
+    r"[^)]*?"                                         # any other args
+    r"[`]?[A-Za-z_][A-Za-z0-9_]*[`]?\s*\.\s*"         # REQUIRED table/alias.
+    r"[`]?[A-Za-z_][A-Za-z0-9_]*[`]?",                # column
+    re.IGNORECASE,
+)
+
+
+def _detect_nonsargable_joins(root):
+    """Walk the tree and return join predicates that use non-sargable
+    function calls on column references.
+
+    Each entry is ``{"function", "predicate", "short_label"}``. The rule
+    fires when:
+
+      * A node is part of a join (operation or access_type mentions
+        ``join``) OR it has a ``hash_condition`` / BNL condition, AND
+      * Its condition / operation / hash_condition text contains a
+        ``_NONSARGABLE_FUNCS`` call wrapping a column reference.
+
+    We don't try to correlate across multiple nodes in the same plan —
+    one match per node is enough to flag the issue, and the downstream
+    advisor rule only ever reports the first hit anyway.
+    """
+    results = []
+    seen_predicates = set()
+
+    def _walk(node):
+        details = node.get("details") or {}
+        op = details.get("operation") or ""
+        access = (details.get("access_type") or "").lower()
+        cond = details.get("condition") or ""
+        join_algo = (details.get("join_algorithm") or "").lower()
+        buf = (details.get("using_join_buffer") or "").lower()
+        is_join = (
+            "join" in op.lower() or access == "join"
+            or bool(join_algo) or ("block" in buf and "nested" in buf)
+        )
+        if is_join:
+            # Build a single text blob from every field that could carry the
+            # join predicate. MySQL hash joins put it on ``hash_condition``,
+            # MySQL nested loops inline it in ``operation`` ("… (u.id = o.u_id)"),
+            # MariaDB BNL wrappers put it in ``attached_condition`` which our
+            # normalizer now copies into ``condition``.
+            text_parts = [op, cond]
+            hc = details.get("hash_condition") or []
+            if isinstance(hc, list):
+                text_parts.extend(hc)
+            elif isinstance(hc, str):
+                text_parts.append(hc)
+            text = " ".join(p for p in text_parts if p)
+            m = _NONSARGABLE_RE.search(text)
+            if m:
+                predicate = cond or op
+                key = (m.group(1).upper(), predicate)
+                if key not in seen_predicates:
+                    seen_predicates.add(key)
+                    results.append({
+                        "function": m.group(1).upper(),
+                        "predicate": predicate,
+                        "short_label": node.get("short_label") or "",
+                    })
+        for c in node.get("children") or []:
+            _walk(c)
+
+    _walk(root)
+    return results
+
+
 def analyze_plan(root):
     """Scan parsed EXPLAIN tree and return analysis dict.
 
@@ -874,7 +1380,8 @@ def analyze_plan(root):
       hash_joins   - list of {rows} for hash join nodes
       temp_tables  - list of {rows} for Materialize nodes
       filesorts    - list of {rows} for Sort nodes
-      optimizer_features - list of inferred optimizer feature strings
+      optimizer_features  - list of inferred optimizer feature strings
+      optimizer_switches  - structured [{"name","value","explanation",...}]
       warnings     - list of human-readable warning strings
       suggestions  - list of actionable suggestion strings
     """
@@ -947,26 +1454,58 @@ def analyze_plan(root):
 
     _scan(root)
 
+    # Detect @@optimizer_switch flags that are actually visible in this plan
+    # and surface a one-line explanation per flag.
+    optimizer_switches = _detect_optimizer_switches(root)
+
+    # Detect non-sargable join predicates (CONCAT/CAST/LOWER/… applied to
+    # a join column). These are a common cause of "why is my plan so slow"
+    # questions because the cost lives in the server layer and shows up as
+    # a wide-base-no-pyramid shape on the flamegraph.
+    nonsargable_joins = _detect_nonsargable_joins(root)
+
     features = []
-    if hash_joins:
-        features.append("hash_join=on")
-    if has_bnl:
-        features.append("block_nested_loop=on (join buffer in use)")
-    elif has_nested_loop:
+    # Carry over the structured detections as display strings. Each feature
+    # line is "<flag>=on — <explanation>" so callers that match by substring
+    # (e.g. 'hash_join' in feature) still pass.
+    for sw in optimizer_switches:
+        features.append("{}={} — {}".format(sw["name"], sw["value"], sw["explanation"]))
+    # Preserve the legacy "nested loop join" / "antijoin=on" lines that had
+    # no dedicated optimizer_switch entry — keeps existing display behaviour.
+    if not any(s["name"] == "block_nested_loop" for s in optimizer_switches) and has_nested_loop:
         features.append("nested loop join")
-    if has_icp:
-        features.append("index_condition_pushdown=on")
-    if has_bka:
-        features.append("batched_key_access=on")
-    if has_semijoin:
-        features.append("semijoin=on")
     if has_antijoin:
         features.append("antijoin=on")
-    if has_covering:
-        features.append("use_index_extensions=on (covering index)")
 
     warnings = []
     suggestions = []
+
+    # Non-sargable join predicate — this is usually the single most
+    # impactful finding because it makes every index useless. We put it
+    # FIRST in the warnings/suggestions lists so the advisor's primary-
+    # action picker surfaces it above every other finding.
+    if nonsargable_joins:
+        preds = []
+        for nsj in nonsargable_joins[:3]:
+            # Trim long predicates so the warning line stays readable.
+            p = nsj["predicate"]
+            if len(p) > 80:
+                p = p[:77] + "..."
+            preds.append("{}(...) in {}".format(nsj["function"], p))
+        warnings.append(
+            "Non-sargable join predicate: "
+            + "; ".join(preds)
+            + " — a function wrapped around the join column prevents index use."
+        )
+        suggestions.append(
+            "Rewrite the join condition to compare the bare column on both "
+            "sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)'). "
+            "Why: wrapping a column in a function means the optimizer cannot use any index "
+            "on that column — every row-pair is evaluated in the server layer, making the "
+            "cost O(outer × inner). Dropping the function lets MySQL/MariaDB pick an index "
+            "lookup or hash join with real selectivity, typically 100–1000× faster on "
+            "mid-sized tables."
+        )
 
     if full_scans:
         parts = [f"{s['table']} ({int(s['rows'])} rows)" for s in full_scans]
@@ -1055,6 +1594,15 @@ def analyze_plan(root):
             lbl = b.get("short_label") or "Table scan"
             node_highlights.append({"short_label": lbl, "message": bnl_msg})
 
+    # Map the non-sargable warning to the plan nodes that triggered it
+    # so the HTML "Labeled" hint points at the right join(s).
+    if nonsargable_joins:
+        nsj_msg = next((w for w in warnings if "Non-sargable" in w), None)
+        if nsj_msg:
+            for nsj in nonsargable_joins:
+                lbl = nsj.get("short_label") or "Join"
+                node_highlights.append({"short_label": lbl, "message": nsj_msg})
+
     index_suggestions = _suggest_indexes(root)
 
     return {
@@ -1063,7 +1611,9 @@ def analyze_plan(root):
         "temp_tables": temp_tables,
         "filesorts": filesorts,
         "bnl_nodes": bnl_nodes,
+        "nonsargable_joins": nonsargable_joins,
         "optimizer_features": features,
+        "optimizer_switches": optimizer_switches,
         "warnings": warnings,
         "suggestions": suggestions,
         "node_highlights": node_highlights,
@@ -1229,6 +1779,71 @@ def render_info_panel(analysis, x, y, width, view_type="bargraph"):
             idx_lines.append("\u2022  " + hint["reason"])
             idx_lines.append("    " + hint["ddl"])
         sections.append(("\U0001f4c8  Index suggestions (heuristic — verify before applying)", idx_lines, "index"))
+
+    # Live-connection advisor output (only present when myflames was run
+    # with connection flags). Each section is independent so sessions
+    # without collected data don't get empty cards.
+    env_warnings = analysis.get("environment_warnings") or []
+    env_suggestions = analysis.get("environment_suggestions") or []
+    collected_vars = analysis.get("collected_variables") or {}
+    collected_schema = analysis.get("collected_schema") or {}
+    collected_stats = analysis.get("collected_stats") or {}
+
+    if env_warnings:
+        sections.append((
+            "\U0001f50d  Environment warnings (from collected server state)",
+            ["\u26a0  " + w for w in env_warnings],
+            "warning",
+        ))
+    if env_suggestions:
+        sections.append((
+            "\u2699  Environment tuning suggestions",
+            ["\u2022  " + s for s in env_suggestions],
+            "suggest",
+        ))
+    if collected_vars:
+        lines_out = []
+        # Only show variables that are non-empty and commonly-tuned — keep
+        # the panel readable.  ``optimizer_switch`` is noisy but
+        # load-bearing, so we include it.
+        SHOW = (
+            "version", "innodb_buffer_pool_size", "innodb_log_file_size",
+            "innodb_flush_log_at_trx_commit",
+            "sort_buffer_size", "join_buffer_size",
+            "tmp_table_size", "max_heap_table_size",
+            "optimizer_switch",
+        )
+        for name in SHOW:
+            if name in collected_vars and collected_vars[name]:
+                lines_out.append(name + " = " + str(collected_vars[name]))
+        if lines_out:
+            sections.append((
+                "Collected session variables",
+                lines_out, "feature",
+            ))
+    if collected_stats:
+        lines_out = []
+        for t, s in collected_stats.items():
+            lines_out.append("{}: rows={}, data={}, idx={}".format(
+                t,
+                s.get("table_rows", 0),
+                s.get("data_length", 0),
+                s.get("index_length", 0),
+            ))
+        sections.append((
+            "Collected table stats (information_schema.tables)",
+            lines_out, "feature",
+        ))
+    if collected_schema:
+        lines_out = []
+        for t, p in collected_schema.items():
+            cols = len(p.get("columns") or [])
+            idxs = ", ".join((i.get("name") or "PRIMARY") for i in (p.get("indexes") or []))
+            lines_out.append("{} — {} cols, indexes: {}".format(t, cols, idxs or "none"))
+        sections.append((
+            "Collected schema (SHOW CREATE TABLE)",
+            lines_out, "feature",
+        ))
 
     # Word-wrap text to fit panel width (approx 6.2px per char for 11px Arial)
     max_chars = max(60, int((width - pad_x * 2 - 30) / 6.2))

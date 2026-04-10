@@ -114,6 +114,106 @@
   </section>
 
   <section>
+    <h2>Complex queries — real-world patterns</h2>
+    <p>Non-trivial query shapes captured live against MySQL 8.4: multi-CTE
+       with window functions, correlated subqueries (the N+1 anti-pattern),
+       and recursive CTEs for tree traversal. Each demo pipes through the
+       advisor + collector pipeline and emits a JSON sidecar next to the
+       HTML so AI agents and external tools can consume the analysis without
+       parsing the SVG.</p>
+    <div class="demo-grid">
+      <div>
+        <strong>CTE + window functions</strong>
+        <p><em>Top-3 earners per department using <code>ROW_NUMBER() OVER (PARTITION BY …)</code>.</em></p>
+        <ul>
+          <li><a href="demos/mysql-query-complex-cte-window-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-query-complex-cte-window-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-query-complex-cte-window-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-query-complex-cte-window-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-query-complex-cte-window-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>Correlated subquery</strong>
+        <p><em>N+1 anti-pattern: per-row scalar subquery to look up max/count.</em></p>
+        <ul>
+          <li><a href="demos/mysql-query-complex-correlated-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-query-complex-correlated-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-query-complex-correlated-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-query-complex-correlated-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-query-complex-correlated-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>Recursive CTE</strong>
+        <p><em>Org-chart traversal — anchor + recursive <code>JOIN</code> until depth limit.</em></p>
+        <ul>
+          <li><a href="demos/mysql-query-complex-recursive-cte-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-query-complex-recursive-cte-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-query-complex-recursive-cte-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-query-complex-recursive-cte-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-query-complex-recursive-cte-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Optimizer switches — one flag per demo</h2>
+    <p>Plans captured live with a specific <code>@@optimizer_switch</code>
+       feature active, so you can see what each switch looks like in a real
+       EXPLAIN plan and read the one-line impact the advisor emits.</p>
+    <div class="demo-grid">
+      <div>
+        <strong>MySQL 8.4</strong>
+        <ul>
+          <li><a href="demos/mysql-query-analysis-optsw-hash-join-flamegraph.html" target="_blank" rel="noopener">hash_join — non-indexed equi-join</a></li>
+          <li><a href="demos/mysql-query-analysis-optsw-bka-mrr-flamegraph.html" target="_blank" rel="noopener">batched_key_access + mrr</a></li>
+          <li><a href="demos/mysql-query-analysis-optsw-skip-scan-flamegraph.html" target="_blank" rel="noopener">skip_scan on composite index</a></li>
+          <li><a href="demos/mysql-query-analysis-optsw-index-merge-union-flamegraph.html" target="_blank" rel="noopener">index_merge (union)</a></li>
+          <li><a href="demos/mysql-query-analysis-optsw-index-merge-intersection-flamegraph.html" target="_blank" rel="noopener">index_merge (intersection)</a></li>
+          <li><a href="demos/mysql-query-analysis-optsw-duplicate-weedout-flamegraph.html" target="_blank" rel="noopener">duplicate weedout semijoin</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>MariaDB 11.4</strong>
+        <ul>
+          <li><a href="demos/mariadb-query-analysis-optsw-block-nl-join-flamegraph.html" target="_blank" rel="noopener">block-nl-join (BNL)</a></li>
+          <li><a href="demos/mariadb-query-analysis-optsw-index-merge-flamegraph.html" target="_blank" rel="noopener">index_merge</a></li>
+          <li><a href="demos/mariadb-query-analysis-optsw-duplicate-weedout-flamegraph.html" target="_blank" rel="noopener">duplicate weedout</a></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Live connection mode — connect + explain + advise</h2>
+    <p>These demos came from running myflames with real connection flags
+       (<code>-h host -P port -u user -p -e "SELECT …"</code>) against
+       MySQL 8.4 and MariaDB 11.4. Each one embeds the collected schema,
+       stats, and session variables, plus environment-specific tuning
+       suggestions generated by the advisor. All 3 outputs (<code>.svg</code>,
+       <code>.html</code>, <code>.json</code>) are produced by a single CLI
+       invocation.</p>
+    <div class="demo-grid">
+      <div>
+        <strong>MySQL 8.4</strong>
+        <ul>
+          <li><a href="demos/live-mysql-hash-join-orderby-flamegraph.html" target="_blank" rel="noopener">hash join + ORDER BY</a></li>
+          <li><a href="demos/live-mysql-derived-table-flamegraph.html" target="_blank" rel="noopener">derived table + filesort</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>MariaDB 11.4</strong>
+        <ul>
+          <li><a href="demos/live-mariadb-hash-join-orderby-flamegraph.html" target="_blank" rel="noopener">BNL join (non-sargable CONCAT)</a></li>
+          <li><a href="demos/live-mariadb-derived-table-flamegraph.html" target="_blank" rel="noopener">derived table + filesort</a></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
     <h2>HTML report — self-contained shareable report</h2>
     <p>Generate with <code>myflames --output report.html explain.json</code>. Includes embedded chart, analysis sidebar, and export buttons.</p>
     <a class="view-full" href="demos/mysql-query-report.html" target="_blank" rel="noopener">Open HTML report demo →</a>

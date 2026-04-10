@@ -1,0 +1,83 @@
+{
+  "query": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "operation": "Table scan on t2",
+              "table_name": "t2",
+              "access_type": "table",
+              "actual_rows": 2000.0,
+              "schema_name": "testdb",
+              "actual_loops": 1,
+              "used_columns": [
+                "x",
+                "y"
+              ],
+              "estimated_rows": 2000.0,
+              "actual_last_row_ms": 0.22383799999999998,
+              "actual_first_row_ms": 0.038292,
+              "estimated_total_cost": 201.5
+            }
+          ],
+          "condition": "((t2.y < 100) and (t2.x is not null))",
+          "operation": "Filter: ((t2.y < 100) and (t2.x is not null))",
+          "access_type": "filter",
+          "actual_rows": 49.0,
+          "actual_loops": 1,
+          "estimated_rows": 666.5999889373779,
+          "actual_last_row_ms": 0.293957,
+          "actual_first_row_ms": 0.040709,
+          "estimated_total_cost": 201.5
+        },
+        {
+          "covering": false,
+          "operation": "Single-row index lookup on t1 using PRIMARY (id=t2.x)",
+          "index_name": "PRIMARY",
+          "table_name": "t1",
+          "access_type": "index",
+          "actual_rows": 1.0,
+          "schema_name": "testdb",
+          "actual_loops": 49,
+          "used_columns": [
+            "id",
+            "a",
+            "b",
+            "c",
+            "d"
+          ],
+          "estimated_rows": 1.0,
+          "lookup_condition": "id=t2.x",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.000777204081632653,
+          "actual_first_row_ms": 0.0007525102040816325,
+          "estimated_total_cost": 0.25015001500398976
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 49.0,
+      "actual_loops": 1,
+      "estimated_rows": 666.5999889373779,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 0.33816599999999997,
+      "actual_first_row_ms": 0.052,
+      "estimated_total_cost": 434.8099961280823
+    }
+  ],
+  "tables": [
+    "t1"
+  ],
+  "operation": "Remove duplicate t1 rows using temporary table (weedout)",
+  "query_type": "select",
+  "access_type": "weedout",
+  "actual_rows": 49.0,
+  "actual_loops": 1,
+  "estimated_rows": 666.5999889373779,
+  "actual_last_row_ms": 0.35183000000000003,
+  "actual_first_row_ms": 0.057624999999999996,
+  "estimated_total_cost": 434.8099961280823
+}

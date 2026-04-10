@@ -1,0 +1,200 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="875" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 875" style="max-width: 100%; height: auto;">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 12px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-header { font-size: 10px; fill: #888; font-weight: bold; letter-spacing: 0.5px; }
+  .label { font-size: 11px; fill: #333; }
+  .loops { font-size: 10px; fill: #777; }
+  .value { font-size: 11px; font-weight: bold; fill: #222; }
+  .bar { transition: opacity 0.12s; }
+  .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
+  .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
+  .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
+  .details-line.dim { fill: #999; }
+  #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #search:hover { fill: #111; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="28" text-anchor="middle" class="title">Hash Join (non-indexed) — MySQL 8.4 EXPLAIN</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 2 ms</text>
+<text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
+<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text id="search" x="1190" y="68" text-anchor="end">Search</text>
+<line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="10" y1="741" x2="1190" y2="741" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="745" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="753" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="767" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="781" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="795" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="809" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="823" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="837" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="851" text-anchor="start" class="details-line"></text>
+<!-- end details area -->
+<text x="320" y="98.0" text-anchor="end" class="label">Inner hash join (t1.d = concat('r',t2.y))</text>
+<text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="410" y="80" width="282.29687127017706" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Inner hash join (t1.d = concat('r',t2.y))  ·  Self: 0.857 ms (44.1%)  ·  Total: 2 ms  ·  Rows: 0  ·  Loops: 1  ·  Access: join  ·  Est.rows: 1000000" data-label="Inner hash join (t1.d = concat('r',t2.y))" data-analysis-msg="Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use."/>
+<text x="1060" y="98.0" class="value">0.857 ms (44.1%)</text>
+<text x="320" y="132.0" text-anchor="end" class="label">Table scan [t1]</text>
+<text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="410" y="114" width="269.2014783474775" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Table scan on t1  ·  Self: 0.818 ms (42.1%)  ·  Rows: 5000  ·  Loops: 1  ·  Table: t1  ·  Access: table  ·  Est.rows: 5000" data-label="Table scan [t1]" data-analysis-msg="Full table scan: t1 (5000 rows), t2 (2000 rows)"/>
+<text x="1060" y="132.0" class="value">0.818 ms (42.1%)</text>
+<text x="320" y="166.0" text-anchor="end" class="label">Table scan [t2]</text>
+<text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="410" y="148" width="88.50165038234543" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Table scan on t2  ·  Self: 0.269 ms (13.8%)  ·  Rows: 2000  ·  Loops: 1  ·  Table: t2  ·  Access: table  ·  Est.rows: 2000" data-label="Table scan [t2]" data-analysis-msg="Full table scan: t1 (5000 rows), t2 (2000 rows)"/>
+<text x="1060" y="166.0" class="value">0.269 ms (13.8%)</text>
+<rect x="10" y="330" width="1180" height="545" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="10" y="340" width="1180" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="10" y="346" width="1180" height="24" fill="#e8eaf6"/>
+<text x="26" y="359" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="14" y="378" width="1172" height="22" fill="#f5f5f5" rx="4"/>
+<text x="26" y="393" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="36" y="417" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d,testdb.t2.id AS id,testdb.t2.x AS x,testdb.t2.y AS y</text>
+<text x="36" y="434" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from testdb.t1</text>
+<text x="36" y="451" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.t2</text>
+<text x="36" y="468" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where (testdb.t1.d = concat('r',testdb.t2.y))</text>
+<rect x="14" y="478" width="1172" height="22" fill="#f1f8e9" rx="4"/>
+<text x="26" y="493" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="36" y="517" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
+<text x="36" y="534" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
+<rect x="14" y="544" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="559" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="36" y="583" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on — Builds an in-memory hash table on the smaller (build) input and probes it from the other side. Uses join_buffer_size; spills to a tmp file (and tmpdir) if the build</text>
+<text x="36" y="600" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">side does not fit.</text>
+<rect x="14" y="610" width="1172" height="22" fill="#fff3f3" rx="4"/>
+<text x="26" y="625" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="36" y="649" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use.</text>
+<text x="36" y="666" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (t1.d = concat('r',t2.y))”</text>
+<text x="36" y="683" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: t1 (5000 rows), t2 (2000 rows)</text>
+<text x="36" y="700" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t1]”, “Table scan [t2]”</text>
+<text x="36" y="717" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size</text>
+<text x="36" y="734" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (t1.d = concat('r',t2.y))”</text>
+<rect x="14" y="744" width="1172" height="22" fill="#e8f5e9" rx="4"/>
+<text x="26" y="759" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="36" y="783" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)'). Why: wrapping a column in a function</text>
+<text x="36" y="800" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets</text>
+<text x="36" y="817" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables.</text>
+<text x="36" y="834" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="36" y="851" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var detailLines = [];
+  var N_LINES = 8;
+  var searchBtn;
+  var defaultHint = "Hover a bar for details; click a bar to pin details  ·  Ctrl+F to search";
+  var searching = false;
+  var pinnedBar = null;
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+      detailLines[i].setAttribute("class", "details-line" + (i > 0 && i >= parts.length - 1 && parts.length > 1 ? " dim" : ""));
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) { detailLines[i].textContent = ""; detailLines[i].setAttribute("class", "details-line"); }
+    }
+  }
+
+  function setDetailsForBar(bar) {
+    if (!bar || !detailLines[0]) return;
+    var info = bar.getAttribute("data-info") || "";
+    var analysisMsg = bar.getAttribute("data-analysis-msg");
+    if (analysisMsg)
+      info = info + "  ·  ⚠ In Query Analysis: " + analysisMsg;
+    var sep = "  ·  ";
+    var parts = info.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    searchBtn = document.getElementById("search");
+    if (!detailLines[0]) return;
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        if (!pinnedBar) setDetailsForBar(e.target);
+      }
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar") && !searching && !pinnedBar)
+        clearDetails();
+    });
+    document.addEventListener("click", function(e) {
+      if (e.target.id === "search") { searchPrompt(); return; }
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        var bars = document.querySelectorAll(".bar.pinned");
+        for (var i = 0; i < bars.length; i++) bars[i].classList.remove("pinned");
+        if (pinnedBar === e.target) {
+          pinnedBar = null;
+          clearDetails();
+        } else {
+          pinnedBar = e.target;
+          pinnedBar.classList.add("pinned");
+          setDetailsForBar(pinnedBar);
+        }
+        return;
+      }
+      if (pinnedBar) {
+        pinnedBar.classList.remove("pinned");
+        pinnedBar = null;
+        clearDetails();
+      }
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var bars = document.querySelectorAll(".bar");
+      for (var i = 0; i < bars.length; i++) {
+        bars[i].style.opacity = "";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+      searchBtn.textContent = "Search";
+      if (!pinnedBar) clearDetails();
+      searching = false;
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var bars = document.querySelectorAll(".bar");
+    for (var i = 0; i < bars.length; i++) {
+      var label = bars[i].getAttribute("data-label") || "";
+      if (re.test(label)) {
+        bars[i].style.opacity = "1";
+        bars[i].style.stroke = "rgb(230,0,230)";
+        bars[i].style.strokeWidth = "2";
+      } else {
+        bars[i].style.opacity = "0.3";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+    }
+    searchBtn.textContent = "Reset Search";
+    searching = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+</svg>

@@ -1140,6 +1140,160 @@ class TestAnalysis(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestOptimizerSwitchDetection — @@optimizer_switch flag inference
+# ---------------------------------------------------------------------------
+#
+# Each fixture in this block was captured live from MySQL 8.4 or MariaDB 11.4
+# while a specific optimizer_switch flag was known to be active. The tests
+# assert that analyze_plan's optimizer_switches surfaces the expected flag
+# with a non-empty explanation and at least one short_label linking it to a
+# concrete plan node.
+
+class TestOptimizerSwitchDetection(unittest.TestCase):
+    """Verify analyze_plan().optimizer_switches against captured plans."""
+
+    # MySQL fixtures (EXPLAIN ANALYZE FORMAT=JSON, explain_json_format_version=2)
+    MYSQL_IM_UNION = os.path.join(TEST_DIR, "mysql-explain-index-merge-union.json")
+    MYSQL_IM_INTER = os.path.join(TEST_DIR, "mysql-explain-index-merge-intersection.json")
+    MYSQL_SKIP_SCAN = os.path.join(TEST_DIR, "mysql-explain-skip-scan.json")
+    MYSQL_HASH_JOIN = os.path.join(TEST_DIR, "mysql-explain-hash-join-probe.json")
+    MYSQL_BKA_MRR = os.path.join(TEST_DIR, "mysql-explain-bka-mrr.json")
+    MYSQL_WEEDOUT = os.path.join(TEST_DIR, "mysql-explain-weedout.json")
+
+    # MariaDB fixtures (ANALYZE FORMAT=JSON)
+    MARIADB_INDEX_MERGE = os.path.join(TEST_DIR, "mariadb-explain-index-merge.json")
+    MARIADB_BNL = os.path.join(TEST_DIR, "mariadb-explain-block-nl-join.json")
+    MARIADB_WEEDOUT = os.path.join(TEST_DIR, "mariadb-explain-weedout.json")
+
+    def _switches(self, path):
+        root = parse_explain(_load(path))
+        return analyze_plan(root)["optimizer_switches"]
+
+    def _names(self, switches):
+        return {s["name"] for s in switches}
+
+    def _get(self, switches, name):
+        for s in switches:
+            if s["name"] == name:
+                return s
+        return None
+
+    # --- Structure contract ---
+
+    def test_optimizer_switches_is_list(self):
+        root = parse_explain(_load(os.path.join(TEST_DIR, "mysql-explain-complex-join.json")))
+        a = analyze_plan(root)
+        self.assertIn("optimizer_switches", a)
+        self.assertIsInstance(a["optimizer_switches"], list)
+
+    def test_each_switch_entry_has_required_keys(self):
+        root = parse_explain(_load(self.MYSQL_HASH_JOIN))
+        a = analyze_plan(root)
+        self.assertGreater(len(a["optimizer_switches"]), 0)
+        for s in a["optimizer_switches"]:
+            for key in ("name", "value", "explanation", "short_labels"):
+                self.assertIn(key, s, f"missing key {key} in {s}")
+            self.assertIsInstance(s["name"], str)
+            self.assertIsInstance(s["explanation"], str)
+            self.assertIsInstance(s["short_labels"], list)
+            # Every explanation must be non-empty — it's the user-facing impact text.
+            self.assertTrue(s["explanation"].strip(), "explanation is empty for " + s["name"])
+
+    def test_features_strings_include_explanation(self):
+        """optimizer_features lines are formatted '<flag>=on — <explanation>'."""
+        root = parse_explain(_load(self.MYSQL_HASH_JOIN))
+        a = analyze_plan(root)
+        joined = " | ".join(a["optimizer_features"])
+        self.assertIn("hash_join", joined)
+        self.assertIn("—", joined)  # em-dash separator
+        # Substring check still works for legacy tests.
+        self.assertTrue(any("hash_join" in f for f in a["optimizer_features"]))
+
+    # --- MySQL detections ---
+
+    @unittest.skipUnless(os.path.exists(MYSQL_HASH_JOIN), "fixture missing")
+    def test_mysql_hash_join_detected(self):
+        switches = self._switches(self.MYSQL_HASH_JOIN)
+        self.assertIn("hash_join", self._names(switches))
+        sw = self._get(switches, "hash_join")
+        self.assertGreater(len(sw["short_labels"]), 0)
+
+    @unittest.skipUnless(os.path.exists(MYSQL_IM_UNION), "fixture missing")
+    def test_mysql_index_merge_union_detected(self):
+        names = self._names(self._switches(self.MYSQL_IM_UNION))
+        self.assertIn("index_merge", names)
+        self.assertIn("index_merge_union", names)
+
+    @unittest.skipUnless(os.path.exists(MYSQL_IM_INTER), "fixture missing")
+    def test_mysql_index_merge_intersection_detected(self):
+        names = self._names(self._switches(self.MYSQL_IM_INTER))
+        self.assertIn("index_merge", names)
+        self.assertIn("index_merge_intersection", names)
+
+    @unittest.skipUnless(os.path.exists(MYSQL_SKIP_SCAN), "fixture missing")
+    def test_mysql_skip_scan_detected(self):
+        names = self._names(self._switches(self.MYSQL_SKIP_SCAN))
+        self.assertIn("skip_scan", names)
+
+    @unittest.skipUnless(os.path.exists(MYSQL_BKA_MRR), "fixture missing")
+    def test_mysql_bka_detected(self):
+        names = self._names(self._switches(self.MYSQL_BKA_MRR))
+        self.assertIn("batched_key_access", names)
+
+    @unittest.skipUnless(os.path.exists(MYSQL_BKA_MRR), "fixture missing")
+    def test_mysql_mrr_detected(self):
+        names = self._names(self._switches(self.MYSQL_BKA_MRR))
+        self.assertIn("mrr", names)
+
+    @unittest.skipUnless(os.path.exists(MYSQL_WEEDOUT), "fixture missing")
+    def test_mysql_duplicate_weedout_detected(self):
+        names = self._names(self._switches(self.MYSQL_WEEDOUT))
+        self.assertIn("semijoin", names)
+        self.assertIn("duplicateweedout", names)
+
+    # --- MariaDB detections ---
+
+    @unittest.skipUnless(os.path.exists(MARIADB_INDEX_MERGE), "fixture missing")
+    def test_mariadb_index_merge_union_detected(self):
+        names = self._names(self._switches(self.MARIADB_INDEX_MERGE))
+        self.assertIn("index_merge", names)
+        self.assertIn("index_merge_union", names)
+
+    @unittest.skipUnless(os.path.exists(MARIADB_BNL), "fixture missing")
+    def test_mariadb_block_nested_loop_detected(self):
+        names = self._names(self._switches(self.MARIADB_BNL))
+        self.assertIn("block_nested_loop", names)
+
+    @unittest.skipUnless(os.path.exists(MARIADB_WEEDOUT), "fixture missing")
+    def test_mariadb_duplicate_weedout_detected(self):
+        names = self._names(self._switches(self.MARIADB_WEEDOUT))
+        self.assertIn("semijoin", names)
+        self.assertIn("duplicateweedout", names)
+
+    # --- Explanation quality: each known flag must have a one-sentence impact ---
+
+    def test_all_known_flags_have_explanation(self):
+        from myflames.parser import OPTIMIZER_SWITCH_EXPLANATIONS
+        self.assertGreater(len(OPTIMIZER_SWITCH_EXPLANATIONS), 15)
+        for name, expl in OPTIMIZER_SWITCH_EXPLANATIONS.items():
+            self.assertTrue(expl.strip(), f"empty explanation for {name}")
+            # Impact text should mention the consequence, not just restate the name.
+            self.assertNotEqual(
+                expl.strip().lower(), name.replace("_", " "),
+                f"explanation for {name} is just the flag name",
+            )
+
+    def test_panel_renders_when_switches_present(self):
+        """render_info_panel should not crash and should mention a detected flag."""
+        root = parse_explain(_load(self.MYSQL_HASH_JOIN))
+        a = analyze_plan(root)
+        lines, h = render_info_panel(a, 0, 0, 1200, view_type="flamegraph")
+        svg = "\n".join(lines)
+        self.assertGreater(h, 0)
+        self.assertIn("hash_join", svg)
+
+
+# ---------------------------------------------------------------------------
 # TestTree — collapsible tree renderer
 # ---------------------------------------------------------------------------
 

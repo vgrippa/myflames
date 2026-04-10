@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:09:18Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "test/mysql-explain-index-merge-intersection.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.06,
+    "rows_sent": 0,
+    "rows_examined_estimate": 75,
+    "operator_count": 4,
+    "max_depth": 3
+  },
+  "optimizer_switches": [
+    {
+      "name": "index_merge",
+      "value": "on",
+      "explanation": "Uses two or more index range scans on the same table and combines row IDs (union/intersection/sort_union) instead of falling back to a full scan. A composite index is usually faster.",
+      "node_labels": [
+        "Intersect (row ID)"
+      ]
+    },
+    {
+      "name": "index_merge_intersection",
+      "value": "on",
+      "explanation": "Intersection variant: AND'ed predicates are satisfied by scanning each index and intersecting row IDs — useful when no single composite index covers both predicates.",
+      "node_labels": [
+        "Intersect (row ID)"
+      ]
+    }
+  ],
+  "warnings": [],
+  "suggestions": [],
+  "executive_summary": "Query runs 4 operators; returns 0 rows in 0.06 ms. No warnings.",
+  "query": {
+    "raw": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`b` = 100) and (`testdb`.`t1`.`a` = 50))",
+    "beautified": "select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t1\nwhere ((testdb.t1.b = 100) and (testdb.t1.a = 50))"
+  }
+}

@@ -10,6 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Visualization Specialist (`/viz-specialist`)**: Located at `.claude/skills/viz-specialist/SKILL.md`. Use for improving UI/UX, CSS, and SVG layouts in `docs/demos/`.
 - **Web Dev (`/web-dev`)**: Located at `.claude/skills/web-dev/SKILL.md`. Use when building or modifying React/TypeScript/Vite/Tailwind components, pages, or API clients.
 - **Web Design (`/web-design`)**: Located at `.claude/skills/web-design/SKILL.md`. Use when designing layouts, typography, color, spacing, or accessibility.
+- **MySQL Expert (`/mysql-expert`)**: Located at `.claude/skills/mysql-expert/SKILL.md`. The MySQL/MariaDB brain — owns correctness of advisor rules, optimizer_switch explanations, and every plain-English claim myflames makes about a plan. Consult before adding or modifying `advisor.py` rules or `OPTIMIZER_SWITCH_EXPLANATIONS`.
+- **Progressive UX (`/progressive-ux`)**: Located at `.claude/skills/progressive-ux/SKILL.md`. Designs outputs that serve newcomers AND senior DBAs via progressive disclosure (glossary chips, primary-action strips, collapsible details). Use when changing HTML wrappers, onboarding copy, or glossary entries.
+- **Structured Output (`/structured-output`)**: Located at `.claude/skills/structured-output/SKILL.md`. Owns the JSON sidecar schema and every decision about what gets serialized where. Consult when adding new data to an output or changing the shape of what myflames emits for external tools / AI agents.
 
 ## 🧪 Development Workflow & Testing
 - **Mandatory Tests**: Every new feature or logic change in the Python package or Perl scripts MUST include a corresponding test case.

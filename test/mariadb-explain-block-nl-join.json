@@ -1,0 +1,60 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.05574969
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 279.343688,
+    "r_loops": 1,
+    "r_total_time_ms": 185.7013798,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "t2",
+          "access_type": "ALL",
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 1000,
+          "r_rows": 1000,
+          "cost": 0.1764192,
+          "r_table_time_ms": 0.064741575,
+          "r_other_time_ms": 0.03195256,
+          "r_engine_stats": {
+            "pages_accessed": 4
+          },
+          "filtered": 100,
+          "r_filtered": 100
+        }
+      },
+      {
+        "block-nl-join": {
+          "table": {
+            "table_name": "t1",
+            "access_type": "ALL",
+            "loops": 1000,
+            "r_loops": 1,
+            "rows": 3000,
+            "r_rows": 3000,
+            "cost": 279.1672688,
+            "r_table_time_ms": 0.271889522,
+            "r_other_time_ms": 0.033249065,
+            "r_engine_stats": {
+              "pages_accessed": 11
+            },
+            "filtered": 100,
+            "r_filtered": 100
+          },
+          "buffer_type": "flat",
+          "buffer_size": "15Kb",
+          "join_type": "BNL",
+          "attached_condition": "t1.d = convert(concat('r',t2.y) using utf8mb4)",
+          "r_loops": 1000,
+          "r_filtered": 0,
+          "r_unpack_time_ms": 50.97537491,
+          "r_other_time_ms": 134.3207009,
+          "r_effective_rows": 3000
+        }
+      }
+    ]
+  }
+}

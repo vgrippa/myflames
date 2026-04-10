@@ -66,6 +66,19 @@ Or generate a self-contained HTML report:
 myflames --output report.html sample.json
 ```
 
+Or connect straight to a live MySQL / MariaDB server (new in **1.3.0**) —
+uses the same flags as the `mysql` CLI, runs `EXPLAIN ANALYZE` for you,
+collects server state, and writes a rich HTML report plus a machine-readable
+JSON sidecar in one go:
+
+```bash
+myflames -h db.example.com -u admin -p -D mydb \
+  -e 'SELECT * FROM orders WHERE user_id = 1' \
+  --output report.html
+# → report.html      — self-contained, progressive-UX, glossary chips
+# → report.json      — v1 schema sidecar for AI agents / CI / jq
+```
+
 ---
 
 ## Output types
@@ -228,13 +241,16 @@ start query.svg       # Windows
 ## All options
 
 ```
-myflames [--type TYPE] [--output PATH] [options] explain.json
+myflames [options] [explain.json]
+myflames -h HOST [-P PORT] -u USER [-p[PASS]] -D DB -e 'SQL' -o OUT
 ```
+
+### Rendering options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--type` | `flamegraph` | Output type: `flamegraph`, `bargraph`, `treemap`, `diagram`, `tree` |
-| `--output PATH` / `-o` | stdout | Write to file. Use `.html` extension for a self-contained HTML report |
+| `--output PATH` / `-o` | stdout | Write to file. Use `.html` extension for a self-contained HTML report; `.svg` for a responsive SVG. A JSON sidecar is written next to it automatically. |
 | `--width N` | 1800 (fg), 1200 (others) | SVG width in pixels |
 | `--height N` | 32 | Frame height in pixels (flamegraph only) |
 | `--colors SCHEME` | `hot` | Color scheme (flamegraph only): `hot`, `mem`, `io`, `red`, `green`, `blue` |
@@ -242,6 +258,35 @@ myflames [--type TYPE] [--output PATH] [options] explain.json
 | `--inverted` | off | Icicle graph — flames grow downward (flamegraph only) |
 | `--no-enhance` | off | Disable detailed tooltips (flamegraph only) |
 | `--version` | | Show version and exit |
+| `--help` | | Show help (was `-h` before 1.3.0; `-h` is now `--host`) |
+
+### Live connection (new in 1.3.0) — same flags as the `mysql` CLI
+
+| Option | Description |
+|--------|-------------|
+| `-h HOST` / `--host HOST` | Connect to this host (enables live mode) |
+| `-P PORT` / `--port PORT` | Server port (default 3306) |
+| `-u USER` / `--user USER` | Username |
+| `-p [PASS]` / `--password [PASS]` | Password. `-p` alone prompts; `-p'secret'` inline works; either way the value is written to a mode-0600 `--defaults-extra-file` and never appears on argv. |
+| `-D DB` / `--database DB` | Default database |
+| `--ssl-mode MODE` | `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`, `VERIFY_IDENTITY` |
+| `--ssl-ca PATH` | Path to CA bundle (e.g. RDS's `global-bundle.pem`) |
+| `--ssl-cert PATH` | Client certificate |
+| `--ssl-key PATH` | Client private key |
+| `--mysql-binary PATH` | Override `mysql`/`mariadb` binary autodetection |
+| `-e SQL` / `--execute SQL` | Query to `EXPLAIN ANALYZE`. Required in live mode. |
+| `--no-collect-schema` | Skip `SHOW CREATE TABLE` for each referenced table |
+| `--no-collect-stats` | Skip `information_schema.tables` row/byte counts |
+| `--no-collect-variables` | Skip `SHOW SESSION VARIABLES` snapshot |
+
+### Sidecar options
+
+| Option | Description |
+|--------|-------------|
+| *(default)* | Auto-write `<output>.json` alongside any `--output PATH` |
+| `--sidecar PATH` | Write sidecar to an explicit path |
+| `--sidecar -` | Suppress sidecar emission (explicit opt-out) |
+| `--no-sidecar` | Same as `--sidecar -` |
 
 ### Subcommands
 
@@ -256,20 +301,183 @@ myflames guide
 
 ---
 
+## Live-connection mode (1.3.0+)
+
+Skip the two-step "run EXPLAIN, pipe into myflames" workflow and connect
+directly. The same flags work for MySQL 8.4 and MariaDB 10.11 / 11.4:
+
+```bash
+# Against a local MySQL instance
+myflames -h 127.0.0.1 -u root -p'password' -D mydb \
+  -e 'SELECT * FROM orders WHERE user_id = 1' \
+  --output report.html
+
+# Against AWS RDS with full TLS verification
+myflames -h my-db.rds.amazonaws.com -P 3306 -u admin -p \
+  --ssl-mode=VERIFY_IDENTITY \
+  --ssl-ca=/path/to/global-bundle.pem \
+  -D prod -e 'SELECT ... FROM big_table ...' \
+  --output report.html
+
+# Against MariaDB — same flags, myflames auto-detects the engine
+myflames -h mariadb.example.com -u dba -p -D analytics \
+  -e 'SELECT ... FROM events ...' \
+  --output report.html
+```
+
+**What myflames does in live mode** (pick which steps run with the
+`--no-collect-*` flags):
+
+1. **Connects** through the real `mysql` / `mariadb` client binary —
+   supports every auth plugin the server implements, including
+   `mysql_native_password` and `caching_sha2_password`. No PyMySQL.
+2. **Runs** `SET explain_json_format_version=2; EXPLAIN ANALYZE FORMAT=JSON <your SQL>`
+   (MySQL) or `ANALYZE FORMAT=JSON <your SQL>` (MariaDB).
+3. **Collects** `SHOW CREATE TABLE` for every referenced table
+   *(skip with `--no-collect-schema`)*.
+4. **Collects** row/byte counts from `information_schema.tables`
+   *(skip with `--no-collect-stats`)*.
+5. **Collects** `SHOW SESSION VARIABLES` — filtered to the subset the
+   advisor inspects (buffer pool, sort/join/tmp buffers, optimizer_switch,
+   durability settings) *(skip with `--no-collect-variables`)*.
+6. **Feeds** all collected data into the **environment advisor**, which
+   produces tuning warnings + `Why:` explanations grounded in the MySQL
+   cost model (sort_buffer_size vs filesort spill, join_buffer_size vs
+   hash-join multi-pass, tmp_table_size vs MEMORY→InnoDB conversion, etc.).
+7. **Renders** the view type you asked for, plus the progressive-UX HTML
+   report + JSON sidecar.
+
+**Password handling:** the password is written to a mode-0600 temp file
+(`--defaults-extra-file=…`) and never appears on argv or environment
+variables. The temp file is deleted on exit (even on error).
+
+---
+
 ## HTML report output
 
-Generate a self-contained HTML file you can attach to a ticket, send to a teammate, or publish:
+Generate a self-contained HTML file you can attach to a ticket, send to a
+teammate, paste into a Confluence page, or publish to GitHub Pages:
 
 ```bash
 myflames --output report.html explain.json
 myflames --type diagram --output report.html explain.json
 ```
 
-The HTML report includes:
-- Embedded interactive SVG chart
-- Analysis sidebar with warnings, suggestions, and optimizer features
-- SQL query display
-- Export buttons (SVG, JSON, Print/PDF)
+The HTML report (redesigned in 1.3.0) is built for **three audiences at once**:
+
+- **Newcomers** see a plain-English executive summary and a single
+  "**Fix first**" primary action card above the fold. Every jargon term
+  (`filesort`, `hash join`, `BNL`, `MRR`, `ICP`, …) is a hover-tooltip
+  glossary chip.
+- **Senior DBAs** get every metric, warning, and suggestion in dense
+  selectable sections below. Every SET / CREATE INDEX / ALTER TABLE
+  recommendation lives in a copy-paste-able `<pre><code>` block — never
+  locked inside the SVG.
+- **AI agents / external tools** consume a `<script type="application/ld+json">`
+  block in `<head>` with the full v1 sidecar payload, AND a
+  `<base>.json` file written alongside. No SVG OCR needed.
+
+Sections in order: executive summary strip → "Fix first" primary action
+card → SQL query card → embedded responsive visualization → warnings
+(expandable) → suggestions (each with a `Why?` expandable clause) →
+collected environment (collapsed) → glossary (collapsed) → raw sidecar
+JSON (collapsed).
+
+---
+
+## JSON sidecar (1.3.0+)
+
+Every `--output` invocation writes a **machine-readable sidecar** next to
+the main file:
+
+```bash
+myflames --output report.html explain.json
+# → report.html                  (progressive-UX HTML)
+# → report.json                  (v1 schema sidecar)
+```
+
+The sidecar is **stable, versioned, and self-validating** — see
+[myflames/output_sidecar.py](myflames/output_sidecar.py) for the enum
+definitions and the full schema.
+
+```jsonc
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T18:00:00Z",
+  "myflames_version": "1.3.0",
+  "source": {"type": "live", "engine": "mysql", "engine_version": "8.4.8"},
+  "plan_summary": {
+    "total_time_ms": 12.4,
+    "rows_sent": 5,
+    "rows_examined_estimate": 48000,
+    "operator_count": 12,
+    "max_depth": 5
+  },
+  "optimizer_switches": [
+    {"name": "hash_join", "value": "on",
+     "explanation": "Builds an in-memory hash table …",
+     "node_labels": ["Inner hash join"]}
+  ],
+  "warnings": [
+    {"severity": "error", "category": "nonsargable_join",
+     "text": "Non-sargable join predicate: CONCAT(...) …",
+     "source": "plan", "node_labels": ["Table scan [o]"]}
+  ],
+  "suggestions": [
+    {"severity": "high", "category": "rewrite",
+     "action": "Rewrite the join condition to compare the bare column …",
+     "why": "wrapping a column in a function means the optimizer cannot use …",
+     "source": "plan"}
+  ],
+  "executive_summary": "Query scans 2 tables, joins via block nested-loop …",
+  "primary_action": {"ref": "suggestions[0]"},
+  "collected": {
+    "variables": {"innodb_buffer_pool_size": "134217728", …},
+    "stats":     {"mydb.users": {"table_rows": 3000, …}},
+    "schema":    {"mydb.users": {"indexes": [{"name": "idx_country", …}]}}
+  }
+}
+```
+
+**Read it with `jq` / curl / Python — no HTML parsing needed:**
+
+```bash
+# "What's the single most impactful thing to fix?"
+jq '.suggestions[0].action + " — Why: " + .suggestions[0].why' report.json
+
+# "Is the buffer pool too small for this workload?"
+jq '.warnings[] | select(.category == "env")' report.json
+
+# "What severity warnings does this plan have?"
+jq '[.warnings[].severity] | group_by(.) | map({sev: .[0], count: length})' report.json
+```
+
+Suppress the sidecar with `--no-sidecar`, or point it at an explicit
+path with `--sidecar /tmp/plan.json`.
+
+---
+
+## Environment advisor (1.3.0+)
+
+When myflames has access to server state (live mode, or anyone else
+populating the `analysis` dict with collected data), it runs **eight rules**
+that match plan signals against the collected server state and emit
+tuning suggestions grounded in the MySQL cost model:
+
+| Rule | Fires when… | Suggestion includes |
+|------|-------------|---------------------|
+| **Non-sargable join predicate** | Any join uses `CONCAT(col)`, `CAST(col)`, `LOWER(col)`, `DATE(col)`, or one of ~30 other functions on a column reference | Rewrite as a bare-column comparison (highest priority — no index helps until this is fixed) |
+| **Buffer pool vs working set** | `innodb_buffer_pool_size` < 25–50% of referenced tables' data+index length | Raise `innodb_buffer_pool_size` to ≥ working set |
+| **Sort buffer vs filesort** | Filesort detected and `sort_buffer_size` < 2 MB | `SET SESSION sort_buffer_size = 8*1024*1024` |
+| **Join buffer vs hash-join / BNL** | Hash join or BNL detected and `join_buffer_size` < 2 MB | Raise per-session, or add an index on the join column (explains which is bigger) |
+| **Tmp table size** | Temp table materialized and `min(tmp_table_size, max_heap_table_size)` < 32 MB | Raise **both** variables to the same value |
+| **`optimizer_switch` overrides** | `hash_join=off` + BNL, `mrr=off` + filesort, `derived_condition_pushdown=off` + materialize | `SET SESSION optimizer_switch=…` with version-gated caveats |
+| **Missing indexes (cross-checked)** | Parser heuristic flags a missing index AND the collected schema confirms no index covers those columns | `CREATE INDEX …` DDL |
+| **Engine = MyISAM/other** | Referenced table is not InnoDB/Aria | `ALTER TABLE … ENGINE=InnoDB` with crash-safety / row-lock justification |
+| **`innodb_flush_log_at_trx_commit`** | UPDATE/DELETE/INSERT query AND value ≠ 1 | Warn about durability trade-off |
+
+**Every suggestion includes a `Why:` clause** — the contract is enforced
+by a test, so no rule can ship without a cost-model justification.
 
 ---
 

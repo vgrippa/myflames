@@ -1,0 +1,259 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="2024" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 2024" style="max-width: 100%; height: auto;">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .treemap-cell { stroke: #fff; stroke-width: 1; cursor: pointer; }
+  .treemap-cell:hover { opacity: 0.9; stroke: #333; stroke-width: 1.5; }
+  .treemap-cell.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
+  .treemap-cell.highlight { stroke: rgb(230,0,230); stroke-width: 2; }
+  .treemap-cell.zoomed { stroke: #111; stroke-width: 2; }
+  #unzoom, #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #unzoom:hover, #search:hover { fill: #111; }
+  #unzoom.hide { display: none; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
+  .details-line.dim { fill: #999; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="26" text-anchor="middle" class="title">Live MySQL 8.4 — hash join + ORDER BY</text>
+<text x="600.0" y="48" text-anchor="middle" class="subtitle">Treemap by total time (hierarchy)  ·  Total: 11 ms</text>
+<text id="unzoom" class="hide" x="2" y="64" text-anchor="start">Reset Zoom</text>
+<text id="breadcrumb" x="600.0" y="64" text-anchor="middle" class="subtitle"></text>
+<text id="search" x="1138" y="64" text-anchor="end">Search</text>
+<g id="zoomable">
+<rect id="cell-0" class="treemap-cell in-query-analysis" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Sort" data-info="Sort  ·  Self: 0.014 ms | Total: 11 ms  ·  Rows: 5 | Loops: 1  ·  ⚠ In Query Analysis: 1 sort operation(s) — 5 rows; may use disk-based filesort" data-analysis-msg="1 sort operation(s) — 5 rows; may use disk-based filesort"><title>Sort
+Self: 0.014 ms | Total: 11 ms
+Rows: 5 | Loops: 1
+⚠ In Query Analysis: 1 sort operation(s) — 5 rows; may use disk-based filesort</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Sort</text>
+<rect id="cell-1" class="treemap-cell in-query-analysis" x="2" y="70" width="1196" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Table scan [&lt;temporary&gt;]" data-info="Table scan [&lt;temporary&gt;]  ·  Self: 0.002 ms | Total: 11 ms  ·  Rows: 5 | Loops: 1  ·  Table: &lt;temporary&gt;  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)"><title>Table scan [&lt;temporary&gt;]
+Self: 0.002 ms | Total: 11 ms
+Rows: 5 | Loops: 1
+Table: &lt;temporary&gt;
+⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [&lt;temporary&gt;]</text>
+<rect id="cell-2" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,218,185)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Aggregate" data-info="Aggregate  ·  Self: 3 ms | Total: 11 ms  ·  Rows: 5 | Loops: 1"><title>Aggregate
+Self: 3 ms | Total: 11 ms
+Rows: 5 | Loops: 1</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Aggregate</text>
+<rect id="cell-3" class="treemap-cell in-query-analysis" x="2" y="70" width="1196" height="600" fill="rgb(176,224,230)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Inner hash join (concat('u',o.user_id) = concat('u..." data-info="Inner hash join (concat('u',o.user_id) = concat('u...  ·  Self: 4 ms | Total: 7 ms  ·  Rows: 6859 | Loops: 1  ·  ⚠ In Query Analysis: Non-sargable join predicate: CONCAT(...) in Inner hash join (concat('u',o.user_id) = concat('u',u.id)) — a function wrapped around the join column prevents index use." data-analysis-msg="Non-sargable join predicate: CONCAT(...) in Inner hash join (concat('u',o.user_id) = concat('u',u.id)) — a function wrapped around the join column prevents index use."><title>Inner hash join (concat('u',o.user_id) = concat('u...
+Self: 4 ms | Total: 7 ms
+Rows: 6859 | Loops: 1
+⚠ In Query Analysis: Non-sargable join predicate: CONCAT(...) in Inner hash join (concat('u',o.user_id) = concat('u',u.id)) — a function wrapped around the join column prevents index use.</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Inner hash join (concat('u',...</text>
+<rect id="cell-4" class="treemap-cell in-query-analysis" x="2" y="70" width="670" height="600" fill="rgb(135,206,250)" data-x="2" data-y="70" data-w="670" data-h="600" data-label="Table scan [orders]" data-info="Table scan [orders]  ·  Self: 2 ms | Total: 2 ms  ·  Rows: 8000 | Loops: 1  ·  Table: orders  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)"><title>Table scan [orders]
+Self: 2 ms | Total: 2 ms
+Rows: 8000 | Loops: 1
+Table: orders
+⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [orders]</text>
+<rect id="cell-5" class="treemap-cell" x="672" y="70" width="526" height="600" fill="rgb(135,206,250)" data-x="672" data-y="70" data-w="526" data-h="600" data-label="Filter: ((u.status = 'active'))" data-info="Filter: ((u.status = 'active'))  ·  Self: 0.547 ms | Total: 2 ms  ·  Rows: 2572 | Loops: 1"><title>Filter: ((u.status = 'active'))
+Self: 0.547 ms | Total: 2 ms
+Rows: 2572 | Loops: 1</title></rect>
+<text x="676" y="666" fill="#333" font-size="10" pointer-events="none">Filter: ((u.status = 'active...</text>
+<rect id="cell-6" class="treemap-cell in-query-analysis" x="672" y="70" width="526" height="600" fill="rgb(173,216,230)" data-x="672" data-y="70" data-w="526" data-h="600" data-label="Table scan [users]" data-info="Table scan [users]  ·  Self: 1 ms | Total: 1 ms  ·  Rows: 3000 | Loops: 1  ·  Table: users  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)"><title>Table scan [users]
+Self: 1 ms | Total: 1 ms
+Rows: 3000 | Loops: 1
+Table: users
+⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)</title></rect>
+<text x="676" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [users]</text>
+</g>
+<line x1="2" y1="676" x2="1198" y2="676" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="2" y="680" width="1196" height="74" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="12" y="690" text-anchor="start" class="details-line">Hover a cell for details; click a cell to zoom and pin details  ·  Ctrl+F to search</text>
+<text id="details-l1" x="12" y="704" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="12" y="718" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="12" y="732" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="12" y="746" text-anchor="start" class="details-line"></text>
+<!-- end details area -->
+<rect x="2" y="760" width="1196" height="1264" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="2" y="770" width="1196" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="2" y="776" width="1196" height="24" fill="#e8eaf6"/>
+<text x="18" y="789" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="6" y="808" width="1188" height="22" fill="#f5f5f5" rx="4"/>
+<text x="18" y="823" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="28" y="847" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">SELECT u.country, SUM(o.amount) AS total</text>
+<text x="28" y="864" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">FROM users u</text>
+<text x="28" y="881" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id)</text>
+<text x="28" y="898" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">WHERE u.status='active'</text>
+<text x="28" y="915" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">GROUP BY u.country</text>
+<text x="28" y="932" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">ORDER BY total DESC</text>
+<rect x="6" y="942" width="1188" height="22" fill="#f1f8e9" rx="4"/>
+<text x="18" y="957" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="28" y="981" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Cell area = total time (including children). Click a cell to zoom.</text>
+<text x="28" y="998" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the cell — the details bar shows “In Query Analysis” and the label that appears in the panel below.</text>
+<rect x="6" y="1008" width="1188" height="22" fill="#e3f2fd" rx="4"/>
+<text x="18" y="1023" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="28" y="1047" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on — Builds an in-memory hash table on the smaller (build) input and probes it from the other side. Uses join_buffer_size; spills to a tmp file (and tmpdir) if the build</text>
+<text x="28" y="1064" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">side does not fit.</text>
+<rect x="6" y="1074" width="1188" height="22" fill="#fff3f3" rx="4"/>
+<text x="18" y="1089" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="28" y="1113" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Non-sargable join predicate: CONCAT(...) in Inner hash join (concat('u',o.user_id) = concat('u',u.id)) — a function wrapped around the join column prevents index use.</text>
+<text x="28" y="1130" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (concat('u',o.user_id) = concat('u...”</text>
+<text x="28" y="1147" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)</text>
+<text x="28" y="1164" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [orders]”, “Table scan [users]”</text>
+<text x="28" y="1181" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~6859 rows in build phase)</text>
+<text x="28" y="1198" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (concat('u',o.user_id) = concat('u...”</text>
+<text x="28" y="1215" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 5 rows; may use disk-based filesort</text>
+<text x="28" y="1232" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="6" y="1242" width="1188" height="22" fill="#e8f5e9" rx="4"/>
+<text x="18" y="1257" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="28" y="1281" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)'). Why: wrapping a column in a function</text>
+<text x="28" y="1298" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets MySQL/MariaDB</text>
+<text x="28" y="1315" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables.</text>
+<text x="28" y="1332" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="28" y="1349" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
+<text x="28" y="1366" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<rect x="6" y="1376" width="1188" height="22" fill="#fff8e1" rx="4"/>
+<text x="18" y="1391" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#e65100">📈  Index suggestions (heuristic — verify before applying)</text>
+<text x="28" y="1415" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">•  Full scan on users with filter on (status)</text>
+<text x="28" y="1432" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">    CREATE INDEX idx_users_status ON users (status);</text>
+<rect x="6" y="1442" width="1188" height="22" fill="#fff3f3" rx="4"/>
+<text x="18" y="1457" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">🔍  Environment warnings (from collected server state)</text>
+<text x="28" y="1481" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.</text>
+<text x="28" y="1498" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Hash join detected but join_buffer_size is only 256.0 KB. Build/batch phase may spill to tmpdir.</text>
+<text x="28" y="1515" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Table users has no index covering (status).</text>
+<rect x="6" y="1525" width="1188" height="22" fill="#e8f5e9" rx="4"/>
+<text x="18" y="1540" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">⚙  Environment tuning suggestions</text>
+<text x="28" y="1564" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024). Why: when the sort set does not fit in sort_buffer_size, MySQL writes multiple</text>
+<text x="28" y="1581" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat:</text>
+<text x="28" y="1598" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.</text>
+<text x="28" y="1615" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise join_buffer_size per-session to 2M–8M (SET SESSION join_buffer_size = 8*1024*1024). Why: hash join builds an in-memory hash table on the smaller input and probes from the</text>
+<text x="28" y="1632" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">other side. If the build side does not fit in join_buffer_size, MySQL spills to tmpdir and does a multi-pass (Grace) hash join — each extra pass re-reads the probe side, so total I/O</text>
+<text x="28" y="1649" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">roughly multiplies. Bigger win: add an index on the join column — that removes the need for the join buffer entirely by turning the join into an indexed lookup.</text>
+<text x="28" y="1666" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  CREATE INDEX idx_users_status ON users (status);</text>
+<rect x="6" y="1676" width="1188" height="22" fill="#e3f2fd" rx="4"/>
+<text x="18" y="1691" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected session variables</text>
+<text x="28" y="1715" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 8.4.8</text>
+<text x="28" y="1732" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_buffer_pool_size = 134217728</text>
+<text x="28" y="1749" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_log_file_size = 50331648</text>
+<text x="28" y="1766" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_flush_log_at_trx_commit = 1</text>
+<text x="28" y="1783" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">sort_buffer_size = 262144</text>
+<text x="28" y="1800" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">join_buffer_size = 262144</text>
+<text x="28" y="1817" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">tmp_table_size = 16777216</text>
+<text x="28" y="1834" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">max_heap_table_size = 16777216</text>
+<text x="28" y="1851" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">optimizer_switch =</text>
+<text x="28" y="1868" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on</text>
+<rect x="6" y="1878" width="1188" height="22" fill="#e3f2fd" rx="4"/>
+<text x="18" y="1893" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected table stats (information_schema.tables)</text>
+<text x="28" y="1917" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users: rows=3000, data=180224, idx=81920</text>
+<text x="28" y="1934" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders: rows=7993, data=425984, idx=180224</text>
+<rect x="6" y="1944" width="1188" height="22" fill="#e3f2fd" rx="4"/>
+<text x="18" y="1959" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected schema (SHOW CREATE TABLE)</text>
+<text x="28" y="1983" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users — 5 cols, indexes: PRIMARY, idx_country</text>
+<text x="28" y="2000" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders — 5 cols, indexes: PRIMARY, idx_user</text>
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 2024;
+  var N_LINES = 5;
+  var zoomable, unzoomBtn, searchBtn, pinnedCell = null;
+  var detailLines = [];
+  var zoomState = { scale: 1, tx: pad, ty: topMargin };
+  var defaultDetailsHint = "Hover a cell for details; click a cell to zoom and pin details  ·  Ctrl+F to search";
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultDetailsHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) detailLines[i].textContent = "";
+    }
+  }
+
+  function setDetailsForCell(cell) {
+    var info = (cell.getAttribute("data-info") || "").replace(/&#10;/g, " | ");
+    var sep = "  ·  ";
+    var parts = info.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    zoomable = document.getElementById("zoomable");
+    unzoomBtn = document.getElementById("unzoom");
+    searchBtn = document.getElementById("search");
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    if (!zoomable) return;
+    zoomState = { scale: 1, tx: 0, ty: 0 };
+    document.addEventListener("click", function(e) {
+      var t = e.target;
+      if (t.id === "unzoom") { resetZoom(); return; }
+      if (t.id === "search") { searchPrompt(); return; }
+      if (t.classList && t.classList.contains("treemap-cell")) {
+        var x = parseFloat(t.getAttribute("data-x")), y = parseFloat(t.getAttribute("data-y")), w = parseFloat(t.getAttribute("data-w")), h = parseFloat(t.getAttribute("data-h"));
+        if (zoomState.scale !== 1 && t.classList.contains("zoomed")) { resetZoom(); return; }
+        var label = t.getAttribute("data-label") || "";
+        zoomTo(x, y, w, h, label);
+        t.classList.add("zoomed");
+        pinnedCell = t;
+        setDetailsForCell(t);
+      }
+    });
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("treemap-cell")) {
+        if (pinnedCell === null) setDetailsForCell(e.target);
+        else if (e.target === pinnedCell) setDetailsForCell(e.target);
+      }
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (e.target.classList && e.target.classList.contains("treemap-cell") && !e.relatedTarget?.classList?.contains("treemap-cell"))
+        if (pinnedCell === null) clearDetails();
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+  function zoomTo(x, y, w, h, label) {
+    var scale = Math.min(tmWidth / w, tmHeight / h);
+    var tx = pad - x * scale;
+    var ty = topMargin - y * scale;
+    zoomable.setAttribute("transform", "translate(" + tx + "," + ty + ") scale(" + scale + ")");
+    zoomState = { scale: scale, tx: tx, ty: ty };
+    unzoomBtn.classList.remove("hide");
+    var bcEl = document.getElementById("breadcrumb");
+    if (bcEl) bcEl.textContent = label ? "All › " + label : "";
+  }
+  function resetZoom() {
+    zoomable.setAttribute("transform", "");
+    zoomState = { scale: 1, tx: 0, ty: 0 };
+    unzoomBtn.classList.add("hide");
+    var cells = document.querySelectorAll(".treemap-cell.zoomed");
+    for (var i = 0; i < cells.length; i++) cells[i].classList.remove("zoomed");
+    pinnedCell = null;
+    clearDetails();
+    var bcEl = document.getElementById("breadcrumb");
+    if (bcEl) bcEl.textContent = "";
+  }
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var cells = document.querySelectorAll(".treemap-cell");
+      for (var i = 0; i < cells.length; i++) cells[i].classList.remove("highlight");
+      searchBtn.textContent = "Search";
+      if (!pinnedCell) clearDetails();
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var cells = document.querySelectorAll(".treemap-cell");
+    for (var i = 0; i < cells.length; i++) {
+      var label = cells[i].getAttribute("data-label") || "";
+      cells[i].classList.toggle("highlight", re.test(label));
+    }
+    searchBtn.textContent = "Reset Search";
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+  window.init = init;
+})();
+]]></script>
+</svg>

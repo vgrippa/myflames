@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="1118" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="1118" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1118" style="max-width: 100%; height: auto;">
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -17,7 +17,7 @@
   .details-line.dim { fill: #999; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
-<text x="600.0" y="26" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="26" text-anchor="middle" class="title">Full Table Scan — MySQL query analysis</text>
 <text x="600.0" y="48" text-anchor="middle" class="subtitle">Treemap by total time (hierarchy)  ·  Total: 0.441 µs</text>
 <text id="unzoom" class="hide" x="2" y="64" text-anchor="start">Reset Zoom</text>
 <text id="breadcrumb" x="600.0" y="64" text-anchor="middle" class="subtitle"></text>

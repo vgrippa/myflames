@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:09:22Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "test/mysql-explain-complex-correlated.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.494,
+    "rows_sent": 50,
+    "rows_examined_estimate": 2000,
+    "operator_count": 4,
+    "max_depth": 4
+  },
+  "optimizer_switches": [],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: employees (2000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [employees]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "filesort",
+      "text": "1 sort operation(s) — 50 rows; may use disk-based filesort",
+      "source": "plan",
+      "node_labels": [
+        "Sort (limit 50)"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase sort_buffer_size or add an ordered index to avoid filesort",
+      "source": "plan",
+      "target_variable": "sort_buffer_size"
+    }
+  ],
+  "executive_summary": "Query scans 1 table and sorts the result; examines ~2,000 rows to return 50 in 0.49 ms. Main finding: no index covers (dept_id) on employees.",
+  "query": {
+    "raw": "/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50",
+    "beautified": "select e.name AS name,e.salary AS salary,(/*\nselect#2 */\nselect max(sh.salary)\nfrom demodb.salary_history sh\nwhere (sh.employee_id = e.id)) AS max_hist,(/*\nselect#3 */\nselect count(0)\nfrom demodb.salary_history sh\nwhere (sh.employee_id = e.id)) AS hist_count\nfrom demodb.employees e\nwhere (e.dept_id in (1,2,3))\norder by e.salary desc\nlimit 50"
+  },
+  "index_suggestions": [
+    {
+      "table": "employees",
+      "columns": [
+        "dept_id"
+      ],
+      "ddl": "CREATE INDEX idx_employees_dept_id ON employees (dept_id);",
+      "reason": "Full scan on employees with filter on (dept_id)"
+    }
+  ],
+  "primary_action": {
+    "ref": "suggestions[0]"
+  }
+}

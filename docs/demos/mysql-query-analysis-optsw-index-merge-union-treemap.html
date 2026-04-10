@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Index Merge (union) — MySQL 8.4 EXPLAIN — myflames report</title>
+  <meta name="description" content="Query runs 4 operators; returns 75 rows in 0.18 ms. No warnings.">
+  <script type="application/ld+json">
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:09:17Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.178,
+    "rows_sent": 75,
+    "rows_examined_estimate": 75,
+    "operator_count": 4,
+    "max_depth": 3
+  },
+  "optimizer_switches": [
+    {
+      "name": "index_merge",
+      "value": "on",
+      "explanation": "Uses two or more index range scans on the same table and combines row IDs (union/intersection/sort_union) instead of falling back to a full scan. A composite index is usually faster.",
+      "node_labels": [
+        "Deduplicate rows sorted by row ID"
+      ]
+    },
+    {
+      "name": "index_merge_union",
+      "value": "on",
+      "explanation": "Union variant of index_merge: OR'ed predicates are satisfied by scanning each index separately, then UNION'ing their row IDs.",
+      "node_labels": [
+        "Deduplicate rows sorted by row ID"
+      ]
+    }
+  ],
+  "warnings": [],
+  "suggestions": [],
+  "executive_summary": "Query runs 4 operators; returns 75 rows in 0.18 ms. No warnings.",
+  "query": {
+    "raw": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`a` = 50) or (`testdb`.`t1`.`b` = 100))",
+    "beautified": "select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t1\nwhere ((testdb.t1.a = 50) or (testdb.t1.b = 100))"
+  }
+}
+  </script>
+  <style>
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --fg: #1a1a2e;
+  --muted: #5a6475;
+  --border: #e0e4ec;
+  --accent: #283593;
+  --accent-soft: #e8eaf6;
+
+  /* Severity palette (from progressive-ux skill) */
+  --sev-error: #b71c1c;
+  --sev-warn: #ef6c00;
+  --sev-info: #0d47a1;
+  --sev-ok: #1b5e20;
+
+  --sev-high: var(--sev-error);
+  --sev-medium: var(--sev-warn);
+  --sev-low: var(--sev-info);
+
+  --code-bg: #263238;
+  --code-fg: #eceff1;
+  --code-str: #c3e88d;
+  --code-kw: #82aaff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; top: -40px; left: 0;
+  background: var(--accent); color: #fff; padding: 8px 16px;
+  z-index: 100; text-decoration: none;
+}
+.skip-link:focus { top: 0; }
+
+/* Header */
+.site-header {
+  background: #1a1a2e; color: #fff;
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.site-header h1 {
+  font-size: 17px; font-weight: 600; margin: 0;
+}
+.site-header nav.toolbar {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.site-header nav.toolbar button {
+  padding: 6px 14px; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; background: rgba(255,255,255,0.06);
+  color: #fff; font-size: 12px; cursor: pointer;
+}
+.site-header nav.toolbar button:hover { background: rgba(255,255,255,0.15); }
+.site-header nav.toolbar button:focus { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Main layout */
+main.report {
+  max-width: 1400px; margin: 24px auto; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+main.report > section,
+main.report > details,
+main.report > aside {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 22px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+main.report h2 {
+  font-size: 15px; font-weight: 600; color: var(--fg);
+  margin: 0 0 12px 0; display: inline-flex; align-items: baseline; gap: 8px;
+}
+main.report h2 .count {
+  color: var(--muted); font-weight: 400; font-size: 13px;
+}
+
+/* Exec summary strip */
+.exec-summary .exec-text {
+  font-size: 16px; font-weight: 500; color: var(--fg);
+  margin: 0 0 14px 0;
+}
+.exec-summary .quick-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin: 0;
+}
+.exec-summary .quick-stats > div {
+  background: var(--accent-soft); border-radius: 6px;
+  padding: 10px 14px; text-align: left;
+}
+.exec-summary .quick-stats dt {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--muted); margin-bottom: 2px;
+}
+.exec-summary .quick-stats dd {
+  font-size: 18px; font-weight: 700; color: var(--accent); margin: 0;
+}
+
+/* Primary action card */
+.primary-action {
+  border-left: 4px solid var(--sev-medium);
+  background: #fff9f3;
+}
+.primary-action.sev-high { border-left-color: var(--sev-high); background: #fff3f3; }
+.primary-action.sev-low  { border-left-color: var(--sev-low);  background: #f1f8ff; }
+.primary-action-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.primary-action-header h2 { margin: 0; font-size: 15px; }
+.primary-action .action-text {
+  font-size: 15px; color: var(--fg); margin: 8px 0;
+}
+.primary-action .sql-action {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 16px; border-radius: 6px; margin: 8px 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; overflow-x: auto;
+}
+.primary-action details.why-details {
+  margin-top: 10px; background: rgba(255,255,255,0.5);
+  border-radius: 6px; padding: 8px 12px;
+}
+.primary-action details.why-details summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted);
+}
+.primary-action details.why-details[open] summary { margin-bottom: 6px; }
+
+/* Severity badges */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 12px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; background: var(--muted); color: #fff;
+}
+.badge-high,  .badge-error { background: var(--sev-error); }
+.badge-medium, .badge-warn { background: var(--sev-warn); }
+.badge-low,   .badge-info  { background: var(--sev-info); }
+.badge-ok                  { background: var(--sev-ok); }
+
+/* Query card */
+.query-card pre {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 14px 18px; border-radius: 8px;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  overflow-x: auto; margin: 0;
+}
+
+/* Visualization */
+.viz-card .chart-panel {
+  overflow-x: auto; padding: 4px; background: #fff;
+  border-radius: 6px; border: 1px solid var(--border);
+}
+.viz-card svg { display: block; max-width: 100%; height: auto; }
+
+/* Warnings + suggestions lists */
+.warning-list, .suggestion-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.warning, .suggestion {
+  background: var(--bg); border-radius: 8px; padding: 12px 14px;
+  border-left: 3px solid var(--muted);
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 6px;
+}
+.warning.sev-error, .suggestion.sev-high    { border-left-color: var(--sev-high); }
+.warning.sev-warn,  .suggestion.sev-medium  { border-left-color: var(--sev-warn); }
+.warning.sev-info,  .suggestion.sev-low     { border-left-color: var(--sev-info); }
+.warning .text, .suggestion .action-text { margin: 0; grid-column: 2; }
+.warning .where { grid-column: 2; font-size: 12px; color: var(--muted); margin: 0; }
+.suggestion .sql-action {
+  grid-column: 1 / -1;
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 10px 14px; border-radius: 6px; margin: 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px; overflow-x: auto;
+}
+.suggestion details.why-details {
+  grid-column: 1 / -1; margin-top: 4px; background: var(--accent-soft);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px;
+}
+.suggestion details.why-details summary {
+  cursor: pointer; font-weight: 600; color: var(--accent);
+}
+.suggestion details.why-details p {
+  margin: 6px 0 0 0; color: var(--fg);
+}
+.node-label {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: rgba(40,53,147,0.1); color: var(--accent);
+  font-size: 11px;
+}
+
+/* Glossary chips (<abbr>) */
+abbr.glossary-chip {
+  text-decoration: underline dotted rgba(40,53,147,0.5);
+  cursor: help; text-underline-offset: 2px;
+}
+
+/* Environment section */
+details.env-section summary,
+details.raw-sidecar summary,
+aside.glossary-aside summary {
+  cursor: pointer; list-style: none;
+}
+details.env-section summary::-webkit-details-marker,
+details.raw-sidecar summary::-webkit-details-marker,
+aside.glossary-aside summary::-webkit-details-marker { display: none; }
+details.env-section summary::before,
+details.raw-sidecar summary::before,
+aside.glossary-aside summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px;
+  transition: transform 0.15s; color: var(--muted);
+}
+details.env-section[open] summary::before,
+details.raw-sidecar[open] summary::before,
+aside.glossary-aside details[open] summary::before { transform: rotate(90deg); }
+details.env-section summary h2,
+details.raw-sidecar summary h2,
+aside.glossary-aside summary h2 { display: inline; margin: 0; }
+.env-grid {
+  margin-top: 14px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.env-card { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.env-card h3 {
+  font-size: 13px; margin: 0 0 8px 0; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv-table th {
+  text-align: left; font-weight: 600; padding: 4px 6px;
+  vertical-align: top; color: var(--muted);
+}
+.kv-table td {
+  padding: 4px 6px; word-break: break-all;
+  font-family: "SFMono-Regular", Menlo, monospace; font-size: 12px;
+}
+.schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.schema-list li { padding: 3px 0; }
+
+/* Glossary aside */
+aside.glossary-aside { background: #f1f8ff; }
+.glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
+.glossary-item dt code {
+  background: var(--accent-soft); padding: 2px 6px;
+  border-radius: 4px; font-size: 12px; color: var(--accent);
+}
+.glossary-item dd { margin: 4px 0 0 0; font-size: 13px; }
+.glossary-item dd.newcomer { color: var(--fg); }
+.glossary-item dd.technical {
+  color: var(--muted); font-size: 12px; font-style: italic;
+}
+
+/* Raw sidecar JSON */
+.raw-json {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+  font-family: "SFMono-Regular", monospace; font-size: 11.5px;
+  max-height: 400px;
+}
+
+/* Print tweaks */
+@media print {
+  body { background: #fff; }
+  .site-header { background: #fff; color: #000; border-bottom: 2px solid #000; }
+  .site-header nav { display: none; }
+  details { page-break-inside: avoid; }
+  details > summary { display: none; }
+  details > *:not(summary) { display: block !important; }
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  main.report { padding: 0 12px; }
+  .site-header { padding: 10px 14px; }
+  .site-header h1 { font-size: 15px; }
+}
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header" role="banner">
+    <h1>Index Merge (union) — MySQL 8.4 EXPLAIN</h1>
+    <nav class="toolbar" aria-label="Report actions">
+      <button type="button" onclick="exportSVG()">Export SVG</button>
+      <button type="button" onclick="exportJSON()">Export Analysis JSON</button>
+      <button type="button" onclick="window.print()">Print / PDF</button>
+    </nav>
+  </header>
+  <main id="main-content" class="report" role="main">
+<section class="exec-summary" aria-labelledby="exec-heading">
+  <h2 id="exec-heading" class="visually-hidden">Summary</h2>
+  <p class="exec-text">Query runs 4 operators; returns 75 rows in 0.18 ms. No warnings.</p>
+  <dl class="quick-stats">
+    <div><dt>Total time</dt><dd>178 µs</dd></div>
+    <div><dt>Rows returned</dt><dd>75</dd></div>
+    <div><dt>Rows examined</dt><dd>75</dd></div>
+    <div><dt>Operators</dt><dd>4</dd></div>
+  </dl>
+</section>
+
+<section class="query-card" aria-labelledby="query-heading">
+  <h2 id="query-heading">SQL</h2>
+  <pre class="sql-text"><code>select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d
+from testdb.t1
+where ((testdb.t1.a = 50) or (testdb.t1.b = 100))</code></pre>
+</section>
+
+<section class="viz-card" aria-labelledby="viz-heading">
+  <h2 id="viz-heading">Execution plan (treemap)</h2>
+  <div class="chart-panel" id="chart-panel">
+<svg version="1.1" width="1200" height="752" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .treemap-cell { stroke: #fff; stroke-width: 1; cursor: pointer; }
+  .treemap-cell:hover { opacity: 0.9; stroke: #333; stroke-width: 1.5; }
+  .treemap-cell.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
+  .treemap-cell.highlight { stroke: rgb(230,0,230); stroke-width: 2; }
+  .treemap-cell.zoomed { stroke: #111; stroke-width: 2; }
+  #unzoom, #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #unzoom:hover, #search:hover { fill: #111; }
+  #unzoom.hide { display: none; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
+  .details-line.dim { fill: #999; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="26" text-anchor="middle" class="title">Index Merge (union) — MySQL 8.4 EXPLAIN</text>
+<text x="600.0" y="48" text-anchor="middle" class="subtitle">Treemap by total time (hierarchy)  ·  Total: 0.178 µs</text>
+<text id="unzoom" class="hide" x="2" y="64" text-anchor="start">Reset Zoom</text>
+<text id="breadcrumb" x="600.0" y="64" text-anchor="middle" class="subtitle"></text>
+<text id="search" x="1138" y="64" text-anchor="end">Search</text>
+<g id="zoomable">
+<rect id="cell-0" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Filter: (((t1.a = 50) or (t1.b = 100)))" data-info="Filter: (((t1.a = 50) or (t1.b = 100)))  ·  Self: 0.009 µs | Total: 0.178 µs  ·  Rows: 75 | Loops: 1"><title>Filter: (((t1.a = 50) or (t1.b = 100)))
+Self: 0.009 µs | Total: 0.178 µs
+Rows: 75 | Loops: 1</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Filter: (((t1.a = 50) or (t1...</text>
+<rect id="cell-1" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Deduplicate rows sorted by row ID" data-info="Deduplicate rows sorted by row ID  ·  Self: 0.094 µs | Total: 0.169 µs  ·  Rows: 75 | Loops: 1"><title>Deduplicate rows sorted by row ID
+Self: 0.094 µs | Total: 0.169 µs
+Rows: 75 | Loops: 1</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Deduplicate rows sorted by r...</text>
+<rect id="cell-2" class="treemap-cell" x="2" y="70" width="912" height="600" fill="rgb(255,218,185)" data-x="2" data-y="70" data-w="912" data-h="600" data-label="Index range scan [t1.idx_a]" data-info="Index range scan [t1.idx_a]  ·  Self: 0.057 µs | Total: 0.057 µs  ·  Rows: 50 | Loops: 1  ·  Table: t1  ·  Index: idx_a"><title>Index range scan [t1.idx_a]
+Self: 0.057 µs | Total: 0.057 µs
+Rows: 50 | Loops: 1
+Table: t1
+Index: idx_a</title></rect>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Index range scan [t1.idx_a]</text>
+<rect id="cell-3" class="treemap-cell" x="914" y="70" width="284" height="600" fill="rgb(255,218,185)" data-x="914" data-y="70" data-w="284" data-h="600" data-label="Index range scan [t1.idx_b]" data-info="Index range scan [t1.idx_b]  ·  Self: 0.018 µs | Total: 0.018 µs  ·  Rows: 25 | Loops: 1  ·  Table: t1  ·  Index: idx_b"><title>Index range scan [t1.idx_b]
+Self: 0.018 µs | Total: 0.018 µs
+Rows: 25 | Loops: 1
+Table: t1
+Index: idx_b</title></rect>
+<text x="918" y="666" fill="#333" font-size="10" pointer-events="none">Index range scan [t1.idx_b]</text>
+</g>
+<line x1="2" y1="676" x2="1198" y2="676" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="2" y="680" width="1196" height="74" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="12" y="690" text-anchor="start" class="details-line">Hover a cell for details; click a cell to zoom and pin details  ·  Ctrl+F to search</text>
+<text id="details-l1" x="12" y="704" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="12" y="718" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="12" y="732" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="12" y="746" text-anchor="start" class="details-line"></text>
+<!-- end details area -->
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 752;
+  var N_LINES = 5;
+  var zoomable, unzoomBtn, searchBtn, pinnedCell = null;
+  var detailLines = [];
+  var zoomState = { scale: 1, tx: pad, ty: topMargin };
+  var defaultDetailsHint = "Hover a cell for details; click a cell to zoom and pin details  ·  Ctrl+F to search";
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultDetailsHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) detailLines[i].textContent = "";
+    }
+  }
+
+  function setDetailsForCell(cell) {
+    var info = (cell.getAttribute("data-info") || "").replace(/&#10;/g, " | ");
+    var sep = "  ·  ";
+    var parts = info.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    zoomable = document.getElementById("zoomable");
+    unzoomBtn = document.getElementById("unzoom");
+    searchBtn = document.getElementById("search");
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    if (!zoomable) return;
+    zoomState = { scale: 1, tx: 0, ty: 0 };
+    document.addEventListener("click", function(e) {
+      var t = e.target;
+      if (t.id === "unzoom") { resetZoom(); return; }
+      if (t.id === "search") { searchPrompt(); return; }
+      if (t.classList && t.classList.contains("treemap-cell")) {
+        var x = parseFloat(t.getAttribute("data-x")), y = parseFloat(t.getAttribute("data-y")), w = parseFloat(t.getAttribute("data-w")), h = parseFloat(t.getAttribute("data-h"));
+        if (zoomState.scale !== 1 && t.classList.contains("zoomed")) { resetZoom(); return; }
+        var label = t.getAttribute("data-label") || "";
+        zoomTo(x, y, w, h, label);
+        t.classList.add("zoomed");
+        pinnedCell = t;
+        setDetailsForCell(t);
+      }
+    });
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("treemap-cell")) {
+        if (pinnedCell === null) setDetailsForCell(e.target);
+        else if (e.target === pinnedCell) setDetailsForCell(e.target);
+      }
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (e.target.classList && e.target.classList.contains("treemap-cell") && !e.relatedTarget?.classList?.contains("treemap-cell"))
+        if (pinnedCell === null) clearDetails();
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+  function zoomTo(x, y, w, h, label) {
+    var scale = Math.min(tmWidth / w, tmHeight / h);
+    var tx = pad - x * scale;
+    var ty = topMargin - y * scale;
+    zoomable.setAttribute("transform", "translate(" + tx + "," + ty + ") scale(" + scale + ")");
+    zoomState = { scale: scale, tx: tx, ty: ty };
+    unzoomBtn.classList.remove("hide");
+    var bcEl = document.getElementById("breadcrumb");
+    if (bcEl) bcEl.textContent = label ? "All › " + label : "";
+  }
+  function resetZoom() {
+    zoomable.setAttribute("transform", "");
+    zoomState = { scale: 1, tx: 0, ty: 0 };
+    unzoomBtn.classList.add("hide");
+    var cells = document.querySelectorAll(".treemap-cell.zoomed");
+    for (var i = 0; i < cells.length; i++) cells[i].classList.remove("zoomed");
+    pinnedCell = null;
+    clearDetails();
+    var bcEl = document.getElementById("breadcrumb");
+    if (bcEl) bcEl.textContent = "";
+  }
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var cells = document.querySelectorAll(".treemap-cell");
+      for (var i = 0; i < cells.length; i++) cells[i].classList.remove("highlight");
+      searchBtn.textContent = "Search";
+      if (!pinnedCell) clearDetails();
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var cells = document.querySelectorAll(".treemap-cell");
+    for (var i = 0; i < cells.length; i++) {
+      var label = cells[i].getAttribute("data-label") || "";
+      cells[i].classList.toggle("highlight", re.test(label));
+    }
+    searchBtn.textContent = "Reset Search";
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+  window.init = init;
+})();
+]]></script>
+</svg>
+
+  </div>
+</section>
+
+<aside class="glossary-aside" aria-labelledby="glossary-heading">
+  <details>
+    <summary><h2 id="glossary-heading">Glossary (2 terms)</h2></summary>
+    <dl class="glossary-list">
+      <div class="glossary-item">
+        <dt><code>full table scan</code></dt>
+        <dd class="newcomer">MySQL is reading every single row in this table, one by one, to check if it matches your WHERE clause. This is slow on big tables — an index on the filter column lets MySQL jump straight to the matching rows instead.</dd>
+        <dd class="technical">Access type ``ALL``: the storage engine returns every row of the table, applying the WHERE clause in the server layer. Cost is roughly (rows × row_evaluate_cost) + pages_read × io_block_read_cost. Signal: ``type=ALL`` in EXPLAIN, ``Handler_read_rnd_next`` climbs by the table row count. Almost always a sign of a missing index on the WHERE or join column.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>index merge</code></dt>
+        <dd class="newcomer">MySQL is using two indexes on the same table and merging their results. It works, but one index that covers both columns together would be faster.</dd>
+        <dd class="technical">When no single composite index satisfies a multi-column predicate, the optimizer can scan each single-column index separately and combine the row IDs — union for OR, intersection for AND. The cost of each scan is paid independently plus a merge step. A composite index ``(a, b)`` is almost always faster.</dd>
+      </div>
+    </dl>
+  </details>
+</aside>
+
+<details class="raw-sidecar">
+  <summary><h2>Raw sidecar (JSON)</h2></summary>
+  <pre class="raw-json"><code>{
+  &quot;schema_version&quot;: &quot;1.0&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-10T20:09:17Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.2.0&quot;,
+  &quot;source&quot;: {
+    &quot;type&quot;: &quot;file&quot;
+  },
+  &quot;plan_summary&quot;: {
+    &quot;total_time_ms&quot;: 0.178,
+    &quot;rows_sent&quot;: 75,
+    &quot;rows_examined_estimate&quot;: 75,
+    &quot;operator_count&quot;: 4,
+    &quot;max_depth&quot;: 3
+  },
+  &quot;optimizer_switches&quot;: [
+    {
+      &quot;name&quot;: &quot;index_merge&quot;,
+      &quot;value&quot;: &quot;on&quot;,
+      &quot;explanation&quot;: &quot;Uses two or more index range scans on the same table and combines row IDs (union/intersection/sort_union) instead of falling back to a full scan. A composite index is usually faster.&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Deduplicate rows sorted by row ID&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;index_merge_union&quot;,
+      &quot;value&quot;: &quot;on&quot;,
+      &quot;explanation&quot;: &quot;Union variant of index_merge: OR'ed predicates are satisfied by scanning each index separately, then UNION'ing their row IDs.&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Deduplicate rows sorted by row ID&quot;
+      ]
+    }
+  ],
+  &quot;warnings&quot;: [],
+  &quot;suggestions&quot;: [],
+  &quot;executive_summary&quot;: &quot;Query runs 4 operators; returns 75 rows in 0.18 ms. No warnings.&quot;,
+  &quot;query&quot;: {
+    &quot;raw&quot;: &quot;/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`a` = 50) or (`testdb`.`t1`.`b` = 100))&quot;,
+    &quot;beautified&quot;: &quot;select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t1\nwhere ((testdb.t1.a = 50) or (testdb.t1.b = 100))&quot;
+  }
+}</code></pre>
+</details>
+  </main>
+  <script>
+function exportSVG() {
+  var svg = document.querySelector('#chart-panel svg');
+  if (!svg) { alert('No SVG found'); return; }
+  var data = new XMLSerializer().serializeToString(svg);
+  var blob = new Blob(['<?xml version="1.0" standalone="no"?>\n', data], {type: 'image/svg+xml'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-plan.svg';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function exportJSON() {
+  // Export the embedded sidecar (same data the JSON-LD script carries).
+  var script = document.querySelector('script[type="application/ld+json"]');
+  if (!script) { alert('No sidecar found'); return; }
+  var blob = new Blob([script.textContent], {type: 'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-analysis.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>

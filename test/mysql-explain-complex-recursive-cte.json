@@ -1,0 +1,160 @@
+{
+  "query": "with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` < 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "cte": true,
+                  "inputs": [
+                    {
+                      "covering": false,
+                      "operation": "Index lookup on employees using idx_mgr (manager_id=NULL), with index condition: (employees.manager_id is null)",
+                      "index_name": "idx_mgr",
+                      "table_name": "employees",
+                      "access_type": "index",
+                      "actual_rows": 100.0,
+                      "schema_name": "demodb",
+                      "actual_loops": 1,
+                      "used_columns": [
+                        "id",
+                        "name",
+                        "manager_id"
+                      ],
+                      "estimated_rows": 100.0,
+                      "lookup_condition": "manager_id=NULL",
+                      "index_access_type": "index_lookup",
+                      "actual_last_row_ms": 0.065747,
+                      "actual_first_row_ms": 0.021251,
+                      "estimated_total_cost": 16.0,
+                      "pushed_index_condition": "(employees.manager_id is null)"
+                    },
+                    {
+                      "inputs": [
+                        {
+                          "inputs": [
+                            {
+                              "operation": "Scan new records on oc",
+                              "table_name": "oc",
+                              "access_type": "scan_new_records",
+                              "actual_rows": 500.0,
+                              "actual_loops": 2,
+                              "used_columns": [
+                                "id",
+                                "name",
+                                "manager_id",
+                                "level"
+                              ],
+                              "estimated_rows": 100.0,
+                              "actual_last_row_ms": 0.021796,
+                              "actual_first_row_ms": 0.000499,
+                              "estimated_total_cost": 13.74999929207186
+                            }
+                          ],
+                          "condition": "((oc.`level` < 10) and (oc.id is not null))",
+                          "operation": "Filter: ((oc.`level` < 10) and (oc.id is not null))",
+                          "access_type": "filter",
+                          "actual_rows": 450.0,
+                          "actual_loops": 2,
+                          "estimated_rows": 33.32999646663666,
+                          "actual_last_row_ms": 0.048792999999999996,
+                          "actual_first_row_ms": 0.001291,
+                          "estimated_total_cost": 13.74999929207186
+                        },
+                        {
+                          "alias": "e",
+                          "covering": false,
+                          "operation": "Index lookup on e using idx_mgr (manager_id=oc.id)",
+                          "index_name": "idx_mgr",
+                          "table_name": "employees",
+                          "access_type": "index",
+                          "actual_rows": 1.0,
+                          "schema_name": "demodb",
+                          "actual_loops": 900,
+                          "used_columns": [
+                            "id",
+                            "name",
+                            "manager_id"
+                          ],
+                          "estimated_rows": 1.0520778894424438,
+                          "lookup_condition": "manager_id=oc.id",
+                          "index_access_type": "index_lookup",
+                          "actual_last_row_ms": 0.0010741811111111112,
+                          "actual_first_row_ms": 0.0009367288888888889,
+                          "estimated_total_cost": 0.2661760219244005
+                        }
+                      ],
+                      "heading": "Repeat until convergence",
+                      "join_type": "inner join",
+                      "operation": "Nested loop inner join",
+                      "access_type": "join",
+                      "actual_rows": 450.0,
+                      "actual_loops": 2,
+                      "estimated_rows": 35.065752337743206,
+                      "join_algorithm": "nested_loop",
+                      "actual_last_row_ms": 0.5824125,
+                      "actual_first_row_ms": 0.003458,
+                      "estimated_total_cost": 26.02301287162062
+                    }
+                  ],
+                  "operation": "Materialize recursive CTE org_chart",
+                  "recursive": true,
+                  "access_type": "materialize",
+                  "actual_rows": 1000.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 135.06575233774322,
+                  "actual_last_row_ms": 1.37675,
+                  "actual_first_row_ms": 1.37675,
+                  "estimated_total_cost": 55.52958810539494,
+                  "estimated_first_row_cost": 55.52958810539494
+                }
+              ],
+              "operation": "Table scan on org_chart",
+              "table_name": "org_chart",
+              "access_type": "table",
+              "actual_rows": 1000.0,
+              "actual_loops": 1,
+              "used_columns": [
+                "id",
+                "name",
+                "manager_id",
+                "level"
+              ],
+              "estimated_rows": 135.06575233774322,
+              "actual_last_row_ms": 1.444127,
+              "actual_first_row_ms": 1.3775,
+              "estimated_total_cost": 59.71708810539494,
+              "estimated_first_row_cost": 55.560591523563666
+            }
+          ],
+          "operation": "Aggregate using temporary table",
+          "access_type": "temp_table_aggregate",
+          "actual_rows": 10.0,
+          "actual_loops": 1,
+          "actual_last_row_ms": 1.542875,
+          "actual_first_row_ms": 1.542875
+        }
+      ],
+      "operation": "Table scan on <temporary>",
+      "table_name": "<temporary>",
+      "access_type": "table",
+      "actual_rows": 10.0,
+      "actual_loops": 1,
+      "actual_last_row_ms": 1.54371,
+      "actual_first_row_ms": 1.543084
+    }
+  ],
+  "operation": "Sort: org_chart.`level`",
+  "query_type": "select",
+  "access_type": "sort",
+  "actual_rows": 10.0,
+  "sort_fields": [
+    "org_chart.`level`"
+  ],
+  "actual_loops": 1,
+  "actual_last_row_ms": 1.551291,
+  "actual_first_row_ms": 1.551042
+}

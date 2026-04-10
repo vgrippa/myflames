@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Correlated subquery (slow N+1 pattern) — myflames report</title>
+  <meta name="description" content="Query scans 1 table and sorts the result; examines ~2,000 rows to return 50 in 0.49 ms. Main finding: no index covers (dept_id) on employees.">
+  <script type="application/ld+json">
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:09:22Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.494,
+    "rows_sent": 50,
+    "rows_examined_estimate": 2000,
+    "operator_count": 4,
+    "max_depth": 4
+  },
+  "optimizer_switches": [],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: employees (2000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [employees]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "filesort",
+      "text": "1 sort operation(s) — 50 rows; may use disk-based filesort",
+      "source": "plan",
+      "node_labels": [
+        "Sort (limit 50)"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase sort_buffer_size or add an ordered index to avoid filesort",
+      "source": "plan",
+      "target_variable": "sort_buffer_size"
+    }
+  ],
+  "executive_summary": "Query scans 1 table and sorts the result; examines ~2,000 rows to return 50 in 0.49 ms. Main finding: no index covers (dept_id) on employees.",
+  "query": {
+    "raw": "/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50",
+    "beautified": "select e.name AS name,e.salary AS salary,(/*\nselect#2 */\nselect max(sh.salary)\nfrom demodb.salary_history sh\nwhere (sh.employee_id = e.id)) AS max_hist,(/*\nselect#3 */\nselect count(0)\nfrom demodb.salary_history sh\nwhere (sh.employee_id = e.id)) AS hist_count\nfrom demodb.employees e\nwhere (e.dept_id in (1,2,3))\norder by e.salary desc\nlimit 50"
+  },
+  "index_suggestions": [
+    {
+      "table": "employees",
+      "columns": [
+        "dept_id"
+      ],
+      "ddl": "CREATE INDEX idx_employees_dept_id ON employees (dept_id);",
+      "reason": "Full scan on employees with filter on (dept_id)"
+    }
+  ],
+  "primary_action": {
+    "ref": "suggestions[0]"
+  }
+}
+  </script>
+  <style>
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --fg: #1a1a2e;
+  --muted: #5a6475;
+  --border: #e0e4ec;
+  --accent: #283593;
+  --accent-soft: #e8eaf6;
+
+  /* Severity palette (from progressive-ux skill) */
+  --sev-error: #b71c1c;
+  --sev-warn: #ef6c00;
+  --sev-info: #0d47a1;
+  --sev-ok: #1b5e20;
+
+  --sev-high: var(--sev-error);
+  --sev-medium: var(--sev-warn);
+  --sev-low: var(--sev-info);
+
+  --code-bg: #263238;
+  --code-fg: #eceff1;
+  --code-str: #c3e88d;
+  --code-kw: #82aaff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; top: -40px; left: 0;
+  background: var(--accent); color: #fff; padding: 8px 16px;
+  z-index: 100; text-decoration: none;
+}
+.skip-link:focus { top: 0; }
+
+/* Header */
+.site-header {
+  background: #1a1a2e; color: #fff;
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.site-header h1 {
+  font-size: 17px; font-weight: 600; margin: 0;
+}
+.site-header nav.toolbar {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.site-header nav.toolbar button {
+  padding: 6px 14px; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; background: rgba(255,255,255,0.06);
+  color: #fff; font-size: 12px; cursor: pointer;
+}
+.site-header nav.toolbar button:hover { background: rgba(255,255,255,0.15); }
+.site-header nav.toolbar button:focus { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Main layout */
+main.report {
+  max-width: 1400px; margin: 24px auto; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+main.report > section,
+main.report > details,
+main.report > aside {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 22px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+main.report h2 {
+  font-size: 15px; font-weight: 600; color: var(--fg);
+  margin: 0 0 12px 0; display: inline-flex; align-items: baseline; gap: 8px;
+}
+main.report h2 .count {
+  color: var(--muted); font-weight: 400; font-size: 13px;
+}
+
+/* Exec summary strip */
+.exec-summary .exec-text {
+  font-size: 16px; font-weight: 500; color: var(--fg);
+  margin: 0 0 14px 0;
+}
+.exec-summary .quick-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin: 0;
+}
+.exec-summary .quick-stats > div {
+  background: var(--accent-soft); border-radius: 6px;
+  padding: 10px 14px; text-align: left;
+}
+.exec-summary .quick-stats dt {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--muted); margin-bottom: 2px;
+}
+.exec-summary .quick-stats dd {
+  font-size: 18px; font-weight: 700; color: var(--accent); margin: 0;
+}
+
+/* Primary action card */
+.primary-action {
+  border-left: 4px solid var(--sev-medium);
+  background: #fff9f3;
+}
+.primary-action.sev-high { border-left-color: var(--sev-high); background: #fff3f3; }
+.primary-action.sev-low  { border-left-color: var(--sev-low);  background: #f1f8ff; }
+.primary-action-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.primary-action-header h2 { margin: 0; font-size: 15px; }
+.primary-action .action-text {
+  font-size: 15px; color: var(--fg); margin: 8px 0;
+}
+.primary-action .sql-action {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 16px; border-radius: 6px; margin: 8px 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; overflow-x: auto;
+}
+.primary-action details.why-details {
+  margin-top: 10px; background: rgba(255,255,255,0.5);
+  border-radius: 6px; padding: 8px 12px;
+}
+.primary-action details.why-details summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted);
+}
+.primary-action details.why-details[open] summary { margin-bottom: 6px; }
+
+/* Severity badges */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 12px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; background: var(--muted); color: #fff;
+}
+.badge-high,  .badge-error { background: var(--sev-error); }
+.badge-medium, .badge-warn { background: var(--sev-warn); }
+.badge-low,   .badge-info  { background: var(--sev-info); }
+.badge-ok                  { background: var(--sev-ok); }
+
+/* Query card */
+.query-card pre {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 14px 18px; border-radius: 8px;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  overflow-x: auto; margin: 0;
+}
+
+/* Visualization */
+.viz-card .chart-panel {
+  overflow-x: auto; padding: 4px; background: #fff;
+  border-radius: 6px; border: 1px solid var(--border);
+}
+.viz-card svg { display: block; max-width: 100%; height: auto; }
+
+/* Warnings + suggestions lists */
+.warning-list, .suggestion-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.warning, .suggestion {
+  background: var(--bg); border-radius: 8px; padding: 12px 14px;
+  border-left: 3px solid var(--muted);
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 6px;
+}
+.warning.sev-error, .suggestion.sev-high    { border-left-color: var(--sev-high); }
+.warning.sev-warn,  .suggestion.sev-medium  { border-left-color: var(--sev-warn); }
+.warning.sev-info,  .suggestion.sev-low     { border-left-color: var(--sev-info); }
+.warning .text, .suggestion .action-text { margin: 0; grid-column: 2; }
+.warning .where { grid-column: 2; font-size: 12px; color: var(--muted); margin: 0; }
+.suggestion .sql-action {
+  grid-column: 1 / -1;
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 10px 14px; border-radius: 6px; margin: 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px; overflow-x: auto;
+}
+.suggestion details.why-details {
+  grid-column: 1 / -1; margin-top: 4px; background: var(--accent-soft);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px;
+}
+.suggestion details.why-details summary {
+  cursor: pointer; font-weight: 600; color: var(--accent);
+}
+.suggestion details.why-details p {
+  margin: 6px 0 0 0; color: var(--fg);
+}
+.node-label {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: rgba(40,53,147,0.1); color: var(--accent);
+  font-size: 11px;
+}
+
+/* Glossary chips (<abbr>) */
+abbr.glossary-chip {
+  text-decoration: underline dotted rgba(40,53,147,0.5);
+  cursor: help; text-underline-offset: 2px;
+}
+
+/* Environment section */
+details.env-section summary,
+details.raw-sidecar summary,
+aside.glossary-aside summary {
+  cursor: pointer; list-style: none;
+}
+details.env-section summary::-webkit-details-marker,
+details.raw-sidecar summary::-webkit-details-marker,
+aside.glossary-aside summary::-webkit-details-marker { display: none; }
+details.env-section summary::before,
+details.raw-sidecar summary::before,
+aside.glossary-aside summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px;
+  transition: transform 0.15s; color: var(--muted);
+}
+details.env-section[open] summary::before,
+details.raw-sidecar[open] summary::before,
+aside.glossary-aside details[open] summary::before { transform: rotate(90deg); }
+details.env-section summary h2,
+details.raw-sidecar summary h2,
+aside.glossary-aside summary h2 { display: inline; margin: 0; }
+.env-grid {
+  margin-top: 14px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.env-card { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.env-card h3 {
+  font-size: 13px; margin: 0 0 8px 0; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv-table th {
+  text-align: left; font-weight: 600; padding: 4px 6px;
+  vertical-align: top; color: var(--muted);
+}
+.kv-table td {
+  padding: 4px 6px; word-break: break-all;
+  font-family: "SFMono-Regular", Menlo, monospace; font-size: 12px;
+}
+.schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.schema-list li { padding: 3px 0; }
+
+/* Glossary aside */
+aside.glossary-aside { background: #f1f8ff; }
+.glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
+.glossary-item dt code {
+  background: var(--accent-soft); padding: 2px 6px;
+  border-radius: 4px; font-size: 12px; color: var(--accent);
+}
+.glossary-item dd { margin: 4px 0 0 0; font-size: 13px; }
+.glossary-item dd.newcomer { color: var(--fg); }
+.glossary-item dd.technical {
+  color: var(--muted); font-size: 12px; font-style: italic;
+}
+
+/* Raw sidecar JSON */
+.raw-json {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+  font-family: "SFMono-Regular", monospace; font-size: 11.5px;
+  max-height: 400px;
+}
+
+/* Print tweaks */
+@media print {
+  body { background: #fff; }
+  .site-header { background: #fff; color: #000; border-bottom: 2px solid #000; }
+  .site-header nav { display: none; }
+  details { page-break-inside: avoid; }
+  details > summary { display: none; }
+  details > *:not(summary) { display: block !important; }
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  main.report { padding: 0 12px; }
+  .site-header { padding: 10px 14px; }
+  .site-header h1 { font-size: 15px; }
+}
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header" role="banner">
+    <h1>Correlated subquery (slow N+1 pattern)</h1>
+    <nav class="toolbar" aria-label="Report actions">
+      <button type="button" onclick="exportSVG()">Export SVG</button>
+      <button type="button" onclick="exportJSON()">Export Analysis JSON</button>
+      <button type="button" onclick="window.print()">Print / PDF</button>
+    </nav>
+  </header>
+  <main id="main-content" class="report" role="main">
+<section class="exec-summary" aria-labelledby="exec-heading">
+  <h2 id="exec-heading" class="visually-hidden">Summary</h2>
+  <p class="exec-text">Query scans 1 table and sorts the result; examines ~2,000 rows to return 50 in 0.49 ms. Main finding: no index covers (dept_id) on employees.</p>
+  <dl class="quick-stats">
+    <div><dt>Total time</dt><dd>494 µs</dd></div>
+    <div><dt>Rows returned</dt><dd>50</dd></div>
+    <div><dt>Rows examined</dt><dd>2.00K</dd></div>
+    <div><dt>Operators</dt><dd>4</dd></div>
+  </dl>
+</section>
+
+<section class="primary-action sev-high" aria-labelledby="primary-heading" role="region">
+  <header class="primary-action-header">
+    <span class="badge badge-high">Fix first</span>
+    <h2 id="primary-heading">Primary recommendation</h2>
+  </header>
+  <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+</section>
+
+<section class="query-card" aria-labelledby="query-heading">
+  <h2 id="query-heading">SQL</h2>
+  <pre class="sql-text"><code>select e.name AS name,e.salary AS salary,(/*
+select#2 */
+select max(sh.salary)
+from demodb.salary_history sh
+where (sh.employee_id = e.id)) AS max_hist,(/*
+select#3 */
+select count(0)
+from demodb.salary_history sh
+where (sh.employee_id = e.id)) AS hist_count
+from demodb.employees e
+where (e.dept_id in (1,2,3))
+order by e.salary desc
+limit 50</code></pre>
+</section>
+
+<section class="viz-card" aria-labelledby="viz-heading">
+  <h2 id="viz-heading">Execution plan (bargraph)</h2>
+  <div class="chart-panel" id="chart-panel">
+<svg version="1.1" width="1200" height="356" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 12px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-header { font-size: 10px; fill: #888; font-weight: bold; letter-spacing: 0.5px; }
+  .label { font-size: 11px; fill: #333; }
+  .loops { font-size: 10px; fill: #777; }
+  .value { font-size: 11px; font-weight: bold; fill: #222; }
+  .bar { transition: opacity 0.12s; }
+  .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
+  .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
+  .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
+  .details-line.dim { fill: #999; }
+  #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #search:hover { fill: #111; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="28" text-anchor="middle" class="title">Correlated subquery (slow N+1 pattern)</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 0.494 µs</text>
+<text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
+<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text id="search" x="1190" y="68" text-anchor="end">Search</text>
+<line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="10" y1="222" x2="1190" y2="222" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="226" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="234" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="248" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="262" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="276" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="290" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="304" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="318" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="332" text-anchor="start" class="details-line"></text>
+<!-- end details area -->
+<text x="320" y="98.0" text-anchor="end" class="label">Table scan [employees]</text>
+<text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="80" width="400.78618384401113" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Table scan on e  ·  Self: 0.309 µs (62.6%)  ·  Rows: 2000  ·  Loops: 1  ·  Table: employees  ·  Access: table  ·  Est.rows: 2000" data-label="Table scan [employees]"/>
+<text x="1060" y="98.0" class="value">0.309 µs (62.6%)</text>
+<text x="320" y="132.0" text-anchor="end" class="label">Sort (limit 50)</text>
+<text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="114" width="126.13818181818182" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Sort: e.salary DESC, limit input to 50 row(s) per chunk  ·  Self: 0.097 µs (19.7%)  ·  Total: 0.491 µs  ·  Rows: 50  ·  Loops: 1  ·  Access: sort  ·  Est.rows: 2000  ⚠ Optimizer overestimate" data-label="Sort (limit 50)"/>
+<text x="1060" y="132.0" class="value">0.097 µs (19.7%)</text>
+<text x="320" y="166.0" text-anchor="end" class="label">Filter: ((e.dept_id in (1,2,3)))</text>
+<text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="148" width="109.24438592048615" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Filter: (e.dept_id in (1,2,3))  ·  Self: 0.084 µs (17.1%)  ·  Total: 0.393 µs  ·  Rows: 750  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 2000  ⚠ Optimizer overestimate  ·  Cond: (e.dept_id in (1,2,3))" data-label="Filter: ((e.dept_id in (1,2,3)))"/>
+<text x="1060" y="166.0" class="value">0.084 µs (17.1%)</text>
+<text x="320" y="200.0" text-anchor="end" class="label">Limit: 50 rows</text>
+<text x="370.0" y="200.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="182" width="3.8312484173208934" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Limit: 50 row(s)  ·  Self: 0.003 µs (0.6%)  ·  Total: 0.494 µs  ·  Rows: 50  ·  Loops: 1  ·  Access: limit  ·  Est.rows: 50" data-label="Limit: 50 rows"/>
+<text x="1060" y="200.0" class="value">0.003 µs (0.6%)</text>
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var detailLines = [];
+  var N_LINES = 8;
+  var searchBtn;
+  var defaultHint = "Hover a bar for details; click a bar to pin details  ·  Ctrl+F to search";
+  var searching = false;
+  var pinnedBar = null;
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+      detailLines[i].setAttribute("class", "details-line" + (i > 0 && i >= parts.length - 1 && parts.length > 1 ? " dim" : ""));
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) { detailLines[i].textContent = ""; detailLines[i].setAttribute("class", "details-line"); }
+    }
+  }
+
+  function setDetailsForBar(bar) {
+    if (!bar || !detailLines[0]) return;
+    var info = bar.getAttribute("data-info") || "";
+    var analysisMsg = bar.getAttribute("data-analysis-msg");
+    if (analysisMsg)
+      info = info + "  ·  ⚠ In Query Analysis: " + analysisMsg;
+    var sep = "  ·  ";
+    var parts = info.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    searchBtn = document.getElementById("search");
+    if (!detailLines[0]) return;
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        if (!pinnedBar) setDetailsForBar(e.target);
+      }
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar") && !searching && !pinnedBar)
+        clearDetails();
+    });
+    document.addEventListener("click", function(e) {
+      if (e.target.id === "search") { searchPrompt(); return; }
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        var bars = document.querySelectorAll(".bar.pinned");
+        for (var i = 0; i < bars.length; i++) bars[i].classList.remove("pinned");
+        if (pinnedBar === e.target) {
+          pinnedBar = null;
+          clearDetails();
+        } else {
+          pinnedBar = e.target;
+          pinnedBar.classList.add("pinned");
+          setDetailsForBar(pinnedBar);
+        }
+        return;
+      }
+      if (pinnedBar) {
+        pinnedBar.classList.remove("pinned");
+        pinnedBar = null;
+        clearDetails();
+      }
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var bars = document.querySelectorAll(".bar");
+      for (var i = 0; i < bars.length; i++) {
+        bars[i].style.opacity = "";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+      searchBtn.textContent = "Search";
+      if (!pinnedBar) clearDetails();
+      searching = false;
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var bars = document.querySelectorAll(".bar");
+    for (var i = 0; i < bars.length; i++) {
+      var label = bars[i].getAttribute("data-label") || "";
+      if (re.test(label)) {
+        bars[i].style.opacity = "1";
+        bars[i].style.stroke = "rgb(230,0,230)";
+        bars[i].style.strokeWidth = "2";
+      } else {
+        bars[i].style.opacity = "0.3";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+    }
+    searchBtn.textContent = "Reset Search";
+    searching = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+</svg>
+
+  </div>
+</section>
+
+<section class="warnings-section" aria-labelledby="warn-heading">
+  <h2 id="warn-heading">Warnings <span class="count">(2)</span></h2>
+  <ol class="warning-list">
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text"><abbr class="glossary-chip" title="Reads every row of a table.">Full table scan</abbr>: employees (2000 rows)</p>
+      <p class="where">Labeled: <code class="node-label">Table scan [employees]</code></p>
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text">1 <abbr class="glossary-chip" title="Sort that can't use an index.">sort operation</abbr>(s) — 50 rows; may use disk-based <abbr class="glossary-chip" title="Sort that can't use an index.">filesort</abbr></p>
+      <p class="where">Labeled: <code class="node-label">Sort (limit 50)</code></p>
+    </li>
+  </ol>
+</section>
+
+<section class="suggestions-section" aria-labelledby="sug-heading">
+  <h2 id="sug-heading">Suggestions <span class="count">(2)</span></h2>
+  <ol class="suggestion-list">
+    <li class="suggestion sev-high">
+      <span class="badge badge-high">HIGH</span>
+      <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+      
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Increase <abbr class="glossary-chip" title="Per-connection buffer for in-memory sorts.">sort_buffer_size</abbr> or add an ordered index to avoid <abbr class="glossary-chip" title="Sort that can't use an index.">filesort</abbr></p>
+      
+    </li>
+  </ol>
+</section>
+
+<aside class="glossary-aside" aria-labelledby="glossary-heading">
+  <details>
+    <summary><h2 id="glossary-heading">Glossary (3 terms)</h2></summary>
+    <dl class="glossary-list">
+      <div class="glossary-item">
+        <dt><code>filesort</code></dt>
+        <dd class="newcomer">MySQL has to sort the rows by hand because the data isn't already in the order you asked for. Small sorts stay in memory; big ones use disk and get slow.</dd>
+        <dd class="technical">MySQL sorts the result in the server layer using ``sort_buffer_size``. If the sort set fits, it stays in memory (fast quicksort). If not, MySQL writes sorted runs to tmpdir and k-way merges them — disk I/O plus CPU for the merge. An index in the ``ORDER BY`` order eliminates the filesort entirely.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>full table scan</code></dt>
+        <dd class="newcomer">MySQL is reading every single row in this table, one by one, to check if it matches your WHERE clause. This is slow on big tables — an index on the filter column lets MySQL jump straight to the matching rows instead.</dd>
+        <dd class="technical">Access type ``ALL``: the storage engine returns every row of the table, applying the WHERE clause in the server layer. Cost is roughly (rows × row_evaluate_cost) + pages_read × io_block_read_cost. Signal: ``type=ALL`` in EXPLAIN, ``Handler_read_rnd_next`` climbs by the table row count. Almost always a sign of a missing index on the WHERE or join column.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>sort buffer size</code></dt>
+        <dd class="newcomer">The memory MySQL gets per connection to sort rows. If your sort is bigger than this, MySQL falls back to using disk, which is slower.</dd>
+        <dd class="technical">Allocated lazily per connection, freed after the sort. When a filesort's data exceeds this buffer, MySQL writes sorted runs to tmpdir and k-way merges them back — disk I/O. Because it's per-connection, setting this high globally multiplies by max_connections; prefer ``SET SESSION sort_buffer_size = …`` for individual big queries.</dd>
+      </div>
+    </dl>
+  </details>
+</aside>
+
+<details class="raw-sidecar">
+  <summary><h2>Raw sidecar (JSON)</h2></summary>
+  <pre class="raw-json"><code>{
+  &quot;schema_version&quot;: &quot;1.0&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-10T20:09:22Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.2.0&quot;,
+  &quot;source&quot;: {
+    &quot;type&quot;: &quot;file&quot;
+  },
+  &quot;plan_summary&quot;: {
+    &quot;total_time_ms&quot;: 0.494,
+    &quot;rows_sent&quot;: 50,
+    &quot;rows_examined_estimate&quot;: 2000,
+    &quot;operator_count&quot;: 4,
+    &quot;max_depth&quot;: 4
+  },
+  &quot;optimizer_switches&quot;: [],
+  &quot;warnings&quot;: [
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;full_scan&quot;,
+      &quot;text&quot;: &quot;Full table scan: employees (2000 rows)&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Table scan [employees]&quot;
+      ]
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;filesort&quot;,
+      &quot;text&quot;: &quot;1 sort operation(s) — 50 rows; may use disk-based filesort&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Sort (limit 50)&quot;
+      ]
+    }
+  ],
+  &quot;suggestions&quot;: [
+    {
+      &quot;severity&quot;: &quot;high&quot;,
+      &quot;category&quot;: &quot;index&quot;,
+      &quot;action&quot;: &quot;Add indexes on filter/join columns to avoid full table scans&quot;,
+      &quot;source&quot;: &quot;plan&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;tuning_variable&quot;,
+      &quot;action&quot;: &quot;Increase sort_buffer_size or add an ordered index to avoid filesort&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;target_variable&quot;: &quot;sort_buffer_size&quot;
+    }
+  ],
+  &quot;executive_summary&quot;: &quot;Query scans 1 table and sorts the result; examines ~2,000 rows to return 50 in 0.49 ms. Main finding: no index covers (dept_id) on employees.&quot;,
+  &quot;query&quot;: {
+    &quot;raw&quot;: &quot;/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50&quot;,
+    &quot;beautified&quot;: &quot;select e.name AS name,e.salary AS salary,(/*\nselect#2 */\nselect max(sh.salary)\nfrom demodb.salary_history sh\nwhere (sh.employee_id = e.id)) AS max_hist,(/*\nselect#3 */\nselect count(0)\nfrom demodb.salary_history sh\nwhere (sh.employee_id = e.id)) AS hist_count\nfrom demodb.employees e\nwhere (e.dept_id in (1,2,3))\norder by e.salary desc\nlimit 50&quot;
+  },
+  &quot;index_suggestions&quot;: [
+    {
+      &quot;table&quot;: &quot;employees&quot;,
+      &quot;columns&quot;: [
+        &quot;dept_id&quot;
+      ],
+      &quot;ddl&quot;: &quot;CREATE INDEX idx_employees_dept_id ON employees (dept_id);&quot;,
+      &quot;reason&quot;: &quot;Full scan on employees with filter on (dept_id)&quot;
+    }
+  ],
+  &quot;primary_action&quot;: {
+    &quot;ref&quot;: &quot;suggestions[0]&quot;
+  }
+}</code></pre>
+</details>
+  </main>
+  <script>
+function exportSVG() {
+  var svg = document.querySelector('#chart-panel svg');
+  if (!svg) { alert('No SVG found'); return; }
+  var data = new XMLSerializer().serializeToString(svg);
+  var blob = new Blob(['<?xml version="1.0" standalone="no"?>\n', data], {type: 'image/svg+xml'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-plan.svg';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function exportJSON() {
+  // Export the embedded sidecar (same data the JSON-LD script carries).
+  var script = document.querySelector('script[type="application/ld+json"]');
+  if (!script) { alert('No sidecar found'); return; }
+  var blob = new Blob([script.textContent], {type: 'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-analysis.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+{
+  "query": "/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` > 4900)",
+  "inputs": [
+    {
+      "ranges": [
+        "4900 < v"
+      ],
+      "covering": true,
+      "operation": "Covering index skip scan on ss using g over 4900 < v",
+      "index_name": "g",
+      "table_name": "ss",
+      "access_type": "index",
+      "actual_rows": 100.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "g",
+        "v"
+      ],
+      "estimated_rows": 1666.0,
+      "index_access_type": "index_skip_scan",
+      "actual_last_row_ms": 0.076959,
+      "actual_first_row_ms": 0.025876,
+      "estimated_total_cost": 431.861403508772,
+      "estimated_first_row_cost": 0.2592205303173902
+    }
+  ],
+  "condition": "(ss.v > 4900)",
+  "operation": "Filter: (ss.v > 4900)",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 100.0,
+  "actual_loops": 1,
+  "estimated_rows": 1666.0,
+  "actual_last_row_ms": 0.083753,
+  "actual_first_row_ms": 0.027874,
+  "estimated_total_cost": 431.861403508772,
+  "estimated_first_row_cost": 0.2592205303173902
+}

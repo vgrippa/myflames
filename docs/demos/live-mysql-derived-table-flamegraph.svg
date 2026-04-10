@@ -1,0 +1,378 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1800" height="1330" onload="init(evt)" viewBox="0 0 1800 1330" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="max-width: 100%; height: auto;">
+<defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs>
+<style type="text/css">text { font-family: Verdana; font-size: 12px; fill: rgb(0,0,0); }
+#search, #ignorecase { opacity:0.1; cursor:pointer; } #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+#title { text-anchor:middle; font-size:17px } #unzoom { cursor:pointer; } #frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; } .hide { display:none; } .parent { opacity:0.5; }</style>
+<script type="text/ecmascript"><![CDATA[
+
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn, pinnedDetails = null;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+		if (params.s) search(params.s);
+	}
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) { pinnedDetails = null; unzoom(true); }
+			else {
+			zoom(target);
+			pinnedDetails = "Function: " + g_to_text(target);
+			}
+			if (!document.querySelector('.parent')) {
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params();
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false);
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = (pinnedDetails !== null ? pinnedDetails : "Function: " + g_to_text(target));
+	}, false);
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target && pinnedDetails === null) details.nodeValue = ' ';
+	}, false);
+	window.addEventListener("keydown", function(e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) { e.preventDefault(); search_prompt(); }
+		else if (e.ctrlKey && e.keyCode === 73) { e.preventDefault(); toggle_ignorecase(); }
+	}, false);
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]] = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) { uri += key + '=' + encodeURIComponent(params[key]) + '&'; }
+		if (uri.slice(-1) == "&") uri = uri.substring(0, uri.length - 1);
+		if (uri == '?') uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title");
+		return text ? text.firstChild.nodeValue : "";
+	}
+	function g_to_func(e) { return g_to_text(e); }
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		if (!r || !t) return;
+		var w = parseFloat(r.attributes.width.value) - 3;
+		var txt = (find_child(e, "title") ? find_child(e, "title").textContent : "").replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+		if (w < 2 * 12 * 0.59) { t.textContent = ""; return; }
+		t.textContent = txt;
+		var sl = t.getSubStringLength ? t.getSubStringLength(0, txt.length) : txt.length * 7;
+		if (/^ *$/.test(txt) || sl < w) return;
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if ((t.getSubStringLength ? t.getSubStringLength(0, x + 2) : (x+2)*7) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+	function zoom_reset(e) {
+		if (e.attributes != undefined) { orig_load(e, "x"); orig_load(e, "width"); }
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_reset(c[i]);
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text" && e.parentNode) {
+					var rect = find_child(e.parentNode, "rect[x]") || find_child(e.parentNode, "rect");
+					if (rect) e.attributes.x.value = parseFloat(rect.attributes.x.value) + 3;
+				}
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_child(c[i], x - 10, ratio);
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) { orig_save(e, "x"); e.attributes.x.value = 10; }
+			if (e.attributes.width != undefined) { orig_save(e, "width"); e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2); }
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_parent(c[i]);
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+		var fudge = 0.0001;
+		unzoombtn.classList.remove("hide");
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack = (0 == 0) ? (parseFloat(a.y.value) > ymin) : (parseFloat(a.y.value) < ymin);
+			if (upstack) {
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				} else e.classList.add("hide");
+			} else {
+				if (ex < xmin || ex + fudge >= xmax) e.classList.add("hide");
+				else { zoom_child(e, xmin, ratio); update_text(e); }
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if (!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		pinnedDetails = null;
+		unzoom();
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		ignorecaseBtn.classList.toggle("show", ignorecase);
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) orig_load(el[i], "fill");
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp allowed)" + (ignorecase ? ", ignoring case" : "") + "\\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search";
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = "";
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = {};
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null) continue;
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth) maxwidth = w;
+			if (func.match(re)) {
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+				matches[x] = (matches[x] === undefined || w > matches[x]) ? w : matches[x];
+				searching = 1;
+			}
+		}
+		if (!searching) return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+		var count = 0, lastx = -1, lastw = 0, keys = [];
+		for (var k in matches) { if (matches.hasOwnProperty(k)) keys.push(k); }
+		keys.sort(function(a,b){ return a - b; });
+		var fudge = 0.0001;
+		for (var ki = 0; ki < keys.length; ki++) {
+			var x = parseFloat(keys[ki]);
+			var w = matches[keys[ki]];
+			if (x >= lastx + lastw - fudge) { count += w; lastx = x; lastw = w; }
+		}
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1);
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+
+]]></script>
+<rect width="100%" height="100%" fill="url(#background)"/>
+<text id="title" x="900" y="24">Live MySQL 8.4 — derived table + filesort</text>
+<text id="details" x="10" y="277"> </text>
+<text id="unzoom" class="hide" x="10" y="24">Reset Zoom</text>
+<text id="search" x="1690" y="24">Search</text>
+<text id="ignorecase" x="1774" y="24">ic</text>
+<text id="matched" x="1690" y="277"> </text>
+<g id="frames">
+<g><title>FILTER ((users.status = 'active')) starts=1 rows=2572 (4 ms, 80.00%)&#10;&#10;Access: filter&#10;Rows: 2572 actual (300 estimated) [UNDERESTIMATE]&#10;Time: 4.150 ms (last row)&#10;Cost: 302.75&#10;Condition: (users.`status` = 'active')</title>
+<rect x="366.0" y="69.0" width="1424.0" height="31.0" fill="rgb(252,193,46)" rx="2" ry="2"/>
+<text x="369.00" y="87.50">FILTER ((users.status = 'active')) starts=1 rows=2572</text>
+</g>
+<g><title>GROUP starts=1 rows=5 (4 ms, 80.00%)&#10;&#10;Access: aggregate&#10;Rows: 5 actual (5 estimated)&#10;Time: 4.437 ms (last row)&#10;Cost: 332.75</title>
+<rect x="366.0" y="101.0" width="1424.0" height="31.0" fill="rgb(242,14,48)" rx="2" ry="2"/>
+<text x="369.00" y="119.50">GROUP starts=1 rows=5</text>
+</g>
+<g><title>INDEX SCAN [users.idx_country] starts=1 rows=3000 (4 ms, 80.00%)&#10;&#10;Table: demodb.users (index: idx_country)&#10;Access: index&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 3.675 ms (last row)&#10;Cost: 302.75&#10;Covering: No</title>
+<rect x="366.0" y="37.0" width="1424.0" height="31.0" fill="rgb(231,52,3)" rx="2" ry="2"/>
+<text x="369.00" y="55.50">INDEX SCAN [users.idx_country] starts=1 rows=3000</text>
+</g>
+<g><title>MATERIALIZE starts=1 rows=5 (4 ms, 80.00%)&#10;&#10;Access: materialize&#10;Rows: 5 actual (5 estimated)&#10;Time: 4.517 ms (last row)&#10;Cost: 333.25</title>
+<rect x="366.0" y="133.0" width="1424.0" height="31.0" fill="rgb(234,229,40)" rx="2" ry="2"/>
+<text x="369.00" y="151.50">MATERIALIZE starts=1 rows=5</text>
+</g>
+<g><title>SORT starts=1 rows=5 (5 ms, 100.00%)&#10;&#10;Access: sort&#10;Rows: 5 actual (5 estimated)&#10;Time: 4.540 ms (last row)&#10;Cost: 337.47</title>
+<rect x="10.0" y="197.0" width="1780.0" height="31.0" fill="rgb(220,211,20)" rx="2" ry="2"/>
+<text x="13.00" y="215.50">SORT starts=1 rows=5</text>
+</g>
+<g><title>TABLE SCAN [t] starts=1 rows=5 (4 ms, 80.00%)&#10;&#10;Table: t&#10;Access: table&#10;Rows: 5 actual (5 estimated)&#10;Time: 4.521 ms (last row)&#10;Cost: 335.81</title>
+<rect x="366.0" y="165.0" width="1424.0" height="31.0" fill="rgb(252,174,47)" rx="2" ry="2"/>
+<text x="369.00" y="183.50">TABLE SCAN [t] starts=1 rows=5</text>
+</g>
+</g>
+<rect x="4" y="302" width="1792" height="1028" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="4" y="312" width="1792" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="4" y="318" width="1792" height="24" fill="#e8eaf6"/>
+<text x="20" y="331" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="8" y="350" width="1784" height="22" fill="#f5f5f5" rx="4"/>
+<text x="20" y="365" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="30" y="389" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">SELECT t.country, t.cnt</text>
+<text x="30" y="406" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">FROM (</text>
+<text x="30" y="423" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">SELECT country, COUNT(*) cnt</text>
+<text x="30" y="440" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">FROM users</text>
+<text x="30" y="457" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">WHERE status='active'</text>
+<text x="30" y="474" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">GROUP BY country) t</text>
+<text x="30" y="491" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">ORDER BY t.cnt DESC</text>
+<rect x="8" y="501" width="1784" height="22" fill="#f1f8e9" rx="4"/>
+<text x="20" y="516" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="30" y="540" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Width = time for that operation (wider = slower). Bottom = query root; top = leaf table access.</text>
+<text x="30" y="557" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.</text>
+<text x="30" y="574" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
+<rect x="8" y="584" width="1784" height="22" fill="#e3f2fd" rx="4"/>
+<text x="20" y="599" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="30" y="623" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">materialization=on — A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.</text>
+<rect x="8" y="633" width="1784" height="22" fill="#fff3f3" rx="4"/>
+<text x="20" y="648" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="30" y="672" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: t (5 rows)</text>
+<text x="30" y="689" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t]”</text>
+<text x="30" y="706" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 temp table(s) (Materialize) — up to 5 rows; may spill to disk</text>
+<text x="30" y="723" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Materialize”</text>
+<text x="30" y="740" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 5 rows; may use disk-based filesort</text>
+<text x="30" y="757" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="8" y="767" width="1784" height="22" fill="#e8f5e9" rx="4"/>
+<text x="20" y="782" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="30" y="806" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="30" y="823" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase tmp_table_size / max_heap_table_size to keep temp tables in memory</text>
+<text x="30" y="840" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<rect x="8" y="850" width="1784" height="22" fill="#fff3f3" rx="4"/>
+<text x="20" y="865" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">🔍  Environment warnings (from collected server state)</text>
+<text x="30" y="889" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.</text>
+<text x="30" y="906" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Query materializes 1 temp table(s) but tmp_table_size/max_heap_table_size is capped at 16.0 MB — temp tables will spill to InnoDB disk tables.</text>
+<rect x="8" y="916" width="1784" height="22" fill="#e8f5e9" rx="4"/>
+<text x="20" y="931" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">⚙  Environment tuning suggestions</text>
+<text x="30" y="955" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024). Why: when the sort set does not fit in sort_buffer_size, MySQL writes multiple sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big</text>
+<text x="30" y="972" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.</text>
+<text x="30" y="989" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise tmp_table_size AND max_heap_table_size together to the same value (64M–256M). Why: once a materialized temp table exceeds min(tmp_table_size, max_heap_table_size), MySQL converts the in-memory MEMORY/TempTable engine to an on-disk InnoDB temp table — scans over the disk</text>
+<text x="30" y="1006" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">version are typically 10–100× slower and generate real I/O. Both variables must be raised together because MySQL always picks the smaller of the two; raising only one has no effect.</text>
+<rect x="8" y="1016" width="1784" height="22" fill="#e3f2fd" rx="4"/>
+<text x="20" y="1031" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected session variables</text>
+<text x="30" y="1055" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 8.4.8</text>
+<text x="30" y="1072" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_buffer_pool_size = 134217728</text>
+<text x="30" y="1089" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_log_file_size = 50331648</text>
+<text x="30" y="1106" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_flush_log_at_trx_commit = 1</text>
+<text x="30" y="1123" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">sort_buffer_size = 262144</text>
+<text x="30" y="1140" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">join_buffer_size = 262144</text>
+<text x="30" y="1157" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">tmp_table_size = 16777216</text>
+<text x="30" y="1174" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">max_heap_table_size = 16777216</text>
+<text x="30" y="1191" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">optimizer_switch =</text>
+<text x="30" y="1208" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on</text>
+<rect x="8" y="1218" width="1784" height="22" fill="#e3f2fd" rx="4"/>
+<text x="20" y="1233" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected table stats (information_schema.tables)</text>
+<text x="30" y="1257" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users: rows=3000, data=180224, idx=81920</text>
+<rect x="8" y="1267" width="1784" height="22" fill="#e3f2fd" rx="4"/>
+<text x="20" y="1282" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected schema (SHOW CREATE TABLE)</text>
+<text x="30" y="1306" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users — 5 cols, indexes: PRIMARY, idx_country</text>
+</svg>

@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:09:22Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "test/mysql-explain-complex-recursive-cte.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 1.551,
+    "rows_sent": 10,
+    "rows_examined_estimate": 601,
+    "operator_count": 10,
+    "max_depth": 8
+  },
+  "optimizer_switches": [
+    {
+      "name": "index_condition_pushdown",
+      "value": "on",
+      "explanation": "Parts of the WHERE clause are evaluated inside the storage engine using index columns before fetching the full row — reduces rows handed to the server layer.",
+      "node_labels": [
+        "Index lookup [employees.idx_mgr]"
+      ]
+    },
+    {
+      "name": "materialization",
+      "value": "on",
+      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.",
+      "node_labels": [
+        "Materialize"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: <temporary> (10 rows), org_chart (1000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [<temporary>]",
+        "Table scan [org_chart]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "temp_table",
+      "text": "1 temp table(s) (Materialize) — up to 1000 rows; may spill to disk",
+      "source": "plan",
+      "node_labels": [
+        "Materialize"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "filesort",
+      "text": "1 sort operation(s) — 10 rows; may use disk-based filesort",
+      "source": "plan",
+      "node_labels": [
+        "Sort"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase tmp_table_size / max_heap_table_size to keep temp tables in memory",
+      "source": "plan",
+      "target_variable": "tmp_table_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase sort_buffer_size or add an ordered index to avoid filesort",
+      "source": "plan",
+      "target_variable": "sort_buffer_size"
+    }
+  ],
+  "executive_summary": "Query scans 2 tables, materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: full scan of org_chart (1,000 rows).",
+  "query": {
+    "raw": "with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` < 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`",
+    "beautified": "with recursive org_chart as (/*\nselect#2 */\nselect demodb.employees.id AS id,demodb.employees.name AS name,demodb.employees.manager_id AS manager_id,1 AS level\nfrom demodb.employees\nwhere (demodb.employees.manager_id is null)\nunion all /*\nselect#3 */\nselect e.id AS id,e.name AS name,e.manager_id AS manager_id,(oc.level + 1) AS oc.level + 1\nfrom demodb.employees e\n  join org_chart oc\nwhere ((e.manager_id = oc.id) and (oc.level < 10))) /*\nselect#1 */\nselect org_chart.level AS level,count(0) AS headcount\nfrom org_chart\ngroup by org_chart.level\norder by org_chart.level"
+  },
+  "primary_action": {
+    "ref": "suggestions[0]"
+  }
+}

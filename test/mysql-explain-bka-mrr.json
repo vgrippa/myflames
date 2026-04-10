@@ -1,0 +1,67 @@
+{
+  "query": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "operation": "Table scan on t2",
+          "table_name": "t2",
+          "access_type": "table",
+          "actual_rows": 2000.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "x",
+            "y"
+          ],
+          "estimated_rows": 2000.0,
+          "actual_last_row_ms": 0.222347,
+          "actual_first_row_ms": 0.040292,
+          "estimated_total_cost": 201.5
+        }
+      ],
+      "heading": "Batch input rows",
+      "condition": "((t2.y < 1000) and (t2.x is not null))",
+      "operation": "Filter: ((t2.y < 1000) and (t2.x is not null))",
+      "access_type": "filter",
+      "actual_rows": 499.0,
+      "actual_loops": 1,
+      "estimated_rows": 666.5999889373779,
+      "actual_last_row_ms": 0.296375,
+      "actual_first_row_ms": 0.042583,
+      "estimated_total_cost": 201.5
+    },
+    {
+      "covering": false,
+      "operation": "Multi-range index lookup on t1 using idx_a (a=t2.x)",
+      "index_name": "idx_a",
+      "table_name": "t1",
+      "access_type": "index",
+      "actual_rows": 12475.0,
+      "schema_name": "testdb",
+      "actual_loops": 2,
+      "used_columns": [
+        "id",
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "estimated_rows": 50.0,
+      "lookup_condition": "a=t2.x",
+      "index_access_type": "multi_range_read",
+      "actual_last_row_ms": 8.7715615,
+      "actual_first_row_ms": 2.414667,
+      "estimated_total_cost": 12.007500750199487
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Batched key access inner join",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 24950.0,
+  "actual_loops": 1,
+  "join_algorithm": "batch_key_access",
+  "actual_last_row_ms": 18.807922,
+  "actual_first_row_ms": 4.31625
+}

@@ -1,0 +1,50 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.095732213
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 0.05941529,
+    "r_loops": 1,
+    "r_total_time_ms": 0.084816482,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "t1",
+          "access_type": "index_merge",
+          "possible_keys": ["idx_a", "idx_b"],
+          "key_length": "5,5",
+          "index_merge": {
+            "union": [
+              {
+                "range": {
+                  "key": "idx_a",
+                  "used_key_parts": ["a"]
+                }
+              },
+              {
+                "range": {
+                  "key": "idx_b",
+                  "used_key_parts": ["b"]
+                }
+              }
+            ]
+          },
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 45,
+          "r_rows": 45,
+          "cost": 0.05941529,
+          "r_table_time_ms": 0.033750937,
+          "r_other_time_ms": 0.015432585,
+          "r_engine_stats": {
+            "pages_accessed": 98
+          },
+          "filtered": 100,
+          "r_filtered": 100,
+          "attached_condition": "t1.a = 50 or t1.b = 100"
+        }
+      }
+    ]
+  }
+}

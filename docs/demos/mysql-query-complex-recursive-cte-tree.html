@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recursive CTE (org-chart traversal) — myflames report</title>
+  <meta name="description" content="Query scans 2 tables, materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: full scan of org_chart (1,000 rows).">
+  <script type="application/ld+json">
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:09:23Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file"
+  },
+  "plan_summary": {
+    "total_time_ms": 1.551,
+    "rows_sent": 10,
+    "rows_examined_estimate": 601,
+    "operator_count": 10,
+    "max_depth": 8
+  },
+  "optimizer_switches": [
+    {
+      "name": "index_condition_pushdown",
+      "value": "on",
+      "explanation": "Parts of the WHERE clause are evaluated inside the storage engine using index columns before fetching the full row — reduces rows handed to the server layer.",
+      "node_labels": [
+        "Index lookup [employees.idx_mgr]"
+      ]
+    },
+    {
+      "name": "materialization",
+      "value": "on",
+      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.",
+      "node_labels": [
+        "Materialize"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: <temporary> (10 rows), org_chart (1000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [<temporary>]",
+        "Table scan [org_chart]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "temp_table",
+      "text": "1 temp table(s) (Materialize) — up to 1000 rows; may spill to disk",
+      "source": "plan",
+      "node_labels": [
+        "Materialize"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "filesort",
+      "text": "1 sort operation(s) — 10 rows; may use disk-based filesort",
+      "source": "plan",
+      "node_labels": [
+        "Sort"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase tmp_table_size / max_heap_table_size to keep temp tables in memory",
+      "source": "plan",
+      "target_variable": "tmp_table_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase sort_buffer_size or add an ordered index to avoid filesort",
+      "source": "plan",
+      "target_variable": "sort_buffer_size"
+    }
+  ],
+  "executive_summary": "Query scans 2 tables, materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: full scan of org_chart (1,000 rows).",
+  "query": {
+    "raw": "with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` < 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`",
+    "beautified": "with recursive org_chart as (/*\nselect#2 */\nselect demodb.employees.id AS id,demodb.employees.name AS name,demodb.employees.manager_id AS manager_id,1 AS level\nfrom demodb.employees\nwhere (demodb.employees.manager_id is null)\nunion all /*\nselect#3 */\nselect e.id AS id,e.name AS name,e.manager_id AS manager_id,(oc.level + 1) AS oc.level + 1\nfrom demodb.employees e\n  join org_chart oc\nwhere ((e.manager_id = oc.id) and (oc.level < 10))) /*\nselect#1 */\nselect org_chart.level AS level,count(0) AS headcount\nfrom org_chart\ngroup by org_chart.level\norder by org_chart.level"
+  },
+  "primary_action": {
+    "ref": "suggestions[0]"
+  }
+}
+  </script>
+  <style>
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --fg: #1a1a2e;
+  --muted: #5a6475;
+  --border: #e0e4ec;
+  --accent: #283593;
+  --accent-soft: #e8eaf6;
+
+  /* Severity palette (from progressive-ux skill) */
+  --sev-error: #b71c1c;
+  --sev-warn: #ef6c00;
+  --sev-info: #0d47a1;
+  --sev-ok: #1b5e20;
+
+  --sev-high: var(--sev-error);
+  --sev-medium: var(--sev-warn);
+  --sev-low: var(--sev-info);
+
+  --code-bg: #263238;
+  --code-fg: #eceff1;
+  --code-str: #c3e88d;
+  --code-kw: #82aaff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; top: -40px; left: 0;
+  background: var(--accent); color: #fff; padding: 8px 16px;
+  z-index: 100; text-decoration: none;
+}
+.skip-link:focus { top: 0; }
+
+/* Header */
+.site-header {
+  background: #1a1a2e; color: #fff;
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.site-header h1 {
+  font-size: 17px; font-weight: 600; margin: 0;
+}
+.site-header nav.toolbar {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.site-header nav.toolbar button {
+  padding: 6px 14px; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; background: rgba(255,255,255,0.06);
+  color: #fff; font-size: 12px; cursor: pointer;
+}
+.site-header nav.toolbar button:hover { background: rgba(255,255,255,0.15); }
+.site-header nav.toolbar button:focus { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Main layout */
+main.report {
+  max-width: 1400px; margin: 24px auto; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+main.report > section,
+main.report > details,
+main.report > aside {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 22px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+main.report h2 {
+  font-size: 15px; font-weight: 600; color: var(--fg);
+  margin: 0 0 12px 0; display: inline-flex; align-items: baseline; gap: 8px;
+}
+main.report h2 .count {
+  color: var(--muted); font-weight: 400; font-size: 13px;
+}
+
+/* Exec summary strip */
+.exec-summary .exec-text {
+  font-size: 16px; font-weight: 500; color: var(--fg);
+  margin: 0 0 14px 0;
+}
+.exec-summary .quick-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin: 0;
+}
+.exec-summary .quick-stats > div {
+  background: var(--accent-soft); border-radius: 6px;
+  padding: 10px 14px; text-align: left;
+}
+.exec-summary .quick-stats dt {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--muted); margin-bottom: 2px;
+}
+.exec-summary .quick-stats dd {
+  font-size: 18px; font-weight: 700; color: var(--accent); margin: 0;
+}
+
+/* Primary action card */
+.primary-action {
+  border-left: 4px solid var(--sev-medium);
+  background: #fff9f3;
+}
+.primary-action.sev-high { border-left-color: var(--sev-high); background: #fff3f3; }
+.primary-action.sev-low  { border-left-color: var(--sev-low);  background: #f1f8ff; }
+.primary-action-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.primary-action-header h2 { margin: 0; font-size: 15px; }
+.primary-action .action-text {
+  font-size: 15px; color: var(--fg); margin: 8px 0;
+}
+.primary-action .sql-action {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 16px; border-radius: 6px; margin: 8px 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; overflow-x: auto;
+}
+.primary-action details.why-details {
+  margin-top: 10px; background: rgba(255,255,255,0.5);
+  border-radius: 6px; padding: 8px 12px;
+}
+.primary-action details.why-details summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted);
+}
+.primary-action details.why-details[open] summary { margin-bottom: 6px; }
+
+/* Severity badges */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 12px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; background: var(--muted); color: #fff;
+}
+.badge-high,  .badge-error { background: var(--sev-error); }
+.badge-medium, .badge-warn { background: var(--sev-warn); }
+.badge-low,   .badge-info  { background: var(--sev-info); }
+.badge-ok                  { background: var(--sev-ok); }
+
+/* Query card */
+.query-card pre {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 14px 18px; border-radius: 8px;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  overflow-x: auto; margin: 0;
+}
+
+/* Visualization */
+.viz-card .chart-panel {
+  overflow-x: auto; padding: 4px; background: #fff;
+  border-radius: 6px; border: 1px solid var(--border);
+}
+.viz-card svg { display: block; max-width: 100%; height: auto; }
+
+/* Warnings + suggestions lists */
+.warning-list, .suggestion-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.warning, .suggestion {
+  background: var(--bg); border-radius: 8px; padding: 12px 14px;
+  border-left: 3px solid var(--muted);
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 6px;
+}
+.warning.sev-error, .suggestion.sev-high    { border-left-color: var(--sev-high); }
+.warning.sev-warn,  .suggestion.sev-medium  { border-left-color: var(--sev-warn); }
+.warning.sev-info,  .suggestion.sev-low     { border-left-color: var(--sev-info); }
+.warning .text, .suggestion .action-text { margin: 0; grid-column: 2; }
+.warning .where { grid-column: 2; font-size: 12px; color: var(--muted); margin: 0; }
+.suggestion .sql-action {
+  grid-column: 1 / -1;
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 10px 14px; border-radius: 6px; margin: 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px; overflow-x: auto;
+}
+.suggestion details.why-details {
+  grid-column: 1 / -1; margin-top: 4px; background: var(--accent-soft);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px;
+}
+.suggestion details.why-details summary {
+  cursor: pointer; font-weight: 600; color: var(--accent);
+}
+.suggestion details.why-details p {
+  margin: 6px 0 0 0; color: var(--fg);
+}
+.node-label {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: rgba(40,53,147,0.1); color: var(--accent);
+  font-size: 11px;
+}
+
+/* Glossary chips (<abbr>) */
+abbr.glossary-chip {
+  text-decoration: underline dotted rgba(40,53,147,0.5);
+  cursor: help; text-underline-offset: 2px;
+}
+
+/* Environment section */
+details.env-section summary,
+details.raw-sidecar summary,
+aside.glossary-aside summary {
+  cursor: pointer; list-style: none;
+}
+details.env-section summary::-webkit-details-marker,
+details.raw-sidecar summary::-webkit-details-marker,
+aside.glossary-aside summary::-webkit-details-marker { display: none; }
+details.env-section summary::before,
+details.raw-sidecar summary::before,
+aside.glossary-aside summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px;
+  transition: transform 0.15s; color: var(--muted);
+}
+details.env-section[open] summary::before,
+details.raw-sidecar[open] summary::before,
+aside.glossary-aside details[open] summary::before { transform: rotate(90deg); }
+details.env-section summary h2,
+details.raw-sidecar summary h2,
+aside.glossary-aside summary h2 { display: inline; margin: 0; }
+.env-grid {
+  margin-top: 14px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.env-card { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.env-card h3 {
+  font-size: 13px; margin: 0 0 8px 0; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv-table th {
+  text-align: left; font-weight: 600; padding: 4px 6px;
+  vertical-align: top; color: var(--muted);
+}
+.kv-table td {
+  padding: 4px 6px; word-break: break-all;
+  font-family: "SFMono-Regular", Menlo, monospace; font-size: 12px;
+}
+.schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.schema-list li { padding: 3px 0; }
+
+/* Glossary aside */
+aside.glossary-aside { background: #f1f8ff; }
+.glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
+.glossary-item dt code {
+  background: var(--accent-soft); padding: 2px 6px;
+  border-radius: 4px; font-size: 12px; color: var(--accent);
+}
+.glossary-item dd { margin: 4px 0 0 0; font-size: 13px; }
+.glossary-item dd.newcomer { color: var(--fg); }
+.glossary-item dd.technical {
+  color: var(--muted); font-size: 12px; font-style: italic;
+}
+
+/* Raw sidecar JSON */
+.raw-json {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+  font-family: "SFMono-Regular", monospace; font-size: 11.5px;
+  max-height: 400px;
+}
+
+/* Print tweaks */
+@media print {
+  body { background: #fff; }
+  .site-header { background: #fff; color: #000; border-bottom: 2px solid #000; }
+  .site-header nav { display: none; }
+  details { page-break-inside: avoid; }
+  details > summary { display: none; }
+  details > *:not(summary) { display: block !important; }
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  main.report { padding: 0 12px; }
+  .site-header { padding: 10px 14px; }
+  .site-header h1 { font-size: 15px; }
+}
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header" role="banner">
+    <h1>Recursive CTE (org-chart traversal)</h1>
+    <nav class="toolbar" aria-label="Report actions">
+      <button type="button" onclick="exportSVG()">Export SVG</button>
+      <button type="button" onclick="exportJSON()">Export Analysis JSON</button>
+      <button type="button" onclick="window.print()">Print / PDF</button>
+    </nav>
+  </header>
+  <main id="main-content" class="report" role="main">
+<section class="exec-summary" aria-labelledby="exec-heading">
+  <h2 id="exec-heading" class="visually-hidden">Summary</h2>
+  <p class="exec-text">Query scans 2 tables, materializes 1 <abbr class="glossary-chip" title="MySQL built an internal temporary table.">temp table</abbr> and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: <abbr class="glossary-chip" title="Reads every row of a table.">full scan</abbr> of org_chart (1,000 rows).</p>
+  <dl class="quick-stats">
+    <div><dt>Total time</dt><dd>1.55 ms</dd></div>
+    <div><dt>Rows returned</dt><dd>10</dd></div>
+    <div><dt>Rows examined</dt><dd>601</dd></div>
+    <div><dt>Operators</dt><dd>10</dd></div>
+  </dl>
+</section>
+
+<section class="primary-action sev-high" aria-labelledby="primary-heading" role="region">
+  <header class="primary-action-header">
+    <span class="badge badge-high">Fix first</span>
+    <h2 id="primary-heading">Primary recommendation</h2>
+  </header>
+  <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+</section>
+
+<section class="query-card" aria-labelledby="query-heading">
+  <h2 id="query-heading">SQL</h2>
+  <pre class="sql-text"><code>with recursive org_chart as (/*
+select#2 */
+select demodb.employees.id AS id,demodb.employees.name AS name,demodb.employees.manager_id AS manager_id,1 AS level
+from demodb.employees
+where (demodb.employees.manager_id is null)
+union all /*
+select#3 */
+select e.id AS id,e.name AS name,e.manager_id AS manager_id,(oc.level + 1) AS oc.level + 1
+from demodb.employees e
+  join org_chart oc
+where ((e.manager_id = oc.id) and (oc.level &lt; 10))) /*
+select#1 */
+select org_chart.level AS level,count(0) AS headcount
+from org_chart
+group by org_chart.level
+order by org_chart.level</code></pre>
+</section>
+
+<section class="viz-card" aria-labelledby="viz-heading">
+  <h2 id="viz-heading">Execution plan (tree)</h2>
+  <div class="chart-panel" id="chart-panel">
+<svg id="tree-svg" version="1.1" width="1200" height="476" viewBox="0 0 1200 476" style="max-width:100%;height:auto;" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 16px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-hdr { font-size: 10px; fill: #888; font-weight: bold; }
+  .row-label { font-size: 11px; fill: #222; }
+  .row-label.warn { fill: #b71c1c; }
+  .toggle { font-size: 13px; fill: #333; cursor: pointer; }
+  .toggle:hover { fill: #000; }
+  .leaf-indicator { font-size: 13px; fill: #bbb; cursor: default; }
+  .row-bg { cursor: pointer; transition: opacity 0.15s ease; }
+  .row-bg:hover { fill: rgba(0,0,0,0.04); }
+  .row-bg.pinned { fill: rgba(0,90,200,0.15); stroke: #1565c0; stroke-width: 1; }
+  .row-time { font-size: 11px; fill: #444; }
+  .row-pct { font-size: 11px; fill: #555; font-weight: bold; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
+  #search-btn { font-size: 11px; fill: #666; cursor: pointer; }
+  #search-btn:hover { fill: #0d47a1; }
+  .ctrl-link { font-size: 10px; fill: #1565c0; cursor: pointer; }
+  .ctrl-link:hover { fill: #0d47a1; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="26" text-anchor="middle" class="title">Recursive CTE (org-chart traversal)</text>
+<text x="10" y="44" text-anchor="start" class="subtitle">Execution tree  ·  Total: 1.55 ms  ·  Click row to pin  ·  Ctrl+F to search</text>
+<text id="expand-all" class="ctrl-link" x="1100" y="44" text-anchor="start">Expand All</text>
+<text id="collapse-all" class="ctrl-link" x="1190" y="44" text-anchor="end">Collapse All</text>
+<line x1="10" y1="52" x2="1190" y2="52" stroke="#ddd" stroke-width="1"/>
+<text x="536" y="65" text-anchor="end" class="col-hdr">SELF</text>
+<text x="626" y="65" text-anchor="end" class="col-hdr">TOTAL</text>
+<text x="681" y="65" text-anchor="end" class="col-hdr">%</text>
+<text x="705" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
+<text id="search-btn" x="1190" y="65" text-anchor="end">Search</text>
+<line x1="10" y1="68" x2="1190" y2="68" stroke="#ddd" stroke-width="1"/>
+<g class="tree-row" data-idx="0" data-depth="0" data-has-children="1">
+<rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Sort: org_chart.level  ·  Self: 7.6 µs (0.5%)  ·  Total: 1.55 ms  ·  Rows: 10  ·  Access: sort"/>
+<text class="toggle" x="12" y="90" data-idx="0">▾</text>
+<text class="row-label" x="26" y="90" pointer-events="none">Sort</text>
+<text class="row-time" x="536" y="90" text-anchor="end" pointer-events="none">7.6 µs</text>
+<text class="row-time" x="626" y="90" text-anchor="end" pointer-events="none">1.55 ms</text>
+<text class="row-pct" x="681" y="90" text-anchor="end" pointer-events="none">0.5%</text>
+<rect x="705" y="77" width="475.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="77" width="2.3" height="16" fill="#dceaf6" rx="2" pointer-events="none"/>
+<line x1="10" y1="98" x2="1190" y2="98" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="1" data-depth="1" data-has-children="1">
+<rect class="row-bg" x="10" y="98" width="1180" height="26" fill="transparent" data-info="Table scan on &lt;temporary&gt;  ·  Self: 0.8 µs (0.1%)  ·  Total: 1.54 ms  ·  Rows: 10  ·  Table: &lt;temporary&gt;  ·  Access: table"/>
+<rect x="10" y="98" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
+<text class="toggle" x="30" y="116" data-idx="1">▾</text>
+<text class="row-label" x="44" y="116" pointer-events="none">Table scan [&lt;temporary&gt;]</text>
+<text class="row-time" x="536" y="116" text-anchor="end" pointer-events="none">0.8 µs</text>
+<text class="row-time" x="626" y="116" text-anchor="end" pointer-events="none">1.54 ms</text>
+<text class="row-pct" x="681" y="116" text-anchor="end" pointer-events="none">0.1%</text>
+<rect x="705" y="103" width="472.7" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<line x1="10" y1="124" x2="1190" y2="124" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="2" data-depth="2" data-has-children="1">
+<rect class="row-bg" x="10" y="124" width="1180" height="26" fill="transparent" data-info="Aggregate using temporary table  ·  Self: 98.7 µs (6.4%)  ·  Total: 1.54 ms  ·  Rows: 10  ·  Access: temp_table_aggregate"/>
+<text class="toggle" x="48" y="142" data-idx="2">▾</text>
+<text class="row-label" x="62" y="142" pointer-events="none">Aggregate</text>
+<text class="row-time" x="536" y="142" text-anchor="end" pointer-events="none">98.7 µs</text>
+<text class="row-time" x="626" y="142" text-anchor="end" pointer-events="none">1.54 ms</text>
+<text class="row-pct" x="681" y="142" text-anchor="end" pointer-events="none">6%</text>
+<rect x="705" y="129" width="472.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="129" width="30.2" height="16" fill="#cadef0" rx="2" pointer-events="none"/>
+<line x1="10" y1="150" x2="1190" y2="150" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="3" data-depth="3" data-has-children="1">
+<rect class="row-bg" x="10" y="150" width="1180" height="26" fill="transparent" data-info="Table scan on org_chart  ·  Self: 67.4 µs (4.3%)  ·  Total: 1.44 ms  ·  Rows: 1000  ·  Table: org_chart  ·  Access: table  ·  Est.rows: 135  ⚠ underestimate (7.4×)"/>
+<rect x="10" y="150" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
+<text class="toggle" x="66" y="168" data-idx="3">▾</text>
+<text class="row-label" x="80" y="168" pointer-events="none">Table scan [org_chart]</text>
+<text class="row-time" x="536" y="168" text-anchor="end" pointer-events="none">67.4 µs</text>
+<text class="row-time" x="626" y="168" text-anchor="end" pointer-events="none">1.44 ms</text>
+<text class="row-pct" x="681" y="168" text-anchor="end" pointer-events="none">4%</text>
+<rect x="705" y="155" width="442.2" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="155" width="20.6" height="16" fill="#d0e2f2" rx="2" pointer-events="none"/>
+<line x1="10" y1="176" x2="1190" y2="176" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="4" data-depth="4" data-has-children="1">
+<rect class="row-bg" x="10" y="176" width="1180" height="26" fill="transparent" data-info="Materialize recursive CTE org_chart  ·  Self: 146.2 µs (9.4%)  ·  Total: 1.38 ms  ·  Rows: 1000  ·  Access: materialize  ·  Est.rows: 135  ⚠ underestimate (7.4×)"/>
+<text class="toggle" x="84" y="194" data-idx="4">▾</text>
+<text class="row-label" x="98" y="194" pointer-events="none">Materialize</text>
+<text class="row-time" x="536" y="194" text-anchor="end" pointer-events="none">146.2 µs</text>
+<text class="row-time" x="626" y="194" text-anchor="end" pointer-events="none">1.38 ms</text>
+<text class="row-pct" x="681" y="194" text-anchor="end" pointer-events="none">9%</text>
+<rect x="705" y="181" width="421.6" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="181" width="44.8" height="16" fill="#c2d9ed" rx="2" pointer-events="none"/>
+<line x1="10" y1="202" x2="1190" y2="202" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="5" data-depth="5" data-has-children="0">
+<rect class="row-bg" x="10" y="202" width="1180" height="26" fill="transparent" data-info="Index lookup on employees using idx_mgr (manager_id=NULL), with index condition:  ·  Self: 65.7 µs (4.2%)  ·  Rows: 100  ·  Table: employees  ·  Index: idx_mgr  ·  Access: index  ·  Est.rows: 100"/>
+<rect x="10" y="202" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
+<text class="leaf-indicator" x="102" y="220" pointer-events="none">·</text>
+<text class="row-label" x="116" y="220" pointer-events="none">Index lookup [employees.idx_mgr]</text>
+<text class="row-time" x="536" y="220" text-anchor="end" pointer-events="none">65.7 µs</text>
+<text class="row-pct" x="681" y="220" text-anchor="end" pointer-events="none">4%</text>
+<rect x="705" y="207" width="20.1" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="207" width="20.1" height="16" fill="#d1e2f2" rx="2" pointer-events="none"/>
+<line x1="10" y1="228" x2="1190" y2="228" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="6" data-depth="5" data-has-children="1">
+<rect class="row-bg" x="10" y="228" width="1180" height="26" fill="transparent" data-info="Nested loop inner join  ·  Self: 100.5 µs (6.5%)  ·  Total: 1.16 ms  ·  Rows: 450  ·  Loops: 2  ·  Access: join  ·  Est.rows: 35  ⚠ underestimate (12.8×)"/>
+<text class="toggle" x="102" y="246" data-idx="6">▾</text>
+<text class="row-label" x="116" y="246" pointer-events="none">Nested loop inner join</text>
+<text class="row-time" x="536" y="246" text-anchor="end" pointer-events="none">100.5 µs</text>
+<text class="row-time" x="626" y="246" text-anchor="end" pointer-events="none">1.16 ms</text>
+<text class="row-pct" x="681" y="246" text-anchor="end" pointer-events="none">6%</text>
+<rect x="705" y="233" width="356.7" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="233" width="30.8" height="16" fill="#cadef0" rx="2" pointer-events="none"/>
+<line x1="10" y1="254" x2="1190" y2="254" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="7" data-depth="6" data-has-children="1">
+<rect class="row-bg" x="10" y="254" width="1180" height="26" fill="transparent" data-info="Filter: ((oc.level &lt; 10) and (oc.id is not null))  ·  Self: 54.0 µs (3.5%)  ·  Total: 97.6 µs  ·  Rows: 450  ·  Loops: 2  ·  Access: filter  ·  Est.rows: 33  ⚠ underestimate (13.5×)  ·  Cond: ((oc.`level` &lt; 10) and (oc.id is not null))"/>
+<rect x="10" y="254" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
+<text class="toggle" x="120" y="272" data-idx="7">▾</text>
+<text class="row-label" x="134" y="272" pointer-events="none">Filter: (((oc.level &lt; 10) and (oc.id is not n…</text>
+<text class="row-time" x="536" y="272" text-anchor="end" pointer-events="none">54.0 µs</text>
+<text class="row-time" x="626" y="272" text-anchor="end" pointer-events="none">97.6 µs</text>
+<text class="row-pct" x="681" y="272" text-anchor="end" pointer-events="none">3%</text>
+<rect x="705" y="259" width="29.9" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="259" width="16.5" height="16" fill="#d3e4f3" rx="2" pointer-events="none"/>
+<line x1="10" y1="280" x2="1190" y2="280" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="8" data-depth="7" data-has-children="0">
+<rect class="row-bg" x="10" y="280" width="1180" height="26" fill="transparent" data-info="Scan new records on oc  ·  Self: 43.6 µs (2.8%)  ·  Rows: 500  ·  Loops: 2  ·  Table: oc  ·  Access: scan_new_records  ·  Est.rows: 100  ⚠ underestimate (5.0×)"/>
+<text class="leaf-indicator" x="138" y="298" pointer-events="none">·</text>
+<text class="row-label" x="152" y="298" pointer-events="none">Scan new records on oc</text>
+<text class="row-time" x="536" y="298" text-anchor="end" pointer-events="none">43.6 µs</text>
+<text class="row-pct" x="681" y="298" text-anchor="end" pointer-events="none">3%</text>
+<rect x="705" y="285" width="13.3" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="285" width="13.3" height="16" fill="#d5e5f3" rx="2" pointer-events="none"/>
+<line x1="10" y1="306" x2="1190" y2="306" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="9" data-depth="6" data-has-children="0">
+<rect class="row-bg" x="10" y="306" width="1180" height="26" fill="transparent" data-info="Index lookup on e using idx_mgr (manager_id=oc.id)  ·  Self: 966.8 µs (62.3%)  ·  Rows: 1  ·  Loops: 900  ·  Table: employees  ·  Index: idx_mgr  ·  Access: index  ·  Est.rows: 1"/>
+<rect x="10" y="306" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
+<text class="leaf-indicator" x="120" y="324" pointer-events="none">·</text>
+<text class="row-label" x="134" y="324" pointer-events="none">Index lookup [employees.idx_mgr]</text>
+<text class="row-time" x="536" y="324" text-anchor="end" pointer-events="none">966.8 µs</text>
+<text class="row-pct" x="681" y="324" text-anchor="end" pointer-events="none">62%</text>
+<rect x="705" y="311" width="296.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="311" width="296.0" height="16" fill="#5592c7" rx="2" pointer-events="none"/>
+<line x1="10" y1="332" x2="1190" y2="332" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<line x1="10" y1="348" x2="1190" y2="348" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="352" width="1180" height="116" fill="#eeeeee" rx="4"/>
+<text id="details-l0" x="20" y="368" class="details-line">Click a row to pin details  ·  Click ▾/▸ to expand/collapse  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="384" class="details-line"></text>
+<text id="details-l2" x="20" y="400" class="details-line"></text>
+<text id="details-l3" x="20" y="416" class="details-line"></text>
+<text id="details-l4" x="20" y="432" class="details-line"></text>
+<text id="details-l5" x="20" y="448" class="details-line"></text>
+<script type="text/javascript"><![CDATA[
+(function() {
+  var ROW_H = 26;
+  var HEADER_H = 72;
+  var N_LINES = 6;
+  var detailLines = [];
+  var searchBtn, svgEl;
+  var defaultHint = "Click a row to pin details  ·  Click ▾/▸ to expand/collapse  ·  Ctrl+F to search";
+  var pinnedBg = null;
+  var searchActive = false;
+  var rows = [];
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (detailLines[i]) detailLines[i].textContent = i < parts.length ? parts[i] : "";
+    }
+  }
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) if (detailLines[i]) detailLines[i].textContent = "";
+  }
+  function showInfo(infoStr) {
+    if (!infoStr) { clearDetails(); return; }
+    setDetailsText(infoStr.split("  ·  "));
+  }
+
+  function init(evt) {
+    svgEl = document.querySelector("svg");
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    searchBtn = document.getElementById("search-btn");
+
+    var rowEls = document.querySelectorAll(".tree-row");
+    for (var i = 0; i < rowEls.length; i++) {
+      rows.push({
+        el: rowEls[i],
+        idx: i,
+        depth: parseInt(rowEls[i].getAttribute("data-depth"), 10),
+        hasChildren: rowEls[i].getAttribute("data-has-children") === "1",
+        hidden: false,
+        collapsed: false
+      });
+    }
+
+    document.addEventListener("click", function(e) {
+      var t = e.target;
+      if (t.id === "search-btn") { searchPrompt(); return; }
+      if (t.id === "expand-all") { expandAll(); return; }
+      if (t.id === "collapse-all") { collapseAll(); return; }
+      if (t.classList && t.classList.contains("toggle")) {
+        var idx = parseInt(t.getAttribute("data-idx"), 10);
+        if (!isNaN(idx) && rows[idx] && rows[idx].hasChildren) toggle(idx);
+        return;
+      }
+      if (t.classList && t.classList.contains("row-bg")) {
+        var info = t.getAttribute("data-info") || "";
+        if (pinnedBg === t) {
+          t.classList.remove("pinned");
+          pinnedBg = null;
+          clearDetails();
+        } else {
+          if (pinnedBg) pinnedBg.classList.remove("pinned");
+          pinnedBg = t;
+          t.classList.add("pinned");
+          showInfo(info);
+        }
+        return;
+      }
+      if (pinnedBg) {
+        pinnedBg.classList.remove("pinned");
+        pinnedBg = null;
+        clearDetails();
+      }
+    });
+
+    document.addEventListener("mouseover", function(e) {
+      if (!pinnedBg && e.target.classList && e.target.classList.contains("row-bg"))
+        showInfo(e.target.getAttribute("data-info") || "");
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (!pinnedBg && e.target.classList && e.target.classList.contains("row-bg"))
+        clearDetails();
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function toggle(idx) {
+    var collapsing = !rows[idx].collapsed;
+    rows[idx].collapsed = collapsing;
+    var toggleEl = rows[idx].el.querySelector(".toggle");
+    if (toggleEl) toggleEl.textContent = collapsing ? "▸" : "▾";
+    setSubtreeHidden(idx, collapsing);
+    reflow();
+  }
+
+  function setSubtreeHidden(parentIdx, hidden) {
+    var depth = rows[parentIdx].depth;
+    for (var j = parentIdx + 1; j < rows.length; j++) {
+      if (rows[j].depth <= depth) break;
+      rows[j].hidden = hidden;
+      if (!hidden && rows[j].collapsed) setSubtreeHidden(j, true);
+    }
+  }
+
+  function reflow() {
+    var y = HEADER_H;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].hidden) {
+        rows[i].el.style.display = "none";
+      } else {
+        rows[i].el.style.display = "";
+        var origY = HEADER_H + i * ROW_H;
+        var dy = y - origY;
+        rows[i].el.setAttribute("transform", dy !== 0 ? "translate(0," + dy + ")" : "");
+        y += ROW_H;
+      }
+    }
+  }
+
+  function expandAll() {
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].hidden = false;
+      rows[i].collapsed = false;
+      var t = rows[i].el.querySelector(".toggle");
+      if (t && rows[i].hasChildren) t.textContent = "▾";
+    }
+    reflow();
+  }
+
+  function collapseAll() {
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].depth > 0) rows[i].hidden = true;
+      if (rows[i].hasChildren) {
+        rows[i].collapsed = true;
+        var t = rows[i].el.querySelector(".toggle");
+        if (t) t.textContent = "▸";
+      }
+    }
+    reflow();
+  }
+
+  function searchPrompt() {
+    if (searchActive) {
+      var bgs = document.querySelectorAll(".row-bg");
+      for (var i = 0; i < bgs.length; i++) bgs[i].style.opacity = "";
+      searchBtn.textContent = "Search";
+      searchActive = false;
+      clearDetails();
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var bgs = document.querySelectorAll(".row-bg");
+    for (var i = 0; i < bgs.length; i++) {
+      var info = bgs[i].getAttribute("data-info") || "";
+      bgs[i].style.opacity = re.test(info) ? "1" : "0.2";
+    }
+    searchBtn.textContent = "Reset Search";
+    searchActive = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+</svg>
+
+  </div>
+</section>
+
+<section class="warnings-section" aria-labelledby="warn-heading">
+  <h2 id="warn-heading">Warnings <span class="count">(3)</span></h2>
+  <ol class="warning-list">
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text"><abbr class="glossary-chip" title="Reads every row of a table.">Full table scan</abbr>: &lt;temporary&gt; (10 rows), org_chart (1000 rows)</p>
+      <p class="where">Labeled: <code class="node-label">Table scan [&lt;temporary&gt;]</code> <code class="node-label">Table scan [org_chart]</code></p>
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text">1 <abbr class="glossary-chip" title="MySQL built an internal temporary table.">temp table</abbr>(s) (<abbr class="glossary-chip" title="Subquery/derived table is computed once, stored in a temp table.">Materialize</abbr>) — up to 1000 rows; may spill to disk</p>
+      <p class="where">Labeled: <code class="node-label">Materialize</code></p>
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text">1 <abbr class="glossary-chip" title="Sort that can't use an index.">sort operation</abbr>(s) — 10 rows; may use disk-based <abbr class="glossary-chip" title="Sort that can't use an index.">filesort</abbr></p>
+      <p class="where">Labeled: <code class="node-label">Sort</code></p>
+    </li>
+  </ol>
+</section>
+
+<section class="suggestions-section" aria-labelledby="sug-heading">
+  <h2 id="sug-heading">Suggestions <span class="count">(3)</span></h2>
+  <ol class="suggestion-list">
+    <li class="suggestion sev-high">
+      <span class="badge badge-high">HIGH</span>
+      <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+      
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Increase <abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">tmp_table_size</abbr> / <abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">max_heap_table_size</abbr> to keep temp tables in memory</p>
+      
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Increase <abbr class="glossary-chip" title="Per-connection buffer for in-memory sorts.">sort_buffer_size</abbr> or add an ordered index to avoid <abbr class="glossary-chip" title="Sort that can't use an index.">filesort</abbr></p>
+      
+    </li>
+  </ol>
+</section>
+
+<aside class="glossary-aside" aria-labelledby="glossary-heading">
+  <details>
+    <summary><h2 id="glossary-heading">Glossary (8 terms)</h2></summary>
+    <dl class="glossary-list">
+      <div class="glossary-item">
+        <dt><code>covering index</code></dt>
+        <dd class="newcomer">The index has all the columns the query needs, so MySQL never has to open the main table at all. This is the fastest form of SELECT on a large table.</dd>
+        <dd class="technical">The optimizer finds every column referenced by the query (SELECT list, WHERE, ORDER BY) in the secondary index itself, so no row fetch from the clustered index is needed. Reported in MySQL with ``Using index`` in the Extra column. In InnoDB, a secondary index always includes the primary key columns, which is why ``use_index_extensions=on`` enables more covering reads.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>derived table</code></dt>
+        <dd class="newcomer">A query-inside-a-query that MySQL treats like a temporary table. MySQL often rewrites it to be part of the outer query for speed, but sometimes it can't and has to materialize it.</dd>
+        <dd class="technical">``SELECT … FROM (SELECT …) AS t``: the inner SELECT is a derived table. With ``derived_merge=on`` (default) the optimizer folds it into the outer query when possible; otherwise it's materialized. With ``derived_condition_pushdown=on``, outer predicates can be pushed inside the derived query block to reduce its row count.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>filesort</code></dt>
+        <dd class="newcomer">MySQL has to sort the rows by hand because the data isn't already in the order you asked for. Small sorts stay in memory; big ones use disk and get slow.</dd>
+        <dd class="technical">MySQL sorts the result in the server layer using ``sort_buffer_size``. If the sort set fits, it stays in memory (fast quicksort). If not, MySQL writes sorted runs to tmpdir and k-way merges them — disk I/O plus CPU for the merge. An index in the ``ORDER BY`` order eliminates the filesort entirely.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>full table scan</code></dt>
+        <dd class="newcomer">MySQL is reading every single row in this table, one by one, to check if it matches your WHERE clause. This is slow on big tables — an index on the filter column lets MySQL jump straight to the matching rows instead.</dd>
+        <dd class="technical">Access type ``ALL``: the storage engine returns every row of the table, applying the WHERE clause in the server layer. Cost is roughly (rows × row_evaluate_cost) + pages_read × io_block_read_cost. Signal: ``type=ALL`` in EXPLAIN, ``Handler_read_rnd_next`` climbs by the table row count. Almost always a sign of a missing index on the WHERE or join column.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>materialization</code></dt>
+        <dd class="newcomer">MySQL ran your subquery or derived table once, stored the result in a temporary table, and then used that temp table instead of re-running the subquery for every outer row.</dd>
+        <dd class="technical">The subquery result is materialized into an internal temp table (MEMORY or on-disk InnoDB depending on size). The outer query reads from the temp table. Controlled by ``tmp_table_size`` and ``max_heap_table_size`` — MySQL always uses the smaller of the two. If the temp table exceeds that limit, MySQL converts to an on-disk temp table and performance drops sharply.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>sort buffer size</code></dt>
+        <dd class="newcomer">The memory MySQL gets per connection to sort rows. If your sort is bigger than this, MySQL falls back to using disk, which is slower.</dd>
+        <dd class="technical">Allocated lazily per connection, freed after the sort. When a filesort's data exceeds this buffer, MySQL writes sorted runs to tmpdir and k-way merges them back — disk I/O. Because it's per-connection, setting this high globally multiplies by max_connections; prefer ``SET SESSION sort_buffer_size = …`` for individual big queries.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>temp table</code></dt>
+        <dd class="newcomer">MySQL built a scratch table in memory to help process your query. If the scratch table gets too big, it moves to disk and slows down a lot.</dd>
+        <dd class="technical">Used for materialized subqueries, GROUP BY with no suitable index, DISTINCT, and some ORDER BY cases. MEMORY/TempTable engine while it fits in ``min(tmp_table_size, max_heap_table_size)``, converted to on-disk InnoDB when it doesn't. The on-disk version is typically 10–100× slower.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>tmp table size</code></dt>
+        <dd class="newcomer">How big MySQL's scratch tables can get before they move from RAM to disk. If your query builds bigger scratch tables than this, expect a big slowdown — and you have to raise ``max_heap_table_size`` at the same time, otherwise it does nothing.</dd>
+        <dd class="technical">The effective limit is ``min(tmp_table_size, max_heap_table_size)``. Internal temp tables (from materialized subqueries, GROUP BY, DISTINCT, etc.) are MEMORY-engine until they exceed this, at which point MySQL converts them to on-disk InnoDB temp tables (10–100× slower for scans). Both variables must be raised together — raising only one has no effect.</dd>
+      </div>
+    </dl>
+  </details>
+</aside>
+
+<details class="raw-sidecar">
+  <summary><h2>Raw sidecar (JSON)</h2></summary>
+  <pre class="raw-json"><code>{
+  &quot;schema_version&quot;: &quot;1.0&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-10T20:09:23Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.2.0&quot;,
+  &quot;source&quot;: {
+    &quot;type&quot;: &quot;file&quot;
+  },
+  &quot;plan_summary&quot;: {
+    &quot;total_time_ms&quot;: 1.551,
+    &quot;rows_sent&quot;: 10,
+    &quot;rows_examined_estimate&quot;: 601,
+    &quot;operator_count&quot;: 10,
+    &quot;max_depth&quot;: 8
+  },
+  &quot;optimizer_switches&quot;: [
+    {
+      &quot;name&quot;: &quot;index_condition_pushdown&quot;,
+      &quot;value&quot;: &quot;on&quot;,
+      &quot;explanation&quot;: &quot;Parts of the WHERE clause are evaluated inside the storage engine using index columns before fetching the full row — reduces rows handed to the server layer.&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Index lookup [employees.idx_mgr]&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;materialization&quot;,
+      &quot;value&quot;: &quot;on&quot;,
+      &quot;explanation&quot;: &quot;A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Materialize&quot;
+      ]
+    }
+  ],
+  &quot;warnings&quot;: [
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;full_scan&quot;,
+      &quot;text&quot;: &quot;Full table scan: &lt;temporary&gt; (10 rows), org_chart (1000 rows)&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Table scan [&lt;temporary&gt;]&quot;,
+        &quot;Table scan [org_chart]&quot;
+      ]
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;temp_table&quot;,
+      &quot;text&quot;: &quot;1 temp table(s) (Materialize) — up to 1000 rows; may spill to disk&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Materialize&quot;
+      ]
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;filesort&quot;,
+      &quot;text&quot;: &quot;1 sort operation(s) — 10 rows; may use disk-based filesort&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Sort&quot;
+      ]
+    }
+  ],
+  &quot;suggestions&quot;: [
+    {
+      &quot;severity&quot;: &quot;high&quot;,
+      &quot;category&quot;: &quot;index&quot;,
+      &quot;action&quot;: &quot;Add indexes on filter/join columns to avoid full table scans&quot;,
+      &quot;source&quot;: &quot;plan&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;tuning_variable&quot;,
+      &quot;action&quot;: &quot;Increase tmp_table_size / max_heap_table_size to keep temp tables in memory&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;target_variable&quot;: &quot;tmp_table_size&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;tuning_variable&quot;,
+      &quot;action&quot;: &quot;Increase sort_buffer_size or add an ordered index to avoid filesort&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;target_variable&quot;: &quot;sort_buffer_size&quot;
+    }
+  ],
+  &quot;executive_summary&quot;: &quot;Query scans 2 tables, materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: full scan of org_chart (1,000 rows).&quot;,
+  &quot;query&quot;: {
+    &quot;raw&quot;: &quot;with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` &lt; 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`&quot;,
+    &quot;beautified&quot;: &quot;with recursive org_chart as (/*\nselect#2 */\nselect demodb.employees.id AS id,demodb.employees.name AS name,demodb.employees.manager_id AS manager_id,1 AS level\nfrom demodb.employees\nwhere (demodb.employees.manager_id is null)\nunion all /*\nselect#3 */\nselect e.id AS id,e.name AS name,e.manager_id AS manager_id,(oc.level + 1) AS oc.level + 1\nfrom demodb.employees e\n  join org_chart oc\nwhere ((e.manager_id = oc.id) and (oc.level &lt; 10))) /*\nselect#1 */\nselect org_chart.level AS level,count(0) AS headcount\nfrom org_chart\ngroup by org_chart.level\norder by org_chart.level&quot;
+  },
+  &quot;primary_action&quot;: {
+    &quot;ref&quot;: &quot;suggestions[0]&quot;
+  }
+}</code></pre>
+</details>
+  </main>
+  <script>
+function exportSVG() {
+  var svg = document.querySelector('#chart-panel svg');
+  if (!svg) { alert('No SVG found'); return; }
+  var data = new XMLSerializer().serializeToString(svg);
+  var blob = new Blob(['<?xml version="1.0" standalone="no"?>\n', data], {type: 'image/svg+xml'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-plan.svg';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function exportJSON() {
+  // Export the embedded sidecar (same data the JSON-LD script carries).
+  var script = document.querySelector('script[type="application/ld+json"]');
+  if (!script) { alert('No sidecar found'); return; }
+  var blob = new Blob([script.textContent], {type: 'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-analysis.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>

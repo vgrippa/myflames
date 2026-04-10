@@ -1,0 +1,313 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:15:22Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "live",
+    "engine": "mysql",
+    "engine_version": "8.4.8"
+  },
+  "plan_summary": {
+    "total_time_ms": 10.136,
+    "rows_sent": 5,
+    "rows_examined_estimate": 11000,
+    "operator_count": 7,
+    "max_depth": 6
+  },
+  "optimizer_switches": [
+    {
+      "name": "hash_join",
+      "value": "on",
+      "explanation": "Builds an in-memory hash table on the smaller (build) input and probes it from the other side. Uses join_buffer_size; spills to a tmp file (and tmpdir) if the build side does not fit.",
+      "node_labels": [
+        "Inner hash join (concat('u',o.user_id) = concat('u..."
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "error",
+      "category": "nonsargable_join",
+      "text": "Non-sargable join predicate: CONCAT(...) in Inner hash join (concat('u',o.user_id) = concat('u',u.id)) — a function wrapped around the join column prevents index use.",
+      "source": "plan",
+      "node_labels": [
+        "Inner hash join (concat('u',o.user_id) = concat('u..."
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: <temporary> (5 rows), orders (8000 rows), users (3000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [<temporary>]",
+        "Table scan [orders]",
+        "Table scan [users]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "hash_join",
+      "text": "1 hash join(s) — uses join_buffer_size (~6859 rows in build phase)",
+      "source": "plan",
+      "node_labels": [
+        "Inner hash join (concat('u',o.user_id) = concat('u..."
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "filesort",
+      "text": "1 sort operation(s) — 5 rows; may use disk-based filesort",
+      "source": "plan",
+      "node_labels": [
+        "Sort"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.",
+      "source": "environment"
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Hash join detected but join_buffer_size is only 256.0 KB. Build/batch phase may spill to tmpdir.",
+      "source": "environment"
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Table users has no index covering (status).",
+      "source": "environment"
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "rewrite",
+      "action": "Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)').",
+      "source": "plan",
+      "why": "wrapping a column in a function means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables."
+    },
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase join_buffer_size if hash joins are slow or spill to disk",
+      "source": "plan",
+      "target_variable": "join_buffer_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase sort_buffer_size or add an ordered index to avoid filesort",
+      "source": "plan",
+      "target_variable": "sort_buffer_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024).",
+      "source": "environment",
+      "why": "when the sort set does not fit in sort_buffer_size, MySQL writes multiple sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.",
+      "target_variable": "sort_buffer_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Raise join_buffer_size per-session to 2M–8M (SET SESSION join_buffer_size = 8*1024*1024).",
+      "source": "environment",
+      "why": "hash join builds an in-memory hash table on the smaller input and probes from the other side. If the build side does not fit in join_buffer_size, MySQL spills to tmpdir and does a multi-pass (Grace) hash join — each extra pass re-reads the probe side, so total I/O roughly multiplies. Bigger win: add an index on the join column — that removes the need for the join buffer entirely by turning the join into an indexed lookup.",
+      "target_variable": "join_buffer_size"
+    },
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "CREATE INDEX idx_users_status ON users (status);",
+      "source": "environment"
+    }
+  ],
+  "executive_summary": "Query scans 3 tables, hash-joins 1 pair and sorts the result; examines ~11,000 rows to return 5 in 10 ms. Main finding: join predicate wraps the column in CONCAT() — no index can be used.",
+  "query": {
+    "raw": "SELECT u.country, SUM(o.amount) AS total FROM users u JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id) WHERE u.status='active' GROUP BY u.country ORDER BY total DESC",
+    "beautified": "SELECT u.country, SUM(o.amount) AS total\nFROM users u\n  JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id)\nWHERE u.status='active'\nGROUP BY u.country\nORDER BY total DESC"
+  },
+  "index_suggestions": [
+    {
+      "table": "users",
+      "columns": [
+        "status"
+      ],
+      "ddl": "CREATE INDEX idx_users_status ON users (status);",
+      "reason": "Full scan on users with filter on (status)"
+    }
+  ],
+  "primary_action": {
+    "ref": "suggestions[0]"
+  },
+  "collected": {
+    "variables": {
+      "bulk_insert_buffer_size": "8388608",
+      "character_set_connection": "utf8mb4",
+      "character_set_server": "utf8mb4",
+      "collation_connection": "utf8mb4_0900_ai_ci",
+      "collation_server": "utf8mb4_0900_ai_ci",
+      "eq_range_index_dive_limit": "200",
+      "innodb_buffer_pool_instances": "1",
+      "innodb_buffer_pool_size": "134217728",
+      "innodb_file_per_table": "ON",
+      "innodb_flush_log_at_trx_commit": "1",
+      "innodb_flush_method": "O_DIRECT",
+      "innodb_io_capacity": "10000",
+      "innodb_log_buffer_size": "67108864",
+      "innodb_log_file_size": "50331648",
+      "join_buffer_size": "262144",
+      "max_allowed_packet": "67108864",
+      "max_connections": "151",
+      "max_heap_table_size": "16777216",
+      "optimizer_prune_level": "1",
+      "optimizer_search_depth": "62",
+      "optimizer_switch": "index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on",
+      "range_optimizer_max_mem_size": "8388608",
+      "read_buffer_size": "131072",
+      "read_rnd_buffer_size": "262144",
+      "sort_buffer_size": "262144",
+      "table_open_cache": "4000",
+      "thread_cache_size": "9",
+      "tmp_table_size": "16777216",
+      "version": "8.4.8",
+      "version_comment": "MySQL Community Server - GPL",
+      "version_compile_os": "Linux"
+    },
+    "stats": {
+      "demodb.users": {
+        "table_schema": "demodb",
+        "table_name": "users",
+        "table_rows": 3000,
+        "data_length": 180224,
+        "index_length": 81920,
+        "data_free": 0,
+        "auto_increment": 4096,
+        "engine": "InnoDB",
+        "row_format": "Dynamic"
+      },
+      "demodb.orders": {
+        "table_schema": "demodb",
+        "table_name": "orders",
+        "table_rows": 7993,
+        "data_length": 425984,
+        "index_length": 180224,
+        "data_free": 0,
+        "auto_increment": 8192,
+        "engine": "InnoDB",
+        "row_format": "Dynamic"
+      }
+    },
+    "schema": {
+      "demodb.users": {
+        "ddl": "CREATE TABLE `users` (\n  `id` int NOT NULL AUTO_INCREMENT,\n  `name` varchar(80) DEFAULT NULL,\n  `country` varchar(2) DEFAULT NULL,\n  `status` varchar(20) DEFAULT NULL,\n  `created_at` datetime DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `idx_country` (`country`)\n) ENGINE=InnoDB AUTO_INCREMENT=4096 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+        "table_name": "users",
+        "columns": [
+          {
+            "name": "id",
+            "type": "int",
+            "rest": "NOT NULL AUTO_INCREMENT"
+          },
+          {
+            "name": "name",
+            "type": "varchar(80)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "country",
+            "type": "varchar(2)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "status",
+            "type": "varchar(20)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "rest": "DEFAULT NULL"
+          }
+        ],
+        "indexes": [
+          {
+            "kind": "PRIMARY KEY",
+            "name": null,
+            "columns": [
+              "id"
+            ]
+          },
+          {
+            "kind": "KEY",
+            "name": "idx_country",
+            "columns": [
+              "country"
+            ]
+          }
+        ],
+        "engine": "InnoDB",
+        "charset": "utf8mb4"
+      },
+      "demodb.orders": {
+        "ddl": "CREATE TABLE `orders` (\n  `id` int NOT NULL AUTO_INCREMENT,\n  `user_id` int DEFAULT NULL,\n  `status` varchar(20) DEFAULT NULL,\n  `amount` decimal(10,2) DEFAULT NULL,\n  `created_at` datetime DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `idx_user` (`user_id`)\n) ENGINE=InnoDB AUTO_INCREMENT=8192 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+        "table_name": "orders",
+        "columns": [
+          {
+            "name": "id",
+            "type": "int",
+            "rest": "NOT NULL AUTO_INCREMENT"
+          },
+          {
+            "name": "user_id",
+            "type": "int",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "status",
+            "type": "varchar(20)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "amount",
+            "type": "decimal(10,2)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "rest": "DEFAULT NULL"
+          }
+        ],
+        "indexes": [
+          {
+            "kind": "PRIMARY KEY",
+            "name": null,
+            "columns": [
+              "id"
+            ]
+          },
+          {
+            "kind": "KEY",
+            "name": "idx_user",
+            "columns": [
+              "user_id"
+            ]
+          }
+        ],
+        "engine": "InnoDB",
+        "charset": "utf8mb4"
+      }
+    }
+  }
+}

@@ -1,0 +1,249 @@
+{
+  "query": "with `dept_avg` as (/* select#2 */ select `demodb`.`employees`.`dept_id` AS `dept_id`,avg(`demodb`.`employees`.`salary`) AS `avg_sal`,count(0) AS `n` from `demodb`.`employees` group by `demodb`.`employees`.`dept_id`), `top_paid` as (/* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`dept_id` AS `dept_id`,`e`.`salary` AS `salary`,row_number() OVER (PARTITION BY `demodb`.`e`.`dept_id` ORDER BY `demodb`.`e`.`salary` desc )  AS `rn` from `demodb`.`employees` `e`) /* select#1 */ select `d`.`name` AS `dept`,`da`.`avg_sal` AS `avg_sal`,`tp`.`name` AS `top_earner`,`tp`.`salary` AS `salary` from `demodb`.`departments` `d` join `dept_avg` `da` join `top_paid` `tp` where ((`tp`.`dept_id` = `d`.`id`) and (`da`.`dept_id` = `d`.`id`) and (`tp`.`rn` <= 3)) order by `da`.`avg_sal` desc",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "alias": "d",
+                  "operation": "Table scan on d",
+                  "table_name": "departments",
+                  "access_type": "table",
+                  "actual_rows": 8.0,
+                  "schema_name": "demodb",
+                  "actual_loops": 1,
+                  "used_columns": [
+                    "id",
+                    "name"
+                  ],
+                  "estimated_rows": 8.0,
+                  "actual_last_row_ms": 0.015415,
+                  "actual_first_row_ms": 0.013791999999999999,
+                  "estimated_total_cost": 1.05
+                },
+                {
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "cte": true,
+                          "inputs": [
+                            {
+                              "inputs": [
+                                {
+                                  "inputs": [
+                                    {
+                                      "alias": "e",
+                                      "operation": "Table scan on e",
+                                      "table_name": "employees",
+                                      "access_type": "table",
+                                      "actual_rows": 2000.0,
+                                      "schema_name": "demodb",
+                                      "actual_loops": 1,
+                                      "used_columns": [
+                                        "id",
+                                        "name",
+                                        "dept_id",
+                                        "salary"
+                                      ],
+                                      "estimated_rows": 2000.0,
+                                      "actual_last_row_ms": 0.35287399999999997,
+                                      "actual_first_row_ms": 0.042459000000000004,
+                                      "estimated_total_cost": 202.0
+                                    }
+                                  ],
+                                  "operation": "Sort: e.dept_id, e.salary DESC",
+                                  "access_type": "sort",
+                                  "actual_rows": 2000.0,
+                                  "sort_fields": [
+                                    "e.dept_id",
+                                    "e.salary DESC"
+                                  ],
+                                  "actual_loops": 1,
+                                  "estimated_rows": 2000.0,
+                                  "actual_last_row_ms": 0.7167849999999999,
+                                  "actual_first_row_ms": 0.636542,
+                                  "estimated_total_cost": 202.0
+                                }
+                              ],
+                              "functions": [
+                                "row_number() OVER (PARTITION BY e.dept_id ORDER BY e.salary desc ) "
+                              ],
+                              "operation": "Window aggregate: row_number() OVER (PARTITION BY e.dept_id ORDER BY e.salary desc ) ",
+                              "access_type": "window",
+                              "actual_rows": 2000.0,
+                              "actual_loops": 1,
+                              "estimated_rows": 2000.0,
+                              "actual_last_row_ms": 1.043602,
+                              "actual_first_row_ms": 0.641833,
+                              "estimated_total_cost": 0.0
+                            }
+                          ],
+                          "operation": "Materialize CTE top_paid",
+                          "access_type": "materialize",
+                          "actual_rows": 2000.0,
+                          "actual_loops": 1,
+                          "estimated_rows": 2000.0,
+                          "actual_last_row_ms": 2.1,
+                          "actual_first_row_ms": 2.1,
+                          "estimated_total_cost": 200.0,
+                          "estimated_first_row_cost": 200.0
+                        }
+                      ],
+                      "covering": false,
+                      "operation": "Index lookup on tp using <auto_key0> (dept_id=d.id)",
+                      "index_name": "<auto_key0>",
+                      "table_name": "tp",
+                      "access_type": "index",
+                      "actual_rows": 250.0,
+                      "actual_loops": 8,
+                      "used_columns": [
+                        "id",
+                        "name",
+                        "dept_id",
+                        "salary",
+                        "rn"
+                      ],
+                      "estimated_rows": 21.0,
+                      "lookup_condition": "dept_id=d.id",
+                      "index_access_type": "index_lookup",
+                      "actual_last_row_ms": 0.291454875,
+                      "actual_first_row_ms": 0.26324474999999997,
+                      "estimated_total_cost": 205.33749124854802,
+                      "estimated_first_row_cost": 200.25416624993085
+                    }
+                  ],
+                  "condition": "(tp.rn <= 3)",
+                  "operation": "Filter: (tp.rn <= 3)",
+                  "access_type": "filter",
+                  "actual_rows": 3.0,
+                  "actual_loops": 8,
+                  "estimated_rows": 6.999299883842468,
+                  "actual_last_row_ms": 0.29832775,
+                  "actual_first_row_ms": 0.26349462500000004,
+                  "estimated_total_cost": 5.337491248548031,
+                  "estimated_first_row_cost": 172.1882885457129
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "actual_rows": 24.0,
+              "actual_loops": 1,
+              "estimated_rows": 55.994399070739746,
+              "join_algorithm": "nested_loop",
+              "actual_last_row_ms": 2.405245,
+              "actual_first_row_ms": 2.119167,
+              "estimated_total_cost": 59.849999999999994
+            },
+            {
+              "inputs": [
+                {
+                  "cte": true,
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "covering": false,
+                          "operation": "Index scan on employees using idx_dept",
+                          "index_name": "idx_dept",
+                          "table_name": "employees",
+                          "access_type": "index",
+                          "actual_rows": 2000.0,
+                          "schema_name": "demodb",
+                          "actual_loops": 1,
+                          "used_columns": [
+                            "id",
+                            "dept_id",
+                            "salary"
+                          ],
+                          "estimated_rows": 2000.0,
+                          "index_access_type": "index_scan",
+                          "actual_last_row_ms": 1.200326,
+                          "actual_first_row_ms": 0.136125,
+                          "estimated_total_cost": 202.0
+                        }
+                      ],
+                      "group_by": true,
+                      "functions": [
+                        "avg(employees.salary)",
+                        "count(0)"
+                      ],
+                      "operation": "Group aggregate: avg(employees.salary), count(0)",
+                      "access_type": "aggregate",
+                      "actual_rows": 8.0,
+                      "actual_loops": 1,
+                      "estimated_rows": 8.0,
+                      "actual_last_row_ms": 1.3389579999999999,
+                      "actual_first_row_ms": 0.271875,
+                      "estimated_total_cost": 402.0
+                    }
+                  ],
+                  "operation": "Materialize CTE dept_avg",
+                  "access_type": "materialize",
+                  "actual_rows": 8.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 8.0,
+                  "actual_last_row_ms": 1.3504159999999998,
+                  "actual_first_row_ms": 1.3504159999999998,
+                  "estimated_total_cost": 402.8,
+                  "estimated_first_row_cost": 402.8
+                }
+              ],
+              "covering": false,
+              "operation": "Index lookup on da using <auto_key0> (dept_id=d.id)",
+              "index_name": "<auto_key0>",
+              "table_name": "da",
+              "access_type": "index",
+              "actual_rows": 1.0,
+              "actual_loops": 24,
+              "used_columns": [
+                "dept_id",
+                "avg_sal",
+                "n"
+              ],
+              "estimated_rows": 20.0,
+              "lookup_condition": "dept_id=d.id",
+              "index_access_type": "index_lookup",
+              "actual_last_row_ms": 0.05670658333333334,
+              "actual_first_row_ms": 0.05658512499999999,
+              "estimated_total_cost": 407.8357178580928,
+              "estimated_first_row_cost": 403.05178589290466
+            }
+          ],
+          "join_type": "inner join",
+          "operation": "Nested loop inner join",
+          "access_type": "join",
+          "actual_rows": 24.0,
+          "actual_loops": 1,
+          "estimated_rows": 447.95519256591797,
+          "join_algorithm": "nested_loop",
+          "actual_last_row_ms": 3.770916,
+          "actual_first_row_ms": 3.472417,
+          "estimated_total_cost": 384.6175146102905
+        }
+      ],
+      "operation": "Stream results",
+      "access_type": "stream",
+      "actual_rows": 24.0,
+      "actual_loops": 1,
+      "estimated_rows": 447.95519256591797,
+      "actual_last_row_ms": 3.777209,
+      "actual_first_row_ms": 3.474333,
+      "estimated_total_cost": 384.6175146102905
+    }
+  ],
+  "operation": "Sort: da.avg_sal DESC",
+  "query_type": "select",
+  "access_type": "sort",
+  "actual_rows": 24.0,
+  "sort_fields": [
+    "da.avg_sal DESC"
+  ],
+  "actual_loops": 1,
+  "actual_last_row_ms": 3.79017,
+  "actual_first_row_ms": 3.788959
+}

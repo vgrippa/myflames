@@ -1,0 +1,1318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live MariaDB 11.4 — derived table + filesort — myflames report</title>
+  <meta name="description" content="Query scans 1 table, materializes 1 temp table and sorts the result; examines ~3,000 rows to return 5 in 0.57 ms. Main finding: no index covers (status) on users.">
+  <script type="application/ld+json">
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:15:42Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "live",
+    "engine": "mariadb",
+    "engine_version": "11.4.10-MariaDB-ubu2404"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.57,
+    "rows_sent": 5,
+    "rows_examined_estimate": 3000,
+    "operator_count": 4,
+    "max_depth": 4
+  },
+  "optimizer_switches": [
+    {
+      "name": "materialization",
+      "value": "on",
+      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.",
+      "node_labels": [
+        "Materialize"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: users (3000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [users]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "temp_table",
+      "text": "1 temp table(s) (Materialize) — up to 5 rows; may spill to disk",
+      "source": "plan",
+      "node_labels": [
+        "Materialize"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "filesort",
+      "text": "2 sort operation(s) — 5 rows; may use disk-based filesort",
+      "source": "plan",
+      "node_labels": [
+        "Sort"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.",
+      "source": "environment"
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Query materializes 1 temp table(s) but tmp_table_size/max_heap_table_size is capped at 16.0 MB — temp tables will spill to InnoDB disk tables.",
+      "source": "environment"
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "optimizer_switch has mrr=off; range scans followed by filesort may read rows in random order.",
+      "source": "environment"
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Table users has no index covering (status).",
+      "source": "environment"
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase tmp_table_size / max_heap_table_size to keep temp tables in memory",
+      "source": "plan",
+      "target_variable": "tmp_table_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase sort_buffer_size or add an ordered index to avoid filesort",
+      "source": "plan",
+      "target_variable": "sort_buffer_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024).",
+      "source": "environment",
+      "why": "when the sort set does not fit in sort_buffer_size, MySQL writes multiple sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.",
+      "target_variable": "sort_buffer_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Raise tmp_table_size AND max_heap_table_size together to the same value (64M–256M).",
+      "source": "environment",
+      "why": "once a materialized temp table exceeds min(tmp_table_size, max_heap_table_size), MySQL converts the in-memory MEMORY/TempTable engine to an on-disk InnoDB temp table — scans over the disk version are typically 10–100× slower and generate real I/O. Both variables must be raised together because MySQL always picks the smaller of the two; raising only one has no effect.",
+      "target_variable": "tmp_table_size"
+    },
+    {
+      "severity": "medium",
+      "category": "optimizer_switch",
+      "action": "Consider SET SESSION optimizer_switch='mrr=on,mrr_cost_based=on';.",
+      "source": "environment",
+      "why": "Multi-Range Read collects row IDs from a secondary-index range scan, sorts them by primary key, and then fetches rows in (mostly) physical order. Without MRR, InnoDB has to dereference each secondary-index row in secondary-index order, which translates to random I/O on the clustered index and hurts both disk and buffer-pool cache locality."
+    },
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "CREATE INDEX idx_users_status ON users (status);",
+      "source": "environment"
+    }
+  ],
+  "executive_summary": "Query scans 1 table, materializes 1 temp table and sorts the result; examines ~3,000 rows to return 5 in 0.57 ms. Main finding: no index covers (status) on users.",
+  "query": {
+    "raw": "SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC",
+    "beautified": "SELECT t.country, t.cnt\nFROM (\nSELECT country, COUNT(*) cnt\nFROM users\nWHERE status='active'\nGROUP BY country) t\nORDER BY t.cnt DESC"
+  },
+  "index_suggestions": [
+    {
+      "table": "users",
+      "columns": [
+        "status"
+      ],
+      "ddl": "CREATE INDEX idx_users_status ON users (status);",
+      "reason": "Full scan on users with filter on (status)"
+    }
+  ],
+  "primary_action": {
+    "ref": "suggestions[0]"
+  },
+  "collected": {
+    "variables": {
+      "bulk_insert_buffer_size": "8388608",
+      "character_set_connection": "utf8mb4",
+      "character_set_server": "utf8mb4",
+      "collation_connection": "utf8mb4_0900_ai_ci",
+      "collation_server": "utf8mb4_uca1400_ai_ci",
+      "eq_range_index_dive_limit": "200",
+      "innodb_buffer_pool_size": "134217728",
+      "innodb_file_per_table": "ON",
+      "innodb_flush_log_at_trx_commit": "1",
+      "innodb_flush_method": "O_DIRECT",
+      "innodb_io_capacity": "200",
+      "innodb_log_buffer_size": "16777216",
+      "innodb_log_file_size": "100663296",
+      "join_buffer_size": "262144",
+      "max_allowed_packet": "16777216",
+      "max_connections": "151",
+      "max_heap_table_size": "16777216",
+      "optimizer_prune_level": "2",
+      "optimizer_search_depth": "62",
+      "optimizer_switch": "index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=off,sargable_casefold=on",
+      "read_buffer_size": "131072",
+      "read_rnd_buffer_size": "262144",
+      "sort_buffer_size": "262144",
+      "table_open_cache": "2000",
+      "thread_cache_size": "151",
+      "tmp_table_size": "16777216",
+      "version": "11.4.10-MariaDB-ubu2404",
+      "version_comment": "mariadb.org binary distribution",
+      "version_compile_os": "debian-linux-gnu"
+    },
+    "stats": {
+      "demodb.users": {
+        "table_schema": "demodb",
+        "table_name": "users",
+        "table_rows": 3000,
+        "data_length": 180224,
+        "index_length": 81920,
+        "data_free": 0,
+        "auto_increment": 4096,
+        "engine": "InnoDB",
+        "row_format": "Dynamic"
+      }
+    },
+    "schema": {
+      "demodb.users": {
+        "ddl": "CREATE TABLE `users` (\n  `id` int(11) NOT NULL AUTO_INCREMENT,\n  `name` varchar(80) DEFAULT NULL,\n  `country` varchar(2) DEFAULT NULL,\n  `status` varchar(20) DEFAULT NULL,\n  `created_at` datetime DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `idx_country` (`country`)\n) ENGINE=InnoDB AUTO_INCREMENT=4096 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci",
+        "table_name": "users",
+        "columns": [
+          {
+            "name": "id",
+            "type": "int(11)",
+            "rest": "NOT NULL AUTO_INCREMENT"
+          },
+          {
+            "name": "name",
+            "type": "varchar(80)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "country",
+            "type": "varchar(2)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "status",
+            "type": "varchar(20)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "rest": "DEFAULT NULL"
+          }
+        ],
+        "indexes": [
+          {
+            "kind": "PRIMARY KEY",
+            "name": null,
+            "columns": [
+              "id"
+            ]
+          },
+          {
+            "kind": "KEY",
+            "name": "idx_country",
+            "columns": [
+              "country"
+            ]
+          }
+        ],
+        "engine": "InnoDB",
+        "charset": "utf8mb4"
+      }
+    }
+  }
+}
+  </script>
+  <style>
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --fg: #1a1a2e;
+  --muted: #5a6475;
+  --border: #e0e4ec;
+  --accent: #283593;
+  --accent-soft: #e8eaf6;
+
+  /* Severity palette (from progressive-ux skill) */
+  --sev-error: #b71c1c;
+  --sev-warn: #ef6c00;
+  --sev-info: #0d47a1;
+  --sev-ok: #1b5e20;
+
+  --sev-high: var(--sev-error);
+  --sev-medium: var(--sev-warn);
+  --sev-low: var(--sev-info);
+
+  --code-bg: #263238;
+  --code-fg: #eceff1;
+  --code-str: #c3e88d;
+  --code-kw: #82aaff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; top: -40px; left: 0;
+  background: var(--accent); color: #fff; padding: 8px 16px;
+  z-index: 100; text-decoration: none;
+}
+.skip-link:focus { top: 0; }
+
+/* Header */
+.site-header {
+  background: #1a1a2e; color: #fff;
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.site-header h1 {
+  font-size: 17px; font-weight: 600; margin: 0;
+}
+.site-header nav.toolbar {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.site-header nav.toolbar button {
+  padding: 6px 14px; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; background: rgba(255,255,255,0.06);
+  color: #fff; font-size: 12px; cursor: pointer;
+}
+.site-header nav.toolbar button:hover { background: rgba(255,255,255,0.15); }
+.site-header nav.toolbar button:focus { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Main layout */
+main.report {
+  max-width: 1400px; margin: 24px auto; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+main.report > section,
+main.report > details,
+main.report > aside {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 22px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+main.report h2 {
+  font-size: 15px; font-weight: 600; color: var(--fg);
+  margin: 0 0 12px 0; display: inline-flex; align-items: baseline; gap: 8px;
+}
+main.report h2 .count {
+  color: var(--muted); font-weight: 400; font-size: 13px;
+}
+
+/* Exec summary strip */
+.exec-summary .exec-text {
+  font-size: 16px; font-weight: 500; color: var(--fg);
+  margin: 0 0 14px 0;
+}
+.exec-summary .quick-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin: 0;
+}
+.exec-summary .quick-stats > div {
+  background: var(--accent-soft); border-radius: 6px;
+  padding: 10px 14px; text-align: left;
+}
+.exec-summary .quick-stats dt {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--muted); margin-bottom: 2px;
+}
+.exec-summary .quick-stats dd {
+  font-size: 18px; font-weight: 700; color: var(--accent); margin: 0;
+}
+
+/* Primary action card */
+.primary-action {
+  border-left: 4px solid var(--sev-medium);
+  background: #fff9f3;
+}
+.primary-action.sev-high { border-left-color: var(--sev-high); background: #fff3f3; }
+.primary-action.sev-low  { border-left-color: var(--sev-low);  background: #f1f8ff; }
+.primary-action-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.primary-action-header h2 { margin: 0; font-size: 15px; }
+.primary-action .action-text {
+  font-size: 15px; color: var(--fg); margin: 8px 0;
+}
+.primary-action .sql-action {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 16px; border-radius: 6px; margin: 8px 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; overflow-x: auto;
+}
+.primary-action details.why-details {
+  margin-top: 10px; background: rgba(255,255,255,0.5);
+  border-radius: 6px; padding: 8px 12px;
+}
+.primary-action details.why-details summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted);
+}
+.primary-action details.why-details[open] summary { margin-bottom: 6px; }
+
+/* Severity badges */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 12px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; background: var(--muted); color: #fff;
+}
+.badge-high,  .badge-error { background: var(--sev-error); }
+.badge-medium, .badge-warn { background: var(--sev-warn); }
+.badge-low,   .badge-info  { background: var(--sev-info); }
+.badge-ok                  { background: var(--sev-ok); }
+
+/* Query card */
+.query-card pre {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 14px 18px; border-radius: 8px;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  overflow-x: auto; margin: 0;
+}
+
+/* Visualization */
+.viz-card .chart-panel {
+  overflow-x: auto; padding: 4px; background: #fff;
+  border-radius: 6px; border: 1px solid var(--border);
+}
+.viz-card svg { display: block; max-width: 100%; height: auto; }
+
+/* Warnings + suggestions lists */
+.warning-list, .suggestion-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.warning, .suggestion {
+  background: var(--bg); border-radius: 8px; padding: 12px 14px;
+  border-left: 3px solid var(--muted);
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 6px;
+}
+.warning.sev-error, .suggestion.sev-high    { border-left-color: var(--sev-high); }
+.warning.sev-warn,  .suggestion.sev-medium  { border-left-color: var(--sev-warn); }
+.warning.sev-info,  .suggestion.sev-low     { border-left-color: var(--sev-info); }
+.warning .text, .suggestion .action-text { margin: 0; grid-column: 2; }
+.warning .where { grid-column: 2; font-size: 12px; color: var(--muted); margin: 0; }
+.suggestion .sql-action {
+  grid-column: 1 / -1;
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 10px 14px; border-radius: 6px; margin: 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px; overflow-x: auto;
+}
+.suggestion details.why-details {
+  grid-column: 1 / -1; margin-top: 4px; background: var(--accent-soft);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px;
+}
+.suggestion details.why-details summary {
+  cursor: pointer; font-weight: 600; color: var(--accent);
+}
+.suggestion details.why-details p {
+  margin: 6px 0 0 0; color: var(--fg);
+}
+.node-label {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: rgba(40,53,147,0.1); color: var(--accent);
+  font-size: 11px;
+}
+
+/* Glossary chips (<abbr>) */
+abbr.glossary-chip {
+  text-decoration: underline dotted rgba(40,53,147,0.5);
+  cursor: help; text-underline-offset: 2px;
+}
+
+/* Environment section */
+details.env-section summary,
+details.raw-sidecar summary,
+aside.glossary-aside summary {
+  cursor: pointer; list-style: none;
+}
+details.env-section summary::-webkit-details-marker,
+details.raw-sidecar summary::-webkit-details-marker,
+aside.glossary-aside summary::-webkit-details-marker { display: none; }
+details.env-section summary::before,
+details.raw-sidecar summary::before,
+aside.glossary-aside summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px;
+  transition: transform 0.15s; color: var(--muted);
+}
+details.env-section[open] summary::before,
+details.raw-sidecar[open] summary::before,
+aside.glossary-aside details[open] summary::before { transform: rotate(90deg); }
+details.env-section summary h2,
+details.raw-sidecar summary h2,
+aside.glossary-aside summary h2 { display: inline; margin: 0; }
+.env-grid {
+  margin-top: 14px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.env-card { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.env-card h3 {
+  font-size: 13px; margin: 0 0 8px 0; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv-table th {
+  text-align: left; font-weight: 600; padding: 4px 6px;
+  vertical-align: top; color: var(--muted);
+}
+.kv-table td {
+  padding: 4px 6px; word-break: break-all;
+  font-family: "SFMono-Regular", Menlo, monospace; font-size: 12px;
+}
+.schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.schema-list li { padding: 3px 0; }
+
+/* Glossary aside */
+aside.glossary-aside { background: #f1f8ff; }
+.glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
+.glossary-item dt code {
+  background: var(--accent-soft); padding: 2px 6px;
+  border-radius: 4px; font-size: 12px; color: var(--accent);
+}
+.glossary-item dd { margin: 4px 0 0 0; font-size: 13px; }
+.glossary-item dd.newcomer { color: var(--fg); }
+.glossary-item dd.technical {
+  color: var(--muted); font-size: 12px; font-style: italic;
+}
+
+/* Raw sidecar JSON */
+.raw-json {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+  font-family: "SFMono-Regular", monospace; font-size: 11.5px;
+  max-height: 400px;
+}
+
+/* Print tweaks */
+@media print {
+  body { background: #fff; }
+  .site-header { background: #fff; color: #000; border-bottom: 2px solid #000; }
+  .site-header nav { display: none; }
+  details { page-break-inside: avoid; }
+  details > summary { display: none; }
+  details > *:not(summary) { display: block !important; }
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  main.report { padding: 0 12px; }
+  .site-header { padding: 10px 14px; }
+  .site-header h1 { font-size: 15px; }
+}
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header" role="banner">
+    <h1>Live MariaDB 11.4 — derived table + filesort</h1>
+    <nav class="toolbar" aria-label="Report actions">
+      <button type="button" onclick="exportSVG()">Export SVG</button>
+      <button type="button" onclick="exportJSON()">Export Analysis JSON</button>
+      <button type="button" onclick="window.print()">Print / PDF</button>
+    </nav>
+  </header>
+  <main id="main-content" class="report" role="main">
+<section class="exec-summary" aria-labelledby="exec-heading">
+  <h2 id="exec-heading" class="visually-hidden">Summary</h2>
+  <p class="exec-text">Query scans 1 table, materializes 1 <abbr class="glossary-chip" title="MySQL built an internal temporary table.">temp table</abbr> and sorts the result; examines ~3,000 rows to return 5 in 0.57 ms. Main finding: no index covers (status) on users.</p>
+  <dl class="quick-stats">
+    <div><dt>Total time</dt><dd>570 µs</dd></div>
+    <div><dt>Rows returned</dt><dd>5</dd></div>
+    <div><dt>Rows examined</dt><dd>3.00K</dd></div>
+    <div><dt>Operators</dt><dd>4</dd></div>
+  </dl>
+</section>
+
+<section class="primary-action sev-high" aria-labelledby="primary-heading" role="region">
+  <header class="primary-action-header">
+    <span class="badge badge-high">Fix first</span>
+    <h2 id="primary-heading">Primary recommendation</h2>
+  </header>
+  <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+</section>
+
+<section class="query-card" aria-labelledby="query-heading">
+  <h2 id="query-heading">SQL</h2>
+  <pre class="sql-text"><code>SELECT t.country, t.cnt
+FROM (
+SELECT country, COUNT(*) cnt
+FROM users
+WHERE status='active'
+GROUP BY country) t
+ORDER BY t.cnt DESC</code></pre>
+</section>
+
+<section class="viz-card" aria-labelledby="viz-heading">
+  <h2 id="viz-heading">Execution plan (tree)</h2>
+  <div class="chart-panel" id="chart-panel">
+<svg id="tree-svg" version="1.1" width="1200" height="320" viewBox="0 0 1200 320" style="max-width:100%;height:auto;" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 16px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-hdr { font-size: 10px; fill: #888; font-weight: bold; }
+  .row-label { font-size: 11px; fill: #222; }
+  .row-label.warn { fill: #b71c1c; }
+  .toggle { font-size: 13px; fill: #333; cursor: pointer; }
+  .toggle:hover { fill: #000; }
+  .leaf-indicator { font-size: 13px; fill: #bbb; cursor: default; }
+  .row-bg { cursor: pointer; transition: opacity 0.15s ease; }
+  .row-bg:hover { fill: rgba(0,0,0,0.04); }
+  .row-bg.pinned { fill: rgba(0,90,200,0.15); stroke: #1565c0; stroke-width: 1; }
+  .row-time { font-size: 11px; fill: #444; }
+  .row-pct { font-size: 11px; fill: #555; font-weight: bold; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
+  #search-btn { font-size: 11px; fill: #666; cursor: pointer; }
+  #search-btn:hover { fill: #0d47a1; }
+  .ctrl-link { font-size: 10px; fill: #1565c0; cursor: pointer; }
+  .ctrl-link:hover { fill: #0d47a1; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="26" text-anchor="middle" class="title">Live MariaDB 11.4 — derived table + filesort</text>
+<text x="10" y="44" text-anchor="start" class="subtitle">Execution tree  ·  Total: 570.0 µs  ·  Click row to pin  ·  Ctrl+F to search</text>
+<text id="expand-all" class="ctrl-link" x="1100" y="44" text-anchor="start">Expand All</text>
+<text id="collapse-all" class="ctrl-link" x="1190" y="44" text-anchor="end">Collapse All</text>
+<line x1="10" y1="52" x2="1190" y2="52" stroke="#ddd" stroke-width="1"/>
+<text x="536" y="65" text-anchor="end" class="col-hdr">SELF</text>
+<text x="626" y="65" text-anchor="end" class="col-hdr">TOTAL</text>
+<text x="681" y="65" text-anchor="end" class="col-hdr">%</text>
+<text x="705" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
+<text id="search-btn" x="1190" y="65" text-anchor="end">Search</text>
+<line x1="10" y1="68" x2="1190" y2="68" stroke="#ddd" stroke-width="1"/>
+<g class="tree-row" data-idx="0" data-depth="0" data-has-children="1">
+<rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Sort: t.cnt desc  ·  Self: 554.5 µs (97.3%)  ·  Total: 570.0 µs  ·  Rows: 5  ·  Access: sort"/>
+<text class="toggle" x="12" y="90" data-idx="0">▾</text>
+<text class="row-label" x="26" y="90" pointer-events="none">Sort</text>
+<text class="row-time" x="536" y="90" text-anchor="end" pointer-events="none">554.5 µs</text>
+<text class="row-time" x="626" y="90" text-anchor="end" pointer-events="none">570.0 µs</text>
+<text class="row-pct" x="681" y="90" text-anchor="end" pointer-events="none">97%</text>
+<rect x="705" y="77" width="475.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="77" width="462.0" height="16" fill="#2573b6" rx="2" pointer-events="none"/>
+<line x1="10" y1="98" x2="1190" y2="98" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="1" data-depth="1" data-has-children="1">
+<rect class="row-bg" x="10" y="98" width="1180" height="26" fill="transparent" data-info="Materialize  ·  Self: — (0.0%)  ·  Total: 15.6 µs  ·  Rows: 5  ·  Table: &lt;derived2&gt;  ·  Access: materialize  ·  Est.rows: 5"/>
+<rect x="10" y="98" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
+<text class="toggle" x="30" y="116" data-idx="1">▾</text>
+<text class="row-label" x="44" y="116" pointer-events="none">Materialize</text>
+<text class="row-time" x="536" y="116" text-anchor="end" pointer-events="none">—</text>
+<text class="row-time" x="626" y="116" text-anchor="end" pointer-events="none">15.6 µs</text>
+<text class="row-pct" x="681" y="116" text-anchor="end" pointer-events="none">0.0%</text>
+<rect x="705" y="103" width="13.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<line x1="10" y1="124" x2="1190" y2="124" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="2" data-depth="2" data-has-children="1">
+<rect class="row-bg" x="10" y="124" width="1180" height="26" fill="transparent" data-info="Sort: users.country  ·  Self: 21.2 µs (3.7%)  ·  Total: 562.4 µs  ·  Rows: 5  ·  Access: sort"/>
+<text class="toggle" x="48" y="142" data-idx="2">▾</text>
+<text class="row-label" x="62" y="142" pointer-events="none">Sort</text>
+<text class="row-time" x="536" y="142" text-anchor="end" pointer-events="none">21.2 µs</text>
+<text class="row-time" x="626" y="142" text-anchor="end" pointer-events="none">562.4 µs</text>
+<text class="row-pct" x="681" y="142" text-anchor="end" pointer-events="none">4%</text>
+<rect x="705" y="129" width="468.7" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="129" width="17.6" height="16" fill="#d5e5f3" rx="2" pointer-events="none"/>
+<line x1="10" y1="150" x2="1190" y2="150" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<g class="tree-row" data-idx="3" data-depth="3" data-has-children="0">
+<rect class="row-bg" x="10" y="150" width="1180" height="26" fill="transparent" data-info="Table scan on users  ·  Self: 541.3 µs (95.0%)  ·  Rows: 3000  ·  Table: users  ·  Access: table  ·  Est.rows: 3000  ·  Cond: users.`status` = 'active'"/>
+<rect x="10" y="150" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
+<text class="leaf-indicator" x="66" y="168" pointer-events="none">·</text>
+<text class="row-label" x="80" y="168" pointer-events="none">Table scan [users]</text>
+<text class="row-time" x="536" y="168" text-anchor="end" pointer-events="none">541.3 µs</text>
+<text class="row-pct" x="681" y="168" text-anchor="end" pointer-events="none">95%</text>
+<rect x="705" y="155" width="451.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="155" width="451.0" height="16" fill="#2876b7" rx="2" pointer-events="none"/>
+<line x1="10" y1="176" x2="1190" y2="176" stroke="#eeeeee" stroke-width="1"/>
+</g>
+<line x1="10" y1="192" x2="1190" y2="192" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="196" width="1180" height="116" fill="#eeeeee" rx="4"/>
+<text id="details-l0" x="20" y="212" class="details-line">Click a row to pin details  ·  Click ▾/▸ to expand/collapse  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="228" class="details-line"></text>
+<text id="details-l2" x="20" y="244" class="details-line"></text>
+<text id="details-l3" x="20" y="260" class="details-line"></text>
+<text id="details-l4" x="20" y="276" class="details-line"></text>
+<text id="details-l5" x="20" y="292" class="details-line"></text>
+<script type="text/javascript"><![CDATA[
+(function() {
+  var ROW_H = 26;
+  var HEADER_H = 72;
+  var N_LINES = 6;
+  var detailLines = [];
+  var searchBtn, svgEl;
+  var defaultHint = "Click a row to pin details  ·  Click ▾/▸ to expand/collapse  ·  Ctrl+F to search";
+  var pinnedBg = null;
+  var searchActive = false;
+  var rows = [];
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (detailLines[i]) detailLines[i].textContent = i < parts.length ? parts[i] : "";
+    }
+  }
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) if (detailLines[i]) detailLines[i].textContent = "";
+  }
+  function showInfo(infoStr) {
+    if (!infoStr) { clearDetails(); return; }
+    setDetailsText(infoStr.split("  ·  "));
+  }
+
+  function init(evt) {
+    svgEl = document.querySelector("svg");
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    searchBtn = document.getElementById("search-btn");
+
+    var rowEls = document.querySelectorAll(".tree-row");
+    for (var i = 0; i < rowEls.length; i++) {
+      rows.push({
+        el: rowEls[i],
+        idx: i,
+        depth: parseInt(rowEls[i].getAttribute("data-depth"), 10),
+        hasChildren: rowEls[i].getAttribute("data-has-children") === "1",
+        hidden: false,
+        collapsed: false
+      });
+    }
+
+    document.addEventListener("click", function(e) {
+      var t = e.target;
+      if (t.id === "search-btn") { searchPrompt(); return; }
+      if (t.id === "expand-all") { expandAll(); return; }
+      if (t.id === "collapse-all") { collapseAll(); return; }
+      if (t.classList && t.classList.contains("toggle")) {
+        var idx = parseInt(t.getAttribute("data-idx"), 10);
+        if (!isNaN(idx) && rows[idx] && rows[idx].hasChildren) toggle(idx);
+        return;
+      }
+      if (t.classList && t.classList.contains("row-bg")) {
+        var info = t.getAttribute("data-info") || "";
+        if (pinnedBg === t) {
+          t.classList.remove("pinned");
+          pinnedBg = null;
+          clearDetails();
+        } else {
+          if (pinnedBg) pinnedBg.classList.remove("pinned");
+          pinnedBg = t;
+          t.classList.add("pinned");
+          showInfo(info);
+        }
+        return;
+      }
+      if (pinnedBg) {
+        pinnedBg.classList.remove("pinned");
+        pinnedBg = null;
+        clearDetails();
+      }
+    });
+
+    document.addEventListener("mouseover", function(e) {
+      if (!pinnedBg && e.target.classList && e.target.classList.contains("row-bg"))
+        showInfo(e.target.getAttribute("data-info") || "");
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (!pinnedBg && e.target.classList && e.target.classList.contains("row-bg"))
+        clearDetails();
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function toggle(idx) {
+    var collapsing = !rows[idx].collapsed;
+    rows[idx].collapsed = collapsing;
+    var toggleEl = rows[idx].el.querySelector(".toggle");
+    if (toggleEl) toggleEl.textContent = collapsing ? "▸" : "▾";
+    setSubtreeHidden(idx, collapsing);
+    reflow();
+  }
+
+  function setSubtreeHidden(parentIdx, hidden) {
+    var depth = rows[parentIdx].depth;
+    for (var j = parentIdx + 1; j < rows.length; j++) {
+      if (rows[j].depth <= depth) break;
+      rows[j].hidden = hidden;
+      if (!hidden && rows[j].collapsed) setSubtreeHidden(j, true);
+    }
+  }
+
+  function reflow() {
+    var y = HEADER_H;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].hidden) {
+        rows[i].el.style.display = "none";
+      } else {
+        rows[i].el.style.display = "";
+        var origY = HEADER_H + i * ROW_H;
+        var dy = y - origY;
+        rows[i].el.setAttribute("transform", dy !== 0 ? "translate(0," + dy + ")" : "");
+        y += ROW_H;
+      }
+    }
+  }
+
+  function expandAll() {
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].hidden = false;
+      rows[i].collapsed = false;
+      var t = rows[i].el.querySelector(".toggle");
+      if (t && rows[i].hasChildren) t.textContent = "▾";
+    }
+    reflow();
+  }
+
+  function collapseAll() {
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].depth > 0) rows[i].hidden = true;
+      if (rows[i].hasChildren) {
+        rows[i].collapsed = true;
+        var t = rows[i].el.querySelector(".toggle");
+        if (t) t.textContent = "▸";
+      }
+    }
+    reflow();
+  }
+
+  function searchPrompt() {
+    if (searchActive) {
+      var bgs = document.querySelectorAll(".row-bg");
+      for (var i = 0; i < bgs.length; i++) bgs[i].style.opacity = "";
+      searchBtn.textContent = "Search";
+      searchActive = false;
+      clearDetails();
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var bgs = document.querySelectorAll(".row-bg");
+    for (var i = 0; i < bgs.length; i++) {
+      var info = bgs[i].getAttribute("data-info") || "";
+      bgs[i].style.opacity = re.test(info) ? "1" : "0.2";
+    }
+    searchBtn.textContent = "Reset Search";
+    searchActive = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+</svg>
+
+  </div>
+</section>
+
+<section class="warnings-section" aria-labelledby="warn-heading">
+  <h2 id="warn-heading">Warnings <span class="count">(7)</span></h2>
+  <ol class="warning-list">
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text"><abbr class="glossary-chip" title="Reads every row of a table.">Full table scan</abbr>: users (3000 rows)</p>
+      <p class="where">Labeled: <code class="node-label">Table scan [users]</code></p>
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text">1 <abbr class="glossary-chip" title="MySQL built an internal temporary table.">temp table</abbr>(s) (<abbr class="glossary-chip" title="Subquery/derived table is computed once, stored in a temp table.">Materialize</abbr>) — up to 5 rows; may spill to disk</p>
+      <p class="where">Labeled: <code class="node-label">Materialize</code></p>
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text">2 <abbr class="glossary-chip" title="Sort that can't use an index.">sort operation</abbr>(s) — 5 rows; may use disk-based <abbr class="glossary-chip" title="Sort that can't use an index.">filesort</abbr></p>
+      <p class="where">Labeled: <code class="node-label">Sort</code></p>
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text"><abbr class="glossary-chip" title="Sort that can't use an index.">Filesort</abbr> detected but <abbr class="glossary-chip" title="Per-connection buffer for in-memory sorts.">sort_buffer_size</abbr> is only 256.0 KB — the sort will likely spill to disk.</p>
+      
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text">Query materializes 1 <abbr class="glossary-chip" title="MySQL built an internal temporary table.">temp table</abbr>(s) but <abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">tmp_table_size</abbr>/<abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">max_heap_table_size</abbr> is capped at 16.0 MB — temp tables will spill to InnoDB disk tables.</p>
+      
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text"><abbr class="glossary-chip" title="Comma-separated list of optimizer feature flags.">optimizer_switch</abbr> has <abbr class="glossary-chip" title="Sort row IDs before fetching rows to make I/O sequential.">mrr</abbr>=off; range scans followed by <abbr class="glossary-chip" title="Sort that can't use an index.">filesort</abbr> may read rows in random order.</p>
+      
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text">Table users has no index covering (status).</p>
+      
+    </li>
+  </ol>
+</section>
+
+<section class="suggestions-section" aria-labelledby="sug-heading">
+  <h2 id="sug-heading">Suggestions <span class="count">(7)</span></h2>
+  <ol class="suggestion-list">
+    <li class="suggestion sev-high">
+      <span class="badge badge-high">HIGH</span>
+      <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+      
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Increase <abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">tmp_table_size</abbr> / <abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">max_heap_table_size</abbr> to keep temp tables in memory</p>
+      
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Increase <abbr class="glossary-chip" title="Per-connection buffer for in-memory sorts.">sort_buffer_size</abbr> or add an ordered index to avoid <abbr class="glossary-chip" title="Sort that can't use an index.">filesort</abbr></p>
+      
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Raise <abbr class="glossary-chip" title="Per-connection buffer for in-memory sorts.">sort_buffer_size</abbr> to 2M–8M for this session (SET SESSION <abbr class="glossary-chip" title="Per-connection buffer for in-memory sorts.">sort_buffer_size</abbr> = 8*1024*1024).</p>
+      <details class="why-details">
+        <summary>Why?</summary>
+        <p>when the sort set does not fit in <abbr class="glossary-chip" title="Per-connection buffer for in-memory sorts.">sort_buffer_size</abbr>, MySQL writes multiple sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat: <abbr class="glossary-chip" title="Per-connection buffer for in-memory sorts.">sort_buffer_size</abbr> is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.</p>
+      </details>
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Raise <abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">tmp_table_size</abbr> AND <abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">max_heap_table_size</abbr> together to the same value (64M–256M).</p>
+      <details class="why-details">
+        <summary>Why?</summary>
+        <p>once a materialized <abbr class="glossary-chip" title="MySQL built an internal temporary table.">temp table</abbr> exceeds min(<abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">tmp_table_size</abbr>, <abbr class="glossary-chip" title="Maximum in-memory temp table size (half of the pair with max_heap_table_size).">max_heap_table_size</abbr>), MySQL converts the in-memory MEMORY/TempTable engine to an on-disk InnoDB <abbr class="glossary-chip" title="MySQL built an internal temporary table.">temp table</abbr> — scans over the disk version are typically 10–100× slower and generate real I/O. Both variables must be raised together because MySQL always picks the smaller of the two; raising only one has no effect.</p>
+      </details>
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Consider SET SESSION <abbr class="glossary-chip" title="Comma-separated list of optimizer feature flags.">optimizer_switch</abbr>='<abbr class="glossary-chip" title="Sort row IDs before fetching rows to make I/O sequential.">mrr</abbr>=on,mrr_cost_based=on';.</p>
+      <details class="why-details">
+        <summary>Why?</summary>
+        <p><abbr class="glossary-chip" title="Sort row IDs before fetching rows to make I/O sequential.">Multi-Range Read</abbr> collects row IDs from a secondary-<abbr class="glossary-chip" title="Reads a contiguous slice of an index.">index range scan</abbr>, sorts them by primary key, and then fetches rows in (mostly) physical order. Without <abbr class="glossary-chip" title="Sort row IDs before fetching rows to make I/O sequential.">MRR</abbr>, InnoDB has to dereference each secondary-index row in secondary-index order, which translates to random I/O on the clustered index and hurts both disk and <abbr class="glossary-chip" title="The RAM InnoDB uses to cache table and index pages.">buffer-pool</abbr> cache locality.</p>
+      </details>
+    </li>
+    <li class="suggestion sev-high">
+      <span class="badge badge-high">HIGH</span>
+      <pre class="sql-action"><code>CREATE INDEX idx_users_status ON users (status);</code></pre>
+      
+    </li>
+  </ol>
+</section>
+
+<details class="env-section">
+  <summary><h2>Collected environment</h2></summary>
+  <div class="env-grid">
+    <div class="env-card">
+      <h3>Session variables</h3>
+      <table class="kv-table">
+        <tr><th>version</th><td><code>11.4.10-MariaDB-ubu2404</code></td></tr>
+        <tr><th>innodb_buffer_pool_size</th><td><code>134217728</code></td></tr>
+        <tr><th>sort_buffer_size</th><td><code>262144</code></td></tr>
+        <tr><th>join_buffer_size</th><td><code>262144</code></td></tr>
+        <tr><th>tmp_table_size</th><td><code>16777216</code></td></tr>
+        <tr><th>max_heap_table_size</th><td><code>16777216</code></td></tr>
+        <tr><th>innodb_flush_log_at_trx_commit</th><td><code>1</code></td></tr>
+        <tr><th>optimizer_switch</th><td><code>index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=off,sargable_casefold=on</code></td></tr>
+      </table>
+    </div>
+    <div class="env-card">
+      <h3>Table stats (information_schema.tables)</h3>
+      <table class="kv-table">
+        <thead><tr><th>Table</th><th>Rows</th><th>Data</th><th>Index</th></tr></thead>
+        <tr><th>demodb.users</th><td>3,000</td><td>180,224</td><td>81,920</td></tr>
+      </table>
+    </div>
+    <div class="env-card">
+      <h3>Schema (SHOW CREATE TABLE)</h3>
+      <ul class="schema-list">
+        <li><strong>demodb.users</strong> — 5 columns · indexes: PRIMARY, idx_country</li>
+      </ul>
+    </div>
+  </div>
+</details>
+
+<aside class="glossary-aside" aria-labelledby="glossary-heading">
+  <details>
+    <summary><h2 id="glossary-heading">Glossary (11 terms)</h2></summary>
+    <dl class="glossary-list">
+      <div class="glossary-item">
+        <dt><code>derived table</code></dt>
+        <dd class="newcomer">A query-inside-a-query that MySQL treats like a temporary table. MySQL often rewrites it to be part of the outer query for speed, but sometimes it can't and has to materialize it.</dd>
+        <dd class="technical">``SELECT … FROM (SELECT …) AS t``: the inner SELECT is a derived table. With ``derived_merge=on`` (default) the optimizer folds it into the outer query when possible; otherwise it's materialized. With ``derived_condition_pushdown=on``, outer predicates can be pushed inside the derived query block to reduce its row count.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>filesort</code></dt>
+        <dd class="newcomer">MySQL has to sort the rows by hand because the data isn't already in the order you asked for. Small sorts stay in memory; big ones use disk and get slow.</dd>
+        <dd class="technical">MySQL sorts the result in the server layer using ``sort_buffer_size``. If the sort set fits, it stays in memory (fast quicksort). If not, MySQL writes sorted runs to tmpdir and k-way merges them — disk I/O plus CPU for the merge. An index in the ``ORDER BY`` order eliminates the filesort entirely.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>full table scan</code></dt>
+        <dd class="newcomer">MySQL is reading every single row in this table, one by one, to check if it matches your WHERE clause. This is slow on big tables — an index on the filter column lets MySQL jump straight to the matching rows instead.</dd>
+        <dd class="technical">Access type ``ALL``: the storage engine returns every row of the table, applying the WHERE clause in the server layer. Cost is roughly (rows × row_evaluate_cost) + pages_read × io_block_read_cost. Signal: ``type=ALL`` in EXPLAIN, ``Handler_read_rnd_next`` climbs by the table row count. Almost always a sign of a missing index on the WHERE or join column.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>index range scan</code></dt>
+        <dd class="newcomer">MySQL is reading a chunk of the index that matches your range filter (like a date range) instead of the whole thing. The narrower the range, the faster.</dd>
+        <dd class="technical">Access type ``range``: reads a bounded key range of a secondary index (e.g. ``WHERE created_at BETWEEN a AND b``). Fast when the range is narrow; degrades to a full scan when the range covers most of the index. With ``mrr=on`` the row-ID fetches can be reordered to turn random I/O into sequential.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>innodb buffer pool size</code></dt>
+        <dd class="newcomer">The amount of RAM InnoDB uses to cache your data. Bigger = more of your data stays in memory = faster repeat queries. If this is smaller than your working set, every query hits the disk.</dd>
+        <dd class="technical">The central caching tunable for InnoDB. Pages are loaded into the buffer pool on demand and evicted by LRU. Every page miss is a physical disk read. Rule of thumb: size it to ~70–80% of system RAM on a dedicated database server, or at least to the working set of your hottest tables. Requires restart.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>materialization</code></dt>
+        <dd class="newcomer">MySQL ran your subquery or derived table once, stored the result in a temporary table, and then used that temp table instead of re-running the subquery for every outer row.</dd>
+        <dd class="technical">The subquery result is materialized into an internal temp table (MEMORY or on-disk InnoDB depending on size). The outer query reads from the temp table. Controlled by ``tmp_table_size`` and ``max_heap_table_size`` — MySQL always uses the smaller of the two. If the temp table exceeds that limit, MySQL converts to an on-disk temp table and performance drops sharply.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>mrr</code></dt>
+        <dd class="newcomer">Instead of fetching rows one at a time in index order (which causes random jumps on disk), MySQL collects the row locations first, sorts them, and fetches them in the order they're physically stored. Much faster on disk-bound queries.</dd>
+        <dd class="technical">Multi-Range Read: the optimizer collects all row IDs from a secondary-index range scan, sorts them by primary key, and then fetches rows in (mostly) physical order. This converts random I/O on the clustered index into sequential I/O, which matters most on spinning disks but still helps SSDs via better cache locality.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>optimizer switch</code></dt>
+        <dd class="newcomer">A list of on/off switches for specific optimizer tricks. Most are on by default; turning the wrong ones off can hurt performance a lot.</dd>
+        <dd class="technical">Server/session variable that enables or disables individual optimizer transformations (hash_join, index_merge, skip_scan, semijoin strategies, etc.). Session-tunable: ``SET SESSION optimizer_switch='hash_join=on'``. The default differs between MySQL and MariaDB and between minor versions.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>sort buffer size</code></dt>
+        <dd class="newcomer">The memory MySQL gets per connection to sort rows. If your sort is bigger than this, MySQL falls back to using disk, which is slower.</dd>
+        <dd class="technical">Allocated lazily per connection, freed after the sort. When a filesort's data exceeds this buffer, MySQL writes sorted runs to tmpdir and k-way merges them back — disk I/O. Because it's per-connection, setting this high globally multiplies by max_connections; prefer ``SET SESSION sort_buffer_size = …`` for individual big queries.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>temp table</code></dt>
+        <dd class="newcomer">MySQL built a scratch table in memory to help process your query. If the scratch table gets too big, it moves to disk and slows down a lot.</dd>
+        <dd class="technical">Used for materialized subqueries, GROUP BY with no suitable index, DISTINCT, and some ORDER BY cases. MEMORY/TempTable engine while it fits in ``min(tmp_table_size, max_heap_table_size)``, converted to on-disk InnoDB when it doesn't. The on-disk version is typically 10–100× slower.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>tmp table size</code></dt>
+        <dd class="newcomer">How big MySQL's scratch tables can get before they move from RAM to disk. If your query builds bigger scratch tables than this, expect a big slowdown — and you have to raise ``max_heap_table_size`` at the same time, otherwise it does nothing.</dd>
+        <dd class="technical">The effective limit is ``min(tmp_table_size, max_heap_table_size)``. Internal temp tables (from materialized subqueries, GROUP BY, DISTINCT, etc.) are MEMORY-engine until they exceed this, at which point MySQL converts them to on-disk InnoDB temp tables (10–100× slower for scans). Both variables must be raised together — raising only one has no effect.</dd>
+      </div>
+    </dl>
+  </details>
+</aside>
+
+<details class="raw-sidecar">
+  <summary><h2>Raw sidecar (JSON)</h2></summary>
+  <pre class="raw-json"><code>{
+  &quot;schema_version&quot;: &quot;1.0&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-10T20:15:42Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.2.0&quot;,
+  &quot;source&quot;: {
+    &quot;type&quot;: &quot;live&quot;,
+    &quot;engine&quot;: &quot;mariadb&quot;,
+    &quot;engine_version&quot;: &quot;11.4.10-MariaDB-ubu2404&quot;
+  },
+  &quot;plan_summary&quot;: {
+    &quot;total_time_ms&quot;: 0.57,
+    &quot;rows_sent&quot;: 5,
+    &quot;rows_examined_estimate&quot;: 3000,
+    &quot;operator_count&quot;: 4,
+    &quot;max_depth&quot;: 4
+  },
+  &quot;optimizer_switches&quot;: [
+    {
+      &quot;name&quot;: &quot;materialization&quot;,
+      &quot;value&quot;: &quot;on&quot;,
+      &quot;explanation&quot;: &quot;A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Materialize&quot;
+      ]
+    }
+  ],
+  &quot;warnings&quot;: [
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;full_scan&quot;,
+      &quot;text&quot;: &quot;Full table scan: users (3000 rows)&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Table scan [users]&quot;
+      ]
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;temp_table&quot;,
+      &quot;text&quot;: &quot;1 temp table(s) (Materialize) — up to 5 rows; may spill to disk&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Materialize&quot;
+      ]
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;filesort&quot;,
+      &quot;text&quot;: &quot;2 sort operation(s) — 5 rows; may use disk-based filesort&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Sort&quot;
+      ]
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;env&quot;,
+      &quot;text&quot;: &quot;Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.&quot;,
+      &quot;source&quot;: &quot;environment&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;env&quot;,
+      &quot;text&quot;: &quot;Query materializes 1 temp table(s) but tmp_table_size/max_heap_table_size is capped at 16.0 MB — temp tables will spill to InnoDB disk tables.&quot;,
+      &quot;source&quot;: &quot;environment&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;env&quot;,
+      &quot;text&quot;: &quot;optimizer_switch has mrr=off; range scans followed by filesort may read rows in random order.&quot;,
+      &quot;source&quot;: &quot;environment&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;env&quot;,
+      &quot;text&quot;: &quot;Table users has no index covering (status).&quot;,
+      &quot;source&quot;: &quot;environment&quot;
+    }
+  ],
+  &quot;suggestions&quot;: [
+    {
+      &quot;severity&quot;: &quot;high&quot;,
+      &quot;category&quot;: &quot;index&quot;,
+      &quot;action&quot;: &quot;Add indexes on filter/join columns to avoid full table scans&quot;,
+      &quot;source&quot;: &quot;plan&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;tuning_variable&quot;,
+      &quot;action&quot;: &quot;Increase tmp_table_size / max_heap_table_size to keep temp tables in memory&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;target_variable&quot;: &quot;tmp_table_size&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;tuning_variable&quot;,
+      &quot;action&quot;: &quot;Increase sort_buffer_size or add an ordered index to avoid filesort&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;target_variable&quot;: &quot;sort_buffer_size&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;tuning_variable&quot;,
+      &quot;action&quot;: &quot;Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024).&quot;,
+      &quot;source&quot;: &quot;environment&quot;,
+      &quot;why&quot;: &quot;when the sort set does not fit in sort_buffer_size, MySQL writes multiple sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.&quot;,
+      &quot;target_variable&quot;: &quot;sort_buffer_size&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;tuning_variable&quot;,
+      &quot;action&quot;: &quot;Raise tmp_table_size AND max_heap_table_size together to the same value (64M–256M).&quot;,
+      &quot;source&quot;: &quot;environment&quot;,
+      &quot;why&quot;: &quot;once a materialized temp table exceeds min(tmp_table_size, max_heap_table_size), MySQL converts the in-memory MEMORY/TempTable engine to an on-disk InnoDB temp table — scans over the disk version are typically 10–100× slower and generate real I/O. Both variables must be raised together because MySQL always picks the smaller of the two; raising only one has no effect.&quot;,
+      &quot;target_variable&quot;: &quot;tmp_table_size&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;optimizer_switch&quot;,
+      &quot;action&quot;: &quot;Consider SET SESSION optimizer_switch='mrr=on,mrr_cost_based=on';.&quot;,
+      &quot;source&quot;: &quot;environment&quot;,
+      &quot;why&quot;: &quot;Multi-Range Read collects row IDs from a secondary-index range scan, sorts them by primary key, and then fetches rows in (mostly) physical order. Without MRR, InnoDB has to dereference each secondary-index row in secondary-index order, which translates to random I/O on the clustered index and hurts both disk and buffer-pool cache locality.&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;high&quot;,
+      &quot;category&quot;: &quot;index&quot;,
+      &quot;action&quot;: &quot;CREATE INDEX idx_users_status ON users (status);&quot;,
+      &quot;source&quot;: &quot;environment&quot;
+    }
+  ],
+  &quot;executive_summary&quot;: &quot;Query scans 1 table, materializes 1 temp table and sorts the result; examines ~3,000 rows to return 5 in 0.57 ms. Main finding: no index covers (status) on users.&quot;,
+  &quot;query&quot;: {
+    &quot;raw&quot;: &quot;SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC&quot;,
+    &quot;beautified&quot;: &quot;SELECT t.country, t.cnt\nFROM (\nSELECT country, COUNT(*) cnt\nFROM users\nWHERE status='active'\nGROUP BY country) t\nORDER BY t.cnt DESC&quot;
+  },
+  &quot;index_suggestions&quot;: [
+    {
+      &quot;table&quot;: &quot;users&quot;,
+      &quot;columns&quot;: [
+        &quot;status&quot;
+      ],
+      &quot;ddl&quot;: &quot;CREATE INDEX idx_users_status ON users (status);&quot;,
+      &quot;reason&quot;: &quot;Full scan on users with filter on (status)&quot;
+    }
+  ],
+  &quot;primary_action&quot;: {
+    &quot;ref&quot;: &quot;suggestions[0]&quot;
+  },
+  &quot;collected&quot;: {
+    &quot;variables&quot;: {
+      &quot;bulk_insert_buffer_size&quot;: &quot;8388608&quot;,
+      &quot;character_set_connection&quot;: &quot;utf8mb4&quot;,
+      &quot;character_set_server&quot;: &quot;utf8mb4&quot;,
+      &quot;collation_connection&quot;: &quot;utf8mb4_0900_ai_ci&quot;,
+      &quot;collation_server&quot;: &quot;utf8mb4_uca1400_ai_ci&quot;,
+      &quot;eq_range_index_dive_limit&quot;: &quot;200&quot;,
+      &quot;innodb_buffer_pool_size&quot;: &quot;134217728&quot;,
+      &quot;innodb_file_per_table&quot;: &quot;ON&quot;,
+      &quot;innodb_flush_log_at_trx_commit&quot;: &quot;1&quot;,
+      &quot;innodb_flush_method&quot;: &quot;O_DIRECT&quot;,
+      &quot;innodb_io_capacity&quot;: &quot;200&quot;,
+      &quot;innodb_log_buffer_size&quot;: &quot;16777216&quot;,
+      &quot;innodb_log_file_size&quot;: &quot;100663296&quot;,
+      &quot;join_buffer_size&quot;: &quot;262144&quot;,
+      &quot;max_allowed_packet&quot;: &quot;16777216&quot;,
+      &quot;max_connections&quot;: &quot;151&quot;,
+      &quot;max_heap_table_size&quot;: &quot;16777216&quot;,
+      &quot;optimizer_prune_level&quot;: &quot;2&quot;,
+      &quot;optimizer_search_depth&quot;: &quot;62&quot;,
+      &quot;optimizer_switch&quot;: &quot;index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=off,sargable_casefold=on&quot;,
+      &quot;read_buffer_size&quot;: &quot;131072&quot;,
+      &quot;read_rnd_buffer_size&quot;: &quot;262144&quot;,
+      &quot;sort_buffer_size&quot;: &quot;262144&quot;,
+      &quot;table_open_cache&quot;: &quot;2000&quot;,
+      &quot;thread_cache_size&quot;: &quot;151&quot;,
+      &quot;tmp_table_size&quot;: &quot;16777216&quot;,
+      &quot;version&quot;: &quot;11.4.10-MariaDB-ubu2404&quot;,
+      &quot;version_comment&quot;: &quot;mariadb.org binary distribution&quot;,
+      &quot;version_compile_os&quot;: &quot;debian-linux-gnu&quot;
+    },
+    &quot;stats&quot;: {
+      &quot;demodb.users&quot;: {
+        &quot;table_schema&quot;: &quot;demodb&quot;,
+        &quot;table_name&quot;: &quot;users&quot;,
+        &quot;table_rows&quot;: 3000,
+        &quot;data_length&quot;: 180224,
+        &quot;index_length&quot;: 81920,
+        &quot;data_free&quot;: 0,
+        &quot;auto_increment&quot;: 4096,
+        &quot;engine&quot;: &quot;InnoDB&quot;,
+        &quot;row_format&quot;: &quot;Dynamic&quot;
+      }
+    },
+    &quot;schema&quot;: {
+      &quot;demodb.users&quot;: {
+        &quot;ddl&quot;: &quot;CREATE TABLE `users` (\n  `id` int(11) NOT NULL AUTO_INCREMENT,\n  `name` varchar(80) DEFAULT NULL,\n  `country` varchar(2) DEFAULT NULL,\n  `status` varchar(20) DEFAULT NULL,\n  `created_at` datetime DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `idx_country` (`country`)\n) ENGINE=InnoDB AUTO_INCREMENT=4096 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci&quot;,
+        &quot;table_name&quot;: &quot;users&quot;,
+        &quot;columns&quot;: [
+          {
+            &quot;name&quot;: &quot;id&quot;,
+            &quot;type&quot;: &quot;int(11)&quot;,
+            &quot;rest&quot;: &quot;NOT NULL AUTO_INCREMENT&quot;
+          },
+          {
+            &quot;name&quot;: &quot;name&quot;,
+            &quot;type&quot;: &quot;varchar(80)&quot;,
+            &quot;rest&quot;: &quot;DEFAULT NULL&quot;
+          },
+          {
+            &quot;name&quot;: &quot;country&quot;,
+            &quot;type&quot;: &quot;varchar(2)&quot;,
+            &quot;rest&quot;: &quot;DEFAULT NULL&quot;
+          },
+          {
+            &quot;name&quot;: &quot;status&quot;,
+            &quot;type&quot;: &quot;varchar(20)&quot;,
+            &quot;rest&quot;: &quot;DEFAULT NULL&quot;
+          },
+          {
+            &quot;name&quot;: &quot;created_at&quot;,
+            &quot;type&quot;: &quot;datetime&quot;,
+            &quot;rest&quot;: &quot;DEFAULT NULL&quot;
+          }
+        ],
+        &quot;indexes&quot;: [
+          {
+            &quot;kind&quot;: &quot;PRIMARY KEY&quot;,
+            &quot;name&quot;: null,
+            &quot;columns&quot;: [
+              &quot;id&quot;
+            ]
+          },
+          {
+            &quot;kind&quot;: &quot;KEY&quot;,
+            &quot;name&quot;: &quot;idx_country&quot;,
+            &quot;columns&quot;: [
+              &quot;country&quot;
+            ]
+          }
+        ],
+        &quot;engine&quot;: &quot;InnoDB&quot;,
+        &quot;charset&quot;: &quot;utf8mb4&quot;
+      }
+    }
+  }
+}</code></pre>
+</details>
+  </main>
+  <script>
+function exportSVG() {
+  var svg = document.querySelector('#chart-panel svg');
+  if (!svg) { alert('No SVG found'); return; }
+  var data = new XMLSerializer().serializeToString(svg);
+  var blob = new Blob(['<?xml version="1.0" standalone="no"?>\n', data], {type: 'image/svg+xml'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-plan.svg';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function exportJSON() {
+  // Export the embedded sidecar (same data the JSON-LD script carries).
+  var script = document.querySelector('script[type="application/ld+json"]');
+  if (!script) { alert('No sidecar found'); return; }
+  var blob = new Blob([script.textContent], {type: 'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-analysis.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>

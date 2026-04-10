@@ -1,0 +1,246 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:15:41Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "live",
+    "engine": "mariadb",
+    "engine_version": "11.4.10-MariaDB-ubu2404"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.568,
+    "rows_sent": 5,
+    "rows_examined_estimate": 3000,
+    "operator_count": 4,
+    "max_depth": 4
+  },
+  "optimizer_switches": [
+    {
+      "name": "materialization",
+      "value": "on",
+      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.",
+      "node_labels": [
+        "Materialize"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: users (3000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [users]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "temp_table",
+      "text": "1 temp table(s) (Materialize) — up to 5 rows; may spill to disk",
+      "source": "plan",
+      "node_labels": [
+        "Materialize"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "filesort",
+      "text": "2 sort operation(s) — 5 rows; may use disk-based filesort",
+      "source": "plan",
+      "node_labels": [
+        "Sort"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.",
+      "source": "environment"
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Query materializes 1 temp table(s) but tmp_table_size/max_heap_table_size is capped at 16.0 MB — temp tables will spill to InnoDB disk tables.",
+      "source": "environment"
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "optimizer_switch has mrr=off; range scans followed by filesort may read rows in random order.",
+      "source": "environment"
+    },
+    {
+      "severity": "warn",
+      "category": "env",
+      "text": "Table users has no index covering (status).",
+      "source": "environment"
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase tmp_table_size / max_heap_table_size to keep temp tables in memory",
+      "source": "plan",
+      "target_variable": "tmp_table_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase sort_buffer_size or add an ordered index to avoid filesort",
+      "source": "plan",
+      "target_variable": "sort_buffer_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024).",
+      "source": "environment",
+      "why": "when the sort set does not fit in sort_buffer_size, MySQL writes multiple sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.",
+      "target_variable": "sort_buffer_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Raise tmp_table_size AND max_heap_table_size together to the same value (64M–256M).",
+      "source": "environment",
+      "why": "once a materialized temp table exceeds min(tmp_table_size, max_heap_table_size), MySQL converts the in-memory MEMORY/TempTable engine to an on-disk InnoDB temp table — scans over the disk version are typically 10–100× slower and generate real I/O. Both variables must be raised together because MySQL always picks the smaller of the two; raising only one has no effect.",
+      "target_variable": "tmp_table_size"
+    },
+    {
+      "severity": "medium",
+      "category": "optimizer_switch",
+      "action": "Consider SET SESSION optimizer_switch='mrr=on,mrr_cost_based=on';.",
+      "source": "environment",
+      "why": "Multi-Range Read collects row IDs from a secondary-index range scan, sorts them by primary key, and then fetches rows in (mostly) physical order. Without MRR, InnoDB has to dereference each secondary-index row in secondary-index order, which translates to random I/O on the clustered index and hurts both disk and buffer-pool cache locality."
+    },
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "CREATE INDEX idx_users_status ON users (status);",
+      "source": "environment"
+    }
+  ],
+  "executive_summary": "Query scans 1 table, materializes 1 temp table and sorts the result; examines ~3,000 rows to return 5 in 0.57 ms. Main finding: no index covers (status) on users.",
+  "query": {
+    "raw": "SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC",
+    "beautified": "SELECT t.country, t.cnt\nFROM (\nSELECT country, COUNT(*) cnt\nFROM users\nWHERE status='active'\nGROUP BY country) t\nORDER BY t.cnt DESC"
+  },
+  "index_suggestions": [
+    {
+      "table": "users",
+      "columns": [
+        "status"
+      ],
+      "ddl": "CREATE INDEX idx_users_status ON users (status);",
+      "reason": "Full scan on users with filter on (status)"
+    }
+  ],
+  "primary_action": {
+    "ref": "suggestions[0]"
+  },
+  "collected": {
+    "variables": {
+      "bulk_insert_buffer_size": "8388608",
+      "character_set_connection": "utf8mb4",
+      "character_set_server": "utf8mb4",
+      "collation_connection": "utf8mb4_0900_ai_ci",
+      "collation_server": "utf8mb4_uca1400_ai_ci",
+      "eq_range_index_dive_limit": "200",
+      "innodb_buffer_pool_size": "134217728",
+      "innodb_file_per_table": "ON",
+      "innodb_flush_log_at_trx_commit": "1",
+      "innodb_flush_method": "O_DIRECT",
+      "innodb_io_capacity": "200",
+      "innodb_log_buffer_size": "16777216",
+      "innodb_log_file_size": "100663296",
+      "join_buffer_size": "262144",
+      "max_allowed_packet": "16777216",
+      "max_connections": "151",
+      "max_heap_table_size": "16777216",
+      "optimizer_prune_level": "2",
+      "optimizer_search_depth": "62",
+      "optimizer_switch": "index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=off,sargable_casefold=on",
+      "read_buffer_size": "131072",
+      "read_rnd_buffer_size": "262144",
+      "sort_buffer_size": "262144",
+      "table_open_cache": "2000",
+      "thread_cache_size": "151",
+      "tmp_table_size": "16777216",
+      "version": "11.4.10-MariaDB-ubu2404",
+      "version_comment": "mariadb.org binary distribution",
+      "version_compile_os": "debian-linux-gnu"
+    },
+    "stats": {
+      "demodb.users": {
+        "table_schema": "demodb",
+        "table_name": "users",
+        "table_rows": 3000,
+        "data_length": 180224,
+        "index_length": 81920,
+        "data_free": 0,
+        "auto_increment": 4096,
+        "engine": "InnoDB",
+        "row_format": "Dynamic"
+      }
+    },
+    "schema": {
+      "demodb.users": {
+        "ddl": "CREATE TABLE `users` (\n  `id` int(11) NOT NULL AUTO_INCREMENT,\n  `name` varchar(80) DEFAULT NULL,\n  `country` varchar(2) DEFAULT NULL,\n  `status` varchar(20) DEFAULT NULL,\n  `created_at` datetime DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `idx_country` (`country`)\n) ENGINE=InnoDB AUTO_INCREMENT=4096 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci",
+        "table_name": "users",
+        "columns": [
+          {
+            "name": "id",
+            "type": "int(11)",
+            "rest": "NOT NULL AUTO_INCREMENT"
+          },
+          {
+            "name": "name",
+            "type": "varchar(80)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "country",
+            "type": "varchar(2)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "status",
+            "type": "varchar(20)",
+            "rest": "DEFAULT NULL"
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "rest": "DEFAULT NULL"
+          }
+        ],
+        "indexes": [
+          {
+            "kind": "PRIMARY KEY",
+            "name": null,
+            "columns": [
+              "id"
+            ]
+          },
+          {
+            "kind": "KEY",
+            "name": "idx_country",
+            "columns": [
+              "country"
+            ]
+          }
+        ],
+        "engine": "InnoDB",
+        "charset": "utf8mb4"
+      }
+    }
+  }
+}

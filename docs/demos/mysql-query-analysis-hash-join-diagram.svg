@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="992" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="1009" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1009" style="max-width: 100%; height: auto;">
 <defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="558"/></clipPath></defs>
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
@@ -28,7 +28,7 @@
   .zoom-btn:hover text { fill: #111; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
-<text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="28" text-anchor="middle" class="title">Hash Join — MySQL query analysis</text>
 <text x="600.0" y="46" text-anchor="middle" class="subtitle">Execution plan (left → right)  ·  Total: 8.25 ms  ·  Darker = slower  ·  Click node to pin details</text>
 <line x1="20" y1="488" x2="1180" y2="488" stroke="#e0e0e0" stroke-width="1"/>
 <rect x="20" y="492" width="1160" height="112" fill="#f5f5f5" rx="4"/>
@@ -253,7 +253,7 @@
   window.init = init;
 })();
 ]]></script>
-<rect x="20" y="566" width="1160" height="426" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="20" y="566" width="1160" height="443" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
 <rect x="20" y="576" width="1160" height="30" fill="#e8eaf6" rx="6"/>
 <rect x="20" y="582" width="1160" height="24" fill="#e8eaf6"/>
 <text x="36" y="595" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
@@ -268,15 +268,16 @@
 <text x="46" y="753" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover or click the node — details show “In Query Analysis”; the panel below lists the node label.</text>
 <rect x="24" y="763" width="1152" height="22" fill="#e3f2fd" rx="4"/>
 <text x="36" y="778" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="46" y="802" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on</text>
-<rect x="24" y="812" width="1152" height="22" fill="#fff3f3" rx="4"/>
-<text x="36" y="827" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="46" y="851" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows), orders (12000 rows)</text>
-<text x="46" y="868" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”, “Table scan [orders]”</text>
-<text x="46" y="885" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</text>
-<text x="46" y="902" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (orders.user_id = users.id)”</text>
-<rect x="24" y="912" width="1152" height="22" fill="#e8f5e9" rx="4"/>
-<text x="36" y="927" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="46" y="951" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="46" y="968" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
+<text x="46" y="802" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on — Builds an in-memory hash table on the smaller (build) input and probes it from the other side. Uses join_buffer_size; spills to a tmp file (and tmpdir) if the</text>
+<text x="46" y="819" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">build side does not fit.</text>
+<rect x="24" y="829" width="1152" height="22" fill="#fff3f3" rx="4"/>
+<text x="36" y="844" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="46" y="868" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows), orders (12000 rows)</text>
+<text x="46" y="885" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”, “Table scan [orders]”</text>
+<text x="46" y="902" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~12000 rows in build phase)</text>
+<text x="46" y="919" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (orders.user_id = users.id)”</text>
+<rect x="24" y="929" width="1152" height="22" fill="#e8f5e9" rx="4"/>
+<text x="36" y="944" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="46" y="968" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="46" y="985" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
 </svg>

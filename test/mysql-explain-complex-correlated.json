@@ -1,0 +1,145 @@
+{
+  "limit": 50,
+  "query": "/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "alias": "e",
+              "operation": "Table scan on e",
+              "table_name": "employees",
+              "access_type": "table",
+              "actual_rows": 2000.0,
+              "schema_name": "demodb",
+              "actual_loops": 1,
+              "used_columns": [
+                "id",
+                "name",
+                "dept_id",
+                "salary"
+              ],
+              "estimated_rows": 2000.0,
+              "actual_last_row_ms": 0.309122,
+              "actual_first_row_ms": 0.033292,
+              "estimated_total_cost": 202.0
+            }
+          ],
+          "condition": "(e.dept_id in (1,2,3))",
+          "operation": "Filter: (e.dept_id in (1,2,3))",
+          "access_type": "filter",
+          "actual_rows": 750.0,
+          "actual_loops": 1,
+          "estimated_rows": 2000.0,
+          "actual_last_row_ms": 0.393381,
+          "actual_first_row_ms": 0.034459000000000004,
+          "estimated_total_cost": 202.0
+        }
+      ],
+      "operation": "Sort: e.salary DESC, limit input to 50 row(s) per chunk",
+      "access_type": "sort",
+      "actual_rows": 50.0,
+      "sort_fields": [
+        "e.salary DESC"
+      ],
+      "actual_loops": 1,
+      "estimated_rows": 2000.0,
+      "per_chunk_limit": 50,
+      "actual_last_row_ms": 0.49067,
+      "actual_first_row_ms": 0.488375,
+      "estimated_total_cost": 202.0
+    }
+  ],
+  "operation": "Limit: 50 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 50.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 50.0,
+  "actual_last_row_ms": 0.49362500000000004,
+  "actual_first_row_ms": 0.488876,
+  "estimated_total_cost": 202.0,
+  "inputs_from_select_list": [
+    {
+      "inputs": [
+        {
+          "alias": "sh",
+          "covering": false,
+          "operation": "Index lookup on sh using idx_emp (employee_id=e.id)",
+          "index_name": "idx_emp",
+          "table_name": "salary_history",
+          "access_type": "index",
+          "actual_rows": 5.0,
+          "schema_name": "demodb",
+          "actual_loops": 50,
+          "used_columns": [
+            "employee_id",
+            "salary"
+          ],
+          "estimated_rows": 4.9604997634887695,
+          "lookup_condition": "employee_id=e.id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.00400582,
+          "actual_first_row_ms": 0.00367584,
+          "estimated_total_cost": 1.7361749172210692
+        }
+      ],
+      "heading": "Select #2 (subquery in projection; dependent)",
+      "subquery": true,
+      "dependent": true,
+      "functions": [
+        "max(sh.salary)"
+      ],
+      "operation": "Aggregate: max(sh.salary)",
+      "access_type": "aggregate",
+      "actual_rows": 1.0,
+      "actual_loops": 50,
+      "estimated_rows": 1.0,
+      "subquery_location": "projection",
+      "actual_last_row_ms": 0.00458986,
+      "actual_first_row_ms": 0.00457156,
+      "estimated_total_cost": 2.232224893569946
+    },
+    {
+      "inputs": [
+        {
+          "alias": "sh",
+          "covering": true,
+          "operation": "Covering index lookup on sh using idx_emp (employee_id=e.id)",
+          "index_name": "idx_emp",
+          "table_name": "salary_history",
+          "access_type": "index",
+          "actual_rows": 5.0,
+          "schema_name": "demodb",
+          "actual_loops": 50,
+          "used_columns": [
+            "employee_id"
+          ],
+          "estimated_rows": 4.9604997634887695,
+          "lookup_condition": "employee_id=e.id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.0012759800000000001,
+          "actual_first_row_ms": 0.00095918,
+          "estimated_total_cost": 0.7471368313882537
+        }
+      ],
+      "heading": "Select #3 (subquery in projection; dependent)",
+      "subquery": true,
+      "dependent": true,
+      "functions": [
+        "count(0)"
+      ],
+      "operation": "Aggregate: count(0)",
+      "access_type": "aggregate",
+      "actual_rows": 1.0,
+      "actual_loops": 50,
+      "estimated_rows": 1.0,
+      "subquery_location": "projection",
+      "actual_last_row_ms": 0.0015933399999999997,
+      "actual_first_row_ms": 0.00157166,
+      "estimated_total_cost": 1.2431868077371306
+    }
+  ]
+}

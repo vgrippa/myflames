@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1800" height="419" onload="init(evt)" viewBox="0 0 1800 419" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1800" height="419" onload="init(evt)" viewBox="0 0 1800 419" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="max-width: 100%; height: auto;">
 <defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs>
 <style type="text/css">text { font-family: Verdana; font-size: 12px; fill: rgb(0,0,0); }
 #search, #ignorecase { opacity:0.1; cursor:pointer; } #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
@@ -281,7 +281,7 @@
 
 ]]></script>
 <rect width="100%" height="100%" fill="url(#background)"/>
-<text id="title" x="900" y="24">MySQL Query Plan</text>
+<text id="title" x="900" y="24">Index Condition Pushdown — MySQL query analysis</text>
 <text id="details" x="10" y="117"> </text>
 <text id="unzoom" class="hide" x="10" y="24">Reset Zoom</text>
 <text id="search" x="1690" y="24">Search</text>
@@ -309,5 +309,5 @@
 <text x="30" y="346" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
 <rect x="8" y="356" width="1784" height="22" fill="#e3f2fd" rx="4"/>
 <text x="20" y="371" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="30" y="395" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_condition_pushdown=on</text>
+<text x="30" y="395" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_condition_pushdown=on — Parts of the WHERE clause are evaluated inside the storage engine using index columns before fetching the full row — reduces rows handed to the server layer.</text>
 </svg>

@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:09:18Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "test/mysql-explain-hash-join-probe.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 1.944,
+    "rows_sent": 0,
+    "rows_examined_estimate": 7000,
+    "operator_count": 3,
+    "max_depth": 2
+  },
+  "optimizer_switches": [
+    {
+      "name": "hash_join",
+      "value": "on",
+      "explanation": "Builds an in-memory hash table on the smaller (build) input and probes it from the other side. Uses join_buffer_size; spills to a tmp file (and tmpdir) if the build side does not fit.",
+      "node_labels": [
+        "Inner hash join (t1.d = concat('r',t2.y))"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "hash_join",
+      "text": "Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use.",
+      "source": "plan",
+      "node_labels": [
+        "Inner hash join (t1.d = concat('r',t2.y))"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: t1 (5000 rows), t2 (2000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [t1]",
+        "Table scan [t2]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "hash_join",
+      "text": "1 hash join(s) — uses join_buffer_size",
+      "source": "plan",
+      "node_labels": [
+        "Inner hash join (t1.d = concat('r',t2.y))"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "low",
+      "category": "other",
+      "action": "Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)').",
+      "source": "plan",
+      "why": "wrapping a column in a function means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables."
+    },
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase join_buffer_size if hash joins are slow or spill to disk",
+      "source": "plan",
+      "target_variable": "join_buffer_size"
+    }
+  ],
+  "executive_summary": "Query scans 2 tables and hash-joins 1 pair; examines ~7,000 rows to return 0 in 1.9 ms. Main finding: join predicate wraps the column in CONCAT() — no index can be used.",
+  "query": {
+    "raw": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))",
+    "beautified": "select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d,testdb.t2.id AS id,testdb.t2.x AS x,testdb.t2.y AS y\nfrom testdb.t1\n  join testdb.t2\nwhere (testdb.t1.d = concat('r',testdb.t2.y))"
+  },
+  "primary_action": {
+    "ref": "suggestions[1]"
+  }
+}

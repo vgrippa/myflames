@@ -1,0 +1,60 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.065661675
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 1.26600137,
+    "r_loops": 1,
+    "r_total_time_ms": 0.100416358,
+    "nested_loop": [
+      {
+        "duplicates_removal": [
+          {
+            "table": {
+              "table_name": "t2",
+              "access_type": "ALL",
+              "possible_keys": ["idx_x"],
+              "loops": 1,
+              "r_loops": 1,
+              "rows": 1000,
+              "r_rows": 1000,
+              "cost": 0.1764192,
+              "r_table_time_ms": 0.046465045,
+              "r_other_time_ms": 0.022458802,
+              "r_engine_stats": {
+                "pages_accessed": 4
+              },
+              "filtered": 100,
+              "r_filtered": 4.9,
+              "attached_condition": "t2.y < 100 and t2.x is not null"
+            }
+          },
+          {
+            "table": {
+              "table_name": "t1",
+              "access_type": "eq_ref",
+              "possible_keys": ["PRIMARY"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "ref": ["testdb.t2.x"],
+              "loops": 1000,
+              "r_loops": 49,
+              "rows": 1,
+              "r_rows": 1,
+              "cost": 0.9034512,
+              "r_table_time_ms": 0.018987516,
+              "r_other_time_ms": 0.009284644,
+              "r_engine_stats": {
+                "pages_accessed": 98
+              },
+              "filtered": 0.100000001,
+              "r_filtered": 100
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

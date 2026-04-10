@@ -1,0 +1,308 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1796" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1796" style="max-width: 100%; height: auto;">
+<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="558"/></clipPath></defs>
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 16px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .cost { font-size: 10px; fill: #555; }
+  .node-label { font-weight: bold; font-size: 11px; }
+  .node-sublabel { font-size: 9px; }
+  .row-count { font-size: 10px; }
+  .arrow-label { font-size: 9px; fill: #444; }
+  .diagram-node { cursor: pointer; }
+  .diagram-node:hover rect, .diagram-node:hover polygon { opacity: 0.9; stroke-width: 2; }
+  .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }
+  .loops-line { font-size: 9px; fill: #555; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
+  .details-line.dim { fill: #999; }
+  #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #search:hover { fill: #000; }
+  .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6; stroke-width: 3; }
+  .diagram-node.dim { opacity: 0.25; }
+  .zoom-controls { cursor: pointer; }
+  .zoom-btn rect { fill: #fff; stroke: #bbb; stroke-width: 1; rx: 4; }
+  .zoom-btn:hover rect { fill: #f0f0f0; stroke: #888; }
+  .zoom-btn text { font-size: 18px; font-weight: bold; fill: #444; user-select: none; pointer-events: none; }
+  .zoom-btn:hover text { fill: #111; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="28" text-anchor="middle" class="title">Live MariaDB 11.4 — derived table + filesort</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Execution plan (left → right)  ·  Total: 774.7 µs  ·  Darker = slower  ·  Click node to pin details</text>
+<line x1="20" y1="488" x2="1180" y2="488" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="20" y="492" width="1160" height="112" fill="#f5f5f5" rx="4"/>
+<text id="search" x="1172" y="500" text-anchor="end">Search</text>
+<text id="details-l0" x="30" y="500" text-anchor="start" class="details-line">Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
+<text id="details-l1" x="30" y="516" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="30" y="532" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="30" y="548" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="30" y="564" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="30" y="580" text-anchor="start" class="details-line"></text>
+<g id="diagram-content" clip-path="url(#diagram-clip)">
+<g class="diagram-node" data-info="Table scan on users  ·  Total: 749.9 µs  ·  Cost: 0.51  ·  Rows: 3.00K  ·  Loops: 1  ·  Table: users  ·  Est.rows: 3000  ·  Cond: users.`status` = 'active'  ·  Covering: no  ·  ⚠ In Query Analysis: Full table scan: users (3000 rows)" data-analysis-msg="Full table scan: users (3000 rows)">
+<title>Table scan on users  ·  Total: 749.9 µs  ·  Cost: 0.51  ·  Rows: 3.00K  ·  Loops: 1  ·  Table: users  ·  Est.rows: 3000  ·  Cond: users.`status` = 'active'  ·  Covering: no  ·  ⚠ In Query Analysis: Full table scan: users (3000 rows)</title>
+<defs><clipPath id="clipbox-0"><rect x="20" y="156" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
+<g clip-path="url(#clipbox-0)">
+<rect x="20" y="156" width="240" height="112" fill="#2472b6" stroke="#333" stroke-width="1" rx="6" ry="6"/>
+<text x="140.0" y="172" text-anchor="middle" class="cost" fill="#ffffff">749.9 µs</text>
+<text x="140.0" y="190" text-anchor="middle" class="node-label" fill="#ffffff">Full Table Scan</text>
+<text x="140.0" y="208" text-anchor="middle" class="node-sublabel" fill="#ffffff">users</text>
+<text x="140.0" y="258" text-anchor="middle" class="row-count" fill="#ffffff">3.00K rows</text>
+</g>
+</g>
+<line x1="260" y1="212.0" x2="310" y2="212.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="285.0" y="206.0" text-anchor="middle" class="arrow-label">3.00K rows</text>
+<g class="diagram-node" data-info="Total: 774.7 µs">
+<title>Total: 774.7 µs</title>
+<rect x="310" y="184.0" width="160" height="56" fill="#2171b5" stroke="#333" stroke-width="1" rx="6"/>
+<text x="390.0" y="204.0" text-anchor="middle" class="node-label" fill="#ffffff">query_block #1</text>
+<text x="390.0" y="222.0" text-anchor="middle" class="cost" fill="#ffffff">766.1 µs</text>
+</g>
+</g>
+<g class="zoom-controls">
+<g class="zoom-btn" id="zoom-in"><rect x="1138" y="412" width="30" height="30"/><text x="1153.0" y="433.0" text-anchor="middle">+</text></g>
+<g class="zoom-btn" id="zoom-out"><rect x="1138" y="446" width="30" height="30"/><text x="1153.0" y="467.0" text-anchor="middle">−</text></g>
+<g class="zoom-btn" id="zoom-reset"><rect x="1138" y="480" width="30" height="30"/><text x="1153.0" y="501.0" text-anchor="middle">↺</text></g>
+</g>
+<script type="text/javascript"><![CDATA[
+(function() {
+  var N_LINES = 6;
+  var detailLines = [];
+  var searchBtn, content, svgEl;
+  var diagramBottom = 558;
+  var defaultHint = "Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
+  var pinned = false, searchActive = false;
+  var vx = 0, vy = 0, vs = 1;
+  var dragging = false, dragStart = {x:0,y:0}, dragOrigin = {x:0,y:0};
+
+  function svgYFromEvent(e) {
+    var rect = svgEl.getBoundingClientRect();
+    var svgH = parseFloat(svgEl.getAttribute('height')) || rect.height;
+    var scale = rect.height > 0 ? svgH / rect.height : 1;
+    return (e.clientY - rect.top) * scale;
+  }
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) detailLines[i].textContent = "";
+    }
+  }
+
+  function setDetailsForNode(infoStr) {
+    if (!infoStr) { clearDetails(); return; }
+    var sep = "  ·  ";
+    var parts = infoStr.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    svgEl = document.querySelector("svg");
+    content = document.getElementById("diagram-content");
+    searchBtn = document.getElementById("search");
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    if (!content) return;
+
+    // Zoom via +/- buttons (zoom toward center of diagram area)
+    function zoomBy(factor) {
+      var rect = svgEl.getBoundingClientRect();
+      var svgW = parseFloat(svgEl.getAttribute('width')) || rect.width;
+      var cx = svgW / 2, cy = diagramBottom / 2;
+      vx = cx + (vx - cx) * factor;
+      vy = cy + (vy - cy) * factor;
+      vs *= factor;
+      applyTransform();
+    }
+    var zoomInBtn = document.getElementById("zoom-in");
+    var zoomOutBtn = document.getElementById("zoom-out");
+    var zoomResetBtn = document.getElementById("zoom-reset");
+    if (zoomInBtn) zoomInBtn.addEventListener("click", function() { zoomBy(1.25); });
+    if (zoomOutBtn) zoomOutBtn.addEventListener("click", function() { zoomBy(0.8); });
+    if (zoomResetBtn) zoomResetBtn.addEventListener("click", function() { vx = 0; vy = 0; vs = 1; applyTransform(); });
+
+    // Drag: only in diagram area, not on text and not on nodes
+    svgEl.addEventListener("mousedown", function(e) {
+      var tag = e.target.tagName ? e.target.tagName.toLowerCase() : '';
+      if (tag === 'text' || tag === 'tspan') return;
+      if (e.target.closest && e.target.closest(".diagram-node")) return;
+      if (svgYFromEvent(e) > diagramBottom) return;
+      dragging = true;
+      dragStart = {x: e.clientX, y: e.clientY};
+      dragOrigin = {x: vx, y: vy};
+      svgEl.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", function(e) {
+      if (!dragging) return;
+      vx = dragOrigin.x + (e.clientX - dragStart.x);
+      vy = dragOrigin.y + (e.clientY - dragStart.y);
+      applyTransform();
+    });
+    document.addEventListener("mouseup", function() {
+      if (dragging) { dragging = false; svgEl.style.cursor = ""; }
+    });
+    svgEl.addEventListener("dblclick", function(e) {
+      if (e.target.closest && e.target.closest(".diagram-node")) return;
+      if (svgYFromEvent(e) > diagramBottom) return;
+      vx = 0; vy = 0; vs = 1;
+      applyTransform();
+    });
+
+    // Hover and click-to-pin on nodes
+    var nodes = document.querySelectorAll(".diagram-node");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].addEventListener("mouseover", onHover);
+      nodes[i].addEventListener("mouseout", onOut);
+      nodes[i].addEventListener("click", onNodeClick);
+    }
+    svgEl.addEventListener("click", function(e) {
+      if (pinned && !(e.target.closest && e.target.closest(".diagram-node"))) unpinAll();
+    });
+
+    if (searchBtn) searchBtn.addEventListener("click", searchPrompt);
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function applyTransform() {
+    content.setAttribute("transform", "translate(" + vx + "," + vy + ") scale(" + vs + ")");
+  }
+
+  function onHover(e) {
+    if (!pinned) setDetailsForNode(e.currentTarget.getAttribute("data-info") || "");
+  }
+  function onOut() {
+    if (!pinned) clearDetails();
+  }
+  function onNodeClick(e) {
+    var g = e.currentTarget;
+    if (g.classList.contains("pinned")) {
+      unpinAll();
+    } else {
+      unpinAll();
+      g.classList.add("pinned");
+      pinned = true;
+      setDetailsForNode(g.getAttribute("data-info") || "");
+    }
+    e.stopPropagation();
+  }
+  function unpinAll() {
+    var prev = document.querySelectorAll(".diagram-node.pinned");
+    for (var i = 0; i < prev.length; i++) prev[i].classList.remove("pinned");
+    pinned = false;
+    clearDetails();
+  }
+
+  function searchPrompt() {
+    if (searchActive) {
+      var all = document.querySelectorAll(".diagram-node");
+      for (var i = 0; i < all.length; i++) all[i].classList.remove("dim");
+      searchBtn.textContent = "Search";
+      searchActive = false;
+      clearDetails();
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var all = document.querySelectorAll(".diagram-node");
+    for (var i = 0; i < all.length; i++) {
+      var info = all[i].getAttribute("data-info") || "";
+      all[i].classList.toggle("dim", !re.test(info));
+    }
+    searchBtn.textContent = "Reset Search";
+    searchActive = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+<rect x="20" y="566" width="1160" height="1230" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="20" y="576" width="1160" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="20" y="582" width="1160" height="24" fill="#e8eaf6"/>
+<text x="36" y="595" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="24" y="614" width="1152" height="22" fill="#f5f5f5" rx="4"/>
+<text x="36" y="629" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="46" y="653" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">SELECT t.country, t.cnt</text>
+<text x="46" y="670" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">FROM (</text>
+<text x="46" y="687" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">SELECT country, COUNT(*) cnt</text>
+<text x="46" y="704" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">FROM users</text>
+<text x="46" y="721" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">WHERE status='active'</text>
+<text x="46" y="738" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">GROUP BY country) t</text>
+<text x="46" y="755" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">ORDER BY t.cnt DESC</text>
+<rect x="24" y="765" width="1152" height="22" fill="#f1f8e9" rx="4"/>
+<text x="36" y="780" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="46" y="804" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Left→right = execution order. Darker = more self-time. Click a node to pin details.</text>
+<text x="46" y="821" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover or click the node — details show “In Query Analysis”; the panel below lists the node label.</text>
+<rect x="24" y="831" width="1152" height="22" fill="#e3f2fd" rx="4"/>
+<text x="36" y="846" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="46" y="870" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">materialization=on — A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill</text>
+<text x="46" y="887" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">to disk.</text>
+<rect x="24" y="897" width="1152" height="22" fill="#fff3f3" rx="4"/>
+<text x="36" y="912" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="46" y="936" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: users (3000 rows)</text>
+<text x="46" y="953" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [users]”</text>
+<text x="46" y="970" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 temp table(s) (Materialize) — up to 5 rows; may spill to disk</text>
+<text x="46" y="987" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Materialize”</text>
+<text x="46" y="1004" font-family="Arial,sans-serif" font-size="11" fill="#c62828">2 sort operation(s) — 5 rows; may use disk-based filesort</text>
+<text x="46" y="1021" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="24" y="1031" width="1152" height="22" fill="#e8f5e9" rx="4"/>
+<text x="36" y="1046" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="46" y="1070" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="46" y="1087" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase tmp_table_size / max_heap_table_size to keep temp tables in memory</text>
+<text x="46" y="1104" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<rect x="24" y="1114" width="1152" height="22" fill="#fff8e1" rx="4"/>
+<text x="36" y="1129" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#e65100">📈  Index suggestions (heuristic — verify before applying)</text>
+<text x="46" y="1153" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">•  Full scan on users with filter on (status)</text>
+<text x="46" y="1170" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">    CREATE INDEX idx_users_status ON users (status);</text>
+<rect x="24" y="1180" width="1152" height="22" fill="#fff3f3" rx="4"/>
+<text x="36" y="1195" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">🔍  Environment warnings (from collected server state)</text>
+<text x="46" y="1219" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.</text>
+<text x="46" y="1236" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Query materializes 1 temp table(s) but tmp_table_size/max_heap_table_size is capped at 16.0 MB — temp tables will spill to InnoDB disk tables.</text>
+<text x="46" y="1253" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  optimizer_switch has mrr=off; range scans followed by filesort may read rows in random order.</text>
+<text x="46" y="1270" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Table users has no index covering (status).</text>
+<rect x="24" y="1280" width="1152" height="22" fill="#e8f5e9" rx="4"/>
+<text x="36" y="1295" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">⚙  Environment tuning suggestions</text>
+<text x="46" y="1319" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024). Why: when the sort set does not fit in sort_buffer_size, MySQL writes multiple</text>
+<text x="46" y="1336" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort.</text>
+<text x="46" y="1353" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.</text>
+<text x="46" y="1370" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise tmp_table_size AND max_heap_table_size together to the same value (64M–256M). Why: once a materialized temp table exceeds min(tmp_table_size, max_heap_table_size),</text>
+<text x="46" y="1387" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">MySQL converts the in-memory MEMORY/TempTable engine to an on-disk InnoDB temp table — scans over the disk version are typically 10–100× slower and generate real I/O. Both</text>
+<text x="46" y="1404" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">variables must be raised together because MySQL always picks the smaller of the two; raising only one has no effect.</text>
+<text x="46" y="1421" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Consider SET SESSION optimizer_switch='mrr=on,mrr_cost_based=on'; Why: Multi-Range Read collects row IDs from a secondary-index range scan, sorts them by primary key, and</text>
+<text x="46" y="1438" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">then fetches rows in (mostly) physical order. Without MRR, InnoDB has to dereference each secondary-index row in secondary-index order, which translates to random I/O on the</text>
+<text x="46" y="1455" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">clustered index and hurts both disk and buffer-pool cache locality.</text>
+<text x="46" y="1472" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  CREATE INDEX idx_users_status ON users (status);</text>
+<rect x="24" y="1482" width="1152" height="22" fill="#e3f2fd" rx="4"/>
+<text x="36" y="1497" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected session variables</text>
+<text x="46" y="1521" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 11.4.10-MariaDB-ubu2404</text>
+<text x="46" y="1538" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_buffer_pool_size = 134217728</text>
+<text x="46" y="1555" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_log_file_size = 100663296</text>
+<text x="46" y="1572" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_flush_log_at_trx_commit = 1</text>
+<text x="46" y="1589" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">sort_buffer_size = 262144</text>
+<text x="46" y="1606" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">join_buffer_size = 262144</text>
+<text x="46" y="1623" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">tmp_table_size = 16777216</text>
+<text x="46" y="1640" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">max_heap_table_size = 16777216</text>
+<text x="46" y="1657" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">optimizer_switch =</text>
+<text x="46" y="1674" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=off,sargable_casefold=on</text>
+<rect x="24" y="1684" width="1152" height="22" fill="#e3f2fd" rx="4"/>
+<text x="36" y="1699" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected table stats (information_schema.tables)</text>
+<text x="46" y="1723" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users: rows=3000, data=180224, idx=81920</text>
+<rect x="24" y="1733" width="1152" height="22" fill="#e3f2fd" rx="4"/>
+<text x="36" y="1748" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected schema (SHOW CREATE TABLE)</text>
+<text x="46" y="1772" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users — 5 cols, indexes: PRIMARY, idx_country</text>
+</svg>

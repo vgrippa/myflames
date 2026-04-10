@@ -1,0 +1,56 @@
+{
+  "query": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))",
+  "inputs": [
+    {
+      "operation": "Table scan on t1",
+      "table_name": "t1",
+      "access_type": "table",
+      "actual_rows": 5000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "estimated_rows": 5000.0,
+      "actual_last_row_ms": 0.817612,
+      "actual_first_row_ms": 0.073624,
+      "estimated_total_cost": 0.02719836463034153
+    },
+    {
+      "heading": "Hash",
+      "operation": "Table scan on t2",
+      "table_name": "t2",
+      "access_type": "table",
+      "actual_rows": 2000.0,
+      "schema_name": "testdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "id",
+        "x",
+        "y"
+      ],
+      "estimated_rows": 2000.0,
+      "actual_last_row_ms": 0.268795,
+      "actual_first_row_ms": 0.041999,
+      "estimated_total_cost": 201.5
+    }
+  ],
+  "join_type": "inner join",
+  "operation": "Inner hash join (t1.d = concat('r',t2.y))",
+  "query_type": "select",
+  "access_type": "join",
+  "actual_rows": 0.0,
+  "actual_loops": 1,
+  "estimated_rows": 1000000.0149011612,
+  "hash_condition": [
+    "(t1.d = concat('r',t2.y))"
+  ],
+  "join_algorithm": "hash",
+  "actual_last_row_ms": 1.943792,
+  "actual_first_row_ms": 1.943792,
+  "estimated_total_cost": 1000205.8967285156
+}

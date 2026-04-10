@@ -14,6 +14,7 @@ __pycache__/
 *.py[cod]
 .eggs/
 *.egg-info/
+build/
 
 # OS and editors
 .DS_Store

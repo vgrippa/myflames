@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Block Nested-Loop — MariaDB 11.4 ANALYZE — myflames report</title>
+  <meta name="description" content="Query scans 2 tables and joins via block nested-loop; returns 3,000 rows in 186 ms. Main finding: join predicate wraps the column in CONVERT() — no index can be used.">
+  <script type="application/ld+json">
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-04-10T20:15:15Z",
+  "myflames_version": "1.2.0",
+  "source": {
+    "type": "file"
+  },
+  "plan_summary": {
+    "total_time_ms": 185.701,
+    "rows_sent": 3000,
+    "rows_examined_estimate": 4000,
+    "operator_count": 3,
+    "max_depth": 2
+  },
+  "optimizer_switches": [
+    {
+      "name": "block_nested_loop",
+      "value": "on",
+      "explanation": "Buffers a batch of outer rows in a join buffer and scans the inner table once per batch instead of once per row. Inner still does a full/index/range scan — a missing index on the join column is the root cause.",
+      "node_labels": [
+        "Table scan [t1]"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "error",
+      "category": "nonsargable_join",
+      "text": "Non-sargable join predicate: CONVERT(...) in t1.d = convert(concat('r',t2.y) using utf8mb4) — a function wrapped around the join column prevents index use.",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [t1]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: t2 (1000 rows), t1 (3000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [t2]",
+        "Table scan [t1]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "bnl",
+      "text": "Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [t1]"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "rewrite",
+      "action": "Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)').",
+      "source": "plan",
+      "why": "wrapping a column in a function means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables."
+    },
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Add indexes to eliminate BNL full/index scans, or increase join_buffer_size. In MySQL 8.0.20+, set block_nested_loop=off to force hash join instead",
+      "source": "plan",
+      "target_variable": "join_buffer_size"
+    }
+  ],
+  "executive_summary": "Query scans 2 tables and joins via block nested-loop; returns 3,000 rows in 186 ms. Main finding: join predicate wraps the column in CONVERT() — no index can be used.",
+  "index_suggestions": [
+    {
+      "table": "t1",
+      "columns": [
+        "d"
+      ],
+      "ddl": "CREATE INDEX idx_t1_d ON t1 (d);",
+      "reason": "Full scan on t1 with filter on (d)"
+    }
+  ],
+  "primary_action": {
+    "ref": "suggestions[0]"
+  }
+}
+  </script>
+  <style>
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --fg: #1a1a2e;
+  --muted: #5a6475;
+  --border: #e0e4ec;
+  --accent: #283593;
+  --accent-soft: #e8eaf6;
+
+  /* Severity palette (from progressive-ux skill) */
+  --sev-error: #b71c1c;
+  --sev-warn: #ef6c00;
+  --sev-info: #0d47a1;
+  --sev-ok: #1b5e20;
+
+  --sev-high: var(--sev-error);
+  --sev-medium: var(--sev-warn);
+  --sev-low: var(--sev-info);
+
+  --code-bg: #263238;
+  --code-fg: #eceff1;
+  --code-str: #c3e88d;
+  --code-kw: #82aaff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; top: -40px; left: 0;
+  background: var(--accent); color: #fff; padding: 8px 16px;
+  z-index: 100; text-decoration: none;
+}
+.skip-link:focus { top: 0; }
+
+/* Header */
+.site-header {
+  background: #1a1a2e; color: #fff;
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.site-header h1 {
+  font-size: 17px; font-weight: 600; margin: 0;
+}
+.site-header nav.toolbar {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.site-header nav.toolbar button {
+  padding: 6px 14px; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; background: rgba(255,255,255,0.06);
+  color: #fff; font-size: 12px; cursor: pointer;
+}
+.site-header nav.toolbar button:hover { background: rgba(255,255,255,0.15); }
+.site-header nav.toolbar button:focus { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Main layout */
+main.report {
+  max-width: 1400px; margin: 24px auto; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+main.report > section,
+main.report > details,
+main.report > aside {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 22px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+main.report h2 {
+  font-size: 15px; font-weight: 600; color: var(--fg);
+  margin: 0 0 12px 0; display: inline-flex; align-items: baseline; gap: 8px;
+}
+main.report h2 .count {
+  color: var(--muted); font-weight: 400; font-size: 13px;
+}
+
+/* Exec summary strip */
+.exec-summary .exec-text {
+  font-size: 16px; font-weight: 500; color: var(--fg);
+  margin: 0 0 14px 0;
+}
+.exec-summary .quick-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin: 0;
+}
+.exec-summary .quick-stats > div {
+  background: var(--accent-soft); border-radius: 6px;
+  padding: 10px 14px; text-align: left;
+}
+.exec-summary .quick-stats dt {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--muted); margin-bottom: 2px;
+}
+.exec-summary .quick-stats dd {
+  font-size: 18px; font-weight: 700; color: var(--accent); margin: 0;
+}
+
+/* Primary action card */
+.primary-action {
+  border-left: 4px solid var(--sev-medium);
+  background: #fff9f3;
+}
+.primary-action.sev-high { border-left-color: var(--sev-high); background: #fff3f3; }
+.primary-action.sev-low  { border-left-color: var(--sev-low);  background: #f1f8ff; }
+.primary-action-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.primary-action-header h2 { margin: 0; font-size: 15px; }
+.primary-action .action-text {
+  font-size: 15px; color: var(--fg); margin: 8px 0;
+}
+.primary-action .sql-action {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 16px; border-radius: 6px; margin: 8px 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; overflow-x: auto;
+}
+.primary-action details.why-details {
+  margin-top: 10px; background: rgba(255,255,255,0.5);
+  border-radius: 6px; padding: 8px 12px;
+}
+.primary-action details.why-details summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted);
+}
+.primary-action details.why-details[open] summary { margin-bottom: 6px; }
+
+/* Severity badges */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 12px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; background: var(--muted); color: #fff;
+}
+.badge-high,  .badge-error { background: var(--sev-error); }
+.badge-medium, .badge-warn { background: var(--sev-warn); }
+.badge-low,   .badge-info  { background: var(--sev-info); }
+.badge-ok                  { background: var(--sev-ok); }
+
+/* Query card */
+.query-card pre {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 14px 18px; border-radius: 8px;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  overflow-x: auto; margin: 0;
+}
+
+/* Visualization */
+.viz-card .chart-panel {
+  overflow-x: auto; padding: 4px; background: #fff;
+  border-radius: 6px; border: 1px solid var(--border);
+}
+.viz-card svg { display: block; max-width: 100%; height: auto; }
+
+/* Warnings + suggestions lists */
+.warning-list, .suggestion-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.warning, .suggestion {
+  background: var(--bg); border-radius: 8px; padding: 12px 14px;
+  border-left: 3px solid var(--muted);
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 6px;
+}
+.warning.sev-error, .suggestion.sev-high    { border-left-color: var(--sev-high); }
+.warning.sev-warn,  .suggestion.sev-medium  { border-left-color: var(--sev-warn); }
+.warning.sev-info,  .suggestion.sev-low     { border-left-color: var(--sev-info); }
+.warning .text, .suggestion .action-text { margin: 0; grid-column: 2; }
+.warning .where { grid-column: 2; font-size: 12px; color: var(--muted); margin: 0; }
+.suggestion .sql-action {
+  grid-column: 1 / -1;
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 10px 14px; border-radius: 6px; margin: 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px; overflow-x: auto;
+}
+.suggestion details.why-details {
+  grid-column: 1 / -1; margin-top: 4px; background: var(--accent-soft);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px;
+}
+.suggestion details.why-details summary {
+  cursor: pointer; font-weight: 600; color: var(--accent);
+}
+.suggestion details.why-details p {
+  margin: 6px 0 0 0; color: var(--fg);
+}
+.node-label {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: rgba(40,53,147,0.1); color: var(--accent);
+  font-size: 11px;
+}
+
+/* Glossary chips (<abbr>) */
+abbr.glossary-chip {
+  text-decoration: underline dotted rgba(40,53,147,0.5);
+  cursor: help; text-underline-offset: 2px;
+}
+
+/* Environment section */
+details.env-section summary,
+details.raw-sidecar summary,
+aside.glossary-aside summary {
+  cursor: pointer; list-style: none;
+}
+details.env-section summary::-webkit-details-marker,
+details.raw-sidecar summary::-webkit-details-marker,
+aside.glossary-aside summary::-webkit-details-marker { display: none; }
+details.env-section summary::before,
+details.raw-sidecar summary::before,
+aside.glossary-aside summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px;
+  transition: transform 0.15s; color: var(--muted);
+}
+details.env-section[open] summary::before,
+details.raw-sidecar[open] summary::before,
+aside.glossary-aside details[open] summary::before { transform: rotate(90deg); }
+details.env-section summary h2,
+details.raw-sidecar summary h2,
+aside.glossary-aside summary h2 { display: inline; margin: 0; }
+.env-grid {
+  margin-top: 14px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.env-card { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.env-card h3 {
+  font-size: 13px; margin: 0 0 8px 0; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv-table th {
+  text-align: left; font-weight: 600; padding: 4px 6px;
+  vertical-align: top; color: var(--muted);
+}
+.kv-table td {
+  padding: 4px 6px; word-break: break-all;
+  font-family: "SFMono-Regular", Menlo, monospace; font-size: 12px;
+}
+.schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.schema-list li { padding: 3px 0; }
+
+/* Glossary aside */
+aside.glossary-aside { background: #f1f8ff; }
+.glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
+.glossary-item dt code {
+  background: var(--accent-soft); padding: 2px 6px;
+  border-radius: 4px; font-size: 12px; color: var(--accent);
+}
+.glossary-item dd { margin: 4px 0 0 0; font-size: 13px; }
+.glossary-item dd.newcomer { color: var(--fg); }
+.glossary-item dd.technical {
+  color: var(--muted); font-size: 12px; font-style: italic;
+}
+
+/* Raw sidecar JSON */
+.raw-json {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+  font-family: "SFMono-Regular", monospace; font-size: 11.5px;
+  max-height: 400px;
+}
+
+/* Print tweaks */
+@media print {
+  body { background: #fff; }
+  .site-header { background: #fff; color: #000; border-bottom: 2px solid #000; }
+  .site-header nav { display: none; }
+  details { page-break-inside: avoid; }
+  details > summary { display: none; }
+  details > *:not(summary) { display: block !important; }
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  main.report { padding: 0 12px; }
+  .site-header { padding: 10px 14px; }
+  .site-header h1 { font-size: 15px; }
+}
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header" role="banner">
+    <h1>Block Nested-Loop — MariaDB 11.4 ANALYZE</h1>
+    <nav class="toolbar" aria-label="Report actions">
+      <button type="button" onclick="exportSVG()">Export SVG</button>
+      <button type="button" onclick="exportJSON()">Export Analysis JSON</button>
+      <button type="button" onclick="window.print()">Print / PDF</button>
+    </nav>
+  </header>
+  <main id="main-content" class="report" role="main">
+<section class="exec-summary" aria-labelledby="exec-heading">
+  <h2 id="exec-heading" class="visually-hidden">Summary</h2>
+  <p class="exec-text">Query scans 2 tables and joins via <abbr class="glossary-chip" title="Buffers outer rows in batches, scans the inner once per batch.">block nested-loop</abbr>; returns 3,000 rows in 186 ms. Main finding: join predicate wraps the column in CONVERT() — no index can be used.</p>
+  <dl class="quick-stats">
+    <div><dt>Total time</dt><dd>185.70 ms</dd></div>
+    <div><dt>Rows returned</dt><dd>3.00K</dd></div>
+    <div><dt>Rows examined</dt><dd>4.00K</dd></div>
+    <div><dt>Operators</dt><dd>3</dd></div>
+  </dl>
+</section>
+
+<section class="primary-action sev-high" aria-labelledby="primary-heading" role="region">
+  <header class="primary-action-header">
+    <span class="badge badge-high">Fix first</span>
+    <h2 id="primary-heading">Primary recommendation</h2>
+  </header>
+  <p class="action-text">Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)').</p>
+  <details class="why-details" open>
+    <summary>Why does this help?</summary>
+    <p>wrapping a column in a function means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets MySQL/MariaDB pick an <abbr class="glossary-chip" title="Direct index probe for matching rows.">index lookup</abbr> or <abbr class="glossary-chip" title="Build a hash table on one side, probe from the other.">hash join</abbr> with real selectivity, typically 100–1000× faster on mid-sized tables.</p>
+  </details>
+</section>
+
+<section class="viz-card" aria-labelledby="viz-heading">
+  <h2 id="viz-heading">Execution plan (diagram)</h2>
+  <div class="chart-panel" id="chart-panel">
+<svg version="1.1" width="1200" height="558" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="558"/></clipPath></defs>
+<style>
+  text { font-family: Arial, sans-serif; font-size: 11px; }
+  .title { font-size: 16px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .cost { font-size: 10px; fill: #555; }
+  .node-label { font-weight: bold; font-size: 11px; }
+  .node-sublabel { font-size: 9px; }
+  .row-count { font-size: 10px; }
+  .arrow-label { font-size: 9px; fill: #444; }
+  .diagram-node { cursor: pointer; }
+  .diagram-node:hover rect, .diagram-node:hover polygon { opacity: 0.9; stroke-width: 2; }
+  .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }
+  .loops-line { font-size: 9px; fill: #555; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
+  .details-line.dim { fill: #999; }
+  #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #search:hover { fill: #000; }
+  .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6; stroke-width: 3; }
+  .diagram-node.dim { opacity: 0.25; }
+  .zoom-controls { cursor: pointer; }
+  .zoom-btn rect { fill: #fff; stroke: #bbb; stroke-width: 1; rx: 4; }
+  .zoom-btn:hover rect { fill: #f0f0f0; stroke: #888; }
+  .zoom-btn text { font-size: 18px; font-weight: bold; fill: #444; user-select: none; pointer-events: none; }
+  .zoom-btn:hover text { fill: #111; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="28" text-anchor="middle" class="title">Block Nested-Loop — MariaDB 11.4 ANALYZE</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Execution plan (left → right)  ·  Total: 186 ms  ·  Darker = slower  ·  Click node to pin details</text>
+<line x1="20" y1="488" x2="1180" y2="488" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="20" y="492" width="1160" height="112" fill="#f5f5f5" rx="4"/>
+<text id="search" x="1172" y="500" text-anchor="end">Search</text>
+<text id="details-l0" x="30" y="500" text-anchor="start" class="details-line">Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
+<text id="details-l1" x="30" y="516" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="30" y="532" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="30" y="548" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="30" y="564" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="30" y="580" text-anchor="start" class="details-line"></text>
+<g id="diagram-content" clip-path="url(#diagram-clip)">
+<g class="diagram-node" data-info="Table scan on t2  ·  Total: 96.7 µs  ·  Cost: 0.18  ·  Rows: 1.00K  ·  Loops: 1  ·  Table: t2  ·  Est.rows: 1000  ·  Covering: no">
+<title>Table scan on t2  ·  Total: 96.7 µs  ·  Cost: 0.18  ·  Rows: 1.00K  ·  Loops: 1  ·  Table: t2  ·  Est.rows: 1000  ·  Covering: no</title>
+<defs><clipPath id="clipbox-0"><rect x="20" y="156" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
+<g clip-path="url(#clipbox-0)">
+<rect x="20" y="156" width="240" height="112" fill="#dae8f5" stroke="#333" stroke-width="1" rx="6" ry="6"/>
+<text x="140.0" y="172" text-anchor="middle" class="cost" fill="#111111">96.7 µs</text>
+<text x="140.0" y="190" text-anchor="middle" class="node-label" fill="#111111">Full Table Scan</text>
+<text x="140.0" y="208" text-anchor="middle" class="node-sublabel" fill="#111111">t2</text>
+<text x="140.0" y="258" text-anchor="middle" class="row-count" fill="#111111">1.00K rows</text>
+</g>
+</g>
+<line x1="260" y1="212.0" x2="310" y2="212.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="285.0" y="206.0" text-anchor="middle" class="arrow-label">1.00K rows</text>
+<g class="diagram-node" data-info="Nested loop inner join  ·  Total: 186 ms  ·  Self: 185 ms  ·  Rows: 3.00K  ·  Loops: 1">
+<title>Nested loop inner join  ·  Total: 186 ms  ·  Self: 185 ms  ·  Rows: 3.00K  ·  Loops: 1</title>
+<text x="366" y="150.0" text-anchor="middle" class="cost">185 ms</text>
+<polygon points="366,156.0 422,212.0 366,268.0 310,212.0" fill="#2171b5" stroke="#333" stroke-width="1"/>
+<text x="366" y="208.0" text-anchor="middle" class="node-label" fill="#ffffff">inner join</text>
+<text x="366" y="224.0" text-anchor="middle" class="node-sublabel" fill="#ffffff">3.00K rows</text>
+</g>
+<g class="diagram-node" data-info="Table scan on t1  ·  Total: 305.1 µs  ·  Cost: 279.17  ·  Rows: 3.00K  ·  Loops: 1  ·  Table: t1  ·  Est.rows: 3000  ·  Cond: t1.d = convert(concat('r',t2.y) using utf8mb4)  ·  Covering: no">
+<title>Table scan on t1  ·  Total: 305.1 µs  ·  Cost: 279.17  ·  Rows: 3.00K  ·  Loops: 1  ·  Table: t1  ·  Est.rows: 3000  ·  Cond: t1.d = convert(concat('r',t2.y) using utf8mb4)  ·  Covering: no</title>
+<defs><clipPath id="clipbox-1"><rect x="246.0" y="318" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
+<g clip-path="url(#clipbox-1)">
+<rect x="246.0" y="318" width="240" height="112" fill="#d4e4f3" stroke="#333" stroke-width="1" rx="6" ry="6"/>
+<text x="366.0" y="334" text-anchor="middle" class="cost" fill="#111111">305.1 µs</text>
+<text x="366.0" y="352" text-anchor="middle" class="node-label" fill="#111111">Full Table Scan</text>
+<text x="366.0" y="370" text-anchor="middle" class="node-sublabel" fill="#111111">t1</text>
+<text x="366.0" y="420" text-anchor="middle" class="row-count" fill="#111111">3.00K rows</text>
+</g>
+</g>
+<line x1="366" y1="318" x2="366" y2="268.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="380" y="293.0" text-anchor="start" class="arrow-label">3.00K rows</text>
+<line x1="422" y1="212.0" x2="600" y2="212.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="511.0" y="206.0" text-anchor="middle" class="arrow-label">3.00K rows</text>
+<g class="diagram-node" data-info="Total: 186 ms">
+<title>Total: 186 ms</title>
+<rect x="600" y="184.0" width="160" height="56" fill="#2171b5" stroke="#333" stroke-width="1" rx="6"/>
+<text x="680.0" y="204.0" text-anchor="middle" class="node-label" fill="#ffffff">query_block #1</text>
+<text x="680.0" y="222.0" text-anchor="middle" class="cost" fill="#ffffff">185 ms</text>
+</g>
+</g>
+<g class="zoom-controls">
+<g class="zoom-btn" id="zoom-in"><rect x="1138" y="412" width="30" height="30"/><text x="1153.0" y="433.0" text-anchor="middle">+</text></g>
+<g class="zoom-btn" id="zoom-out"><rect x="1138" y="446" width="30" height="30"/><text x="1153.0" y="467.0" text-anchor="middle">−</text></g>
+<g class="zoom-btn" id="zoom-reset"><rect x="1138" y="480" width="30" height="30"/><text x="1153.0" y="501.0" text-anchor="middle">↺</text></g>
+</g>
+<script type="text/javascript"><![CDATA[
+(function() {
+  var N_LINES = 6;
+  var detailLines = [];
+  var searchBtn, content, svgEl;
+  var diagramBottom = 558;
+  var defaultHint = "Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
+  var pinned = false, searchActive = false;
+  var vx = 0, vy = 0, vs = 1;
+  var dragging = false, dragStart = {x:0,y:0}, dragOrigin = {x:0,y:0};
+
+  function svgYFromEvent(e) {
+    var rect = svgEl.getBoundingClientRect();
+    var svgH = parseFloat(svgEl.getAttribute('height')) || rect.height;
+    var scale = rect.height > 0 ? svgH / rect.height : 1;
+    return (e.clientY - rect.top) * scale;
+  }
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) detailLines[i].textContent = "";
+    }
+  }
+
+  function setDetailsForNode(infoStr) {
+    if (!infoStr) { clearDetails(); return; }
+    var sep = "  ·  ";
+    var parts = infoStr.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    svgEl = document.querySelector("svg");
+    content = document.getElementById("diagram-content");
+    searchBtn = document.getElementById("search");
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    if (!content) return;
+
+    // Zoom via +/- buttons (zoom toward center of diagram area)
+    function zoomBy(factor) {
+      var rect = svgEl.getBoundingClientRect();
+      var svgW = parseFloat(svgEl.getAttribute('width')) || rect.width;
+      var cx = svgW / 2, cy = diagramBottom / 2;
+      vx = cx + (vx - cx) * factor;
+      vy = cy + (vy - cy) * factor;
+      vs *= factor;
+      applyTransform();
+    }
+    var zoomInBtn = document.getElementById("zoom-in");
+    var zoomOutBtn = document.getElementById("zoom-out");
+    var zoomResetBtn = document.getElementById("zoom-reset");
+    if (zoomInBtn) zoomInBtn.addEventListener("click", function() { zoomBy(1.25); });
+    if (zoomOutBtn) zoomOutBtn.addEventListener("click", function() { zoomBy(0.8); });
+    if (zoomResetBtn) zoomResetBtn.addEventListener("click", function() { vx = 0; vy = 0; vs = 1; applyTransform(); });
+
+    // Drag: only in diagram area, not on text and not on nodes
+    svgEl.addEventListener("mousedown", function(e) {
+      var tag = e.target.tagName ? e.target.tagName.toLowerCase() : '';
+      if (tag === 'text' || tag === 'tspan') return;
+      if (e.target.closest && e.target.closest(".diagram-node")) return;
+      if (svgYFromEvent(e) > diagramBottom) return;
+      dragging = true;
+      dragStart = {x: e.clientX, y: e.clientY};
+      dragOrigin = {x: vx, y: vy};
+      svgEl.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", function(e) {
+      if (!dragging) return;
+      vx = dragOrigin.x + (e.clientX - dragStart.x);
+      vy = dragOrigin.y + (e.clientY - dragStart.y);
+      applyTransform();
+    });
+    document.addEventListener("mouseup", function() {
+      if (dragging) { dragging = false; svgEl.style.cursor = ""; }
+    });
+    svgEl.addEventListener("dblclick", function(e) {
+      if (e.target.closest && e.target.closest(".diagram-node")) return;
+      if (svgYFromEvent(e) > diagramBottom) return;
+      vx = 0; vy = 0; vs = 1;
+      applyTransform();
+    });
+
+    // Hover and click-to-pin on nodes
+    var nodes = document.querySelectorAll(".diagram-node");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].addEventListener("mouseover", onHover);
+      nodes[i].addEventListener("mouseout", onOut);
+      nodes[i].addEventListener("click", onNodeClick);
+    }
+    svgEl.addEventListener("click", function(e) {
+      if (pinned && !(e.target.closest && e.target.closest(".diagram-node"))) unpinAll();
+    });
+
+    if (searchBtn) searchBtn.addEventListener("click", searchPrompt);
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function applyTransform() {
+    content.setAttribute("transform", "translate(" + vx + "," + vy + ") scale(" + vs + ")");
+  }
+
+  function onHover(e) {
+    if (!pinned) setDetailsForNode(e.currentTarget.getAttribute("data-info") || "");
+  }
+  function onOut() {
+    if (!pinned) clearDetails();
+  }
+  function onNodeClick(e) {
+    var g = e.currentTarget;
+    if (g.classList.contains("pinned")) {
+      unpinAll();
+    } else {
+      unpinAll();
+      g.classList.add("pinned");
+      pinned = true;
+      setDetailsForNode(g.getAttribute("data-info") || "");
+    }
+    e.stopPropagation();
+  }
+  function unpinAll() {
+    var prev = document.querySelectorAll(".diagram-node.pinned");
+    for (var i = 0; i < prev.length; i++) prev[i].classList.remove("pinned");
+    pinned = false;
+    clearDetails();
+  }
+
+  function searchPrompt() {
+    if (searchActive) {
+      var all = document.querySelectorAll(".diagram-node");
+      for (var i = 0; i < all.length; i++) all[i].classList.remove("dim");
+      searchBtn.textContent = "Search";
+      searchActive = false;
+      clearDetails();
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var all = document.querySelectorAll(".diagram-node");
+    for (var i = 0; i < all.length; i++) {
+      var info = all[i].getAttribute("data-info") || "";
+      all[i].classList.toggle("dim", !re.test(info));
+    }
+    searchBtn.textContent = "Reset Search";
+    searchActive = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+</svg>
+
+  </div>
+</section>
+
+<section class="warnings-section" aria-labelledby="warn-heading">
+  <h2 id="warn-heading">Warnings <span class="count">(3)</span></h2>
+  <ol class="warning-list">
+    <li class="warning sev-error">
+      <span class="badge badge-error">ERROR</span>
+      <p class="text"><abbr class="glossary-chip" title="A predicate an index can satisfy directly.">Non-sargable</abbr> join predicate: CONVERT(...) in t1.d = convert(concat('r',t2.y) using utf8mb4) — a function wrapped around the join column prevents index use.</p>
+      <p class="where">Labeled: <code class="node-label">Table scan [t1]</code></p>
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text"><abbr class="glossary-chip" title="Reads every row of a table.">Full table scan</abbr>: t2 (1000 rows), t1 (3000 rows)</p>
+      <p class="where">Labeled: <code class="node-label">Table scan [t2]</code> <code class="node-label">Table scan [t1]</code></p>
+    </li>
+    <li class="warning sev-warn">
+      <span class="badge badge-warn">WARN</span>
+      <p class="text"><abbr class="glossary-chip" title="Buffers outer rows in batches, scans the inner once per batch.">Block Nested-Loop</abbr> (<abbr class="glossary-chip" title="Buffers outer rows in batches, scans the inner once per batch.">BNL</abbr>) <abbr class="glossary-chip" title="Per-join buffer for hash joins and Block Nested-Loop.">join buffer</abbr> detected — uses <abbr class="glossary-chip" title="Per-join buffer for hash joins and Block Nested-Loop.">join_buffer_size</abbr> (Extra: '<abbr class="glossary-chip" title="Buffers outer rows in batches, scans the inner once per batch.">Using join buffer (Block Nested Loop)</abbr>', type ALL/index/range)</p>
+      <p class="where">Labeled: <code class="node-label">Table scan [t1]</code></p>
+    </li>
+  </ol>
+</section>
+
+<section class="suggestions-section" aria-labelledby="sug-heading">
+  <h2 id="sug-heading">Suggestions <span class="count">(3)</span></h2>
+  <ol class="suggestion-list">
+    <li class="suggestion sev-high">
+      <span class="badge badge-high">HIGH</span>
+      <p class="action-text">Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)').</p>
+      <details class="why-details">
+        <summary>Why?</summary>
+        <p>wrapping a column in a function means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets MySQL/MariaDB pick an <abbr class="glossary-chip" title="Direct index probe for matching rows.">index lookup</abbr> or <abbr class="glossary-chip" title="Build a hash table on one side, probe from the other.">hash join</abbr> with real selectivity, typically 100–1000× faster on mid-sized tables.</p>
+      </details>
+    </li>
+    <li class="suggestion sev-high">
+      <span class="badge badge-high">HIGH</span>
+      <p class="action-text">Add indexes on filter/join columns to avoid full table scans</p>
+      
+    </li>
+    <li class="suggestion sev-medium">
+      <span class="badge badge-medium">MEDIUM</span>
+      <p class="action-text">Add indexes to eliminate <abbr class="glossary-chip" title="Buffers outer rows in batches, scans the inner once per batch.">BNL</abbr> full/index scans, or increase <abbr class="glossary-chip" title="Per-join buffer for hash joins and Block Nested-Loop.">join_buffer_size</abbr>. In MySQL 8.0.20+, set <abbr class="glossary-chip" title="Buffers outer rows in batches, scans the inner once per batch.">block_nested_loop</abbr>=off to force <abbr class="glossary-chip" title="Build a hash table on one side, probe from the other.">hash join</abbr> instead</p>
+      
+    </li>
+  </ol>
+</section>
+
+<aside class="glossary-aside" aria-labelledby="glossary-heading">
+  <details>
+    <summary><h2 id="glossary-heading">Glossary (7 terms)</h2></summary>
+    <dl class="glossary-list">
+      <div class="glossary-item">
+        <dt><code>block nested loop</code></dt>
+        <dd class="newcomer">MySQL is reading chunks of the outer table into memory, then scanning the entire inner table once per chunk. This is slow on big tables — an index on the join column removes the problem entirely, or turning on hash_join lets MySQL pick a better plan.</dd>
+        <dd class="technical">BNL: signalled by ``Using join buffer (Block Nested Loop)`` in the Extra column. MySQL fills ``join_buffer_size`` with outer rows, then scans the inner table (type=ALL/index/range) once for the whole batch. Cost grows with the outer size: O(outer/batch × inner). On MySQL 8.0.20+, set ``block_nested_loop=off`` to force a hash join instead.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>full table scan</code></dt>
+        <dd class="newcomer">MySQL is reading every single row in this table, one by one, to check if it matches your WHERE clause. This is slow on big tables — an index on the filter column lets MySQL jump straight to the matching rows instead.</dd>
+        <dd class="technical">Access type ``ALL``: the storage engine returns every row of the table, applying the WHERE clause in the server layer. Cost is roughly (rows × row_evaluate_cost) + pages_read × io_block_read_cost. Signal: ``type=ALL`` in EXPLAIN, ``Handler_read_rnd_next`` climbs by the table row count. Almost always a sign of a missing index on the WHERE or join column.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>hash join</code></dt>
+        <dd class="newcomer">MySQL builds a lookup table in memory for the smaller of the two tables, then reads the bigger one once and uses the lookup table to find matches. Much faster than the alternative (Block Nested-Loop) when neither side has a usable index.</dd>
+        <dd class="technical">MySQL 8.0.18+ (default in 8.0.20+). Reads the smaller input, builds an in-memory hash table keyed on the join column, then scans the larger input and probes the hash. Single pass over each side (O(m + n)). Uses ``join_buffer_size``; if the build side doesn't fit, MySQL spills to tmpdir and does a multi-pass (Grace) hash join, re-reading the probe side each pass.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>index lookup</code></dt>
+        <dd class="newcomer">MySQL uses the index to jump straight to the rows you asked for. This is the fast path — what you want for most queries.</dd>
+        <dd class="technical">Access type ``ref`` or ``ref_or_null``: the optimizer uses a secondary index to fetch all rows matching an equality predicate on the indexed column. Cost is O(matching_rows). Ideal access path when the filter column is indexed.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>index range scan</code></dt>
+        <dd class="newcomer">MySQL is reading a chunk of the index that matches your range filter (like a date range) instead of the whole thing. The narrower the range, the faster.</dd>
+        <dd class="technical">Access type ``range``: reads a bounded key range of a secondary index (e.g. ``WHERE created_at BETWEEN a AND b``). Fast when the range is narrow; degrades to a full scan when the range covers most of the index. With ``mrr=on`` the row-ID fetches can be reordered to turn random I/O into sequential.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>join buffer size</code></dt>
+        <dd class="newcomer">The memory MySQL uses when it has to join tables without a handy index. If this is too small for a big join, MySQL spills to disk and slows down.</dd>
+        <dd class="technical">Per-join allocation, freed after the join completes. Feeds the build side of a hash join or the outer-row batches of a BNL. If the build side of a hash join doesn't fit, MySQL spills to a multi-pass (Grace) hash join. An index on the join column is almost always a bigger win than raising this.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>sargable</code></dt>
+        <dd class="newcomer">A filter or join condition MySQL can answer using an index. Comparing a plain column to a value is sargable. Wrapping the column in a function (like CONCAT or DATE) makes it non-sargable, which means MySQL has to evaluate the function on every row — no index can help.</dd>
+        <dd class="technical">Short for *Search ARGument-able*: a WHERE/ON predicate is sargable if it compares the bare column to a value or another bare column (``a.id = b.user_id``, ``created_at &gt; '2024-01-01'``). Wrapping the column in a function (``CONCAT(a.id)``, ``DATE(created_at)``, ``LOWER(email)``) breaks sargability because the optimizer would need a functional index on that exact expression. Non-sargable predicates force a per-row evaluation in the server layer and defeat every regular index.</dd>
+      </div>
+    </dl>
+  </details>
+</aside>
+
+<details class="raw-sidecar">
+  <summary><h2>Raw sidecar (JSON)</h2></summary>
+  <pre class="raw-json"><code>{
+  &quot;schema_version&quot;: &quot;1.0&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-10T20:15:15Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.2.0&quot;,
+  &quot;source&quot;: {
+    &quot;type&quot;: &quot;file&quot;
+  },
+  &quot;plan_summary&quot;: {
+    &quot;total_time_ms&quot;: 185.701,
+    &quot;rows_sent&quot;: 3000,
+    &quot;rows_examined_estimate&quot;: 4000,
+    &quot;operator_count&quot;: 3,
+    &quot;max_depth&quot;: 2
+  },
+  &quot;optimizer_switches&quot;: [
+    {
+      &quot;name&quot;: &quot;block_nested_loop&quot;,
+      &quot;value&quot;: &quot;on&quot;,
+      &quot;explanation&quot;: &quot;Buffers a batch of outer rows in a join buffer and scans the inner table once per batch instead of once per row. Inner still does a full/index/range scan — a missing index on the join column is the root cause.&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Table scan [t1]&quot;
+      ]
+    }
+  ],
+  &quot;warnings&quot;: [
+    {
+      &quot;severity&quot;: &quot;error&quot;,
+      &quot;category&quot;: &quot;nonsargable_join&quot;,
+      &quot;text&quot;: &quot;Non-sargable join predicate: CONVERT(...) in t1.d = convert(concat('r',t2.y) using utf8mb4) — a function wrapped around the join column prevents index use.&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Table scan [t1]&quot;
+      ]
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;full_scan&quot;,
+      &quot;text&quot;: &quot;Full table scan: t2 (1000 rows), t1 (3000 rows)&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Table scan [t2]&quot;,
+        &quot;Table scan [t1]&quot;
+      ]
+    },
+    {
+      &quot;severity&quot;: &quot;warn&quot;,
+      &quot;category&quot;: &quot;bnl&quot;,
+      &quot;text&quot;: &quot;Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Table scan [t1]&quot;
+      ]
+    }
+  ],
+  &quot;suggestions&quot;: [
+    {
+      &quot;severity&quot;: &quot;high&quot;,
+      &quot;category&quot;: &quot;rewrite&quot;,
+      &quot;action&quot;: &quot;Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)').&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;why&quot;: &quot;wrapping a column in a function means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables.&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;high&quot;,
+      &quot;category&quot;: &quot;index&quot;,
+      &quot;action&quot;: &quot;Add indexes on filter/join columns to avoid full table scans&quot;,
+      &quot;source&quot;: &quot;plan&quot;
+    },
+    {
+      &quot;severity&quot;: &quot;medium&quot;,
+      &quot;category&quot;: &quot;tuning_variable&quot;,
+      &quot;action&quot;: &quot;Add indexes to eliminate BNL full/index scans, or increase join_buffer_size. In MySQL 8.0.20+, set block_nested_loop=off to force hash join instead&quot;,
+      &quot;source&quot;: &quot;plan&quot;,
+      &quot;target_variable&quot;: &quot;join_buffer_size&quot;
+    }
+  ],
+  &quot;executive_summary&quot;: &quot;Query scans 2 tables and joins via block nested-loop; returns 3,000 rows in 186 ms. Main finding: join predicate wraps the column in CONVERT() — no index can be used.&quot;,
+  &quot;index_suggestions&quot;: [
+    {
+      &quot;table&quot;: &quot;t1&quot;,
+      &quot;columns&quot;: [
+        &quot;d&quot;
+      ],
+      &quot;ddl&quot;: &quot;CREATE INDEX idx_t1_d ON t1 (d);&quot;,
+      &quot;reason&quot;: &quot;Full scan on t1 with filter on (d)&quot;
+    }
+  ],
+  &quot;primary_action&quot;: {
+    &quot;ref&quot;: &quot;suggestions[0]&quot;
+  }
+}</code></pre>
+</details>
+  </main>
+  <script>
+function exportSVG() {
+  var svg = document.querySelector('#chart-panel svg');
+  if (!svg) { alert('No SVG found'); return; }
+  var data = new XMLSerializer().serializeToString(svg);
+  var blob = new Blob(['<?xml version="1.0" standalone="no"?>\n', data], {type: 'image/svg+xml'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-plan.svg';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function exportJSON() {
+  // Export the embedded sidecar (same data the JSON-LD script carries).
+  var script = document.querySelector('script[type="application/ld+json"]');
+  if (!script) { alert('No sidecar found'); return; }
+  var blob = new Blob([script.textContent], {type: 'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-analysis.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>

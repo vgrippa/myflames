@@ -1,0 +1,77 @@
+{
+  "query": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`a` = 50) or (`testdb`.`t1`.`b` = 100))",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "ranges": [
+            "(a = 50)"
+          ],
+          "covering": false,
+          "operation": "Index range scan on t1 using idx_a over (a = 50)",
+          "index_name": "idx_a",
+          "table_name": "t1",
+          "access_type": "index",
+          "actual_rows": 50.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "a",
+            "b",
+            "c",
+            "d"
+          ],
+          "estimated_rows": 50.0,
+          "index_access_type": "index_range_scan",
+          "actual_last_row_ms": 0.057419,
+          "actual_first_row_ms": 0.044166,
+          "estimated_total_cost": 5.273446761800219
+        },
+        {
+          "ranges": [
+            "(b = 100)"
+          ],
+          "covering": false,
+          "operation": "Index range scan on t1 using idx_b over (b = 100)",
+          "index_name": "idx_b",
+          "table_name": "t1",
+          "access_type": "index",
+          "actual_rows": 25.0,
+          "schema_name": "testdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "a",
+            "b",
+            "c",
+            "d"
+          ],
+          "estimated_rows": 25.0,
+          "index_access_type": "index_range_scan",
+          "actual_last_row_ms": 0.017918,
+          "actual_first_row_ms": 0.013333,
+          "estimated_total_cost": 2.7665861690450053
+        }
+      ],
+      "operation": "Deduplicate rows sorted by row ID",
+      "access_type": "rowid_union",
+      "actual_rows": 75.0,
+      "actual_loops": 1,
+      "estimated_rows": 75.0,
+      "actual_last_row_ms": 0.16949599999999998,
+      "actual_first_row_ms": 0.067124,
+      "estimated_total_cost": 30.379109725652537
+    }
+  ],
+  "condition": "((t1.a = 50) or (t1.b = 100))",
+  "operation": "Filter: ((t1.a = 50) or (t1.b = 100))",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 75.0,
+  "actual_loops": 1,
+  "estimated_rows": 75.0,
+  "actual_last_row_ms": 0.178252,
+  "actual_first_row_ms": 0.06979199999999999,
+  "estimated_total_cost": 30.379109725652537
+}

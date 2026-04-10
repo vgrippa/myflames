@@ -5,6 +5,157 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-04-10
+
+A large quality-of-life release focused on **three audiences at once**:
+newcomers, senior DBAs, and AI agents. The main additions are a live-
+connection mode, a machine-readable sidecar, progressive-disclosure HTML
+reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
+
+### Added
+
+- **Live-connection mode (`-h host -P port -u user -p -D db -e "SELECT ..."`)** —
+  myflames can now connect directly to a MySQL 8.4 or MariaDB 10.11/11.4 server
+  using the same flags as the `mysql` CLI, run `EXPLAIN ANALYZE FORMAT=JSON` (or
+  MariaDB's `ANALYZE FORMAT=JSON`) for you, collect server state, and render the
+  result in one invocation. Replaces the need to pipe `mysql -e '...' | myflames`
+  for simple cases.
+  - Uses the real `mysql` / `mariadb` client binary under the hood — **no PyMySQL
+    or driver install**, stays stdlib-only, authenticates via whatever plugin the
+    server uses (`mysql_native_password`, `caching_sha2_password`, Kerberos, etc.).
+  - Passwords go into a mode-0600 `--defaults-extra-file` temp file — never
+    visible in `ps`, process env, or logs. Temp file is deleted on exit.
+  - Supports every SSL flag the `mysql` client supports:
+    `--ssl-mode`, `--ssl-ca`, `--ssl-cert`, `--ssl-key`. Verified against RDS
+    with `--ssl-mode=VERIFY_IDENTITY --ssl-ca=global-bundle.pem`.
+  - `-p` with no value prompts; `-p'password'` inline works; `-p` alone works.
+  - `--mysql-binary /path/to/mysql` overrides the binary autodetection when
+    you want a specific client version.
+- **Live collectors (on by default; individually toggleable)** — when live mode
+  is active, myflames also captures:
+  - `SHOW CREATE TABLE` for every table the query touches (`--no-collect-schema`
+    to disable)
+  - Row counts / data length / index length from `information_schema.tables`
+    (`--no-collect-stats` to disable)
+  - A curated subset of `SHOW SESSION VARIABLES` the advisor inspects — buffer
+    pool, sort/join/tmp buffers, `optimizer_switch`, durability settings
+    (`--no-collect-variables` to disable)
+- **Environment advisor (`myflames/advisor.py`)** — eight rules that combine the
+  parsed plan with the collected environment data and emit concrete, copy-paste-able
+  tuning suggestions with a `Why:` clause grounded in the MySQL cost model:
+  - `innodb_buffer_pool_size` vs the working set of tables touched
+  - `sort_buffer_size` vs filesorts (in-memory vs disk-merge trade-off)
+  - `join_buffer_size` vs hash joins / BNL (separate explanations for each)
+  - `tmp_table_size` + `max_heap_table_size` vs materialized temp tables
+    (both must be raised together — MySQL always picks the smaller)
+  - `optimizer_switch` overrides (`hash_join=off`, `mrr=off`,
+    `derived_condition_pushdown=off`)
+  - Missing indexes — cross-checks plan heuristics against the collected schema
+    so we only flag indexes that **actually don't exist**
+  - MyISAM / non-InnoDB engine detection
+  - `innodb_flush_log_at_trx_commit` on UPDATE/DELETE/INSERT queries
+- **Non-sargable join predicate detection** — a new advisor rule walks every
+  join condition looking for function calls on column references
+  (`CONCAT(col)`, `CAST(col AS ...)`, `LOWER(col)`, `DATE(col)`,
+  `CONVERT(col USING ...)`, 30+ functions total) and flags them as the
+  **primary action** because no index or buffer tweak can help until the
+  predicate is rewritten. Emits severity `error`, category `nonsargable_join`.
+  Cross-engine: works on MySQL hash joins (via `hash_condition`) and MariaDB
+  BNL joins (via `block-nl-join.attached_condition`, now preserved through
+  normalization).
+- **JSON sidecar (v1 schema)** — every `--output` invocation now writes a
+  `<base>.json` next to the SVG/HTML with a stable, versioned, schema-validated
+  structured summary of the analysis. Consumable by AI agents, CI dashboards,
+  or `jq` without parsing SVG or HTML. Key fields:
+  `schema_version`, `generated_at`, `myflames_version`, `source.{type,engine,
+  engine_version}`, `plan_summary.{total_time_ms,rows_sent,rows_examined_estimate,
+  operator_count,max_depth}`, `optimizer_switches[]`, `warnings[]` (severity +
+  category + source + node_labels), `suggestions[]` (severity + category +
+  action + why + target_variable), `executive_summary`, `primary_action`,
+  `collected.{variables,stats,schema}`. Fail-fast validation enforces enum
+  discipline and required keys at write time.
+- **Progressive-UX HTML report template** — the `--output foo.html` pipeline
+  emits a redesigned self-contained report with:
+  - **Executive summary strip** + **"Fix first" primary action card** above
+    the fold (newcomer-friendly)
+  - **Glossary chips** (`<abbr>` tooltips with zero JS) on every jargon term:
+    filesort, hash join, BNL, materialize, ICP, MRR, sargable, etc.
+  - **Copy-paste affordance**: every SET / CREATE INDEX / ALTER TABLE
+    suggestion lives in a selectable `<pre><code>` block — never locked
+    inside the SVG
+  - **Collapsible `<details>` sections** for warnings, Why clauses, collected
+    environment, and raw sidecar JSON (dense but navigable for DBAs)
+  - **JSON-LD `<script>`** in `<head>` with the full sidecar payload — AI
+    agents can answer "what's wrong with this query?" from the HTML alone
+    without parsing SVG text nodes
+  - **Semantic HTML landmarks** (`role="banner"`, `role="main"`, `<nav>`,
+    `<aside>`) + ARIA labels so screen readers can navigate sections
+  - **Responsive layout** — scales from 720px mobile to 1400px desktop
+- **Responsive SVG output** — the CLI now post-processes every SVG it writes
+  to inject `style="max-width: 100%; height: auto;"` and backfill a `viewBox`
+  when one is missing. Standalone `.svg` files opened directly in a browser
+  now scale to the viewport instead of overflowing at the fixed 1800px
+  flamegraph width.
+- **Glossary module (`myflames/glossary.py`)** — 30+ canonical EXPLAIN /
+  optimizer terms with three tiers of explanation each:
+  - `short`: ≤90-char tooltip text
+  - `technical`: senior-DBA grade with cost-model citations
+  - `newcomer`: plain English, no jargon, no analogies that distort
+  Also exposes `find_terms_in_text()` for HTML glossary-chip wrapping and
+  `generate_executive_summary()` for deterministic one-line plan summaries.
+- **Complex-query demos** — 3 new example topics (15 files each):
+  - **CTE + window functions** (`ROW_NUMBER() OVER (PARTITION BY ...)` top-N per group)
+  - **Correlated subquery** (N+1 anti-pattern)
+  - **Recursive CTE** (org-chart traversal)
+- **105 new unit + integration tests** (parser, sidecar, glossary, advisor,
+  collectors, connector, non-sargable, responsive SVG). Integration tests
+  spin up live MySQL 8.4 + MariaDB 11.4 containers, create both
+  `mysql_native_password` and `caching_sha2_password` users, and drive the
+  whole pipeline end-to-end; they skip automatically when Docker is absent.
+- **Three new specialized skills** (`.claude/skills/`):
+  `mysql-expert` (domain correctness), `progressive-ux` (approachability),
+  `structured-output` (machine consumption). Used to divide work cleanly
+  when adding new rules, new output fields, or new glossary entries.
+
+### Changed
+
+- **`-h` is now `--host`, not `--help`** — to match the `mysql` CLI. Use
+  `--help` if you want help. (`--version` still works.)
+- **HTML report template rebuilt** — the old `output_html_report.py` layout
+  has been replaced with the progressive-ux template described above. Every
+  existing test assertion (`<!DOCTYPE html>`, `<svg`, `Export SVG`,
+  `Export Analysis JSON`, `Print`, `Warnings`, `Suggestions`) still passes.
+- **Advisor suggestions always include `Why:` explanations** — the contract
+  is now enforced by a dedicated test
+  (`test_every_suggestion_explains_why`) so future rules cannot ship
+  without a cost-model justification. Rewrote every existing rule to
+  explain the trade-off (in-memory sort vs tmpdir merge, hash-join probe
+  re-reads on spill, MEMORY → InnoDB temp-table conversion cost, etc.).
+- **`myflames/parser.py`**: `analyze_plan()` now also returns
+  `nonsargable_joins`, `optimizer_switches`, and `node_highlights` entries
+  for non-sargable predicates. `_detect_optimizer_switches()` promoted to
+  a standalone function with a stable dict shape.
+- **Docs**: `docs/index.html` reorganized with new sections for Complex
+  queries, Optimizer switches, and Live mode — the 20 new demos are all
+  linked. Every legacy demo was regenerated through the new template so
+  the whole set is consistent.
+
+### Removed
+
+- Stale demo files with no matching fixture or broken naming
+  (`mysql-query-analysis-derived-sort.*`, bare `mysql-query-analysis-*.svg`
+  without a renderer suffix). The top-level orphan `demos/` directory was
+  also removed; all demos live in `docs/demos/` as they should.
+
+### Fixed
+
+- **MariaDB BNL join condition lost during normalization** — the
+  `block-nl-join.attached_condition` field was being dropped when the
+  inner table was normalized, hiding non-sargable predicates on BNL
+  plans. Now preserved on the normalized node so the advisor sees it.
+- **Standalone SVG viewing overflow** — `width="1800"` SVGs no longer
+  require horizontal scrolling when opened directly in a browser.
+
 ## [1.2.0] — 2026-04-09
 
 ### Added

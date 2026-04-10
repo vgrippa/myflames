@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg id="tree-svg" version="1.1" width="1200" height="745" viewBox="0 0 1200 745" style="max-width:100%;height:auto;" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg id="tree-svg" version="1.1" width="1200" height="762" viewBox="0 0 1200 762" style="max-width:100%;height:auto;" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 16px; font-weight: bold; }
@@ -23,7 +23,7 @@
   .ctrl-link:hover { fill: #0d47a1; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
-<text x="600.0" y="26" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="26" text-anchor="middle" class="title">Block Nested-Loop — MySQL query analysis</text>
 <text x="10" y="44" text-anchor="start" class="subtitle">Execution tree  ·  Total: 15.50 ms  ·  Click row to pin  ·  Ctrl+F to search</text>
 <text id="expand-all" class="ctrl-link" x="1100" y="44" text-anchor="start">Expand All</text>
 <text id="collapse-all" class="ctrl-link" x="1190" y="44" text-anchor="end">Collapse All</text>
@@ -76,7 +76,7 @@
 <text id="details-l3" x="20" y="234" class="details-line"></text>
 <text id="details-l4" x="20" y="250" class="details-line"></text>
 <text id="details-l5" x="20" y="266" class="details-line"></text>
-<rect x="10" y="302" width="1180" height="443" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="10" y="302" width="1180" height="460" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
 <rect x="10" y="312" width="1180" height="30" fill="#e8eaf6" rx="6"/>
 <rect x="10" y="318" width="1180" height="24" fill="#e8eaf6"/>
 <text x="26" y="331" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
@@ -92,17 +92,18 @@
 <text x="36" y="506" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Orange rows ⚠ have a warning in the Query Analysis panel below.</text>
 <rect x="14" y="516" width="1172" height="22" fill="#e3f2fd" rx="4"/>
 <text x="26" y="531" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="36" y="555" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">block_nested_loop=on (join buffer in use)</text>
-<rect x="14" y="565" width="1172" height="22" fill="#fff3f3" rx="4"/>
-<text x="26" y="580" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="36" y="604" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: t1 (100 rows), t2 (150 rows)</text>
-<text x="36" y="621" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t1]”, “Table scan [t2]”</text>
-<text x="36" y="638" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)</text>
-<text x="36" y="655" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t2]”</text>
-<rect x="14" y="665" width="1172" height="22" fill="#e8f5e9" rx="4"/>
-<text x="26" y="680" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="36" y="704" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="36" y="721" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes to eliminate BNL full/index scans, or increase join_buffer_size. In MySQL 8.0.20+, set block_nested_loop=off to force hash join instead</text>
+<text x="36" y="555" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">block_nested_loop=on — Buffers a batch of outer rows in a join buffer and scans the inner table once per batch instead of once per row. Inner still does a full/index/range scan — a</text>
+<text x="36" y="572" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">missing index on the join column is the root cause.</text>
+<rect x="14" y="582" width="1172" height="22" fill="#fff3f3" rx="4"/>
+<text x="26" y="597" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="36" y="621" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: t1 (100 rows), t2 (150 rows)</text>
+<text x="36" y="638" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t1]”, “Table scan [t2]”</text>
+<text x="36" y="655" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)</text>
+<text x="36" y="672" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t2]”</text>
+<rect x="14" y="682" width="1172" height="22" fill="#e8f5e9" rx="4"/>
+<text x="26" y="697" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="36" y="721" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="36" y="738" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes to eliminate BNL full/index scans, or increase join_buffer_size. In MySQL 8.0.20+, set block_nested_loop=off to force hash join instead</text>
 <script type="text/javascript"><![CDATA[
 (function() {
   var ROW_H = 26;
