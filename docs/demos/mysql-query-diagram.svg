@@ -1,29 +1,27 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg version="1.1" width="1200" height="869" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 869" style="max-width: 100%; height: auto;">
-<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"/></marker><filter id="hotspot-glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="584"/></clipPath></defs>
+<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="584"/></clipPath></defs>
 <style>
   text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11px; -webkit-font-smoothing: antialiased; }
   .title { font-size: 19px; font-weight: 650; letter-spacing: -0.2px; fill: #1a1a1a; }
   .subtitle { font-size: 11px; fill: #6b7280; letter-spacing: 0.1px; }
-  .cost { font-size: 10px; fill: #555; }
-  .node-label { font-weight: 600; font-size: 11.5px; letter-spacing: -0.1px; }
-  .node-sublabel { font-size: 9.5px; fill-opacity: 0.92; }
-  .row-count { font-size: 10px; }
+  .cost { font-size: 11px; font-weight: 600; }
+  .node-label { font-weight: 700; font-size: 12px; letter-spacing: -0.1px; }
+  .node-sublabel { font-size: 10px; font-weight: 500; }
+  .row-count { font-size: 10.5px; font-weight: 600; }
   .arrow-label { font-size: 9px; fill: #4b5563; }
   .legend-label { font-size: 9px; fill: #555; }
   .diagram-node { cursor: pointer; }
-  .diagram-node:hover rect, .diagram-node:hover polygon { opacity: 0.9; stroke-width: 2; }
+  .diagram-node:hover rect, .diagram-node:hover polygon { stroke-width: 2.5; }
   .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }
-  .loops-line { font-size: 9px; fill: #555; }
+  .loops-line { font-size: 9.5px; font-weight: 500; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
   .details-line.dim { fill: #999; }
   #search { font-size: 12px; fill: #666; cursor: pointer; }
   #search:hover { fill: #000; }
   .diagram-node.dim { opacity: 0.25; }
-  .diagram-node.hotspot rect, .diagram-node.hotspot polygon { stroke: #ff3d3d; stroke-width: 3.5; filter: url(#hotspot-glow); }
-  .diagram-node.hotspot.dim { opacity: 1; }
-  .diagram-node.pinned.dim { opacity: 1; }
+  .diagram-node.hotspot rect, .diagram-node.hotspot polygon { stroke: #ff3d3d; stroke-width: 3.5; }
   .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6 !important; stroke-width: 3; }
   .hotspot-badge rect { fill: #ff3d3d; }
   .hotspot-badge text { fill: #fff; font-size: 8px; font-weight: 700; letter-spacing: 0.6px; }
@@ -80,8 +78,8 @@
 <g class="diagram-node" data-info="Total: 13.68 ms | Cost: 1660.43">
 <title>Total: 13.68 ms | Cost: 1660.43</title>
 <rect x="310" y="210.0" width="160" height="56" fill="#238a8b" stroke="#2d3748" stroke-width="1" rx="6"/>
-<text x="390.0" y="230.0" text-anchor="middle" class="node-label" fill="#ffffff">query_block #1</text>
-<text x="390.0" y="248.0" text-anchor="middle" class="cost" fill="#ffffff">2.62 ms</text>
+<text x="390.0" y="230.0" text-anchor="middle" class="node-label" fill="#111111">query_block #1</text>
+<text x="390.0" y="248.0" text-anchor="middle" class="cost" fill="#111111">2.62 ms</text>
 </g>
 </g>
 <g class="zoom-controls">
@@ -92,7 +90,6 @@
 <script type="text/javascript"><![CDATA[
 (function() {
   var N_LINES = 6;
-  var HAS_HOTSPOT = true;
   var detailLines = [];
   var searchBtn, content, svgEl;
   var diagramBottom = 584;
@@ -191,14 +188,6 @@
       nodes[i].addEventListener("mouseout", onOut);
       nodes[i].addEventListener("click", onNodeClick);
     }
-
-    // Focus mode: if there's a hotspot, dim every non-hotspot node so the
-    // contention point pops. CSS keeps .hotspot and .pinned bright regardless.
-    if (HAS_HOTSPOT) {
-      for (var j = 0; j < nodes.length; j++) {
-        nodes[j].classList.add("dim");
-      }
-    }
     svgEl.addEventListener("click", function(e) {
       if (pinned && !(e.target.closest && e.target.closest(".diagram-node"))) unpinAll();
     });
@@ -242,10 +231,6 @@
     if (searchActive) {
       var all = document.querySelectorAll(".diagram-node");
       for (var i = 0; i < all.length; i++) all[i].classList.remove("dim");
-      // Restore focus-mode dimming if there's a hotspot to keep lit
-      if (HAS_HOTSPOT) {
-        for (var k = 0; k < all.length; k++) all[k].classList.add("dim");
-      }
       searchBtn.textContent = "Search";
       searchActive = false;
       clearDetails();
@@ -280,8 +265,8 @@
 <rect x="24" y="723" width="1152" height="22" fill="#f1f8e9" rx="4"/>
 <text x="36" y="738" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
 <text x="46" y="762" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Left→right = execution order. Heat scale (yellow = fast → purple = slow) encodes self-time.</text>
-<text x="46" y="779" font-family="Arial,sans-serif" font-size="11" fill="#455a64">The red SLOWEST badge marks the contention point — the single operator to optimize first.</text>
-<text x="46" y="796" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click any node to pin details; other nodes dim so your focus pops. Dbl-click to reset.</text>
+<text x="46" y="779" font-family="Arial,sans-serif" font-size="11" fill="#455a64">The red SLOWEST badge + red border mark the contention point — the single operator to optimize first.</text>
+<text x="46" y="796" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click any node to pin its details. Ctrl+F to search. Dbl-click the background to reset zoom.</text>
 <rect x="24" y="806" width="1152" height="22" fill="#e3f2fd" rx="4"/>
 <text x="36" y="821" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
 <text x="46" y="845" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">None detected</text>

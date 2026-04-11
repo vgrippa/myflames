@@ -1,26 +1,30 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="1111" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1111" style="max-width: 100%; height: auto;">
-<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="558"/></clipPath></defs>
+<svg version="1.1" width="1200" height="1154" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1154" style="max-width: 100%; height: auto;">
+<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="584"/></clipPath></defs>
 <style>
-  text { font-family: Arial, sans-serif; font-size: 11px; }
-  .title { font-size: 16px; font-weight: bold; }
-  .subtitle { font-size: 11px; fill: #666; }
-  .cost { font-size: 10px; fill: #555; }
-  .node-label { font-weight: bold; font-size: 11px; }
-  .node-sublabel { font-size: 9px; }
-  .row-count { font-size: 10px; }
-  .arrow-label { font-size: 9px; fill: #444; }
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11px; -webkit-font-smoothing: antialiased; }
+  .title { font-size: 19px; font-weight: 650; letter-spacing: -0.2px; fill: #1a1a1a; }
+  .subtitle { font-size: 11px; fill: #6b7280; letter-spacing: 0.1px; }
+  .cost { font-size: 11px; font-weight: 600; }
+  .node-label { font-weight: 700; font-size: 12px; letter-spacing: -0.1px; }
+  .node-sublabel { font-size: 10px; font-weight: 500; }
+  .row-count { font-size: 10.5px; font-weight: 600; }
+  .arrow-label { font-size: 9px; fill: #4b5563; }
+  .legend-label { font-size: 9px; fill: #555; }
   .diagram-node { cursor: pointer; }
-  .diagram-node:hover rect, .diagram-node:hover polygon { opacity: 0.9; stroke-width: 2; }
+  .diagram-node:hover rect, .diagram-node:hover polygon { stroke-width: 2.5; }
   .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }
-  .loops-line { font-size: 9px; fill: #555; }
+  .loops-line { font-size: 9.5px; font-weight: 500; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
   .details-line.dim { fill: #999; }
   #search { font-size: 12px; fill: #666; cursor: pointer; }
   #search:hover { fill: #000; }
-  .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6; stroke-width: 3; }
   .diagram-node.dim { opacity: 0.25; }
+  .diagram-node.hotspot rect, .diagram-node.hotspot polygon { stroke: #ff3d3d; stroke-width: 3.5; }
+  .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6 !important; stroke-width: 3; }
+  .hotspot-badge rect { fill: #ff3d3d; }
+  .hotspot-badge text { fill: #fff; font-size: 8px; font-weight: 700; letter-spacing: 0.6px; }
   .zoom-controls { cursor: pointer; }
   .zoom-btn rect { fill: #fff; stroke: #bbb; stroke-width: 1; rx: 4; }
   .zoom-btn:hover rect { fill: #f0f0f0; stroke: #888; }
@@ -28,71 +32,88 @@
   .zoom-btn:hover text { fill: #111; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
-<text x="600.0" y="28" text-anchor="middle" class="title">Hash Join (non-indexed) — MySQL 8.4 EXPLAIN</text>
-<text x="600.0" y="46" text-anchor="middle" class="subtitle">Execution plan (left → right)  ·  Total: 1.94 ms  ·  Darker = slower  ·  Click node to pin details</text>
-<line x1="20" y1="488" x2="1180" y2="488" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="20" y="492" width="1160" height="112" fill="#f5f5f5" rx="4"/>
-<text id="search" x="1172" y="500" text-anchor="end">Search</text>
-<text id="details-l0" x="30" y="500" text-anchor="start" class="details-line">Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
-<text id="details-l1" x="30" y="516" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="30" y="532" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="30" y="548" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="30" y="564" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="30" y="580" text-anchor="start" class="details-line"></text>
+<text x="600.0" y="30" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="48" text-anchor="middle" class="subtitle">Execution plan (left → right)  ·  Total: 1.94 ms  ·  Yellow → Purple = faster → slower  ·  Red SLOWEST badge = fix first</text>
+<g id="diagram-legend">
+<text x="428.0" y="67" class="legend-label">Fast</text>
+<rect x="458.0" y="58" width="18" height="10" fill="#fde725" stroke="#999" stroke-width="0.5"/>
+<rect x="476.0" y="58" width="18" height="10" fill="#addc30" stroke="#999" stroke-width="0.5"/>
+<rect x="494.0" y="58" width="18" height="10" fill="#5ec962" stroke="#999" stroke-width="0.5"/>
+<rect x="512.0" y="58" width="18" height="10" fill="#21918c" stroke="#999" stroke-width="0.5"/>
+<rect x="530.0" y="58" width="18" height="10" fill="#3b528b" stroke="#999" stroke-width="0.5"/>
+<rect x="548.0" y="58" width="18" height="10" fill="#472d7b" stroke="#999" stroke-width="0.5"/>
+<rect x="566.0" y="58" width="18" height="10" fill="#440154" stroke="#999" stroke-width="0.5"/>
+<text x="588.0" y="67" class="legend-label">Slow</text>
+<rect x="622.0" y="58" width="18" height="10" fill="#ff3d3d" stroke="#999" stroke-width="0.5"/>
+<text x="646.0" y="67" class="legend-label">SLOWEST = contention point</text>
+</g>
+<line x1="20" y1="514" x2="1180" y2="514" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="20" y="518" width="1160" height="112" fill="#f5f5f5" rx="4"/>
+<text id="search" x="1172" y="526" text-anchor="end">Search</text>
+<text id="details-l0" x="30" y="526" text-anchor="start" class="details-line">Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
+<text id="details-l1" x="30" y="542" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="30" y="558" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="30" y="574" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="30" y="590" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="30" y="606" text-anchor="start" class="details-line"></text>
 <g id="diagram-content" clip-path="url(#diagram-clip)">
 <g class="diagram-node" data-info="Table scan on t1  ·  Total: 817.6 µs  ·  Cost: 0.03  ·  Rows: 5.00K  ·  Loops: 1  ·  Table: t1  ·  Est.rows: 5000  ·  ⚠ In Query Analysis: Full table scan: t1 (5000 rows), t2 (2000 rows)" data-analysis-msg="Full table scan: t1 (5000 rows), t2 (2000 rows)">
 <title>Table scan on t1  ·  Total: 817.6 µs  ·  Cost: 0.03  ·  Rows: 5.00K  ·  Loops: 1  ·  Table: t1  ·  Est.rows: 5000  ·  ⚠ In Query Analysis: Full table scan: t1 (5000 rows), t2 (2000 rows)</title>
-<defs><clipPath id="clipbox-0"><rect x="20" y="156" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
+<defs><clipPath id="clipbox-0"><rect x="20" y="182" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
 <g clip-path="url(#clipbox-0)">
-<rect x="20" y="156" width="240" height="112" fill="#2775b7" stroke="#333" stroke-width="1" rx="6" ry="6"/>
-<text x="140.0" y="172" text-anchor="middle" class="cost" fill="#ffffff">817.6 µs</text>
-<text x="140.0" y="190" text-anchor="middle" class="node-label" fill="#ffffff">Full Table Scan</text>
-<text x="140.0" y="208" text-anchor="middle" class="node-sublabel" fill="#ffffff">t1</text>
-<text x="140.0" y="258" text-anchor="middle" class="row-count" fill="#ffffff">5.00K rows</text>
+<rect x="20" y="182" width="240" height="112" fill="#440a5c" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
+<text x="140.0" y="198" text-anchor="middle" class="cost" fill="#ffffff">817.6 µs</text>
+<text x="140.0" y="216" text-anchor="middle" class="node-label" fill="#ffffff">Full Table Scan</text>
+<text x="140.0" y="234" text-anchor="middle" class="node-sublabel" fill="#ffffff">t1</text>
+<text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#ffffff">5.00K rows</text>
 </g>
 </g>
-<line x1="260" y1="212.0" x2="310" y2="212.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
-<text x="285.0" y="206.0" text-anchor="middle" class="arrow-label">5.00K rows</text>
-<g class="diagram-node" data-info="Inner hash join (t1.d = concat('r',t2.y))  ·  Total: 1.94 ms  ·  Self: 857.4 µs  ·  Cost: 1000205.90  ·  Rows: 0  ·  Loops: 1  ·  Est.rows: 1000000  ·  ⚠ In Query Analysis: Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use." data-analysis-msg="Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use.">
+<line x1="260" y1="238.0" x2="310" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="285.0" y="232.0" text-anchor="middle" class="arrow-label">5.00K rows</text>
+<g class="diagram-node hotspot" data-info="Inner hash join (t1.d = concat('r',t2.y))  ·  Total: 1.94 ms  ·  Self: 857.4 µs  ·  Cost: 1000205.90  ·  Rows: 0  ·  Loops: 1  ·  Est.rows: 1000000  ·  ⚠ In Query Analysis: Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use." data-analysis-msg="Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use.">
 <title>Inner hash join (t1.d = concat('r',t2.y))  ·  Total: 1.94 ms  ·  Self: 857.4 µs  ·  Cost: 1000205.90  ·  Rows: 0  ·  Loops: 1  ·  Est.rows: 1000000  ·  ⚠ In Query Analysis: Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use.</title>
-<text x="366" y="150.0" text-anchor="middle" class="cost">857.4 µs</text>
-<polygon points="366,156.0 422,212.0 366,268.0 310,212.0" fill="#2171b5" stroke="#333" stroke-width="1"/>
-<text x="366" y="208.0" text-anchor="middle" class="node-label" fill="#ffffff">hash join</text>
-<text x="366" y="224.0" text-anchor="middle" class="node-sublabel" fill="#ffffff">0 rows</text>
+<text x="366" y="176.0" text-anchor="middle" class="cost">857.4 µs</text>
+<polygon points="366,182.0 422,238.0 366,294.0 310,238.0" fill="#440154" stroke="#2d3748" stroke-width="1"/>
+<text x="366" y="234.0" text-anchor="middle" class="node-label" fill="#ffffff">hash join</text>
+<text x="366" y="250.0" text-anchor="middle" class="node-sublabel" fill="#ffffff">0 rows</text>
+<g class="hotspot-badge">
+<rect x="336.0" y="160.0" width="60" height="14" rx="7" ry="7"/>
+<text x="366.0" y="171.0" text-anchor="middle">SLOWEST</text>
+</g>
 </g>
 <g class="diagram-node" data-info="Table scan on t2  ·  Total: 268.8 µs  ·  Cost: 201.50  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: t2  ·  Est.rows: 2000  ·  ⚠ In Query Analysis: Full table scan: t1 (5000 rows), t2 (2000 rows)" data-analysis-msg="Full table scan: t1 (5000 rows), t2 (2000 rows)">
 <title>Table scan on t2  ·  Total: 268.8 µs  ·  Cost: 201.50  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: t2  ·  Est.rows: 2000  ·  ⚠ In Query Analysis: Full table scan: t1 (5000 rows), t2 (2000 rows)</title>
-<defs><clipPath id="clipbox-1"><rect x="246.0" y="318" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
+<defs><clipPath id="clipbox-1"><rect x="246.0" y="344" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
 <g clip-path="url(#clipbox-1)">
-<rect x="246.0" y="318" width="240" height="112" fill="#95bcdd" stroke="#333" stroke-width="1" rx="6" ry="6"/>
-<text x="366.0" y="334" text-anchor="middle" class="cost" fill="#111111">268.8 µs</text>
-<text x="366.0" y="352" text-anchor="middle" class="node-label" fill="#111111">Full Table Scan</text>
-<text x="366.0" y="370" text-anchor="middle" class="node-sublabel" fill="#111111">t2</text>
-<text x="366.0" y="420" text-anchor="middle" class="row-count" fill="#111111">2.00K rows</text>
+<rect x="246.0" y="344" width="240" height="112" fill="#4bb76e" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
+<text x="366.0" y="360" text-anchor="middle" class="cost" fill="#111111">268.8 µs</text>
+<text x="366.0" y="378" text-anchor="middle" class="node-label" fill="#111111">Full Table Scan</text>
+<text x="366.0" y="396" text-anchor="middle" class="node-sublabel" fill="#111111">t2</text>
+<text x="366.0" y="446" text-anchor="middle" class="row-count" fill="#111111">2.00K rows</text>
 </g>
 </g>
-<line x1="366" y1="318" x2="366" y2="268.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
-<text x="380" y="293.0" text-anchor="start" class="arrow-label">2.00K rows</text>
-<line x1="422" y1="212.0" x2="600" y2="212.0" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
-<text x="511.0" y="206.0" text-anchor="middle" class="arrow-label">0 rows</text>
+<line x1="366" y1="344" x2="366" y2="294.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="380" y="319.0" text-anchor="start" class="arrow-label">2.00K rows</text>
+<line x1="422" y1="238.0" x2="600" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="511.0" y="232.0" text-anchor="middle" class="arrow-label">0 rows</text>
 <g class="diagram-node" data-info="Total: 1.94 ms | Cost: 1000205.90">
 <title>Total: 1.94 ms | Cost: 1000205.90</title>
-<rect x="600" y="184.0" width="160" height="56" fill="#2171b5" stroke="#333" stroke-width="1" rx="6"/>
-<text x="680.0" y="204.0" text-anchor="middle" class="node-label" fill="#ffffff">query_block #1</text>
-<text x="680.0" y="222.0" text-anchor="middle" class="cost" fill="#ffffff">857.4 µs</text>
+<rect x="600" y="210.0" width="160" height="56" fill="#440154" stroke="#2d3748" stroke-width="1" rx="6"/>
+<text x="680.0" y="230.0" text-anchor="middle" class="node-label" fill="#ffffff">query_block #1</text>
+<text x="680.0" y="248.0" text-anchor="middle" class="cost" fill="#ffffff">857.4 µs</text>
 </g>
 </g>
 <g class="zoom-controls">
-<g class="zoom-btn" id="zoom-in"><rect x="1138" y="412" width="30" height="30"/><text x="1153.0" y="433.0" text-anchor="middle">+</text></g>
-<g class="zoom-btn" id="zoom-out"><rect x="1138" y="446" width="30" height="30"/><text x="1153.0" y="467.0" text-anchor="middle">−</text></g>
-<g class="zoom-btn" id="zoom-reset"><rect x="1138" y="480" width="30" height="30"/><text x="1153.0" y="501.0" text-anchor="middle">↺</text></g>
+<g class="zoom-btn" id="zoom-in"><rect x="1138" y="438" width="30" height="30"/><text x="1153.0" y="459.0" text-anchor="middle">+</text></g>
+<g class="zoom-btn" id="zoom-out"><rect x="1138" y="472" width="30" height="30"/><text x="1153.0" y="493.0" text-anchor="middle">−</text></g>
+<g class="zoom-btn" id="zoom-reset"><rect x="1138" y="506" width="30" height="30"/><text x="1153.0" y="527.0" text-anchor="middle">↺</text></g>
 </g>
 <script type="text/javascript"><![CDATA[
 (function() {
   var N_LINES = 6;
   var detailLines = [];
   var searchBtn, content, svgEl;
-  var diagramBottom = 558;
+  var diagramBottom = 584;
   var defaultHint = "Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
   var pinned = false, searchActive = false;
   var vx = 0, vy = 0, vs = 1;
@@ -253,37 +274,38 @@
   window.init = init;
 })();
 ]]></script>
-<rect x="20" y="566" width="1160" height="545" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
-<rect x="20" y="576" width="1160" height="30" fill="#e8eaf6" rx="6"/>
-<rect x="20" y="582" width="1160" height="24" fill="#e8eaf6"/>
-<text x="36" y="595" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="24" y="614" width="1152" height="22" fill="#f5f5f5" rx="4"/>
-<text x="36" y="629" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
-<text x="46" y="653" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d,testdb.t2.id AS id,testdb.t2.x AS x,testdb.t2.y AS y</text>
-<text x="46" y="670" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from testdb.t1</text>
-<text x="46" y="687" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.t2</text>
-<text x="46" y="704" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where (testdb.t1.d = concat('r',testdb.t2.y))</text>
-<rect x="24" y="714" width="1152" height="22" fill="#f1f8e9" rx="4"/>
-<text x="36" y="729" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="46" y="753" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Left→right = execution order. Darker = more self-time. Click a node to pin details.</text>
-<text x="46" y="770" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover or click the node — details show “In Query Analysis”; the panel below lists the node label.</text>
-<rect x="24" y="780" width="1152" height="22" fill="#e3f2fd" rx="4"/>
-<text x="36" y="795" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="46" y="819" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on — Builds an in-memory hash table on the smaller (build) input and probes it from the other side. Uses join_buffer_size; spills to a tmp file (and tmpdir) if the</text>
-<text x="46" y="836" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">build side does not fit.</text>
-<rect x="24" y="846" width="1152" height="22" fill="#fff3f3" rx="4"/>
-<text x="36" y="861" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="46" y="885" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use.</text>
-<text x="46" y="902" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (t1.d = concat('r',t2.y))”</text>
-<text x="46" y="919" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: t1 (5000 rows), t2 (2000 rows)</text>
-<text x="46" y="936" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t1]”, “Table scan [t2]”</text>
-<text x="46" y="953" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size</text>
-<text x="46" y="970" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (t1.d = concat('r',t2.y))”</text>
-<rect x="24" y="980" width="1152" height="22" fill="#e8f5e9" rx="4"/>
-<text x="36" y="995" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="46" y="1019" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)'). Why: wrapping a column in a</text>
-<text x="46" y="1036" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">function means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets</text>
-<text x="46" y="1053" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables.</text>
-<text x="46" y="1070" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="46" y="1087" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
+<rect x="20" y="592" width="1160" height="562" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="20" y="602" width="1160" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="20" y="608" width="1160" height="24" fill="#e8eaf6"/>
+<text x="36" y="621" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="24" y="640" width="1152" height="22" fill="#f5f5f5" rx="4"/>
+<text x="36" y="655" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="46" y="679" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d,testdb.t2.id AS id,testdb.t2.x AS x,testdb.t2.y AS y</text>
+<text x="46" y="696" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from testdb.t1</text>
+<text x="46" y="713" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.t2</text>
+<text x="46" y="730" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where (testdb.t1.d = concat('r',testdb.t2.y))</text>
+<rect x="24" y="740" width="1152" height="22" fill="#f1f8e9" rx="4"/>
+<text x="36" y="755" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="46" y="779" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Left→right = execution order. Heat scale (yellow = fast → purple = slow) encodes self-time.</text>
+<text x="46" y="796" font-family="Arial,sans-serif" font-size="11" fill="#455a64">The red SLOWEST badge + red border mark the contention point — the single operator to optimize first.</text>
+<text x="46" y="813" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click any node to pin its details. Ctrl+F to search. Dbl-click the background to reset zoom.</text>
+<rect x="24" y="823" width="1152" height="22" fill="#e3f2fd" rx="4"/>
+<text x="36" y="838" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="46" y="862" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">hash_join=on — Builds an in-memory hash table on the smaller (build) input and probes it from the other side. Uses join_buffer_size; spills to a tmp file (and tmpdir) if the</text>
+<text x="46" y="879" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">build side does not fit.</text>
+<rect x="24" y="889" width="1152" height="22" fill="#fff3f3" rx="4"/>
+<text x="36" y="904" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="46" y="928" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Non-sargable join predicate: CONCAT(...) in Inner hash join (t1.d = concat('r',t2.y)) — a function wrapped around the join column prevents index use.</text>
+<text x="46" y="945" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (t1.d = concat('r',t2.y))”</text>
+<text x="46" y="962" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: t1 (5000 rows), t2 (2000 rows)</text>
+<text x="46" y="979" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [t1]”, “Table scan [t2]”</text>
+<text x="46" y="996" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size</text>
+<text x="46" y="1013" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (t1.d = concat('r',t2.y))”</text>
+<rect x="24" y="1023" width="1152" height="22" fill="#e8f5e9" rx="4"/>
+<text x="36" y="1038" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="46" y="1062" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)'). Why: wrapping a column in a</text>
+<text x="46" y="1079" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">function means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets</text>
+<text x="46" y="1096" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables.</text>
+<text x="46" y="1113" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="46" y="1130" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase join_buffer_size if hash joins are slow or spill to disk</text>
 </svg>
