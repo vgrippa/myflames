@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Block Nested Loop join — MariaDB&#x27;s default</title>
+  <meta name="description" content="Watch join_buffer_size decide how many times the inner table is re-scanned. Bigger buffer, fewer blocks, less I/O.">
+  <meta name="generator" content="myflames teach">
+  <style>
+:root {
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --text: #1a1a1a;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --hot: #ff3d3d;
+  --cool: #21918c;
+  --warm: #fde725;
+  --warn: #f59e0b;
+  --ok: #10b981;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 20px;
+}
+header .inner { max-width: 1100px; margin: 0 auto; }
+header h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  letter-spacing: -0.3px;
+  font-weight: 700;
+}
+header .subtitle {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: 0;
+}
+header .version-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 10px;
+  background: #eef2ff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+.banner {
+  margin: 0 0 20px;
+  padding: 12px 16px;
+  border-left: 4px solid var(--warn);
+  background: #fffbeb;
+  color: #78350f;
+  border-radius: 4px;
+  font-size: 13.5px;
+}
+.banner strong { color: #92400e; }
+section.controls {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+section.controls h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px 20px;
+}
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.control label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.control .hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.control input[type="range"] { width: 100%; }
+.control input[type="number"],
+.control select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+}
+.value-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  background: #f3f4f6;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+  color: #111827;
+}
+section.stage {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+section.stage .stage-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+button:hover { background: #f9fafb; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary:hover { background: #1d4ed8; }
+section.stage svg { width: 100%; height: auto; display: block; }
+section.readout {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+section.readout h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 18px;
+}
+.readout-grid .item {
+  padding: 12px 14px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.readout-grid .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.readout-grid .value {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+.readout-grid .value.warn { color: var(--warn); }
+.readout-grid .value.ok { color: var(--ok); }
+.readout-grid .value.hot { color: var(--hot); }
+details.learn-more {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 20px;
+}
+details.learn-more summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  outline: none;
+}
+details.learn-more[open] summary { color: #111827; }
+details.learn-more .body {
+  padding-bottom: 16px;
+  font-size: 13.5px;
+  color: #374151;
+}
+details.learn-more .body p { margin: 0 0 10px; }
+details.learn-more .body code {
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12.5px;
+}
+abbr.glossary-chip {
+  text-decoration: underline dotted;
+  text-decoration-color: #9ca3af;
+  cursor: help;
+}
+.explanation {
+  padding: 10px 14px;
+  background: #f0f9ff;
+  border-left: 3px solid #0284c7;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0c4a6e;
+  margin-top: 10px;
+}
+footer {
+  max-width: 1100px;
+  margin: 24px auto 0;
+  padding: 16px 20px 32px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+footer a { color: var(--muted); }
+@media (max-width: 640px) {
+  header h1 { font-size: 19px; }
+  .readout-grid .value { font-size: 17px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-tween { transition: none !important; animation: none !important; }
+}
+
+</style>
+</head>
+<body data-lesson="bnl">
+  <header>
+    <div class="inner">
+      <h1>Block Nested Loop join — MariaDB&#x27;s default<span class="version-chip">MariaDB 11.4</span></h1>
+      <p class="subtitle">Watch join_buffer_size decide how many times the inner table is re-scanned. Bigger buffer, fewer blocks, less I/O.</p>
+    </div>
+  </header>
+  <main>
+    
+<div class="banner">
+  <strong>Heads up:</strong> BNL is <strong>not used by MySQL 8.4</strong> —
+  MySQL 8.0.20 removed it in favour of hash join for non-indexed
+  equi-joins. This lesson shows <strong>MariaDB 11.x</strong>, where BNL is
+  still the default (<code>join_cache_level = 2</code>). Compare it with hash
+  join in the <a href="teach-join.html">BNL vs hash</a> lesson.
+</div>
+
+    
+<section class="controls" aria-labelledby="controls-h">
+  <h2 id="controls-h">Parameters (MariaDB 11.x Block Nested Loop)</h2>
+  <div class="control-grid">
+
+    <div class="control">
+      <label for="outer_rows">Outer rows: <span class="value-pill" data-pill-for="outer_rows">10000</span></label>
+      <input type="range" id="outer_rows" name="outer_rows" min="100" max="1000000" step="100" value="10000">
+      <div class="hint">Rows from the outer table (driving side of the join).</div>
+    </div>
+
+    <div class="control">
+      <label for="inner_rows">Inner rows: <span class="value-pill" data-pill-for="inner_rows">50000</span></label>
+      <input type="range" id="inner_rows" name="inner_rows" min="100" max="10000000" step="100" value="50000">
+      <div class="hint">Rows in the inner table, rescanned once per block.</div>
+    </div>
+
+    <div class="control">
+      <label for="row_size">Row size (bytes): <span class="value-pill" data-pill-for="row_size">200</span></label>
+      <input type="range" id="row_size" name="row_size" min="32" max="4096" step="32" value="200">
+      <div class="hint">Size of one outer row in the join buffer.</div>
+    </div>
+
+    <div class="control">
+      <label for="jbs">join_buffer_size (bytes): <span class="value-pill" data-pill-for="jbs">262144</span></label>
+      <input type="range" id="jbs" name="jbs" min="8192" max="16777216" step="8192" value="262144">
+      <div class="hint">MariaDB 11.4 default is 262144 B (256 KiB).</div>
+    </div>
+
+  </div>
+</section>
+
+    
+<section class="stage">
+  <div class="stage-toolbar">
+    <button id="btn-play" class="primary">▶ Play</button>
+    <button id="btn-step">Step</button>
+    <button id="btn-reset">Reset</button>
+    <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">Ready</span>
+  </div>
+  <svg id="bnl-svg" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg"></svg>
+</section>
+
+    
+<section class="readout">
+  <h2>Cost readout (MariaDB 11.x BNL)</h2>
+  <div class="readout-grid">
+    <div class="item"><p class="label">Rows per block</p><p class="value" id="out-rpb">—</p></div>
+    <div class="item"><p class="label">Blocks</p><p class="value" id="out-blocks">—</p></div>
+    <div class="item"><p class="label">Inner re-scans</p><p class="value" id="out-scans">—</p></div>
+    <div class="item"><p class="label">Row comparisons</p><p class="value" id="out-cmp">—</p></div>
+    <div class="item"><p class="label">Complexity</p><p class="value" id="out-complexity">O(n·m / b)</p></div>
+  </div>
+  <div class="explanation" id="out-explanation"></div>
+</section>
+
+    
+<details class="learn-more">
+  <summary>Learn more — why does MariaDB still use BNL?</summary>
+  <div class="body">
+    <p>MariaDB controls block-based join algorithms with
+    <code>join_cache_level</code> (0–8), not <code>optimizer_switch</code>.
+    The default is <strong>2</strong> — "BNL without hashing". Levels 3
+    and 4 enable <em>incremental</em> and <em>hashed</em> BNL respectively.</p>
+
+    <p>MariaDB's "hashed BNL" (level 4) is <strong>not</strong> the same
+    algorithm as MySQL 8.4's hash join. It's still BNL structurally — each
+    outer block builds a tiny hash table, then the inner is scanned once
+    per block and probed into that hash table. It's faster than plain BNL
+    but still O(outer_blocks × inner_rows), not O(outer + inner). See the
+    <a href="teach-join.html">BNL vs hash</a> lesson for the visual.</p>
+
+    <p>MySQL 8.0.20 removed BNL entirely — <code>optimizer_switch=block_nested_loop</code>
+    is a no-op in 8.4. For non-indexed equi-joins MySQL now always uses a
+    two-phase hash join.</p>
+
+    <p>Sources: MariaDB Knowledge Base "Block-based Join Algorithms";
+    "What's New in MySQL 8.0.20" release notes.</p>
+  </div>
+</details>
+
+  </main>
+  <footer>
+    <p>Generated by <a href="https://github.com/vgrippa/myflames">myflames teach</a> —
+    interactive database algorithm lessons. Offline-first, stdlib-only.</p>
+  </footer>
+  <script>
+var teachRuntime = (function() {
+  function formatInt(n) {
+    if (!isFinite(n)) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(Math.round(n));
+  }
+  function formatBytes(b) {
+    if (!isFinite(b) || b < 0) return "—";
+    if (b >= 1024*1024*1024) return (b / (1024*1024*1024)).toFixed(2) + " GiB";
+    if (b >= 1024*1024) return (b / (1024*1024)).toFixed(2) + " MiB";
+    if (b >= 1024) return (b / 1024).toFixed(1) + " KiB";
+    return b + " B";
+  }
+  function formatMs(ms) {
+    if (!isFinite(ms)) return "—";
+    if (ms >= 1000) return (ms / 1000).toFixed(2) + " s";
+    if (ms >= 1) return ms.toFixed(1) + " ms";
+    return (ms * 1000).toFixed(1) + " µs";
+  }
+  function readControls(rootSel) {
+    var root = document.querySelector(rootSel || "section.controls");
+    var out = {};
+    if (!root) return out;
+    var els = root.querySelectorAll("input, select");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.name) continue;
+      var v;
+      if (el.type === "checkbox") v = el.checked;
+      else if (el.type === "number" || el.type === "range") v = Number(el.value);
+      else v = el.value;
+      out[el.name] = v;
+      var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+      if (pill) pill.textContent = el.value;
+    }
+    return out;
+  }
+  function wire(recompute) {
+    var els = document.querySelectorAll("section.controls input, section.controls select");
+    for (var i = 0; i < els.length; i++) {
+      els[i].addEventListener("input", recompute);
+      els[i].addEventListener("change", recompute);
+    }
+    recompute();
+  }
+  return {
+    formatInt: formatInt,
+    formatBytes: formatBytes,
+    formatMs: formatMs,
+    readControls: readControls,
+    wire: wire
+  };
+})();
+
+
+var JOIN_BUFFER_SIZE_DEFAULT = 262144;
+
+function bnlCost(outer, inner, rowSize, jbs) {
+  var rpb = Math.max(1, Math.floor(jbs / rowSize));
+  var blocks = Math.max(1, Math.ceil(outer / rpb));
+  var innerScans = blocks;
+  var cmp = blocks * inner * Math.min(rpb, outer);
+  return {rpb: rpb, blocks: blocks, innerScans: innerScans, cmp: cmp};
+}
+
+function renderBnl(blocks, activeBlock) {
+  var svg = document.getElementById("bnl-svg");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  var W = 800;
+
+  // Outer blocks (top row)
+  var capBlocks = Math.min(blocks, 12);
+  var bw = Math.max(40, (W - 60) / capBlocks);
+  for (var i = 0; i < capBlocks; i++) {
+    var isActive = (i === activeBlock);
+    var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    r.setAttribute("x", 30 + i * bw);
+    r.setAttribute("y", 60);
+    r.setAttribute("width", bw - 6);
+    r.setAttribute("height", 50);
+    r.setAttribute("rx", 4);
+    r.setAttribute("fill", isActive ? "#fde725" : (i < activeBlock ? "#e5e7eb" : "#f9fafb"));
+    r.setAttribute("stroke", isActive ? "#ca8a04" : "#d1d5db");
+    r.setAttribute("stroke-width", isActive ? 3 : 1);
+    svg.appendChild(r);
+    var lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    lbl.setAttribute("x", 30 + i * bw + (bw-6)/2);
+    lbl.setAttribute("y", 89);
+    lbl.setAttribute("text-anchor", "middle");
+    lbl.setAttribute("font-size", "11");
+    lbl.setAttribute("font-weight", "600");
+    lbl.setAttribute("fill", isActive ? "#78350f" : "#6b7280");
+    lbl.textContent = "B" + (i + 1);
+    svg.appendChild(lbl);
+  }
+  if (blocks > 12) {
+    var more = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    more.setAttribute("x", W - 30); more.setAttribute("y", 89);
+    more.setAttribute("text-anchor", "end");
+    more.setAttribute("font-size", "11"); more.setAttribute("fill", "#9ca3af");
+    more.textContent = "+" + (blocks - 12) + " more";
+    svg.appendChild(more);
+  }
+  var hdr = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  hdr.setAttribute("x", 30); hdr.setAttribute("y", 50);
+  hdr.setAttribute("font-size", "12"); hdr.setAttribute("font-weight", "600"); hdr.setAttribute("fill", "#374151");
+  hdr.textContent = "Outer table → join buffer, packed into blocks";
+  svg.appendChild(hdr);
+
+  // Inner table (big block bottom)
+  var innerY = 180;
+  var innerR = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  innerR.setAttribute("x", 30); innerR.setAttribute("y", innerY);
+  innerR.setAttribute("width", W - 60); innerR.setAttribute("height", 80);
+  innerR.setAttribute("rx", 6); innerR.setAttribute("fill", "#f0f9ff");
+  innerR.setAttribute("stroke", "#0284c7"); innerR.setAttribute("stroke-width", 1.5);
+  svg.appendChild(innerR);
+
+  var innerLbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  innerLbl.setAttribute("x", 30); innerLbl.setAttribute("y", innerY - 8);
+  innerLbl.setAttribute("font-size", "12"); innerLbl.setAttribute("font-weight", "600"); innerLbl.setAttribute("fill", "#0c4a6e");
+  innerLbl.textContent = "Inner table (re-scanned once per block)";
+  svg.appendChild(innerLbl);
+
+  var innerBig = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  innerBig.setAttribute("x", W/2); innerBig.setAttribute("y", innerY + 50);
+  innerBig.setAttribute("text-anchor", "middle");
+  innerBig.setAttribute("font-size", "22"); innerBig.setAttribute("font-weight", "700"); innerBig.setAttribute("fill", "#0c4a6e");
+  innerBig.textContent = "full scan " + (activeBlock >= 0 ? ("#" + (activeBlock + 1) + " of " + blocks) : "");
+  svg.appendChild(innerBig);
+
+  // Arrow from active block into inner
+  if (activeBlock >= 0 && activeBlock < capBlocks) {
+    var arrow = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    arrow.setAttribute("x1", 30 + activeBlock * bw + (bw-6)/2);
+    arrow.setAttribute("y1", 115);
+    arrow.setAttribute("x2", 30 + activeBlock * bw + (bw-6)/2);
+    arrow.setAttribute("y2", innerY - 3);
+    arrow.setAttribute("stroke", "#ca8a04");
+    arrow.setAttribute("stroke-width", 2.5);
+    arrow.setAttribute("marker-end", "url(#arrow)");
+    svg.appendChild(arrow);
+    var defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+    var marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+    marker.setAttribute("id", "arrow"); marker.setAttribute("markerWidth", "10"); marker.setAttribute("markerHeight", "7");
+    marker.setAttribute("refX", "9"); marker.setAttribute("refY", "3.5"); marker.setAttribute("orient", "auto");
+    var poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    poly.setAttribute("points", "0 0, 10 3.5, 0 7"); poly.setAttribute("fill", "#ca8a04");
+    marker.appendChild(poly); defs.appendChild(marker); svg.appendChild(defs);
+  }
+}
+
+var animBNL = { block: 0, blocks: 1, playing: false, timer: null };
+
+function step() {
+  animBNL.block += 1;
+  if (animBNL.block >= animBNL.blocks) {
+    animBNL.block = animBNL.blocks - 1;
+    pause();
+    document.getElementById("phase-label").textContent = "Complete — all " + animBNL.blocks + " block(s) scanned";
+    return;
+  }
+  renderBnl(animBNL.blocks, animBNL.block);
+  document.getElementById("phase-label").textContent = "Scanning inner table for block " + (animBNL.block + 1) + "/" + animBNL.blocks;
+}
+function play() {
+  animBNL.playing = true;
+  document.getElementById("btn-play").textContent = "⏸ Pause";
+  animBNL.timer = setInterval(step, 800);
+}
+function pause() {
+  animBNL.playing = false;
+  document.getElementById("btn-play").textContent = "▶ Play";
+  if (animBNL.timer) { clearInterval(animBNL.timer); animBNL.timer = null; }
+}
+function reset() {
+  pause();
+  animBNL.block = 0;
+  document.getElementById("phase-label").textContent = "Ready";
+  renderBnl(animBNL.blocks, 0);
+}
+
+function recompute() {
+  var c = teachRuntime.readControls();
+  var cost = bnlCost(c.outer_rows, c.inner_rows, c.row_size, c.jbs);
+  document.getElementById("out-rpb").textContent = teachRuntime.formatInt(cost.rpb);
+  document.getElementById("out-blocks").textContent = teachRuntime.formatInt(cost.blocks);
+  document.getElementById("out-scans").textContent = teachRuntime.formatInt(cost.innerScans);
+  document.getElementById("out-cmp").textContent = teachRuntime.formatInt(cost.cmp);
+  var expEl = document.getElementById("out-explanation");
+  expEl.textContent =
+    "Outer rows pack into " + cost.blocks + " block(s) of up to " + cost.rpb +
+    " rows. The inner table is fully re-scanned once per block — " +
+    cost.innerScans + " scan(s). Raise join_buffer_size → fewer blocks → fewer rescans.";
+  animBNL.blocks = cost.blocks;
+  animBNL.block = 0;
+  renderBnl(cost.blocks, 0);
+}
+
+document.getElementById("btn-play").addEventListener("click", function() {
+  if (animBNL.playing) pause(); else play();
+});
+document.getElementById("btn-step").addEventListener("click", function() { pause(); step(); });
+document.getElementById("btn-reset").addEventListener("click", reset);
+
+teachRuntime.wire(recompute);
+
+  </script>
+</body>
+</html>

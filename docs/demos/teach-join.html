@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BNL vs hash join — side by side</title>
+  <meta name="description" content="Move the sliders and feel the asymptotic difference between MariaDB&#x27;s Block Nested Loop and MySQL 8.4&#x27;s hash join.">
+  <meta name="generator" content="myflames teach">
+  <style>
+:root {
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --text: #1a1a1a;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --hot: #ff3d3d;
+  --cool: #21918c;
+  --warm: #fde725;
+  --warn: #f59e0b;
+  --ok: #10b981;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 20px;
+}
+header .inner { max-width: 1100px; margin: 0 auto; }
+header h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  letter-spacing: -0.3px;
+  font-weight: 700;
+}
+header .subtitle {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: 0;
+}
+header .version-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 10px;
+  background: #eef2ff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+.banner {
+  margin: 0 0 20px;
+  padding: 12px 16px;
+  border-left: 4px solid var(--warn);
+  background: #fffbeb;
+  color: #78350f;
+  border-radius: 4px;
+  font-size: 13.5px;
+}
+.banner strong { color: #92400e; }
+section.controls {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+section.controls h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px 20px;
+}
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.control label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.control .hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.control input[type="range"] { width: 100%; }
+.control input[type="number"],
+.control select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+}
+.value-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  background: #f3f4f6;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+  color: #111827;
+}
+section.stage {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+section.stage .stage-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+button:hover { background: #f9fafb; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary:hover { background: #1d4ed8; }
+section.stage svg { width: 100%; height: auto; display: block; }
+section.readout {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+section.readout h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 18px;
+}
+.readout-grid .item {
+  padding: 12px 14px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.readout-grid .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.readout-grid .value {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+.readout-grid .value.warn { color: var(--warn); }
+.readout-grid .value.ok { color: var(--ok); }
+.readout-grid .value.hot { color: var(--hot); }
+details.learn-more {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 20px;
+}
+details.learn-more summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  outline: none;
+}
+details.learn-more[open] summary { color: #111827; }
+details.learn-more .body {
+  padding-bottom: 16px;
+  font-size: 13.5px;
+  color: #374151;
+}
+details.learn-more .body p { margin: 0 0 10px; }
+details.learn-more .body code {
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12.5px;
+}
+abbr.glossary-chip {
+  text-decoration: underline dotted;
+  text-decoration-color: #9ca3af;
+  cursor: help;
+}
+.explanation {
+  padding: 10px 14px;
+  background: #f0f9ff;
+  border-left: 3px solid #0284c7;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0c4a6e;
+  margin-top: 10px;
+}
+footer {
+  max-width: 1100px;
+  margin: 24px auto 0;
+  padding: 16px 20px 32px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+footer a { color: var(--muted); }
+@media (max-width: 640px) {
+  header h1 { font-size: 19px; }
+  .readout-grid .value { font-size: 17px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-tween { transition: none !important; animation: none !important; }
+}
+
+</style>
+</head>
+<body data-lesson="join">
+  <header>
+    <div class="inner">
+      <h1>BNL vs hash join — side by side<span class="version-chip">MySQL 8.4 • MariaDB 11.4</span></h1>
+      <p class="subtitle">Move the sliders and feel the asymptotic difference between MariaDB&#x27;s Block Nested Loop and MySQL 8.4&#x27;s hash join.</p>
+    </div>
+  </header>
+  <main>
+    
+    
+<section class="controls">
+  <h2>Shared parameters — both panels update together</h2>
+  <div class="control-grid">
+
+    <div class="control">
+      <label for="outer_rows">Outer rows: <span class="value-pill" data-pill-for="outer_rows">50000</span></label>
+      <input type="range" id="outer_rows" name="outer_rows" min="1000" max="5000000" step="1000" value="50000">
+    </div>
+
+    <div class="control">
+      <label for="inner_rows">Inner rows: <span class="value-pill" data-pill-for="inner_rows">200000</span></label>
+      <input type="range" id="inner_rows" name="inner_rows" min="1000" max="10000000" step="1000" value="200000">
+    </div>
+
+    <div class="control">
+      <label for="row_size">Row size (bytes): <span class="value-pill" data-pill-for="row_size">200</span></label>
+      <input type="range" id="row_size" name="row_size" min="32" max="4096" step="32" value="200">
+    </div>
+
+    <div class="control">
+      <label for="jbs">join_buffer_size (bytes): <span class="value-pill" data-pill-for="jbs">262144</span></label>
+      <input type="range" id="jbs" name="jbs" min="8192" max="16777216" step="8192" value="262144">
+      <div class="hint">Default is 256 KiB in both engines.</div>
+    </div>
+
+  </div>
+</section>
+
+    
+<section class="stage">
+  <div class="stage-toolbar">
+    <span style="font-size:13px;color:#374151;font-weight:600">Left: MariaDB BNL (default) · Right: MySQL 8.4 hash join</span>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#92400e">MariaDB BNL</p>
+      <svg id="svg-bnl" viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <div>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#1e40af">MySQL 8.4 hash join</p>
+      <svg id="svg-hash" viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+  </div>
+</section>
+
+    
+<section class="readout">
+  <h2>Cost comparison</h2>
+  <div class="readout-grid">
+    <div class="item"><p class="label">BNL rows examined</p><p class="value" id="bnl-cmp">—</p></div>
+    <div class="item"><p class="label">Hash rows examined</p><p class="value ok" id="hash-cmp">—</p></div>
+    <div class="item"><p class="label">Speedup (hash/BNL)</p><p class="value" id="speedup">—</p></div>
+    <div class="item"><p class="label">BNL complexity</p><p class="value">O(outer · inner / buffer)</p></div>
+    <div class="item"><p class="label">Hash complexity</p><p class="value">O(outer + inner)</p></div>
+  </div>
+  <div class="explanation" id="out-explanation"></div>
+</section>
+
+    
+<details class="learn-more">
+  <summary>Learn more — isn't MariaDB's "hash join" the same thing?</summary>
+  <div class="body">
+    <p><strong>No.</strong> MariaDB 11.x can use <code>join_cache_level = 4</code>
+    for "hashed BNL" — which is still structurally a Block Nested Loop.
+    Each outer block builds a small hash table and the inner is scanned
+    once per block. It's faster than plain BNL but still
+    <code>O(outer_blocks · inner_rows)</code>.</p>
+
+    <p>MySQL 8.4's hash join (and PostgreSQL's, and most analytics
+    engines') is a two-phase algorithm: <em>build</em> a single in-memory
+    hash table from the smaller input, then stream the larger input
+    through once. That's <code>O(build + probe)</code>. Hash join has
+    existed in MariaDB in a limited form since 10.4 but is not the
+    default, and its heuristics are different from MySQL's.</p>
+
+    <p>Takeaway: when you see "hash join" in a MariaDB EXPLAIN, check
+    which <code>join_cache_level</code> is active. In MySQL 8.4 there's
+    only one kind — <strong>BNL is gone</strong> (removed in
+    8.0.20).</p>
+
+    <p>Sources: MariaDB Knowledge Base "Block-based Join Algorithms",
+    "Hash Join Support". MySQL 8.4 Reference Manual §10.2.1.4.</p>
+  </div>
+</details>
+
+  </main>
+  <footer>
+    <p>Generated by <a href="https://github.com/vgrippa/myflames">myflames teach</a> —
+    interactive database algorithm lessons. Offline-first, stdlib-only.</p>
+  </footer>
+  <script>
+var teachRuntime = (function() {
+  function formatInt(n) {
+    if (!isFinite(n)) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(Math.round(n));
+  }
+  function formatBytes(b) {
+    if (!isFinite(b) || b < 0) return "—";
+    if (b >= 1024*1024*1024) return (b / (1024*1024*1024)).toFixed(2) + " GiB";
+    if (b >= 1024*1024) return (b / (1024*1024)).toFixed(2) + " MiB";
+    if (b >= 1024) return (b / 1024).toFixed(1) + " KiB";
+    return b + " B";
+  }
+  function formatMs(ms) {
+    if (!isFinite(ms)) return "—";
+    if (ms >= 1000) return (ms / 1000).toFixed(2) + " s";
+    if (ms >= 1) return ms.toFixed(1) + " ms";
+    return (ms * 1000).toFixed(1) + " µs";
+  }
+  function readControls(rootSel) {
+    var root = document.querySelector(rootSel || "section.controls");
+    var out = {};
+    if (!root) return out;
+    var els = root.querySelectorAll("input, select");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.name) continue;
+      var v;
+      if (el.type === "checkbox") v = el.checked;
+      else if (el.type === "number" || el.type === "range") v = Number(el.value);
+      else v = el.value;
+      out[el.name] = v;
+      var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+      if (pill) pill.textContent = el.value;
+    }
+    return out;
+  }
+  function wire(recompute) {
+    var els = document.querySelectorAll("section.controls input, section.controls select");
+    for (var i = 0; i < els.length; i++) {
+      els[i].addEventListener("input", recompute);
+      els[i].addEventListener("change", recompute);
+    }
+    recompute();
+  }
+  return {
+    formatInt: formatInt,
+    formatBytes: formatBytes,
+    formatMs: formatMs,
+    readControls: readControls,
+    wire: wire
+  };
+})();
+
+
+function bnlCost(outer, inner, rowSize, jbs) {
+  var rpb = Math.max(1, Math.floor(jbs / rowSize));
+  var blocks = Math.max(1, Math.ceil(outer / rpb));
+  return {rpb: rpb, blocks: blocks, cmp: blocks * inner * Math.min(rpb, outer)};
+}
+function hashCost(build, probe, rowSize, jbs) {
+  var buildBytes = Math.floor(build * rowSize * 1.4);
+  var fits = buildBytes <= jbs;
+  var cmp = build + probe + (fits ? 0 : (build + probe)); // +one more pass on spill
+  return {fits: fits, buildBytes: buildBytes, cmp: cmp};
+}
+
+function box(svg, x, y, w, h, fill, stroke, sw) {
+  var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  r.setAttribute("x", x); r.setAttribute("y", y);
+  r.setAttribute("width", w); r.setAttribute("height", h); r.setAttribute("rx", 4);
+  r.setAttribute("fill", fill); r.setAttribute("stroke", stroke); r.setAttribute("stroke-width", sw || 1);
+  svg.appendChild(r);
+}
+function label(svg, x, y, t, size, weight, fill, anchor) {
+  var el = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  el.setAttribute("x", x); el.setAttribute("y", y);
+  el.setAttribute("font-size", size || 11);
+  el.setAttribute("font-weight", weight || "normal");
+  el.setAttribute("fill", fill || "#374151");
+  el.setAttribute("text-anchor", anchor || "start");
+  el.textContent = t;
+  svg.appendChild(el);
+}
+
+function renderBNLPanel(blocks) {
+  var svg = document.getElementById("svg-bnl");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  var cap = Math.min(blocks, 6);
+  var bw = 50;
+  for (var i = 0; i < cap; i++) {
+    box(svg, 20 + i * bw, 40, bw - 6, 40, "#fde725", "#ca8a04", 1.5);
+    label(svg, 20 + i * bw + (bw-6)/2, 65, "B" + (i+1), 11, 600, "#78350f", "middle");
+  }
+  if (blocks > 6) {
+    label(svg, 20 + 6 * bw, 65, "+" + (blocks - 6), 11, 600, "#9ca3af");
+  }
+  label(svg, 20, 32, "Outer blocks: " + blocks, 11, 600, "#92400e");
+  box(svg, 20, 110, 360, 60, "#f0f9ff", "#0284c7", 1.5);
+  label(svg, 200, 144, "Inner × " + blocks + " re-scans", 13, 700, "#0c4a6e", "middle");
+  label(svg, 20, 104, "Inner table", 11, 600, "#0c4a6e");
+
+  // Arrows: every block to inner
+  for (var j = 0; j < cap; j++) {
+    var ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    ln.setAttribute("x1", 20 + j * bw + (bw-6)/2);
+    ln.setAttribute("y1", 80);
+    ln.setAttribute("x2", 20 + j * bw + (bw-6)/2);
+    ln.setAttribute("y2", 108);
+    ln.setAttribute("stroke", "#ca8a04"); ln.setAttribute("stroke-width", 1.5);
+    svg.appendChild(ln);
+  }
+  label(svg, 200, 200, "Cost: O(outer · inner / buffer)", 11, 600, "#374151", "middle");
+}
+
+function renderHashPanel(fits) {
+  var svg = document.getElementById("svg-hash");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  // Build
+  box(svg, 20, 40, 100, 60, "#fef3c7", "#d97706", 1.5);
+  label(svg, 70, 32, "Build (small)", 11, 600, "#92400e", "middle");
+  label(svg, 70, 72, "hash(col)", 11, "normal", "#78350f", "middle");
+  // Hash table
+  box(svg, 150, 40, 100, 130, fits ? "#dbeafe" : "#fee2e2", fits ? "#2563eb" : "#dc2626", 2);
+  label(svg, 200, 32, "Hash table", 11, 600, fits ? "#1e40af" : "#991b1b", "middle");
+  for (var i = 0; i < 4; i++) {
+    box(svg, 160, 50 + i * 28, 80, 20, "#ffffff", fits ? "#93c5fd" : "#fca5a5");
+    label(svg, 200, 63 + i * 28, "bucket " + (i+1), 9, "normal", fits ? "#1e40af" : "#991b1b", "middle");
+  }
+  // Probe
+  box(svg, 280, 40, 100, 60, "#ccfbf1", "#0d9488", 1.5);
+  label(svg, 330, 32, "Probe (large)", 11, 600, "#115e59", "middle");
+  label(svg, 330, 72, "stream once", 11, "normal", "#134e4a", "middle");
+  // Arrows
+  var a1 = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  a1.setAttribute("x1", 120); a1.setAttribute("y1", 70); a1.setAttribute("x2", 148); a1.setAttribute("y2", 70);
+  a1.setAttribute("stroke", "#d97706"); a1.setAttribute("stroke-width", 2); svg.appendChild(a1);
+  var a2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  a2.setAttribute("x1", 280); a2.setAttribute("y1", 70); a2.setAttribute("x2", 252); a2.setAttribute("y2", 70);
+  a2.setAttribute("stroke", "#0d9488"); a2.setAttribute("stroke-width", 2); svg.appendChild(a2);
+
+  if (!fits) {
+    label(svg, 200, 200, "⚠ Spilled — grace-hash partition to disk", 11, 600, "#991b1b", "middle");
+  } else {
+    label(svg, 200, 200, "Cost: O(outer + inner)", 11, 600, "#115e59", "middle");
+  }
+}
+
+function recompute() {
+  var c = teachRuntime.readControls();
+  var bnl = bnlCost(c.outer_rows, c.inner_rows, c.row_size, c.jbs);
+  // For hash join we use the smaller side as build; inner is usually larger
+  var build = Math.min(c.outer_rows, c.inner_rows);
+  var probe = Math.max(c.outer_rows, c.inner_rows);
+  var hash = hashCost(build, probe, c.row_size, c.jbs);
+
+  document.getElementById("bnl-cmp").textContent = teachRuntime.formatInt(bnl.cmp);
+  document.getElementById("hash-cmp").textContent = teachRuntime.formatInt(hash.cmp);
+  var speedup = hash.cmp > 0 ? bnl.cmp / hash.cmp : 0;
+  document.getElementById("speedup").textContent =
+    isFinite(speedup) ? (speedup >= 2 ? speedup.toFixed(0) + "×" : speedup.toFixed(2) + "×") : "—";
+
+  var exp = "With these parameters: MariaDB BNL examines ~" + teachRuntime.formatInt(bnl.cmp) +
+    " row pairs (" + bnl.blocks + " block(s) × inner scans). MySQL hash join examines " +
+    teachRuntime.formatInt(hash.cmp) + " rows (one build + one probe" +
+    (hash.fits ? "" : ", plus a spill pass") + "). ";
+  if (speedup >= 10) {
+    exp += "At this scale hash join is ~" + speedup.toFixed(0) + "× faster — this is why MySQL 8.4 removed BNL.";
+  } else if (speedup >= 2) {
+    exp += "Hash is " + speedup.toFixed(1) + "× less work even at this modest size.";
+  } else {
+    exp += "At tiny sizes the algorithms are comparable; at scale hash wins by orders of magnitude.";
+  }
+  document.getElementById("out-explanation").textContent = exp;
+
+  renderBNLPanel(bnl.blocks);
+  renderHashPanel(hash.fits);
+}
+
+teachRuntime.wire(recompute);
+
+  </script>
+</body>
+</html>

@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>B+tree lookup — how InnoDB finds a row</title>
+  <meta name="description" content="Clustered primary key, covering vs non-covering secondary index, and why one extra tree walk doubles your I/O.">
+  <meta name="generator" content="myflames teach">
+  <style>
+:root {
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --text: #1a1a1a;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --hot: #ff3d3d;
+  --cool: #21918c;
+  --warm: #fde725;
+  --warn: #f59e0b;
+  --ok: #10b981;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 20px;
+}
+header .inner { max-width: 1100px; margin: 0 auto; }
+header h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  letter-spacing: -0.3px;
+  font-weight: 700;
+}
+header .subtitle {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: 0;
+}
+header .version-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 10px;
+  background: #eef2ff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+.banner {
+  margin: 0 0 20px;
+  padding: 12px 16px;
+  border-left: 4px solid var(--warn);
+  background: #fffbeb;
+  color: #78350f;
+  border-radius: 4px;
+  font-size: 13.5px;
+}
+.banner strong { color: #92400e; }
+section.controls {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+section.controls h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px 20px;
+}
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.control label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.control .hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.control input[type="range"] { width: 100%; }
+.control input[type="number"],
+.control select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+}
+.value-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  background: #f3f4f6;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+  color: #111827;
+}
+section.stage {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+section.stage .stage-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+button:hover { background: #f9fafb; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary:hover { background: #1d4ed8; }
+section.stage svg { width: 100%; height: auto; display: block; }
+section.readout {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+section.readout h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 18px;
+}
+.readout-grid .item {
+  padding: 12px 14px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.readout-grid .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.readout-grid .value {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+.readout-grid .value.warn { color: var(--warn); }
+.readout-grid .value.ok { color: var(--ok); }
+.readout-grid .value.hot { color: var(--hot); }
+details.learn-more {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 20px;
+}
+details.learn-more summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  outline: none;
+}
+details.learn-more[open] summary { color: #111827; }
+details.learn-more .body {
+  padding-bottom: 16px;
+  font-size: 13.5px;
+  color: #374151;
+}
+details.learn-more .body p { margin: 0 0 10px; }
+details.learn-more .body code {
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12.5px;
+}
+abbr.glossary-chip {
+  text-decoration: underline dotted;
+  text-decoration-color: #9ca3af;
+  cursor: help;
+}
+.explanation {
+  padding: 10px 14px;
+  background: #f0f9ff;
+  border-left: 3px solid #0284c7;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0c4a6e;
+  margin-top: 10px;
+}
+footer {
+  max-width: 1100px;
+  margin: 24px auto 0;
+  padding: 16px 20px 32px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+footer a { color: var(--muted); }
+@media (max-width: 640px) {
+  header h1 { font-size: 19px; }
+  .readout-grid .value { font-size: 17px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-tween { transition: none !important; animation: none !important; }
+}
+
+</style>
+</head>
+<body data-lesson="btree">
+  <header>
+    <div class="inner">
+      <h1>B+tree lookup — how InnoDB finds a row<span class="version-chip">MySQL 8.4 • MariaDB 11.4</span></h1>
+      <p class="subtitle">Clustered primary key, covering vs non-covering secondary index, and why one extra tree walk doubles your I/O.</p>
+    </div>
+  </header>
+  <main>
+    
+    
+<section class="controls" aria-labelledby="controls-h">
+  <h2 id="controls-h">Parameters</h2>
+  <div class="control-grid">
+
+    <div class="control">
+      <label for="rows">Rows in table: <span class="value-pill" data-pill-for="rows">1000000</span></label>
+      <input type="range" id="rows" name="rows" min="1" max="9" step="1" value="6">
+      <div class="hint">Logarithmic: 10, 100, 1K, 10K, 100K, 1M, 10M, 100M, 1B</div>
+    </div>
+
+    <div class="control">
+      <label for="key_size">Key size (bytes): <span class="value-pill" data-pill-for="key_size">8</span></label>
+      <input type="range" id="key_size" name="key_size" min="4" max="64" step="2" value="8">
+      <div class="hint">BIGINT PK = 8 B. INT = 4 B. 64-char VARCHAR prefix ≈ 64 B.</div>
+    </div>
+
+    <div class="control">
+      <label for="page_size">InnoDB page size</label>
+      <select id="page_size" name="page_size">
+        <option value="4096">4 KiB</option>
+        <option value="8192">8 KiB</option>
+        <option value="16384" selected>16 KiB (default)</option>
+        <option value="32768">32 KiB</option>
+        <option value="65536">64 KiB</option>
+      </select>
+      <div class="hint">Set at <code>innodb_page_size</code>; default 16 KiB.</div>
+    </div>
+
+    <div class="control">
+      <label for="key_type">Lookup type</label>
+      <select id="key_type" name="key_type">
+        <option value="pk">Clustered PK lookup</option>
+        <option value="secondary_covering">Covering secondary index</option>
+        <option value="secondary_noncovering" selected>Non-covering secondary (PK fetch)</option>
+      </select>
+      <div class="hint">Non-covering is MySQL's single biggest "secret" I/O tax.</div>
+    </div>
+
+  </div>
+</section>
+
+    
+<section class="stage" aria-labelledby="stage-h">
+  <h2 id="stage-h" class="sr-only" style="position:absolute;left:-9999px">Tree descent animation</h2>
+  <div class="stage-toolbar">
+    <button id="btn-play" class="primary">▶ Play</button>
+    <button id="btn-step">Step</button>
+    <button id="btn-reset">Reset</button>
+    <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">Ready</span>
+  </div>
+  <svg id="btree-svg" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg"></svg>
+</section>
+
+    
+<section class="readout">
+  <h2>Cost readout (updates live)</h2>
+  <div class="readout-grid">
+    <div class="item"><p class="label">Fan-out (non-leaf)</p><p class="value" id="out-fanout">—</p></div>
+    <div class="item"><p class="label">Tree height</p><p class="value" id="out-height">—</p></div>
+    <div class="item"><p class="label">Tree traversals</p><p class="value" id="out-traversals">—</p></div>
+    <div class="item"><p class="label">Pages touched</p><p class="value" id="out-pages">—</p></div>
+    <div class="item"><p class="label">Cold-cache I/O (est.)</p><p class="value" id="out-cold-io">—</p></div>
+    <div class="item"><p class="label">Complexity</p><p class="value" id="out-complexity">O(log n)</p></div>
+  </div>
+  <div class="explanation" id="out-explanation"></div>
+</section>
+
+    
+<details class="learn-more">
+  <summary>Learn more — why is a non-covering secondary index slower?</summary>
+  <div class="body">
+    <p>InnoDB stores every table as a <strong>clustered B+tree on the primary key</strong>.
+    The leaf pages of that tree hold the full row. A secondary index is a
+    <em>separate</em> B+tree whose leaves hold <code>(secondary_cols, primary_key)</code>,
+    not the row itself.</p>
+
+    <p>So a lookup by a non-covering secondary index has to:</p>
+    <ol>
+      <li>Walk the secondary B+tree down to a leaf, yielding <code>PK</code>.</li>
+      <li>Walk the <em>clustered</em> B+tree using that <code>PK</code> to fetch the row.</li>
+    </ol>
+    <p>Two traversals, each the full height of its tree. That is why
+    <strong>covering indexes</strong> — where the leaf already has every
+    column the query asked for — are such an important tuning tool.</p>
+
+    <p>The fan-out formula here is
+    <code>(page_size − 120) / (key_size + 9)</code>.
+    It's an approximation: real InnoDB records have variable-length headers and
+    leaf pages split at a 15/16 fill factor, so real fan-out is a bit lower.
+    The <em>height</em> is stable under that noise because it's a logarithm —
+    halving the real fan-out only adds one level of the tree for every
+    factor of the original fan-out.</p>
+
+    <p>Sources: MySQL 8.4 Reference Manual §17.6.2 (InnoDB Indexes),
+    §17.11.2 (File Space Management). Default
+    <code>innodb_page_size</code> = 16 KiB.</p>
+  </div>
+</details>
+
+  </main>
+  <footer>
+    <p>Generated by <a href="https://github.com/vgrippa/myflames">myflames teach</a> —
+    interactive database algorithm lessons. Offline-first, stdlib-only.</p>
+  </footer>
+  <script>
+var teachRuntime = (function() {
+  function formatInt(n) {
+    if (!isFinite(n)) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(Math.round(n));
+  }
+  function formatBytes(b) {
+    if (!isFinite(b) || b < 0) return "—";
+    if (b >= 1024*1024*1024) return (b / (1024*1024*1024)).toFixed(2) + " GiB";
+    if (b >= 1024*1024) return (b / (1024*1024)).toFixed(2) + " MiB";
+    if (b >= 1024) return (b / 1024).toFixed(1) + " KiB";
+    return b + " B";
+  }
+  function formatMs(ms) {
+    if (!isFinite(ms)) return "—";
+    if (ms >= 1000) return (ms / 1000).toFixed(2) + " s";
+    if (ms >= 1) return ms.toFixed(1) + " ms";
+    return (ms * 1000).toFixed(1) + " µs";
+  }
+  function readControls(rootSel) {
+    var root = document.querySelector(rootSel || "section.controls");
+    var out = {};
+    if (!root) return out;
+    var els = root.querySelectorAll("input, select");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.name) continue;
+      var v;
+      if (el.type === "checkbox") v = el.checked;
+      else if (el.type === "number" || el.type === "range") v = Number(el.value);
+      else v = el.value;
+      out[el.name] = v;
+      var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+      if (pill) pill.textContent = el.value;
+    }
+    return out;
+  }
+  function wire(recompute) {
+    var els = document.querySelectorAll("section.controls input, section.controls select");
+    for (var i = 0; i < els.length; i++) {
+      els[i].addEventListener("input", recompute);
+      els[i].addEventListener("change", recompute);
+    }
+    recompute();
+  }
+  return {
+    formatInt: formatInt,
+    formatBytes: formatBytes,
+    formatMs: formatMs,
+    readControls: readControls,
+    wire: wire
+  };
+})();
+
+
+// Constants must match myflames/teach/_cost_model.py — enforced by tests.
+var INNODB_PAGE_OVERHEAD_BYTES = 120;
+var INNODB_CHILD_POINTER_BYTES = 9;
+var INNODB_PAGE_SIZE_DEFAULT = 16384;
+var ROW_SCALE = [10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000];
+
+function innodbFanout(keySize, pageSize) {
+  var usable = pageSize - INNODB_PAGE_OVERHEAD_BYTES;
+  var entry = keySize + INNODB_CHILD_POINTER_BYTES;
+  return Math.max(2, Math.floor(usable / entry));
+}
+
+function innodbTreeHeight(rows, fanOut) {
+  if (rows <= 0) return 2;
+  if (rows <= fanOut) return 2;
+  return Math.max(2, Math.ceil(Math.log(rows) / Math.log(fanOut)));
+}
+
+function btreeCost(rows, keySize, pageSize, keyType) {
+  var fanOut = innodbFanout(keySize, pageSize);
+  var height = innodbTreeHeight(rows, fanOut);
+  var traversals = (keyType === "secondary_noncovering") ? 2 : 1;
+  var pages = height * traversals;
+  var explanation;
+  if (keyType === "pk") {
+    explanation = "Clustered PK lookup: one descent of " + height + " levels. The leaf page holds the full row — no extra I/O.";
+  } else if (keyType === "secondary_covering") {
+    explanation = "Covering secondary index: one descent of " + height + " levels. Every column the query asked for is already in the secondary leaf — no clustered-tree visit.";
+  } else {
+    explanation = "Non-covering secondary: " + height + " levels on the secondary tree, then " + height + " more on the clustered tree to fetch the row. Two traversals.";
+  }
+  return {
+    fanOut: fanOut,
+    height: height,
+    traversals: traversals,
+    pages: pages,
+    explanation: explanation
+  };
+}
+
+// --------------- render the tree as SVG ---------------
+function renderTree(height, traversals, activeLevel, phase) {
+  var svg = document.getElementById("btree-svg");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  var W = 800, H = 360;
+  var treeCount = traversals;
+  var treeWidth = W / treeCount;
+  var treeLabels = (traversals === 2) ? ["Secondary index", "Clustered PK tree"] : [null];
+  var defaultLabel = (treeCount === 1) ? "Clustered PK tree" : "Secondary index";
+
+  for (var t = 0; t < treeCount; t++) {
+    var ox = t * treeWidth;
+    var label = (treeLabels[t] !== null) ? treeLabels[t] : defaultLabel;
+
+    // Tree title
+    var titleEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    titleEl.setAttribute("x", ox + treeWidth/2);
+    titleEl.setAttribute("y", 22);
+    titleEl.setAttribute("text-anchor", "middle");
+    titleEl.setAttribute("font-size", "12");
+    titleEl.setAttribute("font-weight", "600");
+    titleEl.setAttribute("fill", "#374151");
+    titleEl.textContent = label;
+    svg.appendChild(titleEl);
+
+    // Nodes per level
+    var levelY = [50, 130, 210, 290];
+    var levels = Math.min(height, 4);
+    for (var lv = 0; lv < levels; lv++) {
+      var nodesAtLv = Math.min(Math.pow(2, lv), 8);
+      var isActive = (t === phase.tree && lv === phase.level);
+      var isVisited = (t < phase.tree) || (t === phase.tree && lv < phase.level);
+      for (var n = 0; n < nodesAtLv; n++) {
+        var x = ox + ((n + 0.5) * (treeWidth / nodesAtLv)) - 18;
+        var y = levelY[lv];
+        var isOnPath = (n === Math.floor(nodesAtLv / 2));
+        var color = "#f3f4f6";
+        var stroke = "#d1d5db";
+        var sw = 1;
+        if (isOnPath && isVisited) { color = "#e0e7ff"; stroke = "#6366f1"; sw = 1.5; }
+        if (isOnPath && isActive) { color = "#fde725"; stroke = "#ca8a04"; sw = 3; }
+        var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        r.setAttribute("x", x);
+        r.setAttribute("y", y);
+        r.setAttribute("width", 36);
+        r.setAttribute("height", 18);
+        r.setAttribute("rx", 3);
+        r.setAttribute("fill", color);
+        r.setAttribute("stroke", stroke);
+        r.setAttribute("stroke-width", sw);
+        svg.appendChild(r);
+      }
+      // Level label
+      var lvLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      lvLabel.setAttribute("x", ox + 6);
+      lvLabel.setAttribute("y", y + 13);
+      lvLabel.setAttribute("font-size", "9");
+      lvLabel.setAttribute("fill", "#6b7280");
+      lvLabel.textContent = (lv === 0) ? "root" : (lv === levels - 1 ? "leaf" : "L" + lv);
+      svg.appendChild(lvLabel);
+    }
+    if (height > 4) {
+      var moreLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      moreLabel.setAttribute("x", ox + treeWidth/2);
+      moreLabel.setAttribute("y", 334);
+      moreLabel.setAttribute("text-anchor", "middle");
+      moreLabel.setAttribute("font-size", "10");
+      moreLabel.setAttribute("fill", "#6b7280");
+      moreLabel.textContent = "(" + height + " total levels)";
+      svg.appendChild(moreLabel);
+    }
+  }
+}
+
+// --------------- animation state ---------------
+var animState = { tree: 0, level: 0, height: 4, traversals: 1, playing: false, timer: null };
+
+function stepAnim() {
+  animState.level += 1;
+  if (animState.level >= Math.min(animState.height, 4)) {
+    animState.level = 0;
+    animState.tree += 1;
+  }
+  if (animState.tree >= animState.traversals) {
+    animState.tree = 0;
+    animState.level = 0;
+    pauseAnim();
+    document.getElementById("phase-label").textContent = "Complete — reset to replay";
+  }
+  renderTree(animState.height, animState.traversals, animState);
+  if (animState.playing) {
+    document.getElementById("phase-label").textContent =
+      "Walking tree " + (animState.tree + 1) + "/" + animState.traversals +
+      " — level " + animState.level;
+  }
+}
+
+function playAnim() {
+  animState.playing = true;
+  document.getElementById("btn-play").textContent = "⏸ Pause";
+  animState.timer = setInterval(stepAnim, 700);
+}
+function pauseAnim() {
+  animState.playing = false;
+  document.getElementById("btn-play").textContent = "▶ Play";
+  if (animState.timer) { clearInterval(animState.timer); animState.timer = null; }
+}
+function resetAnim() {
+  pauseAnim();
+  animState.tree = 0;
+  animState.level = 0;
+  document.getElementById("phase-label").textContent = "Ready";
+  renderTree(animState.height, animState.traversals, animState);
+}
+
+// --------------- main recompute ---------------
+function recompute() {
+  var c = teachRuntime.readControls();
+  var rowIdx = Math.max(0, Math.min(ROW_SCALE.length - 1, Math.round(c.rows)));
+  var rows = ROW_SCALE[rowIdx];
+  // Update rows pill to show real number
+  var pill = document.querySelector('[data-pill-for="rows"]');
+  if (pill) pill.textContent = teachRuntime.formatInt(rows);
+
+  var keySize = Math.round(c.key_size);
+  var pageSize = Math.round(c.page_size);
+  var keyType = c.key_type;
+  var cost = btreeCost(rows, keySize, pageSize, keyType);
+
+  document.getElementById("out-fanout").textContent = teachRuntime.formatInt(cost.fanOut);
+  document.getElementById("out-height").textContent = cost.height + " levels";
+  document.getElementById("out-traversals").textContent = cost.traversals;
+  document.getElementById("out-pages").textContent = cost.pages + " pages";
+  document.getElementById("out-cold-io").textContent =
+    teachRuntime.formatBytes(cost.pages * pageSize);
+  document.getElementById("out-complexity").textContent =
+    (cost.traversals === 2) ? "O(log n) + O(log n)" : "O(log n)";
+  var expEl = document.getElementById("out-explanation");
+  expEl.textContent = cost.explanation;
+
+  animState.height = cost.height;
+  animState.traversals = cost.traversals;
+  renderTree(cost.height, cost.traversals, animState);
+}
+
+document.getElementById("btn-play").addEventListener("click", function() {
+  if (animState.playing) pauseAnim(); else playAnim();
+});
+document.getElementById("btn-step").addEventListener("click", function() {
+  pauseAnim();
+  stepAnim();
+});
+document.getElementById("btn-reset").addEventListener("click", resetAnim);
+
+teachRuntime.wire(recompute);
+
+  </script>
+</body>
+</html>
