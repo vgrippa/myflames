@@ -330,6 +330,10 @@ def main():
         if sys.argv[1] == "compare":
             _cmd_compare(sys.argv[2:])
             return
+        if sys.argv[1] == "teach":
+            from .teach import cmd_teach
+            cmd_teach(sys.argv[2:])
+            return
 
     parser = argparse.ArgumentParser(
         prog="myflames",
@@ -347,10 +351,12 @@ Examples:
            -e 'SELECT * FROM t WHERE id=1'              # connect + explain
   myflames compare before.json after.json               # before vs after diff
   myflames guide                                        # which view?
+  myflames teach btree -o btree.html                    # interactive lesson
 
 Subcommands:
   compare   Compare before/after EXPLAIN JSON files
   guide     Show which view to pick for your use case
+  teach     Interactive algorithm lessons (btree, bnl, hash, join, lru)
 """,
     )
     parser.add_argument(
