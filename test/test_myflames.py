@@ -1585,6 +1585,114 @@ class TestDocumentation(unittest.TestCase):
         svg = render_diagram(root)
         self.assertIn("user-select: text", svg, "Details strip is not selectable in diagram")
 
+    # ---- Hotspot / modern visual style (added with the viridis palette refresh) ----
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_hotspot_class_applied(self):
+        """Exactly one node in a non-trivial plan must carry the 'hotspot' class."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root, analysis=analyze_plan(root))
+        # class="diagram-node hotspot" appears exactly once
+        count = svg.count('class="diagram-node hotspot"')
+        self.assertEqual(
+            count, 1,
+            f"Expected exactly 1 hotspot node in the diagram, got {count}",
+        )
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_hotspot_badge_present(self):
+        """A hotspot node must render a SLOWEST badge."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root, analysis=analyze_plan(root))
+        self.assertIn('class="hotspot-badge"', svg, "hotspot-badge group missing from SVG")
+        self.assertIn(">SLOWEST<", svg, "SLOWEST badge text missing from SVG")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_has_legend(self):
+        """Diagram must ship a compact heat-scale legend with Fast / Slow labels."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root, analysis=analyze_plan(root))
+        self.assertIn('id="diagram-legend"', svg, "diagram-legend group missing")
+        self.assertIn(">Fast<", svg, "Fast label missing from legend")
+        self.assertIn(">Slow<", svg, "Slow label missing from legend")
+
+    def test_diagram_palette_is_viridis_like(self):
+        """Heat palette must be a 7-stop perceptually-uniform scale with deep purple at the hot end.
+        Guards against regression to the old single-hue blue ramp."""
+        import re
+        from myflames.output_diagram import _HEAT_PALETTE
+        self.assertEqual(len(_HEAT_PALETTE), 7, "palette must have 7 stops")
+        for h in _HEAT_PALETTE:
+            self.assertRegex(h, r"^#[0-9a-f]{6}$")
+        self.assertIn("#440154", _HEAT_PALETTE, "viridis deep purple missing — blue-ramp regression?")
+        self.assertIn("#fde725", _HEAT_PALETTE, "viridis yellow missing")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_uses_system_font_stack(self):
+        """Typography refresh: must use native system font stack, not Arial."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root)
+        self.assertIn("-apple-system", svg, "system font stack missing from diagram SVG")
+        self.assertIn("BlinkMacSystemFont", svg)
+        self.assertNotIn("font-family: Arial, sans-serif;", svg, "old Arial-only font stack must be gone")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_hotspot_glow_filter_defined(self):
+        """The hotspot-glow SVG filter must be defined in <defs>."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root, analysis=analyze_plan(root))
+        self.assertIn('id="hotspot-glow"', svg, "hotspot-glow filter missing from <defs>")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_focus_mode_dims_others(self):
+        """Focus mode: init JS must apply 'dim' to non-hotspot nodes; CSS override keeps hotspot bright."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root, analysis=analyze_plan(root))
+        self.assertIn('classList.add("dim")', svg, "focus-mode JS missing (classList.add('dim'))")
+        self.assertIn(".diagram-node.hotspot.dim", svg, "CSS override for hotspot.dim missing")
+
+    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
+    def test_diagram_how_to_read_mentions_hotspot(self):
+        """The info panel's 'How to read' block must explain the SLOWEST badge."""
+        root = parse_explain(_load(self.HASH_JOIN))
+        svg = render_diagram(root, analysis=analyze_plan(root))
+        self.assertIn("SLOWEST badge", svg, "How to read must describe the SLOWEST badge")
+
+    def test_diagram_hotspot_absent_when_no_time_data(self):
+        """Graceful degrade: if a plan has no usable timing data and no warnings,
+        the hotspot layer must be skipped entirely (no class, no badge)."""
+        from myflames.parser import build_short_label
+        # Synthetic minimal plan: two nodes, all timings None/0, no warnings.
+        inner = {
+            "full_label": "Table scan on t",
+            "short_label": build_short_label("Table scan", table="t"),
+            "table_name": "t",
+            "details": {"operation": "Table scan", "table_name": "t"},
+            "total_time": 0,
+            "self_time": None,
+            "actual_rows": 0,
+            "rows": 0,
+            "loops": 1,
+            "inputs": [],
+            "children": [],
+        }
+        root = {
+            "full_label": "query_block",
+            "short_label": "query_block #1",
+            "details": {"operation": "query_block"},
+            "total_time": 0,
+            "self_time": None,
+            "actual_rows": 0,
+            "rows": 0,
+            "inputs": [inner],
+            "children": [inner],
+        }
+        svg = render_diagram(root)
+        self.assertNotIn('class="diagram-node hotspot"', svg,
+                         "hotspot must be omitted when there's no time data")
+        self.assertNotIn('class="hotspot-badge"', svg,
+                         "SLOWEST badge must be omitted when there's no time data")
+
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_flamegraph_height_equals_viewbox(self):
         """Flamegraph height attribute must equal viewBox height to prevent clipping."""

@@ -33,10 +33,21 @@ import math
 import re
 from .parser import xml_escape, build_diagram_steps, render_info_panel
 
-# Sequential color scale: low time = light, high time = dark (standard for intensity/cost)
-# ColorBrewer-style sequential Blues: light #deebf7 -> dark #2171b5
-_LOW_RGB = (0xde, 0xeb, 0xf7)   # light blue (low time)
-_HIGH_RGB = (0x21, 0x71, 0xb5)  # dark blue (high time)
+# Perceptually-uniform viridis-inspired heat palette.
+# Yellow = fast/cold, deep purple = slow/hot. Colorblind-safe and legible
+# in greyscale / print — unlike the old single-hue blue ramp.
+_HEAT_PALETTE = [
+    "#fde725",  # yellow (coldest)
+    "#addc30",
+    "#5ec962",
+    "#21918c",
+    "#3b528b",
+    "#472d7b",
+    "#440154",  # deep purple (hottest)
+]
+
+# Stroke color for the single "contention point" node — the slowest operator.
+_HOTSPOT_STROKE = "#ff3d3d"
 
 
 def _text_color(fill_hex):
@@ -67,8 +78,12 @@ def _join_type_label(node):
     return "join"
 
 
-def _time_to_fill(time_ms, max_time_ms):
-    """Return SVG fill color (hex): sequential blue — light = low self-time, dark = high.
+def _hex_to_rgb(h):
+    return (int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16))
+
+
+def _time_to_fill_v2(time_ms, max_time_ms, palette=_HEAT_PALETTE):
+    """Return SVG fill color (hex): perceptually-uniform heat — yellow (fast) → purple (slow).
     Uses logarithmic scale so small and large values are visually distinct."""
     if max_time_ms is None or max_time_ms <= 0 or time_ms is None or time_ms < 0:
         return "#e0e0e0"  # neutral light grey
@@ -78,10 +93,114 @@ def _time_to_fill(time_ms, max_time_ms):
         return "#e0e0e0"
     ratio = math.log1p(t) / math.log1p(m)
     ratio = min(1.0, max(0.0, ratio))
-    r = int(_LOW_RGB[0] + (_HIGH_RGB[0] - _LOW_RGB[0]) * ratio)
-    g = int(_LOW_RGB[1] + (_HIGH_RGB[1] - _LOW_RGB[1]) * ratio)
-    b = int(_LOW_RGB[2] + (_HIGH_RGB[2] - _LOW_RGB[2]) * ratio)
+    # Map ratio ∈ [0,1] onto palette stops and linearly interpolate
+    n = len(palette) - 1
+    pos = ratio * n
+    lo = int(pos)
+    hi = min(lo + 1, n)
+    frac = pos - lo
+    lo_rgb = _hex_to_rgb(palette[lo])
+    hi_rgb = _hex_to_rgb(palette[hi])
+    r = int(lo_rgb[0] + (hi_rgb[0] - lo_rgb[0]) * frac)
+    g = int(lo_rgb[1] + (hi_rgb[1] - lo_rgb[1]) * frac)
+    b = int(lo_rgb[2] + (hi_rgb[2] - lo_rgb[2]) * frac)
     return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _time_to_fill(time_ms, max_time_ms):
+    """Backwards-compatible shim — delegates to the viridis-inspired v2 scale."""
+    return _time_to_fill_v2(time_ms, max_time_ms, _HEAT_PALETTE)
+
+
+def _critical_labels(analysis):
+    """Return the set of node short_labels that are 'critical' — i.e. appear in
+    one of the analysis lists that represent expensive operators."""
+    if not analysis:
+        return set()
+    out = set()
+    for key in ("full_scans", "hash_joins", "filesorts", "temp_tables"):
+        for entry in analysis.get(key) or []:
+            lbl = (entry.get("short_label") or "").strip()
+            if lbl:
+                out.add(lbl)
+    return out
+
+
+def _pick_hotspot(items, analysis):
+    """Return the index into `items` of the single 'contention point' — the
+    hottest operator. Ranks by (has_critical_warning, self_ms, total_ms). Ties
+    broken by plan order (first wins). Returns None when there is no usable
+    timing data AND no warnings to latch onto."""
+    if not items:
+        return None
+    critical = _critical_labels(analysis)
+    best_idx = None
+    best_key = None
+    for i, it in enumerate(items):
+        _kind, node, total_ms, self_ms, _cost, _rows = it
+        label = (node.get("short_label") or "").strip()
+        is_crit = 1 if label and label in critical else 0
+        s = float(self_ms or 0)
+        t = float(total_ms or 0)
+        key = (is_crit, s, t)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_idx = i
+    # Only meaningful if either there's a real warning or a measurable time
+    if best_key and (best_key[0] > 0 or best_key[1] > 0 or best_key[2] > 0):
+        return best_idx
+    return None
+
+
+def _render_legend(total_width, pad, y, palette, has_hotspot):
+    """Render a compact heat-scale legend as a list of SVG lines.
+
+    Drawn *outside* the clipped diagram content group so it never gets hidden.
+    Clamped so it never overflows the left padding on narrow plans."""
+    swatch_w = 18
+    swatch_h = 10
+    n = len(palette)
+    grad_w = swatch_w * n
+    labels_w = 30 + 30  # "Fast" left + "Slow" right
+    hotspot_w = 150 if has_hotspot else 0
+    gap = 8
+    total = labels_w + grad_w + (gap + hotspot_w if has_hotspot else 0)
+    # Center, clamp to pad
+    start_x = (total_width - total) / 2
+    if start_x < pad:
+        start_x = pad
+
+    out = []
+    out.append(f'<g id="diagram-legend">')
+    # "Fast" label (left)
+    out.append(
+        f'<text x="{start_x}" y="{y + swatch_h - 1}" class="legend-label">Fast</text>'
+    )
+    cursor = start_x + 30
+    # Gradient strip
+    for i, hexc in enumerate(palette):
+        out.append(
+            f'<rect x="{cursor + i * swatch_w}" y="{y}" width="{swatch_w}" height="{swatch_h}" '
+            f'fill="{hexc}" stroke="#999" stroke-width="0.5"/>'
+        )
+    cursor += grad_w
+    # "Slow" label (right)
+    out.append(
+        f'<text x="{cursor + 4}" y="{y + swatch_h - 1}" class="legend-label">Slow</text>'
+    )
+    if has_hotspot:
+        cursor += 30 + gap
+        # Red swatch + label
+        out.append(
+            f'<rect x="{cursor}" y="{y}" width="{swatch_w}" height="{swatch_h}" '
+            f'fill="{_HOTSPOT_STROKE}" stroke="#999" stroke-width="0.5"/>'
+        )
+        out.append(
+            f'<text x="{cursor + swatch_w + 6}" y="{y + swatch_h - 1}" class="legend-label">'
+            f'SLOWEST = contention point</text>'
+        )
+    out.append('</g>')
+    return out
 
 
 def _format_time(ms):
@@ -207,7 +326,7 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     arrow_len = hspacing
     row_h = 100
     cost_y_offset = -20
-    title_h = 56
+    title_h = 82  # bumped from 56 to make room for the heat-scale legend strip
     bottom_pad = 72
     gap_between_rows = vspacing
     inner_row_offset = box_h + gap_between_rows
@@ -287,20 +406,39 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     details_y_start = diagram_height - bottom_pad + 14
     details_sep_y = diagram_height - bottom_pad + 2
 
+    # Pick the single hotspot (contention point) — the slowest node with optional
+    # critical-warning boost. Returns None when there's no data to latch onto.
+    hotspot_idx = _pick_hotspot(items, analysis)
+    hotspot_node_id = id(items[hotspot_idx][1]) if hotspot_idx is not None else None
+
+    defs_block = (
+        '<defs>'
+        '<marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">'
+        '<polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"/>'
+        '</marker>'
+        '<filter id="hotspot-glow" x="-30%" y="-30%" width="160%" height="160%">'
+        '<feGaussianBlur stdDeviation="2.2" result="blur"/>'
+        '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>'
+        '</filter>'
+        f'<clipPath id="diagram-clip"><rect x="0" y="0" width="{total_width}" height="{diagram_height}"/></clipPath>'
+        '</defs>'
+    )
+
     lines = [
         '<?xml version="1.0" standalone="no"?>',
         '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">',
         f'<svg version="1.1" width="{total_width}" height="{height}" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
-        f'<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="{total_width}" height="{diagram_height}"/></clipPath></defs>',
+        defs_block,
         "<style>",
-        "  text { font-family: Arial, sans-serif; font-size: 11px; }",
-        "  .title { font-size: 16px; font-weight: bold; }",
-        "  .subtitle { font-size: 11px; fill: #666; }",
+        '  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11px; -webkit-font-smoothing: antialiased; }',
+        "  .title { font-size: 19px; font-weight: 650; letter-spacing: -0.2px; fill: #1a1a1a; }",
+        "  .subtitle { font-size: 11px; fill: #6b7280; letter-spacing: 0.1px; }",
         "  .cost { font-size: 10px; fill: #555; }",
-        "  .node-label { font-weight: bold; font-size: 11px; }",
-        "  .node-sublabel { font-size: 9px; }",
+        "  .node-label { font-weight: 600; font-size: 11.5px; letter-spacing: -0.1px; }",
+        "  .node-sublabel { font-size: 9.5px; fill-opacity: 0.92; }",
         "  .row-count { font-size: 10px; }",
-        "  .arrow-label { font-size: 9px; fill: #444; }",
+        "  .arrow-label { font-size: 9px; fill: #4b5563; }",
+        "  .legend-label { font-size: 9px; fill: #555; }",
         "  .diagram-node { cursor: pointer; }",
         "  .diagram-node:hover rect, .diagram-node:hover polygon { opacity: 0.9; stroke-width: 2; }",
         "  .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }",
@@ -309,8 +447,13 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         "  .details-line.dim { fill: #999; }",
         "  #search { font-size: 12px; fill: #666; cursor: pointer; }",
         "  #search:hover { fill: #000; }",
-        "  .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6; stroke-width: 3; }",
         "  .diagram-node.dim { opacity: 0.25; }",
+        f"  .diagram-node.hotspot rect, .diagram-node.hotspot polygon {{ stroke: {_HOTSPOT_STROKE}; stroke-width: 3.5; filter: url(#hotspot-glow); }}",
+        "  .diagram-node.hotspot.dim { opacity: 1; }",
+        "  .diagram-node.pinned.dim { opacity: 1; }",
+        f"  .diagram-node.pinned rect, .diagram-node.pinned polygon {{ stroke: #e600e6 !important; stroke-width: 3; }}",
+        f"  .hotspot-badge rect {{ fill: {_HOTSPOT_STROKE}; }}",
+        "  .hotspot-badge text { fill: #fff; font-size: 8px; font-weight: 700; letter-spacing: 0.6px; }",
         "  .zoom-controls { cursor: pointer; }",
         "  .zoom-btn rect { fill: #fff; stroke: #bbb; stroke-width: 1; rx: 4; }",
         "  .zoom-btn:hover rect { fill: #f0f0f0; stroke: #888; }",
@@ -318,13 +461,18 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         "  .zoom-btn:hover text { fill: #111; }",
         "</style>",
         '<rect width="100%" height="100%" fill="#fafafa"/>',
-        f'<text x="{total_width/2}" y="28" text-anchor="middle" class="title">{xml_escape(title)}</text>',
-        f'<text x="{total_width/2}" y="46" text-anchor="middle" class="subtitle">Execution plan (left \u2192 right)  \u00b7  Total: {total_time_str}  \u00b7  Darker = slower  \u00b7  Click node to pin details</text>',
+        f'<text x="{total_width/2}" y="30" text-anchor="middle" class="title">{xml_escape(title)}</text>',
+        f'<text x="{total_width/2}" y="48" text-anchor="middle" class="subtitle">Execution plan (left \u2192 right)  \u00b7  Total: {total_time_str}  \u00b7  Yellow \u2192 Purple = faster \u2192 slower  \u00b7  Red SLOWEST badge = fix first</text>',
+    ]
+    # Heat-scale legend strip — drawn outside diagram-content so clipPath
+    # doesn't hide it. Positioned just below the subtitle.
+    lines.extend(_render_legend(total_width, pad, 58, _HEAT_PALETTE, hotspot_idx is not None))
+    lines.extend([
         # Separator + details area
         f'<line x1="{pad}" y1="{details_sep_y}" x2="{total_width - pad}" y2="{details_sep_y}" stroke="#e0e0e0" stroke-width="1"/>',
         f'<rect x="{pad}" y="{details_sep_y + 4}" width="{total_width - 2*pad}" height="{details_area_h}" fill="#f5f5f5" rx="4"/>',
         f'<text id="search" x="{total_width - pad - 8}" y="{details_y_start}" text-anchor="end">Search</text>',
-    ]
+    ])
     # Pre-allocate detail lines
     for di in range(details_lines_n):
         dy = details_y_start + di * details_line_h
@@ -354,11 +502,13 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         cid = clip_counter[0]
         clip_counter[0] += 1
         node_extra = f' data-analysis-msg="{analysis_attr}"' if analysis_attr else ""
-        lines.append(f'<g class="diagram-node" data-info="{info_attr}"{node_extra}>')
+        is_hotspot = hotspot_node_id is not None and id(node) == hotspot_node_id
+        node_cls = "diagram-node hotspot" if is_hotspot else "diagram-node"
+        lines.append(f'<g class="{node_cls}" data-info="{info_attr}"{node_extra}>')
         lines.append(f'<title>{xml_escape(tooltip)}</title>')
         lines.append(f'<defs><clipPath id="clipbox-{cid}"><rect x="{x}" y="{y}" width="{box_w}" height="{box_h}" rx="6" ry="6"/></clipPath></defs>')
         lines.append(f'<g clip-path="url(#clipbox-{cid})">')
-        lines.append(f'<rect x="{x}" y="{y}" width="{box_w}" height="{box_h}" fill="{fill}" stroke="#333" stroke-width="1" rx="6" ry="6"/>')
+        lines.append(f'<rect x="{x}" y="{y}" width="{box_w}" height="{box_h}" fill="{fill}" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>')
         tc = _text_color(fill)
         # Covering index badge (top-right)
         details = node.get("details") or {}
@@ -378,6 +528,16 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
             lines.append(f'<text x="{x + box_w/2}" y="{y + box_h - 24}" text-anchor="middle" class="loops-line" fill="{tc}">↻ {xml_escape(loops_str)} loops</text>')
         lines.append(f'<text x="{x + box_w/2}" y="{y + box_h - 10}" text-anchor="middle" class="row-count" fill="{tc}">{rows_str} rows</text>')
         lines.append("</g>")
+        # SLOWEST badge on hotspot (drawn last, outside the clip, so it floats
+        # above the top-right corner of the box).
+        if is_hotspot:
+            bw, bh = 60, 14
+            bx = x + box_w - bw - 6
+            by = y - bh / 2
+            lines.append('<g class="hotspot-badge">')
+            lines.append(f'<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="7" ry="7"/>')
+            lines.append(f'<text x="{bx + bw/2}" y="{by + bh - 3}" text-anchor="middle">SLOWEST</text>')
+            lines.append('</g>')
         lines.append("</g>")
 
     def draw_join_diamond(cx, cy, node, total_ms, self_ms, cost_val, rows):
@@ -401,11 +561,13 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         ]
         path_pts = " ".join(f"{p[0]},{p[1]}" for p in pts)
         j_extra = f' data-analysis-msg="{analysis_attr}"' if analysis_attr else ""
-        lines.append(f'<g class="diagram-node" data-info="{info_attr}"{j_extra}>')
+        is_hotspot = hotspot_node_id is not None and id(node) == hotspot_node_id
+        jnode_cls = "diagram-node hotspot" if is_hotspot else "diagram-node"
+        lines.append(f'<g class="{jnode_cls}" data-info="{info_attr}"{j_extra}>')
         lines.append(f'<title>{xml_escape(tooltip)}</title>')
         # Self-time above the diamond (outside, always readable)
         lines.append(f'<text x="{cx}" y="{cy - diamond_r - 6}" text-anchor="middle" class="cost">{time_str}</text>')
-        lines.append(f'<polygon points="{path_pts}" fill="{fill}" stroke="#333" stroke-width="1"/>')
+        lines.append(f'<polygon points="{path_pts}" fill="{fill}" stroke="#2d3748" stroke-width="1"/>')
         # Join type label at center
         join_lbl = _join_type_label(node)
         lines.append(f'<text x="{cx}" y="{cy - 4}" text-anchor="middle" class="node-label" fill="{tc}">{xml_escape(join_lbl)}</text>')
@@ -416,6 +578,15 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         jloops_str = _format_loops(jloops) if (jloops and jloops > 1) else None
         if jloops_str:
             lines.append(f'<text x="{cx}" y="{cy + 26}" text-anchor="middle" class="loops-line" fill="{tc}">↻ {xml_escape(jloops_str)}</text>')
+        # SLOWEST badge on hotspot — sits above the diamond's top vertex
+        if is_hotspot:
+            bw, bh = 60, 14
+            bx = cx - bw / 2
+            by = cy - diamond_r - 22
+            lines.append('<g class="hotspot-badge">')
+            lines.append(f'<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="7" ry="7"/>')
+            lines.append(f'<text x="{bx + bw/2}" y="{by + bh - 3}" text-anchor="middle">SLOWEST</text>')
+            lines.append('</g>')
         lines.append("</g>")
 
     cy_main = y_main + box_h / 2
@@ -426,7 +597,7 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     draw_access_box(x, y_main, kind, node, total_ms, self_ms, cost_val, rows)
     x += box_w
     # Arrow to first join
-    lines.append(f'<line x1="{x}" y1="{cy_main}" x2="{x + arrow_len}" y2="{cy_main}" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>')
+    lines.append(f'<line x1="{x}" y1="{cy_main}" x2="{x + arrow_len}" y2="{cy_main}" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>')
     lines.append(f'<text x="{x + arrow_len/2}" y="{cy_main - 6}" text-anchor="middle" class="arrow-label">{_format_rows(rows)} rows</text>')
     x += arrow_len
 
@@ -446,17 +617,17 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
             # Arrow from inner box (top center) up to diamond (bottom vertex)
             ax1, ay1 = cx, y_inner
             ax2, ay2 = cx, cy + diamond_r
-            lines.append(f'<line x1="{ax1}" y1="{ay1}" x2="{ax2}" y2="{ay2}" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>')
+            lines.append(f'<line x1="{ax1}" y1="{ay1}" x2="{ax2}" y2="{ay2}" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>')
             lines.append(f'<text x="{cx + 14}" y="{(ay1+ay2)/2}" text-anchor="start" class="arrow-label">{_format_rows(irows)} rows</text>')
         x += 2 * diamond_r
         # Arrow from right tip of diamond to left tip of next (or to query block); full gap so arrows connect
         arrow_h_len = join_segment - 2 * diamond_r
         if k < num_joins - 1:
-            lines.append(f'<line x1="{x}" y1="{cy_main}" x2="{x + arrow_h_len}" y2="{cy_main}" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>')
+            lines.append(f'<line x1="{x}" y1="{cy_main}" x2="{x + arrow_h_len}" y2="{cy_main}" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>')
             lines.append(f'<text x="{x + arrow_h_len/2}" y="{cy_main - 6}" text-anchor="middle" class="arrow-label">{_format_rows(jrows)} rows</text>')
             x += arrow_h_len
         else:
-            lines.append(f'<line x1="{x}" y1="{cy_main}" x2="{x + arrow_h_len}" y2="{cy_main}" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>')
+            lines.append(f'<line x1="{x}" y1="{cy_main}" x2="{x + arrow_h_len}" y2="{cy_main}" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>')
             lines.append(f'<text x="{x + arrow_h_len/2}" y="{cy_main - 6}" text-anchor="middle" class="arrow-label">{_format_rows(jrows)} rows</text>')
             x += arrow_h_len
 
@@ -471,7 +642,7 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         qbox_tooltip += f" | Cost: {total_cost_val:.2f}"
     lines.append(f'<g class="diagram-node" data-info="{attr_escape(qbox_tooltip)}">')
     lines.append(f'<title>{xml_escape(qbox_tooltip)}</title>')
-    lines.append(f'<rect x="{x}" y="{y_main + (box_h - qbox_h)/2}" width="{qbox_w}" height="{qbox_h}" fill="{qbox_fill}" stroke="#333" stroke-width="1" rx="6"/>')
+    lines.append(f'<rect x="{x}" y="{y_main + (box_h - qbox_h)/2}" width="{qbox_w}" height="{qbox_h}" fill="{qbox_fill}" stroke="#2d3748" stroke-width="1" rx="6"/>')
     lines.append(f'<text x="{x + qbox_w/2}" y="{y_main + box_h/2 - 8}" text-anchor="middle" class="node-label" fill="{qbox_tc}">query_block #1</text>')
     lines.append(f'<text x="{x + qbox_w/2}" y="{y_main + box_h/2 + 10}" text-anchor="middle" class="cost" fill="{qbox_tc}">{root_self_str}</text>')
     lines.append("</g>")
@@ -491,9 +662,11 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     lines.append(f'<g class="zoom-btn" id="zoom-reset"><rect x="{zb_x}" y="{zb_y_reset}" width="{zb_size}" height="{zb_size}"/><text x="{zb_x + zb_size/2}" y="{zb_y_reset + zb_size/2 + 6}" text-anchor="middle">\u21ba</text></g>')
     lines.append('</g>')
 
+    has_hotspot_js = "true" if hotspot_idx is not None else "false"
     lines.append(f"""<script type="text/javascript"><![CDATA[
 (function() {{
   var N_LINES = {details_lines_n};
+  var HAS_HOTSPOT = {has_hotspot_js};
   var detailLines = [];
   var searchBtn, content, svgEl;
   var diagramBottom = {diagram_height};
@@ -592,6 +765,14 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
       nodes[i].addEventListener("mouseout", onOut);
       nodes[i].addEventListener("click", onNodeClick);
     }}
+
+    // Focus mode: if there's a hotspot, dim every non-hotspot node so the
+    // contention point pops. CSS keeps .hotspot and .pinned bright regardless.
+    if (HAS_HOTSPOT) {{
+      for (var j = 0; j < nodes.length; j++) {{
+        nodes[j].classList.add("dim");
+      }}
+    }}
     svgEl.addEventListener("click", function(e) {{
       if (pinned && !(e.target.closest && e.target.closest(".diagram-node"))) unpinAll();
     }});
@@ -635,6 +816,10 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     if (searchActive) {{
       var all = document.querySelectorAll(".diagram-node");
       for (var i = 0; i < all.length; i++) all[i].classList.remove("dim");
+      // Restore focus-mode dimming if there's a hotspot to keep lit
+      if (HAS_HOTSPOT) {{
+        for (var k = 0; k < all.length; k++) all[k].classList.add("dim");
+      }}
       searchBtn.textContent = "Search";
       searchActive = false;
       clearDetails();

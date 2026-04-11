@@ -1708,8 +1708,9 @@ def _how_to_read_lines(view_type):
         ]
     if view_type == "diagram":
         return "How to read", [
-            "Left\u2192right = execution order. Darker = more self-time. Click a node to pin details.",
-            "Where a warning applies: hover or click the node — details show \u201cIn Query Analysis\u201d; the panel below lists the node label.",
+            "Left\u2192right = execution order. Heat scale (yellow = fast \u2192 purple = slow) encodes self-time.",
+            "The red SLOWEST badge marks the contention point — the single operator to optimize first.",
+            "Click any node to pin details; other nodes dim so your focus pops. Dbl-click to reset.",
         ]
     if view_type == "flamegraph":
         return "How to read", [
