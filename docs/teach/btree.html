@@ -204,6 +204,28 @@ section.stage .stage-toolbar {
   background: #fff;
   cursor: pointer;
 }
+.stage-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 0 2px;
+}
+.stage-scrubber input[type="range"] {
+  flex: 1;
+  height: 5px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.stage-scrubber .scrubber-time {
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 42px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .complexity-chart {
   margin-top: 14px;
   padding: 14px;
@@ -418,6 +440,12 @@ WHERE  email = &#x27;alice@example.com&#x27;;   -- idx_users_email contains only
   </select>
   <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">Adjust parameters, then press Play</span>
 </div>
+<div class="stage-scrubber">
+  <span class="scrubber-time" id="scrubber-time-current">0.0s</span>
+  <input type="range" id="scrubber" min="0" max="1000" value="0" step="1"
+    aria-label="Animation timeline scrubber" />
+  <span class="scrubber-time" id="scrubber-time-total">0.0s</span>
+</div>
 
   <svg id="btree-svg" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg"></svg>
 </section>
@@ -541,8 +569,10 @@ var anim = (function() {
 
   // --- tween: single-value interpolation with RAF, pause-aware ----------
   // opts: { from, to, duration, ease, onUpdate, onComplete, delay }
-  // Returns a cancel function. Duration is scaled by the global _speed
-  // at frame time, so a live speed change takes effect immediately.
+  // Returns a callable cancel function that also exposes ``.getElapsed()``
+  // so the parent timeline can report precise scrubber positions. Duration
+  // is scaled by the global _speed at frame time, so a live speed change
+  // takes effect immediately.
   function tween(opts) {
     var from = opts.from;
     var to = opts.to;
@@ -560,21 +590,21 @@ var anim = (function() {
       return out;
     }
 
+    var virtualElapsed = 0;  // accumulated virtual time inside this tween
+    var lastFrame = null;
+
     // reduced-motion: skip to end state instantly
     if (reducedMotion()) {
       setTimeout(function() {
         if (cancelled) return;
+        virtualElapsed = baseDuration;
         onUpdate(to);
         onComplete();
       }, 0);
-      return function() { cancelled = true; };
+      var handle_rm = function() { cancelled = true; };
+      handle_rm.getElapsed = function() { return virtualElapsed; };
+      return handle_rm;
     }
-
-    // Time-based progress tracking. We accumulate "virtual elapsed time"
-    // across frames, scaled by _speed and paused by _paused. This lets us
-    // change speed or pause mid-flight without discontinuities.
-    var lastFrame = null;
-    var virtualElapsed = 0;  // in real ms (base duration units)
 
     function frame(now) {
       if (cancelled) return;
@@ -593,7 +623,10 @@ var anim = (function() {
       else onComplete();
     }
     requestAnimationFrame(frame);
-    return function() { cancelled = true; };
+
+    var handle = function() { cancelled = true; };
+    handle.getElapsed = function() { return virtualElapsed; };
+    return handle;
   }
 
   // --- stagger: run fn(item, i) at i*stepMs intervals -------------------
@@ -609,31 +642,142 @@ var anim = (function() {
     return function() { timers.forEach(clearTimeout); };
   }
 
-  // --- timeline: sequential tween queue, pause-aware --------------------
+  // --- timeline: sequential tween queue, pause-aware, scrubbable -------
+  //
+  // Each `.add(step)`, `.delay(ms)`, `.call(fn)` is assigned a cumulative
+  // position on the global timeline (``_start``, ``_duration``). This lets
+  // the scrubber seek to any point by calling ``fastForwardTo(ms)``, which
+  // synchronously applies every step's final state up to the target.
+  //
+  // During play a tiny RAF ticker advances ``virtualElapsed`` so external
+  // code (the toolbar scrubber) can read ``getCurrentTime()`` every frame.
+  // Pauses and speed changes update the ticker exactly like tween() does.
+  function _interpolateValue(from, to, eased) {
+    if (typeof from === "number") return lerp(from, to, eased);
+    var out = {};
+    for (var k in from) out[k] = lerp(from[k], to[k], eased);
+    return out;
+  }
+
   function timeline() {
     var steps = [];
+    var totalDuration = 0;
     var current = null;
     var playing = false;
     var onDoneCb = null;
     var pendingDelayTimer = null;
     var pendingDelayRemaining = 0;
-    var pendingDelayStart = 0;
+
+    // Virtual-time ticker state. ``virtualElapsed`` is the total ms we have
+    // "played" across all steps, pause-adjusted and speed-adjusted. The
+    // currently-running tween reports its own elapsed; we add that to
+    // ``stepVirtualStart`` to get the precise scrubber position.
+    var virtualElapsed = 0;
+    var stepVirtualStart = 0;
+    var tickerLastFrame = null;
+
     var tl = {};
-    tl.add = function(step) { steps.push(step); return tl; };
-    tl.delay = function(ms) { steps.push({ _delay: ms }); return tl; };
-    tl.call = function(fn) { steps.push({ _call: fn }); return tl; };
+    tl.add = function(step) {
+      step._type = "tween";
+      step._start = totalDuration;
+      step._duration = step.duration || 400;
+      totalDuration += step._duration;
+      steps.push(step);
+      return tl;
+    };
+    tl.delay = function(ms) {
+      var s = { _type: "delay", _start: totalDuration, _duration: ms };
+      totalDuration += ms;
+      steps.push(s);
+      return tl;
+    };
+    tl.call = function(fn) {
+      steps.push({ _type: "call", _fn: fn, _start: totalDuration, _duration: 0 });
+      return tl;
+    };
+    tl.getTotalDuration = function() { return totalDuration; };
+    tl.getCurrentTime = function() {
+      // If a tween is mid-flight, add its local elapsed to the step start.
+      if (current && typeof current.getElapsed === "function") {
+        return stepVirtualStart + current.getElapsed();
+      }
+      return virtualElapsed;
+    };
+
+    // Synchronously apply every step's final state up to ``targetMs``.
+    // Used by the scrubber to seek to any point in the timeline.
+    // Tweens that straddle targetMs get one partial update at their local
+    // progress. Leaves ``virtualElapsed = targetMs`` and playing=false.
+    tl.fastForwardTo = function(targetMs) {
+      tl.stop();
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      for (var i = 0; i < steps.length; i++) {
+        var s = steps[i];
+        var stepEnd = s._start + s._duration;
+        if (stepEnd <= targetMs) {
+          // Fully elapsed — fire final state
+          if (s._type === "tween") {
+            if (s.onUpdate) s.onUpdate(s.to);
+            if (s.onComplete) s.onComplete();
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = stepEnd;
+        } else if (s._start < targetMs) {
+          // Step is currently running at targetMs
+          if (s._type === "tween") {
+            var progress = (targetMs - s._start) / s._duration;
+            var eased = (s.ease || easeOutCubic)(progress);
+            if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = targetMs;
+          stepVirtualStart = s._start;
+          return;
+        } else {
+          virtualElapsed = Math.min(targetMs, s._start);
+          return;
+        }
+      }
+      virtualElapsed = targetMs;
+    };
+
     tl.play = function(onDone) {
       playing = true;
       onDoneCb = onDone || null;
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      tickerLastFrame = null;
       var i = 0;
+
+      // Scrubber-tracking RAF loop. Runs while playing; updates
+      // virtualElapsed so getCurrentTime() reflects the current position
+      // even across delay gaps.
+      function ticker(now) {
+        if (!playing) return;
+        if (tickerLastFrame === null) tickerLastFrame = now;
+        var delta = now - tickerLastFrame;
+        tickerLastFrame = now;
+        if (!_paused && !current) {
+          // Only advance during delay windows; while a tween is running,
+          // getCurrentTime() reads the tween's own elapsed instead.
+          virtualElapsed += delta * _speed;
+        } else if (!_paused && current && typeof current.getElapsed === "function") {
+          // Keep virtualElapsed in sync with the running tween so
+          // getCurrentTime() is monotonic even if nothing queries it.
+          virtualElapsed = stepVirtualStart + current.getElapsed();
+        }
+        if (playing) requestAnimationFrame(ticker);
+      }
+      requestAnimationFrame(ticker);
+
       function scheduleDelay(remaining, after) {
         if (_paused) {
-          // When paused, record that we were in a delay with this much left,
-          // and wait until unpause to re-schedule.
           pendingDelayRemaining = remaining;
           return;
         }
-        pendingDelayStart = performance.now();
         pendingDelayRemaining = remaining;
         pendingDelayTimer = setTimeout(function() {
           pendingDelayTimer = null;
@@ -645,27 +789,41 @@ var anim = (function() {
         if (!playing) return;
         if (i >= steps.length) {
           playing = false;
+          virtualElapsed = totalDuration;
           if (onDoneCb) onDoneCb();
           return;
         }
         var step = steps[i++];
-        if (step._delay !== undefined) {
-          if (reducedMotion()) { next(); return; }
-          scheduleDelay(step._delay, next);
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) {
+            virtualElapsed = step._start + step._duration;
+            next();
+            return;
+          }
+          scheduleDelay(step._duration, function() {
+            virtualElapsed = step._start + step._duration;
+            next();
+          });
           return;
         }
-        if (step._call !== undefined) {
-          step._call();
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
           next();
           return;
         }
+        // tween
         var origComplete = step.onComplete || function() {};
         current = tween(Object.assign({}, step, {
-          onComplete: function() { origComplete(); next(); }
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next();
+          }
         }));
       }
-      // When the global pause flag flips back to false while we're sitting
-      // in a delay, re-schedule the delay with the remaining time.
       var offPause = function(p) {
         if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
           scheduleDelay(pendingDelayRemaining, next);
@@ -679,7 +837,10 @@ var anim = (function() {
       playing = false;
       if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }
       pendingDelayRemaining = 0;
-      if (current) current();
+      if (current) {
+        if (typeof current === "function") current();
+        current = null;
+      }
     };
     tl.isPlaying = function() { return playing; };
     return tl;
@@ -907,6 +1068,145 @@ var anim = (function() {
         svgEl.appendChild(vline);
       }
     }
+
+    // ------------- Interactivity: hover guide + tooltip + click ----------
+    // A transparent rect over the plot area captures mouse moves and
+    // clicks. On hover, a vertical guide tracks the pointer and each curve
+    // gets a small dot + label showing its value at that x.
+    var hitRect = svgEl_create("rect", {
+      x: padL, y: padT, width: plotW, height: plotH,
+      fill: "transparent", "pointer-events": "all",
+      style: "cursor: crosshair"
+    });
+    svgEl.appendChild(hitRect);
+
+    var hoverGroup = svgEl_create("g", { "pointer-events": "none", opacity: 0 });
+    var hoverLine = svgEl_create("line", {
+      y1: padT, y2: padT + plotH,
+      stroke: "#1f2937", "stroke-width": 1, "stroke-dasharray": "2 2"
+    });
+    hoverGroup.appendChild(hoverLine);
+    var hoverDots = [];
+    var hoverLabelBg = svgEl_create("rect", {
+      rx: 4, ry: 4, fill: "rgba(31,41,55,0.95)", stroke: "none"
+    });
+    hoverGroup.appendChild(hoverLabelBg);
+    var hoverLabelLines = [];
+    opts.curves.forEach(function(c, idx) {
+      var dot = svgEl_create("circle", {
+        r: 4, fill: c.color || "#1f2937", stroke: "#fff", "stroke-width": 1.5
+      });
+      hoverGroup.appendChild(dot);
+      hoverDots.push(dot);
+      var txt = svgEl_create("text", {
+        "font-size": 10, "font-weight": 600, fill: "#ffffff"
+      });
+      hoverGroup.appendChild(txt);
+      hoverLabelLines.push(txt);
+    });
+    svgEl.appendChild(hoverGroup);
+
+    function svgPointFromEvent(evt) {
+      var ctm = svgEl.getScreenCTM();
+      if (!ctm) return { x: evt.clientX, y: evt.clientY };
+      try {
+        var pt = svgEl.createSVGPoint();
+        pt.x = evt.clientX; pt.y = evt.clientY;
+        var inv = ctm.inverse();
+        return pt.matrixTransform(inv);
+      } catch (e) {
+        return { x: evt.clientX, y: evt.clientY };
+      }
+    }
+    function formatBig(n) {
+      if (!isFinite(n)) return "—";
+      if (n >= 1e12) return (n / 1e12).toFixed(2) + "T";
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+      return Math.round(n).toString();
+    }
+    function updateHover(svgX) {
+      var clamped = Math.max(padL, Math.min(padL + plotW, svgX));
+      var xFrac = (clamped - padL) / plotW;
+      var xVal = Math.exp(Math.log(xMin) + xFrac * (Math.log(xMax) - Math.log(xMin)));
+      hoverLine.setAttribute("x1", clamped);
+      hoverLine.setAttribute("x2", clamped);
+
+      var labelLines = [];
+      labelLines.push(opts.xLabel + ": " + formatBig(xVal));
+      opts.curves.forEach(function(c, idx) {
+        var y = c.fn(xVal);
+        if (!isFinite(y) || y <= 0) {
+          hoverDots[idx].setAttribute("opacity", 0);
+          hoverLabelLines[idx + 1] && hoverLabelLines[idx + 1].setAttribute("opacity", 0);
+          return;
+        }
+        var svgPt = toSvg(xVal, y);
+        hoverDots[idx].setAttribute("cx", svgPt.x);
+        hoverDots[idx].setAttribute("cy", svgPt.y);
+        hoverDots[idx].setAttribute("opacity", 1);
+        labelLines.push(c.label + ": " + formatBig(y));
+      });
+
+      // Compose tooltip on the left or right depending on cursor position
+      var labelX = (clamped < padL + plotW / 2) ? clamped + 10 : clamped - 150;
+      var labelY = padT + 6;
+      var maxLineW = 0;
+      for (var j = 0; j < labelLines.length; j++) {
+        if (!hoverLabelLines[j]) {
+          var t = svgEl_create("text", { "font-size": 10, "font-weight": 600, fill: "#ffffff" });
+          hoverGroup.appendChild(t);
+          hoverLabelLines[j] = t;
+        }
+        hoverLabelLines[j].textContent = labelLines[j];
+        hoverLabelLines[j].setAttribute("x", labelX + 6);
+        hoverLabelLines[j].setAttribute("y", labelY + 12 + j * 13);
+        hoverLabelLines[j].setAttribute("opacity", 1);
+        maxLineW = Math.max(maxLineW, labelLines[j].length * 5.8);
+      }
+      // Clear any extra stale labels
+      for (var k = labelLines.length; k < hoverLabelLines.length; k++) {
+        if (hoverLabelLines[k]) hoverLabelLines[k].setAttribute("opacity", 0);
+      }
+      hoverLabelBg.setAttribute("x", labelX);
+      hoverLabelBg.setAttribute("y", labelY);
+      hoverLabelBg.setAttribute("width", Math.max(140, maxLineW + 12));
+      hoverLabelBg.setAttribute("height", 8 + labelLines.length * 13);
+      hoverGroup.setAttribute("opacity", 1);
+    }
+
+    hitRect.addEventListener("mousemove", function(evt) {
+      var pt = svgPointFromEvent(evt);
+      updateHover(pt.x);
+    });
+    hitRect.addEventListener("mouseleave", function() {
+      hoverGroup.setAttribute("opacity", 0);
+    });
+
+    // Click to update a slider — opts.xSlider = "rows" to bind.
+    if (opts.xSlider) {
+      hitRect.addEventListener("click", function(evt) {
+        var pt = svgPointFromEvent(evt);
+        var clamped = Math.max(padL, Math.min(padL + plotW, pt.x));
+        var xFrac = (clamped - padL) / plotW;
+        var xVal = Math.exp(Math.log(xMin) + xFrac * (Math.log(xMax) - Math.log(xMin)));
+        var slider = document.getElementById(opts.xSlider);
+        if (!slider) return;
+        // Some sliders use linear values (outer_rows), some use a log index
+        // mapped from ROW_SCALE. The caller can provide a transform.
+        var newVal;
+        if (opts.xSliderTransform) {
+          newVal = opts.xSliderTransform(xVal);
+        } else {
+          newVal = Math.round(xVal);
+        }
+        slider.value = newVal;
+        // Fire input event so the lesson's recompute runs
+        var ev = new Event("input", { bubbles: true });
+        slider.dispatchEvent(ev);
+      });
+    }
   }
 
   function svgEl_create(tag, attrs) {
@@ -997,12 +1297,36 @@ var teachRuntime = (function() {
     recompute();
   }
 
-  // Wire the shared stage toolbar: play-pause toggle, speed dropdown, reset
-  function wireToolbar(playFn, resetFn) {
+  // Wire the shared stage toolbar.
+  //
+  // New API: wireToolbar({ build: fn, reset: fn }) where
+  //   build  returns a fresh anim.timeline() that has NOT yet been played
+  //   reset  clears the stage back to its ready state
+  //
+  // The toolbar owns the Play/Pause/Reset buttons, the speed dropdown, and
+  // the YouTube-style scrubber. Lessons do not call .play() themselves.
+  //
+  // Legacy compat: wireToolbar(playFn, resetFn) — two positional function
+  // arguments — still works for any lesson we haven't migrated yet.
+  function wireToolbar(optsOrPlay, maybeReset) {
     var btnPlay = document.getElementById("btn-play");
     var btnReset = document.getElementById("btn-reset");
     var selSpeed = document.getElementById("sel-speed");
-    var state = { running: false, paused: false };
+    var scrubber = document.getElementById("scrubber");
+    var timeCurLbl = document.getElementById("scrubber-time-current");
+    var timeTotLbl = document.getElementById("scrubber-time-total");
+
+    var build = null, reset = null, legacyPlay = null;
+    if (typeof optsOrPlay === "function") {
+      legacyPlay = optsOrPlay;
+      reset = maybeReset;
+    } else if (optsOrPlay && typeof optsOrPlay === "object") {
+      build = optsOrPlay.build;
+      reset = optsOrPlay.reset;
+    }
+
+    var state = { running: false, paused: false, draggingScrubber: false };
+    var currentTL = null;
 
     function labelFor() {
       if (!state.running) return "▶ Play";
@@ -1011,7 +1335,59 @@ var teachRuntime = (function() {
     }
     function updateLabel() { if (btnPlay) btnPlay.textContent = labelFor(); }
 
-    // Lessons notify us when a timeline completes via teachRuntime.onAnimationDone
+    function formatSec(ms) {
+      var s = Math.max(0, ms / 1000);
+      return s.toFixed(1) + "s";
+    }
+    function syncTimeLabels() {
+      if (!currentTL) { if (timeCurLbl) timeCurLbl.textContent = "0.0s"; return; }
+      if (timeTotLbl) timeTotLbl.textContent = formatSec(currentTL.getTotalDuration());
+    }
+
+    // Scrubber RAF loop — moves the thumb based on currentTL.getCurrentTime()
+    function scrubberTick() {
+      if (!currentTL || state.draggingScrubber) return;
+      if (!state.running && !state.paused) return;
+      var total = currentTL.getTotalDuration();
+      if (total > 0) {
+        var frac = Math.min(1, currentTL.getCurrentTime() / total);
+        if (scrubber) scrubber.value = String(Math.round(frac * 1000));
+        if (timeCurLbl) timeCurLbl.textContent = formatSec(currentTL.getCurrentTime());
+      }
+      if (state.running) requestAnimationFrame(scrubberTick);
+    }
+
+    function startPlayback() {
+      if (legacyPlay) { legacyPlay(); return; }
+      if (!build) return;
+      if (currentTL) currentTL.stop();
+      if (reset) reset();
+      currentTL = build();
+      syncTimeLabels();
+      if (scrubber) scrubber.value = "0";
+      state.running = true;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+      currentTL.play(function() {
+        state.running = false;
+        state.paused = false;
+        anim.setPaused(false);
+        if (scrubber && currentTL) scrubber.value = "1000";
+        if (timeCurLbl && currentTL) timeCurLbl.textContent = formatSec(currentTL.getTotalDuration());
+        updateLabel();
+      });
+      requestAnimationFrame(scrubberTick);
+    }
+
+    function togglePause() {
+      state.paused = !state.paused;
+      anim.setPaused(state.paused);
+      updateLabel();
+      if (!state.paused) requestAnimationFrame(scrubberTick);
+    }
+
+    // Used by lessons that still rely on the old legacy done-notification
     window._teachOnDone = function() {
       state.running = false;
       state.paused = false;
@@ -1021,33 +1397,61 @@ var teachRuntime = (function() {
 
     if (btnPlay) btnPlay.addEventListener("click", function() {
       if (!state.running) {
-        state.running = true;
-        state.paused = false;
-        anim.setPaused(false);
-        updateLabel();
-        if (playFn) playFn();
+        startPlayback();
         return;
       }
-      // Toggle pause
-      state.paused = !state.paused;
-      anim.setPaused(state.paused);
-      updateLabel();
+      togglePause();
     });
     if (btnReset) btnReset.addEventListener("click", function() {
+      if (currentTL) currentTL.stop();
+      currentTL = null;
       state.running = false;
       state.paused = false;
       anim.setPaused(false);
       updateLabel();
-      if (resetFn) resetFn();
+      if (reset) reset();
+      if (scrubber) scrubber.value = "0";
+      if (timeCurLbl) timeCurLbl.textContent = "0.0s";
     });
     if (selSpeed) selSpeed.addEventListener("change", function() {
       anim.setSpeed(Number(selSpeed.value));
     });
-    // Set initial speed from the dropdown's default
     if (selSpeed) anim.setSpeed(Number(selSpeed.value));
+
+    // Scrubber behaviour: dragging seeks (stop, reset, rebuild, fast-forward
+    // to target, leave paused). Releasing the thumb leaves playback paused
+    // at the scrub target — the user can press Play to resume from the
+    // beginning (a deliberate simplification; mid-point resume adds a lot
+    // of complexity for little teaching benefit).
+    if (scrubber && build) {
+      function seekToScrubber() {
+        var frac = Number(scrubber.value) / 1000;
+        if (currentTL) currentTL.stop();
+        if (reset) reset();
+        currentTL = build();
+        var target = frac * currentTL.getTotalDuration();
+        currentTL.fastForwardTo(target);
+        syncTimeLabels();
+        if (timeCurLbl) timeCurLbl.textContent = formatSec(target);
+        state.running = true;
+        state.paused = true;
+        anim.setPaused(true);
+        updateLabel();
+      }
+      scrubber.addEventListener("mousedown", function() { state.draggingScrubber = true; });
+      scrubber.addEventListener("touchstart", function() { state.draggingScrubber = true; });
+      scrubber.addEventListener("input", seekToScrubber);
+      scrubber.addEventListener("change", function() {
+        seekToScrubber();
+        state.draggingScrubber = false;
+      });
+      scrubber.addEventListener("mouseup", function() { state.draggingScrubber = false; });
+      scrubber.addEventListener("touchend", function() { state.draggingScrubber = false; });
+    }
   }
 
   // Helper that lesson code calls when its animation reaches the end.
+  // (Only used by legacy wireToolbar(playFn, resetFn) calls.)
   function animationDone() {
     if (typeof window._teachOnDone === "function") window._teachOnDone();
   }
@@ -1183,8 +1587,6 @@ function resetTreeColors() {
 }
 
 // ---------- timeline ----------
-var currentTimeline = null;
-
 function buildDescentTimeline() {
   resetTreeColors();
   var tl = anim.timeline();
@@ -1252,19 +1654,11 @@ function buildDescentTimeline() {
   }
   tl.call(function() {
     phaseLabel.textContent = "✓ Lookup complete — press Reset to replay";
-    teachRuntime.animationDone();
   });
   return tl;
 }
 
-function playAnim() {
-  if (currentTimeline) currentTimeline.stop();
-  currentTimeline = buildDescentTimeline();
-  currentTimeline.play();
-}
 function resetAnim() {
-  if (currentTimeline) currentTimeline.stop();
-  currentTimeline = null;
   resetTreeColors();
   document.getElementById("phase-label").textContent = "Ready — press Play";
 }
@@ -1284,7 +1678,14 @@ function renderChart(keySize, pageSize, keyType, currentRows) {
       { label: "Hypothetical linear scan", color: "#dc2626",
         fn: function(n) { return Math.max(1, n / 400); } }
     ],
-    current: { x: currentRows }
+    current: { x: currentRows },
+    xSlider: "rows",
+    xSliderTransform: function(xVal) {
+      // ROW_SCALE = [10, 100, 1k, 10k, 100k, 1M, 10M, 100M, 1B]
+      // Find the closest log index
+      var logV = Math.log10(Math.max(1, xVal));
+      return Math.max(0, Math.min(ROW_SCALE.length - 1, Math.round(logV - 1)));
+    }
   });
 }
 
@@ -1309,14 +1710,16 @@ function recompute() {
   document.getElementById("out-complexity").textContent = (cost.traversals === 2) ? "O(log n) + O(log n)" : "O(log n)";
   document.getElementById("out-explanation").textContent = cost.explanation;
 
-  if (currentTimeline) { currentTimeline.stop(); currentTimeline = null; }
   buildTrees(cost.height, cost.traversals);
   resetTreeColors();
   renderChart(keySize, pageSize, keyType, rows);
 }
 
 teachRuntime.wire(recompute);
-teachRuntime.wireToolbar(playAnim, resetAnim);
+teachRuntime.wireToolbar({
+  build: buildDescentTimeline,
+  reset: resetAnim
+});
 
   </script>
 </body>
