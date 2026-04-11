@@ -84,13 +84,13 @@ myflames teach btree -o btree.html && open btree.html
 
 | Lesson | What you learn |
 |--------|---------------|
-| [`teach btree`](https://vgrippa.github.io/myflames/demos/teach-btree.html) | InnoDB B+tree lookup — clustered PK, covering vs non-covering secondary, 16 KiB page fan-out. Move the row-count slider from 10 to 1 billion and watch the tree height update. |
-| [`teach bnl`](https://vgrippa.github.io/myflames/demos/teach-bnl.html) | Block Nested Loop join (MariaDB 11.x default). Warning banner: MySQL removed BNL in 8.0.20. |
-| [`teach hash`](https://vgrippa.github.io/myflames/demos/teach-hash.html) | MySQL 8.4 hash join — build phase, probe phase, and grace-hash spill when the build side overflows `join_buffer_size`. |
-| [`teach join`](https://vgrippa.github.io/myflames/demos/teach-join.html) | BNL vs hash join side-by-side with shared sliders. See the asymptotic difference at scale. |
-| [`teach lru`](https://vgrippa.github.io/myflames/demos/teach-lru.html) | InnoDB's midpoint-insertion LRU — why MySQL's buffer pool survives full-scan pollution while a textbook LRU gets wiped. |
+| [`teach btree`](https://vgrippa.github.io/myflames/teach/btree.html) | InnoDB B+tree lookup — clustered PK, covering vs non-covering secondary, 16 KiB page fan-out. Move the row-count slider from 10 to 1 billion and watch the tree height update. |
+| [`teach bnl`](https://vgrippa.github.io/myflames/teach/bnl.html) | Block Nested Loop join (MariaDB 11.x default). Warning banner: MySQL removed BNL in 8.0.20. |
+| [`teach hash`](https://vgrippa.github.io/myflames/teach/hash.html) | MySQL 8.4 hash join — build phase, probe phase, and grace-hash spill when the build side overflows `join_buffer_size`. |
+| [`teach join`](https://vgrippa.github.io/myflames/teach/join.html) | BNL vs hash join side-by-side with shared sliders. See the asymptotic difference at scale. |
+| [`teach lru`](https://vgrippa.github.io/myflames/teach/lru.html) | InnoDB's midpoint-insertion LRU — why MySQL's buffer pool survives full-scan pollution while a textbook LRU gets wiped. |
 
-Each lesson is a single self-contained HTML file: no external scripts, no external stylesheets, no external fonts. Drop one in a Slack DM or attach to a ticket and it just works.
+Each lesson is a single self-contained HTML file: no external scripts, no external stylesheets, no external fonts. Drop one in a Slack DM or attach to a ticket and it just works. Hosted separately from the query-plan demos at [vgrippa.github.io/myflames/teach/](https://vgrippa.github.io/myflames/teach/).
 
 ---
 

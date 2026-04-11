@@ -343,6 +343,32 @@ class TestTeachCLI(unittest.TestCase):
             self.assertIn("-apple-system", html, f"{name} missing system font")
             self.assertIn("BlinkMacSystemFont", html, f"{name} missing system font")
 
+    def test_btree_rendertree_signature_and_arity(self):
+        """Regression guard: the original `function renderTree(height, traversals,
+        activeLevel, phase)` signature left `phase` undefined at every call site
+        (all three callers passed 3 args), so `phase.tree` crashed with
+        'Cannot read properties of undefined'. Lock in the fixed 3-arg signature
+        and assert every call site passes exactly 3 arguments.
+        """
+        import re
+        html = render_lesson("btree")
+        self.assertIn(
+            "function renderTree(height, traversals, phase)", html,
+            "btree lesson renderTree signature regressed — must be "
+            "(height, traversals, phase), not (height, traversals, "
+            "activeLevel, phase)",
+        )
+        # Every call site must pass exactly 3 arguments. Use a negative
+        # lookbehind to exclude the `function renderTree(` declaration.
+        calls = re.findall(r"(?<!function )renderTree\(([^)]*)\)", html)
+        self.assertGreater(len(calls), 0, "no renderTree call sites found")
+        for sig in calls:
+            arity = len([p for p in sig.split(",") if p.strip()])
+            self.assertEqual(
+                arity, 3,
+                f"renderTree call site has {arity} args, not 3: renderTree({sig})",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

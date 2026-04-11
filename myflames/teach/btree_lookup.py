@@ -165,7 +165,7 @@ function btreeCost(rows, keySize, pageSize, keyType) {{
 }}
 
 // --------------- render the tree as SVG ---------------
-function renderTree(height, traversals, activeLevel, phase) {{
+function renderTree(height, traversals, phase) {{
   var svg = document.getElementById("btree-svg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 

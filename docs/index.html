@@ -27,6 +27,31 @@
   </p>
 
   <section>
+    <h2>Learn the algorithms — <code>myflames teach</code></h2>
+    <p>Interactive, offline-first HTML lessons that animate MySQL 8.4 and
+       MariaDB 11.x internals with correct cost models. Every lesson has
+       in-page sliders — no CLI flags, no re-running. Generated with
+       <code>myflames teach &lt;lesson&gt; -o &lt;file&gt;.html</code>.</p>
+    <div class="demo-grid">
+      <div>
+        <strong>Storage internals</strong>
+        <ul>
+          <li><a href="teach/btree.html" target="_blank" rel="noopener">B+tree lookup</a> — clustered PK vs covering vs non-covering secondary, 16 KiB page fan-out</li>
+          <li><a href="teach/lru.html" target="_blank" rel="noopener">Midpoint-insertion LRU</a> — why MySQL's buffer pool survives full-scan pollution</li>
+        </ul>
+      </div>
+      <div>
+        <strong>Join algorithms</strong>
+        <ul>
+          <li><a href="teach/bnl.html" target="_blank" rel="noopener">Block Nested Loop</a> — MariaDB 11.x default (MySQL removed it in 8.0.20)</li>
+          <li><a href="teach/hash.html" target="_blank" rel="noopener">Hash join</a> — build, probe, grace-hash spill on <code>join_buffer_size</code> overflow</li>
+          <li><a href="teach/join.html" target="_blank" rel="noopener">BNL vs hash side-by-side</a> — shared sliders, live cost comparison</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
     <h2>Flame graph — full execution hierarchy (default view)</h2>
     <div class="embed-wrap">
       <object data="demos/mysql-query-complex-flamegraph.svg" type="image/svg+xml" width="100%" height="300" style="min-height: 300px;"></object>

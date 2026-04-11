@@ -15,7 +15,7 @@ def render() -> str:
   MySQL {MYSQL_BNL_REMOVED_IN} removed it in favour of hash join for non-indexed
   equi-joins. This lesson shows <strong>MariaDB 11.x</strong>, where BNL is
   still the default (<code>join_cache_level = 2</code>). Compare it with hash
-  join in the <a href="teach-join.html">BNL vs hash</a> lesson.
+  join in the <a href="join.html">BNL vs hash</a> lesson.
 </div>
 """
 
@@ -92,7 +92,7 @@ def render() -> str:
     outer block builds a tiny hash table, then the inner is scanned once
     per block and probed into that hash table. It's faster than plain BNL
     but still O(outer_blocks × inner_rows), not O(outer + inner). See the
-    <a href="teach-join.html">BNL vs hash</a> lesson for the visual.</p>
+    <a href="join.html">BNL vs hash</a> lesson for the visual.</p>
 
     <p>MySQL 8.0.20 removed BNL entirely — <code>optimizer_switch=block_nested_loop</code>
     is a no-op in 8.4. For non-indexed equi-joins MySQL now always uses a
