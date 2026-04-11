@@ -5,8 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 **myflames** visualizes MySQL and MariaDB `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG flame graphs, bar charts, treemaps, and Visual Explain–style diagrams. It requires MySQL 8.4+ or MariaDB 10.11+/11.4+ and Python 3.7+ with no external dependencies.
 
+Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/). **Never remove this inspiration / credit line** from the README (or anywhere else it appears). Brendan Gregg and Tanel Poder are the origin of this work and must always be acknowledged.
+
 ## 🛠 Skills & Specialized Agents
-- **Testing Specialist (`/test-pro`)**: Located at `.claude/skills/test-pro/SKILL.md`. Use for writing, running, and fixing Python/Perl tests.
+- **Testing Specialist (`/test-pro`)**: Located at `.claude/skills/test-pro/SKILL.md`. Use for writing, running, and fixing Python tests.
 - **Visualization Specialist (`/viz-specialist`)**: Located at `.claude/skills/viz-specialist/SKILL.md`. Use for improving UI/UX, CSS, and SVG layouts in `docs/demos/`.
 - **Web Dev (`/web-dev`)**: Located at `.claude/skills/web-dev/SKILL.md`. Use when building or modifying React/TypeScript/Vite/Tailwind components, pages, or API clients.
 - **Web Design (`/web-design`)**: Located at `.claude/skills/web-design/SKILL.md`. Use when designing layouts, typography, color, spacing, or accessibility.
@@ -15,12 +17,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Structured Output (`/structured-output`)**: Located at `.claude/skills/structured-output/SKILL.md`. Owns the JSON sidecar schema and every decision about what gets serialized where. Consult when adding new data to an output or changing the shape of what myflames emits for external tools / AI agents.
 
 ## 🧪 Development Workflow & Testing
-- **Mandatory Tests**: Every new feature or logic change in the Python package or Perl scripts MUST include a corresponding test case.
+- **Mandatory Tests**: Every new feature or logic change in the Python package MUST include a corresponding test case.
 - **Verification**: Use the `/test-pro` skill to ensure coverage and verify that MySQL explain data is parsed correctly before completing a task.
 - **Test Commands**:
   - Full suite: `./run-tests.sh`
-  - Python only: `python3 -m unittest discover -s test -p "test_myflames.py" -v`
-  - Perl regression: `./test.sh`
+  - Direct: `python3 -m unittest discover -s test -p "test_myflames.py" -v`
 
 ## 🎨 Visualization & UI Standards
 - **Consistency**: All HTML demos and SVGs must share a unified design language (modern system fonts like Inter/Roboto, consistent color palettes for 'Join' vs 'Scan').
@@ -37,7 +38,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Single Parser**: Never parse JSON in output modules; always use `parser.parse_explain`.
 - **SVG Rules**: Always update both `height` AND `viewBox` together. Use `_wrap()` for info panel text.
 - **Preserve Order**: Do not sort `inputs[]` in the JSON; order is semantically significant (outer vs inner table).
-- **No Modifications**: Do not modify Brendan Gregg's original Perl scripts (`flamegraph.pl`, etc.).
+- **Preserve Inspiration Credit**: Never remove the "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs" line from the README or anywhere else. This attribution is load-bearing for the project and must always remain.
 
 ## 📖 Commands Reference
 - **Run**: `python3 -m myflames --type [flamegraph|bargraph|treemap|diagram] explain.json > output.svg`

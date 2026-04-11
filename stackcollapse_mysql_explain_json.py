@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Convert MySQL EXPLAIN ANALYZE FORMAT=JSON output to folded stack format
-for use with flamegraph tools.
+for use with FlameGraph-compatible tools.
 Usage:
-  python stackcollapse_mysql_explain_json.py [options] explain.json | flamegraph.pl > query.svg
+  python stackcollapse_mysql_explain_json.py [options] explain.json > stacks.txt
   Or use: python -m myflames explain.json > query.svg  (unified Python tool)
 """
 import sys

@@ -1448,7 +1448,6 @@ class TestDocumentation(unittest.TestCase):
     def test_readme_referenced_doc_files_exist(self):
         """Every file/dir listed in the README Documentation table must exist."""
         refs = [
-            "LEGACY-PERL.md",
             "docs/VISUAL_EXPLAIN_REFERENCE.md",
             "docs/prompts/",
             "test/README.md",

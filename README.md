@@ -6,77 +6,36 @@
 <p align="center"><strong>MySQL & MariaDB Query Plan Visualizer</strong></p>
 
 <p align="center">
-Visualize MySQL <code>EXPLAIN ANALYZE FORMAT=JSON</code> and MariaDB <code>ANALYZE FORMAT=JSON</code> output as interactive SVG charts. Five output types, one parser, no external dependencies.
+Visualize MySQL <code>EXPLAIN ANALYZE FORMAT=JSON</code> and MariaDB <code>ANALYZE FORMAT=JSON</code> output as interactive SVG charts. Five views, one parser, zero external dependencies.
 </p>
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
 ---
 
-## Installation
+## Install
 
 ```bash
-pip install myflames
+pip install myflames          # or: pipx install myflames  (Homebrew / PEP 668)
 ```
 
-Or install from source:
-
-```bash
-git clone https://github.com/vgrippa/myflames.git
-cd myflames
-pip install .
-```
-
-No external dependencies — pure Python 3.7+ stdlib.
-
-### macOS (Homebrew Python)
-
-Modern macOS with Homebrew Python blocks system-wide `pip install` (PEP 668). Use `pipx` instead:
-
-```bash
-brew install pipx
-pipx install myflames
-```
-
-Or install from source:
-
-```bash
-brew install pipx
-git clone https://github.com/vgrippa/myflames.git
-cd myflames
-pipx install .
-```
-
-The `myflames` command will be available globally without affecting your system Python.
-
----
+Pure Python 3.7+ stdlib. No external dependencies.
 
 ## Try it in 30 seconds
 
-A sample EXPLAIN JSON is included in the repo:
-
 ```bash
-myflames sample.json > query.svg
-open query.svg
+myflames sample.json > query.svg                  # SVG flame graph
+myflames --output report.html sample.json         # self-contained HTML report
 ```
 
-Or generate a self-contained HTML report:
-
-```bash
-myflames --output report.html sample.json
-```
-
-Or connect straight to a live MySQL / MariaDB server (new in **1.3.0**) —
-uses the same flags as the `mysql` CLI, runs `EXPLAIN ANALYZE` for you,
-collects server state, and writes a rich HTML report plus a machine-readable
-JSON sidecar in one go:
+Or connect straight to a live MySQL / MariaDB server — same flags as the `mysql` CLI:
 
 ```bash
 myflames -h db.example.com -u admin -p -D mydb \
   -e 'SELECT * FROM orders WHERE user_id = 1' \
   --output report.html
-# → report.html      — self-contained, progressive-UX, glossary chips
-# → report.json      — v1 schema sidecar for AI agents / CI / jq
+# → report.html  — progressive-UX HTML with advisor warnings
+# → report.json  — v1 schema sidecar for AI agents / CI / jq
 ```
 
 ---
@@ -85,21 +44,19 @@ myflames -h db.example.com -u admin -p -D mydb \
 
 | Type | Best for | Command |
 |------|----------|---------|
-| **Flame graph** | Seeing the full execution hierarchy and time distribution | `myflames explain.json` |
-| **Bar chart** | Quickly finding the slowest individual operations | `myflames --type bargraph explain.json` |
-| **Treemap** | Comparing relative cost of all operations at a glance | `myflames --type treemap explain.json` |
-| **Diagram** | Understanding join order and access paths (like MySQL Workbench Visual Explain) | `myflames --type diagram explain.json` |
-| **Execution tree** | Navigating complex plans — collapsible per-subtree with self/total time per row | `myflames --type tree explain.json` |
+| **Flame graph** | Full execution hierarchy, time distribution | `myflames explain.json` |
+| **Bar chart** | Finding the slowest individual operations | `myflames --type bargraph explain.json` |
+| **Treemap** | Comparing relative cost at a glance | `myflames --type treemap explain.json` |
+| **Diagram** | Join order & access paths (Visual Explain style) | `myflames --type diagram explain.json` |
+| **Execution tree** | Collapsible per-subtree with self/total time | `myflames --type tree explain.json` |
 
-Not sure which view to pick? Run `myflames guide` for a quick recommendation.
+Not sure which view? Run `myflames guide`.
 
-Every view includes a **Query Analysis panel** below the chart with optimizer features detected, warnings (full table scans, hash joins, BNL join buffers, temp tables, filesorts), and tuning suggestions.
+Every view includes a **Query Analysis panel** with optimizer features detected, warnings (full table scans, hash joins, BNL buffers, temp tables, filesorts) and concrete tuning suggestions.
 
 ---
 
 ## Live demos
-
-### Complex join — all five views
 
 | View | Interactive demo |
 |------|-----------------|
@@ -108,527 +65,208 @@ Every view includes a **Query Analysis panel** below the chart with optimizer fe
 | Treemap | [mysql-query-complex-treemap.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-treemap.html) |
 | Diagram | [mysql-query-complex-diagram.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-diagram.html) |
 | Execution tree | [mysql-query-complex-tree.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-tree.html) |
+| HTML report | [mysql-query-report.html](https://vgrippa.github.io/myflames/demos/mysql-query-report.html) |
+| Before vs After | [mysql-query-compare.html](https://vgrippa.github.io/myflames/demos/mysql-query-compare.html) |
 
-### Query Analysis panel demos
+[All demos →](https://vgrippa.github.io/myflames/)
 
-| Scenario | Flamegraph | Bar chart | Treemap | Diagram |
-|----------|-----------|-----------|---------|---------|
-| Full table scan | [fg](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-full-scan-flamegraph.html) | [bar](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-full-scan-bargraph.html) | [tree](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-full-scan-treemap.html) | [diag](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-full-scan-diagram.html) |
-| Hash join | [fg](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-hash-join-flamegraph.html) | [bar](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-hash-join-bargraph.html) | [tree](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-hash-join-treemap.html) | [diag](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-hash-join-diagram.html) |
-| BNL join buffer | [fg](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-bnl-flamegraph.html) | [bar](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-bnl-bargraph.html) | [tree](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-bnl-treemap.html) | [diag](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-bnl-diagram.html) |
-| Index Condition Pushdown | [fg](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-icp-flamegraph.html) | [bar](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-icp-bargraph.html) | [tree](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-icp-treemap.html) | [diag](https://vgrippa.github.io/myflames/demos/mysql-query-analysis-icp-diagram.html) |
-
-### HTML report and comparison demos
-
-| Demo | Link |
-|------|------|
-| HTML report (diagram) | [mysql-query-report.html](https://vgrippa.github.io/myflames/demos/mysql-query-report.html) |
-| Before vs After comparison | [mysql-query-compare.html](https://vgrippa.github.io/myflames/demos/mysql-query-compare.html) |
-
-> **Note:** Interactive features (zoom, search, tooltips) require the SVG to be opened from an HTML wrapper or GitHub Pages — not from a raw GitHub URL, which blocks inline scripts.
-
-[All demos index](https://vgrippa.github.io/myflames/)
+> Interactive features (zoom, search, tooltips) need the HTML wrapper or GitHub Pages — raw GitHub URLs block inline scripts.
 
 ---
 
 ## Requirements
 
-- **Python 3.7+** — no extra packages
-- **MySQL 8.4+** with `explain_json_format_version = 2`, **or**
-- **MariaDB 10.11+** / **11.4+**
-
-### MySQL setup
-
-Enable the required JSON format:
-
-```sql
-SET explain_json_format_version = 2;
--- or permanently in my.cnf:
--- [mysqld]
--- explain_json_format_version = 2
-```
-
-### MariaDB setup
-
-No special configuration needed. MariaDB 10.5+ supports `ANALYZE FORMAT=JSON` natively.
-MariaDB also supports `SHOW ANALYZE FORMAT=JSON FOR <connection_id>` and
-`SHOW EXPLAIN FORMAT=JSON FOR <connection_id>` for live query analysis.
+- **Python 3.7+** (no extra packages)
+- **MySQL 8.4+** with `SET explain_json_format_version = 2`, **or**
+- **MariaDB 10.11+** / **11.4+** (supports `ANALYZE FORMAT=JSON` and `SHOW ANALYZE FORMAT=JSON FOR <conn_id>` out of the box)
 
 ---
 
-## Quick start
-
-### 1. Get EXPLAIN ANALYZE output
-
-**MySQL:**
+## Quick start (file mode)
 
 ```sql
-EXPLAIN ANALYZE FORMAT=JSON
-SELECT u.name, COUNT(o.id)
-FROM users u
-JOIN orders o ON u.id = o.user_id
-WHERE u.country = 'US'
-GROUP BY u.id;
+-- MySQL
+EXPLAIN ANALYZE FORMAT=JSON SELECT ... ;
+-- MariaDB
+ANALYZE FORMAT=JSON SELECT ... ;
 ```
-
-**MariaDB:**
-
-```sql
-ANALYZE FORMAT=JSON
-SELECT u.name, COUNT(o.id)
-FROM users u
-JOIN orders o ON u.id = o.user_id
-WHERE u.country = 'US'
-GROUP BY u.id;
-```
-
-Save to a file — any of these work:
 
 ```bash
-# MySQL: Recommended: -s -N -r gives clean JSON
+# Save to a file and render
 mysql -u user -p mydb -s -N -r -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
-
-# MySQL: Also works: myflames auto-strips table borders, headers, and escaped newlines
-mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
-mysql -u user -p mydb -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
-
-# MariaDB:
-mariadb -u user -p mydb -s -N -r -e "ANALYZE FORMAT=JSON SELECT ..." > explain.json
-
-# MariaDB: SHOW ANALYZE for a running query (from another session)
-mariadb -u user -p mydb -s -N -r -e "SHOW ANALYZE FORMAT=JSON FOR <connection_id>" > explain.json
-```
-
-Or pipe directly (stdin supported):
-
-```bash
-mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." | myflames > query.svg
-mariadb -u user -p mydb -N -e "ANALYZE FORMAT=JSON SELECT ..." | myflames > query.svg
-```
-
-### 2. Generate a visualization
-
-```bash
-# Flame graph (default)
 myflames explain.json > query.svg
 
-# Bar chart — slowest operations first
-myflames --type bargraph explain.json > query-bar.svg
+# Or pipe directly
+mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." | myflames > query.svg
 
-# Treemap — area proportional to total time
-myflames --type treemap explain.json > query-treemap.svg
-
-# Diagram — Visual Explain-style flow
-myflames --type diagram explain.json > query-diagram.svg
-
-# Execution tree — collapsible per-subtree
-myflames --type tree explain.json > query-tree.svg
-
-# Self-contained HTML report (attach to a ticket, send to a teammate)
+# Self-contained HTML report
 myflames --output report.html explain.json
 ```
 
-### 3. Open in a browser
-
-```bash
-open query.svg        # macOS
-xdg-open query.svg    # Linux
-start query.svg       # Windows
-```
+myflames auto-strips MySQL CLI quirks (table borders, `EXPLAIN` headers, escaped newlines, BOM), so plain `-e` also works.
 
 ---
 
-## All options
+## Live-connection mode
 
-```
-myflames [options] [explain.json]
-myflames -h HOST [-P PORT] -u USER [-p[PASS]] -D DB -e 'SQL' -o OUT
-```
-
-### Rendering options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--type` | `flamegraph` | Output type: `flamegraph`, `bargraph`, `treemap`, `diagram`, `tree` |
-| `--output PATH` / `-o` | stdout | Write to file. Use `.html` extension for a self-contained HTML report; `.svg` for a responsive SVG. A JSON sidecar is written next to it automatically. |
-| `--width N` | 1800 (fg), 1200 (others) | SVG width in pixels |
-| `--height N` | 32 | Frame height in pixels (flamegraph only) |
-| `--colors SCHEME` | `hot` | Color scheme (flamegraph only): `hot`, `mem`, `io`, `red`, `green`, `blue` |
-| `--title TEXT` | `MySQL Query Plan` | Chart title |
-| `--inverted` | off | Icicle graph — flames grow downward (flamegraph only) |
-| `--no-enhance` | off | Disable detailed tooltips (flamegraph only) |
-| `--version` | | Show version and exit |
-| `--help` | | Show help (was `-h` before 1.3.0; `-h` is now `--host`) |
-
-### Live connection (new in 1.3.0) — same flags as the `mysql` CLI
-
-| Option | Description |
-|--------|-------------|
-| `-h HOST` / `--host HOST` | Connect to this host (enables live mode) |
-| `-P PORT` / `--port PORT` | Server port (default 3306) |
-| `-u USER` / `--user USER` | Username |
-| `-p [PASS]` / `--password [PASS]` | Password. `-p` alone prompts; `-p'secret'` inline works; either way the value is written to a mode-0600 `--defaults-extra-file` and never appears on argv. |
-| `-D DB` / `--database DB` | Default database |
-| `--ssl-mode MODE` | `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`, `VERIFY_IDENTITY` |
-| `--ssl-ca PATH` | Path to CA bundle (e.g. RDS's `global-bundle.pem`) |
-| `--ssl-cert PATH` | Client certificate |
-| `--ssl-key PATH` | Client private key |
-| `--mysql-binary PATH` | Override `mysql`/`mariadb` binary autodetection |
-| `-e SQL` / `--execute SQL` | Query to `EXPLAIN ANALYZE`. Required in live mode. |
-| `--no-collect-schema` | Skip `SHOW CREATE TABLE` for each referenced table |
-| `--no-collect-stats` | Skip `information_schema.tables` row/byte counts |
-| `--no-collect-variables` | Skip `SHOW SESSION VARIABLES` snapshot |
-
-### Sidecar options
-
-| Option | Description |
-|--------|-------------|
-| *(default)* | Auto-write `<output>.json` alongside any `--output PATH` |
-| `--sidecar PATH` | Write sidecar to an explicit path |
-| `--sidecar -` | Suppress sidecar emission (explicit opt-out) |
-| `--no-sidecar` | Same as `--sidecar -` |
-
-### Subcommands
+Skip the two-step workflow — connect directly. Same flags for MySQL 8.4 and MariaDB:
 
 ```bash
-# Compare before/after optimization
-myflames compare before.json after.json
-myflames compare before.json after.json --output diff.html
+# Local
+myflames -h 127.0.0.1 -u root -p'password' -D mydb -e 'SELECT ...' --output report.html
 
-# Which view should I use?
-myflames guide
+# AWS RDS with full TLS verification
+myflames -h my-db.rds.amazonaws.com -u admin -p \
+  --ssl-mode=VERIFY_IDENTITY --ssl-ca=/path/to/global-bundle.pem \
+  -D prod -e 'SELECT ...' --output report.html
 ```
+
+In live mode myflames (1) connects through the real `mysql` / `mariadb` client binary (every auth plugin the server supports — no PyMySQL), (2) runs `EXPLAIN ANALYZE FORMAT=JSON`, (3) collects `SHOW CREATE TABLE`, row/byte counts, and a filtered `SHOW SESSION VARIABLES` snapshot, (4) feeds everything through the **environment advisor**, and (5) emits the HTML report + JSON sidecar.
+
+**Password handling:** the password is written to a mode-0600 `--defaults-extra-file` and never appears on argv or in env vars. Skip any collection step with `--no-collect-schema`, `--no-collect-stats`, `--no-collect-variables`.
 
 ---
 
-## Live-connection mode (1.3.0+)
-
-Skip the two-step "run EXPLAIN, pipe into myflames" workflow and connect
-directly. The same flags work for MySQL 8.4 and MariaDB 10.11 / 11.4:
-
-```bash
-# Against a local MySQL instance
-myflames -h 127.0.0.1 -u root -p'password' -D mydb \
-  -e 'SELECT * FROM orders WHERE user_id = 1' \
-  --output report.html
-
-# Against AWS RDS with full TLS verification
-myflames -h my-db.rds.amazonaws.com -P 3306 -u admin -p \
-  --ssl-mode=VERIFY_IDENTITY \
-  --ssl-ca=/path/to/global-bundle.pem \
-  -D prod -e 'SELECT ... FROM big_table ...' \
-  --output report.html
-
-# Against MariaDB — same flags, myflames auto-detects the engine
-myflames -h mariadb.example.com -u dba -p -D analytics \
-  -e 'SELECT ... FROM events ...' \
-  --output report.html
-```
-
-**What myflames does in live mode** (pick which steps run with the
-`--no-collect-*` flags):
-
-1. **Connects** through the real `mysql` / `mariadb` client binary —
-   supports every auth plugin the server implements, including
-   `mysql_native_password` and `caching_sha2_password`. No PyMySQL.
-2. **Runs** `SET explain_json_format_version=2; EXPLAIN ANALYZE FORMAT=JSON <your SQL>`
-   (MySQL) or `ANALYZE FORMAT=JSON <your SQL>` (MariaDB).
-3. **Collects** `SHOW CREATE TABLE` for every referenced table
-   *(skip with `--no-collect-schema`)*.
-4. **Collects** row/byte counts from `information_schema.tables`
-   *(skip with `--no-collect-stats`)*.
-5. **Collects** `SHOW SESSION VARIABLES` — filtered to the subset the
-   advisor inspects (buffer pool, sort/join/tmp buffers, optimizer_switch,
-   durability settings) *(skip with `--no-collect-variables`)*.
-6. **Feeds** all collected data into the **environment advisor**, which
-   produces tuning warnings + `Why:` explanations grounded in the MySQL
-   cost model (sort_buffer_size vs filesort spill, join_buffer_size vs
-   hash-join multi-pass, tmp_table_size vs MEMORY→InnoDB conversion, etc.).
-7. **Renders** the view type you asked for, plus the progressive-UX HTML
-   report + JSON sidecar.
-
-**Password handling:** the password is written to a mode-0600 temp file
-(`--defaults-extra-file=…`) and never appears on argv or environment
-variables. The temp file is deleted on exit (even on error).
-
----
-
-## HTML report output
-
-Generate a self-contained HTML file you can attach to a ticket, send to a
-teammate, paste into a Confluence page, or publish to GitHub Pages:
+## HTML report
 
 ```bash
 myflames --output report.html explain.json
 myflames --type diagram --output report.html explain.json
 ```
 
-The HTML report (redesigned in 1.3.0) is built for **three audiences at once**:
+A self-contained file you can attach to a ticket or paste into Confluence. Built for three audiences at once:
 
-- **Newcomers** see a plain-English executive summary and a single
-  "**Fix first**" primary action card above the fold. Every jargon term
-  (`filesort`, `hash join`, `BNL`, `MRR`, `ICP`, …) is a hover-tooltip
-  glossary chip.
-- **Senior DBAs** get every metric, warning, and suggestion in dense
-  selectable sections below. Every SET / CREATE INDEX / ALTER TABLE
-  recommendation lives in a copy-paste-able `<pre><code>` block — never
-  locked inside the SVG.
-- **AI agents / external tools** consume a `<script type="application/ld+json">`
-  block in `<head>` with the full v1 sidecar payload, AND a
-  `<base>.json` file written alongside. No SVG OCR needed.
-
-Sections in order: executive summary strip → "Fix first" primary action
-card → SQL query card → embedded responsive visualization → warnings
-(expandable) → suggestions (each with a `Why?` expandable clause) →
-collected environment (collapsed) → glossary (collapsed) → raw sidecar
-JSON (collapsed).
+- **Newcomers** — plain-English executive summary, a single "Fix first" primary action card above the fold, glossary chips on every jargon term (`filesort`, `hash join`, `BNL`, `MRR`, `ICP`, …).
+- **Senior DBAs** — every metric, warning and `SET` / `CREATE INDEX` / `ALTER TABLE` recommendation in copy-paste-able `<pre><code>` blocks.
+- **AI agents / tools** — a `<script type="application/ld+json">` block in `<head>` with the full v1 sidecar payload, plus a `<base>.json` file written alongside. No SVG OCR needed.
 
 ---
 
-## JSON sidecar (1.3.0+)
+## JSON sidecar
 
-Every `--output` invocation writes a **machine-readable sidecar** next to
-the main file:
+Every `--output` writes a **stable, versioned, machine-readable sidecar** next to the main file:
 
 ```bash
 myflames --output report.html explain.json
-# → report.html                  (progressive-UX HTML)
-# → report.json                  (v1 schema sidecar)
+# → report.html  report.json
 ```
-
-The sidecar is **stable, versioned, and self-validating** — see
-[myflames/output_sidecar.py](myflames/output_sidecar.py) for the enum
-definitions and the full schema.
 
 ```jsonc
 {
   "schema_version": "1.0",
-  "generated_at": "2026-04-10T18:00:00Z",
-  "myflames_version": "1.3.0",
   "source": {"type": "live", "engine": "mysql", "engine_version": "8.4.8"},
-  "plan_summary": {
-    "total_time_ms": 12.4,
-    "rows_sent": 5,
-    "rows_examined_estimate": 48000,
-    "operator_count": 12,
-    "max_depth": 5
-  },
-  "optimizer_switches": [
-    {"name": "hash_join", "value": "on",
-     "explanation": "Builds an in-memory hash table …",
-     "node_labels": ["Inner hash join"]}
-  ],
-  "warnings": [
-    {"severity": "error", "category": "nonsargable_join",
-     "text": "Non-sargable join predicate: CONCAT(...) …",
-     "source": "plan", "node_labels": ["Table scan [o]"]}
-  ],
-  "suggestions": [
-    {"severity": "high", "category": "rewrite",
-     "action": "Rewrite the join condition to compare the bare column …",
-     "why": "wrapping a column in a function means the optimizer cannot use …",
-     "source": "plan"}
-  ],
-  "executive_summary": "Query scans 2 tables, joins via block nested-loop …",
+  "plan_summary": { "total_time_ms": 12.4, "operator_count": 12, ... },
+  "warnings":    [ {"severity": "error", "category": "nonsargable_join", ...} ],
+  "suggestions": [ {"severity": "high", "category": "rewrite", "action": "...", "why": "..."} ],
   "primary_action": {"ref": "suggestions[0]"},
-  "collected": {
-    "variables": {"innodb_buffer_pool_size": "134217728", …},
-    "stats":     {"mydb.users": {"table_rows": 3000, …}},
-    "schema":    {"mydb.users": {"indexes": [{"name": "idx_country", …}]}}
-  }
+  "collected": { "variables": {...}, "stats": {...}, "schema": {...} }
 }
 ```
 
-**Read it with `jq` / curl / Python — no HTML parsing needed:**
+Read it with `jq` — no HTML parsing needed:
 
 ```bash
-# "What's the single most impactful thing to fix?"
-jq '.suggestions[0].action + " — Why: " + .suggestions[0].why' report.json
-
-# "Is the buffer pool too small for this workload?"
-jq '.warnings[] | select(.category == "env")' report.json
-
-# "What severity warnings does this plan have?"
-jq '[.warnings[].severity] | group_by(.) | map({sev: .[0], count: length})' report.json
+jq '.suggestions[0] | .action + " — Why: " + .why' report.json
+jq '.warnings[] | select(.category == "env")'      report.json
 ```
 
-Suppress the sidecar with `--no-sidecar`, or point it at an explicit
-path with `--sidecar /tmp/plan.json`.
+Suppress with `--no-sidecar`, or point at an explicit path with `--sidecar /tmp/plan.json`. See [myflames/output_sidecar.py](myflames/output_sidecar.py) for the full schema.
 
 ---
 
-## Environment advisor (1.3.0+)
+## Environment advisor
 
-When myflames has access to server state (live mode, or anyone else
-populating the `analysis` dict with collected data), it runs **eight rules**
-that match plan signals against the collected server state and emit
-tuning suggestions grounded in the MySQL cost model:
+With access to server state (live mode, or any caller populating `analysis`), myflames runs rules matching plan signals against collected server state and emits tuning suggestions grounded in the MySQL cost model:
 
-| Rule | Fires when… | Suggestion includes |
-|------|-------------|---------------------|
-| **Non-sargable join predicate** | Any join uses `CONCAT(col)`, `CAST(col)`, `LOWER(col)`, `DATE(col)`, or one of ~30 other functions on a column reference | Rewrite as a bare-column comparison (highest priority — no index helps until this is fixed) |
-| **Buffer pool vs working set** | `innodb_buffer_pool_size` < 25–50% of referenced tables' data+index length | Raise `innodb_buffer_pool_size` to ≥ working set |
-| **Sort buffer vs filesort** | Filesort detected and `sort_buffer_size` < 2 MB | `SET SESSION sort_buffer_size = 8*1024*1024` |
-| **Join buffer vs hash-join / BNL** | Hash join or BNL detected and `join_buffer_size` < 2 MB | Raise per-session, or add an index on the join column (explains which is bigger) |
-| **Tmp table size** | Temp table materialized and `min(tmp_table_size, max_heap_table_size)` < 32 MB | Raise **both** variables to the same value |
-| **`optimizer_switch` overrides** | `hash_join=off` + BNL, `mrr=off` + filesort, `derived_condition_pushdown=off` + materialize | `SET SESSION optimizer_switch=…` with version-gated caveats |
-| **Missing indexes (cross-checked)** | Parser heuristic flags a missing index AND the collected schema confirms no index covers those columns | `CREATE INDEX …` DDL |
-| **Engine = MyISAM/other** | Referenced table is not InnoDB/Aria | `ALTER TABLE … ENGINE=InnoDB` with crash-safety / row-lock justification |
-| **`innodb_flush_log_at_trx_commit`** | UPDATE/DELETE/INSERT query AND value ≠ 1 | Warn about durability trade-off |
+| Rule | Fires when… |
+|------|-------------|
+| **Non-sargable join predicate** | Join uses `CONCAT(col)`, `CAST(col)`, `LOWER(col)`, `DATE(col)`, … on a column |
+| **Buffer pool vs working set** | `innodb_buffer_pool_size` < 25–50% of referenced tables' data+index length |
+| **Sort buffer vs filesort** | Filesort detected and `sort_buffer_size` < 2 MB |
+| **Join buffer vs hash-join / BNL** | Hash join or BNL detected and `join_buffer_size` < 2 MB |
+| **Tmp table size** | Temp table materialized and `min(tmp_table_size, max_heap_table_size)` < 32 MB |
+| **`optimizer_switch` overrides** | `hash_join=off` + BNL, `mrr=off` + filesort, `derived_condition_pushdown=off` + materialize |
+| **Missing indexes** | Parser heuristic flags a missing index AND collected schema confirms no covering index |
+| **Engine ≠ InnoDB/Aria** | Referenced table is MyISAM/other |
+| **`innodb_flush_log_at_trx_commit` ≠ 1** | On a mutating query |
 
-**Every suggestion includes a `Why:` clause** — the contract is enforced
-by a test, so no rule can ship without a cost-model justification.
+Every suggestion carries a `Why:` clause — enforced by a test so no rule ships without a cost-model justification.
 
 ---
 
-## Compare before/after optimization
+## Compare before/after
 
 ```bash
-myflames compare before.json after.json
 myflames compare before.json after.json --output diff.html
 ```
 
-The comparison report shows:
-- Total query time delta
-- Per-operator self-time, rows, and loop count changes
-- New or removed full table scans
-- New or resolved warnings
-- Color-coded "what got better / worse" summary
+Shows total time delta, per-operator self-time/rows/loops changes, new or removed full table scans, and new/resolved warnings.
+
+---
+
+## CLI reference
+
+```
+myflames [options] [explain.json]
+myflames -h HOST [-P PORT] -u USER [-p[PASS]] -D DB -e 'SQL' -o OUT
+```
+
+### Rendering
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--type` | `flamegraph` | `flamegraph`, `bargraph`, `treemap`, `diagram`, `tree` |
+| `--output` / `-o` | stdout | `.html` → self-contained report; `.svg` → responsive SVG. JSON sidecar auto-written. |
+| `--width N` | 1800 / 1200 | SVG width in pixels |
+| `--height N` | 32 | Frame height (flamegraph only) |
+| `--colors` | `hot` | `hot`, `mem`, `io`, `red`, `green`, `blue` (flamegraph only) |
+| `--title TEXT` | `MySQL Query Plan` | Chart title |
+| `--inverted` | off | Icicle graph (flamegraph only) |
+| `--no-enhance` | off | Disable detailed tooltips (flamegraph only) |
+
+### Live connection — same flags as the `mysql` CLI
+
+| Option | Description |
+|--------|-------------|
+| `-h HOST` / `--host` | Connect to this host (enables live mode) |
+| `-P PORT`, `-u USER`, `-p[PASS]`, `-D DB` | Standard `mysql` flags |
+| `--ssl-mode MODE` | `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`, `VERIFY_IDENTITY` |
+| `--ssl-ca`, `--ssl-cert`, `--ssl-key` | TLS paths |
+| `--mysql-binary PATH` | Override `mysql`/`mariadb` autodetection |
+| `-e SQL` / `--execute` | Query to `EXPLAIN ANALYZE` (required in live mode) |
+| `--no-collect-schema` / `--no-collect-stats` / `--no-collect-variables` | Skip collection steps |
+
+### Sidecar
+
+| Option | Description |
+|--------|-------------|
+| *(default)* | Auto-write `<output>.json` |
+| `--sidecar PATH` / `--no-sidecar` | Explicit path or opt-out |
+
+### Subcommands
+
+```bash
+myflames compare before.json after.json --output diff.html
+myflames guide      # which view should I use?
+```
+
+Full help: `myflames --help`.
 
 ---
 
 ## Interactive features
 
-### Flame graph
-| Action | Result |
-|--------|--------|
-| Hover frame | Shows operation details: rows, loops, time, cost, index conditions |
-| Click frame | Zoom into that operation |
-| Click Reset Zoom button | Reset zoom |
-| Ctrl+F | Search frames by regex |
-
-### Bar chart
-| Action | Result |
-|--------|--------|
-| Hover bar | Shows multi-line details in the strip below the chart |
-| Click bar | Pins the details in the strip (click again or click background to unpin) |
-| Ctrl+F | Search bars by regex |
-
-### Treemap
-| Action | Result |
-|--------|--------|
-| Hover cell | Shows multi-line details below the chart |
-| Click cell | Zoom into that node and pin its details |
-| Click Reset Zoom button | Reset zoom |
-| Ctrl+F | Search cells by regex |
-
-### Diagram
-| Action | Result |
-|--------|--------|
-| Hover node | Shows details in the strip below the diagram |
-| Click node | Pins the details (stays visible while you scroll) |
-| Click pinned node | Unpins |
-| +/− buttons (bottom-right) | Zoom in/out |
-| ↺ button | Reset zoom |
-| Drag background | Pan the diagram |
-| Double-click background | Reset zoom and pan |
-| Ctrl+F | Search nodes by regex |
-
-### Execution tree
-| Action | Result |
-|--------|--------|
-| Hover row | Shows multi-line details in the strip below the tree |
-| Click row | Pins the details (click again or click background to unpin) |
-| Click ▾ / ▸ | Collapse / expand that subtree |
-| Expand All / Collapse All | Expand or collapse the entire tree at once |
-| Ctrl+F | Search rows by regex |
-
-> Text in the details strip is always selectable — you can copy/paste it freely.
-
----
-
-## Query Analysis panel
-
-Every output type includes a panel below the chart with:
-
-- **How to read** — view-specific guide
-- **Optimizer features** — e.g. `index_condition_pushdown=on`, `batched_key_access`
-- **Warnings** — issues that affect performance:
-  - Full table scans (with row count)
-  - Hash joins (with estimated build phase size)
-  - Block Nested-Loop (BNL) join buffers
-  - Temp tables / Materialize operations
-  - Filesorts
-- **Suggestions** — concrete tuning actions (add indexes, increase `join_buffer_size`, enable hash join, etc.)
-
-Warnings also show which node label in the chart they refer to, so you can find the slow operation quickly.
-
----
-
-## How to read each view
-
-### Flame graph
-- **Width = time** — wider frames consumed more time (including children)
-- **Bottom = root** — the query entry point; table accesses are at the top
-- **Self-time** — the visible "tip" of each frame is time spent in that operation alone
-
-Frame labels follow [Tanel Poder's format](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/):
-```
-OPERATION [table.index] starts=X rows=Y
-```
-Example: `INDEX LOOKUP [orders.idx_user] starts=1000 rows=5`
-→ This lookup ran 1000 times in a nested loop, returning 5 rows each time.
-
-### Bar chart
-- Sorted slowest first by **self-time** (time in that operation, not counting children)
-- Percentage shows each operation's share of total query time
-
-### Treemap
-- **Area = total time** (including all descendants)
-- Nested rectangles show the parent/child relationship
-- Color intensity indicates relative cost
-
-### Diagram
-- Left-to-right execution flow (table accesses → join → result)
-- **Darker color = more time** spent at that step
-- Arrows show row flow with estimated row counts
-- Diamonds represent nested-loop join decision points
-
----
-
-## Time unit auto-detection
-
-All views automatically switch units based on total query time:
-
-| Total time | Unit |
-|------------|------|
-| ≥ 1 ms | ms (milliseconds) |
-| < 1 ms | µs (microseconds) |
-
----
-
-## Advanced usage
-
-### Generate folded stacks only
-
-```bash
-python3 stackcollapse_mysql_explain_json.py explain.json > stacks.txt
-```
-
-Useful for feeding into other FlameGraph-compatible tools.
+All views support **Ctrl+F** regex search. The bar chart, treemap, diagram, and execution tree use click-to-pin details strips (text is always selectable). The diagram has +/− zoom buttons, drag-to-pan, and double-click to reset. Execution tree has Expand/Collapse All. See each demo for the full interaction set.
 
 ---
 
 ## Troubleshooting
 
-**"No module named 'myflames'"**
-Run `pip install myflames` or `pip install .` from the repo root.
+**"Failed to parse EXPLAIN JSON"** — use `EXPLAIN ANALYZE FORMAT=JSON`, not just `EXPLAIN FORMAT=JSON`. The `ANALYZE` keyword is required for timing data.
 
-**"Failed to parse EXPLAIN JSON"**
-Make sure you're using `EXPLAIN ANALYZE FORMAT=JSON` (not just `EXPLAIN FORMAT=JSON`). The `ANALYZE` keyword is required for timing data. myflames automatically handles common MySQL CLI output quirks (escaped newlines, table borders, `EXPLAIN` column headers, BOM), so you don't need `-s -r` flags — but adding them gives the cleanest output: `mysql -s -N -r -e "EXPLAIN ANALYZE FORMAT=JSON ..." > explain.json`.
+**Interactive features not working** — open the `.html` wrapper, not the raw `.svg`. Browsers block inline scripts in SVGs loaded from `raw.githubusercontent.com`.
 
-**Interactive features not working**
-Open the `.html` wrapper file instead of the raw `.svg`. Browsers block inline scripts in SVGs loaded from `raw.githubusercontent.com`. Local `file://` access works fine. Or use `--output report.html` to generate a self-contained HTML report.
+**macOS PEP 668** — use `pipx install myflames` instead of `pip install`.
 
 ---
 
@@ -636,9 +274,8 @@ Open the `.html` wrapper file instead of the raw `.svg`. Browsers block inline s
 
 | File | Contents |
 |------|----------|
-| [LEGACY-PERL.md](LEGACY-PERL.md) | Original Perl scripts (legacy, not primary) |
-| [docs/VISUAL_EXPLAIN_REFERENCE.md](docs/VISUAL_EXPLAIN_REFERENCE.md) | Diagram layout conventions and MySQL Workbench Visual Explain mapping |
-| [docs/prompts/](docs/prompts/) | Prompts and context used to build each feature (for contributors) |
+| [docs/VISUAL_EXPLAIN_REFERENCE.md](docs/VISUAL_EXPLAIN_REFERENCE.md) | Diagram layout conventions and Visual Explain mapping |
+| [docs/prompts/](docs/prompts/) | Prompts and context used to build each feature |
 | [test/README.md](test/README.md) | Running tests and fixture generation |
 
 ---
