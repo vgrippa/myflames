@@ -423,7 +423,7 @@ WHERE  email = &#x27;alice@example.com&#x27;;   -- idx_users_email contains only
   
 <div class="explainer-card">
   <p class="explainer-title">What you&#x27;ll see in the animation</p>
-  <ul class="explainer-list"><li>The grey rectangles are B+tree pages. Top row is the root page, bottom row is the leaf.</li><li>A red diamond &#x27;query token&#x27; appears above the root and descends level by level — each step is one page read.</li><li>When the token arrives at a page, the page pulses yellow. That&#x27;s the &#x27;page is in the buffer pool now&#x27;.</li><li>For non-covering secondary lookups, the token fades out at the secondary leaf, then re-appears above the clustered tree root and descends a second time to fetch the row — that&#x27;s the extra I/O covering indexes avoid.</li></ul>
+  <ul class="explainer-list"><li>The grey rectangles are B+tree pages. Top row is the root page, bottom row is the leaf.</li><li>A red diamond &#x27;query token&#x27; appears above the root and descends level by level — each step is one page read.</li><li>When the token arrives at a page, the page pulses yellow. That&#x27;s the &#x27;page is in the buffer pool now&#x27;.</li><li>For non-covering secondary lookups, the secondary-tree LEAF stores the primary key (labelled &#x27;leaf: PK = 42&#x27;). A dashed orange PK-hop arrow then links that leaf directly to the clustered-tree leaf which holds the actual row (labelled &#x27;leaf: full row&#x27;). The token rides that arrow across — no re-descent magic, the link is a real index pointer.</li><li>That dashed arrow is the extra I/O a covering index would eliminate.</li></ul>
 </div>
 
   
@@ -1502,7 +1502,10 @@ function btreeCost(rows, keySize, pageSize, keyType) {
 
 // ---------- tree rendering ----------
 var W = 800, H = 400;
-var treeState = { height: 3, traversals: 1, nodes: [[],[]], token: null };
+var treeState = {
+  height: 3, traversals: 1, nodes: [[],[]], token: null,
+  pkLink: null, pkLinkLabel: null, leafLabels: []
+};
 
 function buildTrees(height, traversals) {
   var svg = document.getElementById("btree-svg");
@@ -1510,6 +1513,7 @@ function buildTrees(height, traversals) {
   treeState.height = height;
   treeState.traversals = traversals;
   treeState.nodes = [[], []];
+  treeState.leafLabels = [];
   var treeWidth = W / traversals;
   var levels = Math.min(height, 4);
   var levelY = [70, 150, 230, 310];
@@ -1559,6 +1563,62 @@ function buildTrees(height, traversals) {
     }
   }
 
+  // PK link path — dashed curve from secondary leaf to clustered leaf.
+  // Only meaningful when traversals === 2. Drawn first so the token
+  // renders on top. Hidden until the secondary leaf is reached.
+  treeState.pkLink = null;
+  treeState.pkLinkLabel = null;
+  if (traversals === 2) {
+    var secLeaf = treeState.nodes[0][levels - 1].find(function(n) { return n.onPath; });
+    var clusRoot = treeState.nodes[1][0].find(function(n) { return n.onPath; });
+    var clusLeaf = treeState.nodes[1][levels - 1].find(function(n) { return n.onPath; });
+    if (secLeaf && clusRoot && clusLeaf) {
+      // Quadratic Bezier arching upward: sec leaf → above clus root → clus leaf
+      var sx = secLeaf.cx + 22;  // right edge of secondary leaf
+      var sy = secLeaf.cy;
+      var ex = clusLeaf.cx;
+      var ey = clusLeaf.cy;
+      var cx = (sx + ex) / 2;
+      var cy = Math.min(sy, ey) - 50;
+      var pathD = "M " + sx + "," + sy +
+                  " Q " + cx + "," + cy + " " + ex + "," + ey;
+      var pkLink = anim.svgEl("path", {
+        d: pathD,
+        fill: "none",
+        stroke: "#f97316",
+        "stroke-width": 2,
+        "stroke-dasharray": "5 3",
+        "marker-end": "url(#pkArrow)",
+        opacity: 0
+      });
+      // Arrow marker defs
+      var defs = anim.svgEl("defs");
+      var marker = anim.svgEl("marker", {
+        id: "pkArrow", viewBox: "0 0 10 10",
+        refX: "9", refY: "5",
+        markerWidth: "6", markerHeight: "6",
+        orient: "auto"
+      });
+      var arrowPath = anim.svgEl("path", {
+        d: "M 0 0 L 10 5 L 0 10 z", fill: "#f97316"
+      });
+      marker.appendChild(arrowPath);
+      defs.appendChild(marker);
+      svg.appendChild(defs);
+      svg.appendChild(pkLink);
+      treeState.pkLink = pkLink;
+
+      var pkLabel = anim.svgEl("text", {
+        x: cx, y: cy - 4, "text-anchor": "middle",
+        "font-size": 11, "font-weight": 700, fill: "#c2410c",
+        opacity: 0
+      });
+      pkLabel.textContent = "uses PK → clustered leaf";
+      svg.appendChild(pkLabel);
+      treeState.pkLinkLabel = pkLabel;
+    }
+  }
+
   // Query token
   var token = anim.svgEl("polygon", {
     points: "0,-9 9,0 0,9 -9,0",
@@ -1577,6 +1637,12 @@ function resetTreeColors() {
         lvlNodes[n].rect.setAttribute("fill", "#f3f4f6");
         lvlNodes[n].rect.setAttribute("stroke", "#9ca3af");
         lvlNodes[n].rect.setAttribute("stroke-width", 1);
+        // Restore the original "root / L1 / leaf" label text
+        var orig = (lv === 0) ? "root" : (lv === treeState.nodes[t].length - 1 ? "leaf" : "L" + lv);
+        lvlNodes[n].label.textContent = orig;
+        lvlNodes[n].label.setAttribute("font-size", 9);
+        lvlNodes[n].label.setAttribute("font-weight", "normal");
+        lvlNodes[n].label.setAttribute("fill", "#6b7280");
       }
     }
   }
@@ -1584,6 +1650,23 @@ function resetTreeColors() {
     treeState.token.setAttribute("opacity", 0);
     treeState.token.setAttribute("transform", "translate(0,0)");
   }
+  if (treeState.pkLink) {
+    treeState.pkLink.setAttribute("opacity", 0);
+  }
+  if (treeState.pkLinkLabel) {
+    treeState.pkLinkLabel.setAttribute("opacity", 0);
+  }
+}
+
+// Label a node that's on the current lookup path. ``descriptor`` is a
+// short text like "leaf: PK = 42" that replaces the generic "leaf" label
+// while the animation is highlighting that node.
+function labelLeafAs(node, descriptor) {
+  if (!node || !node.label) return;
+  node.label.textContent = descriptor;
+  node.label.setAttribute("font-size", 8);
+  node.label.setAttribute("font-weight", 700);
+  node.label.setAttribute("fill", "#0f172a");
 }
 
 // ---------- timeline ----------
@@ -1594,64 +1677,149 @@ function buildDescentTimeline() {
   var levelsShown = Math.min(treeState.height, 4);
   var phaseLabel = document.getElementById("phase-label");
 
-  for (var t = 0; t < treeState.traversals; t++) {
-    (function(treeIdx) {
-      tl.call(function() {
-        var rootNode = treeState.nodes[treeIdx][0].find(function(n) { return n.onPath; });
-        if (rootNode) {
-          token.setAttribute("transform", "translate(" + rootNode.cx + "," + (rootNode.cy - 40) + ")");
-          token.setAttribute("opacity", 0);
+  // Walk one tree (descend root → leaf, pulsing each node). Step offset
+  // allows the token to start at the root position without a fade-in
+  // when it's arriving over the PK link.
+  function addTreeDescent(treeIdx, fadeInFromAbove) {
+    tl.call(function() {
+      var rootNode = treeState.nodes[treeIdx][0].find(function(n) { return n.onPath; });
+      if (fadeInFromAbove && rootNode) {
+        token.setAttribute("transform", "translate(" + rootNode.cx + "," + (rootNode.cy - 40) + ")");
+        token.setAttribute("opacity", 0);
+      }
+      phaseLabel.textContent = (treeState.traversals === 2
+        ? (treeIdx === 0 ? "Walking idx_users_email (secondary) for WHERE email = …"
+                         : "Walking users PK (clustered) using the PK from the secondary leaf")
+        : "Walking users PK (clustered)");
+    });
+    if (fadeInFromAbove) {
+      tl.add({
+        from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
+        onUpdate: function(v) { token.setAttribute("opacity", v); }
+      });
+    }
+    for (var lv = 0; lv < levelsShown; lv++) {
+      (function(levelIdx) {
+        var activeNode = treeState.nodes[treeIdx][levelIdx].find(function(n) { return n.onPath; });
+        if (!activeNode) return;
+        var isLeaf = (levelIdx === levelsShown - 1);
+        tl.call(function() {
+          phaseLabel.textContent = "Tree " + (treeIdx + 1) + "/" + treeState.traversals +
+            " — descending to " + (levelIdx === 0 ? "root" : (isLeaf ? "leaf" : "level " + levelIdx));
+        });
+        var currentPos;
+        if (levelIdx === 0) {
+          currentPos = { x: activeNode.cx, y: activeNode.cy - 40 };
+        } else {
+          var prev = treeState.nodes[treeIdx][levelIdx - 1].find(function(n) { return n.onPath; });
+          currentPos = { x: prev.cx, y: prev.cy };
         }
-        phaseLabel.textContent = (treeState.traversals === 2 ? (treeIdx === 0 ? "Walking idx_users_email (secondary)" : "Walking users PK (clustered)") : "Walking users PK (clustered)");
+        // Starting-position fudge: if the first level is being entered
+        // over the PK link, the token's current position may have been
+        // set by the link-traversal step, so skip the re-jump.
+        var skipStart = (levelIdx === 0 && !fadeInFromAbove);
+        tl.add({
+          from: skipStart ? { x: activeNode.cx, y: activeNode.cy } : currentPos,
+          to: { x: activeNode.cx, y: activeNode.cy },
+          duration: skipStart ? 160 : 480,
+          ease: anim.easeInOutCubic,
+          onUpdate: function(p) {
+            token.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+          },
+          onComplete: function() {
+            activeNode.rect.setAttribute("fill", "#fde725");
+            activeNode.rect.setAttribute("stroke", "#ca8a04");
+            anim.pulse(activeNode.rect, 3, 1, 360);
+            // Relabel the leaf node on arrival so the user sees what
+            // the leaf actually contains.
+            if (isLeaf && treeState.traversals === 2) {
+              if (treeIdx === 0) {
+                labelLeafAs(activeNode, "leaf: PK = 42");
+              } else {
+                labelLeafAs(activeNode, "leaf: full row");
+              }
+            } else if (isLeaf && treeState.traversals === 1) {
+              labelLeafAs(activeNode, "leaf: full row");
+            }
+          }
+        });
+        tl.delay(160);
+      })(lv);
+    }
+  }
+
+  if (treeState.traversals === 1) {
+    addTreeDescent(0, true);
+  } else {
+    // Secondary descent
+    addTreeDescent(0, true);
+    // PK-hop: reveal the dashed arrow, then animate the token along it
+    // from the secondary leaf to the clustered leaf.
+    var secLeaf = treeState.nodes[0][levelsShown - 1].find(function(n) { return n.onPath; });
+    var clusLeaf = treeState.nodes[1][levelsShown - 1].find(function(n) { return n.onPath; });
+    if (secLeaf && clusLeaf) {
+      tl.delay(240);
+      tl.call(function() {
+        phaseLabel.textContent = "Secondary leaf has the PK — following the pointer to the clustered leaf";
+      });
+      tl.add({
+        from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
+        onUpdate: function(v) {
+          if (treeState.pkLink) treeState.pkLink.setAttribute("opacity", v);
+          if (treeState.pkLinkLabel) treeState.pkLinkLabel.setAttribute("opacity", v);
+        }
+      });
+      // Animate the token along the same quadratic-Bezier path used by
+      // the PK link so the motion visibly rides the arrow.
+      var sx = secLeaf.cx + 22;
+      var sy = secLeaf.cy;
+      var ex = clusLeaf.cx;
+      var ey = clusLeaf.cy;
+      var cx = (sx + ex) / 2;
+      var cy = Math.min(sy, ey) - 50;
+      var pathFn = anim.path(sx, sy, cx, cy, ex, ey);
+      tl.add({
+        from: 0, to: 1, duration: 820, ease: anim.easeInOutCubic,
+        onUpdate: function(t) {
+          var p = pathFn(t);
+          token.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+        },
+        onComplete: function() {
+          // Light up the clustered leaf and label it, because the
+          // PK pointer lands directly on it.
+          clusLeaf.rect.setAttribute("fill", "#fde725");
+          clusLeaf.rect.setAttribute("stroke", "#ca8a04");
+          anim.pulse(clusLeaf.rect, 3, 1, 360);
+          labelLeafAs(clusLeaf, "leaf: full row");
+        }
+      });
+      tl.delay(220);
+    }
+    // Clustered descent — but now we highlight the remaining path from
+    // root → ... → leaf for completeness even though the PK pointer took
+    // us straight there. This shows that InnoDB actually walks the
+    // clustered tree from the top (via the PK's B+tree index).
+    tl.call(function() {
+      phaseLabel.textContent = "InnoDB still walks the clustered B+tree top-down using that PK";
+    });
+    // Move the token back up to above the clustered root, then descend.
+    var clusRoot = treeState.nodes[1][0].find(function(n) { return n.onPath; });
+    if (clusRoot) {
+      tl.add({
+        from: 1, to: 0, duration: 200, ease: anim.easeInCubic,
+        onUpdate: function(v) { token.setAttribute("opacity", v); }
+      });
+      tl.call(function() {
+        token.setAttribute("transform", "translate(" + clusRoot.cx + "," + (clusRoot.cy - 40) + ")");
       });
       tl.add({
         from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
         onUpdate: function(v) { token.setAttribute("opacity", v); }
       });
-      for (var lv = 0; lv < levelsShown; lv++) {
-        (function(levelIdx) {
-          var activeNode = treeState.nodes[treeIdx][levelIdx].find(function(n) { return n.onPath; });
-          if (!activeNode) return;
-          tl.call(function() {
-            phaseLabel.textContent = "Tree " + (treeIdx + 1) + "/" + treeState.traversals +
-              " — descending to " + (levelIdx === 0 ? "root" : (levelIdx === levelsShown - 1 ? "leaf" : "level " + levelIdx));
-          });
-          var currentPos;
-          if (levelIdx === 0) {
-            currentPos = { x: activeNode.cx, y: activeNode.cy - 40 };
-          } else {
-            var prev = treeState.nodes[treeIdx][levelIdx - 1].find(function(n) { return n.onPath; });
-            currentPos = { x: prev.cx, y: prev.cy };
-          }
-          tl.add({
-            from: currentPos,
-            to: { x: activeNode.cx, y: activeNode.cy },
-            duration: 480, ease: anim.easeInOutCubic,
-            onUpdate: function(p) {
-              token.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
-            },
-            onComplete: function() {
-              activeNode.rect.setAttribute("fill", "#fde725");
-              activeNode.rect.setAttribute("stroke", "#ca8a04");
-              anim.pulse(activeNode.rect, 3, 1, 360);
-            }
-          });
-          tl.delay(160);
-        })(lv);
-      }
-      if (treeIdx < treeState.traversals - 1) {
-        tl.delay(280);
-        tl.add({
-          from: 1, to: 0, duration: 220, ease: anim.easeInCubic,
-          onUpdate: function(v) { token.setAttribute("opacity", v); }
-        });
-        tl.call(function() {
-          phaseLabel.textContent = "Secondary-index leaf holds PK — now fetching row from clustered tree";
-        });
-        tl.delay(280);
-      }
-    })(t);
+    }
+    addTreeDescent(1, false);
   }
+
   tl.call(function() {
     phaseLabel.textContent = "✓ Lookup complete — press Reset to replay";
   });
