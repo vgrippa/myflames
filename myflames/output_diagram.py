@@ -50,16 +50,31 @@ _HEAT_PALETTE = [
 _HOTSPOT_STROKE = "#ff3d3d"
 
 
+def _rel_lum_channel(c):
+    """sRGB to linear for WCAG relative-luminance calculation."""
+    cs = c / 255.0
+    return cs / 12.92 if cs <= 0.03928 else ((cs + 0.055) / 1.055) ** 2.4
+
+
 def _text_color(fill_hex):
-    """Return dark (#111) or white (#fff) for best contrast on fill_hex background."""
+    """Return #111 or #fff — whichever gives the higher WCAG contrast ratio
+    against the given background. Proper sRGB relative luminance, not the old
+    (wrong for dark mid-tones) broadcast TV formula — the earlier version left
+    10px text barely legible on viridis teal/green stops."""
     try:
         r = int(fill_hex[1:3], 16)
         g = int(fill_hex[3:5], 16)
         b = int(fill_hex[5:7], 16)
-        luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-        return "#111111" if luminance > 0.45 else "#ffffff"
     except (ValueError, IndexError):
         return "#111111"
+    rl = (
+        0.2126 * _rel_lum_channel(r)
+        + 0.7152 * _rel_lum_channel(g)
+        + 0.0722 * _rel_lum_channel(b)
+    )
+    white_contrast = (1.0 + 0.05) / (rl + 0.05)
+    black_contrast = (rl + 0.05) / (0.0 + 0.05)
+    return "#ffffff" if white_contrast >= black_contrast else "#111111"
 
 
 def _join_type_label(node):
@@ -416,10 +431,6 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         '<marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">'
         '<polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"/>'
         '</marker>'
-        '<filter id="hotspot-glow" x="-30%" y="-30%" width="160%" height="160%">'
-        '<feGaussianBlur stdDeviation="2.2" result="blur"/>'
-        '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>'
-        '</filter>'
         f'<clipPath id="diagram-clip"><rect x="0" y="0" width="{total_width}" height="{diagram_height}"/></clipPath>'
         '</defs>'
     )
@@ -433,24 +444,22 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         '  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11px; -webkit-font-smoothing: antialiased; }',
         "  .title { font-size: 19px; font-weight: 650; letter-spacing: -0.2px; fill: #1a1a1a; }",
         "  .subtitle { font-size: 11px; fill: #6b7280; letter-spacing: 0.1px; }",
-        "  .cost { font-size: 10px; fill: #555; }",
-        "  .node-label { font-weight: 600; font-size: 11.5px; letter-spacing: -0.1px; }",
-        "  .node-sublabel { font-size: 9.5px; fill-opacity: 0.92; }",
-        "  .row-count { font-size: 10px; }",
+        "  .cost { font-size: 11px; font-weight: 600; }",
+        "  .node-label { font-weight: 700; font-size: 12px; letter-spacing: -0.1px; }",
+        "  .node-sublabel { font-size: 10px; font-weight: 500; }",
+        "  .row-count { font-size: 10.5px; font-weight: 600; }",
         "  .arrow-label { font-size: 9px; fill: #4b5563; }",
         "  .legend-label { font-size: 9px; fill: #555; }",
         "  .diagram-node { cursor: pointer; }",
-        "  .diagram-node:hover rect, .diagram-node:hover polygon { opacity: 0.9; stroke-width: 2; }",
+        "  .diagram-node:hover rect, .diagram-node:hover polygon { stroke-width: 2.5; }",
         "  .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }",
-        "  .loops-line { font-size: 9px; fill: #555; }",
+        "  .loops-line { font-size: 9.5px; font-weight: 500; }",
         "  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }",
         "  .details-line.dim { fill: #999; }",
         "  #search { font-size: 12px; fill: #666; cursor: pointer; }",
         "  #search:hover { fill: #000; }",
         "  .diagram-node.dim { opacity: 0.25; }",
-        f"  .diagram-node.hotspot rect, .diagram-node.hotspot polygon {{ stroke: {_HOTSPOT_STROKE}; stroke-width: 3.5; filter: url(#hotspot-glow); }}",
-        "  .diagram-node.hotspot.dim { opacity: 1; }",
-        "  .diagram-node.pinned.dim { opacity: 1; }",
+        f"  .diagram-node.hotspot rect, .diagram-node.hotspot polygon {{ stroke: {_HOTSPOT_STROKE}; stroke-width: 3.5; }}",
         f"  .diagram-node.pinned rect, .diagram-node.pinned polygon {{ stroke: #e600e6 !important; stroke-width: 3; }}",
         f"  .hotspot-badge rect {{ fill: {_HOTSPOT_STROKE}; }}",
         "  .hotspot-badge text { fill: #fff; font-size: 8px; font-weight: 700; letter-spacing: 0.6px; }",
@@ -662,11 +671,9 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     lines.append(f'<g class="zoom-btn" id="zoom-reset"><rect x="{zb_x}" y="{zb_y_reset}" width="{zb_size}" height="{zb_size}"/><text x="{zb_x + zb_size/2}" y="{zb_y_reset + zb_size/2 + 6}" text-anchor="middle">\u21ba</text></g>')
     lines.append('</g>')
 
-    has_hotspot_js = "true" if hotspot_idx is not None else "false"
     lines.append(f"""<script type="text/javascript"><![CDATA[
 (function() {{
   var N_LINES = {details_lines_n};
-  var HAS_HOTSPOT = {has_hotspot_js};
   var detailLines = [];
   var searchBtn, content, svgEl;
   var diagramBottom = {diagram_height};
@@ -765,14 +772,6 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
       nodes[i].addEventListener("mouseout", onOut);
       nodes[i].addEventListener("click", onNodeClick);
     }}
-
-    // Focus mode: if there's a hotspot, dim every non-hotspot node so the
-    // contention point pops. CSS keeps .hotspot and .pinned bright regardless.
-    if (HAS_HOTSPOT) {{
-      for (var j = 0; j < nodes.length; j++) {{
-        nodes[j].classList.add("dim");
-      }}
-    }}
     svgEl.addEventListener("click", function(e) {{
       if (pinned && !(e.target.closest && e.target.closest(".diagram-node"))) unpinAll();
     }});
@@ -816,10 +815,6 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     if (searchActive) {{
       var all = document.querySelectorAll(".diagram-node");
       for (var i = 0; i < all.length; i++) all[i].classList.remove("dim");
-      // Restore focus-mode dimming if there's a hotspot to keep lit
-      if (HAS_HOTSPOT) {{
-        for (var k = 0; k < all.length; k++) all[k].classList.add("dim");
-      }}
       searchBtn.textContent = "Search";
       searchActive = false;
       clearDetails();

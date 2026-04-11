@@ -1637,19 +1637,18 @@ class TestDocumentation(unittest.TestCase):
         self.assertNotIn("font-family: Arial, sans-serif;", svg, "old Arial-only font stack must be gone")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_hotspot_glow_filter_defined(self):
-        """The hotspot-glow SVG filter must be defined in <defs>."""
+    def test_diagram_hotspot_uses_border_only(self):
+        """Hotspot highlight must be a red border — no glow filter, no dimming of other nodes.
+        All nodes stay fully visible; only the hotspot's stroke changes."""
         root = parse_explain(_load(self.HASH_JOIN))
         svg = render_diagram(root, analysis=analyze_plan(root))
-        self.assertIn('id="hotspot-glow"', svg, "hotspot-glow filter missing from <defs>")
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_focus_mode_dims_others(self):
-        """Focus mode: init JS must apply 'dim' to non-hotspot nodes; CSS override keeps hotspot bright."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root, analysis=analyze_plan(root))
-        self.assertIn('classList.add("dim")', svg, "focus-mode JS missing (classList.add('dim'))")
-        self.assertIn(".diagram-node.hotspot.dim", svg, "CSS override for hotspot.dim missing")
+        # Red stroke CSS rule must be present
+        self.assertIn("stroke: #ff3d3d", svg, "hotspot red stroke CSS missing")
+        # No glow filter (user: borders only)
+        self.assertNotIn('id="hotspot-glow"', svg, "hotspot-glow filter must be removed")
+        self.assertNotIn("filter: url(#hotspot-glow)", svg, "hotspot filter reference must be removed")
+        # No focus-mode dimming
+        self.assertNotIn('classList.add("dim")', svg, "focus-mode dimming must be removed")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_how_to_read_mentions_hotspot(self):

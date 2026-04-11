@@ -1709,8 +1709,8 @@ def _how_to_read_lines(view_type):
     if view_type == "diagram":
         return "How to read", [
             "Left\u2192right = execution order. Heat scale (yellow = fast \u2192 purple = slow) encodes self-time.",
-            "The red SLOWEST badge marks the contention point — the single operator to optimize first.",
-            "Click any node to pin details; other nodes dim so your focus pops. Dbl-click to reset.",
+            "The red SLOWEST badge + red border mark the contention point — the single operator to optimize first.",
+            "Click any node to pin its details. Ctrl+F to search. Dbl-click the background to reset zoom.",
         ]
     if view_type == "flamegraph":
         return "How to read", [
