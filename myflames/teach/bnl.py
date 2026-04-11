@@ -240,8 +240,6 @@ function resetStage() {{
   stage.tuples = [];
 }}
 
-var currentTimeline = null;
-
 function buildTimeline(totalBlocksReal) {{
   resetStage();
   var tl = anim.timeline();
@@ -319,21 +317,16 @@ function buildTimeline(totalBlocksReal) {{
     if (totalBlocksReal > shown) {{
       stage.statusLbl.textContent = "…plus " + (totalBlocksReal - shown) + " more blocks not drawn above, same pattern.";
     }}
-    teachRuntime.animationDone();
   }});
   return tl;
 }}
 
-function playAnim() {{
-  if (currentTimeline) currentTimeline.stop();
+function buildCurrentTimeline() {{
   var c = teachRuntime.readControls();
   var cost = bnlCost(c.outer_rows, c.inner_rows, c.row_size, c.jbs);
-  currentTimeline = buildTimeline(cost.blocks);
-  currentTimeline.play();
+  return buildTimeline(cost.blocks);
 }}
 function resetAnim() {{
-  if (currentTimeline) currentTimeline.stop();
-  currentTimeline = null;
   resetStage();
   document.getElementById("phase-label").textContent = "Ready — press Play";
 }}
@@ -350,7 +343,9 @@ function renderChart(innerRows, rowSize, jbs, currentOuter) {{
       {{ label: "Ideal indexed join (O(n+m))", color: "#0d9488",
         fn: function(n) {{ return n + innerRows; }} }}
     ],
-    current: {{ x: currentOuter }}
+    current: {{ x: currentOuter }},
+    xSlider: "outer_rows",
+    xSliderTransform: function(xVal) {{ return Math.round(Math.max(100, Math.min(1000000, xVal / 100) * 100)); }}
   }});
 }}
 
@@ -365,14 +360,16 @@ function recompute() {{
     "customers rows pack into " + cost.blocks + " block(s) of up to " + cost.rpb +
     " rows. orders is fully re-scanned once per block — " +
     cost.innerScans + " scan(s). Raise join_buffer_size → fewer blocks → fewer rescans.";
-  if (currentTimeline) {{ currentTimeline.stop(); currentTimeline = null; }}
   buildStage(cost.blocks);
   resetStage();
   renderChart(c.inner_rows, c.row_size, c.jbs, c.outer_rows);
 }}
 
 teachRuntime.wire(recompute);
-teachRuntime.wireToolbar(playAnim, resetAnim);
+teachRuntime.wireToolbar({{
+  build: buildCurrentTimeline,
+  reset: resetAnim
+}});
 """
 
     return _html.render_page(

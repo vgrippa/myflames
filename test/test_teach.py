@@ -494,6 +494,71 @@ class TestTeachCLI(unittest.TestCase):
                     f"lesson {name!r} does not mention real table {table!r}",
                 )
 
+    def test_all_lessons_have_scrubber(self):
+        """Every lesson must expose a YouTube-style scrubber so users can
+        rewind or jump to any point in the animation."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            self.assertIn(
+                'id="scrubber"', html,
+                f"lesson {name!r} missing id=scrubber range input",
+            )
+            # min/max/step attributes
+            self.assertIn(
+                'min="0"', html,
+                f"lesson {name!r} scrubber missing min=0",
+            )
+            self.assertIn(
+                'max="1000"', html,
+                f"lesson {name!r} scrubber missing max=1000",
+            )
+            # Time labels left and right of the scrubber
+            self.assertIn('id="scrubber-time-current"', html)
+            self.assertIn('id="scrubber-time-total"', html)
+
+    def test_anim_timeline_supports_fast_forward_to(self):
+        """The shared runtime must expose fastForwardTo for scrubber seeking
+        and getTotalDuration / getCurrentTime for the scrubber RAF tracker."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            for api in ["fastForwardTo", "getTotalDuration", "getCurrentTime"]:
+                self.assertIn(
+                    api, html,
+                    f"lesson {name!r} missing timeline.{api} API",
+                )
+
+    def test_all_lessons_use_build_reset_toolbar_api(self):
+        """Every lesson must hand build+reset closures to wireToolbar so
+        the toolbar can rebuild the timeline during scrub seeks."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            # The lesson should call wireToolbar with a {build, reset} object
+            # literal, not the legacy positional (playFn, resetFn) signature.
+            self.assertIn(
+                "build:", html,
+                f"lesson {name!r} does not pass build: to wireToolbar",
+            )
+            self.assertIn(
+                "reset:", html,
+                f"lesson {name!r} does not pass reset: to wireToolbar",
+            )
+
+    def test_all_lessons_charts_are_interactive(self):
+        """Every complexity chart must be hoverable and its x-axis must
+        bind to a slider via xSlider so clicking the chart updates the
+        lesson's parameters."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            self.assertIn(
+                "xSlider:", html,
+                f"lesson {name!r} chart does not bind xSlider for click-to-update",
+            )
+            # The runtime's interactive hover/click logic must be present
+            self.assertIn(
+                "createSVGPoint", html,
+                f"lesson {name!r} chart missing hover svgPointFromEvent logic",
+            )
+
     def test_join_lesson_clarifies_row_pair_comparisons(self):
         """Regression: the comparison lesson used to say 'rows examined'
         with a giant number that confused users — '10.10B of what?'. Make

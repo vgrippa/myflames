@@ -284,8 +284,6 @@ function flyToBucket(tuple, targetBucket, color) {{
   }});
 }}
 
-var currentTimeline = null;
-
 function buildTimeline(spilled, partitions) {{
   resetStage();
   var tl = anim.timeline();
@@ -339,21 +337,15 @@ function buildTimeline(spilled, partitions) {{
       phase.textContent = "✓ Complete — single in-memory pass, O(build + probe)";
     }});
   }}
-  tl.call(function() {{ teachRuntime.animationDone(); }});
-
   return tl;
 }}
 
-function playAnim() {{
-  if (currentTimeline) currentTimeline.stop();
+function buildCurrentTimeline() {{
   var c = teachRuntime.readControls();
   var cost = hashJoinCost(c.build_rows, c.probe_rows, c.row_size, c.jbs);
-  currentTimeline = buildTimeline(cost.spilled, cost.partitions);
-  currentTimeline.play();
+  return buildTimeline(cost.spilled, cost.partitions);
 }}
 function resetAnim() {{
-  if (currentTimeline) currentTimeline.stop();
-  currentTimeline = null;
   resetStage();
   document.getElementById("phase-label").textContent = "Ready — press Play";
 }}
@@ -374,7 +366,9 @@ function renderChart(buildRows, rowSize, jbs, currentProbe) {{
           return blocks * n * Math.min(rpb, buildRows);
         }} }}
     ],
-    current: {{ x: currentProbe }}
+    current: {{ x: currentProbe }},
+    xSlider: "probe_rows",
+    xSliderTransform: function(xVal) {{ return Math.max(1000, Math.round(xVal / 1000) * 1000); }}
   }});
 }}
 
@@ -392,14 +386,16 @@ function recompute() {{
   document.getElementById("out-explanation").textContent = cost.spilled
     ? "departments is " + teachRuntime.formatBytes(cost.buildBytes) + " — bigger than join_buffer_size. MySQL spills: partition both inputs into " + cost.partitions + " chunks on disk, then probe each partition separately. Cost roughly doubles."
     : "departments is " + teachRuntime.formatBytes(cost.buildBytes) + " — fits in join_buffer_size. Single-pass: build the hash table once, stream employees through. O(build + probe).";
-  if (currentTimeline) {{ currentTimeline.stop(); currentTimeline = null; }}
   resetStage();
   renderChart(c.build_rows, c.row_size, c.jbs, c.probe_rows);
 }}
 
 buildStage();
 teachRuntime.wire(recompute);
-teachRuntime.wireToolbar(playAnim, resetAnim);
+teachRuntime.wireToolbar({{
+  build: buildCurrentTimeline,
+  reset: resetAnim
+}});
 """
 
     return _html.render_page(

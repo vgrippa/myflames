@@ -225,6 +225,28 @@ section.stage .stage-toolbar {
   background: #fff;
   cursor: pointer;
 }
+.stage-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 0 2px;
+}
+.stage-scrubber input[type="range"] {
+  flex: 1;
+  height: 5px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.stage-scrubber .scrubber-time {
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 42px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .complexity-chart {
   margin-top: 14px;
   padding: 14px;
@@ -412,12 +434,36 @@ var teachRuntime = (function() {
     recompute();
   }
 
-  // Wire the shared stage toolbar: play-pause toggle, speed dropdown, reset
-  function wireToolbar(playFn, resetFn) {
+  // Wire the shared stage toolbar.
+  //
+  // New API: wireToolbar({ build: fn, reset: fn }) where
+  //   build  returns a fresh anim.timeline() that has NOT yet been played
+  //   reset  clears the stage back to its ready state
+  //
+  // The toolbar owns the Play/Pause/Reset buttons, the speed dropdown, and
+  // the YouTube-style scrubber. Lessons do not call .play() themselves.
+  //
+  // Legacy compat: wireToolbar(playFn, resetFn) — two positional function
+  // arguments — still works for any lesson we haven't migrated yet.
+  function wireToolbar(optsOrPlay, maybeReset) {
     var btnPlay = document.getElementById("btn-play");
     var btnReset = document.getElementById("btn-reset");
     var selSpeed = document.getElementById("sel-speed");
-    var state = { running: false, paused: false };
+    var scrubber = document.getElementById("scrubber");
+    var timeCurLbl = document.getElementById("scrubber-time-current");
+    var timeTotLbl = document.getElementById("scrubber-time-total");
+
+    var build = null, reset = null, legacyPlay = null;
+    if (typeof optsOrPlay === "function") {
+      legacyPlay = optsOrPlay;
+      reset = maybeReset;
+    } else if (optsOrPlay && typeof optsOrPlay === "object") {
+      build = optsOrPlay.build;
+      reset = optsOrPlay.reset;
+    }
+
+    var state = { running: false, paused: false, draggingScrubber: false };
+    var currentTL = null;
 
     function labelFor() {
       if (!state.running) return "▶ Play";
@@ -426,7 +472,59 @@ var teachRuntime = (function() {
     }
     function updateLabel() { if (btnPlay) btnPlay.textContent = labelFor(); }
 
-    // Lessons notify us when a timeline completes via teachRuntime.onAnimationDone
+    function formatSec(ms) {
+      var s = Math.max(0, ms / 1000);
+      return s.toFixed(1) + "s";
+    }
+    function syncTimeLabels() {
+      if (!currentTL) { if (timeCurLbl) timeCurLbl.textContent = "0.0s"; return; }
+      if (timeTotLbl) timeTotLbl.textContent = formatSec(currentTL.getTotalDuration());
+    }
+
+    // Scrubber RAF loop — moves the thumb based on currentTL.getCurrentTime()
+    function scrubberTick() {
+      if (!currentTL || state.draggingScrubber) return;
+      if (!state.running && !state.paused) return;
+      var total = currentTL.getTotalDuration();
+      if (total > 0) {
+        var frac = Math.min(1, currentTL.getCurrentTime() / total);
+        if (scrubber) scrubber.value = String(Math.round(frac * 1000));
+        if (timeCurLbl) timeCurLbl.textContent = formatSec(currentTL.getCurrentTime());
+      }
+      if (state.running) requestAnimationFrame(scrubberTick);
+    }
+
+    function startPlayback() {
+      if (legacyPlay) { legacyPlay(); return; }
+      if (!build) return;
+      if (currentTL) currentTL.stop();
+      if (reset) reset();
+      currentTL = build();
+      syncTimeLabels();
+      if (scrubber) scrubber.value = "0";
+      state.running = true;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+      currentTL.play(function() {
+        state.running = false;
+        state.paused = false;
+        anim.setPaused(false);
+        if (scrubber && currentTL) scrubber.value = "1000";
+        if (timeCurLbl && currentTL) timeCurLbl.textContent = formatSec(currentTL.getTotalDuration());
+        updateLabel();
+      });
+      requestAnimationFrame(scrubberTick);
+    }
+
+    function togglePause() {
+      state.paused = !state.paused;
+      anim.setPaused(state.paused);
+      updateLabel();
+      if (!state.paused) requestAnimationFrame(scrubberTick);
+    }
+
+    // Used by lessons that still rely on the old legacy done-notification
     window._teachOnDone = function() {
       state.running = false;
       state.paused = false;
@@ -436,33 +534,61 @@ var teachRuntime = (function() {
 
     if (btnPlay) btnPlay.addEventListener("click", function() {
       if (!state.running) {
-        state.running = true;
-        state.paused = false;
-        anim.setPaused(false);
-        updateLabel();
-        if (playFn) playFn();
+        startPlayback();
         return;
       }
-      // Toggle pause
-      state.paused = !state.paused;
-      anim.setPaused(state.paused);
-      updateLabel();
+      togglePause();
     });
     if (btnReset) btnReset.addEventListener("click", function() {
+      if (currentTL) currentTL.stop();
+      currentTL = null;
       state.running = false;
       state.paused = false;
       anim.setPaused(false);
       updateLabel();
-      if (resetFn) resetFn();
+      if (reset) reset();
+      if (scrubber) scrubber.value = "0";
+      if (timeCurLbl) timeCurLbl.textContent = "0.0s";
     });
     if (selSpeed) selSpeed.addEventListener("change", function() {
       anim.setSpeed(Number(selSpeed.value));
     });
-    // Set initial speed from the dropdown's default
     if (selSpeed) anim.setSpeed(Number(selSpeed.value));
+
+    // Scrubber behaviour: dragging seeks (stop, reset, rebuild, fast-forward
+    // to target, leave paused). Releasing the thumb leaves playback paused
+    // at the scrub target — the user can press Play to resume from the
+    // beginning (a deliberate simplification; mid-point resume adds a lot
+    // of complexity for little teaching benefit).
+    if (scrubber && build) {
+      function seekToScrubber() {
+        var frac = Number(scrubber.value) / 1000;
+        if (currentTL) currentTL.stop();
+        if (reset) reset();
+        currentTL = build();
+        var target = frac * currentTL.getTotalDuration();
+        currentTL.fastForwardTo(target);
+        syncTimeLabels();
+        if (timeCurLbl) timeCurLbl.textContent = formatSec(target);
+        state.running = true;
+        state.paused = true;
+        anim.setPaused(true);
+        updateLabel();
+      }
+      scrubber.addEventListener("mousedown", function() { state.draggingScrubber = true; });
+      scrubber.addEventListener("touchstart", function() { state.draggingScrubber = true; });
+      scrubber.addEventListener("input", seekToScrubber);
+      scrubber.addEventListener("change", function() {
+        seekToScrubber();
+        state.draggingScrubber = false;
+      });
+      scrubber.addEventListener("mouseup", function() { state.draggingScrubber = false; });
+      scrubber.addEventListener("touchend", function() { state.draggingScrubber = false; });
+    }
   }
 
   // Helper that lesson code calls when its animation reaches the end.
+  // (Only used by legacy wireToolbar(playFn, resetFn) calls.)
   function animationDone() {
     if (typeof window._teachOnDone === "function") window._teachOnDone();
   }
@@ -520,7 +646,8 @@ def query_card(sql: str, note: str = "") -> str:
 
 def stage_toolbar(status_text: str = "Ready — press Play") -> str:
     """Render the shared stage toolbar: play/pause toggle, speed dropdown,
-    reset button, and a status-label span. Every lesson uses this."""
+    reset button, a scrubber (YouTube-style timeline seek), and a
+    status-label span. Every lesson uses this."""
     return f"""
 <div class="stage-toolbar">
   <button id="btn-play" class="primary">▶ Play</button>
@@ -534,6 +661,12 @@ def stage_toolbar(status_text: str = "Ready — press Play") -> str:
     <option value="4">4×</option>
   </select>
   <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">{esc(status_text)}</span>
+</div>
+<div class="stage-scrubber">
+  <span class="scrubber-time" id="scrubber-time-current">0.0s</span>
+  <input type="range" id="scrubber" min="0" max="1000" value="0" step="1"
+    aria-label="Animation timeline scrubber" />
+  <span class="scrubber-time" id="scrubber-time-total">0.0s</span>
 </div>
 """
 

@@ -444,8 +444,6 @@ function rerenderClassic(panel) {
 // ---------- playback ----------
 var innoDBPanel = null;
 var classicPanel = null;
-var playing = false;
-var playTimer = null;
 
 function updateReadouts() {
   if (!innoDBPanel || !classicPanel) return;
@@ -457,15 +455,12 @@ function updateReadouts() {
   document.getElementById("out-classic-hits").textContent = classicPanel.state.hits;
 }
 
-function processStep(trace, i, oldMs, onDone) {
-  if (!playing || i >= trace.length) {
-    if (onDone) onDone();
-    return;
-  }
+function applyStep(trace, i, oldMs) {
+  // Apply one access synchronously — single function used by both the
+  // timeline steps AND the scrubber fastForwardTo() replay.
   var access = trace[i];
   innoDBPanel.currentPage.textContent = "access #" + (i + 1) + ": page " + access.pid;
 
-  // InnoDB step
   var result = simInnoDBStep(innoDBPanel.state, access, oldMs);
   if (result.event === "miss") {
     if (result.evicted !== null && innoDBPanel.cells[result.evicted]) {
@@ -476,7 +471,7 @@ function processStep(trace, i, oldMs, onDone) {
     var p = cellXYForIndex(innoDBPanel, "old", 0);
     cell.rect.setAttribute("x", p.x - 30);
     fadeInCell(cell);
-    setTimeout(function() { rerenderInnoDB(innoDBPanel); }, 50);
+    rerenderInnoDB(innoDBPanel);
   } else if (result.event === "promotion") {
     if (result.demoted !== null && innoDBPanel.cells[result.demoted]) {
       var demotedCell = innoDBPanel.cells[result.demoted];
@@ -487,12 +482,11 @@ function processStep(trace, i, oldMs, onDone) {
       innoDBPanel.cells[access.pid].rect.setAttribute("fill", "#2563eb");
       anim.pulse(innoDBPanel.cells[access.pid].rect, 2, 1, 320);
     }
-    setTimeout(function() { rerenderInnoDB(innoDBPanel); }, 50);
+    rerenderInnoDB(innoDBPanel);
   } else {
-    setTimeout(function() { rerenderInnoDB(innoDBPanel); }, 50);
+    rerenderInnoDB(innoDBPanel);
   }
 
-  // Classic step (same access)
   var cResult = simClassicStep(classicPanel.state, access);
   if (cResult.event === "miss") {
     if (cResult.evicted !== null && classicPanel.cells[cResult.evicted]) {
@@ -502,27 +496,29 @@ function processStep(trace, i, oldMs, onDone) {
     var cCell = createCell(classicPanel, access.pid, "classic", "#6b7280");
     cCell.rect.setAttribute("x", 400);
     fadeInCell(cCell);
-    setTimeout(function() { rerenderClassic(classicPanel); }, 50);
+    rerenderClassic(classicPanel);
   } else {
     anim.pulse(classicPanel.cells[access.pid].rect, 2, 1, 260);
-    setTimeout(function() { rerenderClassic(classicPanel); }, 50);
+    rerenderClassic(classicPanel);
   }
-
   updateReadouts();
-
-  playTimer = setTimeout(function() { processStep(trace, i + 1, oldMs, onDone); },
-    anim.reducedMotion() ? 0 : 420);
 }
 
-function playWorkload() {
-  if (!innoDBPanel || !classicPanel) return;
-  if (playing) return;
-  playing = true;
+function buildCurrentTimeline() {
+  if (!innoDBPanel || !classicPanel) recompute();
   var c = teachRuntime.readControls();
   var trace = genWorkload(c.workload, c.pool_size);
-  document.getElementById("phase-label").textContent = "Running " + trace.length + " accesses…";
-  processStep(trace, 0, c.old_ms, function() {
-    playing = false;
+  var tl = anim.timeline();
+  tl.call(function() {
+    document.getElementById("phase-label").textContent = "Running " + trace.length + " accesses…";
+  });
+  for (var i = 0; i < trace.length; i++) {
+    (function(idx) {
+      tl.call(function() { applyStep(trace, idx, c.old_ms); });
+      tl.delay(420);
+    })(i);
+  }
+  tl.call(function() {
     if (c.workload === "full_scan" && innoDBPanel.state.promotions === 0) {
       innoDBPanel.verdict.textContent = "✓ Young sublist untouched — scan-resistant";
     }
@@ -536,13 +532,11 @@ function playWorkload() {
         : c.workload === "hot_set"
         ? "A small hot set repeatedly accessed. Both algorithms keep the hot pages; midpoint insertion pays off under scan or mixed workloads, not this one."
         : "Mixed workload: hot set, then a scan, then hot set again. InnoDB's young sublist survives the scan pollution — so the second round of hot queries hits its cache.";
-    teachRuntime.animationDone();
   });
+  return tl;
 }
 
 function resetAnim() {
-  playing = false;
-  if (playTimer) { clearTimeout(playTimer); playTimer = null; }
   document.getElementById("phase-label").textContent = "Ready — press Play";
   recompute();
 }
@@ -563,7 +557,9 @@ function renderChart(currentPool) {
       { label: "Classic LRU (wiped by scan)", color: "#dc2626",
         fn: function(n) { return 0.5; } }  // log chart needs >0
     ],
-    current: { x: currentPool }
+    current: { x: currentPool },
+    xSlider: "pool_size",
+    xSliderTransform: function(xVal) { return Math.max(12, Math.min(40, Math.round(xVal / 2) * 2)); }
   });
 }
 
@@ -584,7 +580,10 @@ function recompute() {
 }
 
 teachRuntime.wire(recompute);
-teachRuntime.wireToolbar(playWorkload, resetAnim);
+teachRuntime.wireToolbar({
+  build: buildCurrentTimeline,
+  reset: resetAnim
+});
 """
 
     return _html.render_page(

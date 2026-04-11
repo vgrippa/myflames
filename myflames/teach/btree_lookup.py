@@ -259,8 +259,6 @@ function resetTreeColors() {{
 }}
 
 // ---------- timeline ----------
-var currentTimeline = null;
-
 function buildDescentTimeline() {{
   resetTreeColors();
   var tl = anim.timeline();
@@ -328,19 +326,11 @@ function buildDescentTimeline() {{
   }}
   tl.call(function() {{
     phaseLabel.textContent = "✓ Lookup complete — press Reset to replay";
-    teachRuntime.animationDone();
   }});
   return tl;
 }}
 
-function playAnim() {{
-  if (currentTimeline) currentTimeline.stop();
-  currentTimeline = buildDescentTimeline();
-  currentTimeline.play();
-}}
 function resetAnim() {{
-  if (currentTimeline) currentTimeline.stop();
-  currentTimeline = null;
   resetTreeColors();
   document.getElementById("phase-label").textContent = "Ready — press Play";
 }}
@@ -360,7 +350,14 @@ function renderChart(keySize, pageSize, keyType, currentRows) {{
       {{ label: "Hypothetical linear scan", color: "#dc2626",
         fn: function(n) {{ return Math.max(1, n / 400); }} }}
     ],
-    current: {{ x: currentRows }}
+    current: {{ x: currentRows }},
+    xSlider: "rows",
+    xSliderTransform: function(xVal) {{
+      // ROW_SCALE = [10, 100, 1k, 10k, 100k, 1M, 10M, 100M, 1B]
+      // Find the closest log index
+      var logV = Math.log10(Math.max(1, xVal));
+      return Math.max(0, Math.min(ROW_SCALE.length - 1, Math.round(logV - 1)));
+    }}
   }});
 }}
 
@@ -385,14 +382,16 @@ function recompute() {{
   document.getElementById("out-complexity").textContent = (cost.traversals === 2) ? "O(log n) + O(log n)" : "O(log n)";
   document.getElementById("out-explanation").textContent = cost.explanation;
 
-  if (currentTimeline) {{ currentTimeline.stop(); currentTimeline = null; }}
   buildTrees(cost.height, cost.traversals);
   resetTreeColors();
   renderChart(keySize, pageSize, keyType, rows);
 }}
 
 teachRuntime.wire(recompute);
-teachRuntime.wireToolbar(playAnim, resetAnim);
+teachRuntime.wireToolbar({{
+  build: buildDescentTimeline,
+  reset: resetAnim
+}});
 """
 
     return _html.render_page(

@@ -313,8 +313,6 @@ function resetHashStage() {
   hashStage.tuples = [];
 }
 
-var currentTimeline = null;
-
 function buildTimeline(bnlC, hashC, innerRows) {
   resetBnlStage();
   resetHashStage();
@@ -471,24 +469,19 @@ function buildTimeline(bnlC, hashC, innerRows) {
     } else {
       phase.textContent = "At tiny sizes both algorithms are comparable; raise customers/orders.";
     }
-    teachRuntime.animationDone();
   });
   return tl;
 }
 
-function playAnim() {
-  if (currentTimeline) currentTimeline.stop();
+function buildCurrentTimeline() {
   var c = teachRuntime.readControls();
   var bnlC = bnlCost(c.outer_rows, c.inner_rows, c.row_size, c.jbs);
   var hashC = hashCost(Math.min(c.outer_rows, c.inner_rows), Math.max(c.outer_rows, c.inner_rows), c.row_size, c.jbs);
   buildBnlPanel(bnlC.blocks);
   resetHashStage();
-  currentTimeline = buildTimeline(bnlC, hashC, c.inner_rows);
-  currentTimeline.play();
+  return buildTimeline(bnlC, hashC, c.inner_rows);
 }
 function resetAnim() {
-  if (currentTimeline) currentTimeline.stop();
-  currentTimeline = null;
   resetBnlStage();
   resetHashStage();
   document.getElementById("phase-label").textContent = "Ready — press Play";
@@ -508,7 +501,9 @@ function renderChart(innerRows, rowSize, jbs, currentOuter) {
       { label: "MySQL 8.4 hash", color: "#0d9488",
         fn: function(n) { return hashCost(Math.min(n, innerRows), Math.max(n, innerRows), rowSize, jbs).cmp; } }
     ],
-    current: { x: currentOuter }
+    current: { x: currentOuter },
+    xSlider: "outer_rows",
+    xSliderTransform: function(xVal) { return Math.max(1000, Math.round(xVal / 1000) * 1000); }
   });
 }
 
@@ -539,14 +534,16 @@ function recompute() {
   }
   document.getElementById("out-explanation").textContent = exp;
 
-  if (currentTimeline) { currentTimeline.stop(); currentTimeline = null; }
   buildBnlPanel(bnlC.blocks);
   buildHashPanel();
   renderChart(c.inner_rows, c.row_size, c.jbs, c.outer_rows);
 }
 
 teachRuntime.wire(recompute);
-teachRuntime.wireToolbar(playAnim, resetAnim);
+teachRuntime.wireToolbar({
+  build: buildCurrentTimeline,
+  reset: resetAnim
+});
 """
 
     return _html.render_page(
