@@ -123,12 +123,106 @@ section.stage {
   padding: 16px;
   margin-bottom: 20px;
 }
+.query-card {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+}
+.query-card .query-label {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.query-card .query-sql {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #0f172a;
+  white-space: pre-wrap;
+}
+.query-card .query-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.explainer-card {
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-left: 3px solid #059669;
+  border-radius: 4px;
+}
+.explainer-card .explainer-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #065f46;
+}
+.explainer-card .explainer-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: #064e3b;
+  line-height: 1.55;
+}
+.explainer-card .explainer-list li {
+  margin-bottom: 4px;
+}
+.explainer-card .explainer-list li:last-child {
+  margin-bottom: 0;
+}
 section.stage .stage-toolbar {
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
   font-size: 13px;
+}
+.stage-toolbar .speed-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-left: 6px;
+}
+.stage-toolbar select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12.5px;
+  background: #fff;
+  cursor: pointer;
+}
+.complexity-chart {
+  margin-top: 14px;
+  padding: 14px;
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.complexity-chart .chart-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.complexity-chart svg {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
 }
 button {
   padding: 6px 12px;
@@ -255,15 +349,15 @@ footer a { color: var(--muted); }
   <div class="control-grid">
 
     <div class="control">
-      <label for="pool_size">Buffer pool (pages): <span class="value-pill" data-pill-for="pool_size">100</span></label>
-      <input type="range" id="pool_size" name="pool_size" min="10" max="400" step="10" value="100">
+      <label for="pool_size">Buffer pool (pages): <span class="value-pill" data-pill-for="pool_size">24</span></label>
+      <input type="range" id="pool_size" name="pool_size" min="12" max="40" step="2" value="24">
       <div class="hint">For illustration. Real pools are millions of pages.</div>
     </div>
 
     <div class="control">
       <label for="old_pct">innodb_old_blocks_pct: <span class="value-pill" data-pill-for="old_pct">37</span></label>
-      <input type="range" id="old_pct" name="old_pct" min="5" max="95" step="1" value="37">
-      <div class="hint">% of the pool reserved for the old (cold) sublist. Default 37.</div>
+      <input type="range" id="old_pct" name="old_pct" min="10" max="90" step="1" value="37">
+      <div class="hint">% of pool reserved for the old (cold) sublist. Default 37.</div>
     </div>
 
     <div class="control">
@@ -277,7 +371,7 @@ footer a { color: var(--muted); }
       <select id="workload" name="workload">
         <option value="hot_set">Hot set (frequent few pages)</option>
         <option value="full_scan" selected>One-pass full table scan</option>
-        <option value="mixed">Hot set + full scan</option>
+        <option value="mixed">Hot set + full scan + hot set</option>
       </select>
       <div class="hint">Full scan is where midpoint insertion proves its worth.</div>
     </div>
@@ -287,26 +381,52 @@ footer a { color: var(--muted); }
 
     
 <section class="stage">
-  <div class="stage-toolbar">
-    <button id="btn-run" class="primary">▶ Run workload</button>
-    <button id="btn-reset">Reset</button>
-    <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">Ready</span>
-  </div>
+  
+<div class="query-card">
+  <p class="query-label">Example query this animation executes</p>
+  <pre class="query-sql">-- A one-pass full table scan that would pollute a textbook LRU
+SELECT SUM(amount)
+FROM   events                   -- 10 GB table
+WHERE  event_date &gt;= &#x27;2026-01-01&#x27;;   -- no matching index → scan</pre>
+  <p class="query-note">Pick &#x27;One-pass full table scan&#x27; from the workload dropdown to see why InnoDB&#x27;s buffer pool keeps the OLTP hot set intact during reporting queries like this one.</p>
+</div>
+
+  
+<div class="explainer-card">
+  <p class="explainer-title">What you&#x27;ll see in the animation</p>
+  <ul class="explainer-list"><li>Left panel — InnoDB midpoint-insertion LRU. The pool is split into a blue &#x27;young&#x27; half on top and a grey &#x27;old&#x27; half on bottom. A dashed red line in the middle is the MIDPOINT.</li><li>New pages (cache misses) slide in from the edge into the HEAD OF THE OLD SUBLIST. They never enter the young half on first access.</li><li>A page only gets promoted to young if it&#x27;s hit AGAIN after innodb_old_blocks_time ms — a full scan never does that, which is the whole point.</li><li>Right panel — textbook LRU. Every access bumps the page to the MRU end of a single list. A full scan therefore wipes every hot page out.</li><li>Watch the counters: with a full-scan workload, InnoDB&#x27;s &#x27;promotions&#x27; stay at 0 and classic LRU&#x27;s &#x27;hits&#x27; go to 0 too — but InnoDB&#x27;s young pages stay in place.</li></ul>
+</div>
+
+  
+<div class="stage-toolbar">
+  <button id="btn-play" class="primary">▶ Play</button>
+  <button id="btn-reset">Reset</button>
+  <label for="sel-speed" class="speed-label">Speed:</label>
+  <select id="sel-speed" aria-label="Animation speed">
+    <option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option>
+    <option value="2">2×</option>
+    <option value="4">4×</option>
+  </select>
+  <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">Ready — press Play</span>
+</div>
+
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <div>
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#1e40af">InnoDB midpoint-insertion LRU</p>
-      <svg id="svg-innodb" viewBox="0 0 400 260" xmlns="http://www.w3.org/2000/svg"></svg>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#1e40af;letter-spacing:0.4px;text-transform:uppercase">InnoDB midpoint-insertion LRU</p>
+      <svg id="svg-innodb" viewBox="0 0 400 280" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
     <div>
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#6b7280">Textbook single-list LRU (for contrast)</p>
-      <svg id="svg-classic" viewBox="0 0 400 260" xmlns="http://www.w3.org/2000/svg"></svg>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#6b7280;letter-spacing:0.4px;text-transform:uppercase">Textbook single-list LRU</p>
+      <svg id="svg-classic" viewBox="0 0 400 280" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
   </div>
 </section>
 
     
 <section class="readout">
-  <h2>Simulation results</h2>
+  <h2>Simulation results (updates as the animation plays)</h2>
   <div class="readout-grid">
     <div class="item"><p class="label">InnoDB: young pages</p><p class="value" id="out-young">—</p></div>
     <div class="item"><p class="label">InnoDB: old pages</p><p class="value" id="out-old">—</p></div>
@@ -316,6 +436,10 @@ footer a { color: var(--muted); }
     <div class="item"><p class="label">Classic LRU: hits</p><p class="value" id="out-classic-hits">—</p></div>
   </div>
   <div class="explanation" id="out-explanation"></div>
+  <div class="complexity-chart">
+    <p class="chart-title">Hot-set survival after a full scan (pool size vs scan length)</p>
+    <svg id="complexity-chart" viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
 </section>
 
     
@@ -353,7 +477,7 @@ footer a { color: var(--muted); }
       bumped to the head — cheap linked-list operation.</li>
     </ol>
 
-    <p>Run the "one-pass full scan" workload above and compare the two
+    <p>Run the "one-pass full scan" workload above and watch the two
     panels: the textbook LRU's entire working set is wiped, while InnoDB
     keeps the young sublist intact.</p>
 
@@ -368,6 +492,477 @@ footer a { color: var(--muted); }
     interactive database algorithm lessons. Offline-first, stdlib-only.</p>
   </footer>
   <script>
+// ---------------------------------------------------------------------------
+// myflames teach animation runtime — vanilla JS, no deps, offline-first.
+// See .claude/skills/animation-expert/SKILL.md for craft rules.
+// ---------------------------------------------------------------------------
+var anim = (function() {
+  // --- Easing functions --------------------------------------------------
+  function linear(t) { return t; }
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  function easeInCubic(t) { return t * t * t; }
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+  function easeOutQuart(t) { return 1 - Math.pow(1 - t, 4); }
+  function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+  function easeOutBack(t) {
+    var c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+
+  // --- Interpolation -----------------------------------------------------
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function _parseHex(h) {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+  function _toHex(c) {
+    var h = Math.round(c).toString(16);
+    return h.length < 2 ? "0" + h : h;
+  }
+  function lerpColor(a, b, t) {
+    var ca = _parseHex(a), cb = _parseHex(b);
+    return "#" + _toHex(lerp(ca[0], cb[0], t)) + _toHex(lerp(ca[1], cb[1], t)) + _toHex(lerp(ca[2], cb[2], t));
+  }
+
+  // --- prefers-reduced-motion -------------------------------------------
+  function reducedMotion() {
+    try {
+      return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (e) { return false; }
+  }
+
+  // --- Global speed multiplier (1 = real time, 0.5 = half speed, 2 = 2×) -
+  var _speed = 1;
+  function setSpeed(s) { _speed = Math.max(0.1, s); }
+  function getSpeed() { return _speed; }
+
+  // --- Global pause flag --------------------------------------------------
+  // When paused, every running tween suspends at its current progress and
+  // resumes from the same progress when unpaused.
+  var _paused = false;
+  var _onPauseChange = [];
+  function setPaused(p) {
+    if (_paused === p) return;
+    _paused = p;
+    _onPauseChange.forEach(function(fn) { try { fn(p); } catch (e) {} });
+  }
+  function isPaused() { return _paused; }
+  function onPauseChange(fn) { _onPauseChange.push(fn); }
+
+  // --- tween: single-value interpolation with RAF, pause-aware ----------
+  // opts: { from, to, duration, ease, onUpdate, onComplete, delay }
+  // Returns a cancel function. Duration is scaled by the global _speed
+  // at frame time, so a live speed change takes effect immediately.
+  function tween(opts) {
+    var from = opts.from;
+    var to = opts.to;
+    var baseDuration = opts.duration || 400;
+    var ease = opts.ease || easeOutCubic;
+    var onUpdate = opts.onUpdate || function() {};
+    var onComplete = opts.onComplete || function() {};
+    var delay = opts.delay || 0;
+    var cancelled = false;
+
+    function interpolate(f, t, eased) {
+      if (typeof f === "number") return lerp(f, t, eased);
+      var out = {};
+      for (var k in f) out[k] = lerp(f[k], t[k], eased);
+      return out;
+    }
+
+    // reduced-motion: skip to end state instantly
+    if (reducedMotion()) {
+      setTimeout(function() {
+        if (cancelled) return;
+        onUpdate(to);
+        onComplete();
+      }, 0);
+      return function() { cancelled = true; };
+    }
+
+    // Time-based progress tracking. We accumulate "virtual elapsed time"
+    // across frames, scaled by _speed and paused by _paused. This lets us
+    // change speed or pause mid-flight without discontinuities.
+    var lastFrame = null;
+    var virtualElapsed = 0;  // in real ms (base duration units)
+
+    function frame(now) {
+      if (cancelled) return;
+      if (lastFrame === null) lastFrame = now;
+      var delta = now - lastFrame;
+      lastFrame = now;
+      if (!_paused) {
+        virtualElapsed += delta * _speed;
+      }
+      var adjusted = virtualElapsed - delay;
+      if (adjusted < 0) { requestAnimationFrame(frame); return; }
+      var t = Math.min(1, adjusted / baseDuration);
+      var eased = ease(t);
+      onUpdate(interpolate(from, to, eased));
+      if (t < 1) requestAnimationFrame(frame);
+      else onComplete();
+    }
+    requestAnimationFrame(frame);
+    return function() { cancelled = true; };
+  }
+
+  // --- stagger: run fn(item, i) at i*stepMs intervals -------------------
+  function stagger(items, stepMs, fn) {
+    if (reducedMotion()) {
+      for (var i = 0; i < items.length; i++) fn(items[i], i);
+      return function() {};
+    }
+    var timers = [];
+    items.forEach(function(item, i) {
+      timers.push(setTimeout(function() { fn(item, i); }, i * stepMs));
+    });
+    return function() { timers.forEach(clearTimeout); };
+  }
+
+  // --- timeline: sequential tween queue, pause-aware --------------------
+  function timeline() {
+    var steps = [];
+    var current = null;
+    var playing = false;
+    var onDoneCb = null;
+    var pendingDelayTimer = null;
+    var pendingDelayRemaining = 0;
+    var pendingDelayStart = 0;
+    var tl = {};
+    tl.add = function(step) { steps.push(step); return tl; };
+    tl.delay = function(ms) { steps.push({ _delay: ms }); return tl; };
+    tl.call = function(fn) { steps.push({ _call: fn }); return tl; };
+    tl.play = function(onDone) {
+      playing = true;
+      onDoneCb = onDone || null;
+      var i = 0;
+      function scheduleDelay(remaining, after) {
+        if (_paused) {
+          // When paused, record that we were in a delay with this much left,
+          // and wait until unpause to re-schedule.
+          pendingDelayRemaining = remaining;
+          return;
+        }
+        pendingDelayStart = performance.now();
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      function next() {
+        if (!playing) return;
+        if (i >= steps.length) {
+          playing = false;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[i++];
+        if (step._delay !== undefined) {
+          if (reducedMotion()) { next(); return; }
+          scheduleDelay(step._delay, next);
+          return;
+        }
+        if (step._call !== undefined) {
+          step._call();
+          next();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() { origComplete(); next(); }
+        }));
+      }
+      // When the global pause flag flips back to false while we're sitting
+      // in a delay, re-schedule the delay with the remaining time.
+      var offPause = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay(pendingDelayRemaining, next);
+        }
+      };
+      onPauseChange(offPause);
+      next();
+      return tl;
+    };
+    tl.stop = function() {
+      playing = false;
+      if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }
+      pendingDelayRemaining = 0;
+      if (current) current();
+    };
+    tl.isPlaying = function() { return playing; };
+    return tl;
+  }
+
+  // --- path: quadratic-bezier sampler (x1,y1) → (cx,cy) → (x2,y2) -------
+  function path(x1, y1, cx, cy, x2, y2) {
+    return function(t) {
+      var omt = 1 - t;
+      var x = omt * omt * x1 + 2 * omt * t * cx + t * t * x2;
+      var y = omt * omt * y1 + 2 * omt * t * cy + t * t * y2;
+      return { x: x, y: y };
+    };
+  }
+
+  // --- pulse: briefly grow an SVG element's stroke width ---------------
+  function pulse(el, peakWidth, baseWidth, durationMs) {
+    if (!el) return;
+    var dur = (durationMs || 400) / 2;
+    tween({
+      from: baseWidth || 1,
+      to: peakWidth || 3,
+      duration: dur,
+      ease: easeOutCubic,
+      onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); },
+      onComplete: function() {
+        tween({
+          from: peakWidth || 3,
+          to: baseWidth || 1,
+          duration: dur,
+          ease: easeInCubic,
+          onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); }
+        });
+      }
+    });
+  }
+
+  // --- svg element creators (tiny helpers to reduce boilerplate) -------
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // --- complexityChart: small log-log plot of cost vs input size -------
+  //
+  // Draws a line-chart SVG showing how a cost function scales with input
+  // size, with the current operating point highlighted. Useful for the
+  // "feel the asymptotic gap" moment at the bottom of each lesson.
+  //
+  // opts: {
+  //   svgId: "complexity-chart",
+  //   width: 400, height: 180,
+  //   xLabel: "Rows", yLabel: "Pages touched",
+  //   curves: [
+  //     {label: "BNL", color: "#ca8a04", fn: function(n) { return n * n; }},
+  //     {label: "Hash", color: "#0d9488", fn: function(n) { return n + 1000; }}
+  //   ],
+  //   xMin: 10, xMax: 1000000,
+  //   current: {x: 100000},  // highlight point
+  // }
+  function complexityChart(opts) {
+    var svgEl = document.getElementById(opts.svgId);
+    if (!svgEl) return;
+    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+    var W = opts.width || 400;
+    var H = opts.height || 180;
+    var padL = 44, padR = 20, padT = 20, padB = 32;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+    var xMin = opts.xMin || 1;
+    var xMax = opts.xMax || 1e9;
+    var NSAMP = 80;
+
+    // Sample every curve; use log X scale
+    function logMap(v, lo, hi) {
+      var lv = Math.log(v);
+      var llo = Math.log(lo);
+      var lhi = Math.log(hi);
+      return (lv - llo) / (lhi - llo);
+    }
+    var samples = opts.curves.map(function(c) {
+      var pts = [];
+      for (var i = 0; i < NSAMP; i++) {
+        var frac = i / (NSAMP - 1);
+        var x = Math.exp(Math.log(xMin) + frac * (Math.log(xMax) - Math.log(xMin)));
+        pts.push({x: x, y: c.fn(x)});
+      }
+      return pts;
+    });
+    // Compute global Y range (log scale)
+    var yAll = [];
+    samples.forEach(function(curve) { curve.forEach(function(p) { if (p.y > 0 && isFinite(p.y)) yAll.push(p.y); }); });
+    if (yAll.length === 0) return;
+    var yMin = Math.min.apply(null, yAll);
+    var yMax = Math.max.apply(null, yAll);
+    // Clamp yMin so it's not zero
+    if (yMin <= 0) yMin = 1;
+
+    function toSvg(x, y) {
+      var fx = logMap(x, xMin, xMax);
+      var fy = (y > 0) ? logMap(y, yMin, yMax) : 0;
+      return {
+        x: padL + fx * plotW,
+        y: padT + (1 - fy) * plotH
+      };
+    }
+
+    // Background grid (log decades)
+    for (var gx = Math.pow(10, Math.floor(Math.log10(xMin))); gx <= xMax; gx *= 10) {
+      if (gx < xMin) continue;
+      var gridX = toSvg(gx, yMin).x;
+      var gline = svgEl_create("line", {
+        x1: gridX, y1: padT, x2: gridX, y2: padT + plotH,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gline);
+      var glbl = svgEl_create("text", {
+        x: gridX, y: padT + plotH + 14,
+        "text-anchor": "middle", "font-size": 9, fill: "#9ca3af"
+      });
+      glbl.textContent = formatLog(gx);
+      svgEl.appendChild(glbl);
+    }
+    for (var gy = Math.pow(10, Math.floor(Math.log10(yMin))); gy <= yMax * 10; gy *= 10) {
+      if (gy < yMin) continue;
+      var gridY = toSvg(xMin, gy).y;
+      if (gridY < padT - 1 || gridY > padT + plotH + 1) continue;
+      var gln = svgEl_create("line", {
+        x1: padL, y1: gridY, x2: padL + plotW, y2: gridY,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gln);
+      var glb = svgEl_create("text", {
+        x: padL - 6, y: gridY + 3,
+        "text-anchor": "end", "font-size": 9, fill: "#9ca3af"
+      });
+      glb.textContent = formatLog(gy);
+      svgEl.appendChild(glb);
+    }
+
+    // Axis lines
+    var axisX = svgEl_create("line", {
+      x1: padL, y1: padT + plotH, x2: padL + plotW, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisX);
+    var axisY = svgEl_create("line", {
+      x1: padL, y1: padT, x2: padL, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisY);
+
+    // Axis labels
+    if (opts.xLabel) {
+      var xl = svgEl_create("text", {
+        x: padL + plotW/2, y: H - 6,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151"
+      });
+      xl.textContent = opts.xLabel;
+      svgEl.appendChild(xl);
+    }
+    if (opts.yLabel) {
+      var yl = svgEl_create("text", {
+        x: 12, y: padT + plotH/2,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
+        transform: "rotate(-90 12," + (padT + plotH/2) + ")"
+      });
+      yl.textContent = opts.yLabel;
+      svgEl.appendChild(yl);
+    }
+
+    // Curves
+    opts.curves.forEach(function(c, idx) {
+      var pts = samples[idx];
+      var d = "";
+      pts.forEach(function(p, i) {
+        if (!isFinite(p.y) || p.y <= 0) return;
+        var svg = toSvg(p.x, p.y);
+        d += (i === 0 ? "M " : " L ") + svg.x.toFixed(1) + "," + svg.y.toFixed(1);
+      });
+      var path = svgEl_create("path", {
+        d: d, fill: "none", stroke: c.color || "#1f2937", "stroke-width": 2.5,
+        "stroke-linecap": "round", "stroke-linejoin": "round"
+      });
+      svgEl.appendChild(path);
+    });
+
+    // Legend
+    var legendY = padT - 6;
+    var lx = padL;
+    opts.curves.forEach(function(c, idx) {
+      var sw = svgEl_create("rect", {
+        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "#1f2937"
+      });
+      svgEl.appendChild(sw);
+      var lt = svgEl_create("text", {
+        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "#1f2937"
+      });
+      lt.textContent = c.label;
+      svgEl.appendChild(lt);
+      lx += (c.label.length * 6) + 34;
+    });
+
+    // Highlight current operating point
+    if (opts.current && opts.current.x) {
+      var cx = opts.current.x;
+      if (cx >= xMin && cx <= xMax) {
+        opts.curves.forEach(function(c, idx) {
+          var cy = c.fn(cx);
+          if (!isFinite(cy) || cy <= 0) return;
+          var svg = toSvg(cx, cy);
+          var dot = svgEl_create("circle", {
+            cx: svg.x, cy: svg.y, r: 5,
+            fill: c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+          });
+          svgEl.appendChild(dot);
+        });
+        // Vertical guide line at the current x
+        var vx = toSvg(cx, yMin).x;
+        var vline = svgEl_create("line", {
+          x1: vx, y1: padT, x2: vx, y2: padT + plotH,
+          stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
+        });
+        svgEl.appendChild(vline);
+      }
+    }
+  }
+
+  function svgEl_create(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function formatLog(n) {
+    if (n >= 1e9) return (n / 1e9) + "B";
+    if (n >= 1e6) return (n / 1e6) + "M";
+    if (n >= 1e3) return (n / 1e3) + "K";
+    return String(n);
+  }
+
+  return {
+    linear: linear,
+    easeOutCubic: easeOutCubic,
+    easeInCubic: easeInCubic,
+    easeInOutCubic: easeInOutCubic,
+    easeOutQuart: easeOutQuart,
+    easeInOutQuad: easeInOutQuad,
+    easeOutBack: easeOutBack,
+    lerp: lerp,
+    lerpColor: lerpColor,
+    tween: tween,
+    stagger: stagger,
+    timeline: timeline,
+    path: path,
+    pulse: pulse,
+    svgEl: svgEl,
+    reducedMotion: reducedMotion,
+    setSpeed: setSpeed,
+    getSpeed: getSpeed,
+    setPaused: setPaused,
+    isPaused: isPaused,
+    onPauseChange: onPauseChange,
+    complexityChart: complexityChart
+  };
+})();
+
+
 var teachRuntime = (function() {
   function formatInt(n) {
     if (!isFinite(n)) return "—";
@@ -415,283 +1010,503 @@ var teachRuntime = (function() {
     }
     recompute();
   }
+
+  // Wire the shared stage toolbar: play-pause toggle, speed dropdown, reset
+  function wireToolbar(playFn, resetFn) {
+    var btnPlay = document.getElementById("btn-play");
+    var btnReset = document.getElementById("btn-reset");
+    var selSpeed = document.getElementById("sel-speed");
+    var state = { running: false, paused: false };
+
+    function labelFor() {
+      if (!state.running) return "▶ Play";
+      if (state.paused) return "▶ Resume";
+      return "⏸ Pause";
+    }
+    function updateLabel() { if (btnPlay) btnPlay.textContent = labelFor(); }
+
+    // Lessons notify us when a timeline completes via teachRuntime.onAnimationDone
+    window._teachOnDone = function() {
+      state.running = false;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+    };
+
+    if (btnPlay) btnPlay.addEventListener("click", function() {
+      if (!state.running) {
+        state.running = true;
+        state.paused = false;
+        anim.setPaused(false);
+        updateLabel();
+        if (playFn) playFn();
+        return;
+      }
+      // Toggle pause
+      state.paused = !state.paused;
+      anim.setPaused(state.paused);
+      updateLabel();
+    });
+    if (btnReset) btnReset.addEventListener("click", function() {
+      state.running = false;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+      if (resetFn) resetFn();
+    });
+    if (selSpeed) selSpeed.addEventListener("change", function() {
+      anim.setSpeed(Number(selSpeed.value));
+    });
+    // Set initial speed from the dropdown's default
+    if (selSpeed) anim.setSpeed(Number(selSpeed.value));
+  }
+
+  // Helper that lesson code calls when its animation reaches the end.
+  function animationDone() {
+    if (typeof window._teachOnDone === "function") window._teachOnDone();
+  }
+
   return {
     formatInt: formatInt,
     formatBytes: formatBytes,
     formatMs: formatMs,
     readControls: readControls,
-    wire: wire
+    wire: wire,
+    wireToolbar: wireToolbar,
+    animationDone: animationDone
   };
 })();
 
 
-var INNODB_OLD_BLOCKS_PCT_DEFAULT = 37;
-var INNODB_OLD_BLOCKS_TIME_DEFAULT_MS = 1000;
-
-// --------- workload generators ---------
+// ---------- workload generators ----------
 function genWorkload(kind, pool) {
   var trace = [];
   var now = 0;
-  var hotSetSize = Math.max(5, Math.floor(pool * 0.3));
+  var hotSetSize = Math.max(4, Math.floor(pool * 0.3));
   if (kind === "hot_set") {
-    for (var i = 0; i < 400; i++) {
-      trace.push([Math.floor(Math.random() * hotSetSize), now]);
-      now += 20;
+    for (var i = 0; i < 40; i++) {
+      trace.push({pid: Math.floor(Math.random() * hotSetSize), now: now});
+      now += 40;
     }
   } else if (kind === "full_scan") {
-    // Scan 3x the pool — clearly bigger than fits.
-    var total = pool * 3;
+    var total = Math.min(pool * 2, 60);
     for (var j = 0; j < total; j++) {
-      trace.push([1000 + j, now]); // unique ids, disjoint from hot set
-      now += 5;
+      trace.push({pid: 1000 + j, now: now});
+      now += 10;
     }
   } else {
-    // Mixed: hot set queries interleaved with a full scan
-    for (var k = 0; k < 200; k++) {
-      trace.push([Math.floor(Math.random() * hotSetSize), now]);
-      now += 20;
+    for (var k = 0; k < 15; k++) {
+      trace.push({pid: Math.floor(Math.random() * hotSetSize), now: now});
+      now += 40;
     }
-    for (var s = 0; s < pool * 3; s++) {
-      trace.push([2000 + s, now]);
-      now += 5;
+    for (var s = 0; s < pool; s++) {
+      trace.push({pid: 2000 + s, now: now});
+      now += 10;
     }
-    for (var m = 0; m < 200; m++) {
-      trace.push([Math.floor(Math.random() * hotSetSize), now]);
-      now += 20;
+    for (var m = 0; m < 15; m++) {
+      trace.push({pid: Math.floor(Math.random() * hotSetSize), now: now});
+      now += 40;
     }
   }
   return trace;
 }
 
-// --------- InnoDB midpoint LRU simulator (mirrors _cost_model.simulate_midpoint_lru) ---------
-function simInnoDB(pool, trace, oldPct, oldMs) {
-  var youngCap = Math.max(1, Math.floor(pool * (100 - oldPct) / 100));
-  var oldCap = pool - youngCap;
-  var young = []; // head = MRU
-  var old = [];
-  var evictions = 0, promotions = 0;
+// ---------- InnoDB midpoint LRU (client-side copy) ----------
+function simInnoDBStep(state, access, oldMs) {
+  var pid = access.pid, now = access.now;
+  var young = state.young, old = state.old;
+  function findIn(lst, id) { for (var i = 0; i < lst.length; i++) if (lst[i].id === id) return i; return -1; }
 
-  function find(pid) {
-    for (var i = 0; i < young.length; i++) if (young[i].id === pid) return {list: "young", idx: i, e: young[i]};
-    for (var j = 0; j < old.length; j++) if (old[j].id === pid) return {list: "old", idx: j, e: old[j]};
-    return null;
+  var youngIdx = findIn(young, pid);
+  if (youngIdx >= 0) {
+    // Young hit: MRU bump
+    var e = young.splice(youngIdx, 1)[0];
+    young.unshift(e);
+    return {event: "young_hit", id: pid};
   }
-
-  for (var k = 0; k < trace.length; k++) {
-    var pid = trace[k][0], now = trace[k][1];
-    var f = find(pid);
-    if (f === null) {
-      if (old.length >= oldCap) { old.pop(); evictions++; }
-      old.unshift({id: pid, firstSeen: now});
-    } else if (f.list === "old") {
-      var age = now - f.e.firstSeen;
-      if (age >= oldMs) {
-        old.splice(f.idx, 1);
-        if (young.length >= youngCap) {
-          var demoted = young.pop();
-          demoted.firstSeen = now;
-          old.unshift(demoted);
-        }
-        young.unshift({id: pid, firstSeen: now});
-        promotions++;
+  var oldIdx = findIn(old, pid);
+  if (oldIdx >= 0) {
+    var e = old[oldIdx];
+    var age = now - e.firstSeen;
+    if (age >= oldMs) {
+      // Promote: old → head of young
+      old.splice(oldIdx, 1);
+      var demoted = null;
+      if (young.length >= state.youngCap) {
+        demoted = young.pop();
+        demoted.firstSeen = now;
+        old.unshift(demoted);
       }
-    } else {
-      young.splice(f.idx, 1);
-      young.unshift(f.e);
+      young.unshift({id: pid, firstSeen: now});
+      state.promotions++;
+      return {event: "promotion", id: pid, demoted: demoted ? demoted.id : null};
     }
+    return {event: "old_hit_no_promo", id: pid};
   }
+  // Miss: insert at head of old, evict from old tail if full
+  var evicted = null;
+  if (old.length >= state.oldCap) {
+    evicted = old.pop();
+    state.evictions++;
+  }
+  old.unshift({id: pid, firstSeen: now});
+  return {event: "miss", id: pid, evicted: evicted ? evicted.id : null};
+}
+
+// ---------- Classic LRU ----------
+function simClassicStep(state, access) {
+  var pid = access.pid;
+  var idx = -1;
+  for (var i = 0; i < state.list.length; i++) if (state.list[i] === pid) { idx = i; break; }
+  if (idx >= 0) {
+    state.list.splice(idx, 1);
+    state.list.unshift(pid);
+    state.hits++;
+    return {event: "hit"};
+  }
+  var evicted = null;
+  if (state.list.length >= state.cap) {
+    evicted = state.list.pop();
+    state.evictions++;
+  }
+  state.list.unshift(pid);
+  return {event: "miss", evicted: evicted};
+}
+
+// ---------- Panel rendering ----------
+var CELL_W = 20, CELL_H = 18, CELL_GAP = 3;
+
+function buildInnoDBPanel(youngCap, oldCap) {
+  var svg = document.getElementById("svg-innodb");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  var W = 400;
+
+  // Young sublist
+  var youngLbl = anim.svgEl("text", {x: 16, y: 22, "font-size": 11, "font-weight": 700, fill: "#1e40af"});
+  youngLbl.textContent = "Young (" + youngCap + " slots)";
+  svg.appendChild(youngLbl);
+  var youngBox = anim.svgEl("rect", {
+    x: 16, y: 30, width: W - 32, height: 46,
+    rx: 4, ry: 4, fill: "#eff6ff", stroke: "#93c5fd", "stroke-width": 1
+  });
+  svg.appendChild(youngBox);
+
+  // Midpoint divider
+  var midLine = anim.svgEl("line", {
+    x1: 16, y1: 88, x2: W - 16, y2: 88,
+    stroke: "#dc2626", "stroke-width": 2, "stroke-dasharray": "5 3"
+  });
+  svg.appendChild(midLine);
+  var midLbl = anim.svgEl("text", {
+    x: W - 16, y: 84, "text-anchor": "end",
+    "font-size": 9, fill: "#dc2626", "font-weight": 600
+  });
+  midLbl.textContent = "← midpoint (new pages enter here)";
+  svg.appendChild(midLbl);
+
+  // Old sublist
+  var oldLbl = anim.svgEl("text", {x: 16, y: 108, "font-size": 11, "font-weight": 700, fill: "#374151"});
+  oldLbl.textContent = "Old (" + oldCap + " slots)";
+  svg.appendChild(oldLbl);
+  var oldBox = anim.svgEl("rect", {
+    x: 16, y: 116, width: W - 32, height: 46,
+    rx: 4, ry: 4, fill: "#f9fafb", stroke: "#d1d5db", "stroke-width": 1
+  });
+  svg.appendChild(oldBox);
+
+  // Stats line
+  var stats = anim.svgEl("text", {x: 200, y: 200, "text-anchor": "middle", "font-size": 11, fill: "#374151"});
+  stats.textContent = "";
+  svg.appendChild(stats);
+  var verdict = anim.svgEl("text", {x: 200, y: 225, "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#065f46"});
+  svg.appendChild(verdict);
+  var currentPage = anim.svgEl("text", {x: 200, y: 250, "text-anchor": "middle", "font-size": 12, "font-weight": 700, fill: "#1f2937", "font-variant-numeric": "tabular-nums"});
+  svg.appendChild(currentPage);
+
   return {
-    youngCap: youngCap, oldCap: oldCap,
-    youngPages: young.length, oldPages: old.length,
-    evictions: evictions, promotions: promotions,
-    young: young, old: old
+    svg: svg, youngBoxY: 30, youngBoxHeight: 46,
+    oldBoxY: 116, oldBoxHeight: 46,
+    youngStartX: 22, oldStartX: 22,
+    cells: {}, // id → {rect, label, sublist, x, y}
+    state: {young: [], old: [], youngCap: youngCap, oldCap: oldCap, promotions: 0, evictions: 0},
+    stats: stats, verdict: verdict, currentPage: currentPage
   };
 }
 
-function simClassic(pool, trace) {
-  var list = [];
-  var evictions = 0, hits = 0;
-  for (var i = 0; i < trace.length; i++) {
-    var pid = trace[i][0];
-    var idx = list.indexOf(pid);
-    if (idx >= 0) {
-      list.splice(idx, 1);
-      list.unshift(pid);
-      hits++;
-    } else {
-      if (list.length >= pool) { list.pop(); evictions++; }
-      list.unshift(pid);
-    }
-  }
-  return {evictions: evictions, hits: hits, population: list.length, list: list};
-}
-
-// --------- rendering ---------
-function renderInnoDB(r) {
-  var svg = document.getElementById("svg-innodb");
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-  var W = 400, H = 260;
-  // Young row (top)
-  var youngCapShown = Math.min(r.youngCap, 18);
-  var cellW = (W - 40) / 18;
-  for (var i = 0; i < youngCapShown; i++) {
-    var filled = i < r.youngPages;
-    var r1 = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    r1.setAttribute("x", 20 + i * cellW); r1.setAttribute("y", 60);
-    r1.setAttribute("width", cellW - 2); r1.setAttribute("height", 22);
-    r1.setAttribute("rx", 2);
-    r1.setAttribute("fill", filled ? "#2563eb" : "#f3f4f6");
-    r1.setAttribute("stroke", "#93c5fd");
-    svg.appendChild(r1);
-  }
-  var lbly = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  lbly.setAttribute("x", 20); lbly.setAttribute("y", 52);
-  lbly.setAttribute("font-size", "11"); lbly.setAttribute("font-weight", "600"); lbly.setAttribute("fill", "#1e40af");
-  lbly.textContent = "Young sublist — " + r.youngPages + "/" + r.youngCap + " pages";
-  svg.appendChild(lbly);
-
-  // Midpoint line
-  var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  line.setAttribute("x1", 20); line.setAttribute("y1", 100);
-  line.setAttribute("x2", W - 20); line.setAttribute("y2", 100);
-  line.setAttribute("stroke", "#dc2626"); line.setAttribute("stroke-width", 2);
-  line.setAttribute("stroke-dasharray", "5 3");
-  svg.appendChild(line);
-  var midLbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  midLbl.setAttribute("x", W - 20); midLbl.setAttribute("y", 95);
-  midLbl.setAttribute("text-anchor", "end");
-  midLbl.setAttribute("font-size", "10"); midLbl.setAttribute("fill", "#dc2626"); midLbl.setAttribute("font-weight", "600");
-  midLbl.textContent = "← midpoint: new pages enter here";
-  svg.appendChild(midLbl);
-
-  // Old row (bottom)
-  var oldCapShown = Math.min(r.oldCap, 18);
-  for (var k = 0; k < oldCapShown; k++) {
-    var filled2 = k < r.oldPages;
-    var r2 = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    r2.setAttribute("x", 20 + k * cellW); r2.setAttribute("y", 120);
-    r2.setAttribute("width", cellW - 2); r2.setAttribute("height", 22);
-    r2.setAttribute("rx", 2);
-    r2.setAttribute("fill", filled2 ? "#9ca3af" : "#f3f4f6");
-    r2.setAttribute("stroke", "#d1d5db");
-    svg.appendChild(r2);
-  }
-  var lblo = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  lblo.setAttribute("x", 20); lblo.setAttribute("y", 112);
-  lblo.setAttribute("font-size", "11"); lblo.setAttribute("font-weight", "600"); lblo.setAttribute("fill", "#374151");
-  lblo.textContent = "Old sublist — " + r.oldPages + "/" + r.oldCap + " pages";
-  svg.appendChild(lblo);
-
-  // Stats
-  var stats = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  stats.setAttribute("x", 20); stats.setAttribute("y", 200);
-  stats.setAttribute("font-size", "11"); stats.setAttribute("fill", "#374151");
-  stats.textContent = "Evictions: " + r.evictions + "  ·  Promotions: " + r.promotions;
-  svg.appendChild(stats);
-
-  var verdict = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  verdict.setAttribute("x", 20); verdict.setAttribute("y", 230);
-  verdict.setAttribute("font-size", "11"); verdict.setAttribute("font-weight", "600"); verdict.setAttribute("fill", "#065f46");
-  if (r.promotions === 0 && r.evictions > 0) {
-    verdict.textContent = "✓ Young sublist untouched — scan-resistant";
-  } else if (r.promotions > 0) {
-    verdict.textContent = r.promotions + " pages promoted from old → young";
-  } else {
-    verdict.textContent = "Pool not yet full";
-  }
-  svg.appendChild(verdict);
-}
-
-function renderClassic(r, pool) {
+function buildClassicPanel(cap) {
   var svg = document.getElementById("svg-classic");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
   var W = 400;
-  var capShown = Math.min(pool, 36);
-  var cellW = (W - 40) / 18;
-  // Two rows of 18
-  for (var i = 0; i < capShown; i++) {
-    var row = Math.floor(i / 18);
-    var col = i % 18;
-    var rE = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    rE.setAttribute("x", 20 + col * cellW); rE.setAttribute("y", 60 + row * 26);
-    rE.setAttribute("width", cellW - 2); rE.setAttribute("height", 22);
-    rE.setAttribute("rx", 2);
-    rE.setAttribute("fill", i < r.population ? "#6b7280" : "#f3f4f6");
-    rE.setAttribute("stroke", "#d1d5db");
-    svg.appendChild(rE);
-  }
-  var lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  lbl.setAttribute("x", 20); lbl.setAttribute("y", 52);
-  lbl.setAttribute("font-size", "11"); lbl.setAttribute("font-weight", "600"); lbl.setAttribute("fill", "#374151");
-  lbl.textContent = "Single list — " + r.population + "/" + pool + " pages";
+  var lbl = anim.svgEl("text", {x: 16, y: 22, "font-size": 11, "font-weight": 700, fill: "#374151"});
+  lbl.textContent = "Single list (" + cap + " slots)";
   svg.appendChild(lbl);
+  var box = anim.svgEl("rect", {
+    x: 16, y: 30, width: W - 32, height: 90,
+    rx: 4, ry: 4, fill: "#f9fafb", stroke: "#d1d5db", "stroke-width": 1
+  });
+  svg.appendChild(box);
 
-  var stats = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  stats.setAttribute("x", 20); stats.setAttribute("y", 200);
-  stats.setAttribute("font-size", "11"); stats.setAttribute("fill", "#374151");
-  stats.textContent = "Evictions: " + r.evictions + "  ·  Hits: " + r.hits;
+  var stats = anim.svgEl("text", {x: 200, y: 200, "text-anchor": "middle", "font-size": 11, fill: "#374151"});
   svg.appendChild(stats);
-
-  var verdict = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  verdict.setAttribute("x", 20); verdict.setAttribute("y", 230);
-  verdict.setAttribute("font-size", "11"); verdict.setAttribute("font-weight", "600"); verdict.setAttribute("fill", "#991b1b");
-  if (r.hits === 0 && r.evictions >= pool) {
-    verdict.textContent = "✗ Full scan polluted the pool — all hot pages evicted";
-  } else {
-    verdict.textContent = r.hits + " hits across " + pool + " slots";
-  }
+  var verdict = anim.svgEl("text", {x: 200, y: 225, "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#991b1b"});
   svg.appendChild(verdict);
+
+  return {
+    svg: svg, boxY: 30, boxHeight: 90, startX: 22,
+    cells: {}, state: {list: [], cap: cap, evictions: 0, hits: 0},
+    stats: stats, verdict: verdict
+  };
 }
 
-var cachedTrace = null, cachedCtl = null;
-
-function run() {
-  var c = teachRuntime.readControls();
-  cachedCtl = c;
-  cachedTrace = genWorkload(c.workload, c.pool_size);
-  var inno = simInnoDB(c.pool_size, cachedTrace, c.old_pct, c.old_ms);
-  var classic = simClassic(c.pool_size, cachedTrace);
-  renderInnoDB(inno);
-  renderClassic(classic, c.pool_size);
-
-  document.getElementById("out-young").textContent = inno.youngPages + "/" + inno.youngCap;
-  document.getElementById("out-old").textContent = inno.oldPages + "/" + inno.oldCap;
-  document.getElementById("out-promotions").textContent = inno.promotions;
-  document.getElementById("out-evictions").textContent = inno.evictions;
-  document.getElementById("out-classic-evictions").textContent = classic.evictions;
-  document.getElementById("out-classic-hits").textContent = classic.hits;
-
-  var exp;
-  if (c.workload === "full_scan") {
-    exp = "One-pass full scan. InnoDB's midpoint insertion keeps every page in the old sublist — the young sublist stays intact. Textbook LRU treats every page as MRU and evicts the whole hot set. Promotions: " + inno.promotions + " (should be 0 because no page is hit twice within " + c.old_ms + " ms).";
-  } else if (c.workload === "hot_set") {
-    exp = "A small hot set repeatedly accessed. Both algorithms keep the hot pages; with a hot set that fits in the pool the classic LRU is actually simpler. Midpoint insertion pays its value back under mixed or scan workloads.";
+function cellXYForIndex(panel, sublist, idx) {
+  var startX = panel.youngStartX || panel.startX;
+  if (sublist === "young") {
+    return { x: startX + idx * (CELL_W + CELL_GAP), y: panel.youngBoxY + 14 };
+  } else if (sublist === "old") {
+    return { x: startX + idx * (CELL_W + CELL_GAP), y: panel.oldBoxY + 14 };
   } else {
-    exp = "Mixed: hot queries, then a full scan, then hot queries again. InnoDB's young sublist survives the scan pollution — so the second round of hot queries hits its cache. The textbook LRU evicted the hot set during the scan and has to re-read everything.";
+    // Classic panel
+    var row = Math.floor(idx / 18);
+    var col = idx % 18;
+    return { x: startX + col * (CELL_W + CELL_GAP), y: panel.boxY + 14 + row * 28 };
   }
-  document.getElementById("out-explanation").textContent = exp;
-  document.getElementById("phase-label").textContent = "Workload complete (" + cachedTrace.length + " accesses)";
 }
 
-function reset() {
-  document.getElementById("phase-label").textContent = "Ready";
+function createCell(panel, id, sublist, fillColor) {
+  var p = cellXYForIndex(panel, sublist, 0);
+  var rect = anim.svgEl("rect", {
+    x: p.x - 60, y: p.y, width: CELL_W, height: CELL_H,
+    rx: 3, ry: 3,
+    fill: fillColor || "#9ca3af", stroke: "#374151", "stroke-width": 1, opacity: 0
+  });
+  panel.svg.appendChild(rect);
+  var label = anim.svgEl("text", {
+    x: p.x - 60 + CELL_W/2, y: p.y + 13, "text-anchor": "middle",
+    "font-size": 9, "font-weight": 700, fill: "#ffffff", opacity: 0
+  });
+  label.textContent = (id >= 1000) ? "S" + (id - 1000) : String(id);
+  panel.svg.appendChild(label);
+  var cell = {rect: rect, label: label, sublist: sublist, x: p.x - 60, y: p.y};
+  panel.cells[id] = cell;
+  return cell;
+}
+
+function moveCellTo(cell, toX, toY, duration, ease) {
+  anim.tween({
+    from: {x: cell.x, y: cell.y},
+    to: {x: toX, y: toY},
+    duration: duration || 300, ease: ease || anim.easeOutCubic,
+    onUpdate: function(p) {
+      cell.rect.setAttribute("x", p.x);
+      cell.rect.setAttribute("y", p.y);
+      cell.label.setAttribute("x", p.x + CELL_W/2);
+      cell.label.setAttribute("y", p.y + 13);
+    },
+    onComplete: function() { cell.x = toX; cell.y = toY; }
+  });
+}
+
+function fadeInCell(cell) {
+  anim.tween({
+    from: 0, to: 1, duration: 220, ease: anim.easeOutCubic,
+    onUpdate: function(v) {
+      cell.rect.setAttribute("opacity", v);
+      cell.label.setAttribute("opacity", v);
+    }
+  });
+}
+function fadeOutCell(cell, onComplete) {
+  anim.tween({
+    from: 1, to: 0, duration: 260, ease: anim.easeInCubic,
+    onUpdate: function(v) {
+      cell.rect.setAttribute("opacity", v);
+      cell.label.setAttribute("opacity", v);
+    },
+    onComplete: function() {
+      if (cell.rect.parentNode) cell.rect.parentNode.removeChild(cell.rect);
+      if (cell.label.parentNode) cell.label.parentNode.removeChild(cell.label);
+      if (onComplete) onComplete();
+    }
+  });
+}
+
+function rerenderInnoDB(panel) {
+  // Move every cell to its current index position
+  panel.state.young.forEach(function(entry, idx) {
+    var cell = panel.cells[entry.id];
+    if (!cell) return;
+    var p = cellXYForIndex(panel, "young", idx);
+    if (Math.abs(cell.x - p.x) > 0.1 || Math.abs(cell.y - p.y) > 0.1) {
+      moveCellTo(cell, p.x, p.y, 280, anim.easeInOutCubic);
+    }
+    cell.rect.setAttribute("fill", "#2563eb");
+  });
+  panel.state.old.forEach(function(entry, idx) {
+    var cell = panel.cells[entry.id];
+    if (!cell) return;
+    var p = cellXYForIndex(panel, "old", idx);
+    if (Math.abs(cell.x - p.x) > 0.1 || Math.abs(cell.y - p.y) > 0.1) {
+      moveCellTo(cell, p.x, p.y, 280, anim.easeInOutCubic);
+    }
+    cell.rect.setAttribute("fill", "#9ca3af");
+  });
+}
+
+function rerenderClassic(panel) {
+  panel.state.list.forEach(function(id, idx) {
+    var cell = panel.cells[id];
+    if (!cell) return;
+    var p = cellXYForIndex(panel, "classic", idx);
+    if (Math.abs(cell.x - p.x) > 0.1 || Math.abs(cell.y - p.y) > 0.1) {
+      moveCellTo(cell, p.x, p.y, 260, anim.easeInOutCubic);
+    }
+  });
+}
+
+// ---------- playback ----------
+var innoDBPanel = null;
+var classicPanel = null;
+var playing = false;
+var playTimer = null;
+
+function updateReadouts() {
+  if (!innoDBPanel || !classicPanel) return;
+  document.getElementById("out-young").textContent = innoDBPanel.state.young.length + "/" + innoDBPanel.state.youngCap;
+  document.getElementById("out-old").textContent = innoDBPanel.state.old.length + "/" + innoDBPanel.state.oldCap;
+  document.getElementById("out-promotions").textContent = innoDBPanel.state.promotions;
+  document.getElementById("out-evictions").textContent = innoDBPanel.state.evictions;
+  document.getElementById("out-classic-evictions").textContent = classicPanel.state.evictions;
+  document.getElementById("out-classic-hits").textContent = classicPanel.state.hits;
+}
+
+function processStep(trace, i, oldMs, onDone) {
+  if (!playing || i >= trace.length) {
+    if (onDone) onDone();
+    return;
+  }
+  var access = trace[i];
+  innoDBPanel.currentPage.textContent = "access #" + (i + 1) + ": page " + access.pid;
+
+  // InnoDB step
+  var result = simInnoDBStep(innoDBPanel.state, access, oldMs);
+  if (result.event === "miss") {
+    if (result.evicted !== null && innoDBPanel.cells[result.evicted]) {
+      fadeOutCell(innoDBPanel.cells[result.evicted]);
+      delete innoDBPanel.cells[result.evicted];
+    }
+    var cell = createCell(innoDBPanel, access.pid, "old", "#9ca3af");
+    var p = cellXYForIndex(innoDBPanel, "old", 0);
+    cell.rect.setAttribute("x", p.x - 30);
+    fadeInCell(cell);
+    setTimeout(function() { rerenderInnoDB(innoDBPanel); }, 50);
+  } else if (result.event === "promotion") {
+    if (result.demoted !== null && innoDBPanel.cells[result.demoted]) {
+      var demotedCell = innoDBPanel.cells[result.demoted];
+      demotedCell.sublist = "old";
+    }
+    if (innoDBPanel.cells[access.pid]) {
+      innoDBPanel.cells[access.pid].sublist = "young";
+      innoDBPanel.cells[access.pid].rect.setAttribute("fill", "#2563eb");
+      anim.pulse(innoDBPanel.cells[access.pid].rect, 2, 1, 320);
+    }
+    setTimeout(function() { rerenderInnoDB(innoDBPanel); }, 50);
+  } else {
+    setTimeout(function() { rerenderInnoDB(innoDBPanel); }, 50);
+  }
+
+  // Classic step (same access)
+  var cResult = simClassicStep(classicPanel.state, access);
+  if (cResult.event === "miss") {
+    if (cResult.evicted !== null && classicPanel.cells[cResult.evicted]) {
+      fadeOutCell(classicPanel.cells[cResult.evicted]);
+      delete classicPanel.cells[cResult.evicted];
+    }
+    var cCell = createCell(classicPanel, access.pid, "classic", "#6b7280");
+    cCell.rect.setAttribute("x", 400);
+    fadeInCell(cCell);
+    setTimeout(function() { rerenderClassic(classicPanel); }, 50);
+  } else {
+    anim.pulse(classicPanel.cells[access.pid].rect, 2, 1, 260);
+    setTimeout(function() { rerenderClassic(classicPanel); }, 50);
+  }
+
+  updateReadouts();
+
+  playTimer = setTimeout(function() { processStep(trace, i + 1, oldMs, onDone); },
+    anim.reducedMotion() ? 0 : 420);
+}
+
+function playWorkload() {
+  if (!innoDBPanel || !classicPanel) return;
+  if (playing) return;
+  playing = true;
   var c = teachRuntime.readControls();
-  // Empty render
-  renderInnoDB({youngCap: Math.floor(c.pool_size * (100 - c.old_pct) / 100), oldCap: c.pool_size - Math.floor(c.pool_size * (100 - c.old_pct) / 100), youngPages: 0, oldPages: 0, evictions: 0, promotions: 0, young: [], old: []});
-  renderClassic({evictions: 0, hits: 0, population: 0, list: []}, c.pool_size);
-  document.getElementById("out-young").textContent = "—";
-  document.getElementById("out-old").textContent = "—";
-  document.getElementById("out-promotions").textContent = "—";
-  document.getElementById("out-evictions").textContent = "—";
-  document.getElementById("out-classic-evictions").textContent = "—";
-  document.getElementById("out-classic-hits").textContent = "—";
-  document.getElementById("out-explanation").textContent = "Press “Run workload” to simulate.";
+  var trace = genWorkload(c.workload, c.pool_size);
+  document.getElementById("phase-label").textContent = "Running " + trace.length + " accesses…";
+  processStep(trace, 0, c.old_ms, function() {
+    playing = false;
+    if (c.workload === "full_scan" && innoDBPanel.state.promotions === 0) {
+      innoDBPanel.verdict.textContent = "✓ Young sublist untouched — scan-resistant";
+    }
+    if (c.workload === "full_scan" && classicPanel.state.hits === 0) {
+      classicPanel.verdict.textContent = "✗ All slots evicted — pool polluted";
+    }
+    document.getElementById("phase-label").textContent = "Complete — see results above";
+    document.getElementById("out-explanation").textContent =
+      c.workload === "full_scan"
+        ? "One-pass full scan. InnoDB's midpoint insertion keeps every page in the old sublist — the young sublist stays intact. Textbook LRU treats every page as MRU and evicts the whole hot set."
+        : c.workload === "hot_set"
+        ? "A small hot set repeatedly accessed. Both algorithms keep the hot pages; midpoint insertion pays off under scan or mixed workloads, not this one."
+        : "Mixed workload: hot set, then a scan, then hot set again. InnoDB's young sublist survives the scan pollution — so the second round of hot queries hits its cache.";
+    teachRuntime.animationDone();
+  });
 }
 
-document.getElementById("btn-run").addEventListener("click", run);
-document.getElementById("btn-reset").addEventListener("click", reset);
+function resetAnim() {
+  playing = false;
+  if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+  document.getElementById("phase-label").textContent = "Ready — press Play";
+  recompute();
+}
 
-teachRuntime.wire(reset);
+function renderChart(currentPool) {
+  // Toy model: classic LRU hit rate after scan = 0 (fully polluted).
+  // InnoDB hit rate after scan ≈ (young_capacity / pool_size) assuming
+  // the young set was hot prior to the scan.
+  var OLD_PCT = 37;
+  anim.complexityChart({
+    svgId: "complexity-chart",
+    width: 560, height: 200,
+    xMin: 10, xMax: 10000,
+    xLabel: "Buffer pool size (pages)", yLabel: "Hot pages still cached after scan",
+    curves: [
+      { label: "InnoDB (young sublist preserved)", color: "#2563eb",
+        fn: function(n) { return Math.max(1, Math.floor(n * (100 - OLD_PCT) / 100)); } },
+      { label: "Classic LRU (wiped by scan)", color: "#dc2626",
+        fn: function(n) { return 0.5; } }  // log chart needs >0
+    ],
+    current: { x: currentPool }
+  });
+}
+
+function recompute() {
+  var c = teachRuntime.readControls();
+  var youngCap = Math.max(1, Math.floor(c.pool_size * (100 - c.old_pct) / 100));
+  var oldCap = c.pool_size - youngCap;
+  innoDBPanel = buildInnoDBPanel(youngCap, oldCap);
+  classicPanel = buildClassicPanel(c.pool_size);
+  document.getElementById("out-young").textContent = "0/" + youngCap;
+  document.getElementById("out-old").textContent = "0/" + oldCap;
+  document.getElementById("out-promotions").textContent = "0";
+  document.getElementById("out-evictions").textContent = "0";
+  document.getElementById("out-classic-evictions").textContent = "0";
+  document.getElementById("out-classic-hits").textContent = "0";
+  document.getElementById("out-explanation").textContent = "Press “Play” to simulate step by step.";
+  renderChart(c.pool_size);
+}
+
+teachRuntime.wire(recompute);
+teachRuntime.wireToolbar(playWorkload, resetAnim);
 
   </script>
 </body>

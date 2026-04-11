@@ -123,12 +123,106 @@ section.stage {
   padding: 16px;
   margin-bottom: 20px;
 }
+.query-card {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+}
+.query-card .query-label {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.query-card .query-sql {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #0f172a;
+  white-space: pre-wrap;
+}
+.query-card .query-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.explainer-card {
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-left: 3px solid #059669;
+  border-radius: 4px;
+}
+.explainer-card .explainer-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #065f46;
+}
+.explainer-card .explainer-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: #064e3b;
+  line-height: 1.55;
+}
+.explainer-card .explainer-list li {
+  margin-bottom: 4px;
+}
+.explainer-card .explainer-list li:last-child {
+  margin-bottom: 0;
+}
 section.stage .stage-toolbar {
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
   font-size: 13px;
+}
+.stage-toolbar .speed-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-left: 6px;
+}
+.stage-toolbar select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12.5px;
+  background: #fff;
+  cursor: pointer;
+}
+.complexity-chart {
+  margin-top: 14px;
+  padding: 14px;
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.complexity-chart .chart-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.complexity-chart svg {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
 }
 button {
   padding: 6px 12px;
@@ -255,7 +349,7 @@ footer a { color: var(--muted); }
   <div class="control-grid">
 
     <div class="control">
-      <label for="rows">Rows in table: <span class="value-pill" data-pill-for="rows">1000000</span></label>
+      <label for="rows">Rows in <code>users</code> table: <span class="value-pill" data-pill-for="rows">1000000</span></label>
       <input type="range" id="rows" name="rows" min="1" max="9" step="1" value="6">
       <div class="hint">Logarithmic: 10, 100, 1K, 10K, 100K, 1M, 10M, 100M, 1B</div>
     </div>
@@ -281,7 +375,7 @@ footer a { color: var(--muted); }
     <div class="control">
       <label for="key_type">Lookup type</label>
       <select id="key_type" name="key_type">
-        <option value="pk">Clustered PK lookup</option>
+        <option value="pk">Clustered PK lookup (WHERE id = 42)</option>
         <option value="secondary_covering">Covering secondary index</option>
         <option value="secondary_noncovering" selected>Non-covering secondary (PK fetch)</option>
       </select>
@@ -294,13 +388,38 @@ footer a { color: var(--muted); }
     
 <section class="stage" aria-labelledby="stage-h">
   <h2 id="stage-h" class="sr-only" style="position:absolute;left:-9999px">Tree descent animation</h2>
-  <div class="stage-toolbar">
-    <button id="btn-play" class="primary">▶ Play</button>
-    <button id="btn-step">Step</button>
-    <button id="btn-reset">Reset</button>
-    <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">Ready</span>
-  </div>
-  <svg id="btree-svg" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg"></svg>
+  
+<div class="query-card">
+  <p class="query-label">Example query this animation executes</p>
+  <pre class="query-sql">-- Non-covering secondary index lookup
+SELECT id, first_name, last_name, country_code
+FROM   users
+WHERE  email = &#x27;alice@example.com&#x27;;   -- idx_users_email contains only (email, id)</pre>
+  <p class="query-note">Switch the lookup-type dropdown to see PK-clustered vs covering-index vs non-covering variants of this query.</p>
+</div>
+
+  
+<div class="explainer-card">
+  <p class="explainer-title">What you&#x27;ll see in the animation</p>
+  <ul class="explainer-list"><li>The grey rectangles are B+tree pages. Top row is the root page, bottom row is the leaf.</li><li>A red diamond &#x27;query token&#x27; appears above the root and descends level by level — each step is one page read.</li><li>When the token arrives at a page, the page pulses yellow. That&#x27;s the &#x27;page is in the buffer pool now&#x27;.</li><li>For non-covering secondary lookups, the token fades out at the secondary leaf, then re-appears above the clustered tree root and descends a second time to fetch the row — that&#x27;s the extra I/O covering indexes avoid.</li></ul>
+</div>
+
+  
+<div class="stage-toolbar">
+  <button id="btn-play" class="primary">▶ Play</button>
+  <button id="btn-reset">Reset</button>
+  <label for="sel-speed" class="speed-label">Speed:</label>
+  <select id="sel-speed" aria-label="Animation speed">
+    <option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option>
+    <option value="2">2×</option>
+    <option value="4">4×</option>
+  </select>
+  <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">Adjust parameters, then press Play</span>
+</div>
+
+  <svg id="btree-svg" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg"></svg>
 </section>
 
     
@@ -315,6 +434,10 @@ footer a { color: var(--muted); }
     <div class="item"><p class="label">Complexity</p><p class="value" id="out-complexity">O(log n)</p></div>
   </div>
   <div class="explanation" id="out-explanation"></div>
+  <div class="complexity-chart">
+    <p class="chart-title">Pages touched vs table size (log–log)</p>
+    <svg id="complexity-chart" viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
 </section>
 
     
@@ -355,6 +478,477 @@ footer a { color: var(--muted); }
     interactive database algorithm lessons. Offline-first, stdlib-only.</p>
   </footer>
   <script>
+// ---------------------------------------------------------------------------
+// myflames teach animation runtime — vanilla JS, no deps, offline-first.
+// See .claude/skills/animation-expert/SKILL.md for craft rules.
+// ---------------------------------------------------------------------------
+var anim = (function() {
+  // --- Easing functions --------------------------------------------------
+  function linear(t) { return t; }
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  function easeInCubic(t) { return t * t * t; }
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+  function easeOutQuart(t) { return 1 - Math.pow(1 - t, 4); }
+  function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+  function easeOutBack(t) {
+    var c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+
+  // --- Interpolation -----------------------------------------------------
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function _parseHex(h) {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+  function _toHex(c) {
+    var h = Math.round(c).toString(16);
+    return h.length < 2 ? "0" + h : h;
+  }
+  function lerpColor(a, b, t) {
+    var ca = _parseHex(a), cb = _parseHex(b);
+    return "#" + _toHex(lerp(ca[0], cb[0], t)) + _toHex(lerp(ca[1], cb[1], t)) + _toHex(lerp(ca[2], cb[2], t));
+  }
+
+  // --- prefers-reduced-motion -------------------------------------------
+  function reducedMotion() {
+    try {
+      return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (e) { return false; }
+  }
+
+  // --- Global speed multiplier (1 = real time, 0.5 = half speed, 2 = 2×) -
+  var _speed = 1;
+  function setSpeed(s) { _speed = Math.max(0.1, s); }
+  function getSpeed() { return _speed; }
+
+  // --- Global pause flag --------------------------------------------------
+  // When paused, every running tween suspends at its current progress and
+  // resumes from the same progress when unpaused.
+  var _paused = false;
+  var _onPauseChange = [];
+  function setPaused(p) {
+    if (_paused === p) return;
+    _paused = p;
+    _onPauseChange.forEach(function(fn) { try { fn(p); } catch (e) {} });
+  }
+  function isPaused() { return _paused; }
+  function onPauseChange(fn) { _onPauseChange.push(fn); }
+
+  // --- tween: single-value interpolation with RAF, pause-aware ----------
+  // opts: { from, to, duration, ease, onUpdate, onComplete, delay }
+  // Returns a cancel function. Duration is scaled by the global _speed
+  // at frame time, so a live speed change takes effect immediately.
+  function tween(opts) {
+    var from = opts.from;
+    var to = opts.to;
+    var baseDuration = opts.duration || 400;
+    var ease = opts.ease || easeOutCubic;
+    var onUpdate = opts.onUpdate || function() {};
+    var onComplete = opts.onComplete || function() {};
+    var delay = opts.delay || 0;
+    var cancelled = false;
+
+    function interpolate(f, t, eased) {
+      if (typeof f === "number") return lerp(f, t, eased);
+      var out = {};
+      for (var k in f) out[k] = lerp(f[k], t[k], eased);
+      return out;
+    }
+
+    // reduced-motion: skip to end state instantly
+    if (reducedMotion()) {
+      setTimeout(function() {
+        if (cancelled) return;
+        onUpdate(to);
+        onComplete();
+      }, 0);
+      return function() { cancelled = true; };
+    }
+
+    // Time-based progress tracking. We accumulate "virtual elapsed time"
+    // across frames, scaled by _speed and paused by _paused. This lets us
+    // change speed or pause mid-flight without discontinuities.
+    var lastFrame = null;
+    var virtualElapsed = 0;  // in real ms (base duration units)
+
+    function frame(now) {
+      if (cancelled) return;
+      if (lastFrame === null) lastFrame = now;
+      var delta = now - lastFrame;
+      lastFrame = now;
+      if (!_paused) {
+        virtualElapsed += delta * _speed;
+      }
+      var adjusted = virtualElapsed - delay;
+      if (adjusted < 0) { requestAnimationFrame(frame); return; }
+      var t = Math.min(1, adjusted / baseDuration);
+      var eased = ease(t);
+      onUpdate(interpolate(from, to, eased));
+      if (t < 1) requestAnimationFrame(frame);
+      else onComplete();
+    }
+    requestAnimationFrame(frame);
+    return function() { cancelled = true; };
+  }
+
+  // --- stagger: run fn(item, i) at i*stepMs intervals -------------------
+  function stagger(items, stepMs, fn) {
+    if (reducedMotion()) {
+      for (var i = 0; i < items.length; i++) fn(items[i], i);
+      return function() {};
+    }
+    var timers = [];
+    items.forEach(function(item, i) {
+      timers.push(setTimeout(function() { fn(item, i); }, i * stepMs));
+    });
+    return function() { timers.forEach(clearTimeout); };
+  }
+
+  // --- timeline: sequential tween queue, pause-aware --------------------
+  function timeline() {
+    var steps = [];
+    var current = null;
+    var playing = false;
+    var onDoneCb = null;
+    var pendingDelayTimer = null;
+    var pendingDelayRemaining = 0;
+    var pendingDelayStart = 0;
+    var tl = {};
+    tl.add = function(step) { steps.push(step); return tl; };
+    tl.delay = function(ms) { steps.push({ _delay: ms }); return tl; };
+    tl.call = function(fn) { steps.push({ _call: fn }); return tl; };
+    tl.play = function(onDone) {
+      playing = true;
+      onDoneCb = onDone || null;
+      var i = 0;
+      function scheduleDelay(remaining, after) {
+        if (_paused) {
+          // When paused, record that we were in a delay with this much left,
+          // and wait until unpause to re-schedule.
+          pendingDelayRemaining = remaining;
+          return;
+        }
+        pendingDelayStart = performance.now();
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      function next() {
+        if (!playing) return;
+        if (i >= steps.length) {
+          playing = false;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[i++];
+        if (step._delay !== undefined) {
+          if (reducedMotion()) { next(); return; }
+          scheduleDelay(step._delay, next);
+          return;
+        }
+        if (step._call !== undefined) {
+          step._call();
+          next();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() { origComplete(); next(); }
+        }));
+      }
+      // When the global pause flag flips back to false while we're sitting
+      // in a delay, re-schedule the delay with the remaining time.
+      var offPause = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay(pendingDelayRemaining, next);
+        }
+      };
+      onPauseChange(offPause);
+      next();
+      return tl;
+    };
+    tl.stop = function() {
+      playing = false;
+      if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }
+      pendingDelayRemaining = 0;
+      if (current) current();
+    };
+    tl.isPlaying = function() { return playing; };
+    return tl;
+  }
+
+  // --- path: quadratic-bezier sampler (x1,y1) → (cx,cy) → (x2,y2) -------
+  function path(x1, y1, cx, cy, x2, y2) {
+    return function(t) {
+      var omt = 1 - t;
+      var x = omt * omt * x1 + 2 * omt * t * cx + t * t * x2;
+      var y = omt * omt * y1 + 2 * omt * t * cy + t * t * y2;
+      return { x: x, y: y };
+    };
+  }
+
+  // --- pulse: briefly grow an SVG element's stroke width ---------------
+  function pulse(el, peakWidth, baseWidth, durationMs) {
+    if (!el) return;
+    var dur = (durationMs || 400) / 2;
+    tween({
+      from: baseWidth || 1,
+      to: peakWidth || 3,
+      duration: dur,
+      ease: easeOutCubic,
+      onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); },
+      onComplete: function() {
+        tween({
+          from: peakWidth || 3,
+          to: baseWidth || 1,
+          duration: dur,
+          ease: easeInCubic,
+          onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); }
+        });
+      }
+    });
+  }
+
+  // --- svg element creators (tiny helpers to reduce boilerplate) -------
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // --- complexityChart: small log-log plot of cost vs input size -------
+  //
+  // Draws a line-chart SVG showing how a cost function scales with input
+  // size, with the current operating point highlighted. Useful for the
+  // "feel the asymptotic gap" moment at the bottom of each lesson.
+  //
+  // opts: {
+  //   svgId: "complexity-chart",
+  //   width: 400, height: 180,
+  //   xLabel: "Rows", yLabel: "Pages touched",
+  //   curves: [
+  //     {label: "BNL", color: "#ca8a04", fn: function(n) { return n * n; }},
+  //     {label: "Hash", color: "#0d9488", fn: function(n) { return n + 1000; }}
+  //   ],
+  //   xMin: 10, xMax: 1000000,
+  //   current: {x: 100000},  // highlight point
+  // }
+  function complexityChart(opts) {
+    var svgEl = document.getElementById(opts.svgId);
+    if (!svgEl) return;
+    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+    var W = opts.width || 400;
+    var H = opts.height || 180;
+    var padL = 44, padR = 20, padT = 20, padB = 32;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+    var xMin = opts.xMin || 1;
+    var xMax = opts.xMax || 1e9;
+    var NSAMP = 80;
+
+    // Sample every curve; use log X scale
+    function logMap(v, lo, hi) {
+      var lv = Math.log(v);
+      var llo = Math.log(lo);
+      var lhi = Math.log(hi);
+      return (lv - llo) / (lhi - llo);
+    }
+    var samples = opts.curves.map(function(c) {
+      var pts = [];
+      for (var i = 0; i < NSAMP; i++) {
+        var frac = i / (NSAMP - 1);
+        var x = Math.exp(Math.log(xMin) + frac * (Math.log(xMax) - Math.log(xMin)));
+        pts.push({x: x, y: c.fn(x)});
+      }
+      return pts;
+    });
+    // Compute global Y range (log scale)
+    var yAll = [];
+    samples.forEach(function(curve) { curve.forEach(function(p) { if (p.y > 0 && isFinite(p.y)) yAll.push(p.y); }); });
+    if (yAll.length === 0) return;
+    var yMin = Math.min.apply(null, yAll);
+    var yMax = Math.max.apply(null, yAll);
+    // Clamp yMin so it's not zero
+    if (yMin <= 0) yMin = 1;
+
+    function toSvg(x, y) {
+      var fx = logMap(x, xMin, xMax);
+      var fy = (y > 0) ? logMap(y, yMin, yMax) : 0;
+      return {
+        x: padL + fx * plotW,
+        y: padT + (1 - fy) * plotH
+      };
+    }
+
+    // Background grid (log decades)
+    for (var gx = Math.pow(10, Math.floor(Math.log10(xMin))); gx <= xMax; gx *= 10) {
+      if (gx < xMin) continue;
+      var gridX = toSvg(gx, yMin).x;
+      var gline = svgEl_create("line", {
+        x1: gridX, y1: padT, x2: gridX, y2: padT + plotH,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gline);
+      var glbl = svgEl_create("text", {
+        x: gridX, y: padT + plotH + 14,
+        "text-anchor": "middle", "font-size": 9, fill: "#9ca3af"
+      });
+      glbl.textContent = formatLog(gx);
+      svgEl.appendChild(glbl);
+    }
+    for (var gy = Math.pow(10, Math.floor(Math.log10(yMin))); gy <= yMax * 10; gy *= 10) {
+      if (gy < yMin) continue;
+      var gridY = toSvg(xMin, gy).y;
+      if (gridY < padT - 1 || gridY > padT + plotH + 1) continue;
+      var gln = svgEl_create("line", {
+        x1: padL, y1: gridY, x2: padL + plotW, y2: gridY,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gln);
+      var glb = svgEl_create("text", {
+        x: padL - 6, y: gridY + 3,
+        "text-anchor": "end", "font-size": 9, fill: "#9ca3af"
+      });
+      glb.textContent = formatLog(gy);
+      svgEl.appendChild(glb);
+    }
+
+    // Axis lines
+    var axisX = svgEl_create("line", {
+      x1: padL, y1: padT + plotH, x2: padL + plotW, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisX);
+    var axisY = svgEl_create("line", {
+      x1: padL, y1: padT, x2: padL, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisY);
+
+    // Axis labels
+    if (opts.xLabel) {
+      var xl = svgEl_create("text", {
+        x: padL + plotW/2, y: H - 6,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151"
+      });
+      xl.textContent = opts.xLabel;
+      svgEl.appendChild(xl);
+    }
+    if (opts.yLabel) {
+      var yl = svgEl_create("text", {
+        x: 12, y: padT + plotH/2,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
+        transform: "rotate(-90 12," + (padT + plotH/2) + ")"
+      });
+      yl.textContent = opts.yLabel;
+      svgEl.appendChild(yl);
+    }
+
+    // Curves
+    opts.curves.forEach(function(c, idx) {
+      var pts = samples[idx];
+      var d = "";
+      pts.forEach(function(p, i) {
+        if (!isFinite(p.y) || p.y <= 0) return;
+        var svg = toSvg(p.x, p.y);
+        d += (i === 0 ? "M " : " L ") + svg.x.toFixed(1) + "," + svg.y.toFixed(1);
+      });
+      var path = svgEl_create("path", {
+        d: d, fill: "none", stroke: c.color || "#1f2937", "stroke-width": 2.5,
+        "stroke-linecap": "round", "stroke-linejoin": "round"
+      });
+      svgEl.appendChild(path);
+    });
+
+    // Legend
+    var legendY = padT - 6;
+    var lx = padL;
+    opts.curves.forEach(function(c, idx) {
+      var sw = svgEl_create("rect", {
+        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "#1f2937"
+      });
+      svgEl.appendChild(sw);
+      var lt = svgEl_create("text", {
+        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "#1f2937"
+      });
+      lt.textContent = c.label;
+      svgEl.appendChild(lt);
+      lx += (c.label.length * 6) + 34;
+    });
+
+    // Highlight current operating point
+    if (opts.current && opts.current.x) {
+      var cx = opts.current.x;
+      if (cx >= xMin && cx <= xMax) {
+        opts.curves.forEach(function(c, idx) {
+          var cy = c.fn(cx);
+          if (!isFinite(cy) || cy <= 0) return;
+          var svg = toSvg(cx, cy);
+          var dot = svgEl_create("circle", {
+            cx: svg.x, cy: svg.y, r: 5,
+            fill: c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+          });
+          svgEl.appendChild(dot);
+        });
+        // Vertical guide line at the current x
+        var vx = toSvg(cx, yMin).x;
+        var vline = svgEl_create("line", {
+          x1: vx, y1: padT, x2: vx, y2: padT + plotH,
+          stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
+        });
+        svgEl.appendChild(vline);
+      }
+    }
+  }
+
+  function svgEl_create(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function formatLog(n) {
+    if (n >= 1e9) return (n / 1e9) + "B";
+    if (n >= 1e6) return (n / 1e6) + "M";
+    if (n >= 1e3) return (n / 1e3) + "K";
+    return String(n);
+  }
+
+  return {
+    linear: linear,
+    easeOutCubic: easeOutCubic,
+    easeInCubic: easeInCubic,
+    easeInOutCubic: easeInOutCubic,
+    easeOutQuart: easeOutQuart,
+    easeInOutQuad: easeInOutQuad,
+    easeOutBack: easeOutBack,
+    lerp: lerp,
+    lerpColor: lerpColor,
+    tween: tween,
+    stagger: stagger,
+    timeline: timeline,
+    path: path,
+    pulse: pulse,
+    svgEl: svgEl,
+    reducedMotion: reducedMotion,
+    setSpeed: setSpeed,
+    getSpeed: getSpeed,
+    setPaused: setPaused,
+    isPaused: isPaused,
+    onPauseChange: onPauseChange,
+    complexityChart: complexityChart
+  };
+})();
+
+
 var teachRuntime = (function() {
   function formatInt(n) {
     if (!isFinite(n)) return "—";
@@ -402,12 +996,70 @@ var teachRuntime = (function() {
     }
     recompute();
   }
+
+  // Wire the shared stage toolbar: play-pause toggle, speed dropdown, reset
+  function wireToolbar(playFn, resetFn) {
+    var btnPlay = document.getElementById("btn-play");
+    var btnReset = document.getElementById("btn-reset");
+    var selSpeed = document.getElementById("sel-speed");
+    var state = { running: false, paused: false };
+
+    function labelFor() {
+      if (!state.running) return "▶ Play";
+      if (state.paused) return "▶ Resume";
+      return "⏸ Pause";
+    }
+    function updateLabel() { if (btnPlay) btnPlay.textContent = labelFor(); }
+
+    // Lessons notify us when a timeline completes via teachRuntime.onAnimationDone
+    window._teachOnDone = function() {
+      state.running = false;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+    };
+
+    if (btnPlay) btnPlay.addEventListener("click", function() {
+      if (!state.running) {
+        state.running = true;
+        state.paused = false;
+        anim.setPaused(false);
+        updateLabel();
+        if (playFn) playFn();
+        return;
+      }
+      // Toggle pause
+      state.paused = !state.paused;
+      anim.setPaused(state.paused);
+      updateLabel();
+    });
+    if (btnReset) btnReset.addEventListener("click", function() {
+      state.running = false;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+      if (resetFn) resetFn();
+    });
+    if (selSpeed) selSpeed.addEventListener("change", function() {
+      anim.setSpeed(Number(selSpeed.value));
+    });
+    // Set initial speed from the dropdown's default
+    if (selSpeed) anim.setSpeed(Number(selSpeed.value));
+  }
+
+  // Helper that lesson code calls when its animation reaches the end.
+  function animationDone() {
+    if (typeof window._teachOnDone === "function") window._teachOnDone();
+  }
+
   return {
     formatInt: formatInt,
     formatBytes: formatBytes,
     formatMs: formatMs,
     readControls: readControls,
-    wire: wire
+    wire: wire,
+    wireToolbar: wireToolbar,
+    animationDone: animationDone
   };
 })();
 
@@ -423,13 +1075,11 @@ function innodbFanout(keySize, pageSize) {
   var entry = keySize + INNODB_CHILD_POINTER_BYTES;
   return Math.max(2, Math.floor(usable / entry));
 }
-
 function innodbTreeHeight(rows, fanOut) {
   if (rows <= 0) return 2;
   if (rows <= fanOut) return 2;
   return Math.max(2, Math.ceil(Math.log(rows) / Math.log(fanOut)));
 }
-
 function btreeCost(rows, keySize, pageSize, keyType) {
   var fanOut = innodbFanout(keySize, pageSize);
   var height = innodbTreeHeight(rows, fanOut);
@@ -443,137 +1093,206 @@ function btreeCost(rows, keySize, pageSize, keyType) {
   } else {
     explanation = "Non-covering secondary: " + height + " levels on the secondary tree, then " + height + " more on the clustered tree to fetch the row. Two traversals.";
   }
-  return {
-    fanOut: fanOut,
-    height: height,
-    traversals: traversals,
-    pages: pages,
-    explanation: explanation
-  };
+  return {fanOut: fanOut, height: height, traversals: traversals, pages: pages, explanation: explanation};
 }
 
-// --------------- render the tree as SVG ---------------
-function renderTree(height, traversals, phase) {
+// ---------- tree rendering ----------
+var W = 800, H = 400;
+var treeState = { height: 3, traversals: 1, nodes: [[],[]], token: null };
+
+function buildTrees(height, traversals) {
   var svg = document.getElementById("btree-svg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
-
-  var W = 800, H = 360;
-  var treeCount = traversals;
-  var treeWidth = W / treeCount;
-  var treeLabels = (traversals === 2) ? ["Secondary index", "Clustered PK tree"] : [null];
-  var defaultLabel = (treeCount === 1) ? "Clustered PK tree" : "Secondary index";
-
-  for (var t = 0; t < treeCount; t++) {
+  treeState.height = height;
+  treeState.traversals = traversals;
+  treeState.nodes = [[], []];
+  var treeWidth = W / traversals;
+  var levels = Math.min(height, 4);
+  var levelY = [70, 150, 230, 310];
+  var treeNames = (traversals === 2) ? ["Secondary B+tree — idx_users_email", "Clustered B+tree — users (PK)"] : ["Clustered B+tree — users (PK)"];
+  for (var t = 0; t < traversals; t++) {
     var ox = t * treeWidth;
-    var label = (treeLabels[t] !== null) ? treeLabels[t] : defaultLabel;
+    var heading = anim.svgEl("text", {
+      x: ox + treeWidth/2, y: 32, "text-anchor": "middle",
+      "font-size": 13, "font-weight": 700, fill: "#1f2937"
+    });
+    heading.textContent = treeNames[t];
+    svg.appendChild(heading);
 
-    // Tree title
-    var titleEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    titleEl.setAttribute("x", ox + treeWidth/2);
-    titleEl.setAttribute("y", 22);
-    titleEl.setAttribute("text-anchor", "middle");
-    titleEl.setAttribute("font-size", "12");
-    titleEl.setAttribute("font-weight", "600");
-    titleEl.setAttribute("fill", "#374151");
-    titleEl.textContent = label;
-    svg.appendChild(titleEl);
-
-    // Nodes per level
-    var levelY = [50, 130, 210, 290];
-    var levels = Math.min(height, 4);
+    var treeNodes = [];
     for (var lv = 0; lv < levels; lv++) {
       var nodesAtLv = Math.min(Math.pow(2, lv), 8);
-      var isActive = (t === phase.tree && lv === phase.level);
-      var isVisited = (t < phase.tree) || (t === phase.tree && lv < phase.level);
+      var y = levelY[lv];
+      var levelNodes = [];
       for (var n = 0; n < nodesAtLv; n++) {
-        var x = ox + ((n + 0.5) * (treeWidth / nodesAtLv)) - 18;
-        var y = levelY[lv];
+        var x = ox + ((n + 0.5) * (treeWidth / nodesAtLv)) - 22;
         var isOnPath = (n === Math.floor(nodesAtLv / 2));
-        var color = "#f3f4f6";
-        var stroke = "#d1d5db";
-        var sw = 1;
-        if (isOnPath && isVisited) { color = "#e0e7ff"; stroke = "#6366f1"; sw = 1.5; }
-        if (isOnPath && isActive) { color = "#fde725"; stroke = "#ca8a04"; sw = 3; }
-        var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        r.setAttribute("x", x);
-        r.setAttribute("y", y);
-        r.setAttribute("width", 36);
-        r.setAttribute("height", 18);
-        r.setAttribute("rx", 3);
-        r.setAttribute("fill", color);
-        r.setAttribute("stroke", stroke);
-        r.setAttribute("stroke-width", sw);
-        svg.appendChild(r);
+        var rect = anim.svgEl("rect", {
+          x: x, y: y, width: 44, height: 22, rx: 4, ry: 4,
+          fill: "#f3f4f6", stroke: "#9ca3af", "stroke-width": 1
+        });
+        svg.appendChild(rect);
+        var lvLbl = anim.svgEl("text", {
+          x: x + 22, y: y + 15, "text-anchor": "middle",
+          "font-size": 9, fill: "#6b7280"
+        });
+        lvLbl.textContent = (lv === 0) ? "root" : (lv === levels - 1 ? "leaf" : "L" + lv);
+        svg.appendChild(lvLbl);
+        levelNodes.push({
+          rect: rect, label: lvLbl, cx: x + 22, cy: y + 11, onPath: isOnPath
+        });
       }
-      // Level label
-      var lvLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      lvLabel.setAttribute("x", ox + 6);
-      lvLabel.setAttribute("y", y + 13);
-      lvLabel.setAttribute("font-size", "9");
-      lvLabel.setAttribute("fill", "#6b7280");
-      lvLabel.textContent = (lv === 0) ? "root" : (lv === levels - 1 ? "leaf" : "L" + lv);
-      svg.appendChild(lvLabel);
+      treeNodes.push(levelNodes);
     }
+    treeState.nodes[t] = treeNodes;
     if (height > 4) {
-      var moreLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      moreLabel.setAttribute("x", ox + treeWidth/2);
-      moreLabel.setAttribute("y", 334);
-      moreLabel.setAttribute("text-anchor", "middle");
-      moreLabel.setAttribute("font-size", "10");
-      moreLabel.setAttribute("fill", "#6b7280");
-      moreLabel.textContent = "(" + height + " total levels)";
-      svg.appendChild(moreLabel);
+      var more = anim.svgEl("text", {
+        x: ox + treeWidth/2, y: 370, "text-anchor": "middle",
+        "font-size": 11, fill: "#9ca3af", "font-style": "italic"
+      });
+      more.textContent = "(" + height + " levels total — showing top 4)";
+      svg.appendChild(more);
     }
+  }
+
+  // Query token
+  var token = anim.svgEl("polygon", {
+    points: "0,-9 9,0 0,9 -9,0",
+    fill: "#ff3d3d", stroke: "#991b1b", "stroke-width": 1.5,
+    opacity: 0, transform: "translate(0,0)"
+  });
+  svg.appendChild(token);
+  treeState.token = token;
+}
+
+function resetTreeColors() {
+  for (var t = 0; t < treeState.nodes.length; t++) {
+    for (var lv = 0; lv < treeState.nodes[t].length; lv++) {
+      var lvlNodes = treeState.nodes[t][lv];
+      for (var n = 0; n < lvlNodes.length; n++) {
+        lvlNodes[n].rect.setAttribute("fill", "#f3f4f6");
+        lvlNodes[n].rect.setAttribute("stroke", "#9ca3af");
+        lvlNodes[n].rect.setAttribute("stroke-width", 1);
+      }
+    }
+  }
+  if (treeState.token) {
+    treeState.token.setAttribute("opacity", 0);
+    treeState.token.setAttribute("transform", "translate(0,0)");
   }
 }
 
-// --------------- animation state ---------------
-var animState = { tree: 0, level: 0, height: 4, traversals: 1, playing: false, timer: null };
+// ---------- timeline ----------
+var currentTimeline = null;
 
-function stepAnim() {
-  animState.level += 1;
-  if (animState.level >= Math.min(animState.height, 4)) {
-    animState.level = 0;
-    animState.tree += 1;
+function buildDescentTimeline() {
+  resetTreeColors();
+  var tl = anim.timeline();
+  var token = treeState.token;
+  var levelsShown = Math.min(treeState.height, 4);
+  var phaseLabel = document.getElementById("phase-label");
+
+  for (var t = 0; t < treeState.traversals; t++) {
+    (function(treeIdx) {
+      tl.call(function() {
+        var rootNode = treeState.nodes[treeIdx][0].find(function(n) { return n.onPath; });
+        if (rootNode) {
+          token.setAttribute("transform", "translate(" + rootNode.cx + "," + (rootNode.cy - 40) + ")");
+          token.setAttribute("opacity", 0);
+        }
+        phaseLabel.textContent = (treeState.traversals === 2 ? (treeIdx === 0 ? "Walking idx_users_email (secondary)" : "Walking users PK (clustered)") : "Walking users PK (clustered)");
+      });
+      tl.add({
+        from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
+        onUpdate: function(v) { token.setAttribute("opacity", v); }
+      });
+      for (var lv = 0; lv < levelsShown; lv++) {
+        (function(levelIdx) {
+          var activeNode = treeState.nodes[treeIdx][levelIdx].find(function(n) { return n.onPath; });
+          if (!activeNode) return;
+          tl.call(function() {
+            phaseLabel.textContent = "Tree " + (treeIdx + 1) + "/" + treeState.traversals +
+              " — descending to " + (levelIdx === 0 ? "root" : (levelIdx === levelsShown - 1 ? "leaf" : "level " + levelIdx));
+          });
+          var currentPos;
+          if (levelIdx === 0) {
+            currentPos = { x: activeNode.cx, y: activeNode.cy - 40 };
+          } else {
+            var prev = treeState.nodes[treeIdx][levelIdx - 1].find(function(n) { return n.onPath; });
+            currentPos = { x: prev.cx, y: prev.cy };
+          }
+          tl.add({
+            from: currentPos,
+            to: { x: activeNode.cx, y: activeNode.cy },
+            duration: 480, ease: anim.easeInOutCubic,
+            onUpdate: function(p) {
+              token.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+            },
+            onComplete: function() {
+              activeNode.rect.setAttribute("fill", "#fde725");
+              activeNode.rect.setAttribute("stroke", "#ca8a04");
+              anim.pulse(activeNode.rect, 3, 1, 360);
+            }
+          });
+          tl.delay(160);
+        })(lv);
+      }
+      if (treeIdx < treeState.traversals - 1) {
+        tl.delay(280);
+        tl.add({
+          from: 1, to: 0, duration: 220, ease: anim.easeInCubic,
+          onUpdate: function(v) { token.setAttribute("opacity", v); }
+        });
+        tl.call(function() {
+          phaseLabel.textContent = "Secondary-index leaf holds PK — now fetching row from clustered tree";
+        });
+        tl.delay(280);
+      }
+    })(t);
   }
-  if (animState.tree >= animState.traversals) {
-    animState.tree = 0;
-    animState.level = 0;
-    pauseAnim();
-    document.getElementById("phase-label").textContent = "Complete — reset to replay";
-  }
-  renderTree(animState.height, animState.traversals, animState);
-  if (animState.playing) {
-    document.getElementById("phase-label").textContent =
-      "Walking tree " + (animState.tree + 1) + "/" + animState.traversals +
-      " — level " + animState.level;
-  }
+  tl.call(function() {
+    phaseLabel.textContent = "✓ Lookup complete — press Reset to replay";
+    teachRuntime.animationDone();
+  });
+  return tl;
 }
 
 function playAnim() {
-  animState.playing = true;
-  document.getElementById("btn-play").textContent = "⏸ Pause";
-  animState.timer = setInterval(stepAnim, 700);
-}
-function pauseAnim() {
-  animState.playing = false;
-  document.getElementById("btn-play").textContent = "▶ Play";
-  if (animState.timer) { clearInterval(animState.timer); animState.timer = null; }
+  if (currentTimeline) currentTimeline.stop();
+  currentTimeline = buildDescentTimeline();
+  currentTimeline.play();
 }
 function resetAnim() {
-  pauseAnim();
-  animState.tree = 0;
-  animState.level = 0;
-  document.getElementById("phase-label").textContent = "Ready";
-  renderTree(animState.height, animState.traversals, animState);
+  if (currentTimeline) currentTimeline.stop();
+  currentTimeline = null;
+  resetTreeColors();
+  document.getElementById("phase-label").textContent = "Ready — press Play";
 }
 
-// --------------- main recompute ---------------
+// ---------- complexity chart ----------
+function renderChart(keySize, pageSize, keyType, currentRows) {
+  var fanOut = innodbFanout(keySize, pageSize);
+  var traversals = (keyType === "secondary_noncovering") ? 2 : 1;
+  anim.complexityChart({
+    svgId: "complexity-chart",
+    width: 560, height: 200,
+    xMin: 10, xMax: 1e10,
+    xLabel: "Rows in users table", yLabel: "Pages touched",
+    curves: [
+      { label: "This lesson's choice", color: "#2563eb",
+        fn: function(n) { return innodbTreeHeight(n, fanOut) * traversals; } },
+      { label: "Hypothetical linear scan", color: "#dc2626",
+        fn: function(n) { return Math.max(1, n / 400); } }
+    ],
+    current: { x: currentRows }
+  });
+}
+
+// ---------- main recompute ----------
 function recompute() {
   var c = teachRuntime.readControls();
   var rowIdx = Math.max(0, Math.min(ROW_SCALE.length - 1, Math.round(c.rows)));
   var rows = ROW_SCALE[rowIdx];
-  // Update rows pill to show real number
   var pill = document.querySelector('[data-pill-for="rows"]');
   if (pill) pill.textContent = teachRuntime.formatInt(rows);
 
@@ -586,28 +1305,18 @@ function recompute() {
   document.getElementById("out-height").textContent = cost.height + " levels";
   document.getElementById("out-traversals").textContent = cost.traversals;
   document.getElementById("out-pages").textContent = cost.pages + " pages";
-  document.getElementById("out-cold-io").textContent =
-    teachRuntime.formatBytes(cost.pages * pageSize);
-  document.getElementById("out-complexity").textContent =
-    (cost.traversals === 2) ? "O(log n) + O(log n)" : "O(log n)";
-  var expEl = document.getElementById("out-explanation");
-  expEl.textContent = cost.explanation;
+  document.getElementById("out-cold-io").textContent = teachRuntime.formatBytes(cost.pages * pageSize);
+  document.getElementById("out-complexity").textContent = (cost.traversals === 2) ? "O(log n) + O(log n)" : "O(log n)";
+  document.getElementById("out-explanation").textContent = cost.explanation;
 
-  animState.height = cost.height;
-  animState.traversals = cost.traversals;
-  renderTree(cost.height, cost.traversals, animState);
+  if (currentTimeline) { currentTimeline.stop(); currentTimeline = null; }
+  buildTrees(cost.height, cost.traversals);
+  resetTreeColors();
+  renderChart(keySize, pageSize, keyType, rows);
 }
 
-document.getElementById("btn-play").addEventListener("click", function() {
-  if (animState.playing) pauseAnim(); else playAnim();
-});
-document.getElementById("btn-step").addEventListener("click", function() {
-  pauseAnim();
-  stepAnim();
-});
-document.getElementById("btn-reset").addEventListener("click", resetAnim);
-
 teachRuntime.wire(recompute);
+teachRuntime.wireToolbar(playAnim, resetAnim);
 
   </script>
 </body>
