@@ -1,4 +1,10 @@
-"""Lesson: BNL vs hash join side-by-side with shared sliders."""
+"""Lesson: BNL vs hash join side-by-side with shared sliders.
+
+Same query run by both algorithms — customers ⋈ orders. The confusing
+'10.10B total' label has been replaced with 'row-pair comparisons' and
+the '…and N more blocks' footer now explicitly says what the additional
+blocks would do.
+"""
 from . import _html
 from ._cost_model import JOIN_BUFFER_SIZE_DEFAULT, MYSQL_BNL_REMOVED_IN
 
@@ -10,12 +16,12 @@ def render() -> str:
   <div class="control-grid">
 
     <div class="control">
-      <label for="outer_rows">Outer rows: <span class="value-pill" data-pill-for="outer_rows">50000</span></label>
+      <label for="outer_rows"><code>customers</code> rows: <span class="value-pill" data-pill-for="outer_rows">50000</span></label>
       <input type="range" id="outer_rows" name="outer_rows" min="1000" max="5000000" step="1000" value="50000">
     </div>
 
     <div class="control">
-      <label for="inner_rows">Inner rows: <span class="value-pill" data-pill-for="inner_rows">200000</span></label>
+      <label for="inner_rows"><code>orders</code> rows: <span class="value-pill" data-pill-for="inner_rows">200000</span></label>
       <input type="range" id="inner_rows" name="inner_rows" min="1000" max="10000000" step="1000" value="200000">
     </div>
 
@@ -34,19 +40,42 @@ def render() -> str:
 </section>
 """
 
-    stage_html = """
+    query_card_html = _html.query_card(
+        sql=(
+            "-- The same non-indexed join run by both engines\n"
+            "SELECT c.country, SUM(o.total) AS revenue\n"
+            "FROM   customers c\n"
+            "JOIN   orders    o  ON  c.signup_month = o.signup_month\n"
+            "GROUP  BY c.country;   -- no index on signup_month"
+        ),
+        note="MariaDB 11.x runs this with BNL (join_cache_level=2). MySQL 8.4 runs it with a two-phase hash join. Same SQL, very different cost."
+    )
+
+    explainer_html = _html.explainer(
+        "What you'll see in the animation",
+        [
+            "Left panel — MariaDB BNL: customers rows pack into blocks; a yellow sweep bar crosses the orders table once per block. One sweep = one full scan of orders.",
+            "Right panel — MySQL 8.4 hash join: orange build-tuples fly into hash buckets (phase 1), then teal probe-tuples fly into those buckets (phase 2). Only one pass of each side.",
+            "Both panels run the same input in parallel so you can feel the asymptotic difference — BNL grows quadratically with customers, hash grows linearly.",
+            "Each panel has its own row-pair comparison counter. The ratio is shown above as 'Speedup (hash vs BNL)'. At small sizes it is close to 1×; crank the sliders and watch it grow.",
+        ],
+    )
+
+    stage_html = f"""
 <section class="stage">
-  <div class="stage-toolbar">
-    <span style="font-size:13px;color:#374151;font-weight:600">Left: MariaDB BNL (default) · Right: MySQL 8.4 hash join</span>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  {query_card_html}
+  {explainer_html}
+  {_html.stage_toolbar("Ready — press Play")}
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;margin-top:4px">
     <div>
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#92400e">MariaDB BNL</p>
-      <svg id="svg-bnl" viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg"></svg>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#92400e;letter-spacing:0.4px;text-transform:uppercase">MariaDB 11.x BNL</p>
+      <svg id="svg-bnl" viewBox="0 0 400 240" xmlns="http://www.w3.org/2000/svg"></svg>
+      <p style="margin:4px 0 0;font-size:11px;color:#6b7280" id="bnl-phase">Idle</p>
     </div>
     <div>
-      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#1e40af">MySQL 8.4 hash join</p>
-      <svg id="svg-hash" viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg"></svg>
+      <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#1e40af;letter-spacing:0.4px;text-transform:uppercase">MySQL 8.4 hash join</p>
+      <svg id="svg-hash" viewBox="0 0 400 240" xmlns="http://www.w3.org/2000/svg"></svg>
+      <p style="margin:4px 0 0;font-size:11px;color:#6b7280" id="hash-phase">Idle</p>
     </div>
   </div>
 </section>
@@ -54,15 +83,19 @@ def render() -> str:
 
     readout_html = """
 <section class="readout">
-  <h2>Cost comparison</h2>
+  <h2>Cost comparison — row-pair comparisons</h2>
   <div class="readout-grid">
-    <div class="item"><p class="label">BNL rows examined</p><p class="value" id="bnl-cmp">—</p></div>
-    <div class="item"><p class="label">Hash rows examined</p><p class="value ok" id="hash-cmp">—</p></div>
-    <div class="item"><p class="label">Speedup (hash/BNL)</p><p class="value" id="speedup">—</p></div>
-    <div class="item"><p class="label">BNL complexity</p><p class="value">O(outer · inner / buffer)</p></div>
-    <div class="item"><p class="label">Hash complexity</p><p class="value">O(outer + inner)</p></div>
+    <div class="item"><p class="label">BNL row-pair comparisons</p><p class="value" id="bnl-cmp">—</p></div>
+    <div class="item"><p class="label">Hash row comparisons</p><p class="value ok" id="hash-cmp">—</p></div>
+    <div class="item"><p class="label">Speedup (hash vs BNL)</p><p class="value" id="speedup">—</p></div>
+    <div class="item"><p class="label">BNL complexity</p><p class="value">O(customers · orders / buffer)</p></div>
+    <div class="item"><p class="label">Hash complexity</p><p class="value">O(customers + orders)</p></div>
   </div>
   <div class="explanation" id="out-explanation"></div>
+  <div class="complexity-chart">
+    <p class="chart-title">Row-pair comparisons vs customers rows (log–log, orders fixed)</p>
+    <svg id="complexity-chart" viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
 </section>
 """
 
@@ -103,111 +136,402 @@ function bnlCost(outer, inner, rowSize, jbs) {
 function hashCost(build, probe, rowSize, jbs) {
   var buildBytes = Math.floor(build * rowSize * 1.4);
   var fits = buildBytes <= jbs;
-  var cmp = build + probe + (fits ? 0 : (build + probe)); // +one more pass on spill
+  var cmp = build + probe + (fits ? 0 : (build + probe));
   return {fits: fits, buildBytes: buildBytes, cmp: cmp};
 }
 
-function box(svg, x, y, w, h, fill, stroke, sw) {
-  var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-  r.setAttribute("x", x); r.setAttribute("y", y);
-  r.setAttribute("width", w); r.setAttribute("height", h); r.setAttribute("rx", 4);
-  r.setAttribute("fill", fill); r.setAttribute("stroke", stroke); r.setAttribute("stroke-width", sw || 1);
-  svg.appendChild(r);
-}
-function label(svg, x, y, t, size, weight, fill, anchor) {
-  var el = document.createElementNS("http://www.w3.org/2000/svg", "text");
-  el.setAttribute("x", x); el.setAttribute("y", y);
-  el.setAttribute("font-size", size || 11);
-  el.setAttribute("font-weight", weight || "normal");
-  el.setAttribute("fill", fill || "#374151");
-  el.setAttribute("text-anchor", anchor || "start");
-  el.textContent = t;
-  svg.appendChild(el);
-}
-
-function renderBNLPanel(blocks) {
+var bnlStage = null;
+function buildBnlPanel(numBlocks) {
   var svg = document.getElementById("svg-bnl");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
-  var cap = Math.min(blocks, 6);
-  var bw = 50;
+  var cap = Math.min(numBlocks, 6);
+  var startX = 16, endX = 384;
+  var gap = 6;
+  var totalW = endX - startX;
+  var bw = (totalW - gap * (cap - 1)) / cap;
+  var blocks = [];
+  var lbl = anim.svgEl("text", {
+    x: 16, y: 20, "font-size": 11, "font-weight": 700, fill: "#92400e"
+  });
+  lbl.textContent = "customers → blocks (" + numBlocks + " total)";
+  svg.appendChild(lbl);
   for (var i = 0; i < cap; i++) {
-    box(svg, 20 + i * bw, 40, bw - 6, 40, "#fde725", "#ca8a04", 1.5);
-    label(svg, 20 + i * bw + (bw-6)/2, 65, "B" + (i+1), 11, 600, "#78350f", "middle");
+    var x = startX + i * (bw + gap);
+    var r = anim.svgEl("rect", {
+      x: x, y: 30, width: bw, height: 32, rx: 4, ry: 4,
+      fill: "#fffbeb", stroke: "#d1d5db", "stroke-width": 1
+    });
+    svg.appendChild(r);
+    var t = anim.svgEl("text", {
+      x: x + bw/2, y: 51, "text-anchor": "middle",
+      "font-size": 10, "font-weight": 600, fill: "#92400e"
+    });
+    t.textContent = "B" + (i + 1);
+    svg.appendChild(t);
+    blocks.push({ rect: r, label: t, cx: x + bw/2, cy: 46 });
   }
-  if (blocks > 6) {
-    label(svg, 20 + 6 * bw, 65, "+" + (blocks - 6), 11, 600, "#9ca3af");
+  if (numBlocks > cap) {
+    var more = anim.svgEl("text", {
+      x: endX, y: 51, "text-anchor": "end",
+      "font-size": 10, "font-weight": 600, fill: "#9ca3af"
+    });
+    more.textContent = "+" + (numBlocks - cap) + " more";
+    svg.appendChild(more);
   }
-  label(svg, 20, 32, "Outer blocks: " + blocks, 11, 600, "#92400e");
-  box(svg, 20, 110, 360, 60, "#f0f9ff", "#0284c7", 1.5);
-  label(svg, 200, 144, "Inner × " + blocks + " re-scans", 13, 700, "#0c4a6e", "middle");
-  label(svg, 20, 104, "Inner table", 11, 600, "#0c4a6e");
 
-  // Arrows: every block to inner
-  for (var j = 0; j < cap; j++) {
-    var ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    ln.setAttribute("x1", 20 + j * bw + (bw-6)/2);
-    ln.setAttribute("y1", 80);
-    ln.setAttribute("x2", 20 + j * bw + (bw-6)/2);
-    ln.setAttribute("y2", 108);
-    ln.setAttribute("stroke", "#ca8a04"); ln.setAttribute("stroke-width", 1.5);
-    svg.appendChild(ln);
-  }
-  label(svg, 200, 200, "Cost: O(outer · inner / buffer)", 11, 600, "#374151", "middle");
+  var innerY = 100, innerH = 70, innerX = 24, innerW = 352;
+  var innerR = anim.svgEl("rect", {
+    x: innerX, y: innerY, width: innerW, height: innerH, rx: 6, ry: 6,
+    fill: "#f0f9ff", stroke: "#0284c7", "stroke-width": 1.5
+  });
+  svg.appendChild(innerR);
+  var innerLbl = anim.svgEl("text", {
+    x: innerX, y: innerY - 6, "font-size": 11, "font-weight": 700, fill: "#0c4a6e"
+  });
+  innerLbl.textContent = "orders (re-scanned per block)";
+  svg.appendChild(innerLbl);
+
+  var sweep = anim.svgEl("rect", {
+    x: innerX, y: innerY, width: 4, height: innerH,
+    fill: "#ca8a04", opacity: 0
+  });
+  svg.appendChild(sweep);
+
+  var status = anim.svgEl("text", {
+    x: 200, y: 200, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 600, fill: "#374151"
+  });
+  status.textContent = "";
+  svg.appendChild(status);
+
+  var counter = anim.svgEl("text", {
+    x: 200, y: 220, "text-anchor": "middle",
+    "font-size": 13, "font-weight": 700, fill: "#1f2937", "font-variant-numeric": "tabular-nums"
+  });
+  counter.textContent = "0 row-pair comparisons";
+  svg.appendChild(counter);
+
+  bnlStage = {
+    svg: svg, blocks: blocks, sweep: sweep, status: status, counter: counter,
+    innerX: innerX, innerY: innerY, innerW: innerW, innerH: innerH,
+    shown: cap, totalBlocks: numBlocks
+  };
+}
+function resetBnlStage() {
+  if (!bnlStage) return;
+  bnlStage.blocks.forEach(function(b) {
+    b.rect.setAttribute("fill", "#fffbeb");
+    b.rect.setAttribute("stroke", "#d1d5db");
+    b.rect.setAttribute("stroke-width", 1);
+  });
+  bnlStage.sweep.setAttribute("opacity", 0);
+  bnlStage.status.textContent = "";
+  bnlStage.counter.textContent = "0 row-pair comparisons";
 }
 
-function renderHashPanel(fits) {
+var hashStage = null;
+function buildHashPanel() {
   var svg = document.getElementById("svg-hash");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
-  // Build
-  box(svg, 20, 40, 100, 60, "#fef3c7", "#d97706", 1.5);
-  label(svg, 70, 32, "Build (small)", 11, 600, "#92400e", "middle");
-  label(svg, 70, 72, "hash(col)", 11, "normal", "#78350f", "middle");
-  // Hash table
-  box(svg, 150, 40, 100, 130, fits ? "#dbeafe" : "#fee2e2", fits ? "#2563eb" : "#dc2626", 2);
-  label(svg, 200, 32, "Hash table", 11, 600, fits ? "#1e40af" : "#991b1b", "middle");
-  for (var i = 0; i < 4; i++) {
-    box(svg, 160, 50 + i * 28, 80, 20, "#ffffff", fits ? "#93c5fd" : "#fca5a5");
-    label(svg, 200, 63 + i * 28, "bucket " + (i+1), 9, "normal", fits ? "#1e40af" : "#991b1b", "middle");
-  }
-  // Probe
-  box(svg, 280, 40, 100, 60, "#ccfbf1", "#0d9488", 1.5);
-  label(svg, 330, 32, "Probe (large)", 11, 600, "#115e59", "middle");
-  label(svg, 330, 72, "stream once", 11, "normal", "#134e4a", "middle");
-  // Arrows
-  var a1 = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  a1.setAttribute("x1", 120); a1.setAttribute("y1", 70); a1.setAttribute("x2", 148); a1.setAttribute("y2", 70);
-  a1.setAttribute("stroke", "#d97706"); a1.setAttribute("stroke-width", 2); svg.appendChild(a1);
-  var a2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  a2.setAttribute("x1", 280); a2.setAttribute("y1", 70); a2.setAttribute("x2", 252); a2.setAttribute("y2", 70);
-  a2.setAttribute("stroke", "#0d9488"); a2.setAttribute("stroke-width", 2); svg.appendChild(a2);
 
-  if (!fits) {
-    label(svg, 200, 200, "⚠ Spilled — grace-hash partition to disk", 11, 600, "#991b1b", "middle");
-  } else {
-    label(svg, 200, 200, "Cost: O(outer + inner)", 11, 600, "#115e59", "middle");
+  var buildRect = anim.svgEl("rect", {
+    x: 16, y: 60, width: 80, height: 80, rx: 6, ry: 6,
+    fill: "#fef3c7", stroke: "#d97706", "stroke-width": 1.5
+  });
+  svg.appendChild(buildRect);
+  var buildLbl = anim.svgEl("text", {
+    x: 56, y: 52, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 700, fill: "#92400e"
+  });
+  buildLbl.textContent = "customers (build)";
+  svg.appendChild(buildLbl);
+
+  var htX = 140, htY = 50, htW = 120, htH = 100;
+  var htRect = anim.svgEl("rect", {
+    x: htX, y: htY, width: htW, height: htH, rx: 6, ry: 6,
+    fill: "#f3f4f6", stroke: "#6b7280", "stroke-width": 1
+  });
+  svg.appendChild(htRect);
+  var htLbl = anim.svgEl("text", {
+    x: htX + htW/2, y: htY - 6, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 700, fill: "#1f2937"
+  });
+  htLbl.textContent = "Hash table";
+  svg.appendChild(htLbl);
+  var buckets = [];
+  for (var i = 0; i < 4; i++) {
+    var by = htY + 10 + i * 22;
+    var br = anim.svgEl("rect", {
+      x: htX + 10, y: by, width: htW - 20, height: 16, rx: 3, ry: 3,
+      fill: "#ffffff", stroke: "#d1d5db", "stroke-width": 1
+    });
+    svg.appendChild(br);
+    buckets.push({ rect: br, cx: htX + htW/2, cy: by + 8 });
   }
+
+  var probeRect = anim.svgEl("rect", {
+    x: 304, y: 60, width: 80, height: 80, rx: 6, ry: 6,
+    fill: "#ccfbf1", stroke: "#0d9488", "stroke-width": 1.5
+  });
+  svg.appendChild(probeRect);
+  var probeLbl = anim.svgEl("text", {
+    x: 344, y: 52, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 700, fill: "#115e59"
+  });
+  probeLbl.textContent = "orders (probe)";
+  svg.appendChild(probeLbl);
+
+  var status = anim.svgEl("text", {
+    x: 200, y: 180, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 600, fill: "#374151"
+  });
+  status.textContent = "";
+  svg.appendChild(status);
+
+  var counter = anim.svgEl("text", {
+    x: 200, y: 220, "text-anchor": "middle",
+    "font-size": 13, "font-weight": 700, fill: "#065f46", "font-variant-numeric": "tabular-nums"
+  });
+  counter.textContent = "0 row comparisons";
+  svg.appendChild(counter);
+
+  hashStage = {
+    svg: svg, buckets: buckets,
+    buildCx: 56, buildCy: 100, probeCx: 344, probeCy: 100,
+    status: status, counter: counter, tuples: []
+  };
+}
+function resetHashStage() {
+  if (!hashStage) return;
+  hashStage.buckets.forEach(function(b) {
+    b.rect.setAttribute("fill", "#ffffff");
+    b.rect.setAttribute("stroke", "#d1d5db");
+  });
+  hashStage.status.textContent = "";
+  hashStage.counter.textContent = "0 row comparisons";
+  hashStage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
+  hashStage.tuples = [];
+}
+
+var currentTimeline = null;
+
+function buildTimeline(bnlC, hashC, innerRows) {
+  resetBnlStage();
+  resetHashStage();
+  var tl = anim.timeline();
+  var phase = document.getElementById("phase-label");
+  var bnlPhase = document.getElementById("bnl-phase");
+  var hashPhase = document.getElementById("hash-phase");
+
+  tl.call(function() {
+    phase.textContent = "Running both algorithms on the same query…";
+    bnlPhase.textContent = "Walking through customers blocks";
+    hashPhase.textContent = "Building hash table";
+  });
+
+  var shown = bnlStage.shown;
+  var perBlockDur = 420;
+  var bnlRunning = 0;
+
+  for (var i = 0; i < shown; i++) {
+    (function(idx) {
+      var block = bnlStage.blocks[idx];
+      tl.call(function() {
+        block.rect.setAttribute("fill", "#fde725");
+        block.rect.setAttribute("stroke", "#ca8a04");
+        block.rect.setAttribute("stroke-width", 2);
+      });
+      tl.add({
+        from: bnlStage.innerX, to: bnlStage.innerX + bnlStage.innerW,
+        duration: perBlockDur, ease: anim.easeInOutCubic,
+        onUpdate: function(x) {
+          bnlStage.sweep.setAttribute("x", x);
+          bnlStage.sweep.setAttribute("opacity", 0.85);
+          var progressThroughScan = (x - bnlStage.innerX) / bnlStage.innerW;
+          bnlStage.counter.textContent =
+            teachRuntime.formatInt(bnlRunning + innerRows * progressThroughScan) + " row-pair comparisons";
+        },
+        onComplete: function() {
+          bnlStage.sweep.setAttribute("opacity", 0);
+          block.rect.setAttribute("fill", "#e5e7eb");
+          block.rect.setAttribute("stroke", "#9ca3af");
+          block.rect.setAttribute("stroke-width", 1);
+          bnlRunning += innerRows;
+          bnlStage.counter.textContent = teachRuntime.formatInt(bnlRunning) + " row-pair comparisons";
+        }
+      });
+    })(i);
+  }
+  tl.call(function() {
+    bnlStage.counter.textContent = teachRuntime.formatInt(bnlC.cmp) + " row-pair comparisons (total)";
+    if (bnlStage.totalBlocks > shown) {
+      bnlStage.status.textContent = "…and " + (bnlStage.totalBlocks - shown) + " more blocks — each one is another full scan of orders";
+    }
+    bnlPhase.textContent = "✓ Done — " + bnlStage.totalBlocks + " inner rescans";
+  });
+
+  var totalBnlDur = shown * perBlockDur + 700;
+  var buildDur = totalBnlDur * 0.35;
+  var probeDur = totalBnlDur * 0.55;
+
+  tl.call(function() {
+    for (var b = 0; b < 4; b++) {
+      (function(bi) {
+        setTimeout(function() {
+          var bucket = hashStage.buckets[bi];
+          var tuple = anim.svgEl("circle", {
+            cx: hashStage.buildCx, cy: hashStage.buildCy, r: 5,
+            fill: "#d97706", stroke: "#78350f", "stroke-width": 1, opacity: 0
+          });
+          hashStage.svg.appendChild(tuple);
+          hashStage.tuples.push(tuple);
+          var pathFn = anim.path(
+            hashStage.buildCx, hashStage.buildCy,
+            (hashStage.buildCx + bucket.cx) / 2, bucket.cy - 25,
+            bucket.cx, bucket.cy
+          );
+          anim.tween({
+            from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
+            onUpdate: function(v) { tuple.setAttribute("opacity", v); }
+          });
+          anim.tween({
+            from: 0, to: 1, duration: buildDur / 4, ease: anim.easeInOutQuad,
+            onUpdate: function(t) {
+              var p = pathFn(t);
+              tuple.setAttribute("cx", p.x);
+              tuple.setAttribute("cy", p.y);
+            },
+            onComplete: function() {
+              bucket.rect.setAttribute("fill", "#fde725");
+              bucket.rect.setAttribute("stroke", "#ca8a04");
+              anim.tween({
+                from: 1, to: 0, duration: 160, ease: anim.easeInCubic,
+                onUpdate: function(v) { tuple.setAttribute("opacity", v); }
+              });
+            }
+          });
+        }, bi * (buildDur / 5));
+      })(b);
+    }
+    setTimeout(function() {
+      hashPhase.textContent = "Streaming orders rows";
+      for (var j = 0; j < 6; j++) {
+        (function(jj) {
+          setTimeout(function() {
+            var bucket = hashStage.buckets[jj % 4];
+            var tuple = anim.svgEl("circle", {
+              cx: hashStage.probeCx, cy: hashStage.probeCy, r: 5,
+              fill: "#0d9488", stroke: "#134e4a", "stroke-width": 1, opacity: 0
+            });
+            hashStage.svg.appendChild(tuple);
+            hashStage.tuples.push(tuple);
+            var pathFn = anim.path(
+              hashStage.probeCx, hashStage.probeCy,
+              (hashStage.probeCx + bucket.cx) / 2, bucket.cy - 25,
+              bucket.cx, bucket.cy
+            );
+            anim.tween({
+              from: 0, to: 1, duration: 160, ease: anim.easeOutCubic,
+              onUpdate: function(v) { tuple.setAttribute("opacity", v); }
+            });
+            anim.tween({
+              from: 0, to: 1, duration: probeDur / 6, ease: anim.easeInOutQuad,
+              onUpdate: function(t) {
+                var p = pathFn(t);
+                tuple.setAttribute("cx", p.x);
+                tuple.setAttribute("cy", p.y);
+                var progress = (jj + t) / 6;
+                hashStage.counter.textContent =
+                  teachRuntime.formatInt(hashC.cmp * progress) + " row comparisons";
+              },
+              onComplete: function() {
+                anim.pulse(bucket.rect, 2.5, 1, 220);
+                anim.tween({
+                  from: 1, to: 0, duration: 160, ease: anim.easeInCubic,
+                  onUpdate: function(v) { tuple.setAttribute("opacity", v); }
+                });
+              }
+            });
+          }, jj * (probeDur / 8));
+        })(j);
+      }
+      setTimeout(function() {
+        hashStage.counter.textContent = teachRuntime.formatInt(hashC.cmp) + " row comparisons (total)";
+        hashPhase.textContent = "✓ Done — single pass, " + teachRuntime.formatInt(hashC.cmp) + " row comparisons";
+      }, probeDur + 300);
+    }, buildDur + 200);
+  });
+  tl.delay(totalBnlDur + 300);
+  tl.call(function() {
+    var speedup = hashC.cmp > 0 ? bnlC.cmp / hashC.cmp : 1;
+    if (speedup >= 10) {
+      phase.textContent = "Hash beat BNL by " + speedup.toFixed(0) + "× — this is why MySQL 8.4 removed BNL.";
+    } else if (speedup >= 2) {
+      phase.textContent = "Hash was " + speedup.toFixed(1) + "× less work — try raising customers for a bigger gap.";
+    } else {
+      phase.textContent = "At tiny sizes both algorithms are comparable; raise customers/orders.";
+    }
+    teachRuntime.animationDone();
+  });
+  return tl;
+}
+
+function playAnim() {
+  if (currentTimeline) currentTimeline.stop();
+  var c = teachRuntime.readControls();
+  var bnlC = bnlCost(c.outer_rows, c.inner_rows, c.row_size, c.jbs);
+  var hashC = hashCost(Math.min(c.outer_rows, c.inner_rows), Math.max(c.outer_rows, c.inner_rows), c.row_size, c.jbs);
+  buildBnlPanel(bnlC.blocks);
+  resetHashStage();
+  currentTimeline = buildTimeline(bnlC, hashC, c.inner_rows);
+  currentTimeline.play();
+}
+function resetAnim() {
+  if (currentTimeline) currentTimeline.stop();
+  currentTimeline = null;
+  resetBnlStage();
+  resetHashStage();
+  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("bnl-phase").textContent = "Idle";
+  document.getElementById("hash-phase").textContent = "Idle";
+}
+
+function renderChart(innerRows, rowSize, jbs, currentOuter) {
+  anim.complexityChart({
+    svgId: "complexity-chart",
+    width: 560, height: 200,
+    xMin: 100, xMax: 1e7,
+    xLabel: "customers row count", yLabel: "Row-pair comparisons",
+    curves: [
+      { label: "MariaDB BNL", color: "#ca8a04",
+        fn: function(n) { return bnlCost(n, innerRows, rowSize, jbs).cmp; } },
+      { label: "MySQL 8.4 hash", color: "#0d9488",
+        fn: function(n) { return hashCost(Math.min(n, innerRows), Math.max(n, innerRows), rowSize, jbs).cmp; } }
+    ],
+    current: { x: currentOuter }
+  });
 }
 
 function recompute() {
   var c = teachRuntime.readControls();
-  var bnl = bnlCost(c.outer_rows, c.inner_rows, c.row_size, c.jbs);
-  // For hash join we use the smaller side as build; inner is usually larger
+  var bnlC = bnlCost(c.outer_rows, c.inner_rows, c.row_size, c.jbs);
   var build = Math.min(c.outer_rows, c.inner_rows);
   var probe = Math.max(c.outer_rows, c.inner_rows);
-  var hash = hashCost(build, probe, c.row_size, c.jbs);
+  var hashC = hashCost(build, probe, c.row_size, c.jbs);
 
-  document.getElementById("bnl-cmp").textContent = teachRuntime.formatInt(bnl.cmp);
-  document.getElementById("hash-cmp").textContent = teachRuntime.formatInt(hash.cmp);
-  var speedup = hash.cmp > 0 ? bnl.cmp / hash.cmp : 0;
+  document.getElementById("bnl-cmp").textContent = teachRuntime.formatInt(bnlC.cmp);
+  document.getElementById("hash-cmp").textContent = teachRuntime.formatInt(hashC.cmp);
+  var speedup = hashC.cmp > 0 ? bnlC.cmp / hashC.cmp : 0;
   document.getElementById("speedup").textContent =
     isFinite(speedup) ? (speedup >= 2 ? speedup.toFixed(0) + "×" : speedup.toFixed(2) + "×") : "—";
 
-  var exp = "With these parameters: MariaDB BNL examines ~" + teachRuntime.formatInt(bnl.cmp) +
-    " row pairs (" + bnl.blocks + " block(s) × inner scans). MySQL hash join examines " +
-    teachRuntime.formatInt(hash.cmp) + " rows (one build + one probe" +
-    (hash.fits ? "" : ", plus a spill pass") + "). ";
+  var exp = "With these parameters: MariaDB BNL performs ~" + teachRuntime.formatInt(bnlC.cmp) +
+    " row-pair comparisons (" + bnlC.blocks + " block(s) × inner scans). " +
+    "MySQL hash join performs " + teachRuntime.formatInt(hashC.cmp) +
+    " row comparisons (one build + one probe" +
+    (hashC.fits ? "" : ", plus a spill pass") + "). ";
   if (speedup >= 10) {
-    exp += "At this scale hash join is ~" + speedup.toFixed(0) + "× faster — this is why MySQL 8.4 removed BNL.";
+    exp += "At this scale hash join is ~" + speedup.toFixed(0) + "× fewer comparisons — this is why MySQL 8.4 removed BNL.";
   } else if (speedup >= 2) {
     exp += "Hash is " + speedup.toFixed(1) + "× less work even at this modest size.";
   } else {
@@ -215,11 +539,14 @@ function recompute() {
   }
   document.getElementById("out-explanation").textContent = exp;
 
-  renderBNLPanel(bnl.blocks);
-  renderHashPanel(hash.fits);
+  if (currentTimeline) { currentTimeline.stop(); currentTimeline = null; }
+  buildBnlPanel(bnlC.blocks);
+  buildHashPanel();
+  renderChart(c.inner_rows, c.row_size, c.jbs, c.outer_rows);
 }
 
 teachRuntime.wire(recompute);
+teachRuntime.wireToolbar(playAnim, resetAnim);
 """
 
     return _html.render_page(

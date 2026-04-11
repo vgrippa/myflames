@@ -1,14 +1,9 @@
 """Lesson: InnoDB B+tree lookup.
 
-Shows what happens when InnoDB resolves a point lookup:
-
-* Clustered-PK lookup — one tree descent, leaf holds the row.
-* Covering secondary index — one tree descent on the secondary tree.
-* Non-covering secondary index — two descents: secondary → PK → clustered.
-
-All parameters are in-page sliders. The cost model in JS mirrors
-``_cost_model.innodb_fanout`` / ``innodb_tree_height`` exactly — tests
-assert the JS constants match the Python constants.
+Animates a query token descending the tree(s), with smooth easing,
+pause/resume/speed controls, a real SQL example using the ``users``
+table, and a log-log complexity chart showing how page count scales
+with row count.
 """
 from . import _html
 from ._cost_model import (
@@ -25,7 +20,7 @@ def render() -> str:
   <div class="control-grid">
 
     <div class="control">
-      <label for="rows">Rows in table: <span class="value-pill" data-pill-for="rows">1000000</span></label>
+      <label for="rows">Rows in <code>users</code> table: <span class="value-pill" data-pill-for="rows">1000000</span></label>
       <input type="range" id="rows" name="rows" min="1" max="9" step="1" value="6">
       <div class="hint">Logarithmic: 10, 100, 1K, 10K, 100K, 1M, 10M, 100M, 1B</div>
     </div>
@@ -51,7 +46,7 @@ def render() -> str:
     <div class="control">
       <label for="key_type">Lookup type</label>
       <select id="key_type" name="key_type">
-        <option value="pk">Clustered PK lookup</option>
+        <option value="pk">Clustered PK lookup (WHERE id = 42)</option>
         <option value="secondary_covering">Covering secondary index</option>
         <option value="secondary_noncovering" selected>Non-covering secondary (PK fetch)</option>
       </select>
@@ -62,16 +57,33 @@ def render() -> str:
 </section>
 """
 
-    stage_html = """
+    query_card_html = _html.query_card(
+        sql=(
+            "-- Non-covering secondary index lookup\n"
+            "SELECT id, first_name, last_name, country_code\n"
+            "FROM   users\n"
+            "WHERE  email = 'alice@example.com';   -- idx_users_email contains only (email, id)"
+        ),
+        note="Switch the lookup-type dropdown to see PK-clustered vs covering-index vs non-covering variants of this query."
+    )
+
+    explainer_html = _html.explainer(
+        "What you'll see in the animation",
+        [
+            "The grey rectangles are B+tree pages. Top row is the root page, bottom row is the leaf.",
+            "A red diamond 'query token' appears above the root and descends level by level — each step is one page read.",
+            "When the token arrives at a page, the page pulses yellow. That's the 'page is in the buffer pool now'.",
+            "For non-covering secondary lookups, the token fades out at the secondary leaf, then re-appears above the clustered tree root and descends a second time to fetch the row — that's the extra I/O covering indexes avoid.",
+        ],
+    )
+
+    stage_html = f"""
 <section class="stage" aria-labelledby="stage-h">
   <h2 id="stage-h" class="sr-only" style="position:absolute;left:-9999px">Tree descent animation</h2>
-  <div class="stage-toolbar">
-    <button id="btn-play" class="primary">▶ Play</button>
-    <button id="btn-step">Step</button>
-    <button id="btn-reset">Reset</button>
-    <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">Ready</span>
-  </div>
-  <svg id="btree-svg" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg"></svg>
+  {query_card_html}
+  {explainer_html}
+  {_html.stage_toolbar("Adjust parameters, then press Play")}
+  <svg id="btree-svg" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg"></svg>
 </section>
 """
 
@@ -87,6 +99,10 @@ def render() -> str:
     <div class="item"><p class="label">Complexity</p><p class="value" id="out-complexity">O(log n)</p></div>
   </div>
   <div class="explanation" id="out-explanation"></div>
+  <div class="complexity-chart">
+    <p class="chart-title">Pages touched vs table size (log–log)</p>
+    <svg id="complexity-chart" viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
 </section>
 """
 
@@ -135,13 +151,11 @@ function innodbFanout(keySize, pageSize) {{
   var entry = keySize + INNODB_CHILD_POINTER_BYTES;
   return Math.max(2, Math.floor(usable / entry));
 }}
-
 function innodbTreeHeight(rows, fanOut) {{
   if (rows <= 0) return 2;
   if (rows <= fanOut) return 2;
   return Math.max(2, Math.ceil(Math.log(rows) / Math.log(fanOut)));
 }}
-
 function btreeCost(rows, keySize, pageSize, keyType) {{
   var fanOut = innodbFanout(keySize, pageSize);
   var height = innodbTreeHeight(rows, fanOut);
@@ -155,137 +169,206 @@ function btreeCost(rows, keySize, pageSize, keyType) {{
   }} else {{
     explanation = "Non-covering secondary: " + height + " levels on the secondary tree, then " + height + " more on the clustered tree to fetch the row. Two traversals.";
   }}
-  return {{
-    fanOut: fanOut,
-    height: height,
-    traversals: traversals,
-    pages: pages,
-    explanation: explanation
-  }};
+  return {{fanOut: fanOut, height: height, traversals: traversals, pages: pages, explanation: explanation}};
 }}
 
-// --------------- render the tree as SVG ---------------
-function renderTree(height, traversals, phase) {{
+// ---------- tree rendering ----------
+var W = 800, H = 400;
+var treeState = {{ height: 3, traversals: 1, nodes: [[],[]], token: null }};
+
+function buildTrees(height, traversals) {{
   var svg = document.getElementById("btree-svg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
-
-  var W = 800, H = 360;
-  var treeCount = traversals;
-  var treeWidth = W / treeCount;
-  var treeLabels = (traversals === 2) ? ["Secondary index", "Clustered PK tree"] : [null];
-  var defaultLabel = (treeCount === 1) ? "Clustered PK tree" : "Secondary index";
-
-  for (var t = 0; t < treeCount; t++) {{
+  treeState.height = height;
+  treeState.traversals = traversals;
+  treeState.nodes = [[], []];
+  var treeWidth = W / traversals;
+  var levels = Math.min(height, 4);
+  var levelY = [70, 150, 230, 310];
+  var treeNames = (traversals === 2) ? ["Secondary B+tree — idx_users_email", "Clustered B+tree — users (PK)"] : ["Clustered B+tree — users (PK)"];
+  for (var t = 0; t < traversals; t++) {{
     var ox = t * treeWidth;
-    var label = (treeLabels[t] !== null) ? treeLabels[t] : defaultLabel;
+    var heading = anim.svgEl("text", {{
+      x: ox + treeWidth/2, y: 32, "text-anchor": "middle",
+      "font-size": 13, "font-weight": 700, fill: "#1f2937"
+    }});
+    heading.textContent = treeNames[t];
+    svg.appendChild(heading);
 
-    // Tree title
-    var titleEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    titleEl.setAttribute("x", ox + treeWidth/2);
-    titleEl.setAttribute("y", 22);
-    titleEl.setAttribute("text-anchor", "middle");
-    titleEl.setAttribute("font-size", "12");
-    titleEl.setAttribute("font-weight", "600");
-    titleEl.setAttribute("fill", "#374151");
-    titleEl.textContent = label;
-    svg.appendChild(titleEl);
-
-    // Nodes per level
-    var levelY = [50, 130, 210, 290];
-    var levels = Math.min(height, 4);
+    var treeNodes = [];
     for (var lv = 0; lv < levels; lv++) {{
       var nodesAtLv = Math.min(Math.pow(2, lv), 8);
-      var isActive = (t === phase.tree && lv === phase.level);
-      var isVisited = (t < phase.tree) || (t === phase.tree && lv < phase.level);
+      var y = levelY[lv];
+      var levelNodes = [];
       for (var n = 0; n < nodesAtLv; n++) {{
-        var x = ox + ((n + 0.5) * (treeWidth / nodesAtLv)) - 18;
-        var y = levelY[lv];
+        var x = ox + ((n + 0.5) * (treeWidth / nodesAtLv)) - 22;
         var isOnPath = (n === Math.floor(nodesAtLv / 2));
-        var color = "#f3f4f6";
-        var stroke = "#d1d5db";
-        var sw = 1;
-        if (isOnPath && isVisited) {{ color = "#e0e7ff"; stroke = "#6366f1"; sw = 1.5; }}
-        if (isOnPath && isActive) {{ color = "#fde725"; stroke = "#ca8a04"; sw = 3; }}
-        var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        r.setAttribute("x", x);
-        r.setAttribute("y", y);
-        r.setAttribute("width", 36);
-        r.setAttribute("height", 18);
-        r.setAttribute("rx", 3);
-        r.setAttribute("fill", color);
-        r.setAttribute("stroke", stroke);
-        r.setAttribute("stroke-width", sw);
-        svg.appendChild(r);
+        var rect = anim.svgEl("rect", {{
+          x: x, y: y, width: 44, height: 22, rx: 4, ry: 4,
+          fill: "#f3f4f6", stroke: "#9ca3af", "stroke-width": 1
+        }});
+        svg.appendChild(rect);
+        var lvLbl = anim.svgEl("text", {{
+          x: x + 22, y: y + 15, "text-anchor": "middle",
+          "font-size": 9, fill: "#6b7280"
+        }});
+        lvLbl.textContent = (lv === 0) ? "root" : (lv === levels - 1 ? "leaf" : "L" + lv);
+        svg.appendChild(lvLbl);
+        levelNodes.push({{
+          rect: rect, label: lvLbl, cx: x + 22, cy: y + 11, onPath: isOnPath
+        }});
       }}
-      // Level label
-      var lvLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      lvLabel.setAttribute("x", ox + 6);
-      lvLabel.setAttribute("y", y + 13);
-      lvLabel.setAttribute("font-size", "9");
-      lvLabel.setAttribute("fill", "#6b7280");
-      lvLabel.textContent = (lv === 0) ? "root" : (lv === levels - 1 ? "leaf" : "L" + lv);
-      svg.appendChild(lvLabel);
+      treeNodes.push(levelNodes);
     }}
+    treeState.nodes[t] = treeNodes;
     if (height > 4) {{
-      var moreLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      moreLabel.setAttribute("x", ox + treeWidth/2);
-      moreLabel.setAttribute("y", 334);
-      moreLabel.setAttribute("text-anchor", "middle");
-      moreLabel.setAttribute("font-size", "10");
-      moreLabel.setAttribute("fill", "#6b7280");
-      moreLabel.textContent = "(" + height + " total levels)";
-      svg.appendChild(moreLabel);
+      var more = anim.svgEl("text", {{
+        x: ox + treeWidth/2, y: 370, "text-anchor": "middle",
+        "font-size": 11, fill: "#9ca3af", "font-style": "italic"
+      }});
+      more.textContent = "(" + height + " levels total — showing top 4)";
+      svg.appendChild(more);
     }}
+  }}
+
+  // Query token
+  var token = anim.svgEl("polygon", {{
+    points: "0,-9 9,0 0,9 -9,0",
+    fill: "#ff3d3d", stroke: "#991b1b", "stroke-width": 1.5,
+    opacity: 0, transform: "translate(0,0)"
+  }});
+  svg.appendChild(token);
+  treeState.token = token;
+}}
+
+function resetTreeColors() {{
+  for (var t = 0; t < treeState.nodes.length; t++) {{
+    for (var lv = 0; lv < treeState.nodes[t].length; lv++) {{
+      var lvlNodes = treeState.nodes[t][lv];
+      for (var n = 0; n < lvlNodes.length; n++) {{
+        lvlNodes[n].rect.setAttribute("fill", "#f3f4f6");
+        lvlNodes[n].rect.setAttribute("stroke", "#9ca3af");
+        lvlNodes[n].rect.setAttribute("stroke-width", 1);
+      }}
+    }}
+  }}
+  if (treeState.token) {{
+    treeState.token.setAttribute("opacity", 0);
+    treeState.token.setAttribute("transform", "translate(0,0)");
   }}
 }}
 
-// --------------- animation state ---------------
-var animState = {{ tree: 0, level: 0, height: 4, traversals: 1, playing: false, timer: null }};
+// ---------- timeline ----------
+var currentTimeline = null;
 
-function stepAnim() {{
-  animState.level += 1;
-  if (animState.level >= Math.min(animState.height, 4)) {{
-    animState.level = 0;
-    animState.tree += 1;
+function buildDescentTimeline() {{
+  resetTreeColors();
+  var tl = anim.timeline();
+  var token = treeState.token;
+  var levelsShown = Math.min(treeState.height, 4);
+  var phaseLabel = document.getElementById("phase-label");
+
+  for (var t = 0; t < treeState.traversals; t++) {{
+    (function(treeIdx) {{
+      tl.call(function() {{
+        var rootNode = treeState.nodes[treeIdx][0].find(function(n) {{ return n.onPath; }});
+        if (rootNode) {{
+          token.setAttribute("transform", "translate(" + rootNode.cx + "," + (rootNode.cy - 40) + ")");
+          token.setAttribute("opacity", 0);
+        }}
+        phaseLabel.textContent = (treeState.traversals === 2 ? (treeIdx === 0 ? "Walking idx_users_email (secondary)" : "Walking users PK (clustered)") : "Walking users PK (clustered)");
+      }});
+      tl.add({{
+        from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
+        onUpdate: function(v) {{ token.setAttribute("opacity", v); }}
+      }});
+      for (var lv = 0; lv < levelsShown; lv++) {{
+        (function(levelIdx) {{
+          var activeNode = treeState.nodes[treeIdx][levelIdx].find(function(n) {{ return n.onPath; }});
+          if (!activeNode) return;
+          tl.call(function() {{
+            phaseLabel.textContent = "Tree " + (treeIdx + 1) + "/" + treeState.traversals +
+              " — descending to " + (levelIdx === 0 ? "root" : (levelIdx === levelsShown - 1 ? "leaf" : "level " + levelIdx));
+          }});
+          var currentPos;
+          if (levelIdx === 0) {{
+            currentPos = {{ x: activeNode.cx, y: activeNode.cy - 40 }};
+          }} else {{
+            var prev = treeState.nodes[treeIdx][levelIdx - 1].find(function(n) {{ return n.onPath; }});
+            currentPos = {{ x: prev.cx, y: prev.cy }};
+          }}
+          tl.add({{
+            from: currentPos,
+            to: {{ x: activeNode.cx, y: activeNode.cy }},
+            duration: 480, ease: anim.easeInOutCubic,
+            onUpdate: function(p) {{
+              token.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+            }},
+            onComplete: function() {{
+              activeNode.rect.setAttribute("fill", "#fde725");
+              activeNode.rect.setAttribute("stroke", "#ca8a04");
+              anim.pulse(activeNode.rect, 3, 1, 360);
+            }}
+          }});
+          tl.delay(160);
+        }})(lv);
+      }}
+      if (treeIdx < treeState.traversals - 1) {{
+        tl.delay(280);
+        tl.add({{
+          from: 1, to: 0, duration: 220, ease: anim.easeInCubic,
+          onUpdate: function(v) {{ token.setAttribute("opacity", v); }}
+        }});
+        tl.call(function() {{
+          phaseLabel.textContent = "Secondary-index leaf holds PK — now fetching row from clustered tree";
+        }});
+        tl.delay(280);
+      }}
+    }})(t);
   }}
-  if (animState.tree >= animState.traversals) {{
-    animState.tree = 0;
-    animState.level = 0;
-    pauseAnim();
-    document.getElementById("phase-label").textContent = "Complete — reset to replay";
-  }}
-  renderTree(animState.height, animState.traversals, animState);
-  if (animState.playing) {{
-    document.getElementById("phase-label").textContent =
-      "Walking tree " + (animState.tree + 1) + "/" + animState.traversals +
-      " — level " + animState.level;
-  }}
+  tl.call(function() {{
+    phaseLabel.textContent = "✓ Lookup complete — press Reset to replay";
+    teachRuntime.animationDone();
+  }});
+  return tl;
 }}
 
 function playAnim() {{
-  animState.playing = true;
-  document.getElementById("btn-play").textContent = "⏸ Pause";
-  animState.timer = setInterval(stepAnim, 700);
-}}
-function pauseAnim() {{
-  animState.playing = false;
-  document.getElementById("btn-play").textContent = "▶ Play";
-  if (animState.timer) {{ clearInterval(animState.timer); animState.timer = null; }}
+  if (currentTimeline) currentTimeline.stop();
+  currentTimeline = buildDescentTimeline();
+  currentTimeline.play();
 }}
 function resetAnim() {{
-  pauseAnim();
-  animState.tree = 0;
-  animState.level = 0;
-  document.getElementById("phase-label").textContent = "Ready";
-  renderTree(animState.height, animState.traversals, animState);
+  if (currentTimeline) currentTimeline.stop();
+  currentTimeline = null;
+  resetTreeColors();
+  document.getElementById("phase-label").textContent = "Ready — press Play";
 }}
 
-// --------------- main recompute ---------------
+// ---------- complexity chart ----------
+function renderChart(keySize, pageSize, keyType, currentRows) {{
+  var fanOut = innodbFanout(keySize, pageSize);
+  var traversals = (keyType === "secondary_noncovering") ? 2 : 1;
+  anim.complexityChart({{
+    svgId: "complexity-chart",
+    width: 560, height: 200,
+    xMin: 10, xMax: 1e10,
+    xLabel: "Rows in users table", yLabel: "Pages touched",
+    curves: [
+      {{ label: "This lesson's choice", color: "#2563eb",
+        fn: function(n) {{ return innodbTreeHeight(n, fanOut) * traversals; }} }},
+      {{ label: "Hypothetical linear scan", color: "#dc2626",
+        fn: function(n) {{ return Math.max(1, n / 400); }} }}
+    ],
+    current: {{ x: currentRows }}
+  }});
+}}
+
+// ---------- main recompute ----------
 function recompute() {{
   var c = teachRuntime.readControls();
   var rowIdx = Math.max(0, Math.min(ROW_SCALE.length - 1, Math.round(c.rows)));
   var rows = ROW_SCALE[rowIdx];
-  // Update rows pill to show real number
   var pill = document.querySelector('[data-pill-for="rows"]');
   if (pill) pill.textContent = teachRuntime.formatInt(rows);
 
@@ -298,28 +381,18 @@ function recompute() {{
   document.getElementById("out-height").textContent = cost.height + " levels";
   document.getElementById("out-traversals").textContent = cost.traversals;
   document.getElementById("out-pages").textContent = cost.pages + " pages";
-  document.getElementById("out-cold-io").textContent =
-    teachRuntime.formatBytes(cost.pages * pageSize);
-  document.getElementById("out-complexity").textContent =
-    (cost.traversals === 2) ? "O(log n) + O(log n)" : "O(log n)";
-  var expEl = document.getElementById("out-explanation");
-  expEl.textContent = cost.explanation;
+  document.getElementById("out-cold-io").textContent = teachRuntime.formatBytes(cost.pages * pageSize);
+  document.getElementById("out-complexity").textContent = (cost.traversals === 2) ? "O(log n) + O(log n)" : "O(log n)";
+  document.getElementById("out-explanation").textContent = cost.explanation;
 
-  animState.height = cost.height;
-  animState.traversals = cost.traversals;
-  renderTree(cost.height, cost.traversals, animState);
+  if (currentTimeline) {{ currentTimeline.stop(); currentTimeline = null; }}
+  buildTrees(cost.height, cost.traversals);
+  resetTreeColors();
+  renderChart(keySize, pageSize, keyType, rows);
 }}
 
-document.getElementById("btn-play").addEventListener("click", function() {{
-  if (animState.playing) pauseAnim(); else playAnim();
-}});
-document.getElementById("btn-step").addEventListener("click", function() {{
-  pauseAnim();
-  stepAnim();
-}});
-document.getElementById("btn-reset").addEventListener("click", resetAnim);
-
 teachRuntime.wire(recompute);
+teachRuntime.wireToolbar(playAnim, resetAnim);
 """
 
     return _html.render_page(

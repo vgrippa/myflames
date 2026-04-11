@@ -17,6 +17,8 @@ from __future__ import annotations
 import html
 from typing import Iterable
 
+from ._anim import ANIM_JS
+
 
 # System font stack — same one used by myflames/output_diagram.py.
 _FONT_STACK = (
@@ -142,12 +144,106 @@ section.stage {
   padding: 16px;
   margin-bottom: 20px;
 }
+.query-card {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+}
+.query-card .query-label {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.query-card .query-sql {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #0f172a;
+  white-space: pre-wrap;
+}
+.query-card .query-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.explainer-card {
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-left: 3px solid #059669;
+  border-radius: 4px;
+}
+.explainer-card .explainer-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #065f46;
+}
+.explainer-card .explainer-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: #064e3b;
+  line-height: 1.55;
+}
+.explainer-card .explainer-list li {
+  margin-bottom: 4px;
+}
+.explainer-card .explainer-list li:last-child {
+  margin-bottom: 0;
+}
 section.stage .stage-toolbar {
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
   font-size: 13px;
+}
+.stage-toolbar .speed-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-left: 6px;
+}
+.stage-toolbar select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12.5px;
+  background: #fff;
+  cursor: pointer;
+}
+.complexity-chart {
+  margin-top: 14px;
+  padding: 14px;
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.complexity-chart .chart-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.complexity-chart svg {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
 }
 button {
   padding: 6px 12px;
@@ -259,9 +355,14 @@ footer a { color: var(--muted); }
 """.replace("__FONT_STACK__", _FONT_STACK)
 
 
-# Minimal shared JS runtime used by every lesson. Each lesson's own
-# `<script>` can call ``teachRuntime.wire(recompute)`` to bind every
-# ``input``/``select`` in the controls section to a ``recompute`` callback.
+# Shared JS runtime used by every lesson. Provides:
+#  - teachRuntime.readControls(): reads every input/select in the controls
+#    section and updates the numeric pills.
+#  - teachRuntime.wire(recompute): binds recompute to every input/select
+#    and runs it once.
+#  - teachRuntime.wireToolbar(playFn, resetFn): binds the shared play/pause
+#    toggle, speed dropdown, and reset button.
+#  - teachRuntime.formatInt/Bytes/Ms: number formatters.
 _BASE_JS = """
 var teachRuntime = (function() {
   function formatInt(n) {
@@ -310,12 +411,70 @@ var teachRuntime = (function() {
     }
     recompute();
   }
+
+  // Wire the shared stage toolbar: play-pause toggle, speed dropdown, reset
+  function wireToolbar(playFn, resetFn) {
+    var btnPlay = document.getElementById("btn-play");
+    var btnReset = document.getElementById("btn-reset");
+    var selSpeed = document.getElementById("sel-speed");
+    var state = { running: false, paused: false };
+
+    function labelFor() {
+      if (!state.running) return "▶ Play";
+      if (state.paused) return "▶ Resume";
+      return "⏸ Pause";
+    }
+    function updateLabel() { if (btnPlay) btnPlay.textContent = labelFor(); }
+
+    // Lessons notify us when a timeline completes via teachRuntime.onAnimationDone
+    window._teachOnDone = function() {
+      state.running = false;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+    };
+
+    if (btnPlay) btnPlay.addEventListener("click", function() {
+      if (!state.running) {
+        state.running = true;
+        state.paused = false;
+        anim.setPaused(false);
+        updateLabel();
+        if (playFn) playFn();
+        return;
+      }
+      // Toggle pause
+      state.paused = !state.paused;
+      anim.setPaused(state.paused);
+      updateLabel();
+    });
+    if (btnReset) btnReset.addEventListener("click", function() {
+      state.running = false;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+      if (resetFn) resetFn();
+    });
+    if (selSpeed) selSpeed.addEventListener("change", function() {
+      anim.setSpeed(Number(selSpeed.value));
+    });
+    // Set initial speed from the dropdown's default
+    if (selSpeed) anim.setSpeed(Number(selSpeed.value));
+  }
+
+  // Helper that lesson code calls when its animation reaches the end.
+  function animationDone() {
+    if (typeof window._teachOnDone === "function") window._teachOnDone();
+  }
+
   return {
     formatInt: formatInt,
     formatBytes: formatBytes,
     formatMs: formatMs,
     readControls: readControls,
-    wire: wire
+    wire: wire,
+    wireToolbar: wireToolbar,
+    animationDone: animationDone
   };
 })();
 """
@@ -324,6 +483,59 @@ var teachRuntime = (function() {
 def esc(s: str) -> str:
     """HTML-escape *s*."""
     return html.escape(s, quote=True)
+
+
+def explainer(title: str, bullets: list) -> str:
+    """Render a small 'what you'll see in the animation' card.
+
+    Prepended above the stage to orient first-time viewers before they
+    press Play. Every lesson should have one — the animation-expert
+    skill flags 'silent phase transitions' as a top ugliness signal.
+    """
+    items = "".join(f"<li>{esc(b)}</li>" for b in bullets)
+    return f"""
+<div class="explainer-card">
+  <p class="explainer-title">{esc(title)}</p>
+  <ul class="explainer-list">{items}</ul>
+</div>
+"""
+
+
+def query_card(sql: str, note: str = "") -> str:
+    """Render a small SQL query card that sits above a lesson's stage.
+
+    Uses real table names so the animation tracks something the user
+    actually recognises from their own schemas. The SQL is the query
+    that the lesson's algorithm would be asked to execute.
+    """
+    note_html = f'<p class="query-note">{esc(note)}</p>' if note else ""
+    return f"""
+<div class="query-card">
+  <p class="query-label">Example query this animation executes</p>
+  <pre class="query-sql">{esc(sql)}</pre>
+  {note_html}
+</div>
+"""
+
+
+def stage_toolbar(status_text: str = "Ready — press Play") -> str:
+    """Render the shared stage toolbar: play/pause toggle, speed dropdown,
+    reset button, and a status-label span. Every lesson uses this."""
+    return f"""
+<div class="stage-toolbar">
+  <button id="btn-play" class="primary">▶ Play</button>
+  <button id="btn-reset">Reset</button>
+  <label for="sel-speed" class="speed-label">Speed:</label>
+  <select id="sel-speed" aria-label="Animation speed">
+    <option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option>
+    <option value="2">2×</option>
+    <option value="4">4×</option>
+  </select>
+  <span style="margin-left:auto;font-size:12px;color:#6b7280" id="phase-label">{esc(status_text)}</span>
+</div>
+"""
 
 
 def render_page(
@@ -370,7 +582,8 @@ def render_page(
     <p>Generated by <a href="https://github.com/vgrippa/myflames">myflames teach</a> —
     interactive database algorithm lessons. Offline-first, stdlib-only.</p>
   </footer>
-  <script>{_BASE_JS}
+  <script>{ANIM_JS}
+{_BASE_JS}
 {lesson_js}
   </script>
 </body>

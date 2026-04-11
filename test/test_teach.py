@@ -343,31 +343,166 @@ class TestTeachCLI(unittest.TestCase):
             self.assertIn("-apple-system", html, f"{name} missing system font")
             self.assertIn("BlinkMacSystemFont", html, f"{name} missing system font")
 
-    def test_btree_rendertree_signature_and_arity(self):
-        """Regression guard: the original `function renderTree(height, traversals,
-        activeLevel, phase)` signature left `phase` undefined at every call site
-        (all three callers passed 3 args), so `phase.tree` crashed with
-        'Cannot read properties of undefined'. Lock in the fixed 3-arg signature
-        and assert every call site passes exactly 3 arguments.
+    def test_all_lessons_embed_shared_anim_runtime(self):
+        """Every lesson must pull in the shared `anim` runtime from _anim.py.
+        This is what guarantees easing math, timing, and reduced-motion
+        behaviour stays consistent across lessons — no copy-paste drift.
+
+        Regression guard: the earlier blank-page bug in btree.html came
+        from each lesson hand-rolling its own ad-hoc animation loop. The
+        shared runtime eliminates that class of bug.
         """
         import re
-        html = render_lesson("btree")
-        self.assertIn(
-            "function renderTree(height, traversals, phase)", html,
-            "btree lesson renderTree signature regressed — must be "
-            "(height, traversals, phase), not (height, traversals, "
-            "activeLevel, phase)",
-        )
-        # Every call site must pass exactly 3 arguments. Use a negative
-        # lookbehind to exclude the `function renderTree(` declaration.
-        calls = re.findall(r"(?<!function )renderTree\(([^)]*)\)", html)
-        self.assertGreater(len(calls), 0, "no renderTree call sites found")
-        for sig in calls:
-            arity = len([p for p in sig.split(",") if p.strip()])
-            self.assertEqual(
-                arity, 3,
-                f"renderTree call site has {arity} args, not 3: renderTree({sig})",
+        # Signature lines from _anim.py that every lesson must have inlined
+        shared_markers = [
+            "var anim = (function() {",
+            "function easeOutCubic(t)",
+            "function easeInOutCubic(t)",
+            "function easeOutBack(t)",
+            "function tween(opts)",
+            "function timeline()",
+            "reducedMotion",
+        ]
+        # And every lesson's own JS must actually *use* the runtime. We allow
+        # any of the public API calls — some lessons use anim.timeline()
+        # which dispatches to anim.tween internally, others call anim.tween
+        # directly.
+        usage_any_of = [
+            "anim.timeline(", "anim.tween(", "anim.pulse(", "anim.path(",
+        ]
+
+        for name in LESSONS:
+            html = render_lesson(name)
+            for marker in shared_markers:
+                self.assertIn(
+                    marker, html,
+                    f"lesson {name!r} is missing shared runtime marker: {marker!r}",
+                )
+            # anim.svgEl is used by everyone to create SVG elements
+            self.assertIn(
+                "anim.svgEl(", html,
+                f"lesson {name!r} does not use anim.svgEl — did it bypass the shared runtime?",
             )
+            # And must use at least one motion primitive
+            self.assertTrue(
+                any(u in html for u in usage_any_of),
+                f"lesson {name!r} does not call any of {usage_any_of!r} — "
+                f"animation is not wired through the shared runtime",
+            )
+
+    def test_all_lessons_have_play_button(self):
+        """Every lesson must expose a Play button — animation without
+        user control is disallowed by the animation-expert skill."""
+        import re
+        for name in LESSONS:
+            html = render_lesson(name)
+            # Must have an id="btn-play" element (button or similar)
+            self.assertRegex(
+                html, r'id="btn-play"',
+                f"lesson {name!r} missing id=btn-play — every lesson needs a Play button",
+            )
+
+    def test_all_lessons_have_speed_dropdown(self):
+        """Every lesson must expose a speed dropdown — user requested the
+        ability to control playback speed."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            self.assertIn(
+                'id="sel-speed"', html,
+                f"lesson {name!r} missing speed dropdown (id=sel-speed)",
+            )
+            # Must offer at least these values
+            for val in ["0.25", "0.5", "1", "2", "4"]:
+                self.assertIn(
+                    f'value="{val}"', html,
+                    f"lesson {name!r} missing speed option {val}×",
+                )
+
+    def test_anim_runtime_supports_pause_and_speed(self):
+        """Runtime guards: the shared _anim.py must expose setPaused,
+        isPaused, setSpeed, and getSpeed so lessons can implement the
+        pause-and-speed toolbar."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            for api in ["setPaused", "isPaused", "setSpeed", "getSpeed", "animationDone"]:
+                self.assertIn(
+                    api, html,
+                    f"lesson {name!r} missing {api} from shared anim runtime",
+                )
+
+    def test_all_lessons_have_query_card(self):
+        """Every lesson must show a real SQL query above the animation so
+        users see meaningful table names instead of 'outer table'."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            self.assertIn(
+                'class="query-card"', html,
+                f"lesson {name!r} missing query-card (real SQL example)",
+            )
+            self.assertIn(
+                "SELECT", html,
+                f"lesson {name!r} query-card has no SELECT statement",
+            )
+
+    def test_all_lessons_have_explainer(self):
+        """Every lesson must start with a 'what you'll see' explainer so
+        first-time viewers understand the animation before pressing Play."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            self.assertIn(
+                'class="explainer-card"', html,
+                f"lesson {name!r} missing explainer card",
+            )
+            # The apostrophe is HTML-escaped by esc(), so match both forms
+            self.assertTrue(
+                ("What you&#x27;ll see" in html) or ("What you'll see" in html),
+                f"lesson {name!r} explainer missing 'What you\\'ll see' title",
+            )
+
+    def test_all_lessons_have_complexity_chart(self):
+        """Every lesson must include a live complexity chart so users can
+        see how the cost function scales with input size."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            self.assertIn(
+                'id="complexity-chart"', html,
+                f"lesson {name!r} missing complexity-chart svg",
+            )
+            self.assertIn(
+                "complexityChart", html,
+                f"lesson {name!r} does not call anim.complexityChart",
+            )
+
+    def test_lessons_use_meaningful_table_names(self):
+        """No lesson should refer to 'outer table' / 'inner table' / 't1 ⋈ t2'
+        as the primary animation label — the user asked for real table names.
+        We allow the terms in explainer bullets (where they explain the concept)
+        but the SQL and chart labels must use real names."""
+        # Real table names we expect to see somewhere in each lesson
+        expected_tables = {
+            "btree": ["users"],
+            "bnl": ["customers", "orders"],
+            "hash": ["departments", "employees"],
+            "join": ["customers", "orders"],
+            "lru": ["events"],
+        }
+        for name, names in expected_tables.items():
+            html = render_lesson(name)
+            for table in names:
+                self.assertIn(
+                    table, html,
+                    f"lesson {name!r} does not mention real table {table!r}",
+                )
+
+    def test_join_lesson_clarifies_row_pair_comparisons(self):
+        """Regression: the comparison lesson used to say 'rows examined'
+        with a giant number that confused users — '10.10B of what?'. Make
+        sure we now say 'row-pair comparisons' so the unit is obvious."""
+        html = render_lesson("join")
+        self.assertIn(
+            "row-pair comparison", html,
+            "join lesson must label BNL cost as 'row-pair comparisons', not 'rows examined'",
+        )
 
 
 if __name__ == "__main__":
