@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.1] — 2026-04-13
 
-Maintenance release focused on **repo hygiene and maintainability**.
+Feature and maintenance release adding **interactive teach lessons**,
+**modernized Visual Explain diagrams**, and a thorough repo cleanup.
+
+### Added
+
+- **Interactive algorithm teach lessons (`myflames/teach/`)** — five
+  self-contained, animated HTML lessons that visualize how MySQL internals
+  work: **B-tree index lookup**, **Block Nested Loop (BNL)**, **Hash Join**,
+  **Join algorithm comparison**, and **LRU buffer pool cache**.
+  - YouTube-style scrubber for stepping through animation frames.
+  - Interactive complexity charts showing algorithmic cost curves.
+  - Pause, speed control, and real SQL examples baked into each lesson.
+  - Rendered demos served via GitHub Pages at `docs/teach/`.
+- **Modernized Visual Explain diagram** — hotspot layer with viridis
+  heat-map palette, borders-only hotspot marks, and WCAG-compliant text
+  contrast.
 
 ### Removed
 
