@@ -16,3 +16,6 @@ myflames = "myflames.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["myflames*"]
+
+[tool.setuptools.package-data]
+myflames = ["*.css", "*.js"]
