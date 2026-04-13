@@ -53,7 +53,6 @@ from myflames.parser import (
     flatten_nodes,
     build_flame_entries,
     analyze_plan,
-    render_analysis_panel,
     render_info_panel,
     format_sql,
     _col_refs_for_table,
@@ -814,37 +813,6 @@ class TestAnalysis(unittest.TestCase):
             self.assertIsInstance(h["short_label"], str)
             self.assertIsInstance(h["message"], str)
 
-    # --- render_analysis_panel ---
-
-    def test_render_analysis_panel_returns_tuple(self):
-        root = parse_explain(_load(self.COMPLEX))
-        a = analyze_plan(root)
-        result = render_analysis_panel(a, 0, 0, 1200)
-        self.assertIsInstance(result, tuple)
-        self.assertEqual(len(result), 2)
-
-    def test_render_analysis_panel_lines_are_strings(self):
-        root = parse_explain(_load(self.COMPLEX))
-        a = analyze_plan(root)
-        lines, h = render_analysis_panel(a, 0, 0, 1200)
-        self.assertIsInstance(lines, list)
-        for line in lines:
-            self.assertIsInstance(line, str)
-
-    def test_render_analysis_panel_positive_height(self):
-        root = parse_explain(_load(self.COMPLEX))
-        a = analyze_plan(root)
-        _, h = render_analysis_panel(a, 0, 0, 1200)
-        self.assertGreater(h, 0)
-
-    def test_render_analysis_panel_contains_rect(self):
-        root = parse_explain(_load(self.COMPLEX))
-        a = analyze_plan(root)
-        lines, _ = render_analysis_panel(a, 10, 100, 800)
-        svg = "\n".join(lines)
-        self.assertIn("<rect", svg)
-        self.assertIn("<text", svg)
-
     def test_render_info_panel_single_block(self):
         """Consolidated panel contains both 'How to read' and 'Query Analysis'."""
         root = parse_explain(_load(self.COMPLEX))
@@ -964,34 +932,6 @@ class TestAnalysis(unittest.TestCase):
             any("antijoin" in f.lower() for f in a["optimizer_features"]),
             f"Expected antijoin in {a['optimizer_features']}",
         )
-
-    # --- render_analysis_panel edge cases ---
-
-    def test_render_analysis_panel_empty_analysis(self):
-        """Panel with no features/warnings/suggestions still renders 'None detected' and valid SVG."""
-        a = {
-            "full_scans": [],
-            "hash_joins": [],
-            "temp_tables": [],
-            "filesorts": [],
-            "optimizer_features": [],
-            "warnings": [],
-            "suggestions": [],
-        }
-        lines, h = render_analysis_panel(a, 0, 0, 800)
-        svg = "\n".join(lines)
-        self.assertIn("Query Analysis", svg)
-        self.assertIn("None detected", svg)
-        self.assertGreater(h, 0)
-        self.assertIn("<rect", svg)
-
-    def test_render_analysis_panel_position_reflected_in_output(self):
-        root = parse_explain(_load(self.COMPLEX))
-        a = analyze_plan(root)
-        lines, _ = render_analysis_panel(a, 100, 200, 600)
-        svg = "\n".join(lines)
-        self.assertIn('x="100"', svg)
-        self.assertIn('y="200"', svg)
 
     # --- filesort suggestion text ---
 
@@ -1469,11 +1409,11 @@ class TestDocumentation(unittest.TestCase):
             r'\(https://vgrippa\.github\.io/myflames/demos/([^)]+\.html)\)', readme
         )
         self.assertGreater(len(linked), 0, "No demo HTML links found in README")
-        for fname in linked:
-            local = os.path.join(self.DOCS_DEMOS, fname)
+        for rel_path in linked:
+            local = os.path.join(self.DOCS_DEMOS, rel_path)
             self.assertTrue(
                 os.path.exists(local),
-                f"README links to {fname!r} but docs/demos/{fname} does not exist",
+                f"README links to {rel_path!r} but docs/demos/{rel_path} does not exist",
             )
 
     # ---- CLI options match README ----
@@ -1753,23 +1693,26 @@ class TestDocumentation(unittest.TestCase):
             )
 
     def test_all_demo_html_files_reference_existing_svgs(self):
-        """Every .html in docs/demos/ that embeds an SVG must have that SVG file present."""
+        """Every .html in docs/demos/ (including subdirs) that embeds an SVG must have that SVG file present."""
         import re
         demos_dir = self.DOCS_DEMOS
         if not os.path.isdir(demos_dir):
             self.skipTest("docs/demos/ directory does not exist")
-        html_files = [f for f in os.listdir(demos_dir) if f.endswith(".html")]
+        html_files = []
+        for dirpath, _dirs, files in os.walk(demos_dir):
+            for f in files:
+                if f.endswith(".html"):
+                    html_files.append(os.path.join(dirpath, f))
         self.assertGreater(len(html_files), 0, "No HTML files found in docs/demos/")
-        for fname in sorted(html_files):
-            html_path = os.path.join(demos_dir, fname)
+        for html_path in sorted(html_files):
             with open(html_path, encoding="utf-8") as f:
                 content = f.read()
             svgs = re.findall(r'<object[^>]+data="([^"]+\.svg)"', content)
             for svg_ref in svgs:
-                svg_path = os.path.join(demos_dir, svg_ref)
+                svg_path = os.path.join(os.path.dirname(html_path), svg_ref)
                 self.assertTrue(
                     os.path.exists(svg_path),
-                    f"docs/demos/{fname} references '{svg_ref}' which does not exist",
+                    f"{html_path} references '{svg_ref}' which does not exist",
                 )
 
 
@@ -2342,6 +2285,9 @@ class TestHTMLReport(unittest.TestCase):
             self.assertIn("Print", html, "Missing print button")
             self.assertIn("Warnings", html, "Missing warnings section")
             self.assertIn("Suggestions", html, "Missing suggestions section")
+            self.assertIn("__MYFLAMES_TEACH_HOOKS", html, "Teach hook bridge missing")
+            self.assertIn('id="teach-dialog"', html, "Teach dialog shell missing")
+            self.assertIn("Learn This Operator", html, "Teach CTA missing")
         finally:
             os.unlink(tmp_path)
 
@@ -2378,6 +2324,24 @@ class TestHTMLReport(unittest.TestCase):
         self.assertIn("<!DOCTYPE html>", html)
         self.assertIn("<svg", html)
         self.assertIn("Test Report", html)
+        self.assertIn("teach_hooks", html)
+
+    @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
+    def test_svg_outputs_embed_teach_node_attributes(self):
+        with open(HASH_JOIN_FIXTURE) as f:
+            json_text = f.read()
+        root = parse_explain(json_text)
+        analysis = analyze_plan(root)
+        from myflames.teach_hooks import build_teach_hooks, build_teach_index_maps
+        maps = build_teach_index_maps(build_teach_hooks(root))
+        svg_bar = render_bargraph(
+            root, analysis=analysis, teach_index_by_folded=maps["by_folded_label"]
+        )
+        svg_diagram = render_diagram(
+            root, analysis=analysis, teach_index_by_folded=maps["by_folded_label"]
+        )
+        self.assertIn('data-teach-index="', svg_bar)
+        self.assertIn('data-teach-index="', svg_diagram)
 
 
 class TestCompare(unittest.TestCase):

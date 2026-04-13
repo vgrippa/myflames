@@ -1,2 +1,0 @@
-# MySQL EXPLAIN Flame Graphs - Python
-# No external dependencies; requires Python 3.7+
