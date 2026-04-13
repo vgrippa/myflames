@@ -1407,7 +1407,7 @@ def render() -> str:
 <section class="readout">
   <h2>Cost readout (filesort)</h2>
   <div class="readout-grid">
-    <div class="item"><p class="label">Sort algorithm {ht("MySQL picks: radix sort (key \u2264 16 B), introsort (general case), or priority queue (small LIMIT). See sql/filesort.cc.")}</p><p class="value" id="out-alg">\u2014</p></div>
+    <div class="item"><p class="label">Sort algorithm {ht("MySQL picks: radix sort (key ≤ 16 B), introsort (general case), or priority queue (small LIMIT). See sql/filesort.cc.")}</p><p class="value" id="out-alg">\u2014</p></div>
     <div class="item"><p class="label">Rows per run {ht("How many rows fit in sort_buffer_size. More rows per run = fewer total runs = less disk I/O.")}</p><p class="value" id="out-rpr">\u2014</p></div>
     <div class="item"><p class="label">Sorted runs {ht("Each run is a sorted chunk written to tmpdir. The inner table is merged across all runs in the merge phase.")}</p><p class="value" id="out-runs">\u2014</p></div>
     <div class="item"><p class="label">Merge passes {ht("How many times the merge must re-read all rows. MySQL merges up to ~15 runs per pass. More runs = more passes.")}</p><p class="value" id="out-merges">\u2014</p></div>
