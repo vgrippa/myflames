@@ -5,6 +5,34 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] — 2026-04-13
+
+Maintenance release focused on **repo hygiene and maintainability**.
+
+### Removed
+
+- **4 legacy root-level Python scripts** (`mysql_explain.py`,
+  `mysql_explain_bargraph.py`, `mysql_explain_flamegraph.py`,
+  `stackcollapse_mysql_explain_json.py`) — thin wrappers superseded by
+  the unified `myflames` CLI entry point since v1.0.
+- **91 legacy Linux perf test fixtures** (`test/perf-*.txt`,
+  `test/results/`) — inherited from the original FlameGraph fork,
+  unused by the MySQL-focused test suite.
+- **Dead code**: `render_analysis_panel()` from `parser.py` (replaced by
+  `render_info_panel()`), plus 6 associated tests.
+- **Empty `requirements.txt`** — `pyproject.toml` is the authoritative
+  dependency spec.
+
+### Changed
+
+- **Extracted inline CSS/JS from `output_html_report.py`** into separate
+  `output_html_report.css` (369 lines) and `output_html_report.js`
+  (138 lines) files for proper syntax highlighting, linting, and cleaner
+  diffs. Module reduced from 1261 to 758 lines.
+- **Moved internal dev artifacts** out of `docs/`:
+  - `docs/prompts/` → `.claude/prompts/`
+  - `docs/teach/ALGORITHM_ROADMAP.md` → `.claude/ALGORITHM_ROADMAP.md`
+
 ## [1.3.0] — 2026-04-10
 
 A large quality-of-life release focused on **three audiences at once**:

@@ -26,6 +26,7 @@ HTML owns the panels, selectable and glossary-aware. A standalone SVG
 it works on its own.
 """
 import json
+import os as _os
 import re as _re
 
 from .parser import (
@@ -41,6 +42,8 @@ from .glossary import (
     generate_executive_summary,
 )
 from .output_sidecar import build_sidecar, _compute_plan_summary
+from .teach import render_lesson
+from .teach_hooks import build_teach_hooks, build_teach_index_maps
 
 
 # ---------------------------------------------------------------------------
@@ -64,23 +67,29 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
         enhance_tooltip_flame,
     )
 
+    teach_index_by_folded = kwargs.get("teach_index_by_folded") or {}
+
     if view_type == "bargraph":
         return render_bargraph(
             root, width=width, title=title,
             unit_display=unit, total_time=root["total_time"],
             analysis=None,
+            teach_index_by_folded=teach_index_by_folded,
         )
     if view_type == "treemap":
         return render_treemap(
             root, width=width, title=title, unit_display=unit, analysis=None,
+            teach_index_by_folded=teach_index_by_folded,
         )
     if view_type == "diagram":
         return render_diagram(
             root, width=width, title=title, unit_display=unit, analysis=None,
+            teach_index_by_folded=teach_index_by_folded,
         )
     if view_type == "tree":
         return render_tree(
             root, width=width, title=title, unit_display=unit, analysis=None,
+            teach_index_by_folded=teach_index_by_folded,
         )
 
     # flamegraph (default)
@@ -105,6 +114,7 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
         countname=unit,
         inverted=kwargs.get("inverted", False),
         colors=kwargs.get("colors", "hot"),
+        teach_index_by_folded=teach_index_by_folded,
     )
     # Enhance tooltips with parser details (still useful on hover).
     op_details = {n["folded_label"]: n["details"] for n in _flat(root)}
@@ -302,9 +312,56 @@ def _render_viz_card(svg_embed, view_type):
     return (
         '<section class="viz-card" aria-labelledby="viz-heading">\n'
         '  <h2 id="viz-heading">Execution plan ({})</h2>\n'
+        '  <div class="teach-cta-row">\n'
+        '    <p id="teach-cta-hint" class="teach-cta-hint">Click a plan operator to inspect details.</p>\n'
+        '    <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>\n'
+        '  </div>\n'
         '  <div class="chart-panel" id="chart-panel">\n{}\n  </div>\n'
         '</section>'
     ).format(xml_escape(view_type), svg_embed)
+
+
+def _render_teach_templates(sidecar):
+    hooks = sidecar.get("teach_hooks") or []
+    lessons = []
+    seen = set()
+    for hook in hooks:
+        lesson = (hook.get("lesson") or "").strip()
+        if not lesson or lesson in seen:
+            continue
+        seen.add(lesson)
+        lessons.append(lesson)
+    if not lessons:
+        return ""
+    parts = ['<section class="teach-assets" aria-hidden="true">']
+    for lesson in lessons:
+        try:
+            html = render_lesson(lesson)
+        except Exception:
+            continue
+        parts.append(
+            '<template id="teach-tpl-{}" data-lesson="{}">{}</template>'.format(
+                xml_escape(lesson), xml_escape(lesson), html
+            )
+        )
+    parts.append("</section>")
+    parts.append(
+        '<dialog id="teach-dialog" class="teach-dialog" aria-modal="true" aria-labelledby="teach-dialog-title">'
+        '<div class="teach-dialog-shell">'
+        '<header class="teach-dialog-header">'
+        '<div class="teach-dialog-titles">'
+        '<h2 id="teach-dialog-title">Teach: Operator deep dive</h2>'
+        '<p id="teach-dialog-subtitle"></p>'
+        '</div>'
+        '<button id="teach-dialog-close" type="button" aria-label="Close teach panel">Close</button>'
+        '</header>'
+        '<div class="teach-dialog-body">'
+        '<iframe id="teach-dialog-frame" title="Teach lesson" sandbox="allow-scripts allow-same-origin"></iframe>'
+        '</div>'
+        '</div>'
+        '</dialog>'
+    )
+    return "\n".join(parts)
 
 
 def _render_warnings(sidecar):
@@ -527,326 +584,13 @@ def _render_raw_sidecar(sidecar):
 # Top-level template
 # ---------------------------------------------------------------------------
 
-_CSS = r"""
-:root {
-  --bg: #f5f6fa;
-  --card: #ffffff;
-  --fg: #1a1a2e;
-  --muted: #5a6475;
-  --border: #e0e4ec;
-  --accent: #283593;
-  --accent-soft: #e8eaf6;
+_DIR = _os.path.dirname(_os.path.abspath(__file__))
 
-  /* Severity palette (from progressive-ux skill) */
-  --sev-error: #b71c1c;
-  --sev-warn: #ef6c00;
-  --sev-info: #0d47a1;
-  --sev-ok: #1b5e20;
+with open(_os.path.join(_DIR, "output_html_report.css"), encoding="utf-8") as _f:
+    _CSS = _f.read()
 
-  --sev-high: var(--sev-error);
-  --sev-medium: var(--sev-warn);
-  --sev-low: var(--sev-info);
-
-  --code-bg: #263238;
-  --code-fg: #eceff1;
-  --code-str: #c3e88d;
-  --code-kw: #82aaff;
-}
-
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
-body {
-  background: var(--bg); color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  line-height: 1.55;
-  font-size: 14px;
-}
-.visually-hidden {
-  position: absolute !important; width: 1px; height: 1px;
-  padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
-  white-space: nowrap; border: 0;
-}
-.skip-link {
-  position: absolute; top: -40px; left: 0;
-  background: var(--accent); color: #fff; padding: 8px 16px;
-  z-index: 100; text-decoration: none;
-}
-.skip-link:focus { top: 0; }
-
-/* Header */
-.site-header {
-  background: #1a1a2e; color: #fff;
-  padding: 14px 24px;
-  display: flex; align-items: center; justify-content: space-between;
-  flex-wrap: wrap; gap: 12px;
-}
-.site-header h1 {
-  font-size: 17px; font-weight: 600; margin: 0;
-}
-.site-header nav.toolbar {
-  display: flex; gap: 8px; flex-wrap: wrap;
-}
-.site-header nav.toolbar button {
-  padding: 6px 14px; border: 1px solid rgba(255,255,255,0.3);
-  border-radius: 6px; background: rgba(255,255,255,0.06);
-  color: #fff; font-size: 12px; cursor: pointer;
-}
-.site-header nav.toolbar button:hover { background: rgba(255,255,255,0.15); }
-.site-header nav.toolbar button:focus { outline: 2px solid #fff; outline-offset: 2px; }
-
-/* Main layout */
-main.report {
-  max-width: 1400px; margin: 24px auto; padding: 0 24px;
-  display: flex; flex-direction: column; gap: 20px;
-}
-main.report > section,
-main.report > details,
-main.report > aside {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: 10px; padding: 18px 22px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-main.report h2 {
-  font-size: 15px; font-weight: 600; color: var(--fg);
-  margin: 0 0 12px 0; display: inline-flex; align-items: baseline; gap: 8px;
-}
-main.report h2 .count {
-  color: var(--muted); font-weight: 400; font-size: 13px;
-}
-
-/* Exec summary strip */
-.exec-summary .exec-text {
-  font-size: 16px; font-weight: 500; color: var(--fg);
-  margin: 0 0 14px 0;
-}
-.exec-summary .quick-stats {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px; margin: 0;
-}
-.exec-summary .quick-stats > div {
-  background: var(--accent-soft); border-radius: 6px;
-  padding: 10px 14px; text-align: left;
-}
-.exec-summary .quick-stats dt {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
-  color: var(--muted); margin-bottom: 2px;
-}
-.exec-summary .quick-stats dd {
-  font-size: 18px; font-weight: 700; color: var(--accent); margin: 0;
-}
-
-/* Primary action card */
-.primary-action {
-  border-left: 4px solid var(--sev-medium);
-  background: #fff9f3;
-}
-.primary-action.sev-high { border-left-color: var(--sev-high); background: #fff3f3; }
-.primary-action.sev-low  { border-left-color: var(--sev-low);  background: #f1f8ff; }
-.primary-action-header {
-  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
-}
-.primary-action-header h2 { margin: 0; font-size: 15px; }
-.primary-action .action-text {
-  font-size: 15px; color: var(--fg); margin: 8px 0;
-}
-.primary-action .sql-action {
-  background: var(--code-bg); color: var(--code-fg);
-  padding: 12px 16px; border-radius: 6px; margin: 8px 0;
-  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-  font-size: 13px; overflow-x: auto;
-}
-.primary-action details.why-details {
-  margin-top: 10px; background: rgba(255,255,255,0.5);
-  border-radius: 6px; padding: 8px 12px;
-}
-.primary-action details.why-details summary {
-  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted);
-}
-.primary-action details.why-details[open] summary { margin-bottom: 6px; }
-
-/* Severity badges */
-.badge {
-  display: inline-block; padding: 2px 10px; border-radius: 12px;
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.6px; background: var(--muted); color: #fff;
-}
-.badge-high,  .badge-error { background: var(--sev-error); }
-.badge-medium, .badge-warn { background: var(--sev-warn); }
-.badge-low,   .badge-info  { background: var(--sev-info); }
-.badge-ok                  { background: var(--sev-ok); }
-
-/* Query card */
-.query-card pre {
-  background: var(--code-bg); color: var(--code-fg);
-  padding: 14px 18px; border-radius: 8px;
-  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-  font-size: 13px; line-height: 1.55;
-  white-space: pre-wrap; word-break: break-word;
-  overflow-x: auto; margin: 0;
-}
-
-/* Visualization */
-.viz-card .chart-panel {
-  overflow-x: auto; padding: 4px; background: #fff;
-  border-radius: 6px; border: 1px solid var(--border);
-}
-.viz-card svg { display: block; max-width: 100%; height: auto; }
-
-/* Warnings + suggestions lists */
-.warning-list, .suggestion-list {
-  list-style: none; padding: 0; margin: 0;
-  display: flex; flex-direction: column; gap: 10px;
-}
-.warning, .suggestion {
-  background: var(--bg); border-radius: 8px; padding: 12px 14px;
-  border-left: 3px solid var(--muted);
-  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 6px;
-}
-.warning.sev-error, .suggestion.sev-high    { border-left-color: var(--sev-high); }
-.warning.sev-warn,  .suggestion.sev-medium  { border-left-color: var(--sev-warn); }
-.warning.sev-info,  .suggestion.sev-low     { border-left-color: var(--sev-info); }
-.warning .text, .suggestion .action-text { margin: 0; grid-column: 2; }
-.warning .where { grid-column: 2; font-size: 12px; color: var(--muted); margin: 0; }
-.suggestion .sql-action {
-  grid-column: 1 / -1;
-  background: var(--code-bg); color: var(--code-fg);
-  padding: 10px 14px; border-radius: 6px; margin: 0;
-  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-  font-size: 12.5px; overflow-x: auto;
-}
-.suggestion details.why-details {
-  grid-column: 1 / -1; margin-top: 4px; background: var(--accent-soft);
-  border-radius: 6px; padding: 8px 12px; font-size: 13px;
-}
-.suggestion details.why-details summary {
-  cursor: pointer; font-weight: 600; color: var(--accent);
-}
-.suggestion details.why-details p {
-  margin: 6px 0 0 0; color: var(--fg);
-}
-.node-label {
-  display: inline-block; padding: 1px 6px; border-radius: 4px;
-  background: rgba(40,53,147,0.1); color: var(--accent);
-  font-size: 11px;
-}
-
-/* Glossary chips (<abbr>) */
-abbr.glossary-chip {
-  text-decoration: underline dotted rgba(40,53,147,0.5);
-  cursor: help; text-underline-offset: 2px;
-}
-
-/* Environment section */
-details.env-section summary,
-details.raw-sidecar summary,
-aside.glossary-aside summary {
-  cursor: pointer; list-style: none;
-}
-details.env-section summary::-webkit-details-marker,
-details.raw-sidecar summary::-webkit-details-marker,
-aside.glossary-aside summary::-webkit-details-marker { display: none; }
-details.env-section summary::before,
-details.raw-sidecar summary::before,
-aside.glossary-aside summary::before {
-  content: "▸"; display: inline-block; margin-right: 6px;
-  transition: transform 0.15s; color: var(--muted);
-}
-details.env-section[open] summary::before,
-details.raw-sidecar[open] summary::before,
-aside.glossary-aside details[open] summary::before { transform: rotate(90deg); }
-details.env-section summary h2,
-details.raw-sidecar summary h2,
-aside.glossary-aside summary h2 { display: inline; margin: 0; }
-.env-grid {
-  margin-top: 14px; display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-}
-.env-card { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
-.env-card h3 {
-  font-size: 13px; margin: 0 0 8px 0; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.6px;
-}
-.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.kv-table th {
-  text-align: left; font-weight: 600; padding: 4px 6px;
-  vertical-align: top; color: var(--muted);
-}
-.kv-table td {
-  padding: 4px 6px; word-break: break-all;
-  font-family: "SFMono-Regular", Menlo, monospace; font-size: 12px;
-}
-.schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
-.schema-list li { padding: 3px 0; }
-
-/* Glossary aside */
-aside.glossary-aside { background: #f1f8ff; }
-.glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
-.glossary-item dt code {
-  background: var(--accent-soft); padding: 2px 6px;
-  border-radius: 4px; font-size: 12px; color: var(--accent);
-}
-.glossary-item dd { margin: 4px 0 0 0; font-size: 13px; }
-.glossary-item dd.newcomer { color: var(--fg); }
-.glossary-item dd.technical {
-  color: var(--muted); font-size: 12px; font-style: italic;
-}
-
-/* Raw sidecar JSON */
-.raw-json {
-  background: var(--code-bg); color: var(--code-fg);
-  padding: 12px 14px; border-radius: 6px; overflow-x: auto;
-  font-family: "SFMono-Regular", monospace; font-size: 11.5px;
-  max-height: 400px;
-}
-
-/* Print tweaks */
-@media print {
-  body { background: #fff; }
-  .site-header { background: #fff; color: #000; border-bottom: 2px solid #000; }
-  .site-header nav { display: none; }
-  details { page-break-inside: avoid; }
-  details > summary { display: none; }
-  details > *:not(summary) { display: block !important; }
-}
-
-/* Mobile */
-@media (max-width: 720px) {
-  main.report { padding: 0 12px; }
-  .site-header { padding: 10px 14px; }
-  .site-header h1 { font-size: 15px; }
-}
-"""
-
-
-_JS = r"""
-function exportSVG() {
-  var svg = document.querySelector('#chart-panel svg');
-  if (!svg) { alert('No SVG found'); return; }
-  var data = new XMLSerializer().serializeToString(svg);
-  var blob = new Blob(['<?xml version="1.0" standalone="no"?>\n', data], {type: 'image/svg+xml'});
-  var a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'query-plan.svg';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(a.href);
-}
-
-function exportJSON() {
-  // Export the embedded sidecar (same data the JSON-LD script carries).
-  var script = document.querySelector('script[type="application/ld+json"]');
-  if (!script) { alert('No sidecar found'); return; }
-  var blob = new Blob([script.textContent], {type: 'application/json'});
-  var a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'query-analysis.json';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(a.href);
-}
-"""
+with open(_os.path.join(_DIR, "output_html_report.js"), encoding="utf-8") as _f:
+    _JS = _f.read()
 
 
 def render_html_report(json_text, view_type="flamegraph", width=1200,
@@ -901,12 +645,27 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
             stats=live_artifacts.get("stats"),
             variables=live_artifacts.get("variables"),
         )
+    teach_hooks = build_teach_hooks(
+        root,
+        query_sql=query_text,
+        variables=(live_artifacts or {}).get("variables") or analysis.get("collected_variables"),
+        stats=(live_artifacts or {}).get("stats") or analysis.get("collected_stats") or {},
+    )
+    teach_maps = build_teach_index_maps(teach_hooks)
 
     svg_width = kwargs.get("width") or width
     if view_type == "flamegraph" and "width" not in kwargs:
         svg_width = 1800
 
-    svg = _render_svg(root, view_type, svg_width, title, unit, **kwargs) or ""
+    svg = _render_svg(
+        root,
+        view_type,
+        svg_width,
+        title,
+        unit,
+        teach_index_by_folded=teach_maps["by_folded_label"],
+        **kwargs
+    ) or ""
 
     # Strip XML declaration / DOCTYPE from the SVG so it can be embedded
     # directly in HTML. Do NOT strip the <svg> element itself.
@@ -938,6 +697,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         engine_version=engine_version,
         query_raw=query_text or None,
         query_beautified=beautified or None,
+        teach_hooks=teach_hooks,
     )
 
     sections = [
@@ -950,11 +710,13 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         _render_environment(sidecar),
         _render_glossary_aside(sidecar),
         _render_raw_sidecar(sidecar),
+        _render_teach_templates(sidecar),
     ]
     sections_html = "\n\n".join(s for s in sections if s)
 
     jsonld = _sanitize_for_jsonld(sidecar)
     description = sidecar.get("executive_summary", "")
+    teach_hooks_json = _sanitize_for_jsonld(sidecar.get("teach_hooks") or [])
 
     html = (
         '<!DOCTYPE html>\n'
@@ -980,6 +742,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         '  <main id="main-content" class="report" role="main">\n'
         '{sections}\n'
         '  </main>\n'
+        '  <script>window.__MYFLAMES_TEACH_HOOKS = {teach_hooks_json};</script>\n'
         '  <script>{js}</script>\n'
         '</body>\n'
         '</html>\n'
@@ -989,6 +752,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         jsonld=jsonld,
         css=_CSS,
         sections=sections_html,
+        teach_hooks_json=teach_hooks_json,
         js=_JS,
     )
     return html

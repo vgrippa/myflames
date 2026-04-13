@@ -1389,7 +1389,7 @@ class TestDocumentation(unittest.TestCase):
         """Every file/dir listed in the README Documentation table must exist."""
         refs = [
             "docs/VISUAL_EXPLAIN_REFERENCE.md",
-            "docs/prompts/",
+            ".claude/prompts/",
             "test/README.md",
             "docs/cddl1.txt",
         ]
