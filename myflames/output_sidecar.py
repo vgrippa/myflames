@@ -28,13 +28,14 @@ import os
 import re
 
 from . import __version__
+from .teach_hooks import build_teach_hooks, SUPPORTED_LESSONS
 
 
 # ---------------------------------------------------------------------------
 # Schema constants
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 # Allowed enum values. ``build_sidecar`` + ``validate_sidecar`` reject anything
 # outside these sets to keep downstream agents stable.
@@ -232,6 +233,7 @@ def build_sidecar(
     fixture_path=None,
     query_raw=None,
     query_beautified=None,
+    teach_hooks=None,
 ):
     """Build a v1 sidecar dict from a parsed EXPLAIN tree + analysis dict.
 
@@ -354,6 +356,14 @@ def build_sidecar(
     if fixture_path:
         source["fixture_path"] = fixture_path
 
+    if teach_hooks is None:
+        teach_hooks = build_teach_hooks(
+            root,
+            query_sql=query_raw or query_beautified,
+            variables=(analysis or {}).get("collected_variables") or {},
+            stats=(analysis or {}).get("collected_stats") or {},
+        )
+
     payload = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _utc_now_iso(),
@@ -390,6 +400,9 @@ def build_sidecar(
         collected["schema"] = dict(analysis["collected_schema"])
     if collected:
         payload["collected"] = collected
+
+    if teach_hooks:
+        payload["teach_hooks"] = list(teach_hooks)
 
     validate_sidecar(payload)
     return payload
@@ -502,6 +515,36 @@ def validate_sidecar(payload):
     # executive_summary
     if not isinstance(payload["executive_summary"], str) or not payload["executive_summary"]:
         raise SidecarValidationError("executive_summary must be a non-empty string")
+
+    if "teach_hooks" in payload:
+        hooks = payload["teach_hooks"]
+        if not isinstance(hooks, list):
+            raise SidecarValidationError("teach_hooks must be a list")
+        for hook in hooks:
+            if not isinstance(hook, dict):
+                raise SidecarValidationError("teach_hook must be a dict")
+            lesson = hook.get("lesson")
+            if lesson not in SUPPORTED_LESSONS:
+                raise SidecarValidationError("teach_hook.lesson invalid: " + str(lesson))
+            match = hook.get("match")
+            if not isinstance(match, dict):
+                raise SidecarValidationError("teach_hook.match must be a dict")
+            if not match.get("folded_label"):
+                raise SidecarValidationError("teach_hook.match.folded_label missing")
+            controls = hook.get("controls")
+            if not isinstance(controls, dict):
+                raise SidecarValidationError("teach_hook.controls must be a dict")
+            for k, v in controls.items():
+                if not isinstance(k, str):
+                    raise SidecarValidationError("teach_hook.controls key must be string")
+                if not isinstance(v, (int, float, bool, str)):
+                    raise SidecarValidationError(
+                        "teach_hook.controls value type invalid: {}".format(type(v).__name__)
+                    )
+            if "query_sql" in hook and not isinstance(hook["query_sql"], str):
+                raise SidecarValidationError("teach_hook.query_sql must be string")
+            if "note" in hook and not isinstance(hook["note"], str):
+                raise SidecarValidationError("teach_hook.note must be string")
 
     return True
 

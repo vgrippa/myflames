@@ -66,51 +66,123 @@ Any animation longer than ~1.2 seconds total needs a play / pause / step / reset
 
 Every lesson imports the `ANIM_JS` string from `_anim.py` and embeds it in its `<script>` block. The runtime provides:
 
+### Easing & interpolation
 - **`anim.easeOutCubic(t)`, `anim.easeInOutCubic(t)`, `anim.easeOutBack(t)`, `anim.easeOutQuart(t)`, `anim.easeInOutQuad(t)`, `anim.easeInCubic(t)`** — all take `t ∈ [0,1]`, return eased `[0,1]`.
 - **`anim.lerp(a, b, t)`** — scalar interpolation.
 - **`anim.lerpColor(hexA, hexB, t)`** — RGB interpolation between two `#rrggbb` strings.
-- **`anim.tween({from, to, duration, ease, onUpdate, onComplete})`** — single tween on a numeric value or a plain-numeric-object `{x, y}`. Returns a cancel function.
+
+### Tweens & timelines
+- **`anim.tween({from, to, duration, ease, onUpdate, onComplete})`** — single tween. Returns a handle with `.getElapsed()` for scrubber tracking. Pause-aware via the global `_paused` flag. Speed-aware via `_speed` multiplier.
 - **`anim.stagger(items, stepMs, fn)`** — runs `fn(item, i)` at `i * stepMs` intervals.
-- **`anim.timeline()` → { add, play, stop }** — sequential tween queue with optional `delay` between steps.
+- **`anim.timeline()` → { add, delay, call, play, playFrom, stop, fastForwardTo, getTotalDuration, getCurrentTime }** — sequential tween queue. Scrubbable: `fastForwardTo(ms)` synchronously applies all steps up to the target. `playFrom(ms)` resumes live playback from a scrubbed position.
 - **`anim.path(x1, y1, cx, cy, x2, y2)`** — returns a function `t → {x, y}` for a quadratic Bézier (for tuple flow along curves).
+
+### Playback controls
+- **`anim.setSpeed(s)` / `anim.getSpeed()`** — global speed multiplier (0.25× to 4×). Affects all running tweens immediately.
+- **`anim.setPaused(bool)` / `anim.isPaused()`** — global pause flag. Running tweens freeze at their current progress and resume on unpause.
+- **`anim.onPauseChange(fn)`** — listener for pause state changes (used by timeline delay resumption).
 - **`anim.reducedMotion()`** — returns `true` when the media query matches; tweens short-circuit to their end state.
+
+### Visualization helpers
+- **`anim.pulse(el, peak, base, dur)`** — one-shot stroke-width pulse on arrival.
+- **`anim.svgEl(tag, attrs)`** — create an SVG element.
+- **`anim.complexityChart(opts)`** — interactive log-log chart with hover tooltips and click-to-update-slider via `xSlider` option.
+
+## The toolbar contract — `teachRuntime.wireToolbar({build, reset})`
+
+Every lesson must hand the toolbar two closures:
+- `build()` — returns a fresh `anim.timeline()` populated with the current slider values. Called on Play and on scrub seek (to rebuild for fastForwardTo).
+- `reset()` — clears the stage back to its ready state.
+
+The toolbar owns the Play/Pause/Resume state machine, the speed dropdown, the scrubber, and the Reset button. **Lessons never call `.play()` directly.**
+
+Critical scrubber contract:
+- Dragging the scrubber calls `build()` → `fastForwardTo(target)` → leaves paused.
+- Pressing Resume after a scrub calls `build()` → `playFrom(scrubbedPosition)` → resumes live.
+- The scrubber RAF loop runs as long as `state.running` is true (even when paused) so it can resume advancing instantly on unpause. This was a bug fix — the earlier version stopped the loop on pause and the scrubber ball froze.
+
+## The `_LESSON_JS_TEMPLATE` pattern
+
+Lesson JS must be defined as a **module-level raw string** (`_LESSON_JS_TEMPLATE = r"""..."""`), not an f-string. This avoids double-brace hell (`{{` everywhere) and makes the JS readable, greppable, and node-parseable. Use `%d` for Python substitutions and `%%` for JS modulo operators.
 
 ## Lesson-by-lesson playbook
 
-### `btree` — tree descent
-- Render the full tree once. Keep all nodes visible at the start.
-- Create a small `<circle class="query-token">` that starts above the root.
-- Use `anim.tween` to move it to each level's active node with `easeInOutCubic`, 400 ms per level.
-- On arrival at each node, pulse the node's stroke-width briefly (1 → 3 → 1) via a nested tween.
-- For non-covering secondary lookups, when the token finishes the secondary tree, fade it out, wait 200 ms, fade it in above the clustered tree root, continue.
-- Always-visible label: "Step 3/4 — walking clustered tree, level 2".
+### `btree` — tree descent with visible connections
+- Render the full tree once. **Draw parent→child edge lines** between every level pair. Edges on the lookup path are grey with small arrow markers; all other edges are faint background lines.
+- Create a red diamond `<polygon>` query token that starts above the root. It should carry a trailing label: "looking for id=42" or "looking for email=alice@...".
+- Use `anim.tween` to move the token to each level's active node with `easeInOutCubic`, 480 ms per level.
+- On arrival at each node: (a) pulse stroke-width 1→3→1, (b) turn the edge from the previous level **orange with a larger arrow** (so the descent path is permanently visible), (c) relabel the node with its data ("root: keys 1..500K", "leaf: user #42, alice@ex.com").
+- For non-covering secondary lookups: **do NOT fade the token** between trees. Instead, draw a dashed orange PK-link arrow from the secondary leaf to the clustered leaf. The token rides that arrow along a Bézier curve. The secondary leaf is relabelled "leaf: PK=42", the clustered leaf "leaf: full row". The connection must be visible — the user asked for it explicitly.
+- Always-visible label: "Tree 1/2 — descending to leaf" with the actual data.
 
-### `bnl` — tuples flowing from outer to inner
-- Outer blocks visible at top as a strip.
-- When a block activates, spawn 5–8 small `<circle class="tuple">` elements on that block.
-- Use `anim.path` to curve each circle from the block down to the inner table, with ~80 ms stagger between tuples.
-- As tuples arrive, a "sweep bar" moves left→right across the inner table (represents the full scan).
-- After the sweep completes, tuples fade out, the next block highlights, repeat.
-- Counter in the toolbar: "Scanning inner table for block 3/10 — 2 block(s) remaining".
+### `bnl` — labelled customer tuples flowing to labelled orders
+- Outer blocks show which customer rows are packed inside: "Block 1: Acme, Globex, Initech".
+- When a block activates, spawn labelled pills (`spawnLabeledTuple`) for each customer — e.g. "Acme Jan".
+- Use `anim.path` to curve each pill from the block down to the inner (orders) table with ~80 ms stagger.
+- The sweep bar crosses orders left→right, and the phase label narrates with the actual data: "Comparing Block 1 customers (Acme Jan, Globex Mar, Initech Jan) against orders — scanning…"
+- Orders table should show sample rows with IDs and months visible as subtle text inside.
 
-### `hash` — build + probe tuple flow
-- Phase 1 (build): 6 tuples fly from the left (build input) into specific hash buckets. Stagger 60 ms. Each arrives with `easeOutBack` for a small satisfying settle. Bucket fill fades from neutral grey → viridis cyan.
-- Phase transition: brief pause (300 ms), label updates to "Phase 2".
-- Phase 2 (probe): 10 tuples fly from the right (probe input) toward their matching bucket. Matching bucket flashes (stroke width 2 → 4 → 2, one cycle). Non-matching ones pass through with no flash.
-- Spill case: phase 3 shows a "partition 1/n" label and re-runs a mini build+probe for each partition.
+### `hash` — labelled department + employee pills with bucket contents
+- **Build**: 6 department pills ("id=3 Eng") fly into buckets. Each bucket's content label updates to show what it holds ("Eng, HR"). Phase label: `"Build: dept id=3 'Eng' → hash(3) % 6 = bucket [3]"`.
+- **Probe**: 8 employee pills ("Alice dept=3") fly to their bucket. Phase label: `"Probe: Alice (dept_id=3) → hash(3) % 6 = bucket [3] — bucket holds: Eng, HR"`. When a match is found, the bucket flashes green and a "MATCH ✓" label appears. Status: `"✓ Alice matched Eng — both have dept_id=3 → same bucket [3]"`.
+- The user must be able to follow one specific employee (say Alice) from the right panel into a specific bucket and understand WHY she matched with Eng. If the animation can't answer "what does it mean to be in the same bucket?", it has failed.
 
-### `join` — synchronized BNL vs hash
+### `join` — synchronized BNL vs hash with real data
 - Both panels share a single timeline driven by `anim.timeline`.
-- BNL side: runs its per-block animation at full speed — say, 300 ms per block.
-- Hash side: runs its single-pass animation at a speed calibrated so both finish together when the cost-model favors hash by 10× or less. When the cost-model gap exceeds 10×, hash finishes visually first and a "× faster" label appears.
-- Shared counter above both: "Rows examined so far".
+- BNL side: uses the same customer/order data as the BNL lesson. Block labels show customer names. Sweep narrates matches.
+- Hash side: uses customer/department data. Labelled pills, bucket contents, MATCH flashes.
+- The shared counter says "row-pair comparisons" (NOT "rows examined" — the user flagged "10.10B of what?" as confusing).
 
-### `lru` — progressive reveal of the trace
-- Replace the "run the whole trace and render the final state" pattern with a timeline that reveals one access per frame-tick (~30 ms each).
-- New page miss: slide a `<rect>` in from the left edge to the old-sublist head with `easeOutCubic`.
-- Old-list hit with promotion: animate the `<rect>` from its old-list position to the young-list head along a curved path.
-- Eviction: fade out (opacity 1 → 0) with `easeInCubic` while shrinking `scale(1 → 0.8)`.
-- Alongside, the textbook-LRU panel animates the same trace with its own simpler motion.
+### `filesort` — three sort algorithms with distinct visual personalities
+
+**Radix sort** (row_size ≤ 16 B):
+- Draw 6 labeled bucket boxes (one per distinct month digit) BELOW the array as empty containers with labels "Jan", "Feb", "Mar", "Apr", "May". Buckets are the spatial structure — render them first.
+- For each element in the array: (a) highlight it, (b) show its digit extraction ("Alice Jan 15 → month 1"), (c) arc-tween it from its array slot DOWN into the correct bucket with `easeOutBack` (slight overshoot on landing), (d) bucket border pulses on receive.
+- Stagger elements 80ms apart within the same pass.
+- After all elements are distributed: sweep buckets left→right, rising elements BACK UP into the array in sorted order with `easeInOutCubic`.
+- Two visible passes: first by month, then by day within each month group.
+- The visual story: "elements fall into labeled buckets by digit, then rise back in order — no comparisons anywhere."
+
+**Introsort** (row_size > 16 B):
+- Existing quicksort animation with pivot/partition/swap is good. Keep it.
+- Phase label must say "introsort" not "quicksort" — introsort is what std::sort actually is.
+
+**Priority queue** (LIMIT k):
+- Draw a visible max-heap structure: k slots arranged as a binary tree (or a row of k "seat" boxes if tree is too complex for the space).
+- Elements arrive one at a time from the left. Each one: (a) compare to heap max (flash the max element), (b) if smaller → the max element gets evicted (slides out and fades with `easeInCubic`), new element slides into the vacated slot with `easeOutBack`. (c) if larger → element slides past and fades ("discarded").
+- Heap slots should always show their current occupant labels.
+- The visual story: "a bouncer at a velvet rope — only the k smallest get in, everyone else is turned away."
+
+### `lru` — 3-act story with labelled page cells
+- **Every page cell** must be labelled with a table:row name: "users:42", "orders:101", "events:1003".
+- Act 1 "The hot set": 8 named OLTP pages fill both pools. Blue = hot.
+- Act 2 "The scan arrives": orange scan pages ("events:1001", "events:1002") stream in. In classic LRU, hot pages are evicted. In InnoDB, they enter old sublist only.
+- Act 3 "Hot queries return": the same 8 hot pages re-accessed. Classic: 0/8 hits (evicted). InnoDB: 8/8 hits (still in young). The punchline lands because the user can see "users:42" is still there.
+- Between acts: 800–1200 ms pause with a clear label: "Act 2: A reporting query starts scanning events. Watch what happens to the blue OLTP pages."
+
+## Research-backed design principles (from industry leaders)
+
+### From Mike Bostock (D3.js creator, "Visualizing Algorithms")
+- **Show the container before filling it.** Render bucket outlines, heap slots, merge lanes FIRST as empty scaffolding. Then animate elements flowing in. The spatial layout IS the algorithm's structure — the user reads it before anything moves.
+- **"White box" over "black box."** Expose internal state alongside output: which digit pass, which bucket, what the heap invariant looks like right now. The highest explanatory potential.
+- **Static readability.** If you pause at any frame, the picture should be interpretable without having watched the preceding animation. Labels, bucket counts, pointer positions — all must be visible at every frame.
+
+### From VisuAlgo (gold standard algorithm visualization)
+- **Literal containers.** Radix sort has 10 bucket boxes (labeled 0–9) drawn below the array. Elements physically travel from the array row down into the correct bucket slot, then rise back into the array for the next pass. Not a color change — an actual spatial move.
+- **Per-pass phase separation.** Each digit pass is a visually distinct phase with its own label: "Pass 1: ones digit", "Pass 2: tens digit". The user sees the array stabilize between passes.
+- **Counters.** Show how many elements are in each bucket at all times.
+
+### From Apple HIG + Material Design 3 motion guidelines
+- **Spring-like easing, never linear.** `easeOutBack` for arrivals (overshoot then settle), `easeInOutCubic` for traversals. Linear motion looks mechanical.
+- **Duration scales with distance.** Short moves (< 50px): 150–200ms. Medium (50–200px): 250–400ms. Long (> 200px): 400–600ms. Don't use one duration for everything.
+- **Spatial continuity.** Objects must show where they came from and where they're going. An element entering a bucket should arc from its array position to the bucket slot — the path communicates the classification.
+- **Stagger arrivals 40–80ms.** Never move N items simultaneously. Each successive item starts slightly later. This is the single cheapest way to make motion feel composed.
+- **Microinteractions.** The bucket border pulses when receiving an element. The heap node briefly scales up on insertion. These tiny cues guide attention without overwhelming.
+
+### From Disney's 12 Principles (already partially in our skill)
+- **Arcs, not straight lines.** Natural motion follows curved paths. An element dropping from the array into a bucket should arc, not teleport in a straight line.
+- **Staging.** Before the action starts, set the scene. Dim non-participating elements. Highlight the active region. The user's eye should be guided to where the action will happen BEFORE it happens.
+- **Slow in, slow out.** Every move should accelerate out of rest and decelerate into rest. This is what easing functions do, but apply it consciously — the element leaving the array should start slow (it's being "picked up"), travel fast, then slow into the bucket (it's "landing").
 
 ## Anti-patterns to refuse
 
@@ -132,13 +204,16 @@ Every lesson imports the `ANIM_JS` string from `_anim.py` and embeds it in its `
 
 Walk this checklist top-down:
 
-1. Is the motion linear? → swap to `easeOutCubic`.
-2. Is everything arriving at the same instant? → add `stagger`.
-3. Are you clearing+redrawing the SVG? → keep elements stable, mutate attributes.
-4. Is there a phase transition with no label? → add a status line.
-5. Is the duration < 150 ms? → bump to at least 250 ms.
-6. Is the duration > 1200 ms? → add a play/pause toolbar, or break into phases.
-7. Does it honour `prefers-reduced-motion`? → short-circuit via `anim.reducedMotion()`.
-8. Is the cost readout in sync with the animation progress? → drive both off the same timeline `t`.
+1. **Are the moving shapes anonymous?** → Add data labels to every element. "Alice dept=3", not a bare teal circle. This is the #1 reason users say an animation is "not clear" or "not intuitive". See the teaching skill's principle 3a.
+2. Is the motion linear? → swap to `easeOutCubic`.
+3. Is everything arriving at the same instant? → add `stagger`.
+4. Are you clearing+redrawing the SVG? → keep elements stable, mutate attributes.
+5. Is there a phase transition with no label? → add a status line **with the actual data values**.
+6. **Are connections hidden?** → If A points to B (like a secondary-index leaf pointing to a clustered leaf), draw the arrow explicitly. Don't fade out and fade in.
+7. Is the duration < 150 ms? → bump to at least 250 ms.
+8. Is the duration > 1200 ms? → add a play/pause toolbar, or break into phases.
+9. Does it honour `prefers-reduced-motion`? → short-circuit via `anim.reducedMotion()`.
+10. Is the cost readout in sync with the animation progress? → drive both off the same timeline `t`.
+11. **Does the scrubber work after pause/resume?** → The RAF loop must keep running while `state.running` is true, even when paused. Otherwise the scrubber ball freezes.
 
-Most "ugly" animation is actually **too fast, too flat, or too silent.** Slow it down, ease it, label it, and most of the ugliness goes away.
+Most "ugly" animation is actually **too fast, too flat, too anonymous, or too silent.** Slow it down, ease it, label every shape with its data, and narrate every phase with the actual values being processed.

@@ -1,0 +1,3358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MySQL Query Plan — myflames report</title>
+  <meta name="description" content="Query runs 1 operator; returns 45 rows in 0.05 ms. No warnings.">
+  <script type="application/ld+json">
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-04-13T18:24:20Z",
+  "myflames_version": "1.3.0",
+  "source": {
+    "type": "file"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.049,
+    "rows_sent": 45,
+    "rows_examined_estimate": 45,
+    "operator_count": 1,
+    "max_depth": 1
+  },
+  "optimizer_switches": [
+    {
+      "name": "index_merge",
+      "value": "on",
+      "explanation": "Uses two or more index range scans on the same table and combines row IDs (union/intersection/sort_union) instead of falling back to a full scan. A composite index is usually faster.",
+      "node_labels": [
+        "Deduplicate rows sorted by row ID on t1"
+      ]
+    },
+    {
+      "name": "index_merge_union",
+      "value": "on",
+      "explanation": "Union variant of index_merge: OR'ed predicates are satisfied by scanning each index separately, then UNION'ing their row IDs.",
+      "node_labels": [
+        "Deduplicate rows sorted by row ID on t1"
+      ]
+    }
+  ],
+  "warnings": [],
+  "suggestions": [],
+  "executive_summary": "Query runs 1 operator; returns 45 rows in 0.05 ms. No warnings.",
+  "teach_hooks": [
+    {
+      "lesson": "index_merge",
+      "match": {
+        "folded_label": "Deduplicate rows sorted by row ID on t1 starts=1 rows=45",
+        "short_label": "Deduplicate rows sorted by row ID on t1"
+      },
+      "controls": {
+        "a_rows": 27,
+        "b_rows": 18,
+        "overlap": 30,
+        "variant": "union"
+      },
+      "note": "Deduplicate rows sorted by row ID on t1 (t1)"
+    }
+  ]
+}
+  </script>
+  <style>
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --fg: #1a1a2e;
+  --muted: #5a6475;
+  --border: #e0e4ec;
+  --accent: #283593;
+  --accent-soft: #e8eaf6;
+
+  /* Severity palette (from progressive-ux skill) */
+  --sev-error: #b71c1c;
+  --sev-warn: #ef6c00;
+  --sev-info: #0d47a1;
+  --sev-ok: #1b5e20;
+
+  --sev-high: var(--sev-error);
+  --sev-medium: var(--sev-warn);
+  --sev-low: var(--sev-info);
+
+  --code-bg: #263238;
+  --code-fg: #eceff1;
+  --code-str: #c3e88d;
+  --code-kw: #82aaff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; top: -40px; left: 0;
+  background: var(--accent); color: #fff; padding: 8px 16px;
+  z-index: 100; text-decoration: none;
+}
+.skip-link:focus { top: 0; }
+
+/* Header */
+.site-header {
+  background: #1a1a2e; color: #fff;
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.site-header h1 {
+  font-size: 17px; font-weight: 600; margin: 0;
+}
+.site-header nav.toolbar {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.site-header nav.toolbar button {
+  padding: 6px 14px; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; background: rgba(255,255,255,0.06);
+  color: #fff; font-size: 12px; cursor: pointer;
+}
+.site-header nav.toolbar button:hover { background: rgba(255,255,255,0.15); }
+.site-header nav.toolbar button:focus { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Main layout */
+main.report {
+  max-width: 1400px; margin: 24px auto; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+main.report > section,
+main.report > details,
+main.report > aside {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 22px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+main.report h2 {
+  font-size: 15px; font-weight: 600; color: var(--fg);
+  margin: 0 0 12px 0; display: inline-flex; align-items: baseline; gap: 8px;
+}
+main.report h2 .count {
+  color: var(--muted); font-weight: 400; font-size: 13px;
+}
+
+/* Exec summary strip */
+.exec-summary .exec-text {
+  font-size: 16px; font-weight: 500; color: var(--fg);
+  margin: 0 0 14px 0;
+}
+.exec-summary .quick-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin: 0;
+}
+.exec-summary .quick-stats > div {
+  background: var(--accent-soft); border-radius: 6px;
+  padding: 10px 14px; text-align: left;
+}
+.exec-summary .quick-stats dt {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--muted); margin-bottom: 2px;
+}
+.exec-summary .quick-stats dd {
+  font-size: 18px; font-weight: 700; color: var(--accent); margin: 0;
+}
+
+/* Primary action card */
+.primary-action {
+  border-left: 4px solid var(--sev-medium);
+  background: #fff9f3;
+}
+.primary-action.sev-high { border-left-color: var(--sev-high); background: #fff3f3; }
+.primary-action.sev-low  { border-left-color: var(--sev-low);  background: #f1f8ff; }
+.primary-action-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.primary-action-header h2 { margin: 0; font-size: 15px; }
+.primary-action .action-text {
+  font-size: 15px; color: var(--fg); margin: 8px 0;
+}
+.primary-action .sql-action {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 16px; border-radius: 6px; margin: 8px 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; overflow-x: auto;
+}
+.primary-action details.why-details {
+  margin-top: 10px; background: rgba(255,255,255,0.5);
+  border-radius: 6px; padding: 8px 12px;
+}
+.primary-action details.why-details summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted);
+}
+.primary-action details.why-details[open] summary { margin-bottom: 6px; }
+
+/* Severity badges */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 12px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; background: var(--muted); color: #fff;
+}
+.badge-high,  .badge-error { background: var(--sev-error); }
+.badge-medium, .badge-warn { background: var(--sev-warn); }
+.badge-low,   .badge-info  { background: var(--sev-info); }
+.badge-ok                  { background: var(--sev-ok); }
+
+/* Query card */
+.query-card pre {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 14px 18px; border-radius: 8px;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  overflow-x: auto; margin: 0;
+}
+
+/* Visualization */
+.viz-card .chart-panel {
+  overflow-x: auto; padding: 4px; background: #fff;
+  border-radius: 6px; border: 1px solid var(--border);
+}
+.viz-card svg { display: block; max-width: 100%; height: auto; }
+.teach-cta-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin: 4px 0 10px 0;
+}
+.teach-cta-hint { margin: 0; color: var(--muted); font-size: 12.5px; }
+.teach-cta-btn {
+  border: 1px solid var(--accent);
+  background: #fff;
+  color: var(--accent);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.teach-cta-btn:hover { background: var(--accent-soft); }
+.teach-cta-btn:focus-visible,
+#teach-dialog-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.teach-assets { display: none; }
+.teach-dialog {
+  width: min(94vw, 980px);
+  max-width: 980px;
+  border: none;
+  padding: 0;
+  border-radius: 12px;
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.28);
+}
+.teach-dialog::backdrop {
+  background: rgba(13, 23, 43, 0.58);
+}
+.teach-dialog-shell {
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+  background: #fff;
+}
+.teach-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.teach-dialog-titles h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.teach-dialog-titles p {
+  margin: 2px 0 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+#teach-dialog-close {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--fg);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.teach-dialog-body {
+  min-height: 420px;
+  height: 75vh;
+}
+#teach-dialog-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .teach-dialog[open] { animation: teachDialogIn 160ms ease-out; }
+}
+@keyframes teachDialogIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Warnings + suggestions lists */
+.warning-list, .suggestion-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.warning, .suggestion {
+  background: var(--bg); border-radius: 8px; padding: 12px 14px;
+  border-left: 3px solid var(--muted);
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 6px;
+}
+.warning.sev-error, .suggestion.sev-high    { border-left-color: var(--sev-high); }
+.warning.sev-warn,  .suggestion.sev-medium  { border-left-color: var(--sev-warn); }
+.warning.sev-info,  .suggestion.sev-low     { border-left-color: var(--sev-info); }
+.warning .text, .suggestion .action-text { margin: 0; grid-column: 2; }
+.warning .where { grid-column: 2; font-size: 12px; color: var(--muted); margin: 0; }
+.suggestion .sql-action {
+  grid-column: 1 / -1;
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 10px 14px; border-radius: 6px; margin: 0;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px; overflow-x: auto;
+}
+.suggestion details.why-details {
+  grid-column: 1 / -1; margin-top: 4px; background: var(--accent-soft);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px;
+}
+.suggestion details.why-details summary {
+  cursor: pointer; font-weight: 600; color: var(--accent);
+}
+.suggestion details.why-details p {
+  margin: 6px 0 0 0; color: var(--fg);
+}
+.node-label {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: rgba(40,53,147,0.1); color: var(--accent);
+  font-size: 11px;
+}
+
+/* Glossary chips (<abbr>) */
+abbr.glossary-chip {
+  text-decoration: underline dotted rgba(40,53,147,0.5);
+  cursor: help; text-underline-offset: 2px;
+}
+
+/* Environment section */
+details.env-section summary,
+details.raw-sidecar summary,
+aside.glossary-aside summary {
+  cursor: pointer; list-style: none;
+}
+details.env-section summary::-webkit-details-marker,
+details.raw-sidecar summary::-webkit-details-marker,
+aside.glossary-aside summary::-webkit-details-marker { display: none; }
+details.env-section summary::before,
+details.raw-sidecar summary::before,
+aside.glossary-aside summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px;
+  transition: transform 0.15s; color: var(--muted);
+}
+details.env-section[open] summary::before,
+details.raw-sidecar[open] summary::before,
+aside.glossary-aside details[open] summary::before { transform: rotate(90deg); }
+details.env-section summary h2,
+details.raw-sidecar summary h2,
+aside.glossary-aside summary h2 { display: inline; margin: 0; }
+.env-grid {
+  margin-top: 14px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.env-card { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.env-card h3 {
+  font-size: 13px; margin: 0 0 8px 0; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv-table th {
+  text-align: left; font-weight: 600; padding: 4px 6px;
+  vertical-align: top; color: var(--muted);
+}
+.kv-table td {
+  padding: 4px 6px; word-break: break-all;
+  font-family: "SFMono-Regular", Menlo, monospace; font-size: 12px;
+}
+.schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.schema-list li { padding: 3px 0; }
+
+/* Glossary aside */
+aside.glossary-aside { background: #f1f8ff; }
+.glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
+.glossary-item dt code {
+  background: var(--accent-soft); padding: 2px 6px;
+  border-radius: 4px; font-size: 12px; color: var(--accent);
+}
+.glossary-item dd { margin: 4px 0 0 0; font-size: 13px; }
+.glossary-item dd.newcomer { color: var(--fg); }
+.glossary-item dd.technical {
+  color: var(--muted); font-size: 12px; font-style: italic;
+}
+
+/* Raw sidecar JSON */
+.raw-json {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+  font-family: "SFMono-Regular", monospace; font-size: 11.5px;
+  max-height: 400px;
+}
+
+/* Print tweaks */
+@media print {
+  body { background: #fff; }
+  .site-header { background: #fff; color: #000; border-bottom: 2px solid #000; }
+  .site-header nav { display: none; }
+  details { page-break-inside: avoid; }
+  details > summary { display: none; }
+  details > *:not(summary) { display: block !important; }
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  main.report { padding: 0 12px; }
+  .site-header { padding: 10px 14px; }
+  .site-header h1 { font-size: 15px; }
+}
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header" role="banner">
+    <h1>MySQL Query Plan</h1>
+    <nav class="toolbar" aria-label="Report actions">
+      <button type="button" onclick="exportSVG()">Export SVG</button>
+      <button type="button" onclick="exportJSON()">Export Analysis JSON</button>
+      <button type="button" onclick="window.print()">Print / PDF</button>
+    </nav>
+  </header>
+  <main id="main-content" class="report" role="main">
+<section class="exec-summary" aria-labelledby="exec-heading">
+  <h2 id="exec-heading" class="visually-hidden">Summary</h2>
+  <p class="exec-text">Query runs 1 operator; returns 45 rows in 0.05 ms. No warnings.</p>
+  <dl class="quick-stats">
+    <div><dt>Total time</dt><dd>49 µs</dd></div>
+    <div><dt>Rows returned</dt><dd>45</dd></div>
+    <div><dt>Rows examined</dt><dd>45</dd></div>
+    <div><dt>Operators</dt><dd>1</dd></div>
+  </dl>
+</section>
+
+<section class="viz-card" aria-labelledby="viz-heading">
+  <h2 id="viz-heading">Execution plan (bargraph)</h2>
+  <div class="teach-cta-row">
+    <p id="teach-cta-hint" class="teach-cta-hint">Click a plan operator to inspect details.</p>
+    <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
+  </div>
+  <div class="chart-panel" id="chart-panel">
+<svg version="1.1" width="1200" height="254" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 12px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-header { font-size: 10px; fill: #888; font-weight: bold; letter-spacing: 0.5px; }
+  .label { font-size: 11px; fill: #333; }
+  .loops { font-size: 10px; fill: #777; }
+  .value { font-size: 11px; font-weight: bold; fill: #222; }
+  .bar { transition: opacity 0.12s; }
+  .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
+  .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
+  .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
+  .details-line.dim { fill: #999; }
+  #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #search:hover { fill: #111; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 0.049 µs</text>
+<text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
+<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text id="search" x="1190" y="68" text-anchor="end">Search</text>
+<line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="10" y1="120" x2="1190" y2="120" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="124" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="132" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="146" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="160" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="174" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="188" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="202" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="216" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="230" text-anchor="start" class="details-line"></text>
+<!-- end details area -->
+<text x="320" y="98.0" text-anchor="end" class="label">Deduplicate rows sorted by row ID on t1</text>
+<text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="80" width="640.0" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Deduplicate rows sorted by row ID on t1  ·  Self: 0.049 µs (100.0%)  ·  Rows: 45  ·  Loops: 1  ·  Table: t1  ·  Access: rowid_union  ·  Est.rows: 45  ·  Cond: t1.a = 50 or t1.b = 100" data-label="Deduplicate rows sorted by row ID on t1" data-teach-index="0"/>
+<text x="1060" y="98.0" class="value">0.049 µs (100.0%)</text>
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var detailLines = [];
+  var N_LINES = 8;
+  var searchBtn;
+  var defaultHint = "Hover a bar for details; click a bar to pin details  ·  Ctrl+F to search";
+  var searching = false;
+  var pinnedBar = null;
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+      detailLines[i].setAttribute("class", "details-line" + (i > 0 && i >= parts.length - 1 && parts.length > 1 ? " dim" : ""));
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) { detailLines[i].textContent = ""; detailLines[i].setAttribute("class", "details-line"); }
+    }
+  }
+
+  function setDetailsForBar(bar) {
+    if (!bar || !detailLines[0]) return;
+    var info = bar.getAttribute("data-info") || "";
+    var analysisMsg = bar.getAttribute("data-analysis-msg");
+    if (analysisMsg)
+      info = info + "  ·  ⚠ In Query Analysis: " + analysisMsg;
+    var sep = "  ·  ";
+    var parts = info.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    searchBtn = document.getElementById("search");
+    if (!detailLines[0]) return;
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        if (!pinnedBar) setDetailsForBar(e.target);
+      }
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar") && !searching && !pinnedBar)
+        clearDetails();
+    });
+    document.addEventListener("click", function(e) {
+      if (e.target.id === "search") { searchPrompt(); return; }
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        var bars = document.querySelectorAll(".bar.pinned");
+        for (var i = 0; i < bars.length; i++) bars[i].classList.remove("pinned");
+        if (pinnedBar === e.target) {
+          pinnedBar = null;
+          clearDetails();
+        } else {
+          pinnedBar = e.target;
+          pinnedBar.classList.add("pinned");
+          setDetailsForBar(pinnedBar);
+        }
+        return;
+      }
+      if (pinnedBar) {
+        pinnedBar.classList.remove("pinned");
+        pinnedBar = null;
+        clearDetails();
+      }
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var bars = document.querySelectorAll(".bar");
+      for (var i = 0; i < bars.length; i++) {
+        bars[i].style.opacity = "";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+      searchBtn.textContent = "Search";
+      if (!pinnedBar) clearDetails();
+      searching = false;
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var bars = document.querySelectorAll(".bar");
+    for (var i = 0; i < bars.length; i++) {
+      var label = bars[i].getAttribute("data-label") || "";
+      if (re.test(label)) {
+        bars[i].style.opacity = "1";
+        bars[i].style.stroke = "rgb(230,0,230)";
+        bars[i].style.strokeWidth = "2";
+      } else {
+        bars[i].style.opacity = "0.3";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+    }
+    searchBtn.textContent = "Reset Search";
+    searching = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+</svg>
+
+  </div>
+</section>
+
+<aside class="glossary-aside" aria-labelledby="glossary-heading">
+  <details>
+    <summary><h2 id="glossary-heading">Glossary (2 terms)</h2></summary>
+    <dl class="glossary-list">
+      <div class="glossary-item">
+        <dt><code>full table scan</code></dt>
+        <dd class="newcomer">MySQL is reading every single row in this table, one by one, to check if it matches your WHERE clause. This is slow on big tables — an index on the filter column lets MySQL jump straight to the matching rows instead.</dd>
+        <dd class="technical">Access type ``ALL``: the storage engine returns every row of the table, applying the WHERE clause in the server layer. Cost is roughly (rows × row_evaluate_cost) + pages_read × io_block_read_cost. Signal: ``type=ALL`` in EXPLAIN, ``Handler_read_rnd_next`` climbs by the table row count. Almost always a sign of a missing index on the WHERE or join column.</dd>
+      </div>
+      <div class="glossary-item">
+        <dt><code>index merge</code></dt>
+        <dd class="newcomer">MySQL is using two indexes on the same table and merging their results. It works, but one index that covers both columns together would be faster.</dd>
+        <dd class="technical">When no single composite index satisfies a multi-column predicate, the optimizer can scan each single-column index separately and combine the row IDs — union for OR, intersection for AND. The cost of each scan is paid independently plus a merge step. A composite index ``(a, b)`` is almost always faster.</dd>
+      </div>
+    </dl>
+  </details>
+</aside>
+
+<details class="raw-sidecar">
+  <summary><h2>Raw sidecar (JSON)</h2></summary>
+  <pre class="raw-json"><code>{
+  &quot;schema_version&quot;: &quot;1.1&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-13T18:24:20Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;source&quot;: {
+    &quot;type&quot;: &quot;file&quot;
+  },
+  &quot;plan_summary&quot;: {
+    &quot;total_time_ms&quot;: 0.049,
+    &quot;rows_sent&quot;: 45,
+    &quot;rows_examined_estimate&quot;: 45,
+    &quot;operator_count&quot;: 1,
+    &quot;max_depth&quot;: 1
+  },
+  &quot;optimizer_switches&quot;: [
+    {
+      &quot;name&quot;: &quot;index_merge&quot;,
+      &quot;value&quot;: &quot;on&quot;,
+      &quot;explanation&quot;: &quot;Uses two or more index range scans on the same table and combines row IDs (union/intersection/sort_union) instead of falling back to a full scan. A composite index is usually faster.&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Deduplicate rows sorted by row ID on t1&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;index_merge_union&quot;,
+      &quot;value&quot;: &quot;on&quot;,
+      &quot;explanation&quot;: &quot;Union variant of index_merge: OR'ed predicates are satisfied by scanning each index separately, then UNION'ing their row IDs.&quot;,
+      &quot;node_labels&quot;: [
+        &quot;Deduplicate rows sorted by row ID on t1&quot;
+      ]
+    }
+  ],
+  &quot;warnings&quot;: [],
+  &quot;suggestions&quot;: [],
+  &quot;executive_summary&quot;: &quot;Query runs 1 operator; returns 45 rows in 0.05 ms. No warnings.&quot;,
+  &quot;teach_hooks&quot;: [
+    {
+      &quot;lesson&quot;: &quot;index_merge&quot;,
+      &quot;match&quot;: {
+        &quot;folded_label&quot;: &quot;Deduplicate rows sorted by row ID on t1 starts=1 rows=45&quot;,
+        &quot;short_label&quot;: &quot;Deduplicate rows sorted by row ID on t1&quot;
+      },
+      &quot;controls&quot;: {
+        &quot;a_rows&quot;: 27,
+        &quot;b_rows&quot;: 18,
+        &quot;overlap&quot;: 30,
+        &quot;variant&quot;: &quot;union&quot;
+      },
+      &quot;note&quot;: &quot;Deduplicate rows sorted by row ID on t1 (t1)&quot;
+    }
+  ]
+}</code></pre>
+</details>
+
+<section class="teach-assets" aria-hidden="true">
+<template id="teach-tpl-index_merge" data-lesson="index_merge"><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Index Merge — combining two index scans</title>
+  <meta name="description" content="Watch MySQL scan two separate indexes, collect row-IDs, and merge them with union, intersection, or sort-union.">
+  <meta name="generator" content="myflames teach">
+  <style>
+:root {
+  --bg: #f6f8fc;
+  --panel: #ffffff;
+  --panel-soft: #f8faff;
+  --text: #111827;
+  --muted: #637083;
+  --border: #dbe4f0;
+  --accent: #1a73e8;
+  --accent-strong: #1557b0;
+  --focus: #8ab4f8;
+  --elev-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.04);
+  --elev-2: 0 6px 18px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --hot: #ff3d3d;
+  --cool: #21918c;
+  --warm: #fde725;
+  --warn: #f59e0b;
+  --ok: #10b981;
+}
+/* Lesson-family color grading (shared semantics, different accent ramps). */
+body[data-lesson="bka"],
+body[data-lesson="bnl"],
+body[data-lesson="hash"],
+body[data-lesson="join"],
+body[data-lesson="nested_loop"],
+body[data-lesson="semijoin_weedout"] {
+  --accent: #1a73e8;
+  --accent-strong: #1557b0;
+  --focus: #8ab4f8;
+}
+body[data-lesson="full_scan"],
+body[data-lesson="filter"],
+body[data-lesson="filesort"],
+body[data-lesson="tmp"],
+body[data-lesson="derived_table"] {
+  --accent: #ea580c;
+  --accent-strong: #c2410c;
+  --focus: #fdba74;
+}
+body[data-lesson="btree"],
+body[data-lesson="non_unique_lookup"],
+body[data-lesson="unique_lookup"],
+body[data-lesson="icp"],
+body[data-lesson="index_merge"],
+body[data-lesson="skip_scan"] {
+  --accent: #0f766e;
+  --accent-strong: #0f5f59;
+  --focus: #5eead4;
+}
+body[data-lesson="lru"] {
+  --accent: #7c3aed;
+  --accent-strong: #6d28d9;
+  --focus: #c4b5fd;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Google Sans", Roboto, "Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+header {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border-bottom: 1px solid #e7eef8;
+  padding: 20px;
+  box-shadow: var(--elev-1);
+}
+header .inner { max-width: 1100px; margin: 0 auto; }
+header h1 {
+  margin: 0 0 6px;
+  font-size: 23px;
+  letter-spacing: -0.2px;
+  font-weight: 700;
+}
+header .subtitle {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0;
+}
+header .lesson-meta {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+header .meta-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+header .family-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 13%, #ffffff);
+  color: var(--accent-strong);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, #ffffff);
+}
+header .family-chip .chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+header .version-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 3px 10px;
+  background: #e8f0fe;
+  color: #174ea6;
+  border: 1px solid #c6dafc;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+.banner {
+  margin: 0 0 20px;
+  padding: 12px 16px;
+  border-left: 4px solid var(--warn);
+  background: #fffbeb;
+  color: #78350f;
+  border-radius: 4px;
+  font-size: 13.5px;
+}
+.banner strong { color: #92400e; }
+section.controls {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+section.controls h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px 20px;
+}
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.control label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.control .hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.control input[type="range"] { width: 100%; }
+.control input[type="number"],
+.control select {
+  padding: 8px 10px;
+  border: 1px solid #cfd8e5;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+}
+.control input[type="number"]:focus,
+.control select:focus,
+.control input[type="range"]:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.value-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  background: #eef4ff;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+  color: #1e3a8a;
+}
+section.stage {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+.query-card {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: #f8fbff;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+}
+.query-card .query-label {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.query-card .query-sql {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #0f172a;
+  white-space: pre-wrap;
+}
+.query-card .query-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.explainer-card {
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-left: 4px solid #059669;
+  border-radius: 8px;
+}
+.explainer-card .explainer-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #065f46;
+}
+.explainer-card .explainer-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: #064e3b;
+  line-height: 1.55;
+}
+.explainer-card .explainer-list li {
+  margin-bottom: 4px;
+}
+.explainer-card .explainer-list li:last-child {
+  margin-bottom: 0;
+}
+section.stage .stage-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--panel-soft);
+  border: 1px solid #dbe6f3;
+  border-radius: 12px;
+  font-size: 13px;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+section.stage .stage-toolbar:hover {
+  box-shadow: var(--elev-1);
+  border-color: #cddbef;
+}
+.stage-toolbar .speed-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #374151;
+  margin-left: 2px;
+  letter-spacing: 0.2px;
+}
+.stage-toolbar select {
+  padding: 6px 10px;
+  border: 1px solid #cfd8e5;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12.5px;
+  background: #fff;
+  cursor: pointer;
+}
+.stage-toolbar select:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.stage-toolbar .phase-label {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.stage-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: var(--panel-soft);
+  border: 1px solid #dbe6f3;
+  border-radius: 12px;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.stage-scrubber:hover {
+  box-shadow: var(--elev-1);
+  border-color: #cddbef;
+}
+.stage-scrubber input[type="range"] {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #c8ddff 0%, #dbeafe 100%);
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.stage-scrubber input[type="range"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.stage-scrubber input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #bed8ff 0%, #dbeafe 100%);
+}
+.stage-scrubber input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: var(--accent);
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.stage-scrubber input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.06);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.stage-scrubber input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #bed8ff 0%, #dbeafe 100%);
+}
+.stage-scrubber input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: var(--accent);
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.stage-scrubber input[type="range"]::-moz-range-thumb:hover {
+  transform: scale(1.06);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.stage-scrubber .scrubber-time {
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 42px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.complexity-chart {
+  margin-top: 14px;
+  padding: 14px;
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.complexity-chart .chart-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.complexity-chart svg {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+}
+button {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid #cfd8e5;
+  border-radius: 999px;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+button:hover { background: #edf3ff; border-color: #9eb6d8; }
+button:active { transform: translateY(1px) scale(0.99); }
+button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent-strong);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset;
+}
+button.primary:hover { background: var(--accent-strong); border-color: #144a96; }
+button .btn-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+button .btn-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  transition: transform 0.16s ease;
+}
+button .btn-label {
+  line-height: 1;
+  white-space: nowrap;
+}
+button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 35%, #ffffff);
+}
+button#btn-reset {
+  background: #ffffff;
+}
+button#btn-reset:hover {
+  background: #eef2ff;
+}
+button#btn-play:hover .btn-icon svg {
+  transform: translateX(0.5px);
+}
+button#btn-loop[aria-pressed="true"] .btn-icon svg {
+  transform: rotate(12deg);
+}
+section.stage svg { width: 100%; height: auto; display: block; }
+section.readout {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+section.readout h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 18px;
+}
+.readout-grid .item {
+  padding: 12px 14px;
+  background: #f8fbff;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.readout-grid .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.readout-grid .label .help-tip {
+  display: inline-block;
+  cursor: help;
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  border: 1px solid #d1d5db;
+  border-radius: 50%;
+  width: 15px;
+  height: 15px;
+  line-height: 14px;
+  text-align: center;
+  margin-left: 4px;
+  vertical-align: 1px;
+  text-transform: none;
+  letter-spacing: 0;
+  position: relative;
+}
+.readout-grid .label .help-tip:hover {
+  color: #374151;
+  border-color: #9ca3af;
+}
+.readout-grid .label .help-tip .tip-text {
+  display: none;
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  padding: 8px 10px;
+  background: #1f2937;
+  color: #f3f4f6;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  border-radius: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  z-index: 10;
+  pointer-events: none;
+}
+.readout-grid .label .help-tip:hover .tip-text {
+  display: block;
+}
+.readout-grid .value {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+.readout-grid .value.warn { color: var(--warn); }
+.readout-grid .value.ok { color: var(--ok); }
+.readout-grid .value.hot { color: var(--hot); }
+details.learn-more {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 20px;
+  box-shadow: var(--elev-1);
+}
+details.learn-more summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  outline: none;
+}
+details.learn-more[open] summary { color: #111827; }
+details.learn-more .body {
+  padding-bottom: 16px;
+  font-size: 13.5px;
+  color: #374151;
+}
+details.learn-more .body p { margin: 0 0 10px; }
+details.learn-more .body code {
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12.5px;
+}
+abbr.glossary-chip {
+  text-decoration: underline dotted;
+  text-decoration-color: #9ca3af;
+  cursor: help;
+}
+.explanation {
+  padding: 10px 14px;
+  background: #f0f9ff;
+  border-left: 3px solid #0284c7;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0c4a6e;
+  margin-top: 10px;
+}
+footer {
+  max-width: 1100px;
+  margin: 24px auto 0;
+  padding: 16px 20px 32px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+footer a { color: var(--muted); }
+@media (max-width: 640px) {
+  header h1 { font-size: 19px; }
+  .readout-grid .value { font-size: 17px; }
+}
+.stage-with-phases {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.stage-with-phases > svg {
+  flex: 1;
+  min-width: 0;
+}
+.phase-nav {
+  width: 180px;
+  flex-shrink: 0;
+  background: #f8fbff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 0;
+  font-size: 11px;
+  box-shadow: var(--elev-1);
+}
+.phase-nav .phase-nav-title {
+  padding: 0 10px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.phase-nav .phase-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: #6b7280;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s, transform 0.15s, border-color 0.15s;
+  border-left: 3px solid transparent;
+}
+.phase-nav .phase-item:hover {
+  background: #eef4ff;
+  color: #374151;
+  transform: translateX(1px);
+}
+.phase-nav .phase-item.active {
+  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
+  color: var(--accent-strong);
+  border-left-color: var(--accent);
+  font-weight: 700;
+  transform: translateX(2px);
+}
+.phase-nav .phase-item.done {
+  color: #059669;
+}
+.phase-nav .phase-item .phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d1d5db;
+  flex-shrink: 0;
+}
+.phase-nav .phase-item.active .phase-dot {
+  background: var(--accent);
+  animation: phaseDotPulse 1.15s ease-in-out infinite;
+}
+.phase-nav .phase-item.done .phase-dot {
+  background: #059669;
+}
+@keyframes phaseDotPulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 38%, transparent); }
+  70% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+@media (max-width: 700px) {
+  .stage-with-phases { flex-direction: column; }
+  .phase-nav { width: 100%; }
+  section.stage .stage-toolbar {
+    flex-wrap: wrap;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-tween { transition: none !important; animation: none !important; }
+  .phase-nav .phase-item,
+  .stage-scrubber input[type="range"]::-webkit-slider-thumb,
+  .stage-scrubber input[type="range"]::-moz-range-thumb,
+  button,
+  button .btn-icon svg {
+    transition: none !important;
+  }
+  .phase-nav .phase-item.active .phase-dot {
+    animation: none !important;
+  }
+}
+
+</style>
+</head>
+<body data-lesson="index_merge">
+  <header>
+    <div class="inner">
+      <h1>Index Merge — combining two index scans<span class="version-chip">MySQL 5.1+ • MariaDB 5.1+</span></h1>
+      <p class="subtitle">Watch MySQL scan two separate indexes, collect row-IDs, and merge them with union, intersection, or sort-union.</p>
+      <div class="lesson-meta"><span class="meta-label">Lesson family</span><span class="family-chip"><span class="chip-dot" aria-hidden="true"></span>Index Access</span></div>
+    </div>
+  </header>
+  <main>
+    
+    
+<section class="controls" aria-labelledby="controls-h">
+  <h2 id="controls-h">Parameters (Index Merge)</h2>
+  <div class="control-grid">
+
+    <div class="control">
+      <label for="a_rows">idx_category rows: <span class="value-pill" data-pill-for="a_rows">5000</span></label>
+      <input type="range" id="a_rows" name="a_rows" min="100" max="1000000" step="100" value="5000">
+      <div class="hint">Rows returned by the idx_category index scan.</div>
+    </div>
+
+    <div class="control">
+      <label for="b_rows">idx_supplier rows: <span class="value-pill" data-pill-for="b_rows">3000</span></label>
+      <input type="range" id="b_rows" name="b_rows" min="100" max="1000000" step="100" value="3000">
+      <div class="hint">Rows returned by the idx_supplier index scan.</div>
+    </div>
+
+    <div class="control">
+      <label for="overlap">Overlap (%): <span class="value-pill" data-pill-for="overlap">10</span></label>
+      <input type="range" id="overlap" name="overlap" min="0" max="100" step="1" value="10">
+      <div class="hint">Percentage of rows present in both index scans (duplicates).</div>
+    </div>
+
+    <div class="control">
+      <label for="variant">Merge variant:</label>
+      <select id="variant" name="variant">
+        <option value="union" selected>Union (OR condition)</option>
+        <option value="intersection">Intersection (AND condition)</option>
+        <option value="sort_union">Sort-Union (OR, unsorted ranges)</option>
+      </select>
+      <div class="hint">Union for OR, intersection for AND, sort-union when row-IDs aren't pre-sorted.</div>
+    </div>
+
+  </div>
+</section>
+
+    
+<section class="stage">
+  
+<div class="query-card">
+  <p class="query-label">Example query this animation executes</p>
+  <pre class="query-sql">-- Separate indexes on category_id and supplier_id
+SELECT *
+FROM   products
+WHERE  category_id = 5
+   OR  supplier_id = 12;</pre>
+  <p class="query-note">No composite index covers both conditions, but MySQL can scan both single-column indexes and merge row-ID sets before clustered fetch.</p>
+</div>
+
+  
+<div class="explainer-card">
+  <p class="explainer-title">What you&#x27;ll see in the animation</p>
+  <ul class="explainer-list"><li>Engine executes two independent index scans and collects row-ID lists.</li><li>Merge stage combines lists as union/sort-union (OR) or intersection (AND).</li><li>Duplicate row-IDs are removed before table fetch to avoid repeated reads.</li><li>Only merged row-IDs are fetched from clustered index in the final step.</li><li>Composite indexes can remove this merge stage entirely.</li></ul>
+</div>
+
+  
+<div class="stage-toolbar">
+  <button id="btn-play" class="primary">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    </span>
+    <span class="btn-label">Play</span>
+  </button>
+  <button id="btn-reset">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M12 6V3L8 7l4 4V8c2.8 0 5 2.2 5 5a5 5 0 1 1-9.9-1H5.1A7 7 0 1 0 12 6z"/></svg>
+    </span>
+    <span class="btn-label">Reset</span>
+  </button>
+  <button id="btn-loop" aria-pressed="false">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M7 7h9v3l4-4-4-4v3H6a4 4 0 0 0-4 4v3h2V9a2 2 0 0 1 2-2zm10 10H8v-3l-4 4 4 4v-3h10a4 4 0 0 0 4-4v-3h-2v2a2 2 0 0 1-2 2z"/></svg>
+    </span>
+    <span class="btn-label">Loop: Off</span>
+  </button>
+  <label for="sel-speed" class="speed-label">Speed:</label>
+  <select id="sel-speed" aria-label="Animation speed">
+    <option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option>
+    <option value="2">2×</option>
+    <option value="4">4×</option>
+  </select>
+  <span class="phase-label" id="phase-label">Ready — press Play</span>
+</div>
+<div class="stage-scrubber">
+  <span class="scrubber-time" id="scrubber-time-current">0.0s</span>
+  <input type="range" id="scrubber" min="0" max="1000" value="0" step="1"
+    aria-label="Animation timeline scrubber" />
+  <span class="scrubber-time" id="scrubber-time-total">0.0s</span>
+</div>
+
+  <div class="stage-with-phases">
+    <svg id="merge-svg" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="phase-nav" class="phase-nav"></div>
+  </div>
+</section>
+
+    
+<section class="readout">
+  <h2>Cost readout (Index Merge)</h2>
+  <div class="readout-grid">
+    <div class="item"><p class="label">idx_category rows <span class="help-tip">?<span class="tip-text">Row-IDs returned by the first index scan. These are sorted by primary key for InnoDB.</span></span></p><p class="value" id="out-a-rows">—</p></div>
+    <div class="item"><p class="label">idx_supplier rows <span class="help-tip">?<span class="tip-text">Row-IDs returned by the second index scan.</span></span></p><p class="value" id="out-b-rows">—</p></div>
+    <div class="item"><p class="label">Overlapping rows <span class="help-tip">?<span class="tip-text">Row-IDs present in both index scans. For union, these are de-duplicated. For intersection, these are the result.</span></span></p><p class="value" id="out-overlap">—</p></div>
+    <div class="item"><p class="label">Rows fetched <span class="help-tip">?<span class="tip-text">Final number of rows fetched from the clustered index after merging. This is the actual I/O cost.</span></span></p><p class="value" id="out-merged">—</p></div>
+    <div class="item"><p class="label">Variant <span class="help-tip">?<span class="tip-text">Union = OR conditions (combine both sets). Intersection = AND conditions (keep only common rows). Sort-union = OR with unsorted ranges.</span></span></p><p class="value" id="out-variant">—</p></div>
+  </div>
+  <div class="explanation" id="out-explanation"></div>
+  <div class="complexity-chart">
+    <p class="chart-title">Rows fetched vs index scan size (log–log)</p>
+    <svg id="complexity-chart" viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+</section>
+
+    
+<details class="learn-more">
+  <summary>Learn more — when does MySQL choose index merge?</summary>
+  <div class="body">
+    <p>The optimizer considers index merge when a query has OR or AND conditions
+    on columns with <strong>separate single-column indexes</strong> and no
+    composite index covers the full predicate.</p>
+
+    <p><strong>Index merge union</strong> (OR): The optimizer scans each
+    index separately, then merges the sorted row-ID streams with de-duplication.
+    This avoids a full table scan when each index is selective enough.</p>
+
+    <p><strong>Index merge intersection</strong> (AND): Both indexes are scanned,
+    and only row-IDs present in <strong>both</strong> streams are kept. This is
+    useful when no single index is selective enough, but together they are.</p>
+
+    <p><strong>Index merge sort-union</strong> (OR with ranges): When the row-IDs
+    from each index scan are not guaranteed to be in PK order (e.g. range scans),
+    MySQL sorts each set first before merging. Slower than union but still faster
+    than a full table scan.</p>
+
+    <p>You can control this behaviour with <code>optimizer_switch</code>:
+    <code>index_merge=on</code>, <code>index_merge_union=on</code>,
+    <code>index_merge_intersection=on</code>,
+    <code>index_merge_sort_union=on</code>.</p>
+
+    <p><strong>A composite index is almost always better than index merge.</strong>
+    If you see index merge in your EXPLAIN output, consider whether a composite
+    index would serve the query more efficiently.</p>
+
+    <p>Sources: MySQL 8.4 reference manual §10.2.1.3 "Index Merge Optimization";
+    MariaDB Knowledge Base "Index Merge Optimization".</p>
+  </div>
+</details>
+
+  </main>
+  <footer>
+    <p>Generated by <a href="https://github.com/vgrippa/myflames">myflames teach</a> —
+    interactive database algorithm lessons. Offline-first, stdlib-only.</p>
+  </footer>
+  <script>
+// ---------------------------------------------------------------------------
+// myflames teach animation runtime — vanilla JS, no deps, offline-first.
+// See .claude/skills/animation-expert/SKILL.md for craft rules.
+// ---------------------------------------------------------------------------
+var anim = (function() {
+  // --- Easing functions --------------------------------------------------
+  function linear(t) { return t; }
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  function easeInCubic(t) { return t * t * t; }
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+  function easeOutQuart(t) { return 1 - Math.pow(1 - t, 4); }
+  function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+  function easeOutBack(t) {
+    var c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+
+  // --- Interpolation -----------------------------------------------------
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function _parseHex(h) {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+  function _toHex(c) {
+    var h = Math.round(c).toString(16);
+    return h.length < 2 ? "0" + h : h;
+  }
+  function lerpColor(a, b, t) {
+    var ca = _parseHex(a), cb = _parseHex(b);
+    return "#" + _toHex(lerp(ca[0], cb[0], t)) + _toHex(lerp(ca[1], cb[1], t)) + _toHex(lerp(ca[2], cb[2], t));
+  }
+
+  // --- prefers-reduced-motion -------------------------------------------
+  function reducedMotion() {
+    try {
+      return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (e) { return false; }
+  }
+
+  // --- Global speed multiplier (1 = real time, 0.5 = half speed, 2 = 2×) -
+  var _speed = 1;
+  function setSpeed(s) { _speed = Math.max(0.1, s); }
+  function getSpeed() { return _speed; }
+
+  // --- Global pause flag --------------------------------------------------
+  // When paused, every running tween suspends at its current progress and
+  // resumes from the same progress when unpaused.
+  var _paused = false;
+  var _onPauseChange = [];
+  function setPaused(p) {
+    if (_paused === p) return;
+    _paused = p;
+    _onPauseChange.forEach(function(fn) { try { fn(p); } catch (e) {} });
+  }
+  function isPaused() { return _paused; }
+  function onPauseChange(fn) { _onPauseChange.push(fn); }
+
+  // --- tween: single-value interpolation with RAF, pause-aware ----------
+  // opts: { from, to, duration, ease, onUpdate, onComplete, delay }
+  // Returns a callable cancel function that also exposes ``.getElapsed()``
+  // so the parent timeline can report precise scrubber positions. Duration
+  // is scaled by the global _speed at frame time, so a live speed change
+  // takes effect immediately.
+  function tween(opts) {
+    var from = opts.from;
+    var to = opts.to;
+    var baseDuration = opts.duration || 400;
+    var ease = opts.ease || easeOutCubic;
+    var onUpdate = opts.onUpdate || function() {};
+    var onComplete = opts.onComplete || function() {};
+    var delay = opts.delay || 0;
+    var cancelled = false;
+
+    function interpolate(f, t, eased) {
+      if (typeof f === "number") return lerp(f, t, eased);
+      var out = {};
+      for (var k in f) out[k] = lerp(f[k], t[k], eased);
+      return out;
+    }
+
+    var virtualElapsed = 0;  // accumulated virtual time inside this tween
+    var lastFrame = null;
+
+    // reduced-motion: skip to end state instantly
+    if (reducedMotion()) {
+      setTimeout(function() {
+        if (cancelled) return;
+        virtualElapsed = baseDuration;
+        onUpdate(to);
+        onComplete();
+      }, 0);
+      var handle_rm = function() { cancelled = true; };
+      handle_rm.getElapsed = function() { return virtualElapsed; };
+      return handle_rm;
+    }
+
+    function frame(now) {
+      if (cancelled) return;
+      if (lastFrame === null) lastFrame = now;
+      var delta = now - lastFrame;
+      lastFrame = now;
+      if (!_paused) {
+        virtualElapsed += delta * _speed;
+      }
+      var adjusted = virtualElapsed - delay;
+      if (adjusted < 0) { requestAnimationFrame(frame); return; }
+      var t = Math.min(1, adjusted / baseDuration);
+      var eased = ease(t);
+      onUpdate(interpolate(from, to, eased));
+      if (t < 1) requestAnimationFrame(frame);
+      else onComplete();
+    }
+    requestAnimationFrame(frame);
+
+    var handle = function() { cancelled = true; };
+    handle.getElapsed = function() { return virtualElapsed; };
+    return handle;
+  }
+
+  // --- stagger: run fn(item, i) at i*stepMs intervals -------------------
+  function stagger(items, stepMs, fn) {
+    if (reducedMotion()) {
+      for (var i = 0; i < items.length; i++) fn(items[i], i);
+      return function() {};
+    }
+    var timers = [];
+    items.forEach(function(item, i) {
+      timers.push(setTimeout(function() { fn(item, i); }, i * stepMs));
+    });
+    return function() { timers.forEach(clearTimeout); };
+  }
+
+  // --- timeline: sequential tween queue, pause-aware, scrubbable -------
+  //
+  // Each `.add(step)`, `.delay(ms)`, `.call(fn)` is assigned a cumulative
+  // position on the global timeline (``_start``, ``_duration``). This lets
+  // the scrubber seek to any point by calling ``fastForwardTo(ms)``, which
+  // synchronously applies every step's final state up to the target.
+  //
+  // During play a tiny RAF ticker advances ``virtualElapsed`` so external
+  // code (the toolbar scrubber) can read ``getCurrentTime()`` every frame.
+  // Pauses and speed changes update the ticker exactly like tween() does.
+  function _interpolateValue(from, to, eased) {
+    if (typeof from === "number") return lerp(from, to, eased);
+    var out = {};
+    for (var k in from) out[k] = lerp(from[k], to[k], eased);
+    return out;
+  }
+
+  function timeline() {
+    var steps = [];
+    var totalDuration = 0;
+    var current = null;
+    var playing = false;
+    var onDoneCb = null;
+    var pendingDelayTimer = null;
+    var pendingDelayRemaining = 0;
+    var marks = [];  // phase markers: [{name, ms}]
+
+    // Virtual-time ticker state. ``virtualElapsed`` is the total ms we have
+    // "played" across all steps, pause-adjusted and speed-adjusted. The
+    // currently-running tween reports its own elapsed; we add that to
+    // ``stepVirtualStart`` to get the precise scrubber position.
+    var virtualElapsed = 0;
+    var stepVirtualStart = 0;
+    var tickerLastFrame = null;
+
+    var tl = {};
+    tl.add = function(step) {
+      step._type = "tween";
+      step._start = totalDuration;
+      step._duration = step.duration || 400;
+      totalDuration += step._duration;
+      steps.push(step);
+      return tl;
+    };
+    tl.delay = function(ms) {
+      var s = { _type: "delay", _start: totalDuration, _duration: ms };
+      totalDuration += ms;
+      steps.push(s);
+      return tl;
+    };
+    tl.call = function(fn) {
+      steps.push({ _type: "call", _fn: fn, _start: totalDuration, _duration: 0 });
+      return tl;
+    };
+    tl.mark = function(name) {
+      marks.push({ name: name, ms: totalDuration });
+      return tl;
+    };
+    tl.getMarks = function() { return marks; };
+    tl.getTotalDuration = function() { return totalDuration; };
+    tl.getCurrentTime = function() {
+      // If a tween is mid-flight, add its local elapsed to the step start.
+      if (current && typeof current.getElapsed === "function") {
+        return stepVirtualStart + current.getElapsed();
+      }
+      return virtualElapsed;
+    };
+
+    // Synchronously apply every step's final state up to ``targetMs``.
+    // Used by the scrubber to seek to any point in the timeline.
+    // Tweens that straddle targetMs get one partial update at their local
+    // progress. Leaves ``virtualElapsed = targetMs`` and playing=false.
+    tl.fastForwardTo = function(targetMs) {
+      tl.stop();
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      for (var i = 0; i < steps.length; i++) {
+        var s = steps[i];
+        var stepEnd = s._start + s._duration;
+        if (stepEnd <= targetMs) {
+          // Fully elapsed — fire final state
+          if (s._type === "tween") {
+            if (s.onUpdate) s.onUpdate(s.to);
+            if (s.onComplete) s.onComplete();
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = stepEnd;
+        } else if (s._start < targetMs) {
+          // Step is currently running at targetMs
+          if (s._type === "tween") {
+            var progress = (targetMs - s._start) / s._duration;
+            var eased = (s.ease || easeOutCubic)(progress);
+            if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = targetMs;
+          stepVirtualStart = s._start;
+          return;
+        } else {
+          virtualElapsed = Math.min(targetMs, s._start);
+          return;
+        }
+      }
+      virtualElapsed = targetMs;
+    };
+
+    tl.play = function(onDone) {
+      playing = true;
+      onDoneCb = onDone || null;
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      tickerLastFrame = null;
+      var i = 0;
+
+      // Scrubber-tracking RAF loop. Runs while playing; updates
+      // virtualElapsed so getCurrentTime() reflects the current position
+      // even across delay gaps.
+      function ticker(now) {
+        if (!playing) return;
+        if (tickerLastFrame === null) tickerLastFrame = now;
+        var delta = now - tickerLastFrame;
+        tickerLastFrame = now;
+        if (!_paused && !current) {
+          // Only advance during delay windows; while a tween is running,
+          // getCurrentTime() reads the tween's own elapsed instead.
+          virtualElapsed += delta * _speed;
+        } else if (!_paused && current && typeof current.getElapsed === "function") {
+          // Keep virtualElapsed in sync with the running tween so
+          // getCurrentTime() is monotonic even if nothing queries it.
+          virtualElapsed = stepVirtualStart + current.getElapsed();
+        }
+        if (playing) requestAnimationFrame(ticker);
+      }
+      requestAnimationFrame(ticker);
+
+      function scheduleDelay(remaining, after) {
+        if (_paused) {
+          pendingDelayRemaining = remaining;
+          return;
+        }
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      function next() {
+        if (!playing) return;
+        if (i >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[i++];
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) {
+            virtualElapsed = step._start + step._duration;
+            next();
+            return;
+          }
+          scheduleDelay(step._duration, function() {
+            virtualElapsed = step._start + step._duration;
+            next();
+          });
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next();
+          return;
+        }
+        // tween
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next();
+          }
+        }));
+      }
+      var offPause = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay(pendingDelayRemaining, next);
+        }
+      };
+      onPauseChange(offPause);
+      next();
+      return tl;
+    };
+    // Resume from a specific time. Synchronously applies all steps up to
+    // ``fromMs``, then starts live playback from that point. This is how
+    // the scrubber implements "Resume from where I dragged to".
+    tl.playFrom = function(fromMs, onDone) {
+      tl.stop();
+      // Apply all steps up to fromMs synchronously
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      for (var k = 0; k < steps.length; k++) {
+        var s = steps[k];
+        var stepEnd = s._start + s._duration;
+        if (stepEnd <= fromMs) {
+          if (s._type === "tween") {
+            if (s.onUpdate) s.onUpdate(s.to);
+            if (s.onComplete) s.onComplete();
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = stepEnd;
+        } else {
+          break;
+        }
+      }
+      // Now start live playback. The play() method will walk from step 0,
+      // but each step whose _start + _duration <= virtualElapsed will
+      // complete instantly because virtualElapsed is already past them.
+      // We override virtualElapsed inside play() to resume cleanly.
+      playing = true;
+      onDoneCb = onDone || null;
+      tickerLastFrame = null;
+      var resumeIdx = 0;
+      // Find the first step that hasn't been fully applied yet
+      for (var j = 0; j < steps.length; j++) {
+        if (steps[j]._start + steps[j]._duration > fromMs) {
+          resumeIdx = j;
+          break;
+        }
+        if (j === steps.length - 1) resumeIdx = steps.length;
+      }
+      virtualElapsed = fromMs;
+      stepVirtualStart = (resumeIdx < steps.length) ? steps[resumeIdx]._start : totalDuration;
+
+      function ticker2(now) {
+        if (!playing) return;
+        if (tickerLastFrame === null) tickerLastFrame = now;
+        var delta = now - tickerLastFrame;
+        tickerLastFrame = now;
+        if (!_paused && !current) {
+          virtualElapsed += delta * _speed;
+        } else if (!_paused && current && typeof current.getElapsed === "function") {
+          virtualElapsed = stepVirtualStart + current.getElapsed();
+        }
+        if (playing) requestAnimationFrame(ticker2);
+      }
+      requestAnimationFrame(ticker2);
+
+      function scheduleDelay2(remaining, after) {
+        if (_paused) { pendingDelayRemaining = remaining; return; }
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      var ri = resumeIdx;
+      function next2() {
+        if (!playing) return;
+        if (ri >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[ri++];
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) { virtualElapsed = step._start + step._duration; next2(); return; }
+          // If we're resuming mid-delay, shorten it
+          var elapsed = fromMs - step._start;
+          var remaining = Math.max(0, step._duration - elapsed);
+          if (remaining <= 0) { virtualElapsed = step._start + step._duration; next2(); return; }
+          scheduleDelay2(remaining, function() {
+            virtualElapsed = step._start + step._duration;
+            next2();
+          });
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next2();
+          return;
+        }
+        // tween — if we're resuming past this step, skip it
+        if (step._start + step._duration <= fromMs) {
+          if (step.onUpdate) step.onUpdate(step.to);
+          if (step.onComplete) step.onComplete();
+          virtualElapsed = step._start + step._duration;
+          next2();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next2();
+          }
+        }));
+      }
+      var offPause2 = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay2(pendingDelayRemaining, next2);
+        }
+      };
+      onPauseChange(offPause2);
+      next2();
+      return tl;
+    };
+
+    tl.stop = function() {
+      playing = false;
+      if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }
+      pendingDelayRemaining = 0;
+      if (current) {
+        if (typeof current === "function") current();
+        current = null;
+      }
+    };
+    tl.isPlaying = function() { return playing; };
+    return tl;
+  }
+
+  // --- path: quadratic-bezier sampler (x1,y1) → (cx,cy) → (x2,y2) -------
+  function path(x1, y1, cx, cy, x2, y2) {
+    return function(t) {
+      var omt = 1 - t;
+      var x = omt * omt * x1 + 2 * omt * t * cx + t * t * x2;
+      var y = omt * omt * y1 + 2 * omt * t * cy + t * t * y2;
+      return { x: x, y: y };
+    };
+  }
+
+  // --- pulse: briefly grow an SVG element's stroke width ---------------
+  function pulse(el, peakWidth, baseWidth, durationMs) {
+    if (!el) return;
+    var dur = (durationMs || 400) / 2;
+    tween({
+      from: baseWidth || 1,
+      to: peakWidth || 3,
+      duration: dur,
+      ease: easeOutCubic,
+      onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); },
+      onComplete: function() {
+        tween({
+          from: peakWidth || 3,
+          to: baseWidth || 1,
+          duration: dur,
+          ease: easeInCubic,
+          onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); }
+        });
+      }
+    });
+  }
+
+  // --- svg element creators (tiny helpers to reduce boilerplate) -------
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // --- complexityChart: small log-log plot of cost vs input size -------
+  //
+  // Draws a line-chart SVG showing how a cost function scales with input
+  // size, with the current operating point highlighted. Useful for the
+  // "feel the asymptotic gap" moment at the bottom of each lesson.
+  //
+  // opts: {
+  //   svgId: "complexity-chart",
+  //   width: 400, height: 180,
+  //   xLabel: "Rows", yLabel: "Pages touched",
+  //   curves: [
+  //     {label: "BNL", color: "#ca8a04", fn: function(n) { return n * n; }},
+  //     {label: "Hash", color: "#0d9488", fn: function(n) { return n + 1000; }}
+  //   ],
+  //   xMin: 10, xMax: 1000000,
+  //   current: {x: 100000},  // highlight point
+  // }
+  function complexityChart(opts) {
+    var svgEl = document.getElementById(opts.svgId);
+    if (!svgEl) return;
+    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+    var W = opts.width || 400;
+    var H = opts.height || 180;
+    var padL = 44, padR = 20, padT = 20, padB = 32;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+    var xMin = opts.xMin || 1;
+    var xMax = opts.xMax || 1e9;
+    var NSAMP = 80;
+
+    // Sample every curve; use log X scale
+    function logMap(v, lo, hi) {
+      var lv = Math.log(v);
+      var llo = Math.log(lo);
+      var lhi = Math.log(hi);
+      return (lv - llo) / (lhi - llo);
+    }
+    var samples = opts.curves.map(function(c) {
+      var pts = [];
+      for (var i = 0; i < NSAMP; i++) {
+        var frac = i / (NSAMP - 1);
+        var x = Math.exp(Math.log(xMin) + frac * (Math.log(xMax) - Math.log(xMin)));
+        pts.push({x: x, y: c.fn(x)});
+      }
+      return pts;
+    });
+    // Compute global Y range (log scale)
+    var yAll = [];
+    samples.forEach(function(curve) { curve.forEach(function(p) { if (p.y > 0 && isFinite(p.y)) yAll.push(p.y); }); });
+    if (yAll.length === 0) return;
+    var yMin = Math.min.apply(null, yAll);
+    var yMax = Math.max.apply(null, yAll);
+    // Clamp yMin so it's not zero
+    if (yMin <= 0) yMin = 1;
+
+    function toSvg(x, y) {
+      var fx = logMap(x, xMin, xMax);
+      var fy = (y > 0) ? logMap(y, yMin, yMax) : 0;
+      return {
+        x: padL + fx * plotW,
+        y: padT + (1 - fy) * plotH
+      };
+    }
+
+    // Background grid (log decades)
+    for (var gx = Math.pow(10, Math.floor(Math.log10(xMin))); gx <= xMax; gx *= 10) {
+      if (gx < xMin) continue;
+      var gridX = toSvg(gx, yMin).x;
+      var gline = svgEl_create("line", {
+        x1: gridX, y1: padT, x2: gridX, y2: padT + plotH,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gline);
+      var glbl = svgEl_create("text", {
+        x: gridX, y: padT + plotH + 14,
+        "text-anchor": "middle", "font-size": 9, fill: "#9ca3af"
+      });
+      glbl.textContent = formatLog(gx);
+      svgEl.appendChild(glbl);
+    }
+    for (var gy = Math.pow(10, Math.floor(Math.log10(yMin))); gy <= yMax * 10; gy *= 10) {
+      if (gy < yMin) continue;
+      var gridY = toSvg(xMin, gy).y;
+      if (gridY < padT - 1 || gridY > padT + plotH + 1) continue;
+      var gln = svgEl_create("line", {
+        x1: padL, y1: gridY, x2: padL + plotW, y2: gridY,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gln);
+      var glb = svgEl_create("text", {
+        x: padL - 6, y: gridY + 3,
+        "text-anchor": "end", "font-size": 9, fill: "#9ca3af"
+      });
+      glb.textContent = formatLog(gy);
+      svgEl.appendChild(glb);
+    }
+
+    // Axis lines
+    var axisX = svgEl_create("line", {
+      x1: padL, y1: padT + plotH, x2: padL + plotW, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisX);
+    var axisY = svgEl_create("line", {
+      x1: padL, y1: padT, x2: padL, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisY);
+
+    // Axis labels
+    if (opts.xLabel) {
+      var xl = svgEl_create("text", {
+        x: padL + plotW/2, y: H - 6,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151"
+      });
+      xl.textContent = opts.xLabel;
+      svgEl.appendChild(xl);
+    }
+    if (opts.yLabel) {
+      var yl = svgEl_create("text", {
+        x: 12, y: padT + plotH/2,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
+        transform: "rotate(-90 12," + (padT + plotH/2) + ")"
+      });
+      yl.textContent = opts.yLabel;
+      svgEl.appendChild(yl);
+    }
+
+    // Curves
+    opts.curves.forEach(function(c, idx) {
+      var pts = samples[idx];
+      var d = "";
+      pts.forEach(function(p, i) {
+        if (!isFinite(p.y) || p.y <= 0) return;
+        var svg = toSvg(p.x, p.y);
+        d += (i === 0 ? "M " : " L ") + svg.x.toFixed(1) + "," + svg.y.toFixed(1);
+      });
+      var path = svgEl_create("path", {
+        d: d, fill: "none", stroke: c.color || "#1f2937", "stroke-width": 2.5,
+        "stroke-linecap": "round", "stroke-linejoin": "round"
+      });
+      svgEl.appendChild(path);
+    });
+
+    // Legend
+    var legendY = padT - 6;
+    var lx = padL;
+    opts.curves.forEach(function(c, idx) {
+      var sw = svgEl_create("rect", {
+        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "#1f2937"
+      });
+      svgEl.appendChild(sw);
+      var lt = svgEl_create("text", {
+        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "#1f2937"
+      });
+      lt.textContent = c.label;
+      svgEl.appendChild(lt);
+      lx += (c.label.length * 6) + 34;
+    });
+
+    // Highlight current operating point
+    if (opts.current && opts.current.x) {
+      var cx = opts.current.x;
+      if (cx >= xMin && cx <= xMax) {
+        opts.curves.forEach(function(c, idx) {
+          var cy = c.fn(cx);
+          if (!isFinite(cy) || cy <= 0) return;
+          var svg = toSvg(cx, cy);
+          var dot = svgEl_create("circle", {
+            cx: svg.x, cy: svg.y, r: 5,
+            fill: c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+          });
+          svgEl.appendChild(dot);
+        });
+        // Vertical guide line at the current x
+        var vx = toSvg(cx, yMin).x;
+        var vline = svgEl_create("line", {
+          x1: vx, y1: padT, x2: vx, y2: padT + plotH,
+          stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
+        });
+        svgEl.appendChild(vline);
+      }
+    }
+
+    // ------------- Interactivity: hover guide + tooltip + click ----------
+    // A transparent rect over the plot area captures mouse moves and
+    // clicks. On hover, a vertical guide tracks the pointer and each curve
+    // gets a small dot + label showing its value at that x.
+    var hitRect = svgEl_create("rect", {
+      x: padL, y: padT, width: plotW, height: plotH,
+      fill: "transparent", "pointer-events": "all",
+      style: "cursor: crosshair"
+    });
+    svgEl.appendChild(hitRect);
+
+    var hoverGroup = svgEl_create("g", { "pointer-events": "none", opacity: 0 });
+    var hoverLine = svgEl_create("line", {
+      y1: padT, y2: padT + plotH,
+      stroke: "#1f2937", "stroke-width": 1, "stroke-dasharray": "2 2"
+    });
+    hoverGroup.appendChild(hoverLine);
+    var hoverDots = [];
+    var hoverLabelBg = svgEl_create("rect", {
+      rx: 4, ry: 4, fill: "rgba(31,41,55,0.95)", stroke: "none"
+    });
+    hoverGroup.appendChild(hoverLabelBg);
+    var hoverLabelLines = [];
+    opts.curves.forEach(function(c, idx) {
+      var dot = svgEl_create("circle", {
+        r: 4, fill: c.color || "#1f2937", stroke: "#fff", "stroke-width": 1.5
+      });
+      hoverGroup.appendChild(dot);
+      hoverDots.push(dot);
+      var txt = svgEl_create("text", {
+        "font-size": 10, "font-weight": 600, fill: "#ffffff"
+      });
+      hoverGroup.appendChild(txt);
+      hoverLabelLines.push(txt);
+    });
+    svgEl.appendChild(hoverGroup);
+
+    function svgPointFromEvent(evt) {
+      var ctm = svgEl.getScreenCTM();
+      if (!ctm) return { x: evt.clientX, y: evt.clientY };
+      try {
+        var pt = svgEl.createSVGPoint();
+        pt.x = evt.clientX; pt.y = evt.clientY;
+        var inv = ctm.inverse();
+        return pt.matrixTransform(inv);
+      } catch (e) {
+        return { x: evt.clientX, y: evt.clientY };
+      }
+    }
+    function formatBig(n) {
+      if (!isFinite(n)) return "—";
+      if (n >= 1e12) return (n / 1e12).toFixed(2) + "T";
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+      return Math.round(n).toString();
+    }
+    function updateHover(svgX) {
+      var clamped = Math.max(padL, Math.min(padL + plotW, svgX));
+      var xFrac = (clamped - padL) / plotW;
+      var xVal = Math.exp(Math.log(xMin) + xFrac * (Math.log(xMax) - Math.log(xMin)));
+      hoverLine.setAttribute("x1", clamped);
+      hoverLine.setAttribute("x2", clamped);
+
+      var labelLines = [];
+      labelLines.push(opts.xLabel + ": " + formatBig(xVal));
+      opts.curves.forEach(function(c, idx) {
+        var y = c.fn(xVal);
+        if (!isFinite(y) || y <= 0) {
+          hoverDots[idx].setAttribute("opacity", 0);
+          hoverLabelLines[idx + 1] && hoverLabelLines[idx + 1].setAttribute("opacity", 0);
+          return;
+        }
+        var svgPt = toSvg(xVal, y);
+        hoverDots[idx].setAttribute("cx", svgPt.x);
+        hoverDots[idx].setAttribute("cy", svgPt.y);
+        hoverDots[idx].setAttribute("opacity", 1);
+        labelLines.push(c.label + ": " + formatBig(y));
+      });
+
+      // Compose tooltip on the left or right depending on cursor position
+      var labelX = (clamped < padL + plotW / 2) ? clamped + 10 : clamped - 150;
+      var labelY = padT + 6;
+      var maxLineW = 0;
+      for (var j = 0; j < labelLines.length; j++) {
+        if (!hoverLabelLines[j]) {
+          var t = svgEl_create("text", { "font-size": 10, "font-weight": 600, fill: "#ffffff" });
+          hoverGroup.appendChild(t);
+          hoverLabelLines[j] = t;
+        }
+        hoverLabelLines[j].textContent = labelLines[j];
+        hoverLabelLines[j].setAttribute("x", labelX + 6);
+        hoverLabelLines[j].setAttribute("y", labelY + 12 + j * 13);
+        hoverLabelLines[j].setAttribute("opacity", 1);
+        maxLineW = Math.max(maxLineW, labelLines[j].length * 5.8);
+      }
+      // Clear any extra stale labels
+      for (var k = labelLines.length; k < hoverLabelLines.length; k++) {
+        if (hoverLabelLines[k]) hoverLabelLines[k].setAttribute("opacity", 0);
+      }
+      hoverLabelBg.setAttribute("x", labelX);
+      hoverLabelBg.setAttribute("y", labelY);
+      hoverLabelBg.setAttribute("width", Math.max(140, maxLineW + 12));
+      hoverLabelBg.setAttribute("height", 8 + labelLines.length * 13);
+      hoverGroup.setAttribute("opacity", 1);
+    }
+
+    hitRect.addEventListener("mousemove", function(evt) {
+      var pt = svgPointFromEvent(evt);
+      updateHover(pt.x);
+    });
+    hitRect.addEventListener("mouseleave", function() {
+      hoverGroup.setAttribute("opacity", 0);
+    });
+
+    // Click to update a slider — opts.xSlider = "rows" to bind.
+    if (opts.xSlider) {
+      hitRect.addEventListener("click", function(evt) {
+        var pt = svgPointFromEvent(evt);
+        var clamped = Math.max(padL, Math.min(padL + plotW, pt.x));
+        var xFrac = (clamped - padL) / plotW;
+        var xVal = Math.exp(Math.log(xMin) + xFrac * (Math.log(xMax) - Math.log(xMin)));
+        var slider = document.getElementById(opts.xSlider);
+        if (!slider) return;
+        // Some sliders use linear values (outer_rows), some use a log index
+        // mapped from ROW_SCALE. The caller can provide a transform.
+        var newVal;
+        if (opts.xSliderTransform) {
+          newVal = opts.xSliderTransform(xVal);
+        } else {
+          newVal = Math.round(xVal);
+        }
+        slider.value = newVal;
+        // Fire input event so the lesson's recompute runs
+        var ev = new Event("input", { bubbles: true });
+        slider.dispatchEvent(ev);
+      });
+    }
+  }
+
+  function svgEl_create(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function formatLog(n) {
+    if (n >= 1e9) return (n / 1e9) + "B";
+    if (n >= 1e6) return (n / 1e6) + "M";
+    if (n >= 1e3) return (n / 1e3) + "K";
+    return String(n);
+  }
+
+  return {
+    linear: linear,
+    easeOutCubic: easeOutCubic,
+    easeInCubic: easeInCubic,
+    easeInOutCubic: easeInOutCubic,
+    easeOutQuart: easeOutQuart,
+    easeInOutQuad: easeInOutQuad,
+    easeOutBack: easeOutBack,
+    lerp: lerp,
+    lerpColor: lerpColor,
+    tween: tween,
+    stagger: stagger,
+    timeline: timeline,
+    path: path,
+    pulse: pulse,
+    svgEl: svgEl,
+    reducedMotion: reducedMotion,
+    setSpeed: setSpeed,
+    getSpeed: getSpeed,
+    setPaused: setPaused,
+    isPaused: isPaused,
+    onPauseChange: onPauseChange,
+    complexityChart: complexityChart
+  };
+})();
+
+
+var teachRuntime = (function() {
+  function formatInt(n) {
+    if (!isFinite(n)) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(Math.round(n));
+  }
+  function formatBytes(b) {
+    if (!isFinite(b) || b < 0) return "—";
+    if (b >= 1024*1024*1024) return (b / (1024*1024*1024)).toFixed(2) + " GiB";
+    if (b >= 1024*1024) return (b / (1024*1024)).toFixed(2) + " MiB";
+    if (b >= 1024) return (b / 1024).toFixed(1) + " KiB";
+    return b + " B";
+  }
+  function formatMs(ms) {
+    if (!isFinite(ms)) return "—";
+    if (ms >= 1000) return (ms / 1000).toFixed(2) + " s";
+    if (ms >= 1) return ms.toFixed(1) + " ms";
+    return (ms * 1000).toFixed(1) + " µs";
+  }
+  function readControls(rootSel) {
+    var root = document.querySelector(rootSel || "section.controls");
+    var out = {};
+    if (!root) return out;
+    var els = root.querySelectorAll("input, select");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.name) continue;
+      var v;
+      if (el.type === "checkbox") v = el.checked;
+      else if (el.type === "number" || el.type === "range") v = Number(el.value);
+      else v = el.value;
+      out[el.name] = v;
+      var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+      if (pill) pill.textContent = el.value;
+    }
+    return out;
+  }
+  function wire(recompute) {
+    var els = document.querySelectorAll("section.controls input, section.controls select");
+    for (var i = 0; i < els.length; i++) {
+      els[i].addEventListener("input", recompute);
+      els[i].addEventListener("change", recompute);
+    }
+    window.__teachRecompute = recompute;
+    recompute();
+  }
+  function bootstrapFromObject(ctx) {
+    ctx = ctx || {};
+    var controls = ctx.controls || {};
+    var root = document.querySelector("section.controls");
+    if (root) {
+      var els = root.querySelectorAll("input, select");
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if (!el.name || !Object.prototype.hasOwnProperty.call(controls, el.name)) continue;
+        var v = controls[el.name];
+        if (el.type === "checkbox") {
+          el.checked = !!v;
+        } else {
+          el.value = String(v);
+        }
+        var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+        if (pill) pill.textContent = el.value;
+      }
+    }
+    // Keep the lesson's own example query — it is a pedagogical classic
+    // that matches the animated sample data (Alice, Bob, Carol, …).
+    // Only inject the operator note as context for which operator the
+    // user clicked on.
+    if (ctx.note) {
+      var note = document.querySelector(".query-card .query-note");
+      if (note) note.textContent = String(ctx.note);
+    }
+    if (typeof window.__teachRecompute === "function") {
+      window.__teachRecompute();
+    } else {
+      // Legacy fallback: try to trigger any control-driven recompute path.
+      var evt;
+      if (typeof Event === "function") evt = new Event("input", { bubbles: true });
+      var root2 = document.querySelector("section.controls");
+      if (evt && root2) {
+        var first = root2.querySelector("input, select");
+        if (first) first.dispatchEvent(evt);
+      }
+    }
+  }
+
+  // =====================================================================
+  // Playback controller — unified toolbar, scrubber, and phase navigation.
+  //
+  // One state machine, one RAF loop, one seek() primitive that every entry
+  // point (Play, Pause, Reset, scrubber drag, phase click) routes through.
+  //
+  // State diagram:
+  //   IDLE  → Play    → PLAYING
+  //   PLAYING → Pause  → PAUSED
+  //   PAUSED  → Resume → PLAYING  (continues from currentMs)
+  //   PAUSED  → Play   → PLAYING  (restart from 0)
+  //   *       → seek() → SEEKED   (paused at targetMs, Resume → PLAYING)
+  //   *       → Reset  → IDLE
+  // =====================================================================
+  var _ctrl = {
+    build: null,         // fn → returns fresh anim.timeline()
+    reset: null,         // fn → clears stage to ready state
+    legacyPlay: null,    // fn → old-style play callback
+    tl: null,            // current anim.timeline()
+    phase: "idle",       // "idle" | "playing" | "paused" | "seeked"
+    seekMs: 0,           // ms position we seeked to (valid when phase=seeked)
+    loopEnabled: false,
+    rafId: 0,            // current RAF id (0 = none)
+    dragging: false,     // true while scrubber thumb is held
+    // Phase nav
+    phaseContainer: null,
+    marks: []
+  };
+  var BASELINE_SPEED_SCALE = 0.52;
+
+  // --- DOM refs (resolved once in wireToolbar) ---
+  var _dom = {};
+
+  // --- Helpers ---
+  function _formatSec(ms) { return (Math.max(0, ms) / 1000).toFixed(1) + "s"; }
+
+  function _setBtnLabel(btn, txt) {
+    if (!btn) return;
+    var lbl = btn.querySelector(".btn-label");
+    if (lbl) lbl.textContent = txt; else btn.textContent = txt;
+  }
+
+  function _syncUI() {
+    // Button label
+    var label = _ctrl.phase === "idle" ? "Play"
+              : _ctrl.phase === "playing" ? "Pause"
+              : "Resume";
+    _setBtnLabel(_dom.btnPlay, label);
+    // Scrubber + time labels
+    if (_ctrl.tl && _dom.scrubber) {
+      var total = _ctrl.tl.getTotalDuration();
+      if (_dom.timeTot) _dom.timeTot.textContent = _formatSec(total);
+      if (total > 0) {
+        var cur = _ctrl.tl.getCurrentTime();
+        _dom.scrubber.value = String(Math.round(Math.min(1, cur / total) * 1000));
+        if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(cur);
+      }
+    } else {
+      if (_dom.scrubber) _dom.scrubber.value = "0";
+      if (_dom.timeCur) _dom.timeCur.textContent = "0.0s";
+    }
+    // Loop button
+    if (_dom.btnLoop) {
+      _setBtnLabel(_dom.btnLoop, _ctrl.loopEnabled ? "Loop: On" : "Loop: Off");
+      _dom.btnLoop.setAttribute("aria-pressed", _ctrl.loopEnabled ? "true" : "false");
+    }
+  }
+
+  // --- Single RAF loop: runs only while phase = "playing" ---
+  // Uses a generation counter so stale loops from previous playbacks die.
+  var _tickGen = 0;
+  function _tick(gen) {
+    if (gen !== _tickGen) return;                // stale loop — die
+    if (_ctrl.phase !== "playing") { _ctrl.rafId = 0; return; }
+    if (_ctrl.tl && _dom.scrubber && !_ctrl.dragging) {
+      var total = _ctrl.tl.getTotalDuration();
+      if (total > 0) {
+        var cur = _ctrl.tl.getCurrentTime();
+        var frac = Math.min(1, cur / total);
+        _dom.scrubber.value = String(Math.round(frac * 1000));
+        if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(cur);
+        _updatePhaseHighlight(cur);
+      }
+    }
+    _ctrl.rafId = requestAnimationFrame(function() { _tick(gen); });
+  }
+  function _startTick() {
+    _tickGen++;
+    var gen = _tickGen;
+    _ctrl.rafId = requestAnimationFrame(function() { _tick(gen); });
+  }
+
+  // --- Core operations ---
+
+  // Fully stop everything and return to idle.  Does NOT call reset().
+  function _stopAll() {
+    if (_ctrl.tl) _ctrl.tl.stop();
+    _ctrl.tl = null;
+    _ctrl.phase = "idle";
+    _ctrl.seekMs = 0;
+    anim.setPaused(false);
+    _tickGen++;                                    // kill any stale _tick loop
+    if (_ctrl.rafId) { cancelAnimationFrame(_ctrl.rafId); _ctrl.rafId = 0; }
+  }
+
+  // Build a fresh timeline, apply all state up to `ms`, leave paused there.
+  // This is the single seek primitive — scrubber, phase-nav, and toolbar
+  // all route through here.
+  function _seek(ms) {
+    _stopAll();
+    if (_ctrl.reset) _ctrl.reset();
+    if (!_ctrl.build) return;
+    _ctrl.tl = _ctrl.build();
+    var total = _ctrl.tl.getTotalDuration();
+    if (ms > total) ms = total;
+    if (ms < 0) ms = 0;
+    _ctrl.tl.fastForwardTo(ms);
+    _ctrl.phase = "seeked";
+    _ctrl.seekMs = ms;
+    anim.setPaused(true);
+    _renderPhaseNav();
+    _syncUI();
+    // Override scrubber to exact seek position
+    if (_dom.scrubber && total > 0) {
+      _dom.scrubber.value = String(Math.round((ms / total) * 1000));
+    }
+    if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(ms);
+  }
+
+  // Start playing from `ms` (0 for fresh start).
+  function _playFrom(ms) {
+    _stopAll();
+    if (_ctrl.reset) _ctrl.reset();
+    if (!_ctrl.build) return;
+    _ctrl.tl = _ctrl.build();
+    _ctrl.phase = "playing";
+    _ctrl.seekMs = 0;
+    anim.setPaused(false);
+    _renderPhaseNav();
+    _syncUI();
+    if (ms > 0) {
+      _ctrl.tl.playFrom(ms, _onDone);
+    } else {
+      _ctrl.tl.play(_onDone);
+    }
+    _startTick();
+  }
+
+  function _onDone() {
+    if (_ctrl.loopEnabled) { _playFrom(0); return; }
+    _ctrl.phase = "idle";
+    if (_ctrl.rafId) { cancelAnimationFrame(_ctrl.rafId); _ctrl.rafId = 0; }
+    anim.setPaused(false);
+    _syncUI();
+    // Pin scrubber to end
+    if (_ctrl.tl && _dom.scrubber) _dom.scrubber.value = "1000";
+    if (_ctrl.tl && _dom.timeCur) _dom.timeCur.textContent = _formatSec(_ctrl.tl.getTotalDuration());
+  }
+
+  // --- Phase nav rendering & highlighting ---
+  function _renderPhaseNav() {
+    var c = _ctrl.phaseContainer;
+    if (!c || !_ctrl.tl || !_ctrl.tl.getMarks) return;
+    _ctrl.marks = _ctrl.tl.getMarks();
+    c.innerHTML = '<div class="phase-nav-title">Phases</div>';
+    for (var i = 0; i < _ctrl.marks.length; i++) {
+      (function(idx) {
+        var item = document.createElement("div");
+        item.className = "phase-item";
+        item.setAttribute("data-phase-idx", idx);
+        item.innerHTML = '<span class="phase-dot"></span>' + _ctrl.marks[idx].name;
+        item.addEventListener("click", function() {
+          _seek(_ctrl.marks[idx].ms);
+          _highlightPhaseIdx(idx);
+        });
+        c.appendChild(item);
+      })(i);
+    }
+    _highlightPhaseIdx(0);
+  }
+
+  function _highlightPhaseIdx(activeIdx) {
+    var c = _ctrl.phaseContainer;
+    if (!c) return;
+    var items = c.querySelectorAll(".phase-item");
+    for (var i = 0; i < items.length; i++) {
+      var cls = "phase-item";
+      if (i === activeIdx) cls += " active";
+      else if (i < activeIdx) cls += " done";
+      items[i].className = cls;
+    }
+  }
+
+  function _updatePhaseHighlight(currentMs) {
+    if (!_ctrl.marks.length) return;
+    var active = 0;
+    for (var i = _ctrl.marks.length - 1; i >= 0; i--) {
+      if (currentMs >= _ctrl.marks[i].ms) { active = i; break; }
+    }
+    _highlightPhaseIdx(active);
+  }
+
+  // --- Public API: wireToolbar ---
+  function wireToolbar(optsOrPlay, maybeReset) {
+    _dom.btnPlay  = document.getElementById("btn-play");
+    _dom.btnReset = document.getElementById("btn-reset");
+    _dom.btnLoop  = document.getElementById("btn-loop");
+    _dom.selSpeed = document.getElementById("sel-speed");
+    _dom.scrubber = document.getElementById("scrubber");
+    _dom.timeCur  = document.getElementById("scrubber-time-current");
+    _dom.timeTot  = document.getElementById("scrubber-time-total");
+
+    if (typeof optsOrPlay === "function") {
+      _ctrl.legacyPlay = optsOrPlay;
+      _ctrl.reset = maybeReset;
+    } else if (optsOrPlay && typeof optsOrPlay === "object") {
+      _ctrl.build = optsOrPlay.build;
+      _ctrl.reset = optsOrPlay.reset;
+    }
+
+    // --- Play / Pause / Resume button ---
+    if (_dom.btnPlay) _dom.btnPlay.addEventListener("click", function() {
+      switch (_ctrl.phase) {
+        case "idle":
+          if (_ctrl.legacyPlay) { _ctrl.legacyPlay(); return; }
+          _playFrom(0);
+          break;
+        case "playing":
+          // Pause
+          _ctrl.phase = "paused";
+          anim.setPaused(true);
+          _syncUI();
+          break;
+        case "paused":
+          // Resume from current position
+          _ctrl.phase = "playing";
+          anim.setPaused(false);
+          _syncUI();
+          _startTick();
+          break;
+        case "seeked":
+          // Resume from seeked position
+          _playFrom(_ctrl.seekMs);
+          break;
+      }
+    });
+
+    // --- Reset button ---
+    if (_dom.btnReset) _dom.btnReset.addEventListener("click", function() {
+      _stopAll();
+      if (_ctrl.reset) _ctrl.reset();
+      _syncUI();
+    });
+
+    // --- Loop button ---
+    if (_dom.btnLoop) _dom.btnLoop.addEventListener("click", function() {
+      _ctrl.loopEnabled = !_ctrl.loopEnabled;
+      _syncUI();
+    });
+
+    // --- Speed dropdown ---
+    function applyUiSpeed() {
+      if (!_dom.selSpeed) return;
+      anim.setSpeed(Number(_dom.selSpeed.value) * BASELINE_SPEED_SCALE);
+    }
+    if (_dom.selSpeed) _dom.selSpeed.addEventListener("change", applyUiSpeed);
+    if (_dom.selSpeed) applyUiSpeed();
+
+    // --- Scrubber (range input) ---
+    if (_dom.scrubber && _ctrl.build) {
+      _dom.scrubber.addEventListener("mousedown",  function() { _ctrl.dragging = true; });
+      _dom.scrubber.addEventListener("touchstart", function() { _ctrl.dragging = true; });
+      _dom.scrubber.addEventListener("input", function() {
+        var frac = Number(_dom.scrubber.value) / 1000;
+        if (!_ctrl.build) return;
+        // _seek rebuilds the timeline internally; we need total from a
+        // fresh build to convert frac → ms. Use _seek(0) first to get a
+        // timeline, read its total, then re-seek to the real target.
+        // Optimisation: if we already have a tl, reuse its totalDuration.
+        var total;
+        if (_ctrl.tl) {
+          total = _ctrl.tl.getTotalDuration();
+        } else {
+          // No timeline yet — do a throwaway seek to 0 to get one
+          _seek(0);
+          if (!_ctrl.tl) return;
+          total = _ctrl.tl.getTotalDuration();
+        }
+        _seek(frac * total);
+      });
+      function endDrag() { _ctrl.dragging = false; }
+      _dom.scrubber.addEventListener("change",  endDrag);
+      _dom.scrubber.addEventListener("mouseup",  endDrag);
+      _dom.scrubber.addEventListener("touchend", endDrag);
+    }
+
+    // Legacy done callback
+    window._teachOnDone = function() { _onDone(); };
+
+    _syncUI();
+  }
+
+  // --- Public API: wirePhaseNav ---
+  function wirePhaseNav(containerId, opts) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    _ctrl.phaseContainer = container;
+    // build/reset already set by wireToolbar; opts here are redundant but
+    // kept for backward compat.
+    if (opts && opts.build && !_ctrl.build) _ctrl.build = opts.build;
+    if (opts && opts.reset && !_ctrl.reset) _ctrl.reset = opts.reset;
+    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
+  }
+
+  // Backward-compat aliases used by older code paths
+  function _updatePhaseNav(tl) { _renderPhaseNav(); }
+  function _tickPhaseNav(currentMs) { _updatePhaseHighlight(currentMs); }
+
+  function animationDone() {
+    if (typeof window._teachOnDone === "function") window._teachOnDone();
+  }
+
+  return {
+    formatInt: formatInt,
+    formatBytes: formatBytes,
+    formatMs: formatMs,
+    readControls: readControls,
+    wire: wire,
+    bootstrapFromObject: bootstrapFromObject,
+    wireToolbar: wireToolbar,
+    wirePhaseNav: wirePhaseNav,
+    _updatePhaseNav: _updatePhaseNav,
+    _tickPhaseNav: _tickPhaseNav,
+    animationDone: animationDone
+  };
+})();
+
+
+function indexMergeCost(aRows, bRows, overlapPct, variant) {
+  var overlap = Math.floor(Math.min(aRows, bRows) * overlapPct / 100);
+  var merged;
+  if (variant === "intersection") merged = overlap;
+  else merged = aRows + bRows - overlap;
+  return {aRows: aRows, bRows: bRows, overlap: overlap, merged: merged, variant: variant};
+}
+
+var W = 800, H = 420;
+var stage = null;
+
+// Named products so the user can track rows through the merge.
+// Each product appears in one or both index scans.
+var IDX_A_ROWS = [
+  {name: "Laptop",     rid: "A"},
+  {name: "Keyboard",   rid: "B"},
+  {name: "Webcam",     rid: "C"},
+  {name: "Monitor",    rid: "D"},
+  {name: "Mouse",      rid: "E"},
+  {name: "Headset",    rid: "F"},
+  {name: "Charger",    rid: "G"}
+];
+var IDX_B_ROWS = [
+  {name: "Tablet",     rid: "H"},
+  {name: "Webcam",     rid: "C"},
+  {name: "Cable",      rid: "I"},
+  {name: "Monitor",    rid: "D"},
+  {name: "Stand",      rid: "J"},
+  {name: "Adapter",    rid: "K"}
+];
+// Products in BOTH scans (same name = same row)
+var OVERLAP_NAMES = {"Webcam": true, "Monitor": true};
+
+function buildStage(variant) {
+  var svg = document.getElementById("merge-svg");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  var midX = W / 2;
+
+  // Index A (left)
+  var aTitle = anim.svgEl("text", {
+    x: midX / 2, y: 22, "text-anchor": "middle",
+    "font-size": 13, "font-weight": 700, fill: "#1d4ed8"
+  });
+  aTitle.textContent = "idx_category scan";
+  svg.appendChild(aTitle);
+
+  var aRect = anim.svgEl("rect", {
+    x: 20, y: 32, width: midX - 30, height: 120, rx: 8, ry: 8,
+    fill: "#eff6ff", stroke: "#3b82f6", "stroke-width": 1.5
+  });
+  svg.appendChild(aRect);
+
+  var aEntries = [];
+  for (var i = 0; i < IDX_A_ROWS.length; i++) {
+    var y = 48 + i * 14;
+    var lbl = anim.svgEl("text", {
+      x: 30, y: y, "font-size": 10, "font-weight": 600, fill: "#1e40af"
+    });
+    lbl.textContent = IDX_A_ROWS[i].name;
+    svg.appendChild(lbl);
+    var dot = anim.svgEl("circle", {
+      cx: midX - 40, cy: y - 4, r: 5, fill: "#3b82f6", opacity: 0.3
+    });
+    svg.appendChild(dot);
+    aEntries.push({lbl: lbl, dot: dot, name: IDX_A_ROWS[i].name});
+  }
+
+  // Index B (right)
+  var bTitle = anim.svgEl("text", {
+    x: midX + midX / 2, y: 22, "text-anchor": "middle",
+    "font-size": 13, "font-weight": 700, fill: "#c2410c"
+  });
+  bTitle.textContent = "idx_supplier scan";
+  svg.appendChild(bTitle);
+
+  var bRect = anim.svgEl("rect", {
+    x: midX + 10, y: 32, width: midX - 30, height: 120, rx: 8, ry: 8,
+    fill: "#fff7ed", stroke: "#f97316", "stroke-width": 1.5
+  });
+  svg.appendChild(bRect);
+
+  var bEntries = [];
+  for (var j = 0; j < IDX_B_ROWS.length; j++) {
+    var yb = 48 + j * 14;
+    var blbl = anim.svgEl("text", {
+      x: midX + 20, y: yb, "font-size": 10, "font-weight": 600, fill: "#9a3412"
+    });
+    blbl.textContent = IDX_B_ROWS[j].name;
+    svg.appendChild(blbl);
+    var bdot = anim.svgEl("circle", {
+      cx: W - 40, cy: yb - 4, r: 5, fill: "#f97316", opacity: 0.3
+    });
+    svg.appendChild(bdot);
+    bEntries.push({lbl: blbl, dot: bdot, name: IDX_B_ROWS[j].name});
+  }
+
+  // Merge area (middle)
+  var mergeY = 175;
+  var variantLabel = variant === "intersection" ? "Intersection (AND)" :
+                     variant === "sort_union" ? "Sort-Union (OR, unsorted)" : "Union (OR)";
+  var mergeLbl = anim.svgEl("text", {
+    x: W / 2, y: mergeY, "text-anchor": "middle",
+    "font-size": 13, "font-weight": 700, fill: "#7c3aed"
+  });
+  mergeLbl.textContent = "Merge: " + variantLabel;
+  svg.appendChild(mergeLbl);
+
+  var mergeRect = anim.svgEl("rect", {
+    x: 60, y: mergeY + 8, width: W - 120, height: 55, rx: 8, ry: 8,
+    fill: "#f5f3ff", stroke: "#8b5cf6", "stroke-width": 1.5
+  });
+  svg.appendChild(mergeRect);
+
+  var mergeContent = anim.svgEl("text", {
+    x: W / 2, y: mergeY + 40, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 600, fill: "#5b21b6"
+  });
+  mergeContent.textContent = "(row-IDs merged here)";
+  svg.appendChild(mergeContent);
+
+  // Clustered index fetch area (bottom)
+  var fetchY = 270;
+  var fetchLbl = anim.svgEl("text", {
+    x: W / 2, y: fetchY, "text-anchor": "middle",
+    "font-size": 13, "font-weight": 700, fill: "#047857"
+  });
+  fetchLbl.textContent = "Clustered index \u2192 fetch actual rows";
+  svg.appendChild(fetchLbl);
+
+  var fetchRect = anim.svgEl("rect", {
+    x: 60, y: fetchY + 8, width: W - 120, height: 55, rx: 8, ry: 8,
+    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5, opacity: 0.3
+  });
+  svg.appendChild(fetchRect);
+
+  var fetchContent = anim.svgEl("text", {
+    x: W / 2, y: fetchY + 40, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 600, fill: "#065f46", opacity: 0.3
+  });
+  fetchContent.textContent = "";
+  svg.appendChild(fetchContent);
+
+  var statusLbl = anim.svgEl("text", {
+    x: W / 2, y: H - 20, "text-anchor": "middle",
+    "font-size": 12, "font-weight": 600, fill: "#1f2937"
+  });
+  statusLbl.textContent = "";
+  svg.appendChild(statusLbl);
+
+  stage = {
+    svg: svg, aEntries: aEntries, bEntries: bEntries,
+    mergeRect: mergeRect, mergeContent: mergeContent,
+    fetchRect: fetchRect, fetchContent: fetchContent,
+    statusLbl: statusLbl, tuples: []
+  };
+}
+
+function resetStage() {
+  if (!stage) return;
+  for (var i = 0; i < stage.aEntries.length; i++) {
+    stage.aEntries[i].dot.setAttribute("opacity", 0.3);
+  }
+  for (var j = 0; j < stage.bEntries.length; j++) {
+    stage.bEntries[j].dot.setAttribute("opacity", 0.3);
+  }
+  stage.mergeContent.textContent = "(row-IDs merged here)";
+  stage.fetchRect.setAttribute("opacity", 0.3);
+  stage.fetchContent.setAttribute("opacity", 0.3);
+  stage.fetchContent.textContent = "";
+  stage.statusLbl.textContent = "";
+  stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
+  stage.tuples = [];
+}
+
+function buildTimeline(variant) {
+  resetStage();
+  var tl = anim.timeline();
+  var phase = document.getElementById("phase-label");
+  var mergedSet = {};
+  var mergedCount = 0;
+
+  // Phase 1: scan index A
+  tl.mark("Scan idx_category");
+  tl.call(function() {
+    phase.textContent = "Phase 1/3 \u2014 scanning idx_category for category_id = 5";
+  });
+  for (var i = 0; i < stage.aEntries.length; i++) {
+    (function(idx) {
+      tl.call(function() {
+        stage.aEntries[idx].dot.setAttribute("opacity", 1);
+        stage.aEntries[idx].dot.setAttribute("fill", "#2563eb");
+      });
+      tl.delay(200);
+    })(i);
+  }
+  tl.call(function() {
+    stage.mergeContent.textContent = IDX_A_ROWS.length + " row-IDs from idx_category";
+  });
+  tl.delay(300);
+
+  // Phase 2: scan index B
+  tl.mark("Scan idx_supplier");
+  tl.call(function() {
+    phase.textContent = "Phase 2/3 \u2014 scanning idx_supplier for supplier_id = 12";
+  });
+  for (var j = 0; j < stage.bEntries.length; j++) {
+    (function(jdx) {
+      tl.call(function() {
+        stage.bEntries[jdx].dot.setAttribute("opacity", 1);
+        stage.bEntries[jdx].dot.setAttribute("fill", "#ea580c");
+      });
+      tl.delay(200);
+    })(j);
+  }
+  tl.call(function() {
+    stage.mergeContent.textContent = IDX_A_ROWS.length + " + " + IDX_B_ROWS.length + " row-IDs collected";
+  });
+  tl.delay(300);
+
+  // Phase 3: merge
+  var mergeLabel = variant === "intersection" ? "intersecting" :
+                   variant === "sort_union" ? "sorting + merging" : "merging + deduplicating";
+  tl.mark("Merge row-ID sets");
+  tl.call(function() {
+    phase.textContent = "Phase 3/3 \u2014 " + mergeLabel + " row-ID sets";
+  });
+
+  // Highlight overlaps
+  tl.call(function() {
+    for (var ai = 0; ai < stage.aEntries.length; ai++) {
+      if (OVERLAP_NAMES[stage.aEntries[ai].name]) {
+        stage.aEntries[ai].dot.setAttribute("fill", "#7c3aed");
+        stage.aEntries[ai].dot.setAttribute("r", 7);
+      }
+    }
+    for (var bi = 0; bi < stage.bEntries.length; bi++) {
+      if (OVERLAP_NAMES[stage.bEntries[bi].name]) {
+        stage.bEntries[bi].dot.setAttribute("fill", "#7c3aed");
+        stage.bEntries[bi].dot.setAttribute("r", 7);
+      }
+    }
+    stage.mergeContent.textContent = "2 products in BOTH scans: Webcam, Monitor (purple)";
+  });
+  tl.delay(600);
+
+  // Show result
+  tl.mark("Fetch from clustered index");
+  tl.call(function() {
+    var result;
+    if (variant === "intersection") {
+      result = 2;
+      stage.mergeContent.textContent = "Intersection: " + result + " row-IDs in BOTH sets";
+    } else {
+      result = IDX_A_ROWS.length + IDX_B_ROWS.length - 2;
+      stage.mergeContent.textContent = "Union: " + result + " unique row-IDs (2 duplicates removed)";
+    }
+    stage.fetchRect.setAttribute("opacity", 1);
+    stage.fetchContent.setAttribute("opacity", 1);
+    stage.fetchContent.textContent = "Fetching " + result + " rows from clustered index";
+    phase.textContent = "\u2713 Index merge complete \u2014 " + result + " rows fetched vs " +
+      "full table scan";
+    stage.statusLbl.textContent = "A composite index on (category_id, supplier_id) would avoid the merge entirely.";
+  });
+
+  return tl;
+}
+
+function buildCurrentTimeline() {
+  var c = teachRuntime.readControls();
+  return buildTimeline(c.variant);
+}
+function resetAnim() {
+  resetStage();
+  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+}
+
+function renderChart(overlapPct, currentA, variant) {
+  anim.complexityChart({
+    svgId: "complexity-chart",
+    width: 560, height: 200,
+    xMin: 100, xMax: 1e6,
+    xLabel: "Rows per index scan (equal for both)", yLabel: "Rows fetched from clustered index",
+    curves: [
+      { label: "Index merge union", color: "#7c3aed",
+        fn: function(n) {
+          var ov = Math.floor(n * overlapPct / 100);
+          return 2 * n - ov;
+        }
+      },
+      { label: "Index merge intersection", color: "#0284c7",
+        fn: function(n) { return Math.floor(n * overlapPct / 100); }
+      },
+      { label: "Full table scan (no merge)", color: "#dc2626",
+        fn: function(n) { return n * 10; } }
+    ],
+    current: { x: currentA },
+    xSlider: "a_rows",
+    xSliderTransform: function(xVal) { return Math.round(Math.max(100, Math.min(1000000, xVal / 100) * 100)); }
+  });
+}
+
+function recompute() {
+  var c = teachRuntime.readControls();
+  var cost = indexMergeCost(c.a_rows, c.b_rows, c.overlap, c.variant);
+  document.getElementById("out-a-rows").textContent = teachRuntime.formatInt(cost.aRows);
+  document.getElementById("out-b-rows").textContent = teachRuntime.formatInt(cost.bRows);
+  document.getElementById("out-overlap").textContent = teachRuntime.formatInt(cost.overlap);
+  document.getElementById("out-merged").textContent = teachRuntime.formatInt(cost.merged);
+  document.getElementById("out-variant").textContent =
+    cost.variant === "intersection" ? "Intersection (AND)" :
+    cost.variant === "sort_union" ? "Sort-Union (OR)" : "Union (OR)";
+  document.getElementById("out-explanation").textContent =
+    cost.variant === "intersection"
+      ? "Intersection: only " + cost.overlap + " row-IDs present in BOTH sets are fetched. " +
+        "This is used for AND conditions with separate indexes."
+      : "Union: " + cost.merged + " unique row-IDs fetched (" + cost.overlap +
+        " duplicates removed). Used for OR conditions with separate indexes.";
+  buildStage(c.variant);
+  resetStage();
+  renderChart(c.overlap, c.a_rows, c.variant);
+}
+
+teachRuntime.wire(recompute);
+teachRuntime.wireToolbar({
+  build: buildCurrentTimeline,
+  reset: resetAnim
+});
+teachRuntime.wirePhaseNav("phase-nav", {
+  build: buildCurrentTimeline,
+  reset: resetAnim
+});
+
+  </script>
+</body>
+</html>
+</template>
+</section>
+<dialog id="teach-dialog" class="teach-dialog" aria-modal="true" aria-labelledby="teach-dialog-title"><div class="teach-dialog-shell"><header class="teach-dialog-header"><div class="teach-dialog-titles"><h2 id="teach-dialog-title">Teach: Operator deep dive</h2><p id="teach-dialog-subtitle"></p></div><button id="teach-dialog-close" type="button" aria-label="Close teach panel">Close</button></header><div class="teach-dialog-body"><iframe id="teach-dialog-frame" title="Teach lesson" sandbox="allow-scripts allow-same-origin"></iframe></div></div></dialog>
+  </main>
+  <script>window.__MYFLAMES_TEACH_HOOKS = [
+  {
+    "lesson": "index_merge",
+    "match": {
+      "folded_label": "Deduplicate rows sorted by row ID on t1 starts=1 rows=45",
+      "short_label": "Deduplicate rows sorted by row ID on t1"
+    },
+    "controls": {
+      "a_rows": 27,
+      "b_rows": 18,
+      "overlap": 30,
+      "variant": "union"
+    },
+    "note": "Deduplicate rows sorted by row ID on t1 (t1)"
+  }
+];</script>
+  <script>
+function exportSVG() {
+  var svg = document.querySelector('#chart-panel svg');
+  if (!svg) { alert('No SVG found'); return; }
+  var data = new XMLSerializer().serializeToString(svg);
+  var blob = new Blob(['<?xml version="1.0" standalone="no"?>\n', data], {type: 'image/svg+xml'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-plan.svg';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function exportJSON() {
+  // Export the embedded sidecar (same data the JSON-LD script carries).
+  var script = document.querySelector('script[type="application/ld+json"]');
+  if (!script) { alert('No sidecar found'); return; }
+  var blob = new Blob([script.textContent], {type: 'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'query-analysis.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+(function wireTeachBridge() {
+  var hooks = window.__MYFLAMES_TEACH_HOOKS || [];
+  if (!hooks.length) return;
+
+  var chart = document.getElementById("chart-panel");
+  var ctaBtn = document.getElementById("open-teach-btn");
+  var ctaHint = document.getElementById("teach-cta-hint");
+  var dialog = document.getElementById("teach-dialog");
+  var frame = document.getElementById("teach-dialog-frame");
+  var closeBtn = document.getElementById("teach-dialog-close");
+  var subtitle = document.getElementById("teach-dialog-subtitle");
+  var selectedIndex = -1;
+
+  function hookAt(idx) {
+    var i = Number(idx);
+    if (!isFinite(i) || i < 0 || i >= hooks.length) return null;
+    return hooks[i];
+  }
+  function findTeachTarget(start) {
+    var el = start;
+    while (el && el !== document.body) {
+      if (el.getAttribute && el.getAttribute("data-teach-index")) return el;
+      el = el.parentNode;
+    }
+    return null;
+  }
+  function srcDocForHook(hook) {
+    var lesson = hook.lesson;
+    var tpl = document.getElementById("teach-tpl-" + lesson);
+    if (!tpl) return "";
+    var html = tpl.innerHTML || "";
+    var payload = {
+      controls: hook.controls || {},
+      query_sql: hook.query_sql || "",
+      note: hook.note || ""
+    };
+    var inject = "<script>(function(){"
+      + "var ctx=" + JSON.stringify(payload) + ";"
+      + "function run(){"
+      + "if(window.teachRuntime&&typeof window.teachRuntime.bootstrapFromObject==='function'){"
+      + "window.teachRuntime.bootstrapFromObject(ctx);"
+      + "}"
+      + "}"
+      + "if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',run,{once:true});}else{run();}"
+      + "})();<\/script>";
+    if (/<\/body>/i.test(html)) {
+      return html.replace(/<\/body>/i, inject + "</body>");
+    }
+    return html + inject;
+  }
+  function openForIndex(idx) {
+    var hook = hookAt(idx);
+    if (!hook || !dialog || !frame) return;
+    selectedIndex = Number(idx);
+    var lesson = hook.lesson || "lesson";
+    if (subtitle) {
+      subtitle.textContent = (hook.note || "").slice(0, 180) || ("Lesson: " + lesson);
+    }
+    frame.setAttribute("srcdoc", srcDocForHook(hook));
+    if (typeof dialog.showModal === "function") {
+      dialog.showModal();
+    }
+  }
+  function closeTeachDialog() {
+    if (!dialog || !dialog.open) return;
+    dialog.close();
+    if (frame) frame.removeAttribute("srcdoc");
+  }
+  if (chart) {
+    // Use capture phase so we see the click before SVG-internal handlers
+    // call stopPropagation (diagram, flamegraph, tree all do this).
+    chart.addEventListener("click", function(e) {
+      var t = findTeachTarget(e.target);
+      if (!t) return;
+      var idx = t.getAttribute("data-teach-index");
+      var hook = hookAt(idx);
+      if (!hook) return;
+      selectedIndex = Number(idx);
+      if (ctaBtn) ctaBtn.hidden = false;
+      if (ctaHint) {
+        ctaHint.textContent = "Selected: " + (hook.note || hook.lesson || "operator");
+      }
+    }, true);
+  }
+  if (ctaBtn) {
+    ctaBtn.addEventListener("click", function() {
+      if (selectedIndex >= 0) openForIndex(selectedIndex);
+    });
+  }
+  if (closeBtn) closeBtn.addEventListener("click", closeTeachDialog);
+  if (dialog) {
+    dialog.addEventListener("click", function(evt) {
+      var rect = dialog.getBoundingClientRect();
+      var inside = (
+        evt.clientX >= rect.left &&
+        evt.clientX <= rect.right &&
+        evt.clientY >= rect.top &&
+        evt.clientY <= rect.bottom
+      );
+      if (!inside) closeTeachDialog();
+    });
+    dialog.addEventListener("close", function() {
+      if (frame) frame.removeAttribute("srcdoc");
+    });
+  }
+  window.addEventListener("keydown", function(e) {
+    if (e.key === "Escape") closeTeachDialog();
+  });
+})();
+</script>
+</body>
+</html>

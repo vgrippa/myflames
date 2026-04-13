@@ -59,7 +59,15 @@ def _build_bar_info(op, st, pct, unit_display):
     return "  \u00b7  ".join(parts)
 
 
-def render_bargraph(root, width=1200, title="MySQL Query Performance", unit_display="ms", total_time=None, analysis=None):
+def render_bargraph(
+    root,
+    width=1200,
+    title="MySQL Query Performance",
+    unit_display="ms",
+    total_time=None,
+    analysis=None,
+    teach_index_by_folded=None,
+):
     """Generate bar chart SVG. root is parsed tree; total_time and unit_display from caller."""
     all_nodes = sorted(flatten_nodes(root), key=lambda n: n["self_time"], reverse=True)
     all_nodes = [n for n in all_nodes if n["self_time"] >= 0.001]
@@ -165,12 +173,17 @@ def render_bargraph(root, width=1200, title="MySQL Query Performance", unit_disp
         analysis_msg = highlight_msg_by_label.get(short_lbl, "")
         analysis_attr = _attr_escape(analysis_msg)[:400] if analysis_msg else ""
         bar_class = "bar in-query-analysis" if analysis_attr else "bar"
+        teach_attr = ""
+        folded = (op.get("folded_label") or "").strip()
+        if teach_index_by_folded and folded in teach_index_by_folded:
+            teach_attr = f' data-teach-index="{teach_index_by_folded[folded]}"'
         lines.append(f'<text x="{col_label_x + label_width - 10}" y="{text_y}" text-anchor="end" class="label">{xml_escape(label)}</text>')
         lines.append(f'<text x="{col_loops_x + loops_width/2}" y="{text_y}" text-anchor="middle" class="loops">{loops_t}</text>')
         lines.append(
             f'<rect class="{bar_class}" x="{col_bar_x}" y="{y}" width="{bar_width}" height="{bar_height}" fill="{color}" rx="3" ry="3" '
             f'data-info="{info_attr}" data-label="{bar_label_attr}"'
             + (f' data-analysis-msg="{analysis_attr}"' if analysis_attr else "")
+            + teach_attr
             + "/>"
         )
         value_text = f"{st} {unit_display} ({pct:.1f}%)" if op["self_time"] >= 1 else f"{op['self_time']:.3f} {unit_display} ({pct:.1f}%)"

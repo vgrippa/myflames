@@ -17,37 +17,33 @@ import argparse
 import sys
 from typing import Callable, Dict
 
-from . import btree_lookup, bnl, hash_join, join_compare, lru
+from .cache_family import LESSONS as CACHE_FAMILY_LESSONS
+from .index_family import LESSONS as INDEX_FAMILY_LESSONS
+from .join_family import LESSONS as JOIN_FAMILY_LESSONS
+from .scan_family import LESSONS as SCAN_FAMILY_LESSONS
 
 Lesson = Dict[str, object]
 
-LESSONS: Dict[str, Lesson] = {
-    "btree": {
-        "title": "B+tree lookup — how InnoDB finds a row",
-        "summary": "Clustered primary key vs secondary-to-clustered; 16 KiB page fan-out.",
-        "render": btree_lookup.render,
-    },
-    "bnl": {
-        "title": "Block Nested Loop join — MariaDB's default for non-indexed joins",
-        "summary": "Watch `join_buffer_size` decide how many times the inner table is rescanned.",
-        "render": bnl.render,
-    },
-    "hash": {
-        "title": "Hash join — build, probe, and grace-hash spill",
-        "summary": "MySQL 8.4's default for non-indexed equi-joins; animated build + probe phases.",
-        "render": hash_join.render,
-    },
-    "join": {
-        "title": "BNL vs hash join — side by side",
-        "summary": "MariaDB BNL (default) vs MySQL 8.4 hash join; move the sliders and feel the asymptotic difference.",
-        "render": join_compare.render,
-    },
-    "lru": {
-        "title": "InnoDB buffer pool — midpoint-insertion LRU",
-        "summary": "Why MySQL's LRU is scan-resistant — young/old sublists, innodb_old_blocks_time.",
-        "render": lru.render,
-    },
+LESSON_FAMILIES: Dict[str, Dict[str, Lesson]] = {
+    "join_family": JOIN_FAMILY_LESSONS,
+    "index_family": INDEX_FAMILY_LESSONS,
+    "scan_family": SCAN_FAMILY_LESSONS,
+    "cache_family": CACHE_FAMILY_LESSONS,
 }
+
+# Map family keys to the output subdirectory name under docs/teach/.
+FAMILY_DIRS = {
+    "join_family": "join",
+    "index_family": "index",
+    "scan_family": "scan",
+    "cache_family": "cache",
+}
+
+LESSONS: Dict[str, Lesson] = {}
+for _family in ("join_family", "index_family", "scan_family", "cache_family"):
+    for _name, _lesson in LESSON_FAMILIES[_family].items():
+        _lesson["family"] = _family
+    LESSONS.update(LESSON_FAMILIES[_family])
 
 
 def render_lesson(name: str) -> str:
@@ -61,15 +57,28 @@ def render_lesson(name: str) -> str:
     return render_fn()
 
 
+_FAMILY_LABELS = {
+    "join_family": "Join Family",
+    "index_family": "Index Access Family",
+    "scan_family": "Scan / Sort / Temp Family",
+    "cache_family": "Cache / Memory Family",
+}
+
+
 def _print_catalog(stream=sys.stdout) -> None:
-    """Print the list of available lessons (used by `myflames teach` bare)."""
-    print("myflames teach — interactive database algorithm lessons\n", file=stream)
+    """Print the list of available lessons grouped by family."""
+    print("myflames teach \u2014 interactive database algorithm lessons\n", file=stream)
     print("Usage: myflames teach <lesson> [-o out.html]\n", file=stream)
-    print("Lessons:", file=stream)
-    for name, lesson in LESSONS.items():
-        print(f"  {name:<8} {lesson['summary']}", file=stream)
+    for family_key in ("join_family", "index_family", "scan_family", "cache_family"):
+        family_lessons = LESSON_FAMILIES[family_key]
+        if not family_lessons:
+            continue
+        print(f"  {_FAMILY_LABELS[family_key]}:", file=stream)
+        for name, lesson in family_lessons.items():
+            print(f"    {name:<22} {lesson['summary']}", file=stream)
+        print("", file=stream)
     print(
-        "\nEvery lesson is a self-contained HTML page with in-page sliders —\n"
+        "Every lesson is a self-contained HTML page with in-page sliders \u2014\n"
         "no CLI parameters required.",
         file=stream,
     )

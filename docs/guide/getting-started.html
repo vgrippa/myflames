@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started - myflames documentation</title>
+  <style>
+    :root { --bg: #fafafa; --panel: #fff; --text: #1a1a1a; --muted: #6b7280; --border: #e5e7eb; --accent: #2563eb; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    nav.top { background: var(--panel); border-bottom: 1px solid var(--border); padding: 12px 20px; font-size: 14px; }
+    nav.top a { color: var(--accent); text-decoration: none; margin-right: 18px; font-weight: 500; }
+    nav.top a:hover { text-decoration: underline; }
+    nav.top .brand { font-weight: 700; color: var(--text); margin-right: 24px; }
+    main { max-width: 840px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.5px; }
+    h1 + p.subtitle { color: var(--muted); font-size: 16px; margin: 0 0 32px; }
+    h2 { font-size: 20px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 16px; margin: 28px 0 8px; }
+    p, li { font-size: 15px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 13.5px; }
+    pre { background: #1f2937; color: #e5e7eb; padding: 16px 20px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
+    pre code { background: none; padding: 0; color: inherit; }
+    .step { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin: 16px 0; }
+    .step-number { display: inline-block; width: 28px; height: 28px; background: var(--accent); color: #fff; font-weight: 700; font-size: 14px; text-align: center; line-height: 28px; border-radius: 50%; margin-right: 10px; }
+    .step h3 { display: inline; margin: 0; }
+    .tip { background: #eff6ff; border-left: 3px solid var(--accent); padding: 12px 16px; border-radius: 4px; margin: 16px 0; font-size: 14px; }
+    .warning { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 12px 16px; border-radius: 4px; margin: 16px 0; font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    a { color: var(--accent); }
+    footer { max-width: 840px; margin: 0 auto; padding: 16px 20px 32px; font-size: 12px; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <nav class="top">
+    <span class="brand">myflames docs</span>
+    <a href="../index.html">Home</a>
+    <a href="getting-started.html">Getting Started</a>
+    <a href="views.html">View Types</a>
+    <a href="cli.html">CLI Reference</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="../teach/index.html">Teach Lessons</a>
+  </nav>
+  <main>
+    <h1>Getting Started</h1>
+    <p class="subtitle">Install myflames, generate your first flame graph, and understand a query plan in under 5 minutes.</p>
+
+    <h2>Prerequisites</h2>
+    <ul>
+      <li><strong>Python 3.7+</strong> (no extra packages needed)</li>
+      <li><strong>MySQL 8.4+</strong> with <code>EXPLAIN ANALYZE FORMAT=JSON</code> support, <strong>or</strong></li>
+      <li><strong>MariaDB 10.11+ / 11.4+</strong> with <code>ANALYZE FORMAT=JSON</code></li>
+    </ul>
+
+    <h2>Installation</h2>
+    <div class="step">
+      <span class="step-number">1</span>
+      <h3>Install from PyPI</h3>
+      <pre><code>pip install myflames</code></pre>
+      <p>On macOS with PEP 668 restrictions, use <code>pipx</code>:</p>
+      <pre><code>pipx install myflames</code></pre>
+    </div>
+
+    <div class="step">
+      <span class="step-number">2</span>
+      <h3>Verify the installation</h3>
+      <pre><code>myflames --help
+myflames guide    # shows which view to use</code></pre>
+    </div>
+
+    <h2>Your first flame graph (file mode)</h2>
+
+    <div class="step">
+      <span class="step-number">1</span>
+      <h3>Capture an EXPLAIN ANALYZE plan</h3>
+      <pre><code># MySQL 8.4+
+mysql -u user -p mydb -s -N -r -e \
+  "EXPLAIN ANALYZE FORMAT=JSON SELECT * FROM orders WHERE user_id = 1" \
+  > explain.json
+
+# MariaDB 10.11+
+mariadb -u user -p mydb -s -N -r -e \
+  "ANALYZE FORMAT=JSON SELECT * FROM orders WHERE user_id = 1" \
+  > explain.json</code></pre>
+      <div class="tip">Use <code>EXPLAIN ANALYZE</code> (with ANALYZE), not just <code>EXPLAIN</code>. The ANALYZE keyword is required for timing data.</div>
+    </div>
+
+    <div class="step">
+      <span class="step-number">2</span>
+      <h3>Render a flame graph</h3>
+      <pre><code># SVG to stdout
+myflames explain.json > query.svg
+
+# Self-contained HTML report (recommended)
+myflames --output report.html explain.json
+# Creates: report.html + report.json (machine-readable sidecar)</code></pre>
+    </div>
+
+    <div class="step">
+      <span class="step-number">3</span>
+      <h3>Open in your browser</h3>
+      <pre><code>open report.html    # macOS
+xdg-open report.html  # Linux</code></pre>
+      <p>The HTML report includes interactive zoom, search (Ctrl+F), tooltips, and a Query Analysis panel with tuning suggestions.</p>
+    </div>
+
+    <h2>Live connection mode (skip the file)</h2>
+    <p>Connect directly to a running MySQL/MariaDB server using the same flags as the <code>mysql</code> CLI:</p>
+    <pre><code>myflames -h 127.0.0.1 -u root -p -D mydb \
+  -e 'SELECT * FROM orders WHERE user_id = 1' \
+  --output report.html</code></pre>
+
+    <p>In live mode, myflames:</p>
+    <ol>
+      <li>Connects through the real <code>mysql</code>/<code>mariadb</code> client binary (supports all auth plugins)</li>
+      <li>Runs <code>EXPLAIN ANALYZE FORMAT=JSON</code> for you</li>
+      <li>Collects <code>SHOW CREATE TABLE</code>, row counts, and session variables</li>
+      <li>Feeds everything through the <strong>environment advisor</strong></li>
+      <li>Emits an HTML report + JSON sidecar with tuning suggestions</li>
+    </ol>
+
+    <div class="tip">
+      <strong>Password security:</strong> the password is written to a mode-0600 temporary file and never appears in <code>ps</code>, env vars, or logs.
+    </div>
+
+    <h3>TLS connections (e.g., AWS RDS)</h3>
+    <pre><code>myflames -h my-db.rds.amazonaws.com -u admin -p \
+  --ssl-mode=VERIFY_IDENTITY --ssl-ca=/path/to/global-bundle.pem \
+  -D prod -e 'SELECT ...' --output report.html</code></pre>
+
+    <h2>Try other view types</h2>
+    <pre><code>myflames --type bargraph  explain.json > bar.svg    # slowest ops first
+myflames --type treemap   explain.json > tree.svg   # area = cost
+myflames --type diagram   explain.json > diag.svg   # Visual Explain flow
+myflames --type tree      explain.json > exec.svg   # collapsible tree</code></pre>
+    <p>See the <a href="views.html">View Types guide</a> for when to use each one.</p>
+
+    <h2>Compare before vs after</h2>
+    <pre><code>myflames compare before.json after.json --output diff.html</code></pre>
+    <p>Shows total time delta, per-operator changes, new/resolved warnings, and new/removed full table scans.</p>
+
+    <h2>Learn the algorithms</h2>
+    <p>myflames includes 9 interactive lessons that animate MySQL internals with correct cost models:</p>
+    <pre><code>myflames teach btree -o btree.html && open btree.html</code></pre>
+    <p>See the full catalog at <a href="../teach/index.html">Teach Lessons</a>.</p>
+
+    <h2>Next steps</h2>
+    <ul>
+      <li><a href="views.html">View Types</a> &mdash; when to use each visualization</li>
+      <li><a href="cli.html">CLI Reference</a> &mdash; every flag and option</li>
+      <li><a href="architecture.html">Architecture</a> &mdash; how myflames works internally</li>
+      <li><a href="../teach/index.html">Teach Lessons</a> &mdash; animated algorithm walkthroughs</li>
+    </ul>
+  </main>
+  <footer>
+    <p>myflames &mdash; <a href="https://github.com/vgrippa/myflames">GitHub</a>. Inspired by
+    <a href="https://github.com/brendangregg/FlameGraph">Brendan Gregg's FlameGraph</a> and
+    <a href="https://tanelpoder.com/">Tanel Poder's SQL Plan FlameGraphs</a>.</p>
+  </footer>
+</body>
+</html>

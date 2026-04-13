@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-04-13T18:24:22Z",
+  "myflames_version": "1.3.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "/Users/viniciusgrippa/Downloads/git/myflames/test/mysql-explain-json-sample.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 13.684,
+    "rows_sent": 16352,
+    "rows_examined_estimate": 16352,
+    "operator_count": 2,
+    "max_depth": 2
+  },
+  "optimizer_switches": [],
+  "warnings": [],
+  "suggestions": [],
+  "executive_summary": "Query runs 2 operators; returns 16,352 rows in 14 ms. No warnings.",
+  "query": {
+    "raw": "/* select#1 */ select `test`.`joinit`.`g` AS `g` from `test`.`joinit` where (`test`.`joinit`.`i` > 50)",
+    "beautified": "select test.joinit.g AS g\nfrom test.joinit\nwhere (test.joinit.i > 50)"
+  },
+  "teach_hooks": [
+    {
+      "lesson": "filter",
+      "match": {
+        "folded_label": "FILTER ((joinit.i > 50)) starts=1 rows=16352",
+        "short_label": "Filter: ((joinit.i > 50))"
+      },
+      "controls": {
+        "input_rows": 16352,
+        "selectivity": 10.0
+      },
+      "note": "Filter: (joinit.i > 50)",
+      "query_sql": "/* select#1 */ select `test`.`joinit`.`g` AS `g` from `test`.`joinit` where (`test`.`joinit`.`i` > 50)"
+    },
+    {
+      "lesson": "non_unique_lookup",
+      "match": {
+        "folded_label": "INDEX RANGE SCAN [joinit.PRIMARY] starts=1 rows=16352",
+        "short_label": "Index range scan [joinit.PRIMARY]"
+      },
+      "controls": {
+        "rows": 16352,
+        "selectivity": 40.0,
+        "covering": false
+      },
+      "note": "Index range scan on joinit using PRIMARY over (50 < i) (joinit)",
+      "query_sql": "/* select#1 */ select `test`.`joinit`.`g` AS `g` from `test`.`joinit` where (`test`.`joinit`.`i` > 50)"
+    }
+  ]
+}

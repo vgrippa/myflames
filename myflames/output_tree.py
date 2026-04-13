@@ -86,7 +86,7 @@ def _row_info(node, root_total, unit_display):
     return sep.join(parts)
 
 
-def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", analysis=None):
+def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", analysis=None, teach_index_by_folded=None):
     """Render an interactive collapsible plan tree SVG.
 
     Each row is one plan operation. Click the toggle triangle (▾/▸) to
@@ -203,9 +203,13 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         indent_x = LEFT + depth * INDENT
         label_x = indent_x + TOGGLE_W
 
+        folded = (node.get("folded_label") or "").strip()
+        teach_attr = ""
+        if teach_index_by_folded and folded in teach_index_by_folded:
+            teach_attr = f' data-teach-index="{teach_index_by_folded[folded]}"'
         lines.append(
             f'<g class="tree-row" data-idx="{idx}" data-depth="{depth}"'
-            f' data-has-children="{1 if has_children else 0}">'
+            f' data-has-children="{1 if has_children else 0}"{teach_attr}>'
         )
         # Hover/click background (full-width hit area)
         lines.append(

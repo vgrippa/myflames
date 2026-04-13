@@ -322,7 +322,14 @@ def _node_tooltip(node, kind, time_str, cost_val, rows_str, total_ms=None, self_
     return "  ·  ".join(parts)
 
 
-def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms", analysis=None):
+def render_diagram(
+    root,
+    width=1200,
+    title="MySQL Query Plan",
+    unit_display="ms",
+    analysis=None,
+    teach_index_by_folded=None,
+):
     """Render a left-to-right execution plan diagram (Visual Explain style).
     Each nested loop shows two inputs: outer (main line) and inner (branch from below into the diamond).
     """
@@ -511,6 +518,9 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         cid = clip_counter[0]
         clip_counter[0] += 1
         node_extra = f' data-analysis-msg="{analysis_attr}"' if analysis_attr else ""
+        folded = (node.get("folded_label") or "").strip()
+        if teach_index_by_folded and folded in teach_index_by_folded:
+            node_extra += f' data-teach-index="{teach_index_by_folded[folded]}"'
         is_hotspot = hotspot_node_id is not None and id(node) == hotspot_node_id
         node_cls = "diagram-node hotspot" if is_hotspot else "diagram-node"
         lines.append(f'<g class="{node_cls}" data-info="{info_attr}"{node_extra}>')
@@ -570,6 +580,9 @@ def render_diagram(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         ]
         path_pts = " ".join(f"{p[0]},{p[1]}" for p in pts)
         j_extra = f' data-analysis-msg="{analysis_attr}"' if analysis_attr else ""
+        folded = (node.get("folded_label") or "").strip()
+        if teach_index_by_folded and folded in teach_index_by_folded:
+            j_extra += f' data-teach-index="{teach_index_by_folded[folded]}"'
         is_hotspot = hotspot_node_id is not None and id(node) == hotspot_node_id
         jnode_cls = "diagram-node hotspot" if is_hotspot else "diagram-node"
         lines.append(f'<g class="{jnode_cls}" data-info="{info_attr}"{j_extra}>')

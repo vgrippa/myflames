@@ -1,0 +1,143 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-04-13T18:24:23Z",
+  "myflames_version": "1.3.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "/Users/viniciusgrippa/Downloads/git/myflames/test/mysql-explain-weedout.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.352,
+    "rows_sent": 49,
+    "rows_examined_estimate": 2001,
+    "operator_count": 5,
+    "max_depth": 4
+  },
+  "optimizer_switches": [
+    {
+      "name": "semijoin",
+      "value": "on",
+      "explanation": "IN / EXISTS subqueries are rewritten into a semi-join with the outer query and then resolved via one of the semijoin strategies (firstmatch, loosescan, duplicateweedout, or materialization).",
+      "node_labels": [
+        "Remove duplicate t1 rows using temporary table (we..."
+      ]
+    },
+    {
+      "name": "duplicateweedout",
+      "value": "on",
+      "explanation": "Semijoin strategy: runs the subquery as a normal inner join and then removes duplicate outer rows using a temporary table keyed on their row IDs.",
+      "node_labels": [
+        "Remove duplicate t1 rows using temporary table (we..."
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: t2 (2000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [t2]"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    }
+  ],
+  "executive_summary": "Query scans 1 table; examines ~2,001 rows to return 49 in 0.35 ms. Main finding: no index covers (y, x) on t2.",
+  "query": {
+    "raw": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))",
+    "beautified": "select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t1 semi\n  join (testdb.t2)\nwhere ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y < 100))"
+  },
+  "index_suggestions": [
+    {
+      "table": "t2",
+      "columns": [
+        "y",
+        "x"
+      ],
+      "ddl": "CREATE INDEX idx_t2_y_x ON t2 (y, x);",
+      "reason": "Full scan on t2 with filter on (y, x)"
+    }
+  ],
+  "primary_action": {
+    "ref": "suggestions[0]"
+  },
+  "teach_hooks": [
+    {
+      "lesson": "semijoin_weedout",
+      "match": {
+        "folded_label": "Remove duplicate t1 rows using temporary table (weedout) starts=1 rows=49",
+        "short_label": "Remove duplicate t1 rows using temporary table (we..."
+      },
+      "controls": {
+        "outer_rows": 49,
+        "inner_matches": 5,
+        "row_size": 200
+      },
+      "note": "Remove duplicate t1 rows using temporary table (weedout)",
+      "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))"
+    },
+    {
+      "lesson": "nested_loop",
+      "match": {
+        "folded_label": "NESTED LOOP INNER starts=1 rows=49",
+        "short_label": "Nested loop inner join"
+      },
+      "controls": {
+        "outer_rows": 49,
+        "inner_rows": 49,
+        "row_size": 200
+      },
+      "note": "Nested loop inner join",
+      "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))"
+    },
+    {
+      "lesson": "filter",
+      "match": {
+        "folded_label": "FILTER (((t2.y < 100) and (t2.x is not null))) starts=1 rows=49",
+        "short_label": "Filter: (((t2.y < 100) and (t2.x is not null)))"
+      },
+      "controls": {
+        "input_rows": 49,
+        "selectivity": 7.4
+      },
+      "note": "Filter: ((t2.y < 100) and (t2.x is not null))",
+      "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))"
+    },
+    {
+      "lesson": "full_scan",
+      "match": {
+        "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+        "short_label": "Table scan [t2]"
+      },
+      "controls": {
+        "rows": 2000,
+        "row_size": 200,
+        "selectivity": 100.0
+      },
+      "note": "Table scan on t2 (t2)",
+      "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))"
+    },
+    {
+      "lesson": "unique_lookup",
+      "match": {
+        "folded_label": "SINGLE ROW LOOKUP [t1.PRIMARY] starts=49 rows=1",
+        "short_label": "Single-row lookup [t1.PRIMARY]"
+      },
+      "controls": {
+        "rows": 49,
+        "covering": false
+      },
+      "note": "Single-row index lookup on t1 using PRIMARY (id=t2.x) (t1)",
+      "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))"
+    }
+  ]
+}

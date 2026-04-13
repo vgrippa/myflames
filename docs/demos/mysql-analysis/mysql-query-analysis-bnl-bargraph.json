@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-04-13T18:24:20Z",
+  "myflames_version": "1.3.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "/Users/viniciusgrippa/Downloads/git/myflames/test/mysql-explain-bnl.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 15.5,
+    "rows_sent": 150,
+    "rows_examined_estimate": 250,
+    "operator_count": 3,
+    "max_depth": 2
+  },
+  "optimizer_switches": [
+    {
+      "name": "block_nested_loop",
+      "value": "on",
+      "explanation": "Buffers a batch of outer rows in a join buffer and scans the inner table once per batch instead of once per row. Inner still does a full/index/range scan — a missing index on the join column is the root cause.",
+      "node_labels": [
+        "Table scan [t2]"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: t1 (100 rows), t2 (150 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [t1]",
+        "Table scan [t2]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "bnl",
+      "text": "Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [t2]"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Add indexes to eliminate BNL full/index scans, or increase join_buffer_size. In MySQL 8.0.20+, set block_nested_loop=off to force hash join instead",
+      "source": "plan",
+      "target_variable": "join_buffer_size"
+    }
+  ],
+  "executive_summary": "Query scans 2 tables and joins via block nested-loop; returns 150 rows in 16 ms. Main finding: Block Nested-Loop join — each batch of outer rows triggers a full scan of the inner table.",
+  "query": {
+    "raw": "/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2",
+    "beautified": "select t1.id, t1.name, t2.amount\nfrom testdb.t1\n  join testdb.t2"
+  },
+  "primary_action": {
+    "ref": "suggestions[0]"
+  },
+  "teach_hooks": [
+    {
+      "lesson": "nested_loop",
+      "match": {
+        "folded_label": "NESTED LOOP INNER starts=1 rows=150",
+        "short_label": "Nested loop inner join"
+      },
+      "controls": {
+        "outer_rows": 100,
+        "inner_rows": 15000,
+        "row_size": 200
+      },
+      "note": "Nested loop inner join",
+      "query_sql": "/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2"
+    },
+    {
+      "lesson": "full_scan",
+      "match": {
+        "folded_label": "TABLE SCAN [t1] starts=1 rows=100",
+        "short_label": "Table scan [t1]"
+      },
+      "controls": {
+        "rows": 100,
+        "row_size": 200,
+        "selectivity": 100.0
+      },
+      "note": "Table scan on t1 (t1)",
+      "query_sql": "/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2"
+    },
+    {
+      "lesson": "bnl",
+      "match": {
+        "folded_label": "TABLE SCAN [t2] starts=100 rows=150",
+        "short_label": "Table scan [t2]"
+      },
+      "controls": {
+        "outer_rows": 15000,
+        "inner_rows": 15000,
+        "row_size": 200
+      },
+      "note": "Table scan on t2 (BNL join buffer) (t2)",
+      "query_sql": "/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2"
+    }
+  ]
+}

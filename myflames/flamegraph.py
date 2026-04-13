@@ -107,6 +107,7 @@ def folded_to_svg(
     countname="samples",
     inverted=False,
     colors="hot",
+    teach_index_by_folded=None,
 ):
     """
     Convert folded stack input (string) to SVG.
@@ -220,7 +221,10 @@ def folded_to_svg(
             color = DGREY
         else:
             color = _color_hot(func)
-        out.append(f'<g><title>{info}</title>')
+        teach_attr = ""
+        if teach_index_by_folded and func in teach_index_by_folded:
+            teach_attr = f' data-teach-index="{teach_index_by_folded[func]}"'
+        out.append(f'<g{teach_attr}><title>{info}</title>')
         out.append(f'<rect x="{x1:.1f}" y="{y1:.1f}" width="{x2 - x1:.1f}" height="{y2 - y1:.1f}" fill="{color}" rx="2" ry="2"/>')
         chars = int((x2 - x1) / (fontsize * fontwidth))
         text = ""

@@ -179,6 +179,7 @@ var anim = (function() {
     var onDoneCb = null;
     var pendingDelayTimer = null;
     var pendingDelayRemaining = 0;
+    var marks = [];  // phase markers: [{name, ms}]
 
     // Virtual-time ticker state. ``virtualElapsed`` is the total ms we have
     // "played" across all steps, pause-adjusted and speed-adjusted. The
@@ -207,6 +208,11 @@ var anim = (function() {
       steps.push({ _type: "call", _fn: fn, _start: totalDuration, _duration: 0 });
       return tl;
     };
+    tl.mark = function(name) {
+      marks.push({ name: name, ms: totalDuration });
+      return tl;
+    };
+    tl.getMarks = function() { return marks; };
     tl.getTotalDuration = function() { return totalDuration; };
     tl.getCurrentTime = function() {
       // If a tween is mid-flight, add its local elapsed to the step start.
@@ -345,6 +351,128 @@ var anim = (function() {
       next();
       return tl;
     };
+    // Resume from a specific time. Synchronously applies all steps up to
+    // ``fromMs``, then starts live playback from that point. This is how
+    // the scrubber implements "Resume from where I dragged to".
+    tl.playFrom = function(fromMs, onDone) {
+      tl.stop();
+      // Apply all steps up to fromMs synchronously
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      for (var k = 0; k < steps.length; k++) {
+        var s = steps[k];
+        var stepEnd = s._start + s._duration;
+        if (stepEnd <= fromMs) {
+          if (s._type === "tween") {
+            if (s.onUpdate) s.onUpdate(s.to);
+            if (s.onComplete) s.onComplete();
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = stepEnd;
+        } else {
+          break;
+        }
+      }
+      // Now start live playback. The play() method will walk from step 0,
+      // but each step whose _start + _duration <= virtualElapsed will
+      // complete instantly because virtualElapsed is already past them.
+      // We override virtualElapsed inside play() to resume cleanly.
+      playing = true;
+      onDoneCb = onDone || null;
+      tickerLastFrame = null;
+      var resumeIdx = 0;
+      // Find the first step that hasn't been fully applied yet
+      for (var j = 0; j < steps.length; j++) {
+        if (steps[j]._start + steps[j]._duration > fromMs) {
+          resumeIdx = j;
+          break;
+        }
+        if (j === steps.length - 1) resumeIdx = steps.length;
+      }
+      virtualElapsed = fromMs;
+      stepVirtualStart = (resumeIdx < steps.length) ? steps[resumeIdx]._start : totalDuration;
+
+      function ticker2(now) {
+        if (!playing) return;
+        if (tickerLastFrame === null) tickerLastFrame = now;
+        var delta = now - tickerLastFrame;
+        tickerLastFrame = now;
+        if (!_paused && !current) {
+          virtualElapsed += delta * _speed;
+        } else if (!_paused && current && typeof current.getElapsed === "function") {
+          virtualElapsed = stepVirtualStart + current.getElapsed();
+        }
+        if (playing) requestAnimationFrame(ticker2);
+      }
+      requestAnimationFrame(ticker2);
+
+      function scheduleDelay2(remaining, after) {
+        if (_paused) { pendingDelayRemaining = remaining; return; }
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      var ri = resumeIdx;
+      function next2() {
+        if (!playing) return;
+        if (ri >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[ri++];
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) { virtualElapsed = step._start + step._duration; next2(); return; }
+          // If we're resuming mid-delay, shorten it
+          var elapsed = fromMs - step._start;
+          var remaining = Math.max(0, step._duration - elapsed);
+          if (remaining <= 0) { virtualElapsed = step._start + step._duration; next2(); return; }
+          scheduleDelay2(remaining, function() {
+            virtualElapsed = step._start + step._duration;
+            next2();
+          });
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next2();
+          return;
+        }
+        // tween — if we're resuming past this step, skip it
+        if (step._start + step._duration <= fromMs) {
+          if (step.onUpdate) step.onUpdate(step.to);
+          if (step.onComplete) step.onComplete();
+          virtualElapsed = step._start + step._duration;
+          next2();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next2();
+          }
+        }));
+      }
+      var offPause2 = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay2(pendingDelayRemaining, next2);
+        }
+      };
+      onPauseChange(offPause2);
+      next2();
+      return tl;
+    };
+
     tl.stop = function() {
       playing = false;
       if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }

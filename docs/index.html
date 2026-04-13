@@ -5,7 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>myflames — MySQL Query Plan Visualizer demos</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 1rem; background: #f5f5f5; }
+    body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 0; background: #f5f5f5; }
+    nav.top { background: #fff; border-bottom: 1px solid #e5e7eb; padding: 12px 20px; font-size: 14px; margin-bottom: 1rem; }
+    nav.top a { color: #2563eb; text-decoration: none; margin-right: 18px; font-weight: 500; }
+    nav.top a:hover { text-decoration: underline; }
+    nav.top .brand { font-weight: 700; color: #1a1a1a; margin-right: 24px; }
+    .content { padding: 0 1rem 2rem; }
     h1 { margin-top: 0; }
     section { background: #fff; padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
     section h2 { margin-top: 0; font-size: 1.1rem; }
@@ -16,15 +21,41 @@
     @media (max-width: 700px) { .demo-grid { grid-template-columns: 1fr; } }
     ul { margin: 0.25rem 0 0 0; padding-left: 1.4rem; }
     li { margin-bottom: 0.3rem; }
+    .doc-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 1rem 0; }
+    .doc-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; text-decoration: none; color: inherit; transition: box-shadow 0.15s; }
+    .doc-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .doc-card strong { display: block; margin-bottom: 4px; color: #2563eb; font-size: 15px; }
+    .doc-card span { font-size: 13px; color: #6b7280; }
   </style>
 </head>
 <body>
+  <nav class="top">
+    <span class="brand">myflames docs</span>
+    <a href="index.html">Home</a>
+    <a href="guide/getting-started.html">Getting Started</a>
+    <a href="guide/views.html">View Types</a>
+    <a href="guide/cli.html">CLI Reference</a>
+    <a href="guide/architecture.html">Architecture</a>
+    <a href="teach/index.html">Teach Lessons</a>
+  </nav>
+  <div class="content">
   <h1>myflames — MySQL Query Plan Visualizer</h1>
   <p>
     Visualize <code>EXPLAIN ANALYZE FORMAT=JSON</code> output as interactive SVG charts.
-    These demos are served from GitHub Pages so the embedded JavaScript (zoom, search, tooltips) works correctly.
-    <a href="https://github.com/vgrippa/myflames">View on GitHub →</a>
+    Five views, one parser, zero external dependencies.
+    <a href="https://github.com/vgrippa/myflames">View on GitHub &rarr;</a>
   </p>
+
+  <section>
+    <h2>Documentation</h2>
+    <div class="doc-cards">
+      <a class="doc-card" href="guide/getting-started.html"><strong>Getting Started</strong><span>Install, first flame graph, live connection mode</span></a>
+      <a class="doc-card" href="guide/views.html"><strong>View Types</strong><span>When to use each of the 5 visualization types</span></a>
+      <a class="doc-card" href="guide/cli.html"><strong>CLI Reference</strong><span>Every command, flag, and option</span></a>
+      <a class="doc-card" href="guide/architecture.html"><strong>Architecture</strong><span>How the parser, renderers, and advisor work</span></a>
+      <a class="doc-card" href="teach/index.html"><strong>Teach Lessons (9)</strong><span>Animated algorithm walkthroughs with cost models</span></a>
+    </div>
+  </section>
 
   <section>
     <h2>Learn the algorithms — <code>myflames teach</code></h2>
@@ -39,8 +70,6 @@
           <li><a href="teach/btree.html" target="_blank" rel="noopener">B+tree lookup</a> — clustered PK vs covering vs non-covering secondary, 16 KiB page fan-out</li>
           <li><a href="teach/lru.html" target="_blank" rel="noopener">Midpoint-insertion LRU</a> — why MySQL's buffer pool survives full-scan pollution</li>
         </ul>
-      </div>
-      <div>
         <strong>Join algorithms</strong>
         <ul>
           <li><a href="teach/bnl.html" target="_blank" rel="noopener">Block Nested Loop</a> — MariaDB 11.x default (MySQL removed it in 8.0.20)</li>
@@ -48,47 +77,57 @@
           <li><a href="teach/join.html" target="_blank" rel="noopener">BNL vs hash side-by-side</a> — shared sliders, live cost comparison</li>
         </ul>
       </div>
+      <div>
+        <strong>Query optimization</strong>
+        <ul>
+          <li><a href="teach/filesort.html" target="_blank" rel="noopener">Filesort</a> — sort_buffer_size, sorted runs, k-way merge</li>
+          <li><a href="teach/tmp.html" target="_blank" rel="noopener">Temporary tables</a> — MEMORY to on-disk InnoDB conversion</li>
+          <li><a href="teach/icp.html" target="_blank" rel="noopener">Index Condition Pushdown</a> — filter inside InnoDB, skip unnecessary row fetches</li>
+          <li><a href="teach/index_merge.html" target="_blank" rel="noopener">Index Merge</a> — union, intersection, sort-union of row-ID sets</li>
+        </ul>
+      </div>
     </div>
+    <p style="margin:0.5rem 0 0;font-size:0.9rem"><a href="teach/index.html">All 9 lessons with descriptions &rarr;</a></p>
   </section>
 
   <section>
     <h2>Flame graph — full execution hierarchy (default view)</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-complex-flamegraph.svg" type="image/svg+xml" width="100%" height="300" style="min-height: 300px;"></object>
+      <object data="demos/mysql-complex/mysql-query-complex-flamegraph.svg" type="image/svg+xml" width="100%" height="300" style="min-height: 300px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-complex-flamegraph.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-complex/mysql-query-complex-flamegraph.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
     <h2>Bar chart — slowest operations first</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-complex-bargraph.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
+      <object data="demos/mysql-complex/mysql-query-complex-bargraph.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-complex-bargraph.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-complex/mysql-query-complex-bargraph.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
     <h2>Treemap — area proportional to total time</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-complex-treemap.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
+      <object data="demos/mysql-complex/mysql-query-complex-treemap.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-complex-treemap.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-complex/mysql-query-complex-treemap.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
     <h2>Diagram — Visual Explain-style flow</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-complex-diagram.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
+      <object data="demos/mysql-complex/mysql-query-complex-diagram.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-complex-diagram.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-complex/mysql-query-complex-diagram.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
     <h2>Execution tree — collapsible plan tree</h2>
     <div class="embed-wrap">
-      <object data="demos/mysql-query-complex-tree.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
+      <object data="demos/mysql-complex/mysql-query-complex-tree.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
     </div>
-    <a class="view-full" href="demos/mysql-query-complex-tree.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
+    <a class="view-full" href="demos/mysql-complex/mysql-query-complex-tree.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
   <section>
@@ -98,41 +137,41 @@
       <div>
         <strong>Full table scan</strong>
         <ul>
-          <li><a href="demos/mysql-query-analysis-full-scan-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
-          <li><a href="demos/mysql-query-analysis-full-scan-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-query-analysis-full-scan-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
-          <li><a href="demos/mysql-query-analysis-full-scan-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
-          <li><a href="demos/mysql-query-analysis-full-scan-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
       </div>
       <div>
         <strong>Hash join</strong>
         <ul>
-          <li><a href="demos/mysql-query-analysis-hash-join-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
-          <li><a href="demos/mysql-query-analysis-hash-join-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-query-analysis-hash-join-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
-          <li><a href="demos/mysql-query-analysis-hash-join-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
-          <li><a href="demos/mysql-query-analysis-hash-join-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
       </div>
       <div>
         <strong>BNL join buffer</strong>
         <ul>
-          <li><a href="demos/mysql-query-analysis-bnl-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
-          <li><a href="demos/mysql-query-analysis-bnl-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-query-analysis-bnl-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
-          <li><a href="demos/mysql-query-analysis-bnl-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
-          <li><a href="demos/mysql-query-analysis-bnl-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
       </div>
       <div>
         <strong>Index Condition Pushdown</strong>
         <ul>
-          <li><a href="demos/mysql-query-analysis-icp-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
-          <li><a href="demos/mysql-query-analysis-icp-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-query-analysis-icp-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
-          <li><a href="demos/mysql-query-analysis-icp-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
-          <li><a href="demos/mysql-query-analysis-icp-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
       </div>
     </div>
@@ -151,33 +190,33 @@
         <strong>CTE + window functions</strong>
         <p><em>Top-3 earners per department using <code>ROW_NUMBER() OVER (PARTITION BY …)</code>.</em></p>
         <ul>
-          <li><a href="demos/mysql-query-complex-cte-window-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
-          <li><a href="demos/mysql-query-complex-cte-window-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-query-complex-cte-window-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
-          <li><a href="demos/mysql-query-complex-cte-window-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
-          <li><a href="demos/mysql-query-complex-cte-window-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
       </div>
       <div>
         <strong>Correlated subquery</strong>
         <p><em>N+1 anti-pattern: per-row scalar subquery to look up max/count.</em></p>
         <ul>
-          <li><a href="demos/mysql-query-complex-correlated-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
-          <li><a href="demos/mysql-query-complex-correlated-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-query-complex-correlated-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
-          <li><a href="demos/mysql-query-complex-correlated-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
-          <li><a href="demos/mysql-query-complex-correlated-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-correlated-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-correlated-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-correlated-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-correlated-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-correlated-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
       </div>
       <div>
         <strong>Recursive CTE</strong>
         <p><em>Org-chart traversal — anchor + recursive <code>JOIN</code> until depth limit.</em></p>
         <ul>
-          <li><a href="demos/mysql-query-complex-recursive-cte-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
-          <li><a href="demos/mysql-query-complex-recursive-cte-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-query-complex-recursive-cte-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
-          <li><a href="demos/mysql-query-complex-recursive-cte-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
-          <li><a href="demos/mysql-query-complex-recursive-cte-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
+          <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
       </div>
     </div>
@@ -192,20 +231,20 @@
       <div>
         <strong>MySQL 8.4</strong>
         <ul>
-          <li><a href="demos/mysql-query-analysis-optsw-hash-join-flamegraph.html" target="_blank" rel="noopener">hash_join — non-indexed equi-join</a></li>
-          <li><a href="demos/mysql-query-analysis-optsw-bka-mrr-flamegraph.html" target="_blank" rel="noopener">batched_key_access + mrr</a></li>
-          <li><a href="demos/mysql-query-analysis-optsw-skip-scan-flamegraph.html" target="_blank" rel="noopener">skip_scan on composite index</a></li>
-          <li><a href="demos/mysql-query-analysis-optsw-index-merge-union-flamegraph.html" target="_blank" rel="noopener">index_merge (union)</a></li>
-          <li><a href="demos/mysql-query-analysis-optsw-index-merge-intersection-flamegraph.html" target="_blank" rel="noopener">index_merge (intersection)</a></li>
-          <li><a href="demos/mysql-query-analysis-optsw-duplicate-weedout-flamegraph.html" target="_blank" rel="noopener">duplicate weedout semijoin</a></li>
+          <li><a href="demos/mysql-optsw/mysql-query-analysis-optsw-hash-join-flamegraph.html" target="_blank" rel="noopener">hash_join — non-indexed equi-join</a></li>
+          <li><a href="demos/mysql-optsw/mysql-query-analysis-optsw-bka-mrr-flamegraph.html" target="_blank" rel="noopener">batched_key_access + mrr</a></li>
+          <li><a href="demos/mysql-optsw/mysql-query-analysis-optsw-skip-scan-flamegraph.html" target="_blank" rel="noopener">skip_scan on composite index</a></li>
+          <li><a href="demos/mysql-optsw/mysql-query-analysis-optsw-index-merge-union-flamegraph.html" target="_blank" rel="noopener">index_merge (union)</a></li>
+          <li><a href="demos/mysql-optsw/mysql-query-analysis-optsw-index-merge-intersection-flamegraph.html" target="_blank" rel="noopener">index_merge (intersection)</a></li>
+          <li><a href="demos/mysql-optsw/mysql-query-analysis-optsw-duplicate-weedout-flamegraph.html" target="_blank" rel="noopener">duplicate weedout semijoin</a></li>
         </ul>
       </div>
       <div>
         <strong>MariaDB 11.4</strong>
         <ul>
-          <li><a href="demos/mariadb-query-analysis-optsw-block-nl-join-flamegraph.html" target="_blank" rel="noopener">block-nl-join (BNL)</a></li>
-          <li><a href="demos/mariadb-query-analysis-optsw-index-merge-flamegraph.html" target="_blank" rel="noopener">index_merge</a></li>
-          <li><a href="demos/mariadb-query-analysis-optsw-duplicate-weedout-flamegraph.html" target="_blank" rel="noopener">duplicate weedout</a></li>
+          <li><a href="demos/mariadb-optsw/mariadb-query-analysis-optsw-block-nl-join-flamegraph.html" target="_blank" rel="noopener">block-nl-join (BNL)</a></li>
+          <li><a href="demos/mariadb-optsw/mariadb-query-analysis-optsw-index-merge-flamegraph.html" target="_blank" rel="noopener">index_merge</a></li>
+          <li><a href="demos/mariadb-optsw/mariadb-query-analysis-optsw-duplicate-weedout-flamegraph.html" target="_blank" rel="noopener">duplicate weedout</a></li>
         </ul>
       </div>
     </div>
@@ -224,15 +263,15 @@
       <div>
         <strong>MySQL 8.4</strong>
         <ul>
-          <li><a href="demos/live-mysql-hash-join-orderby-flamegraph.html" target="_blank" rel="noopener">hash join + ORDER BY</a></li>
-          <li><a href="demos/live-mysql-derived-table-flamegraph.html" target="_blank" rel="noopener">derived table + filesort</a></li>
+          <li><a href="demos/live-mysql/live-mysql-hash-join-orderby-flamegraph.html" target="_blank" rel="noopener">hash join + ORDER BY</a></li>
+          <li><a href="demos/live-mysql/live-mysql-derived-table-flamegraph.html" target="_blank" rel="noopener">derived table + filesort</a></li>
         </ul>
       </div>
       <div>
         <strong>MariaDB 11.4</strong>
         <ul>
-          <li><a href="demos/live-mariadb-hash-join-orderby-flamegraph.html" target="_blank" rel="noopener">BNL join (non-sargable CONCAT)</a></li>
-          <li><a href="demos/live-mariadb-derived-table-flamegraph.html" target="_blank" rel="noopener">derived table + filesort</a></li>
+          <li><a href="demos/live-mariadb/live-mariadb-hash-join-orderby-flamegraph.html" target="_blank" rel="noopener">BNL join (non-sargable CONCAT)</a></li>
+          <li><a href="demos/live-mariadb/live-mariadb-derived-table-flamegraph.html" target="_blank" rel="noopener">derived table + filesort</a></li>
         </ul>
       </div>
     </div>
@@ -241,15 +280,20 @@
   <section>
     <h2>HTML report — self-contained shareable report</h2>
     <p>Generate with <code>myflames --output report.html explain.json</code>. Includes embedded chart, analysis sidebar, and export buttons.</p>
-    <a class="view-full" href="demos/mysql-query-report.html" target="_blank" rel="noopener">Open HTML report demo →</a>
+    <a class="view-full" href="demos/mysql-basic/mysql-query-report.html" target="_blank" rel="noopener">Open HTML report demo →</a>
   </section>
 
   <section>
     <h2>Before vs After comparison</h2>
     <p>Generate with <code>myflames compare before.json after.json</code>. Shows time deltas, operator changes, and a "what got better / worse" summary.</p>
-    <a class="view-full" href="demos/mysql-query-compare.html" target="_blank" rel="noopener">Open comparison demo →</a>
+    <a class="view-full" href="demos/mysql-basic/mysql-query-compare.html" target="_blank" rel="noopener">Open comparison demo →</a>
   </section>
 
-  <p><a href="https://github.com/vgrippa/myflames">Repository and README</a></p>
+  <p><a href="https://github.com/vgrippa/myflames">Repository and README</a> &bull;
+     <a href="guide/getting-started.html">Getting Started</a> &bull;
+     <a href="guide/cli.html">CLI Reference</a> &bull;
+     <a href="guide/architecture.html">Architecture</a>
+  </p>
+  </div>
 </body>
 </html>

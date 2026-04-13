@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-04-13T18:24:22Z",
+  "myflames_version": "1.3.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "/Users/viniciusgrippa/Downloads/git/myflames/test/fixtures/explain-008-index-scan-users-by-country.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.419,
+    "rows_sent": 600,
+    "rows_examined_estimate": 600,
+    "operator_count": 1,
+    "max_depth": 1
+  },
+  "optimizer_switches": [
+    {
+      "name": "index_condition_pushdown",
+      "value": "on",
+      "explanation": "Parts of the WHERE clause are evaluated inside the storage engine using index columns before fetching the full row — reduces rows handed to the server layer.",
+      "node_labels": [
+        "Index lookup [users.idx_country]"
+      ]
+    }
+  ],
+  "warnings": [],
+  "suggestions": [],
+  "executive_summary": "Query runs 1 operator; returns 600 rows in 0.42 ms. No warnings.",
+  "query": {
+    "raw": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`email` AS `email` from `testdb`.`users` where (`testdb`.`users`.`country` = 'US')",
+    "beautified": "select testdb.users.id AS id,testdb.users.email AS email\nfrom testdb.users\nwhere (testdb.users.country = 'US')"
+  },
+  "teach_hooks": [
+    {
+      "lesson": "non_unique_lookup",
+      "match": {
+        "folded_label": "INDEX LOOKUP [users.idx_country] starts=1 rows=600",
+        "short_label": "Index lookup [users.idx_country]"
+      },
+      "controls": {
+        "rows": 600,
+        "selectivity": 40.0,
+        "covering": false
+      },
+      "note": "Index lookup on users using idx_country (country='US'), with index condition: (users.country = 'US') (users)",
+      "query_sql": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`email` AS `email` from `testdb`.`users` where (`testdb`.`users`.`country` = 'US')"
+    }
+  ]
+}

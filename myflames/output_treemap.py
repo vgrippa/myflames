@@ -51,7 +51,7 @@ def _cell_info_text(node, unit_display):
     return "  ·  ".join(parts)
 
 
-def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms", analysis=None):
+def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms", analysis=None, teach_index_by_folded=None):
     """Generate treemap SVG. root is parsed tree."""
     top_margin = 70
     pad = 2
@@ -134,11 +134,16 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         label_attr = attr_escape(short_label)
         analysis_attr = attr_escape(analysis_msg)[:400] if analysis_msg else ""
         cell_class = "treemap-cell in-query-analysis" if analysis_attr else "treemap-cell"
+        folded = (n.get("folded_label") or "").strip()
+        teach_attr = ""
+        if teach_index_by_folded and folded in teach_index_by_folded:
+            teach_attr = f' data-teach-index="{teach_index_by_folded[folded]}"'
         title_text = info_text.replace("  ·  ", "\n")
         lines.append(
             f'<rect id="cell-{cell_id}" class="{cell_class}" x="{x}" y="{y}" width="{w}" height="{h}" fill="{color}" '
             f'data-x="{x}" data-y="{y}" data-w="{w}" data-h="{h}" data-label="{label_attr}" data-info="{info_attr}"'
             + (f' data-analysis-msg="{analysis_attr}"' if analysis_attr else "")
+            + teach_attr
             + f'>'
             f"<title>{xml_escape(title_text)}</title></rect>"
         )

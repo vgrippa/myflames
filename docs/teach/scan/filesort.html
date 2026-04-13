@@ -1,0 +1,3402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Filesort — how MySQL sorts without an index</title>
+  <meta name="description" content="Watch sort_buffer_size fill, spill sorted runs to tmpdir, and merge them back. Bigger buffer = fewer runs = less I/O.">
+  <meta name="generator" content="myflames teach">
+  <style>
+:root {
+  --bg: #f6f8fc;
+  --panel: #ffffff;
+  --panel-soft: #f8faff;
+  --text: #111827;
+  --muted: #637083;
+  --border: #dbe4f0;
+  --accent: #1a73e8;
+  --accent-strong: #1557b0;
+  --focus: #8ab4f8;
+  --elev-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.04);
+  --elev-2: 0 6px 18px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --hot: #ff3d3d;
+  --cool: #21918c;
+  --warm: #fde725;
+  --warn: #f59e0b;
+  --ok: #10b981;
+}
+/* Lesson-family color grading (shared semantics, different accent ramps). */
+body[data-lesson="bka"],
+body[data-lesson="bnl"],
+body[data-lesson="hash"],
+body[data-lesson="join"],
+body[data-lesson="nested_loop"],
+body[data-lesson="semijoin_weedout"] {
+  --accent: #1a73e8;
+  --accent-strong: #1557b0;
+  --focus: #8ab4f8;
+}
+body[data-lesson="full_scan"],
+body[data-lesson="filter"],
+body[data-lesson="filesort"],
+body[data-lesson="tmp"],
+body[data-lesson="derived_table"] {
+  --accent: #ea580c;
+  --accent-strong: #c2410c;
+  --focus: #fdba74;
+}
+body[data-lesson="btree"],
+body[data-lesson="non_unique_lookup"],
+body[data-lesson="unique_lookup"],
+body[data-lesson="icp"],
+body[data-lesson="index_merge"],
+body[data-lesson="skip_scan"] {
+  --accent: #0f766e;
+  --accent-strong: #0f5f59;
+  --focus: #5eead4;
+}
+body[data-lesson="lru"] {
+  --accent: #7c3aed;
+  --accent-strong: #6d28d9;
+  --focus: #c4b5fd;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Google Sans", Roboto, "Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+header {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border-bottom: 1px solid #e7eef8;
+  padding: 20px;
+  box-shadow: var(--elev-1);
+}
+header .inner { max-width: 1100px; margin: 0 auto; }
+header h1 {
+  margin: 0 0 6px;
+  font-size: 23px;
+  letter-spacing: -0.2px;
+  font-weight: 700;
+}
+header .subtitle {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0;
+}
+header .lesson-meta {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+header .meta-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+header .family-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 13%, #ffffff);
+  color: var(--accent-strong);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, #ffffff);
+}
+header .family-chip .chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+header .version-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 3px 10px;
+  background: #e8f0fe;
+  color: #174ea6;
+  border: 1px solid #c6dafc;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+.banner {
+  margin: 0 0 20px;
+  padding: 12px 16px;
+  border-left: 4px solid var(--warn);
+  background: #fffbeb;
+  color: #78350f;
+  border-radius: 4px;
+  font-size: 13.5px;
+}
+.banner strong { color: #92400e; }
+section.controls {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+section.controls h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px 20px;
+}
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.control label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.control .hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.control input[type="range"] { width: 100%; }
+.control input[type="number"],
+.control select {
+  padding: 8px 10px;
+  border: 1px solid #cfd8e5;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+}
+.control input[type="number"]:focus,
+.control select:focus,
+.control input[type="range"]:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.value-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  background: #eef4ff;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+  color: #1e3a8a;
+}
+section.stage {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+.query-card {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: #f8fbff;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+}
+.query-card .query-label {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.query-card .query-sql {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #0f172a;
+  white-space: pre-wrap;
+}
+.query-card .query-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.explainer-card {
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-left: 4px solid #059669;
+  border-radius: 8px;
+}
+.explainer-card .explainer-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #065f46;
+}
+.explainer-card .explainer-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: #064e3b;
+  line-height: 1.55;
+}
+.explainer-card .explainer-list li {
+  margin-bottom: 4px;
+}
+.explainer-card .explainer-list li:last-child {
+  margin-bottom: 0;
+}
+section.stage .stage-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--panel-soft);
+  border: 1px solid #dbe6f3;
+  border-radius: 12px;
+  font-size: 13px;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+section.stage .stage-toolbar:hover {
+  box-shadow: var(--elev-1);
+  border-color: #cddbef;
+}
+.stage-toolbar .speed-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #374151;
+  margin-left: 2px;
+  letter-spacing: 0.2px;
+}
+.stage-toolbar select {
+  padding: 6px 10px;
+  border: 1px solid #cfd8e5;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12.5px;
+  background: #fff;
+  cursor: pointer;
+}
+.stage-toolbar select:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.stage-toolbar .phase-label {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.stage-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: var(--panel-soft);
+  border: 1px solid #dbe6f3;
+  border-radius: 12px;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.stage-scrubber:hover {
+  box-shadow: var(--elev-1);
+  border-color: #cddbef;
+}
+.stage-scrubber input[type="range"] {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #c8ddff 0%, #dbeafe 100%);
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.stage-scrubber input[type="range"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.stage-scrubber input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #bed8ff 0%, #dbeafe 100%);
+}
+.stage-scrubber input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: var(--accent);
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.stage-scrubber input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.06);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.stage-scrubber input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #bed8ff 0%, #dbeafe 100%);
+}
+.stage-scrubber input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: var(--accent);
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.stage-scrubber input[type="range"]::-moz-range-thumb:hover {
+  transform: scale(1.06);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.stage-scrubber .scrubber-time {
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 42px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.complexity-chart {
+  margin-top: 14px;
+  padding: 14px;
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.complexity-chart .chart-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.complexity-chart svg {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+}
+button {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid #cfd8e5;
+  border-radius: 999px;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+button:hover { background: #edf3ff; border-color: #9eb6d8; }
+button:active { transform: translateY(1px) scale(0.99); }
+button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent-strong);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset;
+}
+button.primary:hover { background: var(--accent-strong); border-color: #144a96; }
+button .btn-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+button .btn-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  transition: transform 0.16s ease;
+}
+button .btn-label {
+  line-height: 1;
+  white-space: nowrap;
+}
+button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 35%, #ffffff);
+}
+button#btn-reset {
+  background: #ffffff;
+}
+button#btn-reset:hover {
+  background: #eef2ff;
+}
+button#btn-play:hover .btn-icon svg {
+  transform: translateX(0.5px);
+}
+button#btn-loop[aria-pressed="true"] .btn-icon svg {
+  transform: rotate(12deg);
+}
+section.stage svg { width: 100%; height: auto; display: block; }
+section.readout {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+section.readout h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 18px;
+}
+.readout-grid .item {
+  padding: 12px 14px;
+  background: #f8fbff;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.readout-grid .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.readout-grid .label .help-tip {
+  display: inline-block;
+  cursor: help;
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  border: 1px solid #d1d5db;
+  border-radius: 50%;
+  width: 15px;
+  height: 15px;
+  line-height: 14px;
+  text-align: center;
+  margin-left: 4px;
+  vertical-align: 1px;
+  text-transform: none;
+  letter-spacing: 0;
+  position: relative;
+}
+.readout-grid .label .help-tip:hover {
+  color: #374151;
+  border-color: #9ca3af;
+}
+.readout-grid .label .help-tip .tip-text {
+  display: none;
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  padding: 8px 10px;
+  background: #1f2937;
+  color: #f3f4f6;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  border-radius: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  z-index: 10;
+  pointer-events: none;
+}
+.readout-grid .label .help-tip:hover .tip-text {
+  display: block;
+}
+.readout-grid .value {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+.readout-grid .value.warn { color: var(--warn); }
+.readout-grid .value.ok { color: var(--ok); }
+.readout-grid .value.hot { color: var(--hot); }
+details.learn-more {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 20px;
+  box-shadow: var(--elev-1);
+}
+details.learn-more summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  outline: none;
+}
+details.learn-more[open] summary { color: #111827; }
+details.learn-more .body {
+  padding-bottom: 16px;
+  font-size: 13.5px;
+  color: #374151;
+}
+details.learn-more .body p { margin: 0 0 10px; }
+details.learn-more .body code {
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12.5px;
+}
+abbr.glossary-chip {
+  text-decoration: underline dotted;
+  text-decoration-color: #9ca3af;
+  cursor: help;
+}
+.explanation {
+  padding: 10px 14px;
+  background: #f0f9ff;
+  border-left: 3px solid #0284c7;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0c4a6e;
+  margin-top: 10px;
+}
+footer {
+  max-width: 1100px;
+  margin: 24px auto 0;
+  padding: 16px 20px 32px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+footer a { color: var(--muted); }
+@media (max-width: 640px) {
+  header h1 { font-size: 19px; }
+  .readout-grid .value { font-size: 17px; }
+}
+.stage-with-phases {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.stage-with-phases > svg {
+  flex: 1;
+  min-width: 0;
+}
+.phase-nav {
+  width: 180px;
+  flex-shrink: 0;
+  background: #f8fbff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 0;
+  font-size: 11px;
+  box-shadow: var(--elev-1);
+}
+.phase-nav .phase-nav-title {
+  padding: 0 10px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.phase-nav .phase-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: #6b7280;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s, transform 0.15s, border-color 0.15s;
+  border-left: 3px solid transparent;
+}
+.phase-nav .phase-item:hover {
+  background: #eef4ff;
+  color: #374151;
+  transform: translateX(1px);
+}
+.phase-nav .phase-item.active {
+  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
+  color: var(--accent-strong);
+  border-left-color: var(--accent);
+  font-weight: 700;
+  transform: translateX(2px);
+}
+.phase-nav .phase-item.done {
+  color: #059669;
+}
+.phase-nav .phase-item .phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d1d5db;
+  flex-shrink: 0;
+}
+.phase-nav .phase-item.active .phase-dot {
+  background: var(--accent);
+  animation: phaseDotPulse 1.15s ease-in-out infinite;
+}
+.phase-nav .phase-item.done .phase-dot {
+  background: #059669;
+}
+@keyframes phaseDotPulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 38%, transparent); }
+  70% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+@media (max-width: 700px) {
+  .stage-with-phases { flex-direction: column; }
+  .phase-nav { width: 100%; }
+  section.stage .stage-toolbar {
+    flex-wrap: wrap;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-tween { transition: none !important; animation: none !important; }
+  .phase-nav .phase-item,
+  .stage-scrubber input[type="range"]::-webkit-slider-thumb,
+  .stage-scrubber input[type="range"]::-moz-range-thumb,
+  button,
+  button .btn-icon svg {
+    transition: none !important;
+  }
+  .phase-nav .phase-item.active .phase-dot {
+    animation: none !important;
+  }
+}
+
+</style>
+</head>
+<body data-lesson="filesort">
+  <header>
+    <div class="inner">
+      <h1>Filesort — how MySQL sorts without an index<span class="version-chip">MySQL 8.4 • MariaDB 11.4</span></h1>
+      <p class="subtitle">Watch sort_buffer_size fill, spill sorted runs to tmpdir, and merge them back. Bigger buffer = fewer runs = less I/O.</p>
+      <div class="lesson-meta"><span class="meta-label">Lesson family</span><span class="family-chip"><span class="chip-dot" aria-hidden="true"></span>Sort Operator</span></div>
+    </div>
+  </header>
+  <main>
+    
+    
+<section class="controls" aria-labelledby="controls-h">
+  <h2 id="controls-h">Parameters (MySQL 8.4 / MariaDB 11.4 filesort)</h2>
+  <div class="control-grid">
+
+    <div class="control">
+      <label for="rows">Rows to sort: <span class="value-pill" data-pill-for="rows">10000</span></label>
+      <input type="range" id="rows" name="rows" min="100" max="1000000" step="100" value="10000">
+      <div class="hint">Total rows returned by the table/index scan before sorting.</div>
+    </div>
+
+    <div class="control">
+      <label for="row_size">Row size (bytes): <span class="value-pill" data-pill-for="row_size">200</span></label>
+      <input type="range" id="row_size" name="row_size" min="4" max="4096" step="4" value="200">
+      <div class="hint">Sort key + payload. ≤ 16 B triggers radix sort (INT/BIGINT/DATE keys); &gt; 16 B triggers introsort (VARCHAR, composites).</div>
+    </div>
+
+    <div class="control">
+      <label for="sbs">sort_buffer_size (bytes): <span class="value-pill" data-pill-for="sbs">262144</span></label>
+      <input type="range" id="sbs" name="sbs" min="32768" max="16777216" step="32768" value="262144">
+      <div class="hint">Default: 262144 B (256 KiB). Bigger = fewer sorted runs.</div>
+    </div>
+
+    <div class="control">
+      <label for="limit_rows">LIMIT (0 = no limit): <span class="value-pill" data-pill-for="limit_rows">0</span></label>
+      <input type="range" id="limit_rows" name="limit_rows" min="0" max="1000" step="1" value="0">
+      <div class="hint">Small LIMIT triggers priority queue (bounded heap) instead of full sort.</div>
+    </div>
+
+  </div>
+</section>
+
+    
+<section class="stage">
+  
+<div class="query-card">
+  <p class="query-label">Example query this animation executes</p>
+  <pre class="query-sql">-- No index on order_date → filesort
+SELECT customer, order_date, total
+FROM   orders
+ORDER  BY order_date;</pre>
+  <p class="query-note">No index covers the ORDER BY, so MySQL filesorts. The in‑memory algorithm depends on context: radix sort for short fixed keys, introsort for the general case, or a bounded priority queue when LIMIT is small. If the data exceeds sort_buffer_size, sorted runs spill to tmpdir and are k‑way merged.</p>
+</div>
+
+  
+<div class="explainer-card">
+  <p class="explainer-title">What you&#x27;ll see in the animation</p>
+  <ul class="explainer-list"><li>Rows flow into the sort_buffer (purple/blue zone).</li><li>MySQL picks one of three in-memory algorithms based on the key and query:</li><li>• Radix sort (blue) — fixed-length key ≤ 16 B (INT, BIGINT, DATE). Distributes rows into digit buckets with zero comparisons. O(n·k).</li><li>• Introsort (purple) — general case (VARCHAR keys, composites &gt; 16 B). Quicksort with heapsort fallback after O(log n) depth. Guaranteed O(n log n).</li><li>• Priority queue (blue) — ORDER BY … LIMIT k with small k. Maintains a bounded max-heap of k rows; each incoming row is pushed/popped. O(n·log k).</li><li>If all rows fit in sort_buffer_size, the result streams from memory — zero disk I/O.</li><li>If rows overflow, each sorted chunk is flushed as a run to tmpdir (yellow). Final phase: k-way merge across runs (green).</li></ul>
+</div>
+
+  
+<div class="stage-toolbar">
+  <button id="btn-play" class="primary">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    </span>
+    <span class="btn-label">Play</span>
+  </button>
+  <button id="btn-reset">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M12 6V3L8 7l4 4V8c2.8 0 5 2.2 5 5a5 5 0 1 1-9.9-1H5.1A7 7 0 1 0 12 6z"/></svg>
+    </span>
+    <span class="btn-label">Reset</span>
+  </button>
+  <button id="btn-loop" aria-pressed="false">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M7 7h9v3l4-4-4-4v3H6a4 4 0 0 0-4 4v3h2V9a2 2 0 0 1 2-2zm10 10H8v-3l-4 4 4 4v-3h10a4 4 0 0 0 4-4v-3h-2v2a2 2 0 0 1-2 2z"/></svg>
+    </span>
+    <span class="btn-label">Loop: Off</span>
+  </button>
+  <label for="sel-speed" class="speed-label">Speed:</label>
+  <select id="sel-speed" aria-label="Animation speed">
+    <option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option>
+    <option value="2">2×</option>
+    <option value="4">4×</option>
+  </select>
+  <span class="phase-label" id="phase-label">Ready — press Play</span>
+</div>
+<div class="stage-scrubber">
+  <span class="scrubber-time" id="scrubber-time-current">0.0s</span>
+  <input type="range" id="scrubber" min="0" max="1000" value="0" step="1"
+    aria-label="Animation timeline scrubber" />
+  <span class="scrubber-time" id="scrubber-time-total">0.0s</span>
+</div>
+
+  <div class="stage-with-phases">
+    <svg id="filesort-svg" viewBox="0 0 800 440" xmlns="http://www.w3.org/2000/svg"></svg>
+    <svg id="radix-svg" viewBox="0 0 800 340" xmlns="http://www.w3.org/2000/svg" style="display:none"></svg>
+    <div id="phase-nav" class="phase-nav"></div>
+  </div>
+</section>
+
+    
+<section class="readout">
+  <h2>Cost readout (filesort)</h2>
+  <div class="readout-grid">
+    <div class="item"><p class="label">Sort algorithm <span class="help-tip">?<span class="tip-text">MySQL picks: radix sort (key ≤ 16 B), introsort (general case), or priority queue (small LIMIT). See sql/filesort.cc.</span></span></p><p class="value" id="out-alg">—</p></div>
+    <div class="item"><p class="label">Rows per run <span class="help-tip">?<span class="tip-text">How many rows fit in sort_buffer_size. More rows per run = fewer total runs = less disk I/O.</span></span></p><p class="value" id="out-rpr">—</p></div>
+    <div class="item"><p class="label">Sorted runs <span class="help-tip">?<span class="tip-text">Each run is a sorted chunk written to tmpdir. The inner table is merged across all runs in the merge phase.</span></span></p><p class="value" id="out-runs">—</p></div>
+    <div class="item"><p class="label">Merge passes <span class="help-tip">?<span class="tip-text">How many times the merge must re-read all rows. MySQL merges up to ~15 runs per pass. More runs = more passes.</span></span></p><p class="value" id="out-merges">—</p></div>
+    <div class="item"><p class="label">Disk spill? <span class="help-tip">?<span class="tip-text">If all rows fit in sort_buffer_size, no disk I/O needed. Otherwise, sorted runs are spilled to tmpdir.</span></span></p><p class="value ok" id="out-spill">—</p></div>
+    <div class="item"><p class="label">Total I/O rows <span class="help-tip">?<span class="tip-text">Total rows read + written across all merge passes. Each pass reads and writes all rows once.</span></span></p><p class="value" id="out-io">—</p></div>
+  </div>
+  <div class="explanation" id="out-explanation"></div>
+  <div class="complexity-chart">
+    <p class="chart-title">Total I/O rows vs row count (log–log, row size + sort_buffer_size fixed)</p>
+    <svg id="complexity-chart" viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+</section>
+
+    
+<details class="learn-more">
+  <summary>Learn more — the three sort algorithms + single-pass vs two-pass</summary>
+  <div class="body">
+    <p><strong>Algorithm selection (in <code>sql/filesort.cc</code>):</strong></p>
+    <p><strong>1. Radix sort</strong> — Used when the sort key is fixed-length
+    and ≤ 16 bytes on 64-bit systems (e.g. <code>INT</code>, <code>BIGINT</code>,
+    <code>DATE</code>, <code>DATETIME</code>). It distributes rows into
+    digit-buckets with <em>zero comparisons</em>. O(n·k) where k is the key
+    width in bytes. Cache-friendly because it processes all rows in sequential
+    passes.</p>
+    <p><strong>2. Introsort (<code>std::sort</code>)</strong> — The general-case
+    algorithm for variable-length keys (<code>VARCHAR</code>) or composite keys
+    exceeding 16 bytes. Introsort starts as quicksort (cache-friendly, in-place,
+    small constant factor) but switches to heapsort if recursion depth exceeds
+    O(log n), guaranteeing O(n log n) worst case. This is what MySQL actually
+    uses — not plain quicksort.</p>
+    <p><strong>3. Priority queue (bounded heap)</strong> — Used when the query
+    has <code>ORDER BY … LIMIT k</code> and k×row_size fits in the sort buffer.
+    MySQL maintains a max-heap of k elements. Each incoming row is compared to
+    the heap's maximum; if smaller, it replaces it. After scanning all n rows,
+    the heap holds the k smallest. O(n·log k) — much faster than fully sorting
+    when k ≪ n. <em>No disk spill possible</em> because only k rows are ever in
+    memory.</p>
+    <hr>
+    <p><strong>Single-pass vs two-pass filesort:</strong></p>
+    <p><strong>Single-pass (original algorithm):</strong> The sort buffer holds
+    the <em>entire row</em> alongside the sort key. After sorting, rows are
+    already complete — no second read. This is faster but uses more buffer
+    space per row.</p>
+    <p><strong>Two-pass (rowid sort):</strong> The sort buffer holds only the
+    sort key + row pointer. After sorting, MySQL must re-read each row from
+    the table by rowid. Uses less memory per entry but requires a second
+    random-I/O pass.</p>
+    <p>MySQL chooses between them based on <code>max_length_for_sort_data</code>
+    (default 4096 in MySQL 8.4). If the total row length exceeds this
+    threshold, the two-pass algorithm is used.</p>
+    <p>The animation above shows the general sort buffer → sorted runs →
+    merge pattern, which is common to both strategies. The difference is
+    what lives inside each sort-buffer entry.</p>
+    <p>Sources: MySQL 8.4 reference manual §10.2.1.16 "ORDER BY Optimization";
+    <code>sql/filesort.cc</code> in the MySQL source tree.</p>
+  </div>
+</details>
+
+  </main>
+  <footer>
+    <p>Generated by <a href="https://github.com/vgrippa/myflames">myflames teach</a> —
+    interactive database algorithm lessons. Offline-first, stdlib-only.</p>
+  </footer>
+  <script>
+// ---------------------------------------------------------------------------
+// myflames teach animation runtime — vanilla JS, no deps, offline-first.
+// See .claude/skills/animation-expert/SKILL.md for craft rules.
+// ---------------------------------------------------------------------------
+var anim = (function() {
+  // --- Easing functions --------------------------------------------------
+  function linear(t) { return t; }
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  function easeInCubic(t) { return t * t * t; }
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+  function easeOutQuart(t) { return 1 - Math.pow(1 - t, 4); }
+  function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+  function easeOutBack(t) {
+    var c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+
+  // --- Interpolation -----------------------------------------------------
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function _parseHex(h) {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+  function _toHex(c) {
+    var h = Math.round(c).toString(16);
+    return h.length < 2 ? "0" + h : h;
+  }
+  function lerpColor(a, b, t) {
+    var ca = _parseHex(a), cb = _parseHex(b);
+    return "#" + _toHex(lerp(ca[0], cb[0], t)) + _toHex(lerp(ca[1], cb[1], t)) + _toHex(lerp(ca[2], cb[2], t));
+  }
+
+  // --- prefers-reduced-motion -------------------------------------------
+  function reducedMotion() {
+    try {
+      return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (e) { return false; }
+  }
+
+  // --- Global speed multiplier (1 = real time, 0.5 = half speed, 2 = 2×) -
+  var _speed = 1;
+  function setSpeed(s) { _speed = Math.max(0.1, s); }
+  function getSpeed() { return _speed; }
+
+  // --- Global pause flag --------------------------------------------------
+  // When paused, every running tween suspends at its current progress and
+  // resumes from the same progress when unpaused.
+  var _paused = false;
+  var _onPauseChange = [];
+  function setPaused(p) {
+    if (_paused === p) return;
+    _paused = p;
+    _onPauseChange.forEach(function(fn) { try { fn(p); } catch (e) {} });
+  }
+  function isPaused() { return _paused; }
+  function onPauseChange(fn) { _onPauseChange.push(fn); }
+
+  // --- tween: single-value interpolation with RAF, pause-aware ----------
+  // opts: { from, to, duration, ease, onUpdate, onComplete, delay }
+  // Returns a callable cancel function that also exposes ``.getElapsed()``
+  // so the parent timeline can report precise scrubber positions. Duration
+  // is scaled by the global _speed at frame time, so a live speed change
+  // takes effect immediately.
+  function tween(opts) {
+    var from = opts.from;
+    var to = opts.to;
+    var baseDuration = opts.duration || 400;
+    var ease = opts.ease || easeOutCubic;
+    var onUpdate = opts.onUpdate || function() {};
+    var onComplete = opts.onComplete || function() {};
+    var delay = opts.delay || 0;
+    var cancelled = false;
+
+    function interpolate(f, t, eased) {
+      if (typeof f === "number") return lerp(f, t, eased);
+      var out = {};
+      for (var k in f) out[k] = lerp(f[k], t[k], eased);
+      return out;
+    }
+
+    var virtualElapsed = 0;  // accumulated virtual time inside this tween
+    var lastFrame = null;
+
+    // reduced-motion: skip to end state instantly
+    if (reducedMotion()) {
+      setTimeout(function() {
+        if (cancelled) return;
+        virtualElapsed = baseDuration;
+        onUpdate(to);
+        onComplete();
+      }, 0);
+      var handle_rm = function() { cancelled = true; };
+      handle_rm.getElapsed = function() { return virtualElapsed; };
+      return handle_rm;
+    }
+
+    function frame(now) {
+      if (cancelled) return;
+      if (lastFrame === null) lastFrame = now;
+      var delta = now - lastFrame;
+      lastFrame = now;
+      if (!_paused) {
+        virtualElapsed += delta * _speed;
+      }
+      var adjusted = virtualElapsed - delay;
+      if (adjusted < 0) { requestAnimationFrame(frame); return; }
+      var t = Math.min(1, adjusted / baseDuration);
+      var eased = ease(t);
+      onUpdate(interpolate(from, to, eased));
+      if (t < 1) requestAnimationFrame(frame);
+      else onComplete();
+    }
+    requestAnimationFrame(frame);
+
+    var handle = function() { cancelled = true; };
+    handle.getElapsed = function() { return virtualElapsed; };
+    return handle;
+  }
+
+  // --- stagger: run fn(item, i) at i*stepMs intervals -------------------
+  function stagger(items, stepMs, fn) {
+    if (reducedMotion()) {
+      for (var i = 0; i < items.length; i++) fn(items[i], i);
+      return function() {};
+    }
+    var timers = [];
+    items.forEach(function(item, i) {
+      timers.push(setTimeout(function() { fn(item, i); }, i * stepMs));
+    });
+    return function() { timers.forEach(clearTimeout); };
+  }
+
+  // --- timeline: sequential tween queue, pause-aware, scrubbable -------
+  //
+  // Each `.add(step)`, `.delay(ms)`, `.call(fn)` is assigned a cumulative
+  // position on the global timeline (``_start``, ``_duration``). This lets
+  // the scrubber seek to any point by calling ``fastForwardTo(ms)``, which
+  // synchronously applies every step's final state up to the target.
+  //
+  // During play a tiny RAF ticker advances ``virtualElapsed`` so external
+  // code (the toolbar scrubber) can read ``getCurrentTime()`` every frame.
+  // Pauses and speed changes update the ticker exactly like tween() does.
+  function _interpolateValue(from, to, eased) {
+    if (typeof from === "number") return lerp(from, to, eased);
+    var out = {};
+    for (var k in from) out[k] = lerp(from[k], to[k], eased);
+    return out;
+  }
+
+  function timeline() {
+    var steps = [];
+    var totalDuration = 0;
+    var current = null;
+    var playing = false;
+    var onDoneCb = null;
+    var pendingDelayTimer = null;
+    var pendingDelayRemaining = 0;
+    var marks = [];  // phase markers: [{name, ms}]
+
+    // Virtual-time ticker state. ``virtualElapsed`` is the total ms we have
+    // "played" across all steps, pause-adjusted and speed-adjusted. The
+    // currently-running tween reports its own elapsed; we add that to
+    // ``stepVirtualStart`` to get the precise scrubber position.
+    var virtualElapsed = 0;
+    var stepVirtualStart = 0;
+    var tickerLastFrame = null;
+
+    var tl = {};
+    tl.add = function(step) {
+      step._type = "tween";
+      step._start = totalDuration;
+      step._duration = step.duration || 400;
+      totalDuration += step._duration;
+      steps.push(step);
+      return tl;
+    };
+    tl.delay = function(ms) {
+      var s = { _type: "delay", _start: totalDuration, _duration: ms };
+      totalDuration += ms;
+      steps.push(s);
+      return tl;
+    };
+    tl.call = function(fn) {
+      steps.push({ _type: "call", _fn: fn, _start: totalDuration, _duration: 0 });
+      return tl;
+    };
+    tl.mark = function(name) {
+      marks.push({ name: name, ms: totalDuration });
+      return tl;
+    };
+    tl.getMarks = function() { return marks; };
+    tl.getTotalDuration = function() { return totalDuration; };
+    tl.getCurrentTime = function() {
+      // If a tween is mid-flight, add its local elapsed to the step start.
+      if (current && typeof current.getElapsed === "function") {
+        return stepVirtualStart + current.getElapsed();
+      }
+      return virtualElapsed;
+    };
+
+    // Synchronously apply every step's final state up to ``targetMs``.
+    // Used by the scrubber to seek to any point in the timeline.
+    // Tweens that straddle targetMs get one partial update at their local
+    // progress. Leaves ``virtualElapsed = targetMs`` and playing=false.
+    tl.fastForwardTo = function(targetMs) {
+      tl.stop();
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      for (var i = 0; i < steps.length; i++) {
+        var s = steps[i];
+        var stepEnd = s._start + s._duration;
+        if (stepEnd <= targetMs) {
+          // Fully elapsed — fire final state
+          if (s._type === "tween") {
+            if (s.onUpdate) s.onUpdate(s.to);
+            if (s.onComplete) s.onComplete();
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = stepEnd;
+        } else if (s._start < targetMs) {
+          // Step is currently running at targetMs
+          if (s._type === "tween") {
+            var progress = (targetMs - s._start) / s._duration;
+            var eased = (s.ease || easeOutCubic)(progress);
+            if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = targetMs;
+          stepVirtualStart = s._start;
+          return;
+        } else {
+          virtualElapsed = Math.min(targetMs, s._start);
+          return;
+        }
+      }
+      virtualElapsed = targetMs;
+    };
+
+    tl.play = function(onDone) {
+      playing = true;
+      onDoneCb = onDone || null;
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      tickerLastFrame = null;
+      var i = 0;
+
+      // Scrubber-tracking RAF loop. Runs while playing; updates
+      // virtualElapsed so getCurrentTime() reflects the current position
+      // even across delay gaps.
+      function ticker(now) {
+        if (!playing) return;
+        if (tickerLastFrame === null) tickerLastFrame = now;
+        var delta = now - tickerLastFrame;
+        tickerLastFrame = now;
+        if (!_paused && !current) {
+          // Only advance during delay windows; while a tween is running,
+          // getCurrentTime() reads the tween's own elapsed instead.
+          virtualElapsed += delta * _speed;
+        } else if (!_paused && current && typeof current.getElapsed === "function") {
+          // Keep virtualElapsed in sync with the running tween so
+          // getCurrentTime() is monotonic even if nothing queries it.
+          virtualElapsed = stepVirtualStart + current.getElapsed();
+        }
+        if (playing) requestAnimationFrame(ticker);
+      }
+      requestAnimationFrame(ticker);
+
+      function scheduleDelay(remaining, after) {
+        if (_paused) {
+          pendingDelayRemaining = remaining;
+          return;
+        }
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      function next() {
+        if (!playing) return;
+        if (i >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[i++];
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) {
+            virtualElapsed = step._start + step._duration;
+            next();
+            return;
+          }
+          scheduleDelay(step._duration, function() {
+            virtualElapsed = step._start + step._duration;
+            next();
+          });
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next();
+          return;
+        }
+        // tween
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next();
+          }
+        }));
+      }
+      var offPause = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay(pendingDelayRemaining, next);
+        }
+      };
+      onPauseChange(offPause);
+      next();
+      return tl;
+    };
+    // Resume from a specific time. Synchronously applies all steps up to
+    // ``fromMs``, then starts live playback from that point. This is how
+    // the scrubber implements "Resume from where I dragged to".
+    tl.playFrom = function(fromMs, onDone) {
+      tl.stop();
+      // Apply all steps up to fromMs synchronously
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      for (var k = 0; k < steps.length; k++) {
+        var s = steps[k];
+        var stepEnd = s._start + s._duration;
+        if (stepEnd <= fromMs) {
+          if (s._type === "tween") {
+            if (s.onUpdate) s.onUpdate(s.to);
+            if (s.onComplete) s.onComplete();
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = stepEnd;
+        } else {
+          break;
+        }
+      }
+      // Now start live playback. The play() method will walk from step 0,
+      // but each step whose _start + _duration <= virtualElapsed will
+      // complete instantly because virtualElapsed is already past them.
+      // We override virtualElapsed inside play() to resume cleanly.
+      playing = true;
+      onDoneCb = onDone || null;
+      tickerLastFrame = null;
+      var resumeIdx = 0;
+      // Find the first step that hasn't been fully applied yet
+      for (var j = 0; j < steps.length; j++) {
+        if (steps[j]._start + steps[j]._duration > fromMs) {
+          resumeIdx = j;
+          break;
+        }
+        if (j === steps.length - 1) resumeIdx = steps.length;
+      }
+      virtualElapsed = fromMs;
+      stepVirtualStart = (resumeIdx < steps.length) ? steps[resumeIdx]._start : totalDuration;
+
+      function ticker2(now) {
+        if (!playing) return;
+        if (tickerLastFrame === null) tickerLastFrame = now;
+        var delta = now - tickerLastFrame;
+        tickerLastFrame = now;
+        if (!_paused && !current) {
+          virtualElapsed += delta * _speed;
+        } else if (!_paused && current && typeof current.getElapsed === "function") {
+          virtualElapsed = stepVirtualStart + current.getElapsed();
+        }
+        if (playing) requestAnimationFrame(ticker2);
+      }
+      requestAnimationFrame(ticker2);
+
+      function scheduleDelay2(remaining, after) {
+        if (_paused) { pendingDelayRemaining = remaining; return; }
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      var ri = resumeIdx;
+      function next2() {
+        if (!playing) return;
+        if (ri >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[ri++];
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) { virtualElapsed = step._start + step._duration; next2(); return; }
+          // If we're resuming mid-delay, shorten it
+          var elapsed = fromMs - step._start;
+          var remaining = Math.max(0, step._duration - elapsed);
+          if (remaining <= 0) { virtualElapsed = step._start + step._duration; next2(); return; }
+          scheduleDelay2(remaining, function() {
+            virtualElapsed = step._start + step._duration;
+            next2();
+          });
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next2();
+          return;
+        }
+        // tween — if we're resuming past this step, skip it
+        if (step._start + step._duration <= fromMs) {
+          if (step.onUpdate) step.onUpdate(step.to);
+          if (step.onComplete) step.onComplete();
+          virtualElapsed = step._start + step._duration;
+          next2();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next2();
+          }
+        }));
+      }
+      var offPause2 = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay2(pendingDelayRemaining, next2);
+        }
+      };
+      onPauseChange(offPause2);
+      next2();
+      return tl;
+    };
+
+    tl.stop = function() {
+      playing = false;
+      if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }
+      pendingDelayRemaining = 0;
+      if (current) {
+        if (typeof current === "function") current();
+        current = null;
+      }
+    };
+    tl.isPlaying = function() { return playing; };
+    return tl;
+  }
+
+  // --- path: quadratic-bezier sampler (x1,y1) → (cx,cy) → (x2,y2) -------
+  function path(x1, y1, cx, cy, x2, y2) {
+    return function(t) {
+      var omt = 1 - t;
+      var x = omt * omt * x1 + 2 * omt * t * cx + t * t * x2;
+      var y = omt * omt * y1 + 2 * omt * t * cy + t * t * y2;
+      return { x: x, y: y };
+    };
+  }
+
+  // --- pulse: briefly grow an SVG element's stroke width ---------------
+  function pulse(el, peakWidth, baseWidth, durationMs) {
+    if (!el) return;
+    var dur = (durationMs || 400) / 2;
+    tween({
+      from: baseWidth || 1,
+      to: peakWidth || 3,
+      duration: dur,
+      ease: easeOutCubic,
+      onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); },
+      onComplete: function() {
+        tween({
+          from: peakWidth || 3,
+          to: baseWidth || 1,
+          duration: dur,
+          ease: easeInCubic,
+          onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); }
+        });
+      }
+    });
+  }
+
+  // --- svg element creators (tiny helpers to reduce boilerplate) -------
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // --- complexityChart: small log-log plot of cost vs input size -------
+  //
+  // Draws a line-chart SVG showing how a cost function scales with input
+  // size, with the current operating point highlighted. Useful for the
+  // "feel the asymptotic gap" moment at the bottom of each lesson.
+  //
+  // opts: {
+  //   svgId: "complexity-chart",
+  //   width: 400, height: 180,
+  //   xLabel: "Rows", yLabel: "Pages touched",
+  //   curves: [
+  //     {label: "BNL", color: "#ca8a04", fn: function(n) { return n * n; }},
+  //     {label: "Hash", color: "#0d9488", fn: function(n) { return n + 1000; }}
+  //   ],
+  //   xMin: 10, xMax: 1000000,
+  //   current: {x: 100000},  // highlight point
+  // }
+  function complexityChart(opts) {
+    var svgEl = document.getElementById(opts.svgId);
+    if (!svgEl) return;
+    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+    var W = opts.width || 400;
+    var H = opts.height || 180;
+    var padL = 44, padR = 20, padT = 20, padB = 32;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+    var xMin = opts.xMin || 1;
+    var xMax = opts.xMax || 1e9;
+    var NSAMP = 80;
+
+    // Sample every curve; use log X scale
+    function logMap(v, lo, hi) {
+      var lv = Math.log(v);
+      var llo = Math.log(lo);
+      var lhi = Math.log(hi);
+      return (lv - llo) / (lhi - llo);
+    }
+    var samples = opts.curves.map(function(c) {
+      var pts = [];
+      for (var i = 0; i < NSAMP; i++) {
+        var frac = i / (NSAMP - 1);
+        var x = Math.exp(Math.log(xMin) + frac * (Math.log(xMax) - Math.log(xMin)));
+        pts.push({x: x, y: c.fn(x)});
+      }
+      return pts;
+    });
+    // Compute global Y range (log scale)
+    var yAll = [];
+    samples.forEach(function(curve) { curve.forEach(function(p) { if (p.y > 0 && isFinite(p.y)) yAll.push(p.y); }); });
+    if (yAll.length === 0) return;
+    var yMin = Math.min.apply(null, yAll);
+    var yMax = Math.max.apply(null, yAll);
+    // Clamp yMin so it's not zero
+    if (yMin <= 0) yMin = 1;
+
+    function toSvg(x, y) {
+      var fx = logMap(x, xMin, xMax);
+      var fy = (y > 0) ? logMap(y, yMin, yMax) : 0;
+      return {
+        x: padL + fx * plotW,
+        y: padT + (1 - fy) * plotH
+      };
+    }
+
+    // Background grid (log decades)
+    for (var gx = Math.pow(10, Math.floor(Math.log10(xMin))); gx <= xMax; gx *= 10) {
+      if (gx < xMin) continue;
+      var gridX = toSvg(gx, yMin).x;
+      var gline = svgEl_create("line", {
+        x1: gridX, y1: padT, x2: gridX, y2: padT + plotH,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gline);
+      var glbl = svgEl_create("text", {
+        x: gridX, y: padT + plotH + 14,
+        "text-anchor": "middle", "font-size": 9, fill: "#9ca3af"
+      });
+      glbl.textContent = formatLog(gx);
+      svgEl.appendChild(glbl);
+    }
+    for (var gy = Math.pow(10, Math.floor(Math.log10(yMin))); gy <= yMax * 10; gy *= 10) {
+      if (gy < yMin) continue;
+      var gridY = toSvg(xMin, gy).y;
+      if (gridY < padT - 1 || gridY > padT + plotH + 1) continue;
+      var gln = svgEl_create("line", {
+        x1: padL, y1: gridY, x2: padL + plotW, y2: gridY,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gln);
+      var glb = svgEl_create("text", {
+        x: padL - 6, y: gridY + 3,
+        "text-anchor": "end", "font-size": 9, fill: "#9ca3af"
+      });
+      glb.textContent = formatLog(gy);
+      svgEl.appendChild(glb);
+    }
+
+    // Axis lines
+    var axisX = svgEl_create("line", {
+      x1: padL, y1: padT + plotH, x2: padL + plotW, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisX);
+    var axisY = svgEl_create("line", {
+      x1: padL, y1: padT, x2: padL, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisY);
+
+    // Axis labels
+    if (opts.xLabel) {
+      var xl = svgEl_create("text", {
+        x: padL + plotW/2, y: H - 6,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151"
+      });
+      xl.textContent = opts.xLabel;
+      svgEl.appendChild(xl);
+    }
+    if (opts.yLabel) {
+      var yl = svgEl_create("text", {
+        x: 12, y: padT + plotH/2,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
+        transform: "rotate(-90 12," + (padT + plotH/2) + ")"
+      });
+      yl.textContent = opts.yLabel;
+      svgEl.appendChild(yl);
+    }
+
+    // Curves
+    opts.curves.forEach(function(c, idx) {
+      var pts = samples[idx];
+      var d = "";
+      pts.forEach(function(p, i) {
+        if (!isFinite(p.y) || p.y <= 0) return;
+        var svg = toSvg(p.x, p.y);
+        d += (i === 0 ? "M " : " L ") + svg.x.toFixed(1) + "," + svg.y.toFixed(1);
+      });
+      var path = svgEl_create("path", {
+        d: d, fill: "none", stroke: c.color || "#1f2937", "stroke-width": 2.5,
+        "stroke-linecap": "round", "stroke-linejoin": "round"
+      });
+      svgEl.appendChild(path);
+    });
+
+    // Legend
+    var legendY = padT - 6;
+    var lx = padL;
+    opts.curves.forEach(function(c, idx) {
+      var sw = svgEl_create("rect", {
+        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "#1f2937"
+      });
+      svgEl.appendChild(sw);
+      var lt = svgEl_create("text", {
+        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "#1f2937"
+      });
+      lt.textContent = c.label;
+      svgEl.appendChild(lt);
+      lx += (c.label.length * 6) + 34;
+    });
+
+    // Highlight current operating point
+    if (opts.current && opts.current.x) {
+      var cx = opts.current.x;
+      if (cx >= xMin && cx <= xMax) {
+        opts.curves.forEach(function(c, idx) {
+          var cy = c.fn(cx);
+          if (!isFinite(cy) || cy <= 0) return;
+          var svg = toSvg(cx, cy);
+          var dot = svgEl_create("circle", {
+            cx: svg.x, cy: svg.y, r: 5,
+            fill: c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+          });
+          svgEl.appendChild(dot);
+        });
+        // Vertical guide line at the current x
+        var vx = toSvg(cx, yMin).x;
+        var vline = svgEl_create("line", {
+          x1: vx, y1: padT, x2: vx, y2: padT + plotH,
+          stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
+        });
+        svgEl.appendChild(vline);
+      }
+    }
+
+    // ------------- Interactivity: hover guide + tooltip + click ----------
+    // A transparent rect over the plot area captures mouse moves and
+    // clicks. On hover, a vertical guide tracks the pointer and each curve
+    // gets a small dot + label showing its value at that x.
+    var hitRect = svgEl_create("rect", {
+      x: padL, y: padT, width: plotW, height: plotH,
+      fill: "transparent", "pointer-events": "all",
+      style: "cursor: crosshair"
+    });
+    svgEl.appendChild(hitRect);
+
+    var hoverGroup = svgEl_create("g", { "pointer-events": "none", opacity: 0 });
+    var hoverLine = svgEl_create("line", {
+      y1: padT, y2: padT + plotH,
+      stroke: "#1f2937", "stroke-width": 1, "stroke-dasharray": "2 2"
+    });
+    hoverGroup.appendChild(hoverLine);
+    var hoverDots = [];
+    var hoverLabelBg = svgEl_create("rect", {
+      rx: 4, ry: 4, fill: "rgba(31,41,55,0.95)", stroke: "none"
+    });
+    hoverGroup.appendChild(hoverLabelBg);
+    var hoverLabelLines = [];
+    opts.curves.forEach(function(c, idx) {
+      var dot = svgEl_create("circle", {
+        r: 4, fill: c.color || "#1f2937", stroke: "#fff", "stroke-width": 1.5
+      });
+      hoverGroup.appendChild(dot);
+      hoverDots.push(dot);
+      var txt = svgEl_create("text", {
+        "font-size": 10, "font-weight": 600, fill: "#ffffff"
+      });
+      hoverGroup.appendChild(txt);
+      hoverLabelLines.push(txt);
+    });
+    svgEl.appendChild(hoverGroup);
+
+    function svgPointFromEvent(evt) {
+      var ctm = svgEl.getScreenCTM();
+      if (!ctm) return { x: evt.clientX, y: evt.clientY };
+      try {
+        var pt = svgEl.createSVGPoint();
+        pt.x = evt.clientX; pt.y = evt.clientY;
+        var inv = ctm.inverse();
+        return pt.matrixTransform(inv);
+      } catch (e) {
+        return { x: evt.clientX, y: evt.clientY };
+      }
+    }
+    function formatBig(n) {
+      if (!isFinite(n)) return "—";
+      if (n >= 1e12) return (n / 1e12).toFixed(2) + "T";
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+      return Math.round(n).toString();
+    }
+    function updateHover(svgX) {
+      var clamped = Math.max(padL, Math.min(padL + plotW, svgX));
+      var xFrac = (clamped - padL) / plotW;
+      var xVal = Math.exp(Math.log(xMin) + xFrac * (Math.log(xMax) - Math.log(xMin)));
+      hoverLine.setAttribute("x1", clamped);
+      hoverLine.setAttribute("x2", clamped);
+
+      var labelLines = [];
+      labelLines.push(opts.xLabel + ": " + formatBig(xVal));
+      opts.curves.forEach(function(c, idx) {
+        var y = c.fn(xVal);
+        if (!isFinite(y) || y <= 0) {
+          hoverDots[idx].setAttribute("opacity", 0);
+          hoverLabelLines[idx + 1] && hoverLabelLines[idx + 1].setAttribute("opacity", 0);
+          return;
+        }
+        var svgPt = toSvg(xVal, y);
+        hoverDots[idx].setAttribute("cx", svgPt.x);
+        hoverDots[idx].setAttribute("cy", svgPt.y);
+        hoverDots[idx].setAttribute("opacity", 1);
+        labelLines.push(c.label + ": " + formatBig(y));
+      });
+
+      // Compose tooltip on the left or right depending on cursor position
+      var labelX = (clamped < padL + plotW / 2) ? clamped + 10 : clamped - 150;
+      var labelY = padT + 6;
+      var maxLineW = 0;
+      for (var j = 0; j < labelLines.length; j++) {
+        if (!hoverLabelLines[j]) {
+          var t = svgEl_create("text", { "font-size": 10, "font-weight": 600, fill: "#ffffff" });
+          hoverGroup.appendChild(t);
+          hoverLabelLines[j] = t;
+        }
+        hoverLabelLines[j].textContent = labelLines[j];
+        hoverLabelLines[j].setAttribute("x", labelX + 6);
+        hoverLabelLines[j].setAttribute("y", labelY + 12 + j * 13);
+        hoverLabelLines[j].setAttribute("opacity", 1);
+        maxLineW = Math.max(maxLineW, labelLines[j].length * 5.8);
+      }
+      // Clear any extra stale labels
+      for (var k = labelLines.length; k < hoverLabelLines.length; k++) {
+        if (hoverLabelLines[k]) hoverLabelLines[k].setAttribute("opacity", 0);
+      }
+      hoverLabelBg.setAttribute("x", labelX);
+      hoverLabelBg.setAttribute("y", labelY);
+      hoverLabelBg.setAttribute("width", Math.max(140, maxLineW + 12));
+      hoverLabelBg.setAttribute("height", 8 + labelLines.length * 13);
+      hoverGroup.setAttribute("opacity", 1);
+    }
+
+    hitRect.addEventListener("mousemove", function(evt) {
+      var pt = svgPointFromEvent(evt);
+      updateHover(pt.x);
+    });
+    hitRect.addEventListener("mouseleave", function() {
+      hoverGroup.setAttribute("opacity", 0);
+    });
+
+    // Click to update a slider — opts.xSlider = "rows" to bind.
+    if (opts.xSlider) {
+      hitRect.addEventListener("click", function(evt) {
+        var pt = svgPointFromEvent(evt);
+        var clamped = Math.max(padL, Math.min(padL + plotW, pt.x));
+        var xFrac = (clamped - padL) / plotW;
+        var xVal = Math.exp(Math.log(xMin) + xFrac * (Math.log(xMax) - Math.log(xMin)));
+        var slider = document.getElementById(opts.xSlider);
+        if (!slider) return;
+        // Some sliders use linear values (outer_rows), some use a log index
+        // mapped from ROW_SCALE. The caller can provide a transform.
+        var newVal;
+        if (opts.xSliderTransform) {
+          newVal = opts.xSliderTransform(xVal);
+        } else {
+          newVal = Math.round(xVal);
+        }
+        slider.value = newVal;
+        // Fire input event so the lesson's recompute runs
+        var ev = new Event("input", { bubbles: true });
+        slider.dispatchEvent(ev);
+      });
+    }
+  }
+
+  function svgEl_create(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function formatLog(n) {
+    if (n >= 1e9) return (n / 1e9) + "B";
+    if (n >= 1e6) return (n / 1e6) + "M";
+    if (n >= 1e3) return (n / 1e3) + "K";
+    return String(n);
+  }
+
+  return {
+    linear: linear,
+    easeOutCubic: easeOutCubic,
+    easeInCubic: easeInCubic,
+    easeInOutCubic: easeInOutCubic,
+    easeOutQuart: easeOutQuart,
+    easeInOutQuad: easeInOutQuad,
+    easeOutBack: easeOutBack,
+    lerp: lerp,
+    lerpColor: lerpColor,
+    tween: tween,
+    stagger: stagger,
+    timeline: timeline,
+    path: path,
+    pulse: pulse,
+    svgEl: svgEl,
+    reducedMotion: reducedMotion,
+    setSpeed: setSpeed,
+    getSpeed: getSpeed,
+    setPaused: setPaused,
+    isPaused: isPaused,
+    onPauseChange: onPauseChange,
+    complexityChart: complexityChart
+  };
+})();
+
+
+var teachRuntime = (function() {
+  function formatInt(n) {
+    if (!isFinite(n)) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(Math.round(n));
+  }
+  function formatBytes(b) {
+    if (!isFinite(b) || b < 0) return "—";
+    if (b >= 1024*1024*1024) return (b / (1024*1024*1024)).toFixed(2) + " GiB";
+    if (b >= 1024*1024) return (b / (1024*1024)).toFixed(2) + " MiB";
+    if (b >= 1024) return (b / 1024).toFixed(1) + " KiB";
+    return b + " B";
+  }
+  function formatMs(ms) {
+    if (!isFinite(ms)) return "—";
+    if (ms >= 1000) return (ms / 1000).toFixed(2) + " s";
+    if (ms >= 1) return ms.toFixed(1) + " ms";
+    return (ms * 1000).toFixed(1) + " µs";
+  }
+  function readControls(rootSel) {
+    var root = document.querySelector(rootSel || "section.controls");
+    var out = {};
+    if (!root) return out;
+    var els = root.querySelectorAll("input, select");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.name) continue;
+      var v;
+      if (el.type === "checkbox") v = el.checked;
+      else if (el.type === "number" || el.type === "range") v = Number(el.value);
+      else v = el.value;
+      out[el.name] = v;
+      var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+      if (pill) pill.textContent = el.value;
+    }
+    return out;
+  }
+  function wire(recompute) {
+    var els = document.querySelectorAll("section.controls input, section.controls select");
+    for (var i = 0; i < els.length; i++) {
+      els[i].addEventListener("input", recompute);
+      els[i].addEventListener("change", recompute);
+    }
+    window.__teachRecompute = recompute;
+    recompute();
+  }
+  function bootstrapFromObject(ctx) {
+    ctx = ctx || {};
+    var controls = ctx.controls || {};
+    var root = document.querySelector("section.controls");
+    if (root) {
+      var els = root.querySelectorAll("input, select");
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if (!el.name || !Object.prototype.hasOwnProperty.call(controls, el.name)) continue;
+        var v = controls[el.name];
+        if (el.type === "checkbox") {
+          el.checked = !!v;
+        } else {
+          el.value = String(v);
+        }
+        var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+        if (pill) pill.textContent = el.value;
+      }
+    }
+    // Keep the lesson's own example query — it is a pedagogical classic
+    // that matches the animated sample data (Alice, Bob, Carol, …).
+    // Only inject the operator note as context for which operator the
+    // user clicked on.
+    if (ctx.note) {
+      var note = document.querySelector(".query-card .query-note");
+      if (note) note.textContent = String(ctx.note);
+    }
+    if (typeof window.__teachRecompute === "function") {
+      window.__teachRecompute();
+    } else {
+      // Legacy fallback: try to trigger any control-driven recompute path.
+      var evt;
+      if (typeof Event === "function") evt = new Event("input", { bubbles: true });
+      var root2 = document.querySelector("section.controls");
+      if (evt && root2) {
+        var first = root2.querySelector("input, select");
+        if (first) first.dispatchEvent(evt);
+      }
+    }
+  }
+
+  // Wire the shared stage toolbar.
+  //
+  // New API: wireToolbar({ build: fn, reset: fn }) where
+  //   build  returns a fresh anim.timeline() that has NOT yet been played
+  //   reset  clears the stage back to its ready state
+  //
+  // The toolbar owns the Play/Pause/Reset buttons, the speed dropdown, and
+  // the YouTube-style scrubber. Lessons do not call .play() themselves.
+  //
+  // Legacy compat: wireToolbar(playFn, resetFn) — two positional function
+  // arguments — still works for any lesson we haven't migrated yet.
+  function wireToolbar(optsOrPlay, maybeReset) {
+    var btnPlay = document.getElementById("btn-play");
+    var btnReset = document.getElementById("btn-reset");
+    var btnLoop = document.getElementById("btn-loop");
+    var selSpeed = document.getElementById("sel-speed");
+    var scrubber = document.getElementById("scrubber");
+    var timeCurLbl = document.getElementById("scrubber-time-current");
+    var timeTotLbl = document.getElementById("scrubber-time-total");
+
+    var build = null, reset = null, legacyPlay = null;
+    if (typeof optsOrPlay === "function") {
+      legacyPlay = optsOrPlay;
+      reset = maybeReset;
+    } else if (optsOrPlay && typeof optsOrPlay === "object") {
+      build = optsOrPlay.build;
+      reset = optsOrPlay.reset;
+    }
+
+    var state = {
+      running: false,
+      paused: false,
+      draggingScrubber: false,
+      scrubbedToMs: -1,
+      loopEnabled: false
+    };
+    var currentTL = null;
+    // Recalibrated baseline: every labeled speed runs 48% slower than nominal.
+    // Example: UI 1x => effective 0.52x, 2x => 1.04x.
+    // This gives users time to read labels and follow element movement.
+    var BASELINE_SPEED_SCALE = 0.52;
+
+    function labelFor() {
+      if (!state.running) return "Play";
+      if (state.paused) return "Resume";
+      return "Pause";
+    }
+    function setBtnLabel(btn, txt) {
+      if (!btn) return;
+      var lbl = btn.querySelector(".btn-label");
+      if (lbl) lbl.textContent = txt;
+      else btn.textContent = txt;
+    }
+    function updateLabel() { setBtnLabel(btnPlay, labelFor()); }
+    function updateLoopLabel() {
+      if (!btnLoop) return;
+      setBtnLabel(btnLoop, state.loopEnabled ? "Loop: On" : "Loop: Off");
+      btnLoop.setAttribute("aria-pressed", state.loopEnabled ? "true" : "false");
+    }
+
+    function formatSec(ms) {
+      var s = Math.max(0, ms / 1000);
+      return s.toFixed(1) + "s";
+    }
+    function syncTimeLabels() {
+      if (!currentTL) { if (timeCurLbl) timeCurLbl.textContent = "0.0s"; return; }
+      if (timeTotLbl) timeTotLbl.textContent = formatSec(currentTL.getTotalDuration());
+    }
+
+    function onPlaybackDone() {
+      if (state.loopEnabled) {
+        startPlayback();
+        return;
+      }
+      state.running = false;
+      state.paused = false;
+      state.scrubbedToMs = -1;
+      anim.setPaused(false);
+      if (scrubber && currentTL) scrubber.value = "1000";
+      if (timeCurLbl && currentTL) timeCurLbl.textContent = formatSec(currentTL.getTotalDuration());
+      updateLabel();
+    }
+
+    // Scrubber RAF loop — moves the thumb based on currentTL.getCurrentTime().
+    // Keeps running as long as state.running is true (even when paused) so it
+    // can resume updating immediately on unpause without needing a new kick.
+    function scrubberTick() {
+      if (!currentTL || state.draggingScrubber) { if (state.running) requestAnimationFrame(scrubberTick); return; }
+      if (!state.running) return;
+      var total = currentTL.getTotalDuration();
+      if (total > 0 && !state.paused) {
+        var curMs = currentTL.getCurrentTime();
+        var frac = Math.min(1, curMs / total);
+        if (scrubber) scrubber.value = String(Math.round(frac * 1000));
+        if (timeCurLbl) timeCurLbl.textContent = formatSec(curMs);
+        teachRuntime._tickPhaseNav(curMs);
+      }
+      requestAnimationFrame(scrubberTick);
+    }
+
+    function startPlayback() {
+      if (legacyPlay) { legacyPlay(); return; }
+      if (!build) return;
+      if (currentTL) currentTL.stop();
+      if (reset) reset();
+      currentTL = build();
+      teachRuntime._updatePhaseNav(currentTL);
+      syncTimeLabels();
+      if (scrubber) scrubber.value = "0";
+      state.running = true;
+      state.paused = false;
+      state.scrubbedToMs = -1;
+      anim.setPaused(false);
+      updateLabel();
+      currentTL.play(onPlaybackDone);
+      requestAnimationFrame(scrubberTick);
+    }
+
+    function resumeFromScrub() {
+      // After a scrub, the timeline was fast-forwarded but never played.
+      // Rebuild it and use playFrom(scrubPosition) which applies all steps
+      // up to the scrub point synchronously, then starts the RAF loop.
+      if (!build) return;
+      var resumeMs = state.scrubbedToMs;
+      if (resumeMs < 0) resumeMs = 0;
+      if (currentTL) currentTL.stop();
+      if (reset) reset();
+      currentTL = build();
+      teachRuntime._updatePhaseNav(currentTL);
+      syncTimeLabels();
+      state.running = true;
+      state.paused = false;
+      state.scrubbedToMs = -1;
+      anim.setPaused(false);
+      updateLabel();
+      currentTL.playFrom(resumeMs, onPlaybackDone);
+      requestAnimationFrame(scrubberTick);
+    }
+
+    function togglePause() {
+      if (state.paused && state.scrubbedToMs >= 0) {
+        resumeFromScrub();
+        return;
+      }
+      state.paused = !state.paused;
+      anim.setPaused(state.paused);
+      updateLabel();
+    }
+
+    // Used by lessons that still rely on the old legacy done-notification
+    window._teachOnDone = function() {
+      if (state.loopEnabled) {
+        startPlayback();
+        return;
+      }
+      state.running = false;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+    };
+
+    if (btnPlay) btnPlay.addEventListener("click", function() {
+      if (!state.running) {
+        startPlayback();
+        return;
+      }
+      togglePause();
+    });
+    if (btnReset) btnReset.addEventListener("click", function() {
+      if (currentTL) currentTL.stop();
+      currentTL = null;
+      state.running = false;
+      state.paused = false;
+      anim.setPaused(false);
+      updateLabel();
+      if (reset) reset();
+      if (scrubber) scrubber.value = "0";
+      if (timeCurLbl) timeCurLbl.textContent = "0.0s";
+    });
+    if (btnLoop) btnLoop.addEventListener("click", function() {
+      state.loopEnabled = !state.loopEnabled;
+      updateLoopLabel();
+    });
+    updateLoopLabel();
+    function applyUiSpeed() {
+      if (!selSpeed) return;
+      var uiSpeed = Number(selSpeed.value);
+      anim.setSpeed(uiSpeed * BASELINE_SPEED_SCALE);
+    }
+    if (selSpeed) selSpeed.addEventListener("change", applyUiSpeed);
+    if (selSpeed) applyUiSpeed();
+
+    // Scrubber behaviour: dragging seeks (stop, reset, rebuild, fast-forward
+    // to target, leave paused). Releasing the thumb leaves playback paused
+    // at the scrub target — the user can press Play to resume from the
+    // beginning (a deliberate simplification; mid-point resume adds a lot
+    // of complexity for little teaching benefit).
+    if (scrubber && build) {
+      function seekToScrubber() {
+        var frac = Number(scrubber.value) / 1000;
+        if (currentTL) currentTL.stop();
+        if (reset) reset();
+        currentTL = build();
+        var target = frac * currentTL.getTotalDuration();
+        currentTL.fastForwardTo(target);
+        syncTimeLabels();
+        if (timeCurLbl) timeCurLbl.textContent = formatSec(target);
+        state.running = true;
+        state.paused = true;
+        state.scrubbedToMs = target;
+        anim.setPaused(true);
+        updateLabel();
+      }
+      scrubber.addEventListener("mousedown", function() { state.draggingScrubber = true; });
+      scrubber.addEventListener("touchstart", function() { state.draggingScrubber = true; });
+      scrubber.addEventListener("input", seekToScrubber);
+      scrubber.addEventListener("change", function() {
+        seekToScrubber();
+        state.draggingScrubber = false;
+      });
+      scrubber.addEventListener("mouseup", function() { state.draggingScrubber = false; });
+      scrubber.addEventListener("touchend", function() { state.draggingScrubber = false; });
+    }
+  }
+
+  // Helper that lesson code calls when its animation reaches the end.
+  // (Only used by legacy wireToolbar(playFn, resetFn) calls.)
+  function animationDone() {
+    if (typeof window._teachOnDone === "function") window._teachOnDone();
+  }
+
+  // Phase navigation — clickable phase list sidebar.
+  //
+  // Call wirePhaseNav(containerId, opts) AFTER wireToolbar. The toolbar's
+  // build/reset closures and scrubber-seek logic are reused.
+  //
+  // The phase nav reads timeline marks (tl.getMarks()) each time the
+  // timeline is built. Clicking a phase seeks to that mark's timestamp
+  // using the same scrubber infrastructure. During playback, the current
+  // phase is highlighted based on getCurrentTime().
+  var _phaseNavState = { container: null, build: null, reset: null, marks: [] };
+
+  function wirePhaseNav(containerId, opts) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    _phaseNavState.container = container;
+    _phaseNavState.build = opts.build;
+    _phaseNavState.reset = opts.reset;
+
+    // Render initial empty state
+    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
+  }
+
+  // Called by wireToolbar internals to update phase nav after timeline build
+  function _updatePhaseNav(tl) {
+    var container = _phaseNavState.container;
+    if (!container || !tl || !tl.getMarks) return;
+    var marks = tl.getMarks();
+    _phaseNavState.marks = marks;
+    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
+    for (var i = 0; i < marks.length; i++) {
+      (function(idx) {
+        var item = document.createElement("div");
+        item.className = "phase-item";
+        item.setAttribute("data-phase-idx", idx);
+        item.innerHTML = '<span class="phase-dot"></span>' + marks[idx].name;
+        item.addEventListener("click", function() {
+          _seekToPhase(idx);
+        });
+        container.appendChild(item);
+      })(i);
+    }
+    // Highlight the first phase
+    _highlightPhase(0);
+  }
+
+  function _highlightPhase(activeIdx) {
+    var container = _phaseNavState.container;
+    if (!container) return;
+    var items = container.querySelectorAll(".phase-item");
+    for (var i = 0; i < items.length; i++) {
+      var cls = "phase-item";
+      if (i === activeIdx) cls += " active";
+      else if (i < activeIdx) cls += " done";
+      items[i].className = cls;
+    }
+  }
+
+  function _seekToPhase(idx) {
+    var marks = _phaseNavState.marks;
+    if (idx < 0 || idx >= marks.length) return;
+    var scrubber = document.getElementById("scrubber");
+    var build = _phaseNavState.build;
+    var reset = _phaseNavState.reset;
+    if (!build) return;
+
+    // Reuse the scrubber seek pattern: stop, reset, rebuild, fastForwardTo
+    if (reset) reset();
+    var tl = build();
+    var targetMs = marks[idx].ms;
+    tl.fastForwardTo(targetMs);
+    _updatePhaseNav(tl);
+    _highlightPhase(idx);
+
+    // Update scrubber position
+    var total = tl.getTotalDuration();
+    if (scrubber && total > 0) {
+      scrubber.value = String(Math.round((targetMs / total) * 1000));
+    }
+    var timeCurLbl = document.getElementById("scrubber-time-current");
+    var timeTotLbl = document.getElementById("scrubber-time-total");
+    if (timeCurLbl) timeCurLbl.textContent = (targetMs / 1000).toFixed(1) + "s";
+    if (timeTotLbl) timeTotLbl.textContent = (total / 1000).toFixed(1) + "s";
+
+    // Store the scrubbed position for toolbar resume
+    window._phaseSeekTl = tl;
+    window._phaseSeekMs = targetMs;
+  }
+
+  // Phase tracking during playback — call from scrubber tick RAF
+  function _tickPhaseNav(currentMs) {
+    var marks = _phaseNavState.marks;
+    if (!marks.length) return;
+    var active = 0;
+    for (var i = marks.length - 1; i >= 0; i--) {
+      if (currentMs >= marks[i].ms) { active = i; break; }
+    }
+    _highlightPhase(active);
+  }
+
+  return {
+    formatInt: formatInt,
+    formatBytes: formatBytes,
+    formatMs: formatMs,
+    readControls: readControls,
+    wire: wire,
+    bootstrapFromObject: bootstrapFromObject,
+    wireToolbar: wireToolbar,
+    wirePhaseNav: wirePhaseNav,
+    _updatePhaseNav: _updatePhaseNav,
+    _tickPhaseNav: _tickPhaseNav,
+    animationDone: animationDone
+  };
+})();
+
+
+var SORT_BUFFER_SIZE_DEFAULT = 262144;
+
+function filesortCost(rows, rowSize, sbs, limitRows) {
+  var rpr = Math.max(1, Math.floor(sbs / rowSize));
+  var usePQ = (limitRows > 0 && limitRows < rows && limitRows * rowSize * 2 < sbs);
+  if (usePQ) {
+    // Priority queue: only limitRows kept in memory, no spill possible
+    return {rpr: rpr, runs: 1, merges: 0, ioRows: rows, spill: false,
+            sortAlg: "priority_queue", pqSize: limitRows};
+  }
+  var runs = Math.max(1, Math.ceil(rows / rpr));
+  // Radix sort: fixed-length key ≤ 16 B → O(n·k) no comparisons
+  var useRadix = (rowSize <= 16);
+  var alg = useRadix ? "radix" : "introsort";
+  if (runs <= 1) return {rpr: rpr, runs: 1, merges: 0, ioRows: rows, spill: false,
+                         sortAlg: alg, pqSize: 0};
+  var fanIn = 15;
+  var merges = Math.max(1, Math.ceil(Math.log(runs) / Math.log(fanIn)));
+  var ioRows = rows + merges * rows * 2;
+  return {rpr: rpr, runs: runs, merges: merges, ioRows: ioRows, spill: true,
+          sortAlg: alg, pqSize: 0};
+}
+
+var W = 800, H = 440;
+var stage = null;
+
+// Named orders so the user can track rows through the sort
+var ORDERS = [
+  {customer: "Alice",  date: "Jan 15", total: "$2,400"},
+  {customer: "Bob",    date: "Mar 22", total: "$1,800"},
+  {customer: "Carol",  date: "Feb 10", total: "$3,100"},
+  {customer: "Dave",   date: "Jan 03", total: "$950"},
+  {customer: "Eve",    date: "Apr 18", total: "$4,200"},
+  {customer: "Frank",  date: "Mar 01", total: "$2,700"},
+  {customer: "Grace",  date: "Jan 28", total: "$1,100"},
+  {customer: "Hank",   date: "Feb 14", total: "$890"},
+  {customer: "Iris",   date: "May 05", total: "$3,400"},
+  {customer: "Jake",   date: "Apr 11", total: "$1,650"},
+  {customer: "Kate",   date: "Feb 28", total: "$2,200"},
+  {customer: "Leo",    date: "Mar 17", total: "$1,500"}
+];
+
+// Numeric sort keys for ORDER BY order_date (month*100 + day)
+var DATE_KEYS = [115, 322, 210, 103, 418, 301, 128, 214, 505, 411, 228, 317];
+
+// ---- Quicksort step recorder (runs at timeline-build time) ----
+// Returns an array of ops: {type:'pivot'|'cmp'|'swap'|'placed'|'done', ...}
+function recordQsOps(orderIndices) {
+  var n = orderIndices.length;
+  var pos = orderIndices.slice();
+  var ops = [];
+  function qs(lo, hi) {
+    if (lo >= hi) {
+      if (lo === hi) ops.push({type:"done", pos:lo, order:pos[lo]});
+      return;
+    }
+    ops.push({type:"pivot", pos:hi, order:pos[hi], lo:lo, hi:hi});
+    var i = lo;
+    for (var j = lo; j < hi; j++) {
+      var leq = DATE_KEYS[pos[j]] <= DATE_KEYS[pos[hi]];
+      ops.push({type:"cmp", j:j, i:i, pivotPos:hi,
+                orderJ:pos[j], orderP:pos[hi], leq:leq});
+      if (leq) {
+        if (i !== j) {
+          ops.push({type:"swap", a:i, b:j, orderA:pos[i], orderB:pos[j]});
+          var tmp = pos[i]; pos[i] = pos[j]; pos[j] = tmp;
+        }
+        i++;
+      }
+    }
+    if (i !== hi) {
+      ops.push({type:"swap", a:i, b:hi, orderA:pos[i], orderB:pos[hi]});
+      var tmp = pos[i]; pos[i] = pos[hi]; pos[hi] = tmp;
+    }
+    ops.push({type:"placed", pos:i, order:pos[i]});
+    qs(lo, i - 1);
+    qs(i + 1, hi);
+  }
+  qs(0, n - 1);
+  return ops;
+}
+
+// Small pointer triangle below the pills (i = partition boundary, j = scan)
+function createQsPointer(label, color) {
+  var g = anim.svgEl("g", {opacity: 0});
+  var tri = anim.svgEl("polygon", {points: "0,-5 -4,3 4,3", fill: color});
+  g.appendChild(tri);
+  var txt = anim.svgEl("text", {
+    x: 0, y: 13, "text-anchor": "middle",
+    "font-size": 7, "font-weight": 700, fill: color
+  });
+  txt.textContent = label;
+  g.appendChild(txt);
+  stage.svg.appendChild(g);
+  stage.tuples.push(g);
+  return g;
+}
+
+// ---- Animate recorded quicksort ops on the timeline ----
+// slotGs/slotXs: arrays indexed by position. slotGs[i] is the SVG <g> at
+// position i; swaps permute slotGs in sync with the algorithm so closures
+// always resolve the correct element at play-time.
+function addQsToTimeline(tl, slotGs, slotXs, orderIndices, fast) {
+  var ops = recordQsOps(orderIndices);
+  var n = slotGs.length;
+  var dur  = fast ? 200 : 350;
+  var dly  = fast ? 120 : 200;
+  var cmpD = fast ? 80  : 140;
+  var UNSORTED    = "#7c3aed";
+  var PIVOT_CLR   = "#ea580c";
+  var LESS_CLR    = "#16a34a";
+  var GREATER_CLR = "#dc2626";
+  var PLACED_CLR  = "#059669";
+
+  var ptrI = createQsPointer("i", "#2563eb");
+  var ptrJ = createQsPointer("j", "#d97706");
+  var bracket = anim.svgEl("line", {
+    x1:0, y1:0, x2:0, y2:0,
+    stroke:"#9ca3af", "stroke-width":1, "stroke-dasharray":"3,3", opacity:0
+  });
+  stage.svg.appendChild(bracket);
+  stage.tuples.push(bracket);
+  var placed = {};
+
+  for (var oi = 0; oi < ops.length; oi++) {
+    (function(op) {
+      if (op.type === "pivot") {
+        tl.call(function() {
+          slotGs[op.pos].firstChild.setAttribute("fill", PIVOT_CLR);
+          stage.bufContent.textContent = "Pivot: " + ORDERS[op.order].customer +
+            " (" + ORDERS[op.order].date + ")";
+          bracket.setAttribute("x1", slotXs[op.lo] - 30);
+          bracket.setAttribute("y1", 92);
+          bracket.setAttribute("x2", slotXs[op.hi] + 30);
+          bracket.setAttribute("y2", 92);
+          bracket.setAttribute("opacity", 0.5);
+          ptrI.setAttribute("transform", "translate(" + slotXs[op.lo] + ",98)");
+          ptrI.setAttribute("opacity", 1);
+          ptrJ.setAttribute("opacity", 0);
+        });
+        tl.delay(dly * 2);
+      }
+      else if (op.type === "cmp") {
+        tl.call(function() {
+          ptrJ.setAttribute("transform", "translate(" + slotXs[op.j] + ",98)");
+          ptrJ.setAttribute("opacity", 1);
+          ptrI.setAttribute("transform", "translate(" + slotXs[op.i] + ",98)");
+          if (!placed[op.j]) {
+            slotGs[op.j].firstChild.setAttribute("fill",
+              op.leq ? LESS_CLR : GREATER_CLR);
+          }
+          var sym = op.leq ? " \u2264 " : " > ";
+          stage.bufContent.textContent = ORDERS[op.orderJ].date + sym +
+            ORDERS[op.orderP].date +
+            (op.leq ? " \u2192 swap zone grows" : "");
+        });
+        tl.delay(cmpD);
+      }
+      else if (op.type === "swap") {
+        tl.call(function() {
+          var ga = slotGs[op.a], gb = slotGs[op.b];
+          var xa = slotXs[op.a],  xb = slotXs[op.b];
+          anim.tween({from: 0, to: 1, duration: dur,
+            ease: anim.easeInOutCubic,
+            onUpdate: function(t) {
+              var ax = xa + (xb - xa) * t;
+              var ay = 75 - Math.sin(t * Math.PI) * 16;
+              ga.setAttribute("transform", "translate(" + ax + "," + ay + ")");
+              var bx = xb + (xa - xb) * t;
+              var by = 75 + Math.sin(t * Math.PI) * 16;
+              gb.setAttribute("transform", "translate(" + bx + "," + by + ")");
+            }
+          });
+          stage.bufContent.textContent = "Swap: " + ORDERS[op.orderA].customer +
+            " \u2194 " + ORDERS[op.orderB].customer;
+          // Permute tracking array to stay in sync with algorithm
+          var tmpG = slotGs[op.a];
+          slotGs[op.a] = slotGs[op.b];
+          slotGs[op.b] = tmpG;
+        });
+        tl.delay(dur + 60);
+      }
+      else if (op.type === "placed") {
+        tl.call(function() {
+          slotGs[op.pos].firstChild.setAttribute("fill", PLACED_CLR);
+          placed[op.pos] = true;
+          // Reset non-placed elements to unsorted purple
+          for (var k = 0; k < n; k++) {
+            if (!placed[k]) slotGs[k].firstChild.setAttribute("fill", UNSORTED);
+          }
+          stage.bufContent.textContent = ORDERS[op.order].customer +
+            " (" + ORDERS[op.order].date + ") \u2192 final position";
+        });
+        tl.delay(dly);
+      }
+      else if (op.type === "done") {
+        tl.call(function() {
+          slotGs[op.pos].firstChild.setAttribute("fill", PLACED_CLR);
+          placed[op.pos] = true;
+        });
+      }
+    })(ops[oi]);
+  }
+
+  // Clean up pointers
+  tl.call(function() {
+    ptrI.setAttribute("opacity", 0);
+    ptrJ.setAttribute("opacity", 0);
+    bracket.setAttribute("opacity", 0);
+    stage.bufContent.textContent = fast
+      ? "Chunk sorted \u2714" : "Sorted by order_date \u2714";
+  });
+  tl.delay(fast ? 150 : 300);
+}
+
+// ---- Radix sort animation ----
+// Simple and reliable: color each pill by its month group (pass 1),
+// then slide all pills to their sorted positions (pass 2).
+// No external bucket DOM — everything stays in the buffer zone.
+var MONTH_NAMES = ["", "Jan", "Feb", "Mar", "Apr", "May"];
+var BUCKET_CLRS = ["#2563eb", "#7c3aed", "#db2777", "#ea580c", "#ca8a04", "#059669"];
+
+// Radix sort uses its own dedicated SVG (radix-svg) so it doesn't
+// fight with the filesort stage's zones/arrows/z-order.
+var radixPills = [];  // tracks pill elements inside radix-svg
+
+function buildRadixTimeline(orderIndices, fast) {
+  var rsvg = document.getElementById("radix-svg");
+  var fsvg = document.getElementById("filesort-svg");
+  // Show radix SVG, hide filesort SVG
+  fsvg.style.display = "none";
+  rsvg.style.display = "";
+  while (rsvg.firstChild) rsvg.removeChild(rsvg.firstChild);
+  radixPills = [];
+
+  var n = Math.min(orderIndices.length, 8);
+  var RW = 800, RH = 340;
+  var dur = fast ? 250 : 420;
+  var dly = fast ? 80 : 160;
+  var PLACED = "#059669";
+  var ROW_Y = 40;       // unsorted row at top
+  var BUCKET_Y = 140;   // bucket boxes in middle
+  var BUCKET_H = 54;
+  var RESULT_Y = 260;   // sorted result row at bottom
+
+  // Pre-compute months and sorted order
+  var monthSet = {};
+  for (var mi = 0; mi < n; mi++) {
+    var mk = Math.floor(DATE_KEYS[orderIndices[mi]] / 100);
+    monthSet[mk] = true;
+  }
+  var months = [];
+  for (var mm in monthSet) months.push(Number(mm));
+  months.sort(function(a, b) { return a - b; });
+  var numB = months.length;
+
+  var sorted = [];
+  for (var si = 0; si < n; si++) {
+    sorted.push({idx: si, oi: orderIndices[si], key: DATE_KEYS[orderIndices[si]],
+                 month: Math.floor(DATE_KEYS[orderIndices[si]] / 100)});
+  }
+  sorted.sort(function(a, b) { return a.key - b.key; });
+
+  // Pill X positions
+  var pillGap = (RW - 80) / (n - 1 || 1);
+  var pillXs = [];
+  for (var px = 0; px < n; px++) pillXs.push(40 + px * pillGap);
+
+  // Bucket positions
+  var bGap = 10;
+  var bTotalW = RW - 80;
+  var bw = (bTotalW - bGap * (numB - 1)) / numB;
+  var bucketXs = {};  // month -> {x, cx}
+  for (var bi = 0; bi < numB; bi++) {
+    var bx = 40 + bi * (bw + bGap);
+    bucketXs[months[bi]] = {x: bx, cx: bx + bw / 2};
+  }
+
+  // ---- Draw static layout ----
+  // Title: unsorted array
+  var titleTop = anim.svgEl("text", {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "#7c3aed"});
+  titleTop.textContent = "\u2460 Unsorted rows (sort key \u2264 16 B \u2192 radix sort)";
+  rsvg.appendChild(titleTop);
+
+  // Unsorted row background
+  var topBg = anim.svgEl("rect", {x: 20, y: ROW_Y - 12, width: RW - 40, height: 36, rx: 8,
+    fill: "#f5f3ff", stroke: "#8b5cf6", "stroke-width": 1.5});
+  rsvg.appendChild(topBg);
+
+  // Arrow down
+  var arrowD = anim.svgEl("text", {x: RW / 2, y: BUCKET_Y - 18, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 600, fill: "#9ca3af"});
+  arrowD.textContent = "\u2193 distribute by month digit (zero comparisons)";
+  rsvg.appendChild(arrowD);
+
+  // Title: buckets
+  var titleMid = anim.svgEl("text", {x: 20, y: BUCKET_Y - 4, "font-size": 13, "font-weight": 700, fill: "#0369a1"});
+  titleMid.textContent = "\u2461 Month buckets";
+  rsvg.appendChild(titleMid);
+
+  // Draw bucket boxes — initially at opacity 0 for staggered reveal
+  var bucketRects = {};
+  var bucketCounts = {};
+  var bucketCountLbls = {};
+  var bucketGroups = {};
+  for (var bk = 0; bk < numB; bk++) {
+    var m = months[bk];
+    var bp = bucketXs[m];
+    var clr = BUCKET_CLRS[bk % BUCKET_CLRS.length];
+    var bgrp = anim.svgEl("g", {opacity: 0});
+    var br = anim.svgEl("rect", {x: bp.x, y: BUCKET_Y, width: bw, height: BUCKET_H, rx: 8,
+      fill: "#f0f9ff", stroke: clr, "stroke-width": 2});
+    bgrp.appendChild(br);
+    var blbl = anim.svgEl("text", {x: bp.cx, y: BUCKET_Y + 20, "text-anchor": "middle",
+      "font-size": 13, "font-weight": 700, fill: clr});
+    blbl.textContent = MONTH_NAMES[m] || ("M" + m);
+    bgrp.appendChild(blbl);
+    var bcnt = anim.svgEl("text", {x: bp.cx, y: BUCKET_Y + BUCKET_H - 8, "text-anchor": "middle",
+      "font-size": 10, "font-weight": 600, fill: "#64748b"});
+    bcnt.textContent = "0 rows";
+    bgrp.appendChild(bcnt);
+    rsvg.appendChild(bgrp);
+    bucketRects[m] = br;
+    bucketCounts[m] = 0;
+    bucketCountLbls[m] = bcnt;
+    bucketGroups[m] = bgrp;
+  }
+
+  // Comparison counter (always shows 0 — the visual punchline of radix)
+  var cmpCounter = anim.svgEl("text", {x: RW - 24, y: BUCKET_Y + BUCKET_H / 2 + 4,
+    "text-anchor": "end", "font-size": 12, "font-weight": 700, fill: "#059669", opacity: 0});
+  cmpCounter.textContent = "Comparisons: 0";
+  rsvg.appendChild(cmpCounter);
+
+  // Arrow down
+  var arrowD2 = anim.svgEl("text", {x: RW / 2, y: RESULT_Y - 18, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 600, fill: "#9ca3af"});
+  arrowD2.textContent = "\u2193 gather left-to-right into sorted order";
+  rsvg.appendChild(arrowD2);
+
+  // Title: sorted result
+  var titleBot = anim.svgEl("text", {x: 20, y: RESULT_Y - 4, "font-size": 13, "font-weight": 700, fill: "#047857"});
+  titleBot.textContent = "\u2462 Sorted result";
+  rsvg.appendChild(titleBot);
+
+  // Sorted row background
+  var botBg = anim.svgEl("rect", {x: 20, y: RESULT_Y, width: RW - 40, height: 36, rx: 8,
+    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5, opacity: 0.3});
+  rsvg.appendChild(botBg);
+
+  // Status label
+  var statusLbl = anim.svgEl("text", {x: RW / 2, y: RH - 8, "text-anchor": "middle",
+    "font-size": 12, "font-weight": 600, fill: "#1f2937"});
+  statusLbl.textContent = "";
+  rsvg.appendChild(statusLbl);
+
+  // ---- Build timeline ----
+  var tl = anim.timeline();
+  var phase = document.getElementById("phase-label");
+
+  // Phase 1: spawn pills in unsorted row (show customer + date for tracking)
+  tl.mark("Load rows");
+  tl.call(function() { phase.textContent = "Phase 1/3 \u2014 loading unsorted rows"; });
+  var pills = [];
+  for (var pi = 0; pi < n; pi++) {
+    (function(idx) {
+      tl.call(function() {
+        var o = ORDERS[orderIndices[idx]];
+        var label = o.customer + " " + o.date;
+        var tw = Math.max(70, label.length * 5.5 + 14);
+        var g = anim.svgEl("g", {opacity: 0, transform: "translate(" + pillXs[idx] + "," + ROW_Y + ")"});
+        var bg = anim.svgEl("rect", {x: -tw/2, y: -10, width: tw, height: 20, rx: 10,
+          fill: "#7c3aed", stroke: "#1f2937", "stroke-width": 1});
+        g.appendChild(bg);
+        var txt = anim.svgEl("text", {x: 0, y: 4, "text-anchor": "middle",
+          "font-size": 7.5, "font-weight": 700, fill: "#fff"});
+        txt.textContent = label;
+        g.appendChild(txt);
+        rsvg.appendChild(g);
+        pills[idx] = g;
+        radixPills.push(g);
+        // Staggered fade-in with slight scale feel via easeOutBack
+        anim.tween({from: 0, to: 1, duration: 220, ease: anim.easeOutCubic,
+          onUpdate: function(v) { g.setAttribute("opacity", v); }});
+        statusLbl.textContent = (idx + 1) + "/" + n + " rows loaded";
+      });
+      tl.delay(fast ? 60 : 100);
+    })(pi);
+  }
+  tl.delay(250);
+
+  // Phase 2a: reveal bucket containers with stagger (Bostock: show container before filling)
+  tl.mark("Distribute to buckets");
+  tl.call(function() {
+    phase.textContent = "Phase 2/3 \u2014 distribute by month digit (no comparisons)";
+    anim.tween({from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
+      onUpdate: function(v) { cmpCounter.setAttribute("opacity", v); }});
+  });
+  for (var rv = 0; rv < numB; rv++) {
+    (function(rvIdx) {
+      var rvM = months[rvIdx];
+      tl.call(function() {
+        anim.tween({from: 0, to: 1, duration: 280, ease: anim.easeOutCubic,
+          onUpdate: function(v) { bucketGroups[rvM].setAttribute("opacity", v); }});
+      });
+      tl.delay(fast ? 50 : 80);
+    })(rv);
+  }
+  tl.delay(fast ? 150 : 250);
+
+  for (var di = 0; di < n; di++) {
+    (function(idx) {
+      var oi = orderIndices[idx];
+      var month = Math.floor(DATE_KEYS[oi] / 100);
+      var bp = bucketXs[month];
+      var bkIdx = months.indexOf(month);
+      var clr = BUCKET_CLRS[bkIdx >= 0 ? bkIdx % BUCKET_CLRS.length : 0];
+
+      // Staging: highlight pill before it moves (anticipation)
+      tl.call(function() {
+        var g = pills[idx];
+        g.firstChild.setAttribute("fill", "#fbbf24");  // flash yellow = "I'm being classified"
+        statusLbl.textContent = ORDERS[oi].customer + ": extracting month digit \u2192 " +
+          (MONTH_NAMES[month] || month);
+      });
+      tl.delay(fast ? 60 : 140);
+
+      // Arc into bucket with easeOutBack (overshoot landing)
+      tl.call(function() {
+        var g = pills[idx];
+        g.firstChild.setAttribute("fill", clr);  // take bucket's color
+        var startX = pillXs[idx];
+        var endX = bp.cx + bucketCounts[month] * 14 - 7;
+        var endY = BUCKET_Y + 32;
+        anim.tween({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
+          onUpdate: function(t) {
+            var x = startX + (endX - startX) * t;
+            var y = ROW_Y + (endY - ROW_Y) * t - Math.sin(t * Math.PI) * 35;
+            g.setAttribute("transform", "translate(" + x + "," + y + ")");
+          }
+        });
+        // Pulse bucket border + tint fill on receive
+        var br = bucketRects[month];
+        anim.tween({from: 2, to: 4.5, duration: 120, ease: anim.easeOutCubic,
+          onUpdate: function(v) { br.setAttribute("stroke-width", v); },
+          onComplete: function() {
+            anim.tween({from: 4.5, to: 2, duration: 200, ease: anim.easeInCubic,
+              onUpdate: function(v) { br.setAttribute("stroke-width", v); }});
+          }
+        });
+        // Tint bucket background slightly darker as it fills
+        var fillIntensity = Math.min(0.3, bucketCounts[month] * 0.08);
+        br.setAttribute("fill", anim.lerpColor("#f0f9ff", "#dbeafe", fillIntensity));
+        bucketCounts[month]++;
+        bucketCountLbls[month].textContent = bucketCounts[month] +
+          " row" + (bucketCounts[month] === 1 ? "" : "s");
+        statusLbl.textContent = ORDERS[oi].customer + " (" + ORDERS[oi].date +
+          ") \u2192 " + (MONTH_NAMES[month] || month) + " bucket  \u2022  Comparisons: 0";
+      });
+      tl.delay(fast ? dly : dly + 50);
+    })(di);
+  }
+  tl.delay(300);
+
+  // Phase 3: gather from buckets into sorted result — sweep left to right
+  tl.mark("Gather sorted");
+  tl.call(function() {
+    phase.textContent = "Phase 3/3 \u2014 gather from buckets left\u2192right into sorted order";
+    // Reveal result row
+    anim.tween({from: 0.3, to: 1, duration: 300, ease: anim.easeOutCubic,
+      onUpdate: function(v) { botBg.setAttribute("opacity", v); }});
+  });
+  tl.delay(fast ? dly : 250);
+
+  for (var gi = 0; gi < sorted.length; gi++) {
+    (function(pos, item) {
+      var targetX = pillXs[pos];
+      tl.call(function() {
+        var g = pills[item.idx];
+        var curTransform = g.getAttribute("transform") || "";
+        var match = curTransform.match(/translate\(([^,]+),([^)]+)\)/);
+        var fromX = match ? parseFloat(match[1]) : pillXs[item.idx];
+        var fromY = match ? parseFloat(match[2]) : BUCKET_Y + 32;
+        // Arc up slightly then down to result row with easeOutBack (settle)
+        anim.tween({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
+          onUpdate: function(t) {
+            var x = fromX + (targetX - fromX) * t;
+            var y = fromY + (RESULT_Y + 10 - fromY) * t + Math.sin(t * Math.PI) * 22;
+            g.setAttribute("transform", "translate(" + x + "," + y + ")");
+          }
+        });
+        g.firstChild.setAttribute("fill", PLACED);
+        statusLbl.textContent = ORDERS[item.oi].customer + " (" + ORDERS[item.oi].date +
+          ") \u2192 sorted position " + (pos + 1) + "/" + sorted.length;
+      });
+      tl.delay(fast ? dly : dly + 30);
+    })(gi, sorted[gi]);
+  }
+  tl.delay(200);
+
+  tl.mark("Done");
+  tl.call(function() {
+    phase.textContent = "\u2713 Radix sort complete \u2014 zero comparisons, pure digit bucketing";
+    statusLbl.textContent = "Sorted by order_date \u2714 (radix: " + n + " rows, 0 comparisons)";
+  });
+
+  return tl;
+}
+
+function cleanupRadix() {
+  var rsvg = document.getElementById("radix-svg");
+  var fsvg = document.getElementById("filesort-svg");
+  if (rsvg) { rsvg.style.display = "none"; while (rsvg.firstChild) rsvg.removeChild(rsvg.firstChild); }
+  if (fsvg) fsvg.style.display = "";
+  radixPills = [];
+}
+
+
+// ---- Priority queue (bounded heap) with visible seat boxes ----
+// Visual: k "seat" boxes rendered below the array. Elements try to enter.
+// If heap not full → element arcs into an empty seat.
+// If heap full → compare to max (flashes). Smaller wins the seat, max
+// is evicted and slides out. Larger is turned away (fades right).
+function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
+  var n = slotGs.length;
+  var dur  = 320;
+  var HEAP_CLR    = "#2563eb";
+  var EVICT_CLR   = "#dc2626";
+  var KEEP_CLR    = "#059669";
+  var INCOMING    = "#7c3aed";
+  var MAX_FLASH   = "#f59e0b";
+  var SEAT_EMPTY  = "#f1f5f9";
+  var SEAT_BORDER = "#94a3b8";
+
+  // ---- Draw k seat boxes below the buffer ----
+  var seatY = 115;
+  var seatH = 32;
+  var seatGap = 10;
+  var totalSW = Math.min(W - 80, limitK * 110);
+  var sw = (totalSW - seatGap * (limitK - 1)) / limitK;
+  var seatStartX = (W - totalSW) / 2;
+  var seatEls = []; // {rect, lbl, cx, cy, occupant: null}
+
+  tl.call(function() {
+    // Header for the heap section
+    var hdr = anim.svgEl("text", {
+      x: W / 2, y: seatY - 6, "text-anchor": "middle",
+      "font-size": 10, "font-weight": 700, fill: "#475569"
+    });
+    hdr.textContent = "Max-heap seats (" + limitK + " slots) \u2014 only smallest rows survive";
+    stage.svg.appendChild(hdr);
+    stage.tuples.push(hdr);
+
+    // Render empty seats
+    for (var si = 0; si < limitK; si++) {
+      var sx = seatStartX + si * (sw + seatGap);
+      var rect = anim.svgEl("rect", {
+        x: sx, y: seatY, width: sw, height: seatH, rx: 6, ry: 6,
+        fill: SEAT_EMPTY, stroke: SEAT_BORDER, "stroke-width": 1.5, opacity: 0
+      });
+      stage.svg.appendChild(rect);
+      stage.tuples.push(rect);
+      var lbl = anim.svgEl("text", {
+        x: sx + sw / 2, y: seatY + seatH / 2 + 4, "text-anchor": "middle",
+        "font-size": 8, "font-weight": 600, fill: "#94a3b8", opacity: 0
+      });
+      lbl.textContent = "empty";
+      stage.svg.appendChild(lbl);
+      stage.tuples.push(lbl);
+      seatEls.push({rect: rect, lbl: lbl, cx: sx + sw / 2, cy: seatY + seatH / 2,
+                     occupant: null, key: Infinity});
+    }
+    stage.bufContent.textContent = "Priority queue: " + limitK + " empty seats waiting";
+  });
+
+  // Staggered fade-in of seats
+  for (var fi2 = 0; fi2 < limitK; fi2++) {
+    (function(idx) {
+      tl.call(function() {
+        anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
+          onUpdate: function(v) {
+            seatEls[idx].rect.setAttribute("opacity", v);
+            seatEls[idx].lbl.setAttribute("opacity", v);
+          }
+        });
+      });
+      tl.delay(40);
+    })(fi2);
+  }
+  tl.delay(200);
+
+  // Track heap state
+  var heapCount = 0;
+
+  for (var pi = 0; pi < n; pi++) {
+    (function(p) {
+      var key = DATE_KEYS[orderIndices[p]];
+      var order = ORDERS[orderIndices[p]];
+
+      tl.call(function() {
+        slotGs[p].firstChild.setAttribute("fill", INCOMING);
+        anim.tween({from: 0, to: 1, duration: 180, ease: anim.easeOutCubic,
+          onUpdate: function(v) { slotGs[p].setAttribute("opacity", v); }});
+        stage.bufContent.textContent = order.customer + " (" + order.date +
+          ") arrives\u2026";
+      });
+      tl.delay(100);
+
+      tl.call(function() {
+        if (heapCount < limitK) {
+          // Heap not full — find first empty seat and arc into it
+          var seatIdx = -1;
+          for (var si2 = 0; si2 < limitK; si2++) {
+            if (seatEls[si2].occupant === null) { seatIdx = si2; break; }
+          }
+          if (seatIdx < 0) seatIdx = 0;
+          var seat = seatEls[seatIdx];
+
+          // Arc-tween element to seat
+          var startX = slotXs[p], startY = 75;
+          var endX = seat.cx, endY = seat.cy;
+          var g = slotGs[p];
+          anim.tween({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
+            onUpdate: function(t) {
+              var x = startX + (endX - startX) * t;
+              var y = startY + (endY - startY) * t - Math.sin(t * Math.PI) * 20;
+              g.setAttribute("transform", "translate(" + x + "," + y + ")");
+            }
+          });
+          g.firstChild.setAttribute("fill", HEAP_CLR);
+          seat.rect.setAttribute("fill", "#dbeafe");
+          seat.lbl.textContent = order.customer.substring(0, 5);
+          seat.lbl.setAttribute("fill", "#1e40af");
+          seat.occupant = {pos: p, key: key, oi: orderIndices[p]};
+          seat.key = key;
+          heapCount++;
+          stage.bufContent.textContent = order.customer + " \u2192 seat " +
+            (seatIdx + 1) + " (" + heapCount + "/" + limitK + " filled)";
+        } else {
+          // Find max in heap (the one to potentially evict)
+          var maxSeatIdx = 0;
+          for (var hi2 = 1; hi2 < limitK; hi2++) {
+            if (seatEls[hi2].key > seatEls[maxSeatIdx].key) maxSeatIdx = hi2;
+          }
+          var maxSeat = seatEls[maxSeatIdx];
+          // Flash the max seat to show the comparison target
+          anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
+            onUpdate: function(t) {
+              maxSeat.rect.setAttribute("fill", anim.lerpColor("#dbeafe", MAX_FLASH, t));
+            },
+            onComplete: function() {
+              anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeInCubic,
+                onUpdate: function(t) {
+                  maxSeat.rect.setAttribute("fill", anim.lerpColor(MAX_FLASH, "#dbeafe", t));
+                }
+              });
+            }
+          });
+
+          if (key < maxSeat.key) {
+            // New element wins — evict the max, take its seat
+            var evicted = maxSeat.occupant;
+            // Slide evicted element out to the right and fade
+            var evG = slotGs[evicted.pos];
+            anim.tween({from: 0, to: 1, duration: 250, ease: anim.easeInCubic,
+              onUpdate: function(t) {
+                var cx = maxSeat.cx + t * 60;
+                evG.setAttribute("transform", "translate(" + cx + "," + maxSeat.cy + ")");
+                evG.setAttribute("opacity", String(1 - t * 0.8));
+              }
+            });
+            evG.firstChild.setAttribute("fill", EVICT_CLR);
+
+            // Arc new element into the freed seat
+            var g2 = slotGs[p];
+            var sx2 = slotXs[p], sy2 = 75;
+            anim.tween({from: 0, to: 1, duration: dur, ease: anim.easeOutBack, delay: 100,
+              onUpdate: function(t) {
+                var x = sx2 + (maxSeat.cx - sx2) * t;
+                var y = sy2 + (maxSeat.cy - sy2) * t - Math.sin(t * Math.PI) * 18;
+                g2.setAttribute("transform", "translate(" + x + "," + y + ")");
+              }
+            });
+            g2.firstChild.setAttribute("fill", KEEP_CLR);
+            maxSeat.rect.setAttribute("fill", "#dcfce7");
+            maxSeat.lbl.textContent = order.customer.substring(0, 5);
+            maxSeat.lbl.setAttribute("fill", "#166534");
+            maxSeat.occupant = {pos: p, key: key, oi: orderIndices[p]};
+            maxSeat.key = key;
+            stage.bufContent.textContent = order.customer + " (" + order.date +
+              ") < heap max " + ORDERS[evicted.oi].date +
+              " \u2192 evicts " + ORDERS[evicted.oi].customer;
+          } else {
+            // New element is larger — turned away
+            var gReject = slotGs[p];
+            anim.tween({from: 0, to: 1, duration: 250, ease: anim.easeInCubic,
+              onUpdate: function(t) {
+                var cx = slotXs[p] + t * 50;
+                gReject.setAttribute("transform", "translate(" + cx + ",75)");
+                gReject.setAttribute("opacity", String(1 - t * 0.8));
+              }
+            });
+            gReject.firstChild.setAttribute("fill", EVICT_CLR);
+            stage.bufContent.textContent = order.customer + " (" + order.date +
+              ") \u2265 heap max \u2192 turned away";
+          }
+        }
+      });
+      tl.delay(dur + 60);
+    })(pi);
+  }
+
+  tl.delay(200);
+  // Final: highlight all surviving seats green
+  tl.call(function() {
+    for (var fsi = 0; fsi < limitK; fsi++) {
+      if (seatEls[fsi].occupant) {
+        seatEls[fsi].rect.setAttribute("fill", "#bbf7d0");
+        seatEls[fsi].rect.setAttribute("stroke", KEEP_CLR);
+        var surv = slotGs[seatEls[fsi].occupant.pos];
+        surv.firstChild.setAttribute("fill", KEEP_CLR);
+        surv.setAttribute("opacity", "1");
+      }
+    }
+    stage.bufContent.textContent = "Heap complete: " + limitK +
+      " smallest rows survive, rest discarded \u2714";
+  });
+  tl.delay(300);
+}
+
+function buildStage(numRuns) {
+  var svg = document.getElementById("filesort-svg");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  // ---- Zone 1: Sort buffer (top) ----
+  var bufLbl = anim.svgEl("text", {
+    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "#7c3aed"
+  });
+  bufLbl.textContent = "\u2460 sort_buffer_size \u2014 in-memory sort area";
+  svg.appendChild(bufLbl);
+
+  var bufRect = anim.svgEl("rect", {
+    x: 20, y: 40, width: W - 40, height: 70, rx: 8, ry: 8,
+    fill: "#f5f3ff", stroke: "#8b5cf6", "stroke-width": 1.5
+  });
+  svg.appendChild(bufRect);
+
+  var bufContent = anim.svgEl("text", {
+    x: W / 2, y: 80, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 600, fill: "#5b21b6"
+  });
+  bufContent.textContent = "(rows fill here, get sorted, then spill to disk)";
+  svg.appendChild(bufContent);
+
+  // Wrap all spill-path visuals in a group so radix sort can hide them
+  var spillGroup = anim.svgEl("g", {});
+  svg.appendChild(spillGroup);
+
+  // ---- Arrow: buffer \u2192 tmpdir ----
+  var arrow1Y = 118;
+  var arrow1 = anim.svgEl("path", {
+    d: "M" + (W/2) + "," + arrow1Y + " L" + (W/2) + "," + (arrow1Y + 24) +
+       " M" + (W/2 - 6) + "," + (arrow1Y + 18) + " L" + (W/2) + "," + (arrow1Y + 24) +
+       " L" + (W/2 + 6) + "," + (arrow1Y + 18),
+    stroke: "#9ca3af", "stroke-width": 2, fill: "none"
+  });
+  spillGroup.appendChild(arrow1);
+  var arrow1Lbl = anim.svgEl("text", {
+    x: W/2 + 16, y: arrow1Y + 16, "font-size": 10, fill: "#9ca3af", "font-weight": 600
+  });
+  arrow1Lbl.textContent = "spill sorted run";
+  spillGroup.appendChild(arrow1Lbl);
+
+  // ---- Zone 2: Sorted runs on disk (middle) ----
+  var diskY = 152;
+  var diskLbl = anim.svgEl("text", {
+    x: 20, y: diskY, "font-size": 13, "font-weight": 700, fill: "#b45309"
+  });
+  diskLbl.textContent = "\u2461 tmpdir \u2014 sorted runs on disk";
+  spillGroup.appendChild(diskLbl);
+
+  // Show max 4 run boxes so there is always room for the overflow label
+  var cap = Math.min(numRuns, 4);
+  var hasMore = numRuns > cap;
+  var gap = 12;
+  var startX = 20;
+  // Reserve 180px on the right for the "+N more" label when needed
+  var avail = hasMore ? W - 40 - 180 : W - 40;
+  var rw = cap > 0 ? (avail - gap * (cap - 1)) / cap : 0;
+  var runRects = [];
+
+  for (var i = 0; i < cap; i++) {
+    var x = startX + i * (rw + gap);
+    var rect = anim.svgEl("rect", {
+      x: x, y: diskY + 12, width: rw, height: 50, rx: 6, ry: 6,
+      fill: "#fffbeb", stroke: "#d1d5db", "stroke-width": 1.5, opacity: 0.3
+    });
+    spillGroup.appendChild(rect);
+    var lbl = anim.svgEl("text", {
+      x: x + rw / 2, y: diskY + 42, "text-anchor": "middle",
+      "font-size": 10, "font-weight": 700, fill: "#92400e", opacity: 0.3
+    });
+    lbl.textContent = "Run " + (i + 1);
+    spillGroup.appendChild(lbl);
+    runRects.push({rect: rect, label: lbl});
+  }
+  if (hasMore) {
+    var moreX = startX + cap * (rw + gap) + 8;
+    var more = anim.svgEl("text", {
+      x: moreX, y: diskY + 32, "font-size": 12, "font-weight": 600,
+      fill: "#92400e", "font-style": "italic"
+    });
+    more.textContent = "\u2026 + " + (numRuns - cap) + " more run" + (numRuns - cap === 1 ? "" : "s");
+    spillGroup.appendChild(more);
+    var moreSub = anim.svgEl("text", {
+      x: moreX, y: diskY + 48, "font-size": 10, fill: "#9ca3af"
+    });
+    moreSub.textContent = "(each is another buffer-fill \u2192 sort \u2192 flush cycle)";
+    spillGroup.appendChild(moreSub);
+  }
+
+  // ---- Arrow: tmpdir \u2192 merge ----
+  var arrow2Y = diskY + 70;
+  var arrow2 = anim.svgEl("path", {
+    d: "M" + (W/2) + "," + arrow2Y + " L" + (W/2) + "," + (arrow2Y + 24) +
+       " M" + (W/2 - 6) + "," + (arrow2Y + 18) + " L" + (W/2) + "," + (arrow2Y + 24) +
+       " L" + (W/2 + 6) + "," + (arrow2Y + 18),
+    stroke: "#9ca3af", "stroke-width": 2, fill: "none"
+  });
+  spillGroup.appendChild(arrow2);
+  var arrow2Lbl = anim.svgEl("text", {
+    x: W/2 + 16, y: arrow2Y + 16, "font-size": 10, fill: "#9ca3af", "font-weight": 600
+  });
+  arrow2Lbl.textContent = "k-way merge";
+  spillGroup.appendChild(arrow2Lbl);
+
+  // ---- Zone 3: Merge output (bottom) ----
+  var mergeY = arrow2Y + 32;
+  var mergeLbl = anim.svgEl("text", {
+    x: 20, y: mergeY, "font-size": 13, "font-weight": 700, fill: "#047857"
+  });
+  mergeLbl.textContent = "\u2462 final sorted output";
+  spillGroup.appendChild(mergeLbl);
+
+  var mergeRect = anim.svgEl("rect", {
+    x: 20, y: mergeY + 12, width: W - 40, height: 50, rx: 8, ry: 8,
+    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5, opacity: 0.3
+  });
+  spillGroup.appendChild(mergeRect);
+
+  var mergeContent = anim.svgEl("text", {
+    x: W / 2, y: mergeY + 42, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 600, fill: "#065f46", opacity: 0.3
+  });
+  mergeContent.textContent = "";
+  spillGroup.appendChild(mergeContent);
+
+  var statusLbl = anim.svgEl("text", {
+    x: W / 2, y: H - 16, "text-anchor": "middle",
+    "font-size": 13, "font-weight": 600, fill: "#1f2937"
+  });
+  statusLbl.textContent = "";
+  svg.appendChild(statusLbl);
+
+  stage = {
+    svg: svg, bufRect: bufRect, bufContent: bufContent,
+    runRects: runRects, totalRuns: numRuns,
+    mergeRect: mergeRect, mergeContent: mergeContent, mergeLbl: mergeLbl,
+    statusLbl: statusLbl, spillGroup: spillGroup, tuples: []
+  };
+}
+
+function resetStage() {
+  if (!stage) return;
+  stage.bufRect.setAttribute("fill", "#f5f3ff");
+  stage.bufContent.textContent = "(rows fill here, get sorted, then spill to disk)";
+  stage.spillGroup.setAttribute("opacity", "1");
+  stage.runRects.forEach(function(r) {
+    r.rect.setAttribute("opacity", 0.3);
+    r.rect.setAttribute("fill", "#fffbeb");
+    r.label.setAttribute("opacity", 0.3);
+  });
+  stage.mergeRect.setAttribute("opacity", 0.3);
+  stage.mergeContent.setAttribute("opacity", 0.3);
+  stage.mergeContent.textContent = "";
+  stage.statusLbl.textContent = "";
+  stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
+  stage.tuples = [];
+}
+
+function spawnTuple(text, color, cx, cy) {
+  var g = anim.svgEl("g", { opacity: 0, transform: "translate(" + cx + "," + cy + ")" });
+  var tw = Math.max(70, text.length * 5.5 + 14);
+  var bg = anim.svgEl("rect", {
+    x: -tw/2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
+    fill: color, stroke: "#1f2937", "stroke-width": 1
+  });
+  g.appendChild(bg);
+  var lbl = anim.svgEl("text", {
+    x: 0, y: 4, "text-anchor": "middle",
+    "font-size": 8, "font-weight": 700, fill: "#ffffff"
+  });
+  lbl.textContent = text;
+  g.appendChild(lbl);
+  stage.svg.appendChild(g);
+  stage.tuples.push(g);
+  return g;
+}
+
+function buildTimeline(numRuns, spill, sortAlg, pqSize) {
+  cleanupRadix();  // ensure radix SVG is hidden if switching from radix
+  resetStage();
+
+  // Radix sort gets its own dedicated SVG — completely separate rendering
+  if (sortAlg === "radix" && !spill) {
+    var radixIndices = [];
+    for (var ri2 = 0; ri2 < 6; ri2++) radixIndices.push(ri2);
+    return buildRadixTimeline(radixIndices, false);
+  }
+
+  var tl = anim.timeline();
+  var phase = document.getElementById("phase-label");
+  var shown = stage.runRects.length;
+
+  if (sortAlg === "priority_queue") {
+    // Priority queue path: ORDER BY … LIMIT k
+    var PQ_N = 8;
+    var pqXs = [];
+    for (var pqi = 0; pqi < PQ_N; pqi++) pqXs.push(60 + pqi * 95);
+    var pqGs = [];
+    var pqIndices = [];
+    for (var pqi2 = 0; pqi2 < PQ_N; pqi2++) pqIndices.push(pqi2);
+
+    tl.mark("Load rows");
+    tl.call(function() {
+      phase.textContent = "Priority queue \u2014 ORDER BY \u2026 LIMIT " + pqSize + " (bounded max-heap)";
+      stage.bufRect.setAttribute("fill", "#dbeafe");
+    });
+    for (var pr = 0; pr < PQ_N; pr++) {
+      (function(idx) {
+        tl.call(function() {
+          var o = ORDERS[idx];
+          var label = o.customer + " " + o.date;
+          var tuple = spawnTuple(label, "#7c3aed", pqXs[idx], 75);
+          pqGs[idx] = tuple;
+          anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
+            onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
+        });
+        tl.delay(100);
+      })(pr);
+    }
+    tl.delay(300);
+
+    tl.mark("Heap push/pop");
+    tl.call(function() {
+      phase.textContent = "Push each row into max-heap of size " + pqSize + " \u2014 evict largest if full";
+      stage.bufRect.setAttribute("fill", "#bfdbfe");
+    });
+    addPQToTimeline(tl, pqGs, pqXs, pqIndices, Math.min(pqSize, PQ_N - 1));
+
+    tl.mark("Done");
+    tl.call(function() {
+      phase.textContent = "\u2713 Priority queue done \u2014 only " + pqSize + " rows kept, no full sort needed";
+      stage.mergeRect.setAttribute("opacity", 1);
+      stage.mergeContent.setAttribute("opacity", 1);
+      stage.mergeContent.textContent = "Top " + pqSize + " rows streamed from heap";
+      stage.statusLbl.textContent = "Priority queue: O(n \u00b7 log k) — scanned all rows but only kept " + pqSize + " in memory.";
+    });
+    return tl;
+  }
+
+  if (!spill) {
+    // All rows fit in memory — choose radix or introsort
+    var QS_N = 6;
+    var qsXs = [];
+    for (var qi = 0; qi < QS_N; qi++) qsXs.push(100 + qi * 120);
+    var qsGs = [];
+    var qsIndices = [];
+    for (var qi2 = 0; qi2 < QS_N; qi2++) qsIndices.push(qi2);
+
+    tl.mark("Fill sort buffer");
+    tl.call(function() {
+      phase.textContent = "Phase 1/2 \u2014 loading rows into sort_buffer";
+      stage.bufRect.setAttribute("fill", "#ddd6fe");
+    });
+    for (var r = 0; r < QS_N; r++) {
+      (function(idx) {
+        tl.call(function() {
+          var o = ORDERS[idx];
+          var label = o.customer + " " + o.date;
+          var tuple = spawnTuple(label, "#7c3aed", qsXs[idx], 75);
+          qsGs[idx] = tuple;
+          anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
+            onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
+          stage.bufContent.textContent = (idx + 1) + " rows loaded";
+        });
+        tl.delay(150);
+      })(r);
+    }
+    tl.delay(400);
+
+    tl.mark("Introsort: partitioning");
+    tl.call(function() {
+      phase.textContent = "Phase 2/2 \u2014 introsort (quicksort + heapsort fallback after O(log n) depth)";
+      stage.bufRect.setAttribute("fill", "#c4b5fd");
+    });
+    tl.delay(200);
+    addQsToTimeline(tl, qsGs, qsXs, qsIndices, false);
+
+    tl.mark("Sorted \u2014 done");
+    tl.call(function() {
+      phase.textContent = "\u2713 Sorted in memory via introsort \u2014 no disk I/O!";
+      // Restore spill group to show merge result
+      stage.spillGroup.setAttribute("opacity", "1");
+      stage.mergeRect.setAttribute("opacity", 1);
+      stage.mergeContent.setAttribute("opacity", 1);
+      stage.mergeContent.textContent = "Result streamed directly from memory";
+      stage.statusLbl.textContent = "In-memory " + algName + ": 0 disk spills, 0 merge passes.";
+    });
+    return tl;
+  }
+
+  // Spill path: fill buffer, quicksort, flush to disk runs, then merge
+  var animRuns = Math.min(shown, numRuns);
+  for (var ri = 0; ri < animRuns; ri++) {
+    (function(runIdx) {
+      var chunkStart = (runIdx * 4) % ORDERS.length;
+      var chunkXs = [80, 260, 440, 620];
+      var chunkGs = [];
+      var chunkIndices = [];
+      for (var ck = 0; ck < 4; ck++) {
+        chunkIndices.push((chunkStart + ck) % ORDERS.length);
+      }
+
+      tl.mark("Run " + (runIdx + 1) + ": fill");
+      tl.call(function() {
+        phase.textContent = "Phase 1/" + (numRuns > 1 ? "2" : "1") +
+          " \u2014 filling sort_buffer, run " + (runIdx + 1) + " of " + numRuns;
+        stage.bufRect.setAttribute("fill", "#ddd6fe");
+        stage.bufContent.textContent = "Filling with rows\u2026";
+      });
+      for (var ci = 0; ci < 4; ci++) {
+        (function(c) {
+          tl.call(function() {
+            var order = ORDERS[chunkIndices[c]];
+            var label = order.customer + " " + order.date;
+            var tuple = spawnTuple(label, "#7c3aed", chunkXs[c], 75);
+            chunkGs[c] = tuple;
+            anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
+              onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
+          });
+          tl.delay(100);
+        })(ci);
+      }
+      tl.delay(200);
+
+      // Sort animation (fast mode for spill path — always introsort here,
+      // radix in-memory path is handled by buildRadixTimeline above)
+      tl.mark("Run " + (runIdx + 1) + ": introsort");
+      tl.call(function() {
+        stage.bufRect.setAttribute("fill", "#c4b5fd");
+      });
+      addQsToTimeline(tl, chunkGs, chunkXs, chunkIndices, true);
+
+      // Flush sorted run to disk
+      tl.mark("Run " + (runIdx + 1) + ": flush");
+      tl.call(function() {
+        stage.bufContent.textContent = "Flushing sorted run to tmpdir\u2026";
+        stage.bufRect.setAttribute("fill", "#fde68a");
+        if (runIdx < shown) {
+          stage.runRects[runIdx].rect.setAttribute("opacity", 1);
+          stage.runRects[runIdx].rect.setAttribute("fill", "#fde68a");
+          stage.runRects[runIdx].label.setAttribute("opacity", 1);
+          anim.tween({
+            from: 0, to: 1, duration: 400, ease: anim.easeOutCubic,
+            onUpdate: function(v) {
+              stage.runRects[runIdx].rect.setAttribute("fill",
+                anim.lerpColor("#fde68a", "#fbbf24", v));
+            }
+          });
+        }
+        // Fade out buffer tuples + QS pointers
+        stage.tuples.forEach(function(t) {
+          anim.tween({from: 1, to: 0, duration: 300, ease: anim.easeInCubic,
+            onUpdate: function(v) { t.setAttribute("opacity", v); }});
+        });
+      });
+      tl.delay(500);
+      tl.call(function() {
+        stage.bufRect.setAttribute("fill", "#f5f3ff");
+        stage.bufContent.textContent = "(buffer cleared for next chunk)";
+        stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
+        stage.tuples = [];
+      });
+      tl.delay(200);
+    })(ri);
+  }
+
+  // Merge phase
+  tl.mark("K-way merge");
+  tl.call(function() {
+    phase.textContent = "Phase 2/2 — k-way merge of " + numRuns + " sorted runs";
+    stage.mergeRect.setAttribute("opacity", 1);
+    stage.mergeContent.setAttribute("opacity", 1);
+    stage.mergeContent.textContent = "Merging runs\u2026";
+  });
+  // Animate runs draining into merge
+  for (var mi = 0; mi < animRuns; mi++) {
+    (function(mergeIdx) {
+      tl.call(function() {
+        if (mergeIdx < shown) {
+          anim.tween({
+            from: 1, to: 0.4, duration: 600, ease: anim.easeInCubic,
+            onUpdate: function(v) {
+              stage.runRects[mergeIdx].rect.setAttribute("opacity", v);
+              stage.runRects[mergeIdx].label.setAttribute("opacity", v);
+            }
+          });
+        }
+        stage.mergeContent.textContent = "Merged run " + (mergeIdx + 1) + " of " + numRuns;
+      });
+      tl.delay(400);
+    })(mi);
+  }
+  tl.delay(200);
+  tl.mark("Done");
+  tl.call(function() {
+    stage.mergeRect.setAttribute("fill", "#a7f3d0");
+    stage.mergeContent.textContent = "All " + numRuns + " runs merged \u2192 final sorted result";
+    phase.textContent = "\u2713 Filesort complete — " + numRuns + " sorted runs merged";
+    stage.statusLbl.textContent = numRuns + " disk spills + merge = significant I/O. Bigger sort_buffer_size would help.";
+  });
+
+  return tl;
+}
+
+function buildCurrentTimeline() {
+  var c = teachRuntime.readControls();
+  var limitVal = c.limit_rows || 0;
+  var cost = filesortCost(c.rows, c.row_size, c.sbs, limitVal);
+  return buildTimeline(cost.runs, cost.spill, cost.sortAlg, cost.pqSize);
+}
+function resetAnim() {
+  cleanupRadix();
+  resetStage();
+  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+}
+
+function renderChart(rowSize, sbs, currentRows) {
+  anim.complexityChart({
+    svgId: "complexity-chart",
+    width: 560, height: 200,
+    xMin: 100, xMax: 1e7,
+    xLabel: "Row count to sort", yLabel: "Total I/O rows (read+write)",
+    curves: [
+      { label: "Filesort (this algorithm)", color: "#7c3aed",
+        fn: function(n) { return filesortCost(n, rowSize, sbs).ioRows; } },
+      { label: "Index-ordered scan (0 I/O)", color: "#059669",
+        fn: function(n) { return n; } }
+    ],
+    current: { x: currentRows },
+    xSlider: "rows",
+    xSliderTransform: function(xVal) { return Math.round(Math.max(100, Math.min(1000000, xVal / 100) * 100)); }
+  });
+}
+
+function algDisplayName(alg) {
+  if (alg === "radix") return "Radix sort";
+  if (alg === "priority_queue") return "Priority queue";
+  return "Introsort (std::sort)";
+}
+function algReason(alg, rowSize, limitRows, rows) {
+  if (alg === "priority_queue")
+    return "LIMIT " + limitRows + " is small and fits in buffer \u2192 bounded max-heap of " +
+           limitRows + " elements. Scans all " + rows + " rows but never fully sorts them.";
+  if (alg === "radix")
+    return "Sort key is " + rowSize + " B (\u2264 16 B fixed-length) \u2192 radix sort. " +
+           "O(n\u00b7k) with zero comparisons \u2014 distributes into digit buckets.";
+  return "Sort key is " + rowSize + " B (> 16 B or variable-length) \u2192 introsort " +
+         "(quicksort + heapsort fallback after O(log n) depth). " +
+         "Guaranteed O(n log n) worst case.";
+}
+
+function recompute() {
+  var c = teachRuntime.readControls();
+  var limitVal = c.limit_rows || 0;
+  var cost = filesortCost(c.rows, c.row_size, c.sbs, limitVal);
+  document.getElementById("out-rpr").textContent = teachRuntime.formatInt(cost.rpr);
+  document.getElementById("out-runs").textContent = teachRuntime.formatInt(cost.runs);
+  document.getElementById("out-merges").textContent = String(cost.merges);
+  document.getElementById("out-io").textContent = teachRuntime.formatInt(cost.ioRows);
+  document.getElementById("out-spill").textContent = cost.spill ? "Yes \u2014 disk I/O" : "No \u2014 in-memory";
+  document.getElementById("out-spill").className = "value " + (cost.spill ? "hot" : "ok");
+  document.getElementById("out-alg").textContent = algDisplayName(cost.sortAlg);
+  document.getElementById("out-alg").className = "value " +
+    (cost.sortAlg === "radix" ? "ok" : cost.sortAlg === "priority_queue" ? "ok" : "");
+  document.getElementById("out-explanation").textContent =
+    algReason(cost.sortAlg, c.row_size, limitVal, c.rows) +
+    (cost.spill
+      ? " Buffer holds " + cost.rpr + " rows \u2192 " + cost.runs +
+        " sorted runs spilled to tmpdir. K-way merge needs " + cost.merges +
+        " pass(es). Bigger sort_buffer_size \u2192 fewer runs \u2192 less I/O."
+      : (cost.sortAlg !== "priority_queue"
+         ? " All rows fit in sort_buffer_size \u2014 no disk spill."
+         : ""));
+  buildStage(cost.runs);
+  resetStage();
+  renderChart(c.row_size, c.sbs, c.rows);
+}
+
+teachRuntime.wire(recompute);
+teachRuntime.wireToolbar({
+  build: buildCurrentTimeline,
+  reset: resetAnim
+});
+teachRuntime.wirePhaseNav("phase-nav", {
+  build: buildCurrentTimeline,
+  reset: resetAnim
+});
+
+  </script>
+</body>
+</html>

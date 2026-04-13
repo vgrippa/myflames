@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-04-13T18:24:25Z",
+  "myflames_version": "1.3.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "/Users/viniciusgrippa/Downloads/git/myflames/test/mysql-explain-index-merge-union.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.178,
+    "rows_sent": 75,
+    "rows_examined_estimate": 75,
+    "operator_count": 4,
+    "max_depth": 3
+  },
+  "optimizer_switches": [
+    {
+      "name": "index_merge",
+      "value": "on",
+      "explanation": "Uses two or more index range scans on the same table and combines row IDs (union/intersection/sort_union) instead of falling back to a full scan. A composite index is usually faster.",
+      "node_labels": [
+        "Deduplicate rows sorted by row ID"
+      ]
+    },
+    {
+      "name": "index_merge_union",
+      "value": "on",
+      "explanation": "Union variant of index_merge: OR'ed predicates are satisfied by scanning each index separately, then UNION'ing their row IDs.",
+      "node_labels": [
+        "Deduplicate rows sorted by row ID"
+      ]
+    }
+  ],
+  "warnings": [],
+  "suggestions": [],
+  "executive_summary": "Query runs 4 operators; returns 75 rows in 0.18 ms. No warnings.",
+  "query": {
+    "raw": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`a` = 50) or (`testdb`.`t1`.`b` = 100))",
+    "beautified": "select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t1\nwhere ((testdb.t1.a = 50) or (testdb.t1.b = 100))"
+  },
+  "teach_hooks": [
+    {
+      "lesson": "filter",
+      "match": {
+        "folded_label": "FILTER (((t1.a = 50) or (t1.b = 100))) starts=1 rows=75",
+        "short_label": "Filter: (((t1.a = 50) or (t1.b = 100)))"
+      },
+      "controls": {
+        "input_rows": 75,
+        "selectivity": 10.0
+      },
+      "note": "Filter: ((t1.a = 50) or (t1.b = 100))",
+      "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`a` = 50) or (`testdb`.`t1`.`b` = 100))"
+    },
+    {
+      "lesson": "non_unique_lookup",
+      "match": {
+        "folded_label": "INDEX RANGE SCAN [t1.idx_a] starts=1 rows=50",
+        "short_label": "Index range scan [t1.idx_a]"
+      },
+      "controls": {
+        "rows": 50,
+        "selectivity": 40.0,
+        "covering": false
+      },
+      "note": "Index range scan on t1 using idx_a over (a = 50) (t1)",
+      "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`a` = 50) or (`testdb`.`t1`.`b` = 100))"
+    },
+    {
+      "lesson": "non_unique_lookup",
+      "match": {
+        "folded_label": "INDEX RANGE SCAN [t1.idx_b] starts=1 rows=25",
+        "short_label": "Index range scan [t1.idx_b]"
+      },
+      "controls": {
+        "rows": 25,
+        "selectivity": 40.0,
+        "covering": false
+      },
+      "note": "Index range scan on t1 using idx_b over (b = 100) (t1)",
+      "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`a` = 50) or (`testdb`.`t1`.`b` = 100))"
+    }
+  ]
+}

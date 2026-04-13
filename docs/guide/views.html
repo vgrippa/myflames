@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>View Types - myflames documentation</title>
+  <style>
+    :root { --bg: #fafafa; --panel: #fff; --text: #1a1a1a; --muted: #6b7280; --border: #e5e7eb; --accent: #2563eb; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    nav.top { background: var(--panel); border-bottom: 1px solid var(--border); padding: 12px 20px; font-size: 14px; }
+    nav.top a { color: var(--accent); text-decoration: none; margin-right: 18px; font-weight: 500; }
+    nav.top a:hover { text-decoration: underline; }
+    nav.top .brand { font-weight: 700; color: var(--text); margin-right: 24px; }
+    main { max-width: 840px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.5px; }
+    h1 + p.subtitle { color: var(--muted); font-size: 16px; margin: 0 0 32px; }
+    h2 { font-size: 20px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 16px; margin: 28px 0 8px; }
+    p, li { font-size: 15px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 13.5px; }
+    pre { background: #1f2937; color: #e5e7eb; padding: 16px 20px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
+    pre code { background: none; padding: 0; color: inherit; }
+    .view-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin: 20px 0; }
+    .view-card h3 { margin: 0 0 8px; font-size: 18px; }
+    .view-card .meta { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+    .view-card .meta code { font-size: 12px; }
+    .best-for { display: inline-block; background: #ecfdf5; color: #065f46; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; margin-right: 6px; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    a { color: var(--accent); }
+    footer { max-width: 840px; margin: 0 auto; padding: 16px 20px 32px; font-size: 12px; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <nav class="top">
+    <span class="brand">myflames docs</span>
+    <a href="../index.html">Home</a>
+    <a href="getting-started.html">Getting Started</a>
+    <a href="views.html">View Types</a>
+    <a href="cli.html">CLI Reference</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="../teach/index.html">Teach Lessons</a>
+  </nav>
+  <main>
+    <h1>View Types</h1>
+    <p class="subtitle">Five visualization types, one parser, one analysis engine. Pick the view that answers your question.</p>
+
+    <h2>Quick comparison</h2>
+    <table>
+      <thead>
+        <tr><th>View</th><th>Best for</th><th>Command</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Flame graph</td><td>Full execution hierarchy, time distribution</td><td><code>myflames explain.json</code></td></tr>
+        <tr><td>Bar chart</td><td>Finding the slowest individual operations</td><td><code>--type bargraph</code></td></tr>
+        <tr><td>Treemap</td><td>Comparing relative cost at a glance</td><td><code>--type treemap</code></td></tr>
+        <tr><td>Diagram</td><td>Join order &amp; access paths (Visual Explain)</td><td><code>--type diagram</code></td></tr>
+        <tr><td>Execution tree</td><td>Collapsible per-subtree with self/total time</td><td><code>--type tree</code></td></tr>
+      </tbody>
+    </table>
+    <p>Not sure? Run <code>myflames guide</code> for a quick interactive picker.</p>
+
+    <h2>Detailed view guide</h2>
+
+    <div class="view-card">
+      <h3>Flame Graph (default)</h3>
+      <div class="meta"><code>myflames explain.json</code> &bull; <a href="../demos/mysql-query-complex-flamegraph.html">Live demo</a></div>
+      <span class="best-for">Full hierarchy</span><span class="best-for">Time distribution</span><span class="best-for">Drill-down</span>
+      <p>The default view. Each horizontal bar represents an operation in the query plan. Width is proportional to execution time. Parent operations stack above their children. Click to zoom into a subtree, Ctrl+F to search.</p>
+      <p><strong>When to use:</strong> You want to see the entire query execution at once and quickly spot which branch consumed the most time. Great for complex multi-join queries where you need to understand the nesting.</p>
+      <p><strong>Options:</strong> <code>--colors hot|mem|io|red|green|blue</code>, <code>--inverted</code> (icicle graph), <code>--height N</code> (frame height).</p>
+    </div>
+
+    <div class="view-card">
+      <h3>Bar Chart</h3>
+      <div class="meta"><code>myflames --type bargraph explain.json</code> &bull; <a href="../demos/mysql-query-complex-bargraph.html">Live demo</a></div>
+      <span class="best-for">Slowest first</span><span class="best-for">Self time focus</span><span class="best-for">Quick triage</span>
+      <p>Operations sorted by self-time (excluding children). The bar chart immediately answers "which single operation took the longest?" without requiring you to navigate a hierarchy.</p>
+      <p><strong>When to use:</strong> You already know the query is slow and want to jump straight to the bottleneck. Best for quick triage before diving into the flame graph for context.</p>
+    </div>
+
+    <div class="view-card">
+      <h3>Treemap</h3>
+      <div class="meta"><code>myflames --type treemap explain.json</code> &bull; <a href="../demos/mysql-query-complex-treemap.html">Live demo</a></div>
+      <span class="best-for">Visual weight</span><span class="best-for">Proportional cost</span><span class="best-for">Presentations</span>
+      <p>Nested rectangles where area is proportional to total execution time. Operations that cost more visually dominate. Click any rectangle to zoom in, click the breadcrumb to zoom out.</p>
+      <p><strong>When to use:</strong> You want a spatial feel for "where did the time go?" at a glance. Good for presentations and reports where a non-DBA audience needs to understand the cost breakdown.</p>
+    </div>
+
+    <div class="view-card">
+      <h3>Diagram (Visual Explain)</h3>
+      <div class="meta"><code>myflames --type diagram explain.json</code> &bull; <a href="../demos/mysql-query-complex-diagram.html">Live demo</a></div>
+      <span class="best-for">Join order</span><span class="best-for">Access paths</span><span class="best-for">MySQL Workbench style</span>
+      <p>A flow diagram inspired by MySQL Workbench's Visual Explain. Tables are shown as nodes with their access type (ALL, ref, range, etc.), and join operations are shown as connectors. Each node shows actual rows, loops, and cost.</p>
+      <p><strong>When to use:</strong> You want to understand the join order (which table is the driving table?), which access paths are used (full scan vs. index lookup), and how data flows between operations. Best for multi-table joins.</p>
+      <p><strong>Interactions:</strong> +/&minus; zoom, drag-to-pan, double-click to reset. Click a node to pin its details strip.</p>
+    </div>
+
+    <div class="view-card">
+      <h3>Execution Tree</h3>
+      <div class="meta"><code>myflames --type tree explain.json</code> &bull; <a href="../demos/mysql-query-complex-tree.html">Live demo</a></div>
+      <span class="best-for">Expand/collapse</span><span class="best-for">Self vs total time</span><span class="best-for">Subquery isolation</span>
+      <p>A collapsible tree where each node shows both self-time and total time. Expand only the branches you care about. Useful for deeply nested plans where the flame graph gets too tall.</p>
+      <p><strong>When to use:</strong> You have a complex plan with subqueries, CTEs, or deeply nested joins, and want to focus on one subtree at a time. The "Expand All" / "Collapse All" buttons let you toggle between overview and detail.</p>
+    </div>
+
+    <h2>Common to all views</h2>
+    <ul>
+      <li><strong>Query Analysis panel</strong> &mdash; every view includes optimizer feature detection, warnings (full table scans, hash joins, temp tables, filesorts), and concrete tuning suggestions with copy-paste-able SQL.</li>
+      <li><strong>HTML output</strong> &mdash; use <code>--output report.html</code> for self-contained interactive files with all features enabled.</li>
+      <li><strong>JSON sidecar</strong> &mdash; every <code>--output</code> also writes a <code>.json</code> sidecar with structured plan data for CI/CD or AI agents.</li>
+      <li><strong>Search</strong> &mdash; Ctrl+F regex search works in all views.</li>
+    </ul>
+  </main>
+  <footer>
+    <p>myflames &mdash; <a href="https://github.com/vgrippa/myflames">GitHub</a></p>
+  </footer>
+</body>
+</html>

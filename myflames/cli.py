@@ -19,6 +19,7 @@ from .output_bargraph import render_bargraph
 from .output_treemap import render_treemap
 from .output_diagram import render_diagram
 from .output_tree import render_tree
+from .teach_hooks import build_teach_hooks, build_teach_index_maps
 
 
 # ── View recommendation guide ────────────────────────────────────────────
@@ -602,6 +603,14 @@ Subcommands:
             stats=live_artifacts.get("stats"),
             variables=live_artifacts.get("variables"),
         )
+    teach_maps = build_teach_index_maps(
+        build_teach_hooks(
+            root,
+            query_sql=query_text,
+            variables=(live_artifacts or {}).get("variables") or analysis.get("collected_variables"),
+            stats=(live_artifacts or {}).get("stats") or analysis.get("collected_stats") or {},
+        )
+    )
 
     # ---- Sidecar emission ----------------------------------------------
     # The sidecar path is derived from --output by default. Precedence:
@@ -635,6 +644,7 @@ Subcommands:
             countname=unit,
             inverted=args.inverted,
             colors=args.colors,
+            teach_index_by_folded=teach_maps["by_folded_label"],
         )
         if not args.no_enhance:
             from .parser import xml_escape
@@ -671,22 +681,37 @@ Subcommands:
             for n in flatten_nodes(root):
                 n["self_time"] *= multiplier
             total_time *= multiplier
-        svg = render_bargraph(root, width=args.width, title=args.title, unit_display=unit, total_time=total_time, analysis=analysis)
+        svg = render_bargraph(
+            root,
+            width=args.width,
+            title=args.title,
+            unit_display=unit,
+            total_time=total_time,
+            analysis=analysis,
+            teach_index_by_folded=teach_maps["by_folded_label"],
+        )
         _write_output(svg, output_path)
         return
 
     if args.type == "treemap":
-        svg = render_treemap(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis)
+        svg = render_treemap(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
         _write_output(svg, output_path)
         return
 
     if args.type == "diagram":
-        svg = render_diagram(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis)
+        svg = render_diagram(
+            root,
+            width=args.width,
+            title=args.title,
+            unit_display=unit,
+            analysis=analysis,
+            teach_index_by_folded=teach_maps["by_folded_label"],
+        )
         _write_output(svg, output_path)
         return
 
     if args.type == "tree":
-        svg = render_tree(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis)
+        svg = render_tree(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
         _write_output(svg, output_path)
         return
 

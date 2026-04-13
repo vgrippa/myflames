@@ -20,6 +20,7 @@ from .output_bargraph import render_bargraph
 from .output_treemap import render_treemap
 from .output_diagram import render_diagram
 from .output_tree import render_tree
+from .teach_hooks import build_teach_hooks, build_teach_index_maps
 
 
 def render_explain(
@@ -62,6 +63,7 @@ def render_explain(
         query_text = ""
     if query_text:
         analysis["query_text_lines"] = format_sql(query_text)
+    teach_maps = build_teach_index_maps(build_teach_hooks(root, query_sql=query_text))
 
     if output_type == "flamegraph":
         entries = list(build_flame_entries(root))
@@ -84,6 +86,7 @@ def render_explain(
             countname=unit,
             inverted=inverted,
             colors=colors,
+            teach_index_by_folded=teach_maps["by_folded_label"],
         )
         if not no_enhance:
             op_details = {n["folded_label"]: n["details"] for n in flatten_nodes(root)}
@@ -119,16 +122,29 @@ def render_explain(
                 n["self_time"] *= multiplier
             total_time *= multiplier
         return render_bargraph(
-            root, width=width, title=title, unit_display=unit, total_time=total_time, analysis=analysis
+            root,
+            width=width,
+            title=title,
+            unit_display=unit,
+            total_time=total_time,
+            analysis=analysis,
+            teach_index_by_folded=teach_maps["by_folded_label"],
         )
 
     if output_type == "treemap":
-        return render_treemap(root, width=width, title=title, unit_display=unit, analysis=analysis)
+        return render_treemap(root, width=width, title=title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
 
     if output_type == "diagram":
-        return render_diagram(root, width=width, title=title, unit_display=unit, analysis=analysis)
+        return render_diagram(
+            root,
+            width=width,
+            title=title,
+            unit_display=unit,
+            analysis=analysis,
+            teach_index_by_folded=teach_maps["by_folded_label"],
+        )
 
     if output_type == "tree":
-        return render_tree(root, width=width, title=title, unit_display=unit, analysis=analysis)
+        return render_tree(root, width=width, title=title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
 
     raise ValueError("output_type must be one of: flamegraph, bargraph, treemap, diagram, tree")

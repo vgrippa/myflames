@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLI Reference - myflames documentation</title>
+  <style>
+    :root { --bg: #fafafa; --panel: #fff; --text: #1a1a1a; --muted: #6b7280; --border: #e5e7eb; --accent: #2563eb; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    nav.top { background: var(--panel); border-bottom: 1px solid var(--border); padding: 12px 20px; font-size: 14px; }
+    nav.top a { color: var(--accent); text-decoration: none; margin-right: 18px; font-weight: 500; }
+    nav.top a:hover { text-decoration: underline; }
+    nav.top .brand { font-weight: 700; color: var(--text); margin-right: 24px; }
+    main { max-width: 840px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.5px; }
+    h1 + p.subtitle { color: var(--muted); font-size: 16px; margin: 0 0 32px; }
+    h2 { font-size: 20px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 16px; margin: 28px 0 8px; }
+    p, li { font-size: 15px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 13.5px; }
+    pre { background: #1f2937; color: #e5e7eb; padding: 16px 20px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
+    pre code { background: none; padding: 0; color: inherit; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    td code { font-size: 12.5px; }
+    a { color: var(--accent); }
+    .tip { background: #eff6ff; border-left: 3px solid var(--accent); padding: 12px 16px; border-radius: 4px; margin: 16px 0; font-size: 14px; }
+    footer { max-width: 840px; margin: 0 auto; padding: 16px 20px 32px; font-size: 12px; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <nav class="top">
+    <span class="brand">myflames docs</span>
+    <a href="../index.html">Home</a>
+    <a href="getting-started.html">Getting Started</a>
+    <a href="views.html">View Types</a>
+    <a href="cli.html">CLI Reference</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="../teach/index.html">Teach Lessons</a>
+  </nav>
+  <main>
+    <h1>CLI Reference</h1>
+    <p class="subtitle">Every command, flag, and option.</p>
+
+    <h2>Synopsis</h2>
+    <pre><code>myflames [options] [explain.json]
+myflames -h HOST -u USER -p -D DB -e 'SQL' -o report.html
+myflames compare before.json after.json --output diff.html
+myflames teach &lt;lesson&gt; [-o file.html]
+myflames guide</code></pre>
+
+    <h2>Rendering options</h2>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--type TYPE</code></td><td><code>flamegraph</code></td><td><code>flamegraph</code>, <code>bargraph</code>, <code>treemap</code>, <code>diagram</code>, <code>tree</code></td></tr>
+        <tr><td><code>--output FILE</code>, <code>-o</code></td><td>stdout</td><td><code>.html</code> = self-contained report; <code>.svg</code> = responsive SVG. JSON sidecar auto-written alongside.</td></tr>
+        <tr><td><code>--width N</code></td><td>1800 / 1200</td><td>SVG width in pixels</td></tr>
+        <tr><td><code>--height N</code></td><td>32</td><td>Frame height (flamegraph only)</td></tr>
+        <tr><td><code>--colors SCHEME</code></td><td><code>hot</code></td><td><code>hot</code>, <code>mem</code>, <code>io</code>, <code>red</code>, <code>green</code>, <code>blue</code> (flamegraph only)</td></tr>
+        <tr><td><code>--title TEXT</code></td><td><code>MySQL Query Plan</code></td><td>Chart title shown in the SVG header</td></tr>
+        <tr><td><code>--inverted</code></td><td>off</td><td>Icicle graph — roots at the top (flamegraph only)</td></tr>
+        <tr><td><code>--no-enhance</code></td><td>off</td><td>Disable detailed tooltips (flamegraph only)</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Live connection</h2>
+    <p>Same flags as the <code>mysql</code> CLI. Providing <code>-h</code> enables live mode.</p>
+    <table>
+      <thead><tr><th>Option</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>-h HOST</code>, <code>--host</code></td><td>Connect to this host (enables live mode)</td></tr>
+        <tr><td><code>-P PORT</code></td><td>Port number (default: 3306)</td></tr>
+        <tr><td><code>-u USER</code></td><td>Username</td></tr>
+        <tr><td><code>-p[PASS]</code></td><td>Password. <code>-p</code> alone prompts; <code>-p'secret'</code> inline.</td></tr>
+        <tr><td><code>-D DB</code></td><td>Default database</td></tr>
+        <tr><td><code>-e SQL</code>, <code>--execute</code></td><td>Query to EXPLAIN ANALYZE (required in live mode)</td></tr>
+        <tr><td><code>--ssl-mode MODE</code></td><td><code>DISABLED</code>, <code>PREFERRED</code>, <code>REQUIRED</code>, <code>VERIFY_CA</code>, <code>VERIFY_IDENTITY</code></td></tr>
+        <tr><td><code>--ssl-ca PATH</code></td><td>CA certificate file for TLS verification</td></tr>
+        <tr><td><code>--ssl-cert PATH</code></td><td>Client certificate for mutual TLS</td></tr>
+        <tr><td><code>--ssl-key PATH</code></td><td>Client private key for mutual TLS</td></tr>
+        <tr><td><code>--mysql-binary PATH</code></td><td>Override <code>mysql</code>/<code>mariadb</code> binary autodetection</td></tr>
+        <tr><td><code>--no-collect-schema</code></td><td>Skip <code>SHOW CREATE TABLE</code> collection</td></tr>
+        <tr><td><code>--no-collect-stats</code></td><td>Skip <code>information_schema.tables</code> row/size collection</td></tr>
+        <tr><td><code>--no-collect-variables</code></td><td>Skip <code>SHOW SESSION VARIABLES</code> collection</td></tr>
+      </tbody>
+    </table>
+
+    <div class="tip">
+      <strong>Password security:</strong> Passwords are written to a mode-0600 temporary <code>--defaults-extra-file</code> and never appear in <code>ps</code>, environment variables, or logs. The temp file is deleted on exit.
+    </div>
+
+    <h2>JSON sidecar</h2>
+    <table>
+      <thead><tr><th>Option</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><em>(default)</em></td><td>Auto-writes <code>&lt;output&gt;.json</code> alongside the HTML/SVG</td></tr>
+        <tr><td><code>--sidecar PATH</code></td><td>Write sidecar to a specific path</td></tr>
+        <tr><td><code>--no-sidecar</code></td><td>Suppress sidecar generation</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Subcommands</h2>
+
+    <h3><code>myflames compare</code></h3>
+    <pre><code>myflames compare before.json after.json --output diff.html</code></pre>
+    <p>Side-by-side before/after comparison showing total time delta, per-operator self-time/rows/loops changes, and new/resolved warnings.</p>
+
+    <h3><code>myflames guide</code></h3>
+    <pre><code>myflames guide</code></pre>
+    <p>Interactive guide that helps you pick the right view type for your situation.</p>
+
+    <h3><code>myflames teach</code></h3>
+    <pre><code>myflames teach              # list available lessons
+myflames teach btree -o btree.html   # render a lesson</code></pre>
+    <p>Generate self-contained HTML lessons that animate database algorithms. See the <a href="../teach/index.html">Teach Lessons</a> index for the full catalog.</p>
+
+    <table>
+      <thead><tr><th>Option</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>lesson</code></td><td>Lesson name: <code>btree</code>, <code>bnl</code>, <code>hash</code>, <code>join</code>, <code>lru</code>, <code>filesort</code>, <code>tmp</code>, <code>icp</code>, <code>index_merge</code></td></tr>
+        <tr><td><code>--output FILE</code>, <code>-o</code></td><td>Write HTML to file (default: stdout)</td></tr>
+        <tr><td><code>--title TEXT</code></td><td>Override the lesson title</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Query embedding</h2>
+    <table>
+      <thead><tr><th>Option</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--query SQL</code></td><td>Embed the original SQL in the output for reference</td></tr>
+        <tr><td><code>--query-file PATH</code></td><td>Read the original SQL from a file</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Environment variables</h2>
+    <p>myflames does not read any environment variables. All configuration is through CLI flags.</p>
+
+    <h2>Exit codes</h2>
+    <table>
+      <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>0</code></td><td>Success</td></tr>
+        <tr><td><code>1</code></td><td>Runtime error (parse failure, connection error, file not found)</td></tr>
+        <tr><td><code>2</code></td><td>Invalid arguments (argparse)</td></tr>
+      </tbody>
+    </table>
+  </main>
+  <footer>
+    <p>myflames &mdash; <a href="https://github.com/vgrippa/myflames">GitHub</a></p>
+  </footer>
+</body>
+</html>

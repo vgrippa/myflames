@@ -1,0 +1,170 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-04-13T18:24:25Z",
+  "myflames_version": "1.3.0",
+  "source": {
+    "type": "file",
+    "engine": "mysql",
+    "fixture_path": "/Users/viniciusgrippa/Downloads/git/myflames/test/fixtures/explain-052-derived-table-top-spenders.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 7.127,
+    "rows_sent": 10,
+    "rows_examined_estimate": 12001,
+    "operator_count": 8,
+    "max_depth": 7
+  },
+  "optimizer_switches": [
+    {
+      "name": "materialization",
+      "value": "on",
+      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.",
+      "node_labels": [
+        "Materialize"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: agg (3000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [agg]"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "temp_table",
+      "text": "1 temp table(s) (Materialize) — up to 3000 rows; may spill to disk",
+      "source": "plan",
+      "node_labels": [
+        "Materialize"
+      ]
+    },
+    {
+      "severity": "warn",
+      "category": "filesort",
+      "text": "1 sort operation(s) — 10 rows; may use disk-based filesort",
+      "source": "plan",
+      "node_labels": [
+        "Sort"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase tmp_table_size / max_heap_table_size to keep temp tables in memory",
+      "source": "plan",
+      "target_variable": "tmp_table_size"
+    },
+    {
+      "severity": "medium",
+      "category": "tuning_variable",
+      "action": "Increase sort_buffer_size or add an ordered index to avoid filesort",
+      "source": "plan",
+      "target_variable": "sort_buffer_size"
+    }
+  ],
+  "executive_summary": "Query scans 1 table, materializes 1 temp table and sorts the result; examines ~12,001 rows to return 10 in 7.1 ms. Main finding: full scan of agg (3,000 rows).",
+  "query": {
+    "raw": "/* select#1 */ select `u`.`name` AS `name`,`agg`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id`) `agg` where (`u`.`id` = `agg`.`user_id`) order by `agg`.`total_spent` desc limit 10",
+    "beautified": "select u.name AS name,agg.total_spent AS total_spent\nfrom testdb.users u\n  join (/*\nselect#2 */\nselect testdb.orders.user_id AS user_id,sum(testdb.orders.total) AS total_spent\nfrom testdb.orders\ngroup by testdb.orders.user_id) agg\nwhere (u.id = agg.user_id)\norder by agg.total_spent desc\nlimit 10"
+  },
+  "primary_action": {
+    "ref": "suggestions[0]"
+  },
+  "teach_hooks": [
+    {
+      "lesson": "nested_loop",
+      "match": {
+        "folded_label": "NESTED LOOP INNER starts=1 rows=10",
+        "short_label": "Nested loop inner join"
+      },
+      "controls": {
+        "outer_rows": 10,
+        "inner_rows": 10,
+        "row_size": 200
+      },
+      "note": "Nested loop inner join",
+      "query_sql": "/* select#1 */ select `u`.`name` AS `name`,`agg`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id`) `agg` where (`u`.`id` = `agg`.`user_id`) order by `agg`.`total_spent` desc limit 10"
+    },
+    {
+      "lesson": "filesort",
+      "match": {
+        "folded_label": "SORT starts=1 rows=10",
+        "short_label": "Sort"
+      },
+      "controls": {
+        "rows": 10,
+        "row_size": 200
+      },
+      "note": "Sort: agg.total_spent DESC",
+      "query_sql": "/* select#1 */ select `u`.`name` AS `name`,`agg`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id`) `agg` where (`u`.`id` = `agg`.`user_id`) order by `agg`.`total_spent` desc limit 10"
+    },
+    {
+      "lesson": "full_scan",
+      "match": {
+        "folded_label": "TABLE SCAN [agg] starts=1 rows=3000",
+        "short_label": "Table scan [agg]"
+      },
+      "controls": {
+        "rows": 3000,
+        "row_size": 200,
+        "selectivity": 100.0
+      },
+      "note": "Table scan on agg (agg)",
+      "query_sql": "/* select#1 */ select `u`.`name` AS `name`,`agg`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id`) `agg` where (`u`.`id` = `agg`.`user_id`) order by `agg`.`total_spent` desc limit 10"
+    },
+    {
+      "lesson": "tmp",
+      "match": {
+        "folded_label": "MATERIALIZE starts=1 rows=3000",
+        "short_label": "Materialize"
+      },
+      "controls": {
+        "rows": 3000,
+        "row_size": 200
+      },
+      "note": "Materialize",
+      "query_sql": "/* select#1 */ select `u`.`name` AS `name`,`agg`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id`) `agg` where (`u`.`id` = `agg`.`user_id`) order by `agg`.`total_spent` desc limit 10"
+    },
+    {
+      "lesson": "btree",
+      "match": {
+        "folded_label": "INDEX SCAN [orders.idx_user] starts=1 rows=12000",
+        "short_label": "Index scan [orders.idx_user]"
+      },
+      "controls": {
+        "rows": 12000,
+        "key_size": 16,
+        "page_size": 16384,
+        "key_type": "secondary_noncovering"
+      },
+      "note": "Index scan on orders using idx_user (orders)",
+      "query_sql": "/* select#1 */ select `u`.`name` AS `name`,`agg`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id`) `agg` where (`u`.`id` = `agg`.`user_id`) order by `agg`.`total_spent` desc limit 10"
+    },
+    {
+      "lesson": "unique_lookup",
+      "match": {
+        "folded_label": "SINGLE ROW LOOKUP [users.PRIMARY] starts=10 rows=1",
+        "short_label": "Single-row lookup [users.PRIMARY]"
+      },
+      "controls": {
+        "rows": 10,
+        "covering": false
+      },
+      "note": "Single-row index lookup on u using PRIMARY (id=agg.user_id) (users)",
+      "query_sql": "/* select#1 */ select `u`.`name` AS `name`,`agg`.`total_spent` AS `total_spent` from `testdb`.`users` `u` join (/* select#2 */ select `testdb`.`orders`.`user_id` AS `user_id`,sum(`testdb`.`orders`.`total`) AS `total_spent` from `testdb`.`orders` group by `testdb`.`orders`.`user_id`) `agg` where (`u`.`id` = `agg`.`user_id`) order by `agg`.`total_spent` desc limit 10"
+    }
+  ]
+}

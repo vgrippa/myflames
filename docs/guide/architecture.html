@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture - myflames documentation</title>
+  <style>
+    :root { --bg: #fafafa; --panel: #fff; --text: #1a1a1a; --muted: #6b7280; --border: #e5e7eb; --accent: #2563eb; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    nav.top { background: var(--panel); border-bottom: 1px solid var(--border); padding: 12px 20px; font-size: 14px; }
+    nav.top a { color: var(--accent); text-decoration: none; margin-right: 18px; font-weight: 500; }
+    nav.top a:hover { text-decoration: underline; }
+    nav.top .brand { font-weight: 700; color: var(--text); margin-right: 24px; }
+    main { max-width: 840px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.5px; }
+    h1 + p.subtitle { color: var(--muted); font-size: 16px; margin: 0 0 32px; }
+    h2 { font-size: 20px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 16px; margin: 28px 0 8px; }
+    p, li { font-size: 15px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 13.5px; }
+    pre { background: #1f2937; color: #e5e7eb; padding: 16px 20px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
+    pre code { background: none; padding: 0; color: inherit; }
+    .box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    a { color: var(--accent); }
+    .diagram { background: #f9fafb; border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 20px 0; font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; line-height: 1.7; white-space: pre; overflow-x: auto; }
+    footer { max-width: 840px; margin: 0 auto; padding: 16px 20px 32px; font-size: 12px; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <nav class="top">
+    <span class="brand">myflames docs</span>
+    <a href="../index.html">Home</a>
+    <a href="getting-started.html">Getting Started</a>
+    <a href="views.html">View Types</a>
+    <a href="cli.html">CLI Reference</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="../teach/index.html">Teach Lessons</a>
+  </nav>
+  <main>
+    <h1>Architecture</h1>
+    <p class="subtitle">How myflames works internally: parser, renderers, advisor, and the teach module.</p>
+
+    <h2>Design principles</h2>
+    <ul>
+      <li><strong>Zero external dependencies</strong> &mdash; Python 3.7+ stdlib only. No pip install of MySQL drivers, templating engines, or JS frameworks.</li>
+      <li><strong>Single parser, multiple renderers</strong> &mdash; JSON is parsed once into a unified tree. Renderers never re-parse JSON.</li>
+      <li><strong>Offline-first output</strong> &mdash; every HTML file is self-contained. No external scripts, stylesheets, or fonts. Works in Slack DMs, email attachments, and air-gapped environments.</li>
+      <li><strong>MySQL + MariaDB parity</strong> &mdash; the parser auto-detects the engine and normalizes MariaDB's different JSON structure into the same internal tree.</li>
+    </ul>
+
+    <h2>Data flow</h2>
+    <div class="diagram">Input JSON             Parser               Renderer            Output
+(MySQL or MariaDB) &rarr;  parser.py          &rarr;  flamegraph.py    &rarr;  .svg / .html
+                       &bull; auto-detect engine   output_bargraph.py
+                       &bull; normalize MariaDB    output_treemap.py
+                       &bull; build unified tree   output_diagram.py
+                       &bull; analyze_plan()       output_tree.py
+                                             &darr;
+                                          advisor.py        &rarr;  warnings + suggestions
+                                          output_sidecar.py &rarr;  .json sidecar
+                                          output_html.py    &rarr;  .html wrapper</div>
+
+    <h2>Module map</h2>
+    <table>
+      <thead><tr><th>Module</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>cli.py</code></td><td>Argument parsing, live-connection orchestration, SVG height patching for the analysis panel.</td></tr>
+        <tr><td><code>parser.py</code></td><td>Single entry point. Builds unified tree from MySQL or MariaDB JSON. <code>analyze_plan(root)</code> scans for full scans, hash joins, temp tables, filesorts, non-sargable joins, etc.</td></tr>
+        <tr><td><code>flamegraph.py</code></td><td>SVG flame graph renderer (pure-Python port of Brendan Gregg's FlameGraph).</td></tr>
+        <tr><td><code>output_bargraph.py</code></td><td>SVG bar chart renderer, sorted by self-time.</td></tr>
+        <tr><td><code>output_treemap.py</code></td><td>SVG treemap renderer with squarified layout.</td></tr>
+        <tr><td><code>output_diagram.py</code></td><td>SVG Visual Explain-style diagram with drag/zoom.</td></tr>
+        <tr><td><code>output_tree.py</code></td><td>SVG collapsible execution tree.</td></tr>
+        <tr><td><code>output_html.py</code></td><td>HTML wrapper with progressive-disclosure UI, glossary chips, and JSON-LD in &lt;head&gt;.</td></tr>
+        <tr><td><code>output_sidecar.py</code></td><td>JSON sidecar generator (v1 schema). Machine-readable plan summary, warnings, suggestions.</td></tr>
+        <tr><td><code>advisor.py</code></td><td>Environment advisor: 8 rules that combine plan signals with collected server state.</td></tr>
+        <tr><td><code>glossary.py</code></td><td>31 glossary entries with 3-tier explanations (short / technical / newcomer). Powers the HTML glossary chips.</td></tr>
+        <tr><td><code>teach/</code></td><td>Interactive algorithm lessons. Shared animation runtime + cost models + per-lesson renderers.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Parser internals</h2>
+    <p>The parser (<code>parser.py</code>) handles two structurally different JSON formats:</p>
+    <ul>
+      <li><strong>MySQL 8.4+</strong> uses an <code>operation</code> / <code>inputs[]</code> tree structure (format version 2).</li>
+      <li><strong>MariaDB 10.11+</strong> uses a <code>query_block</code> / <code>nested_loop</code> / <code>table</code> structure.</li>
+    </ul>
+    <p>MariaDB normalization (<code>_normalize_mariadb*()</code> functions) converts MariaDB's structure into MySQL's <code>operation/inputs</code> tree <em>before</em> <code>parse_node()</code> processes it. This means every renderer and the advisor work with one canonical tree format.</p>
+    <p><code>analyze_plan(root)</code> walks the parsed tree and returns a dictionary of detected features: <code>full_scans</code>, <code>hash_joins</code>, <code>temp_tables</code>, <code>filesorts</code>, <code>bnl_nodes</code>, <code>nonsargable_joins</code>, <code>index_suggestions</code>, and more.</p>
+
+    <h2>Teach module architecture</h2>
+    <p>The <code>teach/</code> subpackage is a self-contained animation platform:</p>
+    <table>
+      <thead><tr><th>File</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>__init__.py</code></td><td>Lesson registry (<code>LESSONS</code> dict), <code>render_lesson()</code>, CLI dispatch.</td></tr>
+        <tr><td><code>_anim.py</code></td><td>Shared JS animation runtime: tween, timeline, easing, pause/speed, scrubber, phase marks.</td></tr>
+        <tr><td><code>_html.py</code></td><td>Shared HTML chrome: CSS, controls, toolbar, phase nav, query card, explainer, readout grid.</td></tr>
+        <tr><td><code>_cost_model.py</code></td><td>Cost-model functions tied to MySQL 8.4 / MariaDB 11.4 defaults. Constants enforced by tests.</td></tr>
+        <tr><td><code>join_family/</code>, <code>index_family/</code>, <code>scan_family/</code>, <code>cache_family/</code></td><td>Lesson modules grouped by topic. Each exports a <code>render()</code> function. Some lessons remain as top-level <code>*.py</code> files with thin family wrappers.</td></tr>
+      </tbody>
+    </table>
+    <p>Every lesson is a single self-contained HTML file (~65-85 KB) with inlined CSS, JS, and SVG. No build step, no bundler, no CI.</p>
+
+    <h2>Environment advisor rules</h2>
+    <p><code>advisor.py</code> runs 8 rules that cross-reference the parsed plan with collected server state:</p>
+    <table>
+      <thead><tr><th>Rule</th><th>Fires when</th></tr></thead>
+      <tbody>
+        <tr><td>Non-sargable join predicate</td><td>Join uses CONCAT(col), CAST(col), LOWER(col), DATE(col), etc.</td></tr>
+        <tr><td>Buffer pool vs working set</td><td><code>innodb_buffer_pool_size</code> &lt; 25-50% of referenced tables</td></tr>
+        <tr><td>Sort buffer vs filesort</td><td>Filesort detected + <code>sort_buffer_size</code> &lt; 2 MB</td></tr>
+        <tr><td>Join buffer vs hash/BNL</td><td>Hash join or BNL + <code>join_buffer_size</code> &lt; 2 MB</td></tr>
+        <tr><td>Tmp table size</td><td>Temp table + <code>min(tmp_table_size, max_heap_table_size)</code> &lt; 32 MB</td></tr>
+        <tr><td>Optimizer switch overrides</td><td><code>hash_join=off</code>, <code>mrr=off</code>, <code>derived_condition_pushdown=off</code></td></tr>
+        <tr><td>Missing indexes</td><td>Parser heuristic + collected schema confirms no covering index</td></tr>
+        <tr><td>Engine != InnoDB</td><td>Table uses MyISAM/MEMORY</td></tr>
+      </tbody>
+    </table>
+    <p>Every suggestion carries a <code>Why:</code> clause grounded in the MySQL cost model. This is enforced by a test.</p>
+
+    <h2>Testing</h2>
+    <p>The test suite has 1200+ tests across two files:</p>
+    <ul>
+      <li><code>test/test_myflames.py</code> &mdash; parser, renderers, advisor, HTML wrapper, sidecar, compare, live-connection mode</li>
+      <li><code>test/test_teach.py</code> &mdash; cost-model invariants, version-accuracy strings, CLI scaffolding, shared runtime markers</li>
+    </ul>
+    <pre><code># Full suite
+./run-tests.sh
+
+# Just teach tests
+python3 -m unittest discover -s test -p "test_teach.py" -v</code></pre>
+    <p>Fixtures are generated from live MySQL/MariaDB Docker containers:</p>
+    <pre><code>./scripts/generate-fixtures.sh           # MySQL fixtures
+./scripts/generate-mariadb-fixtures.sh   # MariaDB fixtures</code></pre>
+  </main>
+  <footer>
+    <p>myflames &mdash; <a href="https://github.com/vgrippa/myflames">GitHub</a>. Inspired by
+    <a href="https://github.com/brendangregg/FlameGraph">Brendan Gregg's FlameGraph</a> and
+    <a href="https://tanelpoder.com/">Tanel Poder's SQL Plan FlameGraphs</a>.</p>
+  </footer>
+</body>
+</html>

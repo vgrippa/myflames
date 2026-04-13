@@ -414,3 +414,270 @@ def simulate_classic_lru(pool_size: int, access_trace: list) -> Dict[str, int]:
                 evictions += 1
             lst.insert(0, pid)
     return {"evictions": evictions, "hits": hits, "final_population": len(lst)}
+
+
+# ---------------------------------------------------------------------------
+# Filesort (MySQL / MariaDB)
+# ---------------------------------------------------------------------------
+
+#: ``sort_buffer_size`` default in MySQL 8.4 (bytes). MariaDB 11.4 default
+#: is also 256 KiB (262144).
+SORT_BUFFER_SIZE_DEFAULT = 256 * 1024  # 256 KiB = 262144 B
+
+
+class FilesortCost(NamedTuple):
+    rows_per_run: int
+    sorted_runs: int
+    merge_passes: int
+    total_io_rows: int
+    explanation: str
+
+
+def filesort_cost(
+    rows: int,
+    row_size: int,
+    sort_buffer_size: int = SORT_BUFFER_SIZE_DEFAULT,
+) -> FilesortCost:
+    """Return a cost breakdown for MySQL's filesort algorithm.
+
+    When the rows to sort fit in ``sort_buffer_size``, the sort is pure
+    in-memory (quicksort). When they don't, MySQL fills the buffer,
+    sorts it, writes a sorted run to tmpdir, repeats, then does a
+    k-way merge of all runs.
+
+    ``merge_passes`` approximates the number of merge-sort passes needed
+    if MySQL can merge at most ~15 runs per pass (the merge-file fan-in
+    documented in the MySQL source ``sql/filesort.cc``).
+    """
+    if rows <= 0 or row_size <= 0 or sort_buffer_size <= 0:
+        return FilesortCost(
+            rows_per_run=0, sorted_runs=1, merge_passes=0,
+            total_io_rows=0, explanation="No rows to sort.",
+        )
+    rows_per_run = max(1, sort_buffer_size // row_size)
+    sorted_runs = max(1, math.ceil(rows / rows_per_run))
+    if sorted_runs <= 1:
+        return FilesortCost(
+            rows_per_run=rows_per_run, sorted_runs=1, merge_passes=0,
+            total_io_rows=rows,
+            explanation=(
+                f"All {rows:,} rows fit in sort_buffer_size "
+                f"({sort_buffer_size:,} bytes) — pure in-memory quicksort, "
+                f"no disk spill."
+            ),
+        )
+    # Each merge pass can combine up to MERGE_FAN_IN runs.
+    merge_fan_in = 15
+    merge_passes = max(1, math.ceil(math.log(sorted_runs) / math.log(merge_fan_in)))
+    # I/O: each merge pass reads + writes all rows once.
+    total_io_rows = rows + merge_passes * rows * 2
+    explanation = (
+        f"sort_buffer_size holds {rows_per_run:,} rows → {sorted_runs:,} sorted "
+        f"run(s) spilled to tmpdir. The k-way merge needs {merge_passes} pass(es) "
+        f"(fan-in ~{merge_fan_in}). Each pass reads + writes all {rows:,} rows. "
+        f"Bigger sort_buffer_size → fewer runs → fewer merge passes."
+    )
+    return FilesortCost(
+        rows_per_run=rows_per_run,
+        sorted_runs=sorted_runs,
+        merge_passes=merge_passes,
+        total_io_rows=total_io_rows,
+        explanation=explanation,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Temporary tables (MEMORY → InnoDB on-disk conversion)
+# ---------------------------------------------------------------------------
+
+#: ``tmp_table_size`` default in MySQL 8.4 (bytes).
+TMP_TABLE_SIZE_DEFAULT = 16 * 1024 * 1024  # 16 MiB
+
+#: ``max_heap_table_size`` default in MySQL 8.4 (bytes).
+MAX_HEAP_TABLE_SIZE_DEFAULT = 16 * 1024 * 1024  # 16 MiB
+
+
+class TmpTableCost(NamedTuple):
+    effective_limit: int
+    fits_in_memory: bool
+    memory_rows: int
+    disk_rows: int
+    explanation: str
+
+
+def tmp_table_cost(
+    rows: int,
+    row_size: int,
+    tmp_table_size: int = TMP_TABLE_SIZE_DEFAULT,
+    max_heap_table_size: int = MAX_HEAP_TABLE_SIZE_DEFAULT,
+) -> TmpTableCost:
+    """Return a cost breakdown for MySQL's internal temporary tables.
+
+    MySQL uses ``min(tmp_table_size, max_heap_table_size)`` as the effective
+    limit. When the materialized data exceeds this, the MEMORY temp table
+    is converted to an on-disk InnoDB temp table (slow).
+    """
+    if rows <= 0 or row_size <= 0:
+        return TmpTableCost(
+            effective_limit=min(tmp_table_size, max_heap_table_size),
+            fits_in_memory=True, memory_rows=0, disk_rows=0,
+            explanation="No rows to materialize.",
+        )
+    effective_limit = min(tmp_table_size, max_heap_table_size)
+    memory_capacity = max(1, effective_limit // row_size)
+    fits = rows <= memory_capacity
+    memory_rows = min(rows, memory_capacity)
+    disk_rows = 0 if fits else rows - memory_capacity
+    if fits:
+        explanation = (
+            f"All {rows:,} rows ({rows * row_size:,} bytes) fit in the MEMORY "
+            f"temp table (limit {effective_limit:,} bytes). No on-disk conversion."
+        )
+    else:
+        explanation = (
+            f"MEMORY temp table holds {memory_capacity:,} rows "
+            f"({effective_limit:,} bytes). Row {memory_capacity + 1:,} triggers "
+            f"conversion to on-disk InnoDB — {disk_rows:,} remaining rows are "
+            f"inserted on disk. Raise tmp_table_size or max_heap_table_size to "
+            f"avoid the conversion."
+        )
+    return TmpTableCost(
+        effective_limit=effective_limit,
+        fits_in_memory=fits,
+        memory_rows=memory_rows,
+        disk_rows=disk_rows,
+        explanation=explanation,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Index Condition Pushdown (ICP)
+# ---------------------------------------------------------------------------
+
+
+class ICPCost(NamedTuple):
+    index_rows_scanned: int
+    rows_fetched_without_icp: int
+    rows_fetched_with_icp: int
+    rows_saved: int
+    selectivity_pct: float
+    explanation: str
+
+
+def icp_cost(
+    index_rows_scanned: int,
+    icp_selectivity: float = 0.20,
+) -> ICPCost:
+    """Return a cost breakdown for Index Condition Pushdown.
+
+    ``index_rows_scanned``: rows matching the range condition on the
+    leading index column (e.g. ``last_name LIKE 'S%'``).
+
+    ``icp_selectivity``: fraction of those rows that also satisfy the
+    pushed-down condition on the trailing column (e.g. ``first_name
+    LIKE 'J%'``). Default 20% — only 1 in 5 range-matching rows
+    actually satisfies the full WHERE clause.
+
+    Without ICP, all ``index_rows_scanned`` rows trigger a clustered-index
+    lookup. With ICP, only the matching fraction does.
+    """
+    if index_rows_scanned <= 0:
+        return ICPCost(
+            index_rows_scanned=0, rows_fetched_without_icp=0,
+            rows_fetched_with_icp=0, rows_saved=0,
+            selectivity_pct=icp_selectivity * 100,
+            explanation="No rows scanned.",
+        )
+    without = index_rows_scanned
+    with_icp = max(1, int(index_rows_scanned * icp_selectivity))
+    saved = without - with_icp
+    explanation = (
+        f"Without ICP: all {without:,} index rows trigger a clustered-index "
+        f"row fetch. With ICP: the storage engine checks the pushed condition "
+        f"first — only {with_icp:,} rows ({icp_selectivity * 100:.0f}%) need "
+        f"a row fetch. {saved:,} row fetches saved."
+    )
+    return ICPCost(
+        index_rows_scanned=index_rows_scanned,
+        rows_fetched_without_icp=without,
+        rows_fetched_with_icp=with_icp,
+        rows_saved=saved,
+        selectivity_pct=icp_selectivity * 100,
+        explanation=explanation,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Index Merge (union / intersection / sort-union)
+# ---------------------------------------------------------------------------
+
+
+class IndexMergeCost(NamedTuple):
+    index_a_rows: int
+    index_b_rows: int
+    merged_rows: int
+    rows_fetched: int
+    variant: str
+    explanation: str
+
+
+def index_merge_cost(
+    index_a_rows: int,
+    index_b_rows: int,
+    overlap_pct: float = 0.10,
+    variant: str = "union",
+) -> IndexMergeCost:
+    """Return a cost breakdown for index merge operations.
+
+    ``index_a_rows`` / ``index_b_rows``: rows returned by each index scan.
+
+    ``overlap_pct``: fraction of rows present in both sets (for union
+    deduplication or intersection matching).
+
+    ``variant``: ``"union"`` (OR), ``"intersection"`` (AND), or
+    ``"sort_union"`` (OR with unsorted row-IDs that need sorting first).
+    """
+    if index_a_rows <= 0 and index_b_rows <= 0:
+        return IndexMergeCost(
+            index_a_rows=0, index_b_rows=0, merged_rows=0,
+            rows_fetched=0, variant=variant, explanation="No rows scanned.",
+        )
+    total = index_a_rows + index_b_rows
+    overlap = int(min(index_a_rows, index_b_rows) * overlap_pct)
+
+    if variant == "union":
+        merged = total - overlap
+        explanation = (
+            f"Index merge union: scan idx_a ({index_a_rows:,} rows) + "
+            f"scan idx_b ({index_b_rows:,} rows). Merge the two sorted "
+            f"row-ID streams and de-duplicate — {overlap:,} rows appear in "
+            f"both. Result: {merged:,} unique row-IDs fetched from the "
+            f"clustered index."
+        )
+    elif variant == "intersection":
+        merged = overlap
+        explanation = (
+            f"Index merge intersection: scan idx_a ({index_a_rows:,} rows) + "
+            f"scan idx_b ({index_b_rows:,} rows). Keep only row-IDs present "
+            f"in both — {merged:,} rows. Far fewer clustered-index fetches "
+            f"than a full scan."
+        )
+    elif variant == "sort_union":
+        merged = total - overlap
+        explanation = (
+            f"Index merge sort-union: scan idx_a ({index_a_rows:,} rows) + "
+            f"scan idx_b ({index_b_rows:,} rows). Row-IDs are NOT pre-sorted "
+            f"(range scans), so MySQL sorts each set first, then merges. "
+            f"Result: {merged:,} unique rows fetched."
+        )
+    else:
+        raise ValueError(f"unknown variant: {variant!r}")
+
+    return IndexMergeCost(
+        index_a_rows=index_a_rows,
+        index_b_rows=index_b_rows,
+        merged_rows=merged,
+        rows_fetched=merged,
+        variant=variant,
+        explanation=explanation,
+    )

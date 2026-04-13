@@ -257,6 +257,8 @@ class TestBuildSidecarRealFixtures(unittest.TestCase):
             self.assertIn(s["severity"], ("high", "medium", "low"))
             self.assertIn(s["source"], ("plan", "environment"))
             self.assertTrue(s["action"])
+        self.assertIn("teach_hooks", payload)
+        self.assertTrue(any(h.get("lesson") == "hash" for h in payload["teach_hooks"]))
 
     def test_complex_fixture(self):
         root = parse_explain(_load_fixture(COMPLEX))
@@ -415,6 +417,16 @@ class TestValidateSidecarNegative(unittest.TestCase):
         p = self._minimal()
         p["suggestions"] = [{"severity": "urgent", "category": "index",
                              "action": "x", "source": "plan"}]
+        with self.assertRaises(SidecarValidationError):
+            validate_sidecar(p)
+
+    def test_teach_hook_invalid_lesson(self):
+        p = self._minimal()
+        p["teach_hooks"] = [{
+            "lesson": "unknown",
+            "match": {"folded_label": "x"},
+            "controls": {"rows": 10},
+        }]
         with self.assertRaises(SidecarValidationError):
             validate_sidecar(p)
 

@@ -1,0 +1,123 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-04-13T18:24:20Z",
+  "myflames_version": "1.3.0",
+  "source": {
+    "type": "file",
+    "engine": "mariadb",
+    "fixture_path": "/Users/viniciusgrippa/Downloads/git/myflames/test/mariadb-explain-weedout.json"
+  },
+  "plan_summary": {
+    "total_time_ms": 0.0,
+    "rows_sent": 1,
+    "rows_examined_estimate": 1001,
+    "operator_count": 4,
+    "max_depth": 3
+  },
+  "optimizer_switches": [
+    {
+      "name": "semijoin",
+      "value": "on",
+      "explanation": "IN / EXISTS subqueries are rewritten into a semi-join with the outer query and then resolved via one of the semijoin strategies (firstmatch, loosescan, duplicateweedout, or materialization).",
+      "node_labels": [
+        "Remove duplicates using temporary table (weedout)"
+      ]
+    },
+    {
+      "name": "duplicateweedout",
+      "value": "on",
+      "explanation": "Semijoin strategy: runs the subquery as a normal inner join and then removes duplicate outer rows using a temporary table keyed on their row IDs.",
+      "node_labels": [
+        "Remove duplicates using temporary table (weedout)"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "category": "full_scan",
+      "text": "Full table scan: t2 (1000 rows)",
+      "source": "plan",
+      "node_labels": [
+        "Table scan [t2]"
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "severity": "high",
+      "category": "index",
+      "action": "Add indexes on filter/join columns to avoid full table scans",
+      "source": "plan"
+    }
+  ],
+  "executive_summary": "Query scans 1 table; examines ~1,001 rows to return 1. Main finding: no index covers (y, x) on t2.",
+  "index_suggestions": [
+    {
+      "table": "t2",
+      "columns": [
+        "y",
+        "x"
+      ],
+      "ddl": "CREATE INDEX idx_t2_y_x ON t2 (y, x);",
+      "reason": "Full scan on t2 with filter on (y, x)"
+    }
+  ],
+  "primary_action": {
+    "ref": "suggestions[0]"
+  },
+  "teach_hooks": [
+    {
+      "lesson": "semijoin_weedout",
+      "match": {
+        "folded_label": "Remove duplicates using temporary table (weedout) starts=1 rows=1",
+        "short_label": "Remove duplicates using temporary table (weedout)"
+      },
+      "controls": {
+        "outer_rows": 1,
+        "inner_matches": 5,
+        "row_size": 200
+      },
+      "note": "Remove duplicates using temporary table (weedout)"
+    },
+    {
+      "lesson": "nested_loop",
+      "match": {
+        "folded_label": "NESTED LOOP INNER starts=1 rows=1",
+        "short_label": "Nested loop inner join"
+      },
+      "controls": {
+        "outer_rows": 1000,
+        "inner_rows": 49,
+        "row_size": 200
+      },
+      "note": "Nested loop inner join"
+    },
+    {
+      "lesson": "full_scan",
+      "match": {
+        "folded_label": "TABLE SCAN [t2] starts=1 rows=1000",
+        "short_label": "Table scan [t2]"
+      },
+      "controls": {
+        "rows": 1000,
+        "row_size": 200,
+        "selectivity": 10.0
+      },
+      "note": "Table scan on t2 (t2)"
+    },
+    {
+      "lesson": "non_unique_lookup",
+      "match": {
+        "folded_label": "INDEX LOOKUP [t1.PRIMARY] starts=49 rows=1",
+        "short_label": "Index lookup [t1.PRIMARY]"
+      },
+      "controls": {
+        "rows": 49,
+        "selectivity": 40.0,
+        "covering": false
+      },
+      "note": "Index lookup on t1 using PRIMARY (t1)"
+    }
+  ]
+}

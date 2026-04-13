@@ -28,6 +28,9 @@ from myflames.teach._cost_model import (
     MYSQL_BNL_REMOVED_IN,
     INNODB_OLD_BLOCKS_PCT_DEFAULT,
     INNODB_OLD_BLOCKS_TIME_DEFAULT_MS,
+    SORT_BUFFER_SIZE_DEFAULT,
+    TMP_TABLE_SIZE_DEFAULT,
+    MAX_HEAP_TABLE_SIZE_DEFAULT,
     innodb_fanout,
     innodb_tree_height,
     btree_lookup_cost,
@@ -37,6 +40,10 @@ from myflames.teach._cost_model import (
     hash_join_cost,
     simulate_midpoint_lru,
     simulate_classic_lru,
+    filesort_cost,
+    tmp_table_cost,
+    icp_cost,
+    index_merge_cost,
 )
 from myflames.teach import LESSONS, render_lesson
 
@@ -216,6 +223,108 @@ class TestMidpointLRU(unittest.TestCase):
         self.assertEqual(result["hits"], 0)
 
 
+class TestFilesort(unittest.TestCase):
+    def test_sort_buffer_size_default_is_256kib(self):
+        self.assertEqual(SORT_BUFFER_SIZE_DEFAULT, 262144)
+
+    def test_small_sort_fits_in_memory(self):
+        """100 rows × 200 B = 20 KiB → fits in 256 KiB buffer, no spill."""
+        c = filesort_cost(rows=100, row_size=200)
+        self.assertEqual(c.sorted_runs, 1)
+        self.assertEqual(c.merge_passes, 0)
+
+    def test_large_sort_spills(self):
+        """100k rows × 200 B = 20 MiB >> 256 KiB → many sorted runs."""
+        c = filesort_cost(rows=100_000, row_size=200)
+        self.assertGreater(c.sorted_runs, 1)
+        self.assertGreater(c.merge_passes, 0)
+        self.assertGreater(c.total_io_rows, 100_000)
+
+    def test_rows_per_run_calculation(self):
+        """256 KiB / 200 B = 1310 rows per run."""
+        c = filesort_cost(rows=10_000, row_size=200)
+        self.assertEqual(c.rows_per_run, 262144 // 200)
+
+    def test_bigger_buffer_means_fewer_runs(self):
+        """Doubling sort_buffer_size should halve the number of runs."""
+        c1 = filesort_cost(rows=100_000, row_size=200, sort_buffer_size=262144)
+        c2 = filesort_cost(rows=100_000, row_size=200, sort_buffer_size=262144 * 2)
+        self.assertGreater(c1.sorted_runs, c2.sorted_runs)
+
+
+class TestTmpTable(unittest.TestCase):
+    def test_tmp_table_size_default_is_16mib(self):
+        self.assertEqual(TMP_TABLE_SIZE_DEFAULT, 16 * 1024 * 1024)
+
+    def test_max_heap_table_size_default_is_16mib(self):
+        self.assertEqual(MAX_HEAP_TABLE_SIZE_DEFAULT, 16 * 1024 * 1024)
+
+    def test_small_table_fits_in_memory(self):
+        """1000 rows × 200 B = 200 KiB → fits in 16 MiB."""
+        c = tmp_table_cost(rows=1000, row_size=200)
+        self.assertTrue(c.fits_in_memory)
+        self.assertEqual(c.disk_rows, 0)
+
+    def test_large_table_spills_to_disk(self):
+        """500k rows × 200 B = 100 MiB >> 16 MiB → disk conversion."""
+        c = tmp_table_cost(rows=500_000, row_size=200)
+        self.assertFalse(c.fits_in_memory)
+        self.assertGreater(c.disk_rows, 0)
+
+    def test_effective_limit_is_min(self):
+        """Effective limit is min(tmp_table_size, max_heap_table_size)."""
+        c = tmp_table_cost(rows=100, row_size=200,
+                           tmp_table_size=8 * 1024 * 1024,
+                           max_heap_table_size=16 * 1024 * 1024)
+        self.assertEqual(c.effective_limit, 8 * 1024 * 1024)
+
+
+class TestICP(unittest.TestCase):
+    def test_icp_saves_row_fetches(self):
+        """With 20% selectivity, ICP should save 80% of row fetches."""
+        c = icp_cost(index_rows_scanned=1000, icp_selectivity=0.20)
+        self.assertEqual(c.rows_fetched_without_icp, 1000)
+        self.assertEqual(c.rows_fetched_with_icp, 200)
+        self.assertEqual(c.rows_saved, 800)
+
+    def test_full_selectivity_saves_nothing(self):
+        """With 100% selectivity, ICP saves nothing."""
+        c = icp_cost(index_rows_scanned=1000, icp_selectivity=1.0)
+        self.assertEqual(c.rows_saved, 0)
+
+    def test_low_selectivity_saves_most(self):
+        """With 1% selectivity, ICP saves 99%."""
+        c = icp_cost(index_rows_scanned=10_000, icp_selectivity=0.01)
+        self.assertEqual(c.rows_fetched_with_icp, 100)
+        self.assertEqual(c.rows_saved, 9900)
+
+
+class TestIndexMerge(unittest.TestCase):
+    def test_union_deduplicates(self):
+        """Union of 1000 + 800 with 10% overlap = 1000 + 800 - 80 = 1720."""
+        c = index_merge_cost(index_a_rows=1000, index_b_rows=800,
+                             overlap_pct=0.10, variant="union")
+        self.assertEqual(c.merged_rows, 1000 + 800 - 80)
+
+    def test_intersection_keeps_overlap(self):
+        """Intersection of 1000 + 800 with 10% overlap = 80."""
+        c = index_merge_cost(index_a_rows=1000, index_b_rows=800,
+                             overlap_pct=0.10, variant="intersection")
+        self.assertEqual(c.merged_rows, 80)
+
+    def test_sort_union_same_as_union(self):
+        """Sort-union has the same row count as union (just slower to merge)."""
+        c = index_merge_cost(index_a_rows=1000, index_b_rows=800,
+                             overlap_pct=0.10, variant="sort_union")
+        self.assertEqual(c.merged_rows, 1000 + 800 - 80)
+
+    def test_zero_overlap_union(self):
+        """With 0% overlap, union = sum of both sets."""
+        c = index_merge_cost(index_a_rows=500, index_b_rows=300,
+                             overlap_pct=0.0, variant="union")
+        self.assertEqual(c.merged_rows, 800)
+
+
 # ---------------------------------------------------------------------------
 # Ring 2 — version-accuracy assertions on rendered HTML
 # ---------------------------------------------------------------------------
@@ -271,6 +380,45 @@ class TestLessonHTMLContent(unittest.TestCase):
         html = render_lesson("lru")
         self.assertIn("scan-resistant", html.lower().replace("scan resistant", "scan-resistant"))
 
+    def test_filesort_lesson_mentions_sort_buffer_size(self):
+        html = render_lesson("filesort")
+        self.assertIn("sort_buffer_size", html)
+        self.assertIn("262144", html)
+
+    def test_filesort_lesson_mentions_tmpdir(self):
+        html = render_lesson("filesort")
+        self.assertIn("tmpdir", html)
+
+    def test_filesort_lesson_mentions_merge(self):
+        html = render_lesson("filesort")
+        self.assertIn("merge", html.lower())
+
+    def test_tmp_lesson_mentions_both_size_limits(self):
+        html = render_lesson("tmp")
+        self.assertIn("tmp_table_size", html)
+        self.assertIn("max_heap_table_size", html)
+
+    def test_tmp_lesson_mentions_memory_to_disk(self):
+        html = render_lesson("tmp")
+        self.assertIn("MEMORY", html)
+        self.assertIn("on-disk", html)
+
+    def test_icp_lesson_mentions_index_condition(self):
+        html = render_lesson("icp")
+        self.assertIn("Index Condition Pushdown", html)
+        self.assertIn("pushed condition", html.lower())
+
+    def test_icp_lesson_shows_without_and_with(self):
+        html = render_lesson("icp")
+        self.assertIn("Without ICP", html)
+        self.assertIn("With ICP", html)
+
+    def test_index_merge_lesson_mentions_variants(self):
+        html = render_lesson("index_merge")
+        self.assertIn("union", html.lower())
+        self.assertIn("intersection", html.lower())
+        self.assertIn("sort-union", html.lower().replace("sort_union", "sort-union"))
+
 
 # ---------------------------------------------------------------------------
 # Ring 3 — CLI + HTML scaffolding
@@ -310,7 +458,7 @@ class TestTeachCLI(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_all_five_lessons_render_via_python_api(self):
+    def test_all_lessons_render_via_python_api(self):
         """Every lesson in LESSONS renders a well-formed HTML document."""
         for name in LESSONS:
             html = render_lesson(name)
@@ -418,6 +566,19 @@ class TestTeachCLI(unittest.TestCase):
                     f"lesson {name!r} missing speed option {val}×",
                 )
 
+    def test_all_lessons_have_loop_toggle_disabled_by_default(self):
+        """Every lesson must expose loop toggle and it must start disabled."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            self.assertIn(
+                'id="btn-loop"', html,
+                f"lesson {name!r} missing loop toggle button",
+            )
+            self.assertIn(
+                "Loop: Off", html,
+                f"lesson {name!r} loop toggle should default to off",
+            )
+
     def test_anim_runtime_supports_pause_and_speed(self):
         """Runtime guards: the shared _anim.py must expose setPaused,
         isPaused, setSpeed, and getSpeed so lessons can implement the
@@ -459,10 +620,12 @@ class TestTeachCLI(unittest.TestCase):
                 f"lesson {name!r} explainer missing 'What you\\'ll see' title",
             )
 
-    def test_all_lessons_have_complexity_chart(self):
-        """Every lesson must include a live complexity chart so users can
-        see how the cost function scales with input size."""
-        for name in LESSONS:
+    def test_lessons_with_scaling_have_complexity_chart(self):
+        """Lessons that teach an algorithm with O(…) scaling must include a
+        live complexity chart. The LRU lesson uses a 3-act hit/miss story
+        instead — its punchline is 8/8 vs 0/8 hits, not a log-log curve."""
+        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter"]
+        for name in chart_lessons:
             html = render_lesson(name)
             self.assertIn(
                 'id="complexity-chart"', html,
@@ -484,7 +647,16 @@ class TestTeachCLI(unittest.TestCase):
             "bnl": ["customers", "orders"],
             "hash": ["departments", "employees"],
             "join": ["customers", "orders"],
+            "nested_loop": ["customers", "orders"],
             "lru": ["events"],
+            "filesort": ["orders"],
+            "tmp": ["employees"],
+            "icp": ["employees"],
+            "index_merge": ["products"],
+            "full_scan": ["users"],
+            "non_unique_lookup": ["users"],
+            "unique_lookup": ["users"],
+            "filter": ["orders"],
         }
         for name, names in expected_tables.items():
             html = render_lesson(name)
@@ -543,17 +715,16 @@ class TestTeachCLI(unittest.TestCase):
                 f"lesson {name!r} does not pass reset: to wireToolbar",
             )
 
-    def test_all_lessons_charts_are_interactive(self):
-        """Every complexity chart must be hoverable and its x-axis must
-        bind to a slider via xSlider so clicking the chart updates the
-        lesson's parameters."""
-        for name in LESSONS:
+    def test_chart_lessons_are_interactive(self):
+        """Lessons with a complexity chart must have hoverable charts with
+        xSlider click-to-update binding."""
+        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter"]
+        for name in chart_lessons:
             html = render_lesson(name)
             self.assertIn(
                 "xSlider:", html,
                 f"lesson {name!r} chart does not bind xSlider for click-to-update",
             )
-            # The runtime's interactive hover/click logic must be present
             self.assertIn(
                 "createSVGPoint", html,
                 f"lesson {name!r} chart missing hover svgPointFromEvent logic",
@@ -568,6 +739,38 @@ class TestTeachCLI(unittest.TestCase):
             "row-pair comparison", html,
             "join lesson must label BNL cost as 'row-pair comparisons', not 'rows examined'",
         )
+
+    def test_all_lessons_include_bootstrap_runtime(self):
+        """Embedded report mode needs teachRuntime.bootstrapFromObject(ctx)."""
+        for name in LESSONS:
+            html = render_lesson(name)
+            self.assertIn(
+                "bootstrapFromObject", html,
+                "lesson {!r} missing bootstrap runtime function".format(name),
+            )
+
+    def test_full_scan_lesson_explains_every_row_is_read(self):
+        html = render_lesson("full_scan")
+        self.assertIn("full scan reads every row", html)
+        self.assertIn("O(log n + k)", html)
+        self.assertIn("country='US'", html)
+
+    def test_non_unique_lookup_lesson_mentions_row_id_fetches(self):
+        html = render_lesson("non_unique_lookup")
+        self.assertIn("row-id", html)
+        self.assertIn("Index range scan", html)
+        self.assertIn("non-covering", html)
+
+    def test_unique_lookup_lesson_mentions_single_row(self):
+        html = render_lesson("unique_lookup")
+        self.assertIn("Single-row", html)
+        self.assertIn("covering", html)
+
+    def test_filter_lesson_mentions_predicate_evaluation(self):
+        html = render_lesson("filter")
+        self.assertIn("Filter operator", html)
+        self.assertIn("WHERE", html)
+        self.assertIn("incoming row", html)
 
 
 if __name__ == "__main__":

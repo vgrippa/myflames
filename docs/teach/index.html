@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Teach Lessons - myflames documentation</title>
+  <style>
+    :root { --bg: #fafafa; --panel: #fff; --text: #1a1a1a; --muted: #6b7280; --border: #e5e7eb; --accent: #2563eb; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    nav.top { background: var(--panel); border-bottom: 1px solid var(--border); padding: 12px 20px; font-size: 14px; }
+    nav.top a { color: var(--accent); text-decoration: none; margin-right: 18px; font-weight: 500; }
+    nav.top a:hover { text-decoration: underline; }
+    nav.top .brand { font-weight: 700; color: var(--text); margin-right: 24px; }
+    main { max-width: 900px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.5px; }
+    h1 + p.subtitle { color: var(--muted); font-size: 16px; margin: 0 0 32px; }
+    h2 { font-size: 20px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    p, li { font-size: 15px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 13.5px; }
+    pre { background: #1f2937; color: #e5e7eb; padding: 16px 20px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
+    pre code { background: none; padding: 0; color: inherit; }
+    a { color: var(--accent); }
+    .lesson-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+    @media (max-width: 700px) { .lesson-grid { grid-template-columns: 1fr; } }
+    .lesson-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; transition: box-shadow 0.15s; }
+    .lesson-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .lesson-card h3 { margin: 0 0 6px; font-size: 16px; }
+    .lesson-card h3 a { text-decoration: none; }
+    .lesson-card h3 a:hover { text-decoration: underline; }
+    .lesson-card .cli { font-size: 12px; color: var(--muted); margin-bottom: 8px; font-family: monospace; }
+    .lesson-card p { font-size: 13.5px; margin: 0; color: #374151; }
+    .lesson-card .tag { display: inline-block; background: #eef2ff; color: #3730a3; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-right: 4px; margin-bottom: 4px; }
+    .section-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 32px 0 8px; }
+    footer { max-width: 900px; margin: 0 auto; padding: 16px 20px 32px; font-size: 12px; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <nav class="top">
+    <span class="brand">myflames docs</span>
+    <a href="../index.html">Home</a>
+    <a href="../guide/getting-started.html">Getting Started</a>
+    <a href="../guide/views.html">View Types</a>
+    <a href="../guide/cli.html">CLI Reference</a>
+    <a href="../guide/architecture.html">Architecture</a>
+    <a href="index.html">Teach Lessons</a>
+  </nav>
+  <main>
+    <h1>Teach Lessons</h1>
+    <p class="subtitle">Interactive, offline-first HTML lessons that animate MySQL 8.4 and MariaDB 11.x internals with correct cost models.</p>
+
+    <h2>Quick start</h2>
+    <pre><code>myflames teach              # list all lessons
+myflames teach btree -o btree.html && open btree.html</code></pre>
+    <p>Each lesson is a single self-contained HTML file. No external scripts, stylesheets, or fonts. Drop it in Slack, attach to a ticket, or email it — it just works offline.</p>
+
+    <h2>All 14 lessons</h2>
+
+    <p class="section-label">Storage internals</p>
+    <div class="lesson-grid">
+      <div class="lesson-card">
+        <h3><a href="index/btree.html">B+tree Lookup</a></h3>
+        <div class="cli">myflames teach btree</div>
+        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
+        <p>How InnoDB finds a row: clustered PK vs covering secondary vs non-covering secondary. Move the row-count slider from 10 to 1 billion and watch the tree height change.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="cache/lru.html">InnoDB Buffer Pool LRU</a></h3>
+        <div class="cli">myflames teach lru</div>
+        <span class="tag">MySQL 8.4</span>
+        <p>Why MySQL's midpoint-insertion LRU survives full-scan pollution while textbook LRU gets wiped. 3-act story: hot set &rarr; scan arrives &rarr; hot queries return.</p>
+      </div>
+    </div>
+
+    <p class="section-label">Join algorithms</p>
+    <div class="lesson-grid">
+      <div class="lesson-card">
+        <h3><a href="join/bnl.html">Block Nested Loop (BNL)</a></h3>
+        <div class="cli">myflames teach bnl</div>
+        <span class="tag">MariaDB 11.x</span>
+        <p>MariaDB's default join algorithm. Watch <code>join_buffer_size</code> decide how many times the inner table is rescanned. Includes warning: MySQL removed BNL in 8.0.20.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="join/hash.html">Hash Join</a></h3>
+        <div class="cli">myflames teach hash</div>
+        <span class="tag">MySQL 8.4</span>
+        <p>Build phase (hash departments into buckets), probe phase (find each employee's department), and grace-hash spill when <code>join_buffer_size</code> overflows.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="join/join.html">BNL vs Hash Join</a></h3>
+        <div class="cli">myflames teach join</div>
+        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.x</span>
+        <p>Side-by-side comparison with shared sliders. See the asymptotic difference at scale: BNL grows with blocks &times; inner, hash stays at build + probe.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="join/nested_loop.html">Nested Loop Join (Operator)</a></h3>
+        <div class="cli">myflames teach nested_loop</div>
+        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
+        <p>Dedicated operator view for EXPLAIN Nested loop nodes. Focuses on outer-driver + inner-probe behavior and O(n &times; m) growth.</p>
+      </div>
+    </div>
+
+    <p class="section-label">Query optimization</p>
+    <div class="lesson-grid">
+      <div class="lesson-card">
+        <h3><a href="scan/filesort.html">Filesort</a></h3>
+        <div class="cli">myflames teach filesort</div>
+        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
+        <p>How MySQL sorts when there is no index: <code>sort_buffer_size</code> fills, sorted runs spill to tmpdir, then a k-way merge produces the final result. Bigger buffer = fewer runs = less I/O.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="scan/tmp.html">Temporary Tables</a></h3>
+        <div class="cli">myflames teach tmp</div>
+        <span class="tag">MySQL 8.4</span>
+        <p>Watch GROUP BY fill a MEMORY temp table, hit <code>min(tmp_table_size, max_heap_table_size)</code>, and convert to on-disk InnoDB. That cliff is why your query suddenly slows down.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="index/icp.html">Index Condition Pushdown (ICP)</a></h3>
+        <div class="cli">myflames teach icp</div>
+        <span class="tag">MySQL 5.6+</span><span class="tag">MariaDB 5.3+</span>
+        <p>Side-by-side: without ICP, every row is fetched then filtered. With ICP, the storage engine checks trailing index columns before fetching — saving unnecessary clustered-index lookups.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="index/index_merge.html">Index Merge</a></h3>
+        <div class="cli">myflames teach index_merge</div>
+        <span class="tag">MySQL 5.1+</span><span class="tag">MariaDB 5.1+</span>
+        <p>Two separate index scans combined via union, intersection, or sort-union. See how MySQL avoids a full table scan by merging row-ID sets from multiple indexes.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="scan/full_scan.html">Full Table Scan</a></h3>
+        <div class="cli">myflames teach full_scan</div>
+        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
+        <p>What a full table scan actually means: every row is read, then filtered. Compare O(n) scan work with indexed access O(log n + k) as selectivity changes.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="index/non_unique_lookup.html">Non-Unique Key Lookup</a></h3>
+        <div class="cli">myflames teach non_unique_lookup</div>
+        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
+        <p>What “Non-Unique Key Lookup” means in the diagram: one key/range can match many entries, then non-covering lookups fetch base rows by row-id.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="index/unique_lookup.html">Unique Key Lookup</a></h3>
+        <div class="cli">myflames teach unique_lookup</div>
+        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
+        <p>Single-row index lookup path (eq_ref/const style). Shows exact-key traversal and covering vs non-covering fetch behavior.</p>
+      </div>
+      <div class="lesson-card">
+        <h3><a href="scan/filter.html">Filter Operator</a></h3>
+        <div class="cli">myflames teach filter</div>
+        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
+        <p>What a Filter stage means: every incoming row is evaluated against the predicate, only matching rows continue to parent stages.</p>
+      </div>
+    </div>
+
+    <h2>Lesson features</h2>
+    <ul>
+      <li><strong>In-page sliders</strong> &mdash; change parameters and see the cost model update instantly. No CLI flags, no re-running.</li>
+      <li><strong>Animated SVG stage</strong> &mdash; Play/Pause, Speed (0.25x&ndash;4x), YouTube-style scrubber, Reset button.</li>
+      <li><strong>Phase navigation</strong> &mdash; clickable sidebar listing all animation phases. Click to jump to any phase.</li>
+      <li><strong>Cost readout</strong> &mdash; live numeric displays with (?) help tooltips written at a 10th-grade reading level.</li>
+      <li><strong>Complexity chart</strong> &mdash; log-log plots showing how the algorithm scales (most lessons).</li>
+      <li><strong>Learn more</strong> &mdash; collapsible <code>&lt;details&gt;</code> block with deeper context and MySQL documentation sources.</li>
+      <li><strong>Accessibility</strong> &mdash; ARIA labels, keyboard navigation, <code>prefers-reduced-motion</code> support.</li>
+      <li><strong>Offline-first</strong> &mdash; no external scripts, stylesheets, or fonts. Single HTML file, works anywhere.</li>
+    </ul>
+
+    <h2>Python API</h2>
+    <pre><code>from myflames.teach import render_lesson, LESSONS
+
+# List available lessons
+for name, info in LESSONS.items():
+    print(f"{name}: {info['summary']}")
+
+# Render to HTML string
+html = render_lesson("btree")
+with open("btree.html", "w") as f:
+    f.write(html)</code></pre>
+  </main>
+  <footer>
+    <p>myflames &mdash; <a href="https://github.com/vgrippa/myflames">GitHub</a></p>
+  </footer>
+</body>
+</html>

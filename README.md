@@ -60,13 +60,13 @@ Every view includes a **Query Analysis panel** with optimizer features detected,
 
 | View | Interactive demo |
 |------|-----------------|
-| Flame graph | [mysql-query-complex-flamegraph.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-flamegraph.html) |
-| Bar chart | [mysql-query-complex-bargraph.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-bargraph.html) |
-| Treemap | [mysql-query-complex-treemap.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-treemap.html) |
-| Diagram | [mysql-query-complex-diagram.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-diagram.html) |
-| Execution tree | [mysql-query-complex-tree.html](https://vgrippa.github.io/myflames/demos/mysql-query-complex-tree.html) |
-| HTML report | [mysql-query-report.html](https://vgrippa.github.io/myflames/demos/mysql-query-report.html) |
-| Before vs After | [mysql-query-compare.html](https://vgrippa.github.io/myflames/demos/mysql-query-compare.html) |
+| Flame graph | [mysql-query-complex-flamegraph.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-flamegraph.html) |
+| Bar chart | [mysql-query-complex-bargraph.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-bargraph.html) |
+| Treemap | [mysql-query-complex-treemap.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-treemap.html) |
+| Diagram | [mysql-query-complex-diagram.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-diagram.html) |
+| Execution tree | [mysql-query-complex-tree.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-tree.html) |
+| HTML report | [mysql-query-report.html](https://vgrippa.github.io/myflames/demos/mysql-basic/mysql-query-report.html) |
+| Before vs After | [mysql-query-compare.html](https://vgrippa.github.io/myflames/demos/mysql-basic/mysql-query-compare.html) |
 
 [All demos →](https://vgrippa.github.io/myflames/)
 
@@ -82,13 +82,46 @@ Interactive, offline-first HTML lessons that animate MySQL 8.4 and MariaDB 11.x 
 myflames teach btree -o btree.html && open btree.html
 ```
 
+**19 lessons** in four families:
+
+### Join family
+
 | Lesson | What you learn |
 |--------|---------------|
-| [`teach btree`](https://vgrippa.github.io/myflames/teach/btree.html) | InnoDB B+tree lookup — clustered PK, covering vs non-covering secondary, 16 KiB page fan-out. Move the row-count slider from 10 to 1 billion and watch the tree height update. |
-| [`teach bnl`](https://vgrippa.github.io/myflames/teach/bnl.html) | Block Nested Loop join (MariaDB 11.x default). Warning banner: MySQL removed BNL in 8.0.20. |
-| [`teach hash`](https://vgrippa.github.io/myflames/teach/hash.html) | MySQL 8.4 hash join — build phase, probe phase, and grace-hash spill when the build side overflows `join_buffer_size`. |
-| [`teach join`](https://vgrippa.github.io/myflames/teach/join.html) | BNL vs hash join side-by-side with shared sliders. See the asymptotic difference at scale. |
-| [`teach lru`](https://vgrippa.github.io/myflames/teach/lru.html) | InnoDB's midpoint-insertion LRU — why MySQL's buffer pool survives full-scan pollution while a textbook LRU gets wiped. |
+| [`teach nested_loop`](https://vgrippa.github.io/myflames/teach/join/nested_loop.html) | Nested Loop Join — the outer-driver/inner-probe loop shape from EXPLAIN. |
+| [`teach bnl`](https://vgrippa.github.io/myflames/teach/join/bnl.html) | Block Nested Loop join (MariaDB 11.x default). Warning banner: MySQL removed BNL in 8.0.20. |
+| [`teach hash`](https://vgrippa.github.io/myflames/teach/join/hash.html) | MySQL 8.4 hash join — build phase, probe phase, and grace-hash spill when the build side overflows `join_buffer_size`. |
+| [`teach join`](https://vgrippa.github.io/myflames/teach/join/join.html) | BNL vs hash join side-by-side with shared sliders. See the asymptotic difference at scale. |
+| [`teach bka_join`](https://vgrippa.github.io/myflames/teach/join/bka_join.html) | Batched Key Access join — batch outer keys, sort by rowid, and sweep the inner index sequentially via Multi-Range Read. |
+| [`teach semijoin_weedout`](https://vgrippa.github.io/myflames/teach/join/semijoin_weedout.html) | Semijoin Duplicate Weedout — IN/EXISTS rewritten as inner join; a temp table keyed on outer rowid removes duplicates. |
+
+### Index family
+
+| Lesson | What you learn |
+|--------|---------------|
+| [`teach btree`](https://vgrippa.github.io/myflames/teach/index/btree.html) | InnoDB B+tree lookup — clustered PK, covering vs non-covering secondary, 16 KiB page fan-out. Move the row-count slider from 10 to 1 billion and watch the tree height update. |
+| [`teach unique_lookup`](https://vgrippa.github.io/myflames/teach/index/unique_lookup.html) | Unique Key Lookup — exact-key lookup path and covering vs non-covering single-row access. |
+| [`teach non_unique_lookup`](https://vgrippa.github.io/myflames/teach/index/non_unique_lookup.html) | Non-Unique Key Lookup — explains “Index lookup” / “Index range scan” and why non-covering lookups fetch base rows by row-id. |
+| [`teach icp`](https://vgrippa.github.io/myflames/teach/index/icp.html) | Index Condition Pushdown — see how ICP checks trailing index columns before fetching the row, saving unnecessary clustered-index lookups. |
+| [`teach index_merge`](https://vgrippa.github.io/myflames/teach/index/index_merge.html) | Index Merge — two separate indexes scanned and combined via union, intersection, or sort-union instead of a full table scan. |
+| [`teach skip_scan`](https://vgrippa.github.io/myflames/teach/index/skip_scan.html) | Skip Scan — low-NDV leading column lets MySQL do N small range scans instead of a full table scan. |
+| [`teach rowid_filter`](https://vgrippa.github.io/myflames/teach/index/rowid_filter.html) | Rowid Filter (MariaDB) — bitmap pre-filter before table access; scans a filtering index to build a rowid bitmap, skipping table fetches for non-matching rows. |
+
+### Scan / sort / temp family
+
+| Lesson | What you learn |
+|--------|---------------|
+| [`teach full_scan`](https://vgrippa.github.io/myflames/teach/scan/full_scan.html) | Full table scan — what it means when MySQL reads every row, then filters. Compare O(n) scan work against indexed access O(log n + k). |
+| [`teach filter`](https://vgrippa.github.io/myflames/teach/scan/filter.html) | Filter operator — row-by-row predicate evaluation and why filter cost scales with incoming rows. |
+| [`teach filesort`](https://vgrippa.github.io/myflames/teach/scan/filesort.html) | How MySQL sorts without an index: `sort_buffer_size` fills, sorted runs spill to tmpdir, k-way merge. Bigger buffer = fewer runs = less I/O. |
+| [`teach tmp`](https://vgrippa.github.io/myflames/teach/scan/tmp.html) | Temporary tables — watch GROUP BY fill a MEMORY temp table, hit the limit, and convert to on-disk InnoDB. That cliff is why your query suddenly slows down. |
+| [`teach derived_table`](https://vgrippa.github.io/myflames/teach/scan/derived_table.html) | Derived Table Materialization — FROM-clause subquery materialized into temp table, auto-indexed, then probed. |
+
+### Cache family
+
+| Lesson | What you learn |
+|--------|---------------|
+| [`teach lru`](https://vgrippa.github.io/myflames/teach/cache/lru.html) | InnoDB's midpoint-insertion LRU — why MySQL's buffer pool survives full-scan pollution while a textbook LRU gets wiped. |
 
 Each lesson is a single self-contained HTML file: no external scripts, no external stylesheets, no external fonts. Drop one in a Slack DM or attach to a ticket and it just works. Hosted separately from the query-plan demos at [vgrippa.github.io/myflames/teach/](https://vgrippa.github.io/myflames/teach/).
 
@@ -243,6 +276,8 @@ myflames -h HOST [-P PORT] -u USER [-p[PASS]] -D DB -e 'SQL' -o OUT
 | `--title TEXT` | `MySQL Query Plan` | Chart title |
 | `--inverted` | off | Icicle graph (flamegraph only) |
 | `--no-enhance` | off | Disable detailed tooltips (flamegraph only) |
+| `--query SQL` | — | Embed the original SQL text in the output |
+| `--query-file PATH` | — | Read the original SQL from a file to embed in the output |
 
 ### Live connection — same flags as the `mysql` CLI
 
@@ -267,7 +302,8 @@ myflames -h HOST [-P PORT] -u USER [-p[PASS]] -D DB -e 'SQL' -o OUT
 
 ```bash
 myflames compare before.json after.json --output diff.html
-myflames guide      # which view should I use?
+myflames teach btree -o btree.html   # interactive algorithm lesson
+myflames guide                        # which view should I use?
 ```
 
 Full help: `myflames --help`.
@@ -292,10 +328,15 @@ All views support **Ctrl+F** regex search. The bar chart, treemap, diagram, and 
 
 ## Documentation
 
-| File | Contents |
+| Page | Contents |
 |------|----------|
-| [docs/VISUAL_EXPLAIN_REFERENCE.md](docs/VISUAL_EXPLAIN_REFERENCE.md) | Diagram layout conventions and Visual Explain mapping |
-| [docs/prompts/](docs/prompts/) | Prompts and context used to build each feature |
+| [Getting Started](https://vgrippa.github.io/myflames/guide/getting-started.html) | Installation, first flame graph, live connection mode |
+| [View Types](https://vgrippa.github.io/myflames/guide/views.html) | When to use each of the 5 visualization types |
+| [CLI Reference](https://vgrippa.github.io/myflames/guide/cli.html) | Every command, flag, and option |
+| [Architecture](https://vgrippa.github.io/myflames/guide/architecture.html) | Parser, renderers, advisor, teach module internals |
+| [Teach Lessons](https://vgrippa.github.io/myflames/teach/index.html) | All 19 interactive algorithm lessons with descriptions |
+| [Contributing](CONTRIBUTING.md) | Development setup, testing, adding lessons/rules |
+| [Visual Explain Reference](docs/VISUAL_EXPLAIN_REFERENCE.md) | Diagram layout conventions |
 | [test/README.md](test/README.md) | Running tests and fixture generation |
 
 ---
