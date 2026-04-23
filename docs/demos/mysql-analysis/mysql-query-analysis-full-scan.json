@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:25Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:10Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -56,6 +56,20 @@
       },
       "note": "Table scan on users (users)",
       "query_sql": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`name` AS `name`,`testdb`.`users`.`email` AS `email`,`testdb`.`users`.`country` AS `country`,`testdb`.`users`.`created_at` AS `created_at` from `testdb`.`users`"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "TABLE SCAN [users] starts=1 rows=3000",
+      "short_label": "Table scan [users]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
     }
   ]
 }

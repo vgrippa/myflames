@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:21Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:05Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -110,6 +110,44 @@
       },
       "note": "Table scan on orders (hash build) (orders)",
       "query_sql": "/* select#1 */ select `u`.`name` AS `name`, `o`.`total` AS `total` from `testdb`.`users` `u` join `testdb`.`orders` `o` on (`o`.`user_id` = `u`.`id`)"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Inner hash join (orders.user_id = users.id) starts=1 rows=12000",
+      "short_label": "Inner hash join (orders.user_id = users.id)",
+      "complexity": {
+        "big_o": "O(n + m)",
+        "short": "n + m",
+        "severity": "good",
+        "rationale": "Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asymptotic class — only the constants.",
+        "confidence": "exact",
+        "learn_more": "hash_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [users] starts=1 rows=3000",
+      "short_label": "Table scan [users]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [orders] starts=1 rows=12000",
+      "short_label": "Table scan [orders]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
     }
   ]
 }

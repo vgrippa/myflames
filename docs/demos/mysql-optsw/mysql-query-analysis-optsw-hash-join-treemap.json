@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:24Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:09Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -126,6 +126,44 @@
       },
       "note": "Table scan on t2 (t2)",
       "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0",
+      "short_label": "Inner hash join (t1.d = concat('r',t2.y))",
+      "complexity": {
+        "big_o": "O(n + m)",
+        "short": "n + m",
+        "severity": "good",
+        "rationale": "Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asymptotic class — only the constants.",
+        "confidence": "exact",
+        "learn_more": "hash_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t1] starts=1 rows=5000",
+      "short_label": "Table scan [t1]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
     }
   ]
 }

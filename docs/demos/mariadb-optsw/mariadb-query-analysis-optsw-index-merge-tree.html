@@ -7,9 +7,9 @@
   <meta name="description" content="Query runs 1 operator; returns 45 rows in 0.05 ms. No warnings.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:20Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:04Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -56,11 +56,24 @@
       },
       "note": "Deduplicate rows sorted by row ID on t1 (t1)"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Deduplicate rows sorted by row ID on t1 starts=1 rows=45",
+      "short_label": "Deduplicate rows sorted by row ID on t1",
+      "complexity": {
+        "big_o": "O(Σ kᵢ)",
+        "short": "Σ kᵢ",
+        "severity": "medium",
+        "rationale": "Index merge (union): each index scan returns kᵢ row IDs; merging them through a sorted-list union costs a pass over the total.",
+        "confidence": "typical",
+        "learn_more": "index_merge"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -708,9 +721,9 @@ aside.glossary-aside { background: #f1f8ff; }
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:20Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:04Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -756,6 +769,20 @@ aside.glossary-aside { background: #f1f8ff; }
         &quot;variant&quot;: &quot;union&quot;
       },
       &quot;note&quot;: &quot;Deduplicate rows sorted by row ID on t1 (t1)&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;Deduplicate rows sorted by row ID on t1 starts=1 rows=45&quot;,
+      &quot;short_label&quot;: &quot;Deduplicate rows sorted by row ID on t1&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(Σ kᵢ)&quot;,
+        &quot;short&quot;: &quot;Σ kᵢ&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Index merge (union): each index scan returns kᵢ row IDs; merging them through a sorted-list union costs a pass over the total.&quot;,
+        &quot;confidence&quot;: &quot;typical&quot;,
+        &quot;learn_more&quot;: &quot;index_merge&quot;
+      }
     }
   ]
 }</code></pre>
@@ -3282,8 +3309,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "note": "Deduplicate rows sorted by row ID on t1 (t1)"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

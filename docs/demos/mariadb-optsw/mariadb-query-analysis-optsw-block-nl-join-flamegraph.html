@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables and joins via block nested-loop; returns 3,000 rows in 186 ms. Main finding: join predicate wraps the column in CONVERT() — no index can be used.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:19Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:04Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -136,11 +136,48 @@
       },
       "note": "Table scan on t1 (t1)"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=3000",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · m)",
+        "short": "n · m",
+        "severity": "bad",
+        "rationale": "Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=1000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t1] starts=1 rows=3000",
+      "short_label": "Table scan [t1]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -839,9 +876,10 @@ aside.glossary-aside { background: #f1f8ff; }
 <text id="ignorecase" x="1774" y="24">ic</text>
 <text id="matched" x="1690" y="117"> </text>
 <g id="frames">
-<g data-teach-index="0"><title>NESTED LOOP INNER starts=1 rows=3000 (185 ms, 100.00%)&#10;&#10;Access: join&#10;Rows: 3000 actual&#10;Time: 185.701 ms (last row)</title>
+<g data-teach-index="0"><title>NESTED LOOP INNER starts=1 rows=3000 (185 ms, 100.00%)  •  O(...): O(n · m)&#10;&#10;Access: join&#10;Rows: 3000 actual&#10;Time: 185.701 ms (last row)&#10;Complexity: O(n · m)&#10;Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up.</title>
 <rect x="10.0" y="37.0" width="1780.0" height="31.0" fill="rgb(224,82,29)" rx="2" ry="2"/>
-<text x="13.00" y="55.50">NESTED LOOP INNER starts=1 rows=3000</text>
+<circle cx="1785.0" cy="52.5" r="3" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.6" pointer-events="none"/>
+<text x="13.00" y="55.50">NESTED LOOP INNER starts=1 rows=3000  O(n · m)</text>
 </g>
 </g>
 </svg>
@@ -940,9 +978,9 @@ aside.glossary-aside { background: #f1f8ff; }
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:19Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:04Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -1068,6 +1106,44 @@ aside.glossary-aside { background: #f1f8ff; }
         &quot;row_size&quot;: 200
       },
       &quot;note&quot;: &quot;Table scan on t1 (t1)&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;NESTED LOOP INNER starts=1 rows=3000&quot;,
+      &quot;short_label&quot;: &quot;Nested loop inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · m)&quot;,
+        &quot;short&quot;: &quot;n · m&quot;,
+        &quot;severity&quot;: &quot;bad&quot;,
+        &quot;rationale&quot;: &quot;Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;nested_loop_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t2] starts=1 rows=1000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t2]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t1] starts=1 rows=3000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t1]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -8467,8 +8543,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "note": "Table scan on t1 (t1)"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

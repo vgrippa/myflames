@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 1 table; examines ~2,001 rows to return 49 in 0.35 ms. Main finding: no index covers (y, x) on t2.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:23Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:08Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -145,11 +145,60 @@
       "note": "Single-row index lookup on t1 using PRIMARY (id=t2.x) (t1)",
       "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Remove duplicate t1 rows using temporary table (weedout) starts=1 rows=49",
+      "short_label": "Remove duplicate t1 rows using temporary table (we...",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "DuplicateWeedout semijoin: runs as a plain inner join, then drops duplicates using a temp-table index on the outer row IDs.",
+        "confidence": "typical",
+        "learn_more": "duplicate_weedout"
+      }
+    },
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=49",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Indexed nested loop: each outer row probes the inner table via an index descent.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "SINGLE ROW LOOKUP [t1.PRIMARY] starts=49 rows=1",
+      "short_label": "Single-row lookup [t1.PRIMARY]",
+      "complexity": {
+        "big_o": "O(log n)",
+        "short": "log n",
+        "severity": "good",
+        "rationale": "Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.",
+        "confidence": "exact",
+        "learn_more": "single_row_lookup"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -564,7 +613,7 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="390" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="500" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -577,6 +626,8 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
   .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
   .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
   .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .complexity-chip-rect { pointer-events: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
   #search { font-size: 12px; fill: #666; cursor: pointer; }
@@ -586,41 +637,78 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
 <text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
 <text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 0.352 µs</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
-<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
-<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text x="378.0" y="68" text-anchor="middle" class="col-header">COMPLEXITY</text>
+<text x="466.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="778.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="256" x2="1190" y2="256" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="260" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="268" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="282" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="296" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="310" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="324" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="338" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="352" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="366" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="366" x2="1190" y2="366" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="370" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="378" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="392" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="406" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="420" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="434" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="448" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="462" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="476" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
 <text x="320" y="98.0" text-anchor="end" class="label">Table scan [t2]</text>
-<text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="80" width="407.17482875252244" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Table scan on t2  ·  Self: 0.224 µs (63.6%)  ·  Rows: 2000  ·  Loops: 1  ·  Table: t2  ·  Access: table  ·  Est.rows: 2000" data-label="Table scan [t2]" data-teach-index="3"/>
+<g><title>O(n)</title><rect class="complexity-chip-rect" x="356.0" y="86.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="98.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<text x="466.0" y="98.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="80" width="346.0986044396441" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Table scan on t2  ·  Self: 0.224 µs (63.6%)  ·  Rows: 2000  ·  Loops: 1  ·  Table: t2  ·  Access: table  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Est.rows: 2000" data-label="Table scan [t2]" data-teach-index="3"/>
 <text x="1060" y="98.0" class="value">0.224 µs (63.6%)</text>
 <text x="320" y="132.0" text-anchor="end" class="label">Filter: (((t2.y &lt; 100) and (t2.x is not null)))</text>
-<text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="114" width="127.55069209561442" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Filter: ((t2.y &lt; 100) and (t2.x is not null))  ·  Self: 0.070 µs (19.9%)  ·  Total: 0.294 µs  ·  Rows: 49  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 667  ⚠ Optimizer overestimate  ·  Cond: ((t2.y &lt; 100) and (t2.x is not null))" data-label="Filter: (((t2.y &lt; 100) and (t2.x is not null)))" data-teach-index="2"/>
+<text x="466.0" y="132.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="114" width="108.41808828127226" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Filter: ((t2.y &lt; 100) and (t2.x is not null))  ·  Self: 0.070 µs (19.9%)  ·  Total: 0.294 µs  ·  Rows: 49  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 667  ⚠ Optimizer overestimate  ·  Cond: ((t2.y &lt; 100) and (t2.x is not null))" data-label="Filter: (((t2.y &lt; 100) and (t2.x is not null)))" data-teach-index="2"/>
 <text x="1060" y="132.0" class="value">0.070 µs (19.9%)</text>
 <text x="320" y="166.0" text-anchor="end" class="label">Single-row lookup [t1.PRIMARY]</text>
-<text x="370.0" y="166.0" text-anchor="middle" class="loops">49</text>
-<rect class="bar" x="410" y="148" width="69.27527499076257" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Single-row index lookup on t1 using PRIMARY (id=t2.x)  ·  Self: 0.038 µs (10.8%)  ·  Rows: 1  ·  Loops: 49  ·  Table: t1  ·  Index: PRIMARY  ·  Access: index  ·  Est.rows: 1" data-label="Single-row lookup [t1.PRIMARY]" data-teach-index="4"/>
+<g><title>O(log n)</title><rect class="complexity-chip-rect" x="352.5" y="154.0" width="51.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="166.0" text-anchor="middle" class="complexity-chip-text">log n</text></g>
+<text x="466.0" y="166.0" text-anchor="middle" class="loops">49</text>
+<rect class="bar" x="506" y="148" width="58.88398374214819" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Single-row index lookup on t1 using PRIMARY (id=t2.x)  ·  Self: 0.038 µs (10.8%)  ·  Rows: 1  ·  Loops: 49  ·  Table: t1  ·  Index: PRIMARY  ·  Access: index  ·  Complexity: O(log n)  ·  Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.  ·  Est.rows: 1" data-label="Single-row lookup [t1.PRIMARY]" data-teach-index="4"/>
 <text x="1060" y="166.0" class="value">0.038 µs (10.8%)</text>
 <text x="320" y="200.0" text-anchor="end" class="label">Remove duplicate t1 rows using temporary table (...</text>
-<text x="370.0" y="200.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="182" width="24.8556405082001" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Remove duplicate t1 rows using temporary table (weedout)  ·  Self: 0.014 µs (3.9%)  ·  Total: 0.352 µs  ·  Rows: 49  ·  Loops: 1  ·  Access: weedout  ·  Est.rows: 667  ⚠ Optimizer overestimate" data-label="Remove duplicate t1 rows using temporary table (we..." data-teach-index="0"/>
+<g><title>O(n log n)</title><rect class="complexity-chip-rect" x="342.0" y="188.0" width="72.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="200.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<text x="466.0" y="200.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="182" width="21.127294431970085" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Remove duplicate t1 rows using temporary table (weedout)  ·  Self: 0.014 µs (3.9%)  ·  Total: 0.352 µs  ·  Rows: 49  ·  Loops: 1  ·  Access: weedout  ·  Complexity: O(n log n) (typical)  ·  DuplicateWeedout semijoin: runs as a plain inner join, then drops duplicates using a temp-table index on the outer row I…  ·  Est.rows: 667  ⚠ Optimizer overestimate" data-label="Remove duplicate t1 rows using temporary table (we..." data-teach-index="0"/>
 <text x="1060" y="200.0" class="value">0.014 µs (3.9%)</text>
 <text x="320" y="234.0" text-anchor="end" class="label">Nested loop inner join</text>
-<text x="370.0" y="234.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="216" width="11.143563652900482" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 0.006 µs (1.7%)  ·  Total: 0.338 µs  ·  Rows: 49  ·  Loops: 1  ·  Access: join  ·  Est.rows: 667  ⚠ Optimizer overestimate" data-label="Nested loop inner join" data-teach-index="1"/>
+<g><title>O(n · log m)</title><rect class="complexity-chip-rect" x="338.5" y="222.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="234.0" text-anchor="middle" class="complexity-chip-text">n · log m</text></g>
+<text x="466.0" y="234.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="216" width="9.472029104965412" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 0.006 µs (1.7%)  ·  Total: 0.338 µs  ·  Rows: 49  ·  Loops: 1  ·  Access: join  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent.  ·  Est.rows: 667  ⚠ Optimizer overestimate" data-label="Nested loop inner join" data-teach-index="1"/>
 <text x="1060" y="234.0" class="value">0.006 µs (1.7%)</text>
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="10" y="394" width="1180" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="20" y="408" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1180" y="408" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="20" y="422" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="50.0" y="435" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="92" y="435" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="20" y="444" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="57.0" y="457" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="106" y="457" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="20" y="466" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="71.0" y="479" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="134" y="479" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="408" y="422" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="438.0" y="435" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="480" y="435" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="408" y="444" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="452.0" y="457" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="508" y="457" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="408" y="466" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="445.0" y="479" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="494" y="479" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="796" y="422" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="847.0" y="435" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="910" y="435" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="796" y="444" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="833.0" y="457" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="882" y="457" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="796" y="466" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="826.0" y="479" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="868" y="479" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];
@@ -809,9 +897,9 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:23Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:08Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -946,6 +1034,56 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
       },
       &quot;note&quot;: &quot;Single-row index lookup on t1 using PRIMARY (id=t2.x) (t1)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` &lt; 100))&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;Remove duplicate t1 rows using temporary table (weedout) starts=1 rows=49&quot;,
+      &quot;short_label&quot;: &quot;Remove duplicate t1 rows using temporary table (we...&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n log n)&quot;,
+        &quot;short&quot;: &quot;n log n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;DuplicateWeedout semijoin: runs as a plain inner join, then drops duplicates using a temp-table index on the outer row IDs.&quot;,
+        &quot;confidence&quot;: &quot;typical&quot;,
+        &quot;learn_more&quot;: &quot;duplicate_weedout&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;NESTED LOOP INNER starts=1 rows=49&quot;,
+      &quot;short_label&quot;: &quot;Nested loop inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · log m)&quot;,
+        &quot;short&quot;: &quot;n · log m&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Indexed nested loop: each outer row probes the inner table via an index descent.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;nested_loop_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t2] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t2]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;SINGLE ROW LOOKUP [t1.PRIMARY] starts=49 rows=1&quot;,
+      &quot;short_label&quot;: &quot;Single-row lookup [t1.PRIMARY]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n)&quot;,
+        &quot;short&quot;: &quot;log n&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;single_row_lookup&quot;
+      }
     }
   ]
 }</code></pre>
@@ -13017,8 +13155,7 @@ teachRuntime.wirePhaseNav("phase-nav", {build: buildCurrentTimeline, reset: rese
     "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

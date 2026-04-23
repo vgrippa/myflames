@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables, materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: full scan of org_chart (1,000 rows).">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:23Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:07Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -221,11 +221,112 @@
       "note": "Index lookup on e using idx_mgr (manager_id=oc.id) (employees)",
       "query_sql": "with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` < 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "SORT starts=1 rows=10",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [<temporary>] starts=1 rows=10",
+      "short_label": "Table scan [<temporary>]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [org_chart] starts=1 rows=1000",
+      "short_label": "Table scan [org_chart]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "MATERIALIZE starts=1 rows=1000",
+      "short_label": "Materialize",
+      "complexity": {
+        "big_o": "build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all",
+        "short": "build+scan",
+        "severity": "good",
+        "rationale": "Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.",
+        "confidence": "exact",
+        "learn_more": "materialization",
+        "build_complexity": {
+          "big_o": "O(log n + k)",
+          "short": "log n + k",
+          "severity": "good",
+          "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+          "confidence": "exact",
+          "learn_more": "index_lookup"
+        },
+        "scan_complexity": {
+          "big_o": "O(1) per probe, O(rows) to fetch all",
+          "short": "O(1)/probe",
+          "severity": "good",
+          "rationale": "Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        }
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [employees.idx_mgr] starts=1 rows=100",
+      "short_label": "Index lookup [employees.idx_mgr]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "folded_label": "NESTED LOOP INNER starts=2 rows=450",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Indexed nested loop: each outer row probes the inner table via an index descent.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1",
+      "short_label": "Index lookup [employees.idx_mgr]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -944,29 +1045,35 @@ order by org_chart.level</code></pre>
 <rect x="900.0" y="165.0" width="890.0" height="31.0" fill="rgb(209,228,5)" rx="2" ry="2"/>
 <text x="903.00" y="183.50">AGGREGATE starts=1 rows=10</text>
 </g>
-<g data-teach-index="8"><title>INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1 (1 ms, 50.00%)&#10;&#10;Table: demodb.employees (index: idx_mgr)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 900&#10;Time: 0.001 ms (last row)&#10;Cost: 0.27&#10;Covering: No</title>
+<g data-teach-index="8"><title>INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1 (1 ms, 50.00%)  •  O(...): O(log n + k)&#10;&#10;Table: demodb.employees (index: idx_mgr)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 900&#10;Time: 0.001 ms (last row)&#10;Cost: 0.27&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
 <rect x="900.0" y="37.0" width="890.0" height="31.0" fill="rgb(253,37,47)" rx="2" ry="2"/>
-<text x="903.00" y="55.50">INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1</text>
+<circle cx="1785.0" cy="52.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
+<text x="903.00" y="55.50">INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1  O(log n + k)</text>
 </g>
-<g data-teach-index="4"><title>MATERIALIZE starts=1 rows=1000 (1 ms, 50.00%)&#10;&#10;Access: materialize&#10;Rows: 1000 actual (135 estimated) [UNDERESTIMATE]&#10;Time: 1.377 ms (last row)&#10;Cost: 55.53</title>
+<g data-teach-index="4"><title>MATERIALIZE starts=1 rows=1000 (1 ms, 50.00%)  •  O(...): build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all&#10;&#10;Access: materialize&#10;Rows: 1000 actual (135 estimated) [UNDERESTIMATE]&#10;Time: 1.377 ms (last row)&#10;Cost: 55.53&#10;Complexity: build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all&#10;Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is ef...</title>
 <rect x="900.0" y="101.0" width="890.0" height="31.0" fill="rgb(205,104,46)" rx="2" ry="2"/>
-<text x="903.00" y="119.50">MATERIALIZE starts=1 rows=1000</text>
+<circle cx="1785.0" cy="116.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
+<text x="903.00" y="119.50">MATERIALIZE starts=1 rows=1000  O(build+scan)</text>
 </g>
-<g data-teach-index="6"><title>NESTED LOOP INNER starts=2 rows=450 (1 ms, 50.00%)&#10;&#10;Access: join&#10;Rows: 450 actual (35 estimated) [UNDERESTIMATE]&#10;Loops: 2&#10;Time: 0.582 ms (last row)&#10;Cost: 26.02</title>
+<g data-teach-index="6"><title>NESTED LOOP INNER starts=2 rows=450 (1 ms, 50.00%)  •  O(...): O(n · log m)&#10;&#10;Access: join&#10;Rows: 450 actual (35 estimated) [UNDERESTIMATE]&#10;Loops: 2&#10;Time: 0.582 ms (last row)&#10;Cost: 26.02&#10;Complexity: O(n · log m)&#10;Indexed nested loop: each outer row probes the inner table via an index descent.</title>
 <rect x="900.0" y="69.0" width="890.0" height="31.0" fill="rgb(243,50,41)" rx="2" ry="2"/>
-<text x="903.00" y="87.50">NESTED LOOP INNER starts=2 rows=450</text>
+<circle cx="1785.0" cy="84.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
+<text x="903.00" y="87.50">NESTED LOOP INNER starts=2 rows=450  O(n · log m)</text>
 </g>
-<g data-teach-index="0"><title>SORT starts=1 rows=10 (2 ms, 100.00%)&#10;&#10;Access: sort&#10;Rows: 10 actual&#10;Time: 1.551 ms (last row)</title>
+<g data-teach-index="0"><title>SORT starts=1 rows=10 (2 ms, 100.00%)  •  O(...): O(n log n) (worst case)&#10;&#10;Access: sort&#10;Rows: 10 actual&#10;Time: 1.551 ms (last row)&#10;Complexity: O(n log n) (worst case)&#10;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we repo...</title>
 <rect x="10.0" y="229.0" width="1780.0" height="31.0" fill="rgb(213,143,4)" rx="2" ry="2"/>
-<text x="13.00" y="247.50">SORT starts=1 rows=10</text>
+<circle cx="1785.0" cy="244.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
+<text x="13.00" y="247.50">SORT starts=1 rows=10  O(~n log n)</text>
 </g>
-<g data-teach-index="1"><title>TABLE SCAN [&lt;temporary&gt;] starts=1 rows=10 (1 ms, 50.00%)&#10;&#10;Table: &amp;lt;temporary&amp;gt;&#10;Access: table&#10;Rows: 10 actual&#10;Time: 1.544 ms (last row)</title>
+<g data-teach-index="1"><title>TABLE SCAN [&lt;temporary&gt;] starts=1 rows=10 (1 ms, 50.00%)  •  O(...): O(n)&#10;&#10;Table: &amp;lt;temporary&amp;gt;&#10;Access: table&#10;Rows: 10 actual&#10;Time: 1.544 ms (last row)&#10;Complexity: O(n)&#10;Full table scan: the storage engine returns every row; cost scales with the table size.</title>
 <rect x="900.0" y="197.0" width="890.0" height="31.0" fill="rgb(212,116,47)" rx="2" ry="2"/>
-<text x="903.00" y="215.50">TABLE SCAN [&lt;temporary&gt;] starts=1 rows=10</text>
+<circle cx="1785.0" cy="212.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
+<text x="903.00" y="215.50">TABLE SCAN [&lt;temporary&gt;] starts=1 rows=10  O(n)</text>
 </g>
-<g data-teach-index="3"><title>TABLE SCAN [org_chart] starts=1 rows=1000 (1 ms, 50.00%)&#10;&#10;Table: org_chart&#10;Access: table&#10;Rows: 1000 actual (135 estimated) [UNDERESTIMATE]&#10;Time: 1.444 ms (last row)&#10;Cost: 59.72</title>
+<g data-teach-index="3"><title>TABLE SCAN [org_chart] starts=1 rows=1000 (1 ms, 50.00%)  •  O(...): O(n)&#10;&#10;Table: org_chart&#10;Access: table&#10;Rows: 1000 actual (135 estimated) [UNDERESTIMATE]&#10;Time: 1.444 ms (last row)&#10;Cost: 59.72&#10;Complexity: O(n)&#10;Full table scan: the storage engine returns every row; cost scales with the table size.</title>
 <rect x="900.0" y="133.0" width="890.0" height="31.0" fill="rgb(207,185,23)" rx="2" ry="2"/>
-<text x="903.00" y="151.50">TABLE SCAN [org_chart] starts=1 rows=1000</text>
+<circle cx="1785.0" cy="148.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
+<text x="903.00" y="151.50">TABLE SCAN [org_chart] starts=1 rows=1000  O(n)</text>
 </g>
 </g>
 </svg>
@@ -1067,9 +1174,9 @@ order by org_chart.level</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:23Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:07Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -1280,6 +1387,108 @@ order by org_chart.level</code></pre>
       },
       &quot;note&quot;: &quot;Index lookup on e using idx_mgr (manager_id=oc.id) (employees)&quot;,
       &quot;query_sql&quot;: &quot;with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` &lt; 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;SORT starts=1 rows=10&quot;,
+      &quot;short_label&quot;: &quot;Sort&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n log n)&quot;,
+        &quot;short&quot;: &quot;n log n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.&quot;,
+        &quot;confidence&quot;: &quot;worst_case&quot;,
+        &quot;learn_more&quot;: &quot;filesort&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [&lt;temporary&gt;] starts=1 rows=10&quot;,
+      &quot;short_label&quot;: &quot;Table scan [&lt;temporary&gt;]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [org_chart] starts=1 rows=1000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [org_chart]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;MATERIALIZE starts=1 rows=1000&quot;,
+      &quot;short_label&quot;: &quot;Materialize&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all&quot;,
+        &quot;short&quot;: &quot;build+scan&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;materialization&quot;,
+        &quot;build_complexity&quot;: {
+          &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+          &quot;short&quot;: &quot;log n + k&quot;,
+          &quot;severity&quot;: &quot;good&quot;,
+          &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+          &quot;confidence&quot;: &quot;exact&quot;,
+          &quot;learn_more&quot;: &quot;index_lookup&quot;
+        },
+        &quot;scan_complexity&quot;: {
+          &quot;big_o&quot;: &quot;O(1) per probe, O(rows) to fetch all&quot;,
+          &quot;short&quot;: &quot;O(1)/probe&quot;,
+          &quot;severity&quot;: &quot;good&quot;,
+          &quot;rationale&quot;: &quot;Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.&quot;,
+          &quot;confidence&quot;: &quot;typical&quot;,
+          &quot;learn_more&quot;: &quot;materialization&quot;
+        }
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;INDEX LOOKUP [employees.idx_mgr] starts=1 rows=100&quot;,
+      &quot;short_label&quot;: &quot;Index lookup [employees.idx_mgr]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_lookup&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;NESTED LOOP INNER starts=2 rows=450&quot;,
+      &quot;short_label&quot;: &quot;Nested loop inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · log m)&quot;,
+        &quot;short&quot;: &quot;n · log m&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Indexed nested loop: each outer row probes the inner table via an index descent.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;nested_loop_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1&quot;,
+      &quot;short_label&quot;: &quot;Index lookup [employees.idx_mgr]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_lookup&quot;
+      }
     }
   ]
 }</code></pre>
@@ -17029,8 +17238,7 @@ teachRuntime.wirePhaseNav("phase-nav", {build: buildCurrentTimeline, reset: rese
     "query_sql": "with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` < 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

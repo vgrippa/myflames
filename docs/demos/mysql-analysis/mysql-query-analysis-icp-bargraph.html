@@ -7,9 +7,9 @@
   <meta name="description" content="Query runs 1 operator; returns 600 rows in 0.42 ms. No warnings.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:21Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:06Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -52,11 +52,24 @@
       "note": "Index lookup on users using idx_country (country='US'), with index condition: (users.country = 'US') (users)",
       "query_sql": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`email` AS `email` from `testdb`.`users` where (`testdb`.`users`.`country` = 'US')"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "INDEX LOOKUP [users.idx_country] starts=1 rows=600",
+      "short_label": "Index lookup [users.idx_country]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -462,7 +475,7 @@ where (testdb.users.country = 'US')</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="254" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="364" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -475,6 +488,8 @@ where (testdb.users.country = 'US')</code></pre>
   .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
   .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
   .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .complexity-chip-rect { pointer-events: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
   #search { font-size: 12px; fill: #666; cursor: pointer; }
@@ -484,25 +499,59 @@ where (testdb.users.country = 'US')</code></pre>
 <text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
 <text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 0.419 µs</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
-<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
-<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text x="378.0" y="68" text-anchor="middle" class="col-header">COMPLEXITY</text>
+<text x="466.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="778.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="120" x2="1190" y2="120" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="124" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="132" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="146" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="160" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="174" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="188" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="202" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="216" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="230" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="230" x2="1190" y2="230" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="234" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="242" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="256" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="270" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="284" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="298" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="312" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="326" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="340" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
 <text x="320" y="98.0" text-anchor="end" class="label">Index lookup [users.idx_country]</text>
-<text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="80" width="640.0" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index lookup on users using idx_country (country='US'), with index condition: (users.country = 'US')  ·  Self: 0.419 µs (100.0%)  ·  Rows: 600  ·  Loops: 1  ·  Table: users  ·  Index: idx_country  ·  Access: index  ·  Est.rows: 600" data-label="Index lookup [users.idx_country]" data-teach-index="0"/>
+<g><title>O(log n + k)</title><rect class="complexity-chip-rect" x="338.5" y="86.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="98.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<text x="466.0" y="98.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="80" width="544.0" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index lookup on users using idx_country (country='US'), with index condition: (users.country = 'US')  ·  Self: 0.419 µs (100.0%)  ·  Rows: 600  ·  Loops: 1  ·  Table: users  ·  Index: idx_country  ·  Access: index  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the i…  ·  Est.rows: 600" data-label="Index lookup [users.idx_country]" data-teach-index="0"/>
 <text x="1060" y="98.0" class="value">0.419 µs (100.0%)</text>
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="10" y="258" width="1180" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="20" y="272" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1180" y="272" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="20" y="286" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="50.0" y="299" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="92" y="299" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="20" y="308" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="57.0" y="321" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="106" y="321" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="20" y="330" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="71.0" y="343" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="134" y="343" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="408" y="286" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="438.0" y="299" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="480" y="299" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="408" y="308" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="452.0" y="321" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="508" y="321" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="408" y="330" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="445.0" y="343" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="494" y="343" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="796" y="286" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="847.0" y="299" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="910" y="299" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="796" y="308" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="833.0" y="321" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="882" y="321" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="796" y="330" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="826.0" y="343" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="868" y="343" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];
@@ -639,9 +688,9 @@ where (testdb.users.country = 'US')</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:21Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:06Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -683,6 +732,20 @@ where (testdb.users.country = 'US')</code></pre>
       },
       &quot;note&quot;: &quot;Index lookup on users using idx_country (country='US'), with index condition: (users.country = 'US') (users)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`email` AS `email` from `testdb`.`users` where (`testdb`.`users`.`country` = 'US')&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;INDEX LOOKUP [users.idx_country] starts=1 rows=600&quot;,
+      &quot;short_label&quot;: &quot;Index lookup [users.idx_country]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_lookup&quot;
+      }
     }
   ]
 }</code></pre>
@@ -3222,8 +3285,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select `testdb`.`users`.`id` AS `id`,`testdb`.`users`.`email` AS `email` from `testdb`.`users` where (`testdb`.`users`.`country` = 'US')"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

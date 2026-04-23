@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables and sorts the result; examines ~331,614 rows to return 9 in 6357 ms. Main finding: full scan of dept_emp (331,603 rows).">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:22Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:06Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -187,11 +187,84 @@
       "note": "Single-row index lookup on d using PRIMARY (dept_no=de.dept_no) (departments)",
       "query_sql": "/* select#1 */ select `d`.`dept_name` AS `dept_name`,round(AVG(s.salary),2) AS `avg_salary` from `employees`.`salaries` `s` join `employees`.`dept_emp` `de` join `employees`.`departments` `d` where ((`s`.`emp_no` = `de`.`emp_no`) and (`d`.`dept_no` = `de`.`dept_no`) and (`de`.`to_date` = DATE'9999-01-01') and (`s`.`to_date` = DATE'9999-01-01')) group by `employees`.`d`.`dept_name` order by `avg_salary` desc"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "SORT starts=1 rows=9",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [<temporary>] starts=1 rows=9",
+      "short_label": "Table scan [<temporary>]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=240124",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Indexed nested loop: each outer row probes the inner table via an index descent.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [dept_emp] starts=1 rows=331603",
+      "short_label": "Table scan [dept_emp]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11",
+      "short_label": "Index lookup [salaries.PRIMARY]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "folded_label": "SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1",
+      "short_label": "Single-row lookup [departments.PRIMARY]",
+      "complexity": {
+        "big_o": "O(log n)",
+        "short": "log n",
+        "severity": "good",
+        "rationale": "Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.",
+        "confidence": "exact",
+        "learn_more": "single_row_lookup"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -609,7 +682,7 @@ order by avg_salary desc</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="560" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="670" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -622,6 +695,8 @@ order by avg_salary desc</code></pre>
   .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
   .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
   .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .complexity-chip-rect { pointer-events: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
   #search { font-size: 12px; fill: #666; cursor: pointer; }
@@ -631,61 +706,100 @@ order by avg_salary desc</code></pre>
 <text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
 <text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 6357 ms</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
-<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
-<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text x="378.0" y="68" text-anchor="middle" class="col-header">COMPLEXITY</text>
+<text x="466.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="778.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="426" x2="1190" y2="426" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="430" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="438" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="452" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="466" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="480" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="494" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="508" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="522" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="536" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="536" x2="1190" y2="536" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="540" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="548" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="562" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="576" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="590" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="604" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="618" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="632" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="646" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
 <text x="320" y="98.0" text-anchor="end" class="label">Index lookup [salaries.PRIMARY]</text>
-<text x="370.0" y="98.0" text-anchor="middle" class="loops">240,124</text>
-<rect class="bar" x="410" y="80" width="359.1535915521704" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index lookup on s using PRIMARY (emp_no=de.emp_no)  ·  Self: 3568 ms (56.1%)  ·  Rows: 11  ·  Loops: 240,124  ·  Table: salaries  ·  Index: PRIMARY  ·  Access: index  ·  Est.rows: 1  ⚠ Optimizer underestimate (10.5×)" data-label="Index lookup [salaries.PRIMARY]" data-teach-index="7"/>
+<g><title>O(log n + k)</title><rect class="complexity-chip-rect" x="338.5" y="86.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="98.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<text x="466.0" y="98.0" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="506" y="80" width="305.28055281934485" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index lookup on s using PRIMARY (emp_no=de.emp_no)  ·  Self: 3568 ms (56.1%)  ·  Rows: 11  ·  Loops: 240,124  ·  Table: salaries  ·  Index: PRIMARY  ·  Access: index  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the i…  ·  Est.rows: 1  ⚠ Optimizer underestimate (10.5×)" data-label="Index lookup [salaries.PRIMARY]" data-teach-index="7"/>
 <text x="1060" y="98.0" class="value">3568 ms (56.1%)</text>
 <text x="320" y="132.0" text-anchor="end" class="label">Single-row lookup [departments.PRIMARY]</text>
-<text x="370.0" y="132.0" text-anchor="middle" class="loops">240,124</text>
-<rect class="bar" x="410" y="114" width="116.07806366624585" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)  ·  Self: 1153 ms (18.1%)  ·  Rows: 1  ·  Loops: 240,124  ·  Table: departments  ·  Index: PRIMARY  ·  Access: index  ·  Est.rows: 1" data-label="Single-row lookup [departments.PRIMARY]" data-teach-index="8"/>
+<g><title>O(log n)</title><rect class="complexity-chip-rect" x="352.5" y="120.0" width="51.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="132.0" text-anchor="middle" class="complexity-chip-text">log n</text></g>
+<text x="466.0" y="132.0" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="506" y="114" width="98.66635411630897" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)  ·  Self: 1153 ms (18.1%)  ·  Rows: 1  ·  Loops: 240,124  ·  Table: departments  ·  Index: PRIMARY  ·  Access: index  ·  Complexity: O(log n)  ·  Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.  ·  Est.rows: 1" data-label="Single-row lookup [departments.PRIMARY]" data-teach-index="8"/>
 <text x="1060" y="132.0" class="value">1153 ms (18.1%)</text>
 <text x="320" y="166.0" text-anchor="end" class="label">Aggregate</text>
-<text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="148" width="73.72367302396857" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Aggregate using temporary table  ·  Self: 732 ms (11.5%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Access: temp_table_aggregate" data-label="Aggregate" data-teach-index="2"/>
+<text x="466.0" y="166.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="148" width="62.665122070373286" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Aggregate using temporary table  ·  Self: 732 ms (11.5%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Access: temp_table_aggregate" data-label="Aggregate" data-teach-index="2"/>
 <text x="1060" y="166.0" class="value">732 ms (11.5%)</text>
 <text x="320" y="200.0" text-anchor="end" class="label">Filter: ((s.to_date = DATE'9999-01-01'))</text>
-<text x="370.0" y="200.0" text-anchor="middle" class="loops">240,124</text>
-<rect class="bar" x="410" y="182" width="40.49796182158258" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Filter: (s.to_date = 9999-01-01)  ·  Self: 402 ms (6.3%)  ·  Total: 3970 ms  ·  Rows: 1  ·  Loops: 240,124  ·  Access: filter  ·  Est.rows: 0  ⚠ Optimizer underestimate (10.0×)  ·  Cond: (s.to_date = DATE'9999-01-01')" data-label="Filter: ((s.to_date = DATE'9999-01-01'))" data-teach-index="6"/>
+<text x="466.0" y="200.0" text-anchor="middle" class="loops">240,124</text>
+<rect class="bar" x="506" y="182" width="34.423267548345194" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Filter: (s.to_date = 9999-01-01)  ·  Self: 402 ms (6.3%)  ·  Total: 3970 ms  ·  Rows: 1  ·  Loops: 240,124  ·  Access: filter  ·  Est.rows: 0  ⚠ Optimizer underestimate (10.0×)  ·  Cond: (s.to_date = DATE'9999-01-01')" data-label="Filter: ((s.to_date = DATE'9999-01-01'))" data-teach-index="6"/>
 <text x="1060" y="200.0" class="value">402 ms (6.3%)</text>
 <text x="320" y="234.0" text-anchor="end" class="label">Table scan [dept_emp]</text>
-<text x="370.0" y="234.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="216" width="21.239712355875724" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Table scan on de  ·  Self: 211 ms (3.3%)  ·  Rows: 331603  ·  Loops: 1  ·  Table: dept_emp  ·  Access: table  ·  Est.rows: 331143" data-label="Table scan [dept_emp]" data-teach-index="5"/>
+<g><title>O(n)</title><rect class="complexity-chip-rect" x="356.0" y="222.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="234.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<text x="466.0" y="234.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="216" width="18.05375550249437" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Table scan on de  ·  Self: 211 ms (3.3%)  ·  Rows: 331603  ·  Loops: 1  ·  Table: dept_emp  ·  Access: table  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Est.rows: 331143" data-label="Table scan [dept_emp]" data-teach-index="5"/>
 <text x="1060" y="234.0" class="value">211 ms (3.3%)</text>
 <text x="320" y="268.0" text-anchor="end" class="label">Filter: ((de.to_date = DATE'9999-01-01'))</text>
-<text x="370.0" y="268.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="250" width="10.890606429954047" height="28" fill="rgb(200,200,100)" rx="3" ry="3" data-info="Filter: (de.to_date = 9999-01-01)  ·  Self: 108 ms (1.7%)  ·  Total: 319 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 33114  ⚠ Optimizer underestimate (7.3×)  ·  Cond: (de.to_date = DATE'9999-01-01')" data-label="Filter: ((de.to_date = DATE'9999-01-01'))" data-teach-index="4"/>
+<text x="466.0" y="268.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="250" width="9.257015465460942" height="28" fill="rgb(200,200,100)" rx="3" ry="3" data-info="Filter: (de.to_date = 9999-01-01)  ·  Self: 108 ms (1.7%)  ·  Total: 319 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 33114  ⚠ Optimizer underestimate (7.3×)  ·  Cond: (de.to_date = DATE'9999-01-01')" data-label="Filter: ((de.to_date = DATE'9999-01-01'))" data-teach-index="4"/>
 <text x="1060" y="268.0" class="value">108 ms (1.7%)</text>
 <text x="320" y="302.0" text-anchor="end" class="label">Nested loop inner join</text>
-<text x="370.0" y="302.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="284" width="9.46380861917782" height="28" fill="rgb(150,200,150)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 94 ms (1.5%)  ·  Total: 5625 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: join  ·  Est.rows: 3311  ⚠ Optimizer underestimate (72.5×)" data-label="Nested loop inner join" data-teach-index="3"/>
+<g><title>O(n · log m)</title><rect class="complexity-chip-rect" x="338.5" y="290.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="302.0" text-anchor="middle" class="complexity-chip-text">n · log m</text></g>
+<text x="466.0" y="302.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="284" width="8.044237326301147" height="28" fill="rgb(150,200,150)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 94 ms (1.5%)  ·  Total: 5625 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: join  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent.  ·  Est.rows: 3311  ⚠ Optimizer underestimate (72.5×)" data-label="Nested loop inner join" data-teach-index="3"/>
 <text x="1060" y="302.0" class="value">94 ms (1.5%)</text>
 <text x="320" y="336.0" text-anchor="end" class="label">Nested loop inner join</text>
-<text x="370.0" y="336.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="318" width="8.945519027507274" height="28" fill="rgb(100,180,180)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 89 ms (1.4%)  ·  Total: 4378 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: join  ·  Est.rows: 3311  ⚠ Optimizer underestimate (72.5×)" data-label="Nested loop inner join" data-teach-index="3"/>
+<text x="466.0" y="336.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="318" width="7.603691173381183" height="28" fill="rgb(100,180,180)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 89 ms (1.4%)  ·  Total: 4378 ms  ·  Rows: 240124  ·  Loops: 1  ·  Access: join  ·  Est.rows: 3311  ⚠ Optimizer underestimate (72.5×)" data-label="Nested loop inner join" data-teach-index="3"/>
 <text x="1060" y="336.0" class="value">89 ms (1.4%)</text>
 <text x="320" y="370.0" text-anchor="end" class="label">Sort</text>
-<text x="370.0" y="370.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="352" width="3" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Sort: avg_salary DESC  ·  Self: 0.067 ms (0.0%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Access: sort" data-label="Sort" data-teach-index="0"/>
+<g><title>O(n log n)</title><rect class="complexity-chip-rect" x="342.0" y="358.0" width="72.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="370.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<text x="466.0" y="370.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="352" width="3" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Sort: avg_salary DESC  ·  Self: 0.067 ms (0.0%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Access: sort  ·  Complexity: O(n log n) (worst case)  ·  Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report …" data-label="Sort" data-teach-index="0"/>
 <text x="1060" y="370.0" class="value">0.067 ms (0.0%)</text>
 <text x="320" y="404.0" text-anchor="end" class="label">Table scan [&lt;temporary&gt;]</text>
-<text x="370.0" y="404.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="386" width="3" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Table scan on &lt;temporary&gt;  ·  Self: 0.004 ms (0.0%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Table: &lt;temporary&gt;  ·  Access: table" data-label="Table scan [&lt;temporary&gt;]" data-teach-index="1"/>
+<g><title>O(n)</title><rect class="complexity-chip-rect" x="356.0" y="392.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="404.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<text x="466.0" y="404.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="386" width="3" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Table scan on &lt;temporary&gt;  ·  Self: 0.004 ms (0.0%)  ·  Total: 6357 ms  ·  Rows: 9  ·  Loops: 1  ·  Table: &lt;temporary&gt;  ·  Access: table  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size." data-label="Table scan [&lt;temporary&gt;]" data-teach-index="1"/>
 <text x="1060" y="404.0" class="value">0.004 ms (0.0%)</text>
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="10" y="564" width="1180" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="20" y="578" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1180" y="578" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="20" y="592" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="50.0" y="605" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="92" y="605" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="20" y="614" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="57.0" y="627" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="106" y="627" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="20" y="636" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="71.0" y="649" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="134" y="649" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="408" y="592" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="438.0" y="605" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="480" y="605" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="408" y="614" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="452.0" y="627" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="508" y="627" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="408" y="636" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="445.0" y="649" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="494" y="649" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="796" y="592" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="847.0" y="605" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="910" y="605" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="796" y="614" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="833.0" y="627" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="882" y="627" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="796" y="636" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="826.0" y="649" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="868" y="649" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];
@@ -864,9 +978,9 @@ order by avg_salary desc</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:22Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:06Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -1043,6 +1157,80 @@ order by avg_salary desc</code></pre>
       },
       &quot;note&quot;: &quot;Single-row index lookup on d using PRIMARY (dept_no=de.dept_no) (departments)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `d`.`dept_name` AS `dept_name`,round(AVG(s.salary),2) AS `avg_salary` from `employees`.`salaries` `s` join `employees`.`dept_emp` `de` join `employees`.`departments` `d` where ((`s`.`emp_no` = `de`.`emp_no`) and (`d`.`dept_no` = `de`.`dept_no`) and (`de`.`to_date` = DATE'9999-01-01') and (`s`.`to_date` = DATE'9999-01-01')) group by `employees`.`d`.`dept_name` order by `avg_salary` desc&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;SORT starts=1 rows=9&quot;,
+      &quot;short_label&quot;: &quot;Sort&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n log n)&quot;,
+        &quot;short&quot;: &quot;n log n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.&quot;,
+        &quot;confidence&quot;: &quot;worst_case&quot;,
+        &quot;learn_more&quot;: &quot;filesort&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9&quot;,
+      &quot;short_label&quot;: &quot;Table scan [&lt;temporary&gt;]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;NESTED LOOP INNER starts=1 rows=240124&quot;,
+      &quot;short_label&quot;: &quot;Nested loop inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · log m)&quot;,
+        &quot;short&quot;: &quot;n · log m&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Indexed nested loop: each outer row probes the inner table via an index descent.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;nested_loop_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [dept_emp] starts=1 rows=331603&quot;,
+      &quot;short_label&quot;: &quot;Table scan [dept_emp]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11&quot;,
+      &quot;short_label&quot;: &quot;Index lookup [salaries.PRIMARY]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_lookup&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1&quot;,
+      &quot;short_label&quot;: &quot;Single-row lookup [departments.PRIMARY]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n)&quot;,
+        &quot;short&quot;: &quot;log n&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;single_row_lookup&quot;
+      }
     }
   ]
 }</code></pre>
@@ -19040,8 +19228,7 @@ teachRuntime.wirePhaseNav("phase-nav", {build: buildCurrentTimeline, reset: rese
     "query_sql": "/* select#1 */ select `d`.`dept_name` AS `dept_name`,round(AVG(s.salary),2) AS `avg_salary` from `employees`.`salaries` `s` join `employees`.`dept_emp` `de` join `employees`.`departments` `d` where ((`s`.`emp_no` = `de`.`emp_no`) and (`d`.`dept_no` = `de`.`dept_no`) and (`de`.`to_date` = DATE'9999-01-01') and (`s`.`to_date` = DATE'9999-01-01')) group by `employees`.`d`.`dept_name` order by `avg_salary` desc"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

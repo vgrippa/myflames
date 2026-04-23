@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:21Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:05Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -110,6 +110,44 @@
       },
       "note": "Table scan on t2 (BNL join buffer) (t2)",
       "query_sql": "/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=150",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · m)",
+        "short": "n · m",
+        "severity": "bad",
+        "rationale": "Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t1] starts=1 rows=100",
+      "short_label": "Table scan [t1]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=100 rows=150",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
     }
   ]
 }

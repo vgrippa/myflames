@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables and joins via block nested-loop; returns 150 rows in 16 ms. Main finding: Block Nested-Loop join — each batch of outer rows triggers a full scan of the inner table.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:20Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:05Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -117,11 +117,48 @@
       "note": "Table scan on t2 (BNL join buffer) (t2)",
       "query_sql": "/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=150",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · m)",
+        "short": "n · m",
+        "severity": "bad",
+        "rationale": "Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t1] starts=1 rows=100",
+      "short_label": "Table scan [t1]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=100 rows=150",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -853,9 +890,9 @@ from testdb.t1
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:20Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:05Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -962,6 +999,44 @@ from testdb.t1
       },
       &quot;note&quot;: &quot;Table scan on t2 (BNL join buffer) (t2)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;NESTED LOOP INNER starts=1 rows=150&quot;,
+      &quot;short_label&quot;: &quot;Nested loop inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · m)&quot;,
+        &quot;short&quot;: &quot;n · m&quot;,
+        &quot;severity&quot;: &quot;bad&quot;,
+        &quot;rationale&quot;: &quot;Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;nested_loop_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t1] starts=1 rows=100&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t1]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t2] starts=100 rows=150&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t2]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -8364,8 +8439,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select t1.id, t1.name, t2.amount from testdb.t1 join testdb.t2"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

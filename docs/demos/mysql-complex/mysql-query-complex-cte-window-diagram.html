@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables, materializes 2 temp tables and sorts the result; examines ~4,008 rows to return 24 in 3.8 ms. Main finding: full scan of employees (2,000 rows).">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:22Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:07Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -241,11 +241,174 @@
       "note": "Index scan on employees using idx_dept (employees)",
       "query_sql": "with `dept_avg` as (/* select#2 */ select `demodb`.`employees`.`dept_id` AS `dept_id`,avg(`demodb`.`employees`.`salary`) AS `avg_sal`,count(0) AS `n` from `demodb`.`employees` group by `demodb`.`employees`.`dept_id`), `top_paid` as (/* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`dept_id` AS `dept_id`,`e`.`salary` AS `salary`,row_number() OVER (PARTITION BY `demodb`.`e`.`dept_id` ORDER BY `demodb`.`e`.`salary` desc )  AS `rn` from `demodb`.`employees` `e`) /* select#1 */ select `d`.`name` AS `dept`,`da`.`avg_sal` AS `avg_sal`,`tp`.`name` AS `top_earner`,`tp`.`salary` AS `salary` from `demodb`.`departments` `d` join `dept_avg` `da` join `top_paid` `tp` where ((`tp`.`dept_id` = `d`.`id`) and (`da`.`dept_id` = `d`.`id`) and (`tp`.`rn` <= 3)) order by `da`.`avg_sal` desc"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "SORT starts=1 rows=24",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=24",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Indexed nested loop: each outer row probes the inner table via an index descent.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [departments] starts=1 rows=8",
+      "short_label": "Table scan [departments]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [tp.<auto_key0>] starts=8 rows=250",
+      "short_label": "Index lookup [tp.<auto_key0>]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "folded_label": "MATERIALIZE starts=1 rows=2000",
+      "short_label": "Materialize",
+      "complexity": {
+        "big_o": "build: O(m)  •  scan: O(1) per probe, O(rows) to fetch all",
+        "short": "build+scan",
+        "severity": "medium",
+        "rationale": "Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.",
+        "confidence": "typical",
+        "learn_more": "materialization",
+        "build_complexity": {
+          "big_o": "O(m)",
+          "short": "m",
+          "severity": "medium",
+          "rationale": "Materialize build: cost = cost of the source subquery over m rows.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        },
+        "scan_complexity": {
+          "big_o": "O(1) per probe, O(rows) to fetch all",
+          "short": "O(1)/probe",
+          "severity": "good",
+          "rationale": "Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        }
+      }
+    },
+    {
+      "folded_label": "SORT starts=1 rows=2000",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [employees] starts=1 rows=2000",
+      "short_label": "Table scan [employees]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [da.<auto_key0>] starts=24 rows=1",
+      "short_label": "Index lookup [da.<auto_key0>]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "folded_label": "MATERIALIZE starts=1 rows=8",
+      "short_label": "Materialize",
+      "complexity": {
+        "big_o": "build: O(n log n)  •  scan: O(1) per probe, O(rows) to fetch all",
+        "short": "build+scan",
+        "severity": "medium",
+        "rationale": "Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.",
+        "confidence": "typical",
+        "learn_more": "materialization",
+        "build_complexity": {
+          "big_o": "O(n log n)",
+          "short": "n log n",
+          "severity": "medium",
+          "rationale": "Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates.",
+          "confidence": "typical"
+        },
+        "scan_complexity": {
+          "big_o": "O(1) per probe, O(rows) to fetch all",
+          "short": "O(1)/probe",
+          "severity": "good",
+          "rationale": "Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        }
+      }
+    },
+    {
+      "folded_label": "GROUP starts=1 rows=8",
+      "short_label": "Group",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates.",
+        "confidence": "typical"
+      }
+    },
+    {
+      "folded_label": "INDEX SCAN [employees.idx_dept] starts=1 rows=2000",
+      "short_label": "Index scan [employees.idx_dept]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but still O(n).",
+        "confidence": "exact",
+        "learn_more": "index_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -672,7 +835,7 @@ order by da.avg_sal desc</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="584" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="694" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="584"/></clipPath></defs>
 <style>
   text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11px; -webkit-font-smoothing: antialiased; }
@@ -687,6 +850,8 @@ order by da.avg_sal desc</code></pre>
   .diagram-node { cursor: pointer; }
   .diagram-node:hover rect, .diagram-node:hover polygon { stroke-width: 2.5; }
   .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }
+  .complexity-chip { pointer-events: none; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
   .loops-line { font-size: 9.5px; font-weight: 500; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
   .details-line.dim { fill: #999; }
@@ -729,8 +894,8 @@ order by da.avg_sal desc</code></pre>
 <text id="details-l4" x="30" y="590" text-anchor="start" class="details-line"></text>
 <text id="details-l5" x="30" y="606" text-anchor="start" class="details-line"></text>
 <g id="diagram-content" clip-path="url(#diagram-clip)">
-<g class="diagram-node" data-info="Table scan on d  ·  Total: 15.4 µs  ·  Cost: 1.05  ·  Rows: 8  ·  Loops: 1  ·  Table: departments  ·  Est.rows: 8" data-teach-index="2">
-<title>Table scan on d  ·  Total: 15.4 µs  ·  Cost: 1.05  ·  Rows: 8  ·  Loops: 1  ·  Table: departments  ·  Est.rows: 8</title>
+<g class="diagram-node" data-info="Table scan on d  ·  Total: 15.4 µs  ·  Cost: 1.05  ·  Rows: 8  ·  Loops: 1  ·  Table: departments  ·  Est.rows: 8  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size." data-teach-index="2">
+<title>Table scan on d  ·  Total: 15.4 µs  ·  Cost: 1.05  ·  Rows: 8  ·  Loops: 1  ·  Table: departments  ·  Est.rows: 8  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.</title>
 <defs><clipPath id="clipbox-0"><rect x="20" y="182" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
 <g clip-path="url(#clipbox-0)">
 <rect x="20" y="182" width="240" height="112" fill="#f3e526" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
@@ -738,6 +903,10 @@ order by da.avg_sal desc</code></pre>
 <text x="140.0" y="216" text-anchor="middle" class="node-label" fill="#111111">Full Table Scan</text>
 <text x="140.0" y="234" text-anchor="middle" class="node-sublabel" fill="#111111">departments</text>
 <text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#111111">8 rows</text>
+</g>
+<g class="complexity-chip" data-big-o="O(n)">
+<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
 </g>
 </g>
 <line x1="260" y1="238.0" x2="310" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
@@ -749,8 +918,8 @@ order by da.avg_sal desc</code></pre>
 <text x="366" y="234.0" text-anchor="middle" class="node-label" fill="#111111">inner join</text>
 <text x="366" y="250.0" text-anchor="middle" class="node-sublabel" fill="#111111">24 rows</text>
 </g>
-<g class="diagram-node" data-info="Table scan on e  ·  Total: 352.9 µs  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Est.rows: 2000" data-teach-index="7">
-<title>Table scan on e  ·  Total: 352.9 µs  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Est.rows: 2000</title>
+<g class="diagram-node" data-info="Table scan on e  ·  Total: 352.9 µs  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Est.rows: 2000  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size." data-teach-index="7">
+<title>Table scan on e  ·  Total: 352.9 µs  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Est.rows: 2000  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.</title>
 <defs><clipPath id="clipbox-1"><rect x="246.0" y="344" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
 <g clip-path="url(#clipbox-1)">
 <rect x="246.0" y="344" width="240" height="112" fill="#4bb86e" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
@@ -764,15 +933,19 @@ order by da.avg_sal desc</code></pre>
 <text x="380" y="319.0" text-anchor="start" class="arrow-label">2.00K rows</text>
 <line x1="422" y1="238.0" x2="600" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
 <text x="511.0" y="232.0" text-anchor="middle" class="arrow-label">24 rows</text>
-<g class="diagram-node" data-info="Nested loop inner join  ·  Total: 3.77 ms  ·  Self: 4.7 µs  ·  Cost: 384.62  ·  Rows: 24  ·  Loops: 1  ·  Est.rows: 448" data-teach-index="1">
-<title>Nested loop inner join  ·  Total: 3.77 ms  ·  Self: 4.7 µs  ·  Cost: 384.62  ·  Rows: 24  ·  Loops: 1  ·  Est.rows: 448</title>
+<g class="diagram-node" data-info="Nested loop inner join  ·  Total: 3.77 ms  ·  Self: 4.7 µs  ·  Cost: 384.62  ·  Rows: 24  ·  Loops: 1  ·  Est.rows: 448  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent." data-teach-index="1">
+<title>Nested loop inner join  ·  Total: 3.77 ms  ·  Self: 4.7 µs  ·  Cost: 384.62  ·  Rows: 24  ·  Loops: 1  ·  Est.rows: 448  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent.</title>
 <text x="656" y="176.0" text-anchor="middle" class="cost">4.7 µs</text>
 <polygon points="656,182.0 712,238.0 656,294.0 600,238.0" fill="#fae625" stroke="#2d3748" stroke-width="1"/>
 <text x="656" y="234.0" text-anchor="middle" class="node-label" fill="#111111">inner join</text>
 <text x="656" y="250.0" text-anchor="middle" class="node-sublabel" fill="#111111">24 rows</text>
+<g class="complexity-chip" data-big-o="O(n · log m)">
+<rect x="617.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="656.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
 </g>
-<g class="diagram-node hotspot" data-info="Index scan on employees using idx_dept  ·  Total: 1.20 ms  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Index: idx_dept  ·  Est.rows: 2000  ·  Covering: no" data-teach-index="10">
-<title>Index scan on employees using idx_dept  ·  Total: 1.20 ms  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Index: idx_dept  ·  Est.rows: 2000  ·  Covering: no</title>
+</g>
+<g class="diagram-node hotspot" data-info="Index scan on employees using idx_dept  ·  Total: 1.20 ms  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Index: idx_dept  ·  Est.rows: 2000  ·  Covering: no  ·  Complexity: O(n)  ·  Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but …" data-teach-index="10">
+<title>Index scan on employees using idx_dept  ·  Total: 1.20 ms  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Index: idx_dept  ·  Est.rows: 2000  ·  Covering: no  ·  Complexity: O(n)  ·  Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but …</title>
 <defs><clipPath id="clipbox-2"><rect x="536.0" y="344" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
 <g clip-path="url(#clipbox-2)">
 <rect x="536.0" y="344" width="240" height="112" fill="#440154" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
@@ -969,6 +1142,38 @@ order by da.avg_sal desc</code></pre>
   window.init = init;
 })();
 ]]></script>
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="20" y="588" width="1160" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="30" y="602" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1170" y="602" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="30" y="616" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="60.0" y="629" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="102" y="629" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="30" y="638" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="67.0" y="651" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="116" y="651" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="30" y="660" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="81.0" y="673" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="144" y="673" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="411" y="616" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="441.0" y="629" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="483" y="629" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="411" y="638" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="455.0" y="651" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="511" y="651" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="411" y="660" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="448.0" y="673" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="497" y="673" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="792" y="616" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="843.0" y="629" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="906" y="629" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="792" y="638" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="829.0" y="651" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="878" y="651" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="792" y="660" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="822.0" y="673" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="864" y="673" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 </svg>
 
   </div>
@@ -1062,9 +1267,9 @@ order by da.avg_sal desc</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:22Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:07Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -1295,6 +1500,170 @@ order by da.avg_sal desc</code></pre>
       },
       &quot;note&quot;: &quot;Index scan on employees using idx_dept (employees)&quot;,
       &quot;query_sql&quot;: &quot;with `dept_avg` as (/* select#2 */ select `demodb`.`employees`.`dept_id` AS `dept_id`,avg(`demodb`.`employees`.`salary`) AS `avg_sal`,count(0) AS `n` from `demodb`.`employees` group by `demodb`.`employees`.`dept_id`), `top_paid` as (/* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`dept_id` AS `dept_id`,`e`.`salary` AS `salary`,row_number() OVER (PARTITION BY `demodb`.`e`.`dept_id` ORDER BY `demodb`.`e`.`salary` desc )  AS `rn` from `demodb`.`employees` `e`) /* select#1 */ select `d`.`name` AS `dept`,`da`.`avg_sal` AS `avg_sal`,`tp`.`name` AS `top_earner`,`tp`.`salary` AS `salary` from `demodb`.`departments` `d` join `dept_avg` `da` join `top_paid` `tp` where ((`tp`.`dept_id` = `d`.`id`) and (`da`.`dept_id` = `d`.`id`) and (`tp`.`rn` &lt;= 3)) order by `da`.`avg_sal` desc&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;SORT starts=1 rows=24&quot;,
+      &quot;short_label&quot;: &quot;Sort&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n log n)&quot;,
+        &quot;short&quot;: &quot;n log n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.&quot;,
+        &quot;confidence&quot;: &quot;worst_case&quot;,
+        &quot;learn_more&quot;: &quot;filesort&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;NESTED LOOP INNER starts=1 rows=24&quot;,
+      &quot;short_label&quot;: &quot;Nested loop inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · log m)&quot;,
+        &quot;short&quot;: &quot;n · log m&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Indexed nested loop: each outer row probes the inner table via an index descent.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;nested_loop_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [departments] starts=1 rows=8&quot;,
+      &quot;short_label&quot;: &quot;Table scan [departments]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;INDEX LOOKUP [tp.&lt;auto_key0&gt;] starts=8 rows=250&quot;,
+      &quot;short_label&quot;: &quot;Index lookup [tp.&lt;auto_key0&gt;]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_lookup&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;MATERIALIZE starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Materialize&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;build: O(m)  •  scan: O(1) per probe, O(rows) to fetch all&quot;,
+        &quot;short&quot;: &quot;build+scan&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.&quot;,
+        &quot;confidence&quot;: &quot;typical&quot;,
+        &quot;learn_more&quot;: &quot;materialization&quot;,
+        &quot;build_complexity&quot;: {
+          &quot;big_o&quot;: &quot;O(m)&quot;,
+          &quot;short&quot;: &quot;m&quot;,
+          &quot;severity&quot;: &quot;medium&quot;,
+          &quot;rationale&quot;: &quot;Materialize build: cost = cost of the source subquery over m rows.&quot;,
+          &quot;confidence&quot;: &quot;typical&quot;,
+          &quot;learn_more&quot;: &quot;materialization&quot;
+        },
+        &quot;scan_complexity&quot;: {
+          &quot;big_o&quot;: &quot;O(1) per probe, O(rows) to fetch all&quot;,
+          &quot;short&quot;: &quot;O(1)/probe&quot;,
+          &quot;severity&quot;: &quot;good&quot;,
+          &quot;rationale&quot;: &quot;Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.&quot;,
+          &quot;confidence&quot;: &quot;typical&quot;,
+          &quot;learn_more&quot;: &quot;materialization&quot;
+        }
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;SORT starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Sort&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n log n)&quot;,
+        &quot;short&quot;: &quot;n log n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.&quot;,
+        &quot;confidence&quot;: &quot;worst_case&quot;,
+        &quot;learn_more&quot;: &quot;filesort&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [employees] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [employees]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;INDEX LOOKUP [da.&lt;auto_key0&gt;] starts=24 rows=1&quot;,
+      &quot;short_label&quot;: &quot;Index lookup [da.&lt;auto_key0&gt;]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_lookup&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;MATERIALIZE starts=1 rows=8&quot;,
+      &quot;short_label&quot;: &quot;Materialize&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;build: O(n log n)  •  scan: O(1) per probe, O(rows) to fetch all&quot;,
+        &quot;short&quot;: &quot;build+scan&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.&quot;,
+        &quot;confidence&quot;: &quot;typical&quot;,
+        &quot;learn_more&quot;: &quot;materialization&quot;,
+        &quot;build_complexity&quot;: {
+          &quot;big_o&quot;: &quot;O(n log n)&quot;,
+          &quot;short&quot;: &quot;n log n&quot;,
+          &quot;severity&quot;: &quot;medium&quot;,
+          &quot;rationale&quot;: &quot;Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates.&quot;,
+          &quot;confidence&quot;: &quot;typical&quot;
+        },
+        &quot;scan_complexity&quot;: {
+          &quot;big_o&quot;: &quot;O(1) per probe, O(rows) to fetch all&quot;,
+          &quot;short&quot;: &quot;O(1)/probe&quot;,
+          &quot;severity&quot;: &quot;good&quot;,
+          &quot;rationale&quot;: &quot;Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.&quot;,
+          &quot;confidence&quot;: &quot;typical&quot;,
+          &quot;learn_more&quot;: &quot;materialization&quot;
+        }
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;GROUP starts=1 rows=8&quot;,
+      &quot;short_label&quot;: &quot;Group&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n log n)&quot;,
+        &quot;short&quot;: &quot;n log n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates.&quot;,
+        &quot;confidence&quot;: &quot;typical&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;INDEX SCAN [employees.idx_dept] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Index scan [employees.idx_dept]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but still O(n).&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -19847,8 +20216,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "with `dept_avg` as (/* select#2 */ select `demodb`.`employees`.`dept_id` AS `dept_id`,avg(`demodb`.`employees`.`salary`) AS `avg_sal`,count(0) AS `n` from `demodb`.`employees` group by `demodb`.`employees`.`dept_id`), `top_paid` as (/* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`dept_id` AS `dept_id`,`e`.`salary` AS `salary`,row_number() OVER (PARTITION BY `demodb`.`e`.`dept_id` ORDER BY `demodb`.`e`.`salary` desc )  AS `rn` from `demodb`.`employees` `e`) /* select#1 */ select `d`.`name` AS `dept`,`da`.`avg_sal` AS `avg_sal`,`tp`.`name` AS `top_earner`,`tp`.`salary` AS `salary` from `demodb`.`departments` `d` join `dept_avg` `da` join `top_paid` `tp` where ((`tp`.`dept_id` = `d`.`id`) and (`da`.`dept_id` = `d`.`id`) and (`tp`.`rn` <= 3)) order by `da`.`avg_sal` desc"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

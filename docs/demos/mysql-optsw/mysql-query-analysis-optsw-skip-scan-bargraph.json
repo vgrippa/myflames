@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:25Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:09Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -66,6 +66,20 @@
       },
       "note": "Covering index skip scan on ss using g over 4900 < v (ss)",
       "query_sql": "/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` > 4900)"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "COVERING INDEX [ss.g] starts=1 rows=100",
+      "short_label": "Covering index [ss.g]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "good",
+        "rationale": "Covering index scan: walks the whole index in key order but never touches the clustered tree — all selected columns fit on the index leaves.",
+        "confidence": "exact",
+        "learn_more": "covering_index"
+      }
     }
   ]
 }

@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables and hash-joins 1 pair; examines ~7,000 rows to return 0 in 1.9 ms. Main finding: join predicate wraps the column in CONCAT() — no index can be used.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:24Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:08Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -133,11 +133,48 @@
       "note": "Table scan on t2 (t2)",
       "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0",
+      "short_label": "Inner hash join (t1.d = concat('r',t2.y))",
+      "complexity": {
+        "big_o": "O(n + m)",
+        "short": "n + m",
+        "severity": "good",
+        "rationale": "Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asymptotic class — only the constants.",
+        "confidence": "exact",
+        "learn_more": "hash_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t1] starts=1 rows=5000",
+      "short_label": "Table scan [t1]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -844,13 +881,15 @@ where (testdb.t1.d = concat('r',testdb.t2.y))</code></pre>
 <text id="ignorecase" x="1774" y="24">ic</text>
 <text id="matched" x="1690" y="149"> </text>
 <g id="frames">
-<g data-teach-index="0"><title>Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0 (2 ms, 100.00%)&#10;&#10;Access: join&#10;Rows: 0 actual (1000000 estimated)&#10;Time: 1.944 ms (last row)&#10;Cost: 1000205.90</title>
+<g data-teach-index="0"><title>Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0 (2 ms, 100.00%)  •  O(...): O(n + m)&#10;&#10;Access: join&#10;Rows: 0 actual (1000000 estimated)&#10;Time: 1.944 ms (last row)&#10;Cost: 1000205.90&#10;Complexity: O(n + m)&#10;Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asympto...</title>
 <rect x="10.0" y="69.0" width="1780.0" height="31.0" fill="rgb(245,121,51)" rx="2" ry="2"/>
-<text x="13.00" y="87.50">Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0</text>
+<circle cx="1785.0" cy="84.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
+<text x="13.00" y="87.50">Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0  O(n + m)</text>
 </g>
-<g data-teach-index="1"><title>TABLE SCAN [t1] starts=1 rows=5000 (1 ms, 50.00%)&#10;&#10;Table: testdb.t1&#10;Access: table&#10;Rows: 5000 actual (5000 estimated)&#10;Time: 0.818 ms (last row)&#10;Cost: 0.03</title>
+<g data-teach-index="1"><title>TABLE SCAN [t1] starts=1 rows=5000 (1 ms, 50.00%)  •  O(...): O(n)&#10;&#10;Table: testdb.t1&#10;Access: table&#10;Rows: 5000 actual (5000 estimated)&#10;Time: 0.818 ms (last row)&#10;Cost: 0.03&#10;Complexity: O(n)&#10;Full table scan: the storage engine returns every row; cost scales with the table size.</title>
 <rect x="900.0" y="37.0" width="890.0" height="31.0" fill="rgb(210,124,48)" rx="2" ry="2"/>
-<text x="903.00" y="55.50">TABLE SCAN [t1] starts=1 rows=5000</text>
+<circle cx="1785.0" cy="52.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
+<text x="903.00" y="55.50">TABLE SCAN [t1] starts=1 rows=5000  O(n)</text>
 </g>
 </g>
 </svg>
@@ -939,9 +978,9 @@ where (testdb.t1.d = concat('r',testdb.t2.y))</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:24Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:08Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -1064,6 +1103,44 @@ where (testdb.t1.d = concat('r',testdb.t2.y))</code></pre>
       },
       &quot;note&quot;: &quot;Table scan on t2 (t2)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0&quot;,
+      &quot;short_label&quot;: &quot;Inner hash join (t1.d = concat('r',t2.y))&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n + m)&quot;,
+        &quot;short&quot;: &quot;n + m&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asymptotic class — only the constants.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;hash_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t1] starts=1 rows=5000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t1]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t2] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t2]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -6173,8 +6250,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

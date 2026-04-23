@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables, materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: full scan of org_chart (1,000 rows).">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:23Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:07Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -221,11 +221,112 @@
       "note": "Index lookup on e using idx_mgr (manager_id=oc.id) (employees)",
       "query_sql": "with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` < 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "SORT starts=1 rows=10",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [<temporary>] starts=1 rows=10",
+      "short_label": "Table scan [<temporary>]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [org_chart] starts=1 rows=1000",
+      "short_label": "Table scan [org_chart]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "MATERIALIZE starts=1 rows=1000",
+      "short_label": "Materialize",
+      "complexity": {
+        "big_o": "build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all",
+        "short": "build+scan",
+        "severity": "good",
+        "rationale": "Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.",
+        "confidence": "exact",
+        "learn_more": "materialization",
+        "build_complexity": {
+          "big_o": "O(log n + k)",
+          "short": "log n + k",
+          "severity": "good",
+          "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+          "confidence": "exact",
+          "learn_more": "index_lookup"
+        },
+        "scan_complexity": {
+          "big_o": "O(1) per probe, O(rows) to fetch all",
+          "short": "O(1)/probe",
+          "severity": "good",
+          "rationale": "Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        }
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [employees.idx_mgr] starts=1 rows=100",
+      "short_label": "Index lookup [employees.idx_mgr]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "folded_label": "NESTED LOOP INNER starts=2 rows=450",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Indexed nested loop: each outer row probes the inner table via an index descent.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1",
+      "short_label": "Index lookup [employees.idx_mgr]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -652,7 +753,7 @@ order by org_chart.level</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="526" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="636" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -665,6 +766,8 @@ order by org_chart.level</code></pre>
   .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
   .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
   .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .complexity-chip-rect { pointer-events: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
   #search { font-size: 12px; fill: #666; cursor: pointer; }
@@ -674,57 +777,96 @@ order by org_chart.level</code></pre>
 <text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
 <text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 2 ms</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
-<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
-<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text x="378.0" y="68" text-anchor="middle" class="col-header">COMPLEXITY</text>
+<text x="466.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="778.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="392" x2="1190" y2="392" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="396" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="404" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="418" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="432" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="446" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="460" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="474" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="488" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="502" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="502" x2="1190" y2="502" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="506" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="514" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="528" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="542" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="556" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="570" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="584" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="598" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="612" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
 <text x="320" y="98.0" text-anchor="end" class="label">Index lookup [employees.idx_mgr]</text>
-<text x="370.0" y="98.0" text-anchor="middle" class="loops">900</text>
-<rect class="bar" x="410" y="80" width="398.8473600375429" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index lookup on e using idx_mgr (manager_id=oc.id)  ·  Self: 0.967 ms (62.3%)  ·  Rows: 1  ·  Loops: 900  ·  Table: employees  ·  Index: idx_mgr  ·  Access: index  ·  Est.rows: 1" data-label="Index lookup [employees.idx_mgr]" data-teach-index="8"/>
+<g><title>O(log n + k)</title><rect class="complexity-chip-rect" x="338.5" y="86.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="98.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<text x="466.0" y="98.0" text-anchor="middle" class="loops">900</text>
+<rect class="bar" x="506" y="80" width="339.02025603191146" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index lookup on e using idx_mgr (manager_id=oc.id)  ·  Self: 0.967 ms (62.3%)  ·  Rows: 1  ·  Loops: 900  ·  Table: employees  ·  Index: idx_mgr  ·  Access: index  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the i…  ·  Est.rows: 1" data-label="Index lookup [employees.idx_mgr]" data-teach-index="8"/>
 <text x="1060" y="98.0" class="value">0.967 ms (62.3%)</text>
 <text x="320" y="132.0" text-anchor="end" class="label">Materialize</text>
-<text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="114" width="60.307137732379" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Materialize recursive CTE org_chart  ·  Self: 0.146 ms (9.4%)  ·  Total: 1 ms  ·  Rows: 1000  ·  Loops: 1  ·  Access: materialize  ·  Est.rows: 135  ⚠ Optimizer underestimate (7.4×)" data-label="Materialize" data-teach-index="4"/>
+<g><title>build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all</title><rect class="complexity-chip-rect" x="336.0" y="120.0" width="84.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="132.0" text-anchor="middle" class="complexity-chip-text">build+scan</text></g>
+<text x="466.0" y="132.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="114" width="51.26106707252215" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Materialize recursive CTE org_chart  ·  Self: 0.146 ms (9.4%)  ·  Total: 1 ms  ·  Rows: 1000  ·  Loops: 1  ·  Access: materialize  ·  Complexity: build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all  ·  Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effec…  ·  Est.rows: 135  ⚠ Optimizer underestimate (7.4×)" data-label="Materialize" data-teach-index="4"/>
 <text x="1060" y="132.0" class="value">0.146 ms (9.4%)</text>
 <text x="320" y="166.0" text-anchor="end" class="label">Nested loop inner join</text>
-<text x="370.0" y="166.0" text-anchor="middle" class="loops">2</text>
-<rect class="bar" x="410" y="148" width="41.452338729484026" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 0.100 ms (6.5%)  ·  Total: 1 ms  ·  Rows: 450  ·  Loops: 2  ·  Access: join  ·  Est.rows: 35  ⚠ Optimizer underestimate (12.8×)" data-label="Nested loop inner join" data-teach-index="6"/>
+<g><title>O(n · log m)</title><rect class="complexity-chip-rect" x="338.5" y="154.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="166.0" text-anchor="middle" class="complexity-chip-text">n · log m</text></g>
+<text x="466.0" y="166.0" text-anchor="middle" class="loops">2</text>
+<rect class="bar" x="506" y="148" width="35.234487920061426" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 0.100 ms (6.5%)  ·  Total: 1 ms  ·  Rows: 450  ·  Loops: 2  ·  Access: join  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent.  ·  Est.rows: 35  ⚠ Optimizer underestimate (12.8×)" data-label="Nested loop inner join" data-teach-index="6"/>
 <text x="1060" y="166.0" class="value">0.100 ms (6.5%)</text>
 <text x="320" y="200.0" text-anchor="end" class="label">Aggregate</text>
-<text x="370.0" y="200.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="182" width="40.739435734494705" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Aggregate using temporary table  ·  Self: 0.099 ms (6.4%)  ·  Total: 2 ms  ·  Rows: 10  ·  Loops: 1  ·  Access: temp_table_aggregate" data-label="Aggregate" data-teach-index="2"/>
+<text x="466.0" y="200.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="182" width="34.6285203743205" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Aggregate using temporary table  ·  Self: 0.099 ms (6.4%)  ·  Total: 2 ms  ·  Rows: 10  ·  Loops: 1  ·  Access: temp_table_aggregate" data-label="Aggregate" data-teach-index="2"/>
 <text x="1060" y="200.0" class="value">0.099 ms (6.4%)</text>
 <text x="320" y="234.0" text-anchor="end" class="label">Table scan [org_chart]</text>
-<text x="370.0" y="234.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="216" width="27.797028410530334" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Table scan on org_chart  ·  Self: 0.067 ms (4.3%)  ·  Total: 1 ms  ·  Rows: 1000  ·  Loops: 1  ·  Table: org_chart  ·  Access: table  ·  Est.rows: 135  ⚠ Optimizer underestimate (7.4×)" data-label="Table scan [org_chart]" data-teach-index="3"/>
+<g><title>O(n)</title><rect class="complexity-chip-rect" x="356.0" y="222.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="234.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<text x="466.0" y="234.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="216" width="23.627474148950782" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Table scan on org_chart  ·  Self: 0.067 ms (4.3%)  ·  Total: 1 ms  ·  Rows: 1000  ·  Loops: 1  ·  Table: org_chart  ·  Access: table  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Est.rows: 135  ⚠ Optimizer underestimate (7.4×)" data-label="Table scan [org_chart]" data-teach-index="3"/>
 <text x="1060" y="234.0" class="value">0.067 ms (4.3%)</text>
 <text x="320" y="268.0" text-anchor="end" class="label">Index lookup [employees.idx_mgr]</text>
-<text x="370.0" y="268.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="250" width="27.124556256692006" height="28" fill="rgb(200,200,100)" rx="3" ry="3" data-info="Index lookup on employees using idx_mgr (manager_id=NULL), with index condition: (employees.manager_id is null)  ·  Self: 0.066 ms (4.2%)  ·  Rows: 100  ·  Loops: 1  ·  Table: employees  ·  Index: idx_mgr  ·  Access: index  ·  Est.rows: 100" data-label="Index lookup [employees.idx_mgr]" data-teach-index="5"/>
+<g><title>O(log n + k)</title><rect class="complexity-chip-rect" x="338.5" y="256.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="268.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<text x="466.0" y="268.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="250" width="23.055872818188206" height="28" fill="rgb(200,200,100)" rx="3" ry="3" data-info="Index lookup on employees using idx_mgr (manager_id=NULL), with index condition: (employees.manager_id is null)  ·  Self: 0.066 ms (4.2%)  ·  Rows: 100  ·  Loops: 1  ·  Table: employees  ·  Index: idx_mgr  ·  Access: index  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the i…  ·  Est.rows: 100" data-label="Index lookup [employees.idx_mgr]" data-teach-index="5"/>
 <text x="1060" y="268.0" class="value">0.066 ms (4.2%)</text>
 <text x="320" y="302.0" text-anchor="end" class="label">Filter: (((oc.level &lt; 10) and (oc.id is not null...</text>
-<text x="370.0" y="302.0" text-anchor="middle" class="loops">2</text>
-<rect class="bar" x="410" y="284" width="22.275743235795215" height="28" fill="rgb(150,200,150)" rx="3" ry="3" data-info="Filter: ((oc.level &lt; 10) and (oc.id is not null))  ·  Self: 0.054 ms (3.5%)  ·  Total: 0.098 ms  ·  Rows: 450  ·  Loops: 2  ·  Access: filter  ·  Est.rows: 33  ⚠ Optimizer underestimate (13.5×)  ·  Cond: ((oc.`level` &lt; 10) and (oc.id is not null))" data-label="Filter: (((oc.level &lt; 10) and (oc.id is not null)))" data-teach-index="7"/>
+<text x="466.0" y="302.0" text-anchor="middle" class="loops">2</text>
+<rect class="bar" x="506" y="284" width="18.934381750425935" height="28" fill="rgb(150,200,150)" rx="3" ry="3" data-info="Filter: ((oc.level &lt; 10) and (oc.id is not null))  ·  Self: 0.054 ms (3.5%)  ·  Total: 0.098 ms  ·  Rows: 450  ·  Loops: 2  ·  Access: filter  ·  Est.rows: 33  ⚠ Optimizer underestimate (13.5×)  ·  Cond: ((oc.`level` &lt; 10) and (oc.id is not null))" data-label="Filter: (((oc.level &lt; 10) and (oc.id is not null)))" data-teach-index="7"/>
 <text x="1060" y="302.0" class="value">0.054 ms (3.5%)</text>
 <text x="320" y="336.0" text-anchor="end" class="label">Scan new records on oc</text>
-<text x="370.0" y="336.0" text-anchor="middle" class="loops">2</text>
-<rect class="bar" x="410" y="318" width="17.984298239337427" height="28" fill="rgb(100,180,180)" rx="3" ry="3" data-info="Scan new records on oc  ·  Self: 0.044 ms (2.8%)  ·  Rows: 500  ·  Loops: 2  ·  Table: oc  ·  Access: scan_new_records  ·  Est.rows: 100  ⚠ Optimizer underestimate (5.0×)" data-label="Scan new records on oc"/>
+<text x="466.0" y="336.0" text-anchor="middle" class="loops">2</text>
+<rect class="bar" x="506" y="318" width="15.286653503436813" height="28" fill="rgb(100,180,180)" rx="3" ry="3" data-info="Scan new records on oc  ·  Self: 0.044 ms (2.8%)  ·  Rows: 500  ·  Loops: 2  ·  Table: oc  ·  Access: scan_new_records  ·  Est.rows: 100  ⚠ Optimizer underestimate (5.0×)" data-label="Scan new records on oc"/>
 <text x="1060" y="336.0" class="value">0.044 ms (2.8%)</text>
 <text x="320" y="370.0" text-anchor="end" class="label">Sort</text>
-<text x="370.0" y="370.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="352" width="3.1276143547535815" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Sort: org_chart.level  ·  Self: 0.008 ms (0.5%)  ·  Total: 2 ms  ·  Rows: 10  ·  Loops: 1  ·  Access: sort" data-label="Sort" data-teach-index="0"/>
+<g><title>O(n log n)</title><rect class="complexity-chip-rect" x="342.0" y="358.0" width="72.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="370.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<text x="466.0" y="370.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="352" width="3" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Sort: org_chart.level  ·  Self: 0.008 ms (0.5%)  ·  Total: 2 ms  ·  Rows: 10  ·  Loops: 1  ·  Access: sort  ·  Complexity: O(n log n) (worst case)  ·  Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report …" data-label="Sort" data-teach-index="0"/>
 <text x="1060" y="370.0" class="value">0.008 ms (0.5%)</text>
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="10" y="530" width="1180" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="20" y="544" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1180" y="544" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="20" y="558" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="50.0" y="571" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="92" y="571" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="20" y="580" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="57.0" y="593" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="106" y="593" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="20" y="602" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="71.0" y="615" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="134" y="615" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="408" y="558" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="438.0" y="571" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="480" y="571" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="408" y="580" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="452.0" y="593" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="508" y="593" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="408" y="602" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="445.0" y="615" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="494" y="615" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="796" y="558" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="847.0" y="571" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="910" y="571" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="796" y="580" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="833.0" y="593" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="882" y="593" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="796" y="602" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="826.0" y="615" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="868" y="615" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];
@@ -938,9 +1080,9 @@ order by org_chart.level</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:23Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:07Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -1151,6 +1293,108 @@ order by org_chart.level</code></pre>
       },
       &quot;note&quot;: &quot;Index lookup on e using idx_mgr (manager_id=oc.id) (employees)&quot;,
       &quot;query_sql&quot;: &quot;with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` &lt; 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;SORT starts=1 rows=10&quot;,
+      &quot;short_label&quot;: &quot;Sort&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n log n)&quot;,
+        &quot;short&quot;: &quot;n log n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.&quot;,
+        &quot;confidence&quot;: &quot;worst_case&quot;,
+        &quot;learn_more&quot;: &quot;filesort&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [&lt;temporary&gt;] starts=1 rows=10&quot;,
+      &quot;short_label&quot;: &quot;Table scan [&lt;temporary&gt;]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [org_chart] starts=1 rows=1000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [org_chart]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;MATERIALIZE starts=1 rows=1000&quot;,
+      &quot;short_label&quot;: &quot;Materialize&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all&quot;,
+        &quot;short&quot;: &quot;build+scan&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;materialization&quot;,
+        &quot;build_complexity&quot;: {
+          &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+          &quot;short&quot;: &quot;log n + k&quot;,
+          &quot;severity&quot;: &quot;good&quot;,
+          &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+          &quot;confidence&quot;: &quot;exact&quot;,
+          &quot;learn_more&quot;: &quot;index_lookup&quot;
+        },
+        &quot;scan_complexity&quot;: {
+          &quot;big_o&quot;: &quot;O(1) per probe, O(rows) to fetch all&quot;,
+          &quot;short&quot;: &quot;O(1)/probe&quot;,
+          &quot;severity&quot;: &quot;good&quot;,
+          &quot;rationale&quot;: &quot;Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.&quot;,
+          &quot;confidence&quot;: &quot;typical&quot;,
+          &quot;learn_more&quot;: &quot;materialization&quot;
+        }
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;INDEX LOOKUP [employees.idx_mgr] starts=1 rows=100&quot;,
+      &quot;short_label&quot;: &quot;Index lookup [employees.idx_mgr]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_lookup&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;NESTED LOOP INNER starts=2 rows=450&quot;,
+      &quot;short_label&quot;: &quot;Nested loop inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · log m)&quot;,
+        &quot;short&quot;: &quot;n · log m&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Indexed nested loop: each outer row probes the inner table via an index descent.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;nested_loop_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1&quot;,
+      &quot;short_label&quot;: &quot;Index lookup [employees.idx_mgr]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_lookup&quot;
+      }
     }
   ]
 }</code></pre>
@@ -16900,8 +17144,7 @@ teachRuntime.wirePhaseNav("phase-nav", {build: buildCurrentTimeline, reset: rese
     "query_sql": "with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` < 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

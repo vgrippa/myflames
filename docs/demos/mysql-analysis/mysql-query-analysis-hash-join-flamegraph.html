@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables and hash-joins 1 pair; returns 12,000 rows in 8.2 ms. Main finding: hash join uses join_buffer_size; an index on the join column would be faster.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:21Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:05Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -117,11 +117,48 @@
       "note": "Table scan on orders (hash build) (orders)",
       "query_sql": "/* select#1 */ select `u`.`name` AS `name`, `o`.`total` AS `total` from `testdb`.`users` `u` join `testdb`.`orders` `o` on (`o`.`user_id` = `u`.`id`)"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Inner hash join (orders.user_id = users.id) starts=1 rows=12000",
+      "short_label": "Inner hash join (orders.user_id = users.id)",
+      "complexity": {
+        "big_o": "O(n + m)",
+        "short": "n + m",
+        "severity": "good",
+        "rationale": "Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asymptotic class — only the constants.",
+        "confidence": "exact",
+        "learn_more": "hash_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [users] starts=1 rows=3000",
+      "short_label": "Table scan [users]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [orders] starts=1 rows=12000",
+      "short_label": "Table scan [orders]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -823,17 +860,20 @@ from testdb.users u
 <text id="ignorecase" x="1774" y="24">ic</text>
 <text id="matched" x="1690" y="149"> </text>
 <g id="frames">
-<g data-teach-index="0"><title>Inner hash join (orders.user_id = users.id) starts=1 rows=12000 (9 ms, 100.00%)&#10;&#10;Access: join&#10;Rows: 12000 actual&#10;Time: 8.250 ms (last row)&#10;Cost: 1025.50</title>
+<g data-teach-index="0"><title>Inner hash join (orders.user_id = users.id) starts=1 rows=12000 (9 ms, 100.00%)  •  O(...): O(n + m)&#10;&#10;Access: join&#10;Rows: 12000 actual&#10;Time: 8.250 ms (last row)&#10;Cost: 1025.50&#10;Complexity: O(n + m)&#10;Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asympto...</title>
 <rect x="10.0" y="69.0" width="1780.0" height="31.0" fill="rgb(243,34,46)" rx="2" ry="2"/>
-<text x="13.00" y="87.50">Inner hash join (orders.user_id = users.id) starts=1 rows=12000</text>
+<circle cx="1785.0" cy="84.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
+<text x="13.00" y="87.50">Inner hash join (orders.user_id = users.id) starts=1 rows=12000  O(n + m)</text>
 </g>
-<g data-teach-index="2"><title>TABLE SCAN [orders] starts=1 rows=12000 (4 ms, 44.44%)&#10;&#10;Table: testdb.orders&#10;Access: table&#10;Rows: 12000 actual (11834 estimated)&#10;Time: 3.810 ms (last row)&#10;Cost: 1191.40</title>
+<g data-teach-index="2"><title>TABLE SCAN [orders] starts=1 rows=12000 (4 ms, 44.44%)  •  O(...): O(n)&#10;&#10;Table: testdb.orders&#10;Access: table&#10;Rows: 12000 actual (11834 estimated)&#10;Time: 3.810 ms (last row)&#10;Cost: 1191.40&#10;Complexity: O(n)&#10;Full table scan: the storage engine returns every row; cost scales with the table size.</title>
 <rect x="405.6" y="37.0" width="791.1" height="31.0" fill="rgb(240,48,42)" rx="2" ry="2"/>
-<text x="408.56" y="55.50">TABLE SCAN [orders] starts=1 rows=12000</text>
+<circle cx="1191.7" cy="52.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
+<text x="408.56" y="55.50">TABLE SCAN [orders] starts=1 rows=12000  O(n)</text>
 </g>
-<g data-teach-index="1"><title>TABLE SCAN [users] starts=1 rows=3000 (3 ms, 33.33%)&#10;&#10;Table: testdb.users&#10;Access: table&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 2.540 ms (last row)&#10;Cost: 303.50</title>
+<g data-teach-index="1"><title>TABLE SCAN [users] starts=1 rows=3000 (3 ms, 33.33%)  •  O(...): O(n)&#10;&#10;Table: testdb.users&#10;Access: table&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 2.540 ms (last row)&#10;Cost: 303.50&#10;Complexity: O(n)&#10;Full table scan: the storage engine returns every row; cost scales with the table size.</title>
 <rect x="1196.7" y="37.0" width="593.3" height="31.0" fill="rgb(232,118,7)" rx="2" ry="2"/>
-<text x="1199.67" y="55.50">TABLE SCAN [users] starts=1 rows=3000</text>
+<circle cx="1785.0" cy="52.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
+<text x="1199.67" y="55.50">TABLE SCAN [users] starts=1 rows=3000  O(n)</text>
 </g>
 </g>
 </svg>
@@ -899,9 +939,9 @@ from testdb.users u
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:21Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:05Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -1008,6 +1048,44 @@ from testdb.users u
       },
       &quot;note&quot;: &quot;Table scan on orders (hash build) (orders)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `u`.`name` AS `name`, `o`.`total` AS `total` from `testdb`.`users` `u` join `testdb`.`orders` `o` on (`o`.`user_id` = `u`.`id`)&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;Inner hash join (orders.user_id = users.id) starts=1 rows=12000&quot;,
+      &quot;short_label&quot;: &quot;Inner hash join (orders.user_id = users.id)&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n + m)&quot;,
+        &quot;short&quot;: &quot;n + m&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asymptotic class — only the constants.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;hash_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [users] starts=1 rows=3000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [users]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [orders] starts=1 rows=12000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [orders]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -6117,8 +6195,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select `u`.`name` AS `name`, `o`.`total` AS `total` from `testdb`.`users` `u` join `testdb`.`orders` `o` on (`o`.`user_id` = `u`.`id`)"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

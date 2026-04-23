@@ -7,9 +7,9 @@
   <meta name="description" content="Query runs 2 operators; returns 100 rows in 0.08 ms. No warnings.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:25Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:09Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -73,11 +73,24 @@
       "note": "Covering index skip scan on ss using g over 4900 < v (ss)",
       "query_sql": "/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` > 4900)"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "COVERING INDEX [ss.g] starts=1 rows=100",
+      "short_label": "Covering index [ss.g]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "good",
+        "rationale": "Covering index scan: walks the whole index in key order but never touches the clustered tree — all selected columns fit on the index leaves.",
+        "confidence": "exact",
+        "learn_more": "covering_index"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -726,9 +739,9 @@ where (testdb.ss.v &gt; 4900)</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:25Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:09Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -791,6 +804,20 @@ where (testdb.ss.v &gt; 4900)</code></pre>
       },
       &quot;note&quot;: &quot;Covering index skip scan on ss using g over 4900 &lt; v (ss)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` &gt; 4900)&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;COVERING INDEX [ss.g] starts=1 rows=100&quot;,
+      &quot;short_label&quot;: &quot;Covering index [ss.g]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Covering index scan: walks the whole index in key order but never touches the clustered tree — all selected columns fit on the index leaves.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;covering_index&quot;
+      }
     }
   ]
 }</code></pre>
@@ -5614,8 +5641,7 @@ buildStage();
     "query_sql": "/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` > 4900)"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

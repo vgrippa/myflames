@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:23Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:08Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -138,6 +138,56 @@
       },
       "note": "Single-row index lookup on t1 using PRIMARY (id=t2.x) (t1)",
       "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Remove duplicate t1 rows using temporary table (weedout) starts=1 rows=49",
+      "short_label": "Remove duplicate t1 rows using temporary table (we...",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "DuplicateWeedout semijoin: runs as a plain inner join, then drops duplicates using a temp-table index on the outer row IDs.",
+        "confidence": "typical",
+        "learn_more": "duplicate_weedout"
+      }
+    },
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=49",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Indexed nested loop: each outer row probes the inner table via an index descent.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "SINGLE ROW LOOKUP [t1.PRIMARY] starts=49 rows=1",
+      "short_label": "Single-row lookup [t1.PRIMARY]",
+      "complexity": {
+        "big_o": "O(log n)",
+        "short": "log n",
+        "severity": "good",
+        "rationale": "Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.",
+        "confidence": "exact",
+        "learn_more": "single_row_lookup"
+      }
     }
   ]
 }

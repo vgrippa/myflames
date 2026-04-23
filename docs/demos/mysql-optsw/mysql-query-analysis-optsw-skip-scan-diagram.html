@@ -7,9 +7,9 @@
   <meta name="description" content="Query runs 2 operators; returns 100 rows in 0.08 ms. No warnings.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:25Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:09Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -73,11 +73,24 @@
       "note": "Covering index skip scan on ss using g over 4900 < v (ss)",
       "query_sql": "/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` > 4900)"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "COVERING INDEX [ss.g] starts=1 rows=100",
+      "short_label": "Covering index [ss.g]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "good",
+        "rationale": "Covering index scan: walks the whole index in key order but never touches the clustered tree — all selected columns fit on the index leaves.",
+        "confidence": "exact",
+        "learn_more": "covering_index"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -483,7 +496,7 @@ where (testdb.ss.v &gt; 4900)</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="584" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="694" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="584"/></clipPath></defs>
 <style>
   text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11px; -webkit-font-smoothing: antialiased; }
@@ -498,6 +511,8 @@ where (testdb.ss.v &gt; 4900)</code></pre>
   .diagram-node { cursor: pointer; }
   .diagram-node:hover rect, .diagram-node:hover polygon { stroke-width: 2.5; }
   .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }
+  .complexity-chip { pointer-events: none; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
   .loops-line { font-size: 9.5px; font-weight: 500; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
   .details-line.dim { fill: #999; }
@@ -540,8 +555,8 @@ where (testdb.ss.v &gt; 4900)</code></pre>
 <text id="details-l4" x="30" y="590" text-anchor="start" class="details-line"></text>
 <text id="details-l5" x="30" y="606" text-anchor="start" class="details-line"></text>
 <g id="diagram-content" clip-path="url(#diagram-clip)">
-<g class="diagram-node hotspot" data-info="Index only (no table read – often faster).  ·  —  ·  Covering index skip scan on ss using g over 4900 &lt; v  ·  Total: 77.0 µs  ·  Cost: 431.86  ·  Rows: 100  ·  Loops: 1  ·  Table: ss  ·  Index: g  ·  Est.rows: 1666  ·  Ranges: 4900 &lt; v  ·  Covering: yes" data-teach-index="1">
-<title>Index only (no table read – often faster).  ·  —  ·  Covering index skip scan on ss using g over 4900 &lt; v  ·  Total: 77.0 µs  ·  Cost: 431.86  ·  Rows: 100  ·  Loops: 1  ·  Table: ss  ·  Index: g  ·  Est.rows: 1666  ·  Ranges: 4900 &lt; v  ·  Covering: yes</title>
+<g class="diagram-node hotspot" data-info="Index only (no table read – often faster).  ·  —  ·  Covering index skip scan on ss using g over 4900 &lt; v  ·  Total: 77.0 µs  ·  Cost: 431.86  ·  Rows: 100  ·  Loops: 1  ·  Table: ss  ·  Index: g  ·  Est.rows: 1666  ·  Ranges: 4900 &lt; v  ·  Covering: yes  ·  Complexity: O(n)  ·  Covering index scan: walks the whole index in key order but never touches the clustered tree — all selected columns f…" data-teach-index="1">
+<title>Index only (no table read – often faster).  ·  —  ·  Covering index skip scan on ss using g over 4900 &lt; v  ·  Total: 77.0 µs  ·  Cost: 431.86  ·  Rows: 100  ·  Loops: 1  ·  Table: ss  ·  Index: g  ·  Est.rows: 1666  ·  Ranges: 4900 &lt; v  ·  Covering: yes  ·  Complexity: O(n)  ·  Covering index scan: walks the whole index in key order but never touches the clustered tree — all selected columns f…</title>
 <defs><clipPath id="clipbox-0"><rect x="20" y="182" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
 <g clip-path="url(#clipbox-0)">
 <rect x="20" y="182" width="240" height="112" fill="#440154" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
@@ -551,6 +566,10 @@ where (testdb.ss.v &gt; 4900)</code></pre>
 <text x="140.0" y="234" text-anchor="middle" class="node-sublabel" fill="#ffffff">ss</text>
 <text x="140.0" y="250" text-anchor="middle" class="node-sublabel" fill="#ffffff">g</text>
 <text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#ffffff">100 rows</text>
+</g>
+<g class="complexity-chip" data-big-o="O(n)">
+<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
 </g>
 <g class="hotspot-badge">
 <rect x="194" y="175.0" width="60" height="14" rx="7" ry="7"/>
@@ -737,6 +756,38 @@ where (testdb.ss.v &gt; 4900)</code></pre>
   window.init = init;
 })();
 ]]></script>
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="20" y="588" width="1160" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="30" y="602" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1170" y="602" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="30" y="616" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="60.0" y="629" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="102" y="629" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="30" y="638" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="67.0" y="651" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="116" y="651" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="30" y="660" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="81.0" y="673" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="144" y="673" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="411" y="616" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="441.0" y="629" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="483" y="629" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="411" y="638" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="455.0" y="651" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="511" y="651" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="411" y="660" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="448.0" y="673" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="497" y="673" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="792" y="616" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="843.0" y="629" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="906" y="629" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="792" y="638" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="829.0" y="651" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="878" y="651" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="792" y="660" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="822.0" y="673" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="864" y="673" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 </svg>
 
   </div>
@@ -745,9 +796,9 @@ where (testdb.ss.v &gt; 4900)</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:25Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:09Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -810,6 +861,20 @@ where (testdb.ss.v &gt; 4900)</code></pre>
       },
       &quot;note&quot;: &quot;Covering index skip scan on ss using g over 4900 &lt; v (ss)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` &gt; 4900)&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;COVERING INDEX [ss.g] starts=1 rows=100&quot;,
+      &quot;short_label&quot;: &quot;Covering index [ss.g]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Covering index scan: walks the whole index in key order but never touches the clustered tree — all selected columns fit on the index leaves.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;covering_index&quot;
+      }
     }
   ]
 }</code></pre>
@@ -5633,8 +5698,7 @@ buildStage();
     "query_sql": "/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` > 4900)"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:22Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:06Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -234,6 +234,170 @@
       },
       "note": "Index scan on employees using idx_dept (employees)",
       "query_sql": "with `dept_avg` as (/* select#2 */ select `demodb`.`employees`.`dept_id` AS `dept_id`,avg(`demodb`.`employees`.`salary`) AS `avg_sal`,count(0) AS `n` from `demodb`.`employees` group by `demodb`.`employees`.`dept_id`), `top_paid` as (/* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`dept_id` AS `dept_id`,`e`.`salary` AS `salary`,row_number() OVER (PARTITION BY `demodb`.`e`.`dept_id` ORDER BY `demodb`.`e`.`salary` desc )  AS `rn` from `demodb`.`employees` `e`) /* select#1 */ select `d`.`name` AS `dept`,`da`.`avg_sal` AS `avg_sal`,`tp`.`name` AS `top_earner`,`tp`.`salary` AS `salary` from `demodb`.`departments` `d` join `dept_avg` `da` join `top_paid` `tp` where ((`tp`.`dept_id` = `d`.`id`) and (`da`.`dept_id` = `d`.`id`) and (`tp`.`rn` <= 3)) order by `da`.`avg_sal` desc"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "SORT starts=1 rows=24",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=24",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Indexed nested loop: each outer row probes the inner table via an index descent.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [departments] starts=1 rows=8",
+      "short_label": "Table scan [departments]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [tp.<auto_key0>] starts=8 rows=250",
+      "short_label": "Index lookup [tp.<auto_key0>]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "folded_label": "MATERIALIZE starts=1 rows=2000",
+      "short_label": "Materialize",
+      "complexity": {
+        "big_o": "build: O(m)  •  scan: O(1) per probe, O(rows) to fetch all",
+        "short": "build+scan",
+        "severity": "medium",
+        "rationale": "Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.",
+        "confidence": "typical",
+        "learn_more": "materialization",
+        "build_complexity": {
+          "big_o": "O(m)",
+          "short": "m",
+          "severity": "medium",
+          "rationale": "Materialize build: cost = cost of the source subquery over m rows.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        },
+        "scan_complexity": {
+          "big_o": "O(1) per probe, O(rows) to fetch all",
+          "short": "O(1)/probe",
+          "severity": "good",
+          "rationale": "Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        }
+      }
+    },
+    {
+      "folded_label": "SORT starts=1 rows=2000",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [employees] starts=1 rows=2000",
+      "short_label": "Table scan [employees]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [da.<auto_key0>] starts=24 rows=1",
+      "short_label": "Index lookup [da.<auto_key0>]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "folded_label": "MATERIALIZE starts=1 rows=8",
+      "short_label": "Materialize",
+      "complexity": {
+        "big_o": "build: O(n log n)  •  scan: O(1) per probe, O(rows) to fetch all",
+        "short": "build+scan",
+        "severity": "medium",
+        "rationale": "Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.",
+        "confidence": "typical",
+        "learn_more": "materialization",
+        "build_complexity": {
+          "big_o": "O(n log n)",
+          "short": "n log n",
+          "severity": "medium",
+          "rationale": "Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates.",
+          "confidence": "typical"
+        },
+        "scan_complexity": {
+          "big_o": "O(1) per probe, O(rows) to fetch all",
+          "short": "O(1)/probe",
+          "severity": "good",
+          "rationale": "Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        }
+      }
+    },
+    {
+      "folded_label": "GROUP starts=1 rows=8",
+      "short_label": "Group",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates.",
+        "confidence": "typical"
+      }
+    },
+    {
+      "folded_label": "INDEX SCAN [employees.idx_dept] starts=1 rows=2000",
+      "short_label": "Index scan [employees.idx_dept]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but still O(n).",
+        "confidence": "exact",
+        "learn_more": "index_scan"
+      }
     }
   ]
 }

@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 1 table; returns 24,950 rows in 19 ms. Main finding: no index covers (y, x) on t2.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:23Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:08Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -127,11 +127,48 @@
       "note": "Multi-range index lookup on t1 using idx_a (a=t2.x) (t1)",
       "query_sql": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Batched key access inner join starts=1 rows=24950",
+      "short_label": "Batched key access inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Batched Key Access: outer keys are buffered and sorted, then the inner side is fetched via Multi-Range Read in clustered order. Cuts random I/O but keeps the index-descent cost per outer row.",
+        "confidence": "typical",
+        "learn_more": "batched_key_access"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475",
+      "short_label": "Multi-range index lookup on t1 using idx_a (a=t2.x)",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index range scan: one B+tree descent to the range start, then a sequential walk over k matching index entries.",
+        "confidence": "exact",
+        "learn_more": "index_range_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -861,9 +898,9 @@ where ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y &lt; 1000))</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:23Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:08Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -980,6 +1017,44 @@ where ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y &lt; 1000))</code></pre>
       },
       &quot;note&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x) (t1)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` &lt; 1000))&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;Batched key access inner join starts=1 rows=24950&quot;,
+      &quot;short_label&quot;: &quot;Batched key access inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · log m)&quot;,
+        &quot;short&quot;: &quot;n · log m&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Batched Key Access: outer keys are buffered and sorted, then the inner side is fetched via Multi-Range Read in clustered order. Cuts random I/O but keeps the index-descent cost per outer row.&quot;,
+        &quot;confidence&quot;: &quot;typical&quot;,
+        &quot;learn_more&quot;: &quot;batched_key_access&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t2] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t2]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475&quot;,
+      &quot;short_label&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x)&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index range scan: one B+tree descent to the range start, then a sequential walk over k matching index entries.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_range_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -8387,8 +8462,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

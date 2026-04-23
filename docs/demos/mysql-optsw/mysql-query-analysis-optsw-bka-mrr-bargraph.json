@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:23Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:07Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -120,6 +120,44 @@
       },
       "note": "Multi-range index lookup on t1 using idx_a (a=t2.x) (t1)",
       "query_sql": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Batched key access inner join starts=1 rows=24950",
+      "short_label": "Batched key access inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Batched Key Access: outer keys are buffered and sorted, then the inner side is fetched via Multi-Range Read in clustered order. Cuts random I/O but keeps the index-descent cost per outer row.",
+        "confidence": "typical",
+        "learn_more": "batched_key_access"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475",
+      "short_label": "Multi-range index lookup on t1 using idx_a (a=t2.x)",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index range scan: one B+tree descent to the range start, then a sequential walk over k matching index entries.",
+        "confidence": "exact",
+        "learn_more": "index_range_scan"
+      }
     }
   ]
 }

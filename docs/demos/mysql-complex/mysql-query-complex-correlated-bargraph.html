@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 1 table and sorts the result; examines ~2,000 rows to return 50 in 0.49 ms. Main finding: no index covers (dept_id) on employees.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:22Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:06Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -115,11 +115,36 @@
       "note": "Table scan on e (employees)",
       "query_sql": "/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "SORT starts=1 rows=50",
+      "short_label": "Sort (limit 50)",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [employees] starts=1 rows=2000",
+      "short_label": "Table scan [employees]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -543,7 +568,7 @@ limit 50</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="356" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="466" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -556,6 +581,8 @@ limit 50</code></pre>
   .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
   .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
   .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .complexity-chip-rect { pointer-events: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
   #search { font-size: 12px; fill: #666; cursor: pointer; }
@@ -565,37 +592,72 @@ limit 50</code></pre>
 <text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
 <text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 0.494 µs</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
-<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
-<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text x="378.0" y="68" text-anchor="middle" class="col-header">COMPLEXITY</text>
+<text x="466.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="778.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="222" x2="1190" y2="222" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="226" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="234" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="248" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="262" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="276" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="290" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="304" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="318" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="332" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="332" x2="1190" y2="332" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="336" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="344" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="358" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="372" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="386" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="400" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="414" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="428" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="442" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
 <text x="320" y="98.0" text-anchor="end" class="label">Table scan [employees]</text>
-<text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="80" width="400.78618384401113" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Table scan on e  ·  Self: 0.309 µs (62.6%)  ·  Rows: 2000  ·  Loops: 1  ·  Table: employees  ·  Access: table  ·  Est.rows: 2000" data-label="Table scan [employees]" data-teach-index="2"/>
+<g><title>O(n)</title><rect class="complexity-chip-rect" x="356.0" y="86.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="98.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<text x="466.0" y="98.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="80" width="340.66825626740945" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Table scan on e  ·  Self: 0.309 µs (62.6%)  ·  Rows: 2000  ·  Loops: 1  ·  Table: employees  ·  Access: table  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Est.rows: 2000" data-label="Table scan [employees]" data-teach-index="2"/>
 <text x="1060" y="98.0" class="value">0.309 µs (62.6%)</text>
 <text x="320" y="132.0" text-anchor="end" class="label">Sort (limit 50)</text>
-<text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="114" width="126.13818181818182" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Sort: e.salary DESC, limit input to 50 row(s) per chunk  ·  Self: 0.097 µs (19.7%)  ·  Total: 0.491 µs  ·  Rows: 50  ·  Loops: 1  ·  Access: sort  ·  Est.rows: 2000  ⚠ Optimizer overestimate" data-label="Sort (limit 50)" data-teach-index="0"/>
+<g><title>O(n log n)</title><rect class="complexity-chip-rect" x="342.0" y="120.0" width="72.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="132.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<text x="466.0" y="132.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="114" width="107.21745454545454" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Sort: e.salary DESC, limit input to 50 row(s) per chunk  ·  Self: 0.097 µs (19.7%)  ·  Total: 0.491 µs  ·  Rows: 50  ·  Loops: 1  ·  Access: sort  ·  Complexity: O(n log n) (worst case)  ·  Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report …  ·  Est.rows: 2000  ⚠ Optimizer overestimate" data-label="Sort (limit 50)" data-teach-index="0"/>
 <text x="1060" y="132.0" class="value">0.097 µs (19.7%)</text>
 <text x="320" y="166.0" text-anchor="end" class="label">Filter: ((e.dept_id in (1,2,3)))</text>
-<text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="148" width="109.24438592048615" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Filter: (e.dept_id in (1,2,3))  ·  Self: 0.084 µs (17.1%)  ·  Total: 0.393 µs  ·  Rows: 750  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 2000  ⚠ Optimizer overestimate  ·  Cond: (e.dept_id in (1,2,3))" data-label="Filter: ((e.dept_id in (1,2,3)))" data-teach-index="1"/>
+<text x="466.0" y="166.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="148" width="92.85772803241322" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Filter: (e.dept_id in (1,2,3))  ·  Self: 0.084 µs (17.1%)  ·  Total: 0.393 µs  ·  Rows: 750  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 2000  ⚠ Optimizer overestimate  ·  Cond: (e.dept_id in (1,2,3))" data-label="Filter: ((e.dept_id in (1,2,3)))" data-teach-index="1"/>
 <text x="1060" y="166.0" class="value">0.084 µs (17.1%)</text>
 <text x="320" y="200.0" text-anchor="end" class="label">Limit: 50 rows</text>
-<text x="370.0" y="200.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="182" width="3.8312484173208934" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Limit: 50 row(s)  ·  Self: 0.003 µs (0.6%)  ·  Total: 0.494 µs  ·  Rows: 50  ·  Loops: 1  ·  Access: limit  ·  Est.rows: 50" data-label="Limit: 50 rows"/>
+<text x="466.0" y="200.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="182" width="3.256561154722759" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Limit: 50 row(s)  ·  Self: 0.003 µs (0.6%)  ·  Total: 0.494 µs  ·  Rows: 50  ·  Loops: 1  ·  Access: limit  ·  Est.rows: 50" data-label="Limit: 50 rows"/>
 <text x="1060" y="200.0" class="value">0.003 µs (0.6%)</text>
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="10" y="360" width="1180" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="20" y="374" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1180" y="374" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="20" y="388" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="50.0" y="401" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="92" y="401" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="20" y="410" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="57.0" y="423" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="106" y="423" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="20" y="432" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="71.0" y="445" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="134" y="445" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="408" y="388" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="438.0" y="401" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="480" y="401" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="408" y="410" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="452.0" y="423" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="508" y="423" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="408" y="432" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="445.0" y="445" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="494" y="445" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="796" y="388" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="847.0" y="401" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="910" y="401" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="796" y="410" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="833.0" y="423" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="882" y="423" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="796" y="432" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="826.0" y="445" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="868" y="445" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];
@@ -774,9 +836,9 @@ limit 50</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:22Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:06Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -881,6 +943,32 @@ limit 50</code></pre>
       },
       &quot;note&quot;: &quot;Table scan on e (employees)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;SORT starts=1 rows=50&quot;,
+      &quot;short_label&quot;: &quot;Sort (limit 50)&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n log n)&quot;,
+        &quot;short&quot;: &quot;n log n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.&quot;,
+        &quot;confidence&quot;: &quot;worst_case&quot;,
+        &quot;learn_more&quot;: &quot;filesort&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [employees] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [employees]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -9235,8 +9323,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

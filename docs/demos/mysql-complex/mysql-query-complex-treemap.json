@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:25Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:10Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -180,6 +180,80 @@
       },
       "note": "Single-row index lookup on d using PRIMARY (dept_no=de.dept_no) (departments)",
       "query_sql": "/* select#1 */ select `d`.`dept_name` AS `dept_name`,round(AVG(s.salary),2) AS `avg_salary` from `employees`.`salaries` `s` join `employees`.`dept_emp` `de` join `employees`.`departments` `d` where ((`s`.`emp_no` = `de`.`emp_no`) and (`d`.`dept_no` = `de`.`dept_no`) and (`de`.`to_date` = DATE'9999-01-01') and (`s`.`to_date` = DATE'9999-01-01')) group by `employees`.`d`.`dept_name` order by `avg_salary` desc"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "SORT starts=1 rows=9",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [<temporary>] starts=1 rows=9",
+      "short_label": "Table scan [<temporary>]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "NESTED LOOP INNER starts=1 rows=240124",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Indexed nested loop: each outer row probes the inner table via an index descent.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [dept_emp] starts=1 rows=331603",
+      "short_label": "Table scan [dept_emp]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11",
+      "short_label": "Index lookup [salaries.PRIMARY]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "folded_label": "SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1",
+      "short_label": "Single-row lookup [departments.PRIMARY]",
+      "complexity": {
+        "big_o": "O(log n)",
+        "short": "log n",
+        "severity": "good",
+        "rationale": "Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.",
+        "confidence": "exact",
+        "learn_more": "single_row_lookup"
+      }
     }
   ]
 }

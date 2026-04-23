@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 2 tables and hash-joins 1 pair; examines ~7,000 rows to return 0 in 1.9 ms. Main finding: join predicate wraps the column in CONCAT() — no index can be used.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:24Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:08Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -133,11 +133,48 @@
       "note": "Table scan on t2 (t2)",
       "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0",
+      "short_label": "Inner hash join (t1.d = concat('r',t2.y))",
+      "complexity": {
+        "big_o": "O(n + m)",
+        "short": "n + m",
+        "severity": "good",
+        "rationale": "Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asymptotic class — only the constants.",
+        "confidence": "exact",
+        "learn_more": "hash_join"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t1] starts=1 rows=5000",
+      "short_label": "Table scan [t1]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -556,7 +593,7 @@ where (testdb.t1.d = concat('r',testdb.t2.y))</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="752" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="862" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -571,6 +608,7 @@ where (testdb.t1.d = concat('r',testdb.t2.y))</code></pre>
   #unzoom.hide { display: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
 <text x="600.0" y="26" text-anchor="middle" class="title">MySQL Query Plan</text>
@@ -579,20 +617,26 @@ where (testdb.t1.d = concat('r',testdb.t2.y))</code></pre>
 <text id="breadcrumb" x="600.0" y="64" text-anchor="middle" class="subtitle"></text>
 <text id="search" x="1138" y="64" text-anchor="end">Search</text>
 <g id="zoomable">
-<rect id="cell-0" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Inner hash join (t1.d = concat('r',t2.y))" data-info="Inner hash join (t1.d = concat('r',t2.y))  ·  Self: 0.857 ms | Total: 2 ms  ·  Rows: 0 | Loops: 1" data-teach-index="0"><title>Inner hash join (t1.d = concat('r',t2.y))
+<rect id="cell-0" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Inner hash join (t1.d = concat('r',t2.y))" data-info="Inner hash join (t1.d = concat('r',t2.y))  ·  Self: 0.857 ms | Total: 2 ms  ·  Rows: 0 | Loops: 1  ·  Complexity: O(n + m)" data-complexity="O(n + m)" data-teach-index="0"><title>Inner hash join (t1.d = concat('r',t2.y))
 Self: 0.857 ms | Total: 2 ms
-Rows: 0 | Loops: 1</title></rect>
+Rows: 0 | Loops: 1
+Complexity: O(n + m)</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Inner hash join (t1.d = conc...</text>
-<rect id="cell-1" class="treemap-cell" x="2" y="70" width="900" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="900" data-h="600" data-label="Table scan [t1]" data-info="Table scan [t1]  ·  Self: 0.818 ms | Total: 0.818 ms  ·  Rows: 5000 | Loops: 1  ·  Table: t1" data-teach-index="1"><title>Table scan [t1]
+<g pointer-events="none"><rect x="1147.0" y="74.0" width="47.0" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="1170.5" y="84.0" text-anchor="middle" class="complexity-chip-text">n + m</text></g>
+<rect id="cell-1" class="treemap-cell" x="2" y="70" width="900" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="900" data-h="600" data-label="Table scan [t1]" data-info="Table scan [t1]  ·  Self: 0.818 ms | Total: 0.818 ms  ·  Rows: 5000 | Loops: 1  ·  Table: t1  ·  Complexity: O(n)" data-complexity="O(n)" data-teach-index="1"><title>Table scan [t1]
 Self: 0.818 ms | Total: 0.818 ms
 Rows: 5000 | Loops: 1
-Table: t1</title></rect>
+Table: t1
+Complexity: O(n)</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [t1]</text>
-<rect id="cell-2" class="treemap-cell" x="902" y="70" width="296" height="600" fill="rgb(255,160,122)" data-x="902" data-y="70" data-w="296" data-h="600" data-label="Table scan [t2]" data-info="Table scan [t2]  ·  Self: 0.269 ms | Total: 0.269 ms  ·  Rows: 2000 | Loops: 1  ·  Table: t2" data-teach-index="2"><title>Table scan [t2]
+<g pointer-events="none"><rect x="862.0" y="74.0" width="36.0" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="880.0" y="84.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<rect id="cell-2" class="treemap-cell" x="902" y="70" width="296" height="600" fill="rgb(255,160,122)" data-x="902" data-y="70" data-w="296" data-h="600" data-label="Table scan [t2]" data-info="Table scan [t2]  ·  Self: 0.269 ms | Total: 0.269 ms  ·  Rows: 2000 | Loops: 1  ·  Table: t2  ·  Complexity: O(n)" data-complexity="O(n)" data-teach-index="2"><title>Table scan [t2]
 Self: 0.269 ms | Total: 0.269 ms
 Rows: 2000 | Loops: 1
-Table: t2</title></rect>
+Table: t2
+Complexity: O(n)</title></rect>
 <text x="906" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [t2]</text>
+<g pointer-events="none"><rect x="1158.0" y="74.0" width="36.0" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="1176.0" y="84.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
 </g>
 <line x1="2" y1="676" x2="1198" y2="676" stroke="#e0e0e0" stroke-width="1"/>
 <rect x="2" y="680" width="1196" height="74" fill="#f5f5f5" rx="4"/>
@@ -602,9 +646,41 @@ Table: t2</title></rect>
 <text id="details-l3" x="12" y="732" text-anchor="start" class="details-line"></text>
 <text id="details-l4" x="12" y="746" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="2" y="764" width="1196" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="12" y="778" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1188" y="778" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="12" y="792" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="42.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="84" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="12" y="814" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="49.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="98" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="12" y="836" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="63.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="126" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="405" y="792" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="435.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="477" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="405" y="814" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="449.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="505" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="405" y="836" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="442.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="491" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="798" y="792" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="849.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="912" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="798" y="814" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="835.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="884" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="798" y="836" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="828.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="870" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 <script type="text/ecmascript"><![CDATA[
 (function() {
-  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 752;
+  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 862;
   var N_LINES = 5;
   var zoomable, unzoomBtn, searchBtn, pinnedCell = null;
   var detailLines = [];
@@ -800,9 +876,9 @@ Table: t2</title></rect>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:24Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:08Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -925,6 +1001,44 @@ Table: t2</title></rect>
       },
       &quot;note&quot;: &quot;Table scan on t2 (t2)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;Inner hash join (t1.d = concat('r',t2.y)) starts=1 rows=0&quot;,
+      &quot;short_label&quot;: &quot;Inner hash join (t1.d = concat('r',t2.y))&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n + m)&quot;,
+        &quot;short&quot;: &quot;n + m&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Hash join: builds a hash on one side (O(m)), streams the other past it (O(n)). Disk-spill does NOT change the asymptotic class — only the constants.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;hash_join&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t1] starts=1 rows=5000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t1]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t2] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t2]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -6034,8 +6148,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d`,`testdb`.`t2`.`id` AS `id`,`testdb`.`t2`.`x` AS `x`,`testdb`.`t2`.`y` AS `y` from `testdb`.`t1` join `testdb`.`t2` where (`testdb`.`t1`.`d` = concat('r',`testdb`.`t2`.`y`))"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

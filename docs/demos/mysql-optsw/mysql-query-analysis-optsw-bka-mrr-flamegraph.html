@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 1 table; returns 24,950 rows in 19 ms. Main finding: no index covers (y, x) on t2.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:23Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:08Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -127,11 +127,48 @@
       "note": "Multi-range index lookup on t1 using idx_a (a=t2.x) (t1)",
       "query_sql": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Batched key access inner join starts=1 rows=24950",
+      "short_label": "Batched key access inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Batched Key Access: outer keys are buffered and sorted, then the inner side is fetched via Multi-Range Read in clustered order. Cuts random I/O but keeps the index-descent cost per outer row.",
+        "confidence": "typical",
+        "learn_more": "batched_key_access"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475",
+      "short_label": "Multi-range index lookup on t1 using idx_a (a=t2.x)",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index range scan: one B+tree descent to the range start, then a sequential walk over k matching index entries.",
+        "confidence": "exact",
+        "learn_more": "index_range_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -834,13 +871,15 @@ where ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y &lt; 1000))</code></pre>
 <text id="ignorecase" x="1774" y="24">ic</text>
 <text id="matched" x="1690" y="149"> </text>
 <g id="frames">
-<g><title>Batched key access inner join starts=1 rows=24950 (19 ms, 100.00%)&#10;&#10;Access: join&#10;Rows: 24950 actual&#10;Time: 18.808 ms (last row)</title>
+<g><title>Batched key access inner join starts=1 rows=24950 (19 ms, 100.00%)  •  O(...): O(n · log m) (typical)&#10;&#10;Access: join&#10;Rows: 24950 actual&#10;Time: 18.808 ms (last row)&#10;Complexity: O(n · log m) (typical)&#10;Batched Key Access: outer keys are buffered and sorted, then the inner side is fetched via Multi-Range Read in cluste...</title>
 <rect x="10.0" y="69.0" width="1780.0" height="31.0" fill="rgb(222,31,40)" rx="2" ry="2"/>
-<text x="13.00" y="87.50">Batched key access inner join starts=1 rows=24950</text>
+<circle cx="1785.0" cy="84.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
+<text x="13.00" y="87.50">Batched key access inner join starts=1 rows=24950  O(~n · log m)</text>
 </g>
-<g data-teach-index="2"><title>Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475 (18 ms, 94.74%)&#10;&#10;Table: testdb.t1 (index: idx_a)&#10;Access: index&#10;Rows: 12475 actual (50 estimated) [UNDERESTIMATE]&#10;Loops: 2&#10;Time: 8.772 ms (last row)&#10;Cost: 12.01&#10;Covering: No</title>
+<g data-teach-index="2"><title>Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475 (18 ms, 94.74%)  •  O(...): O(log n + k)&#10;&#10;Table: testdb.t1 (index: idx_a)&#10;Access: index&#10;Rows: 12475 actual (50 estimated) [UNDERESTIMATE]&#10;Loops: 2&#10;Time: 8.772 ms (last row)&#10;Cost: 12.01&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index range scan: one B+tree descent to the range start, then a sequential walk over k matching index entries.</title>
 <rect x="103.7" y="37.0" width="1686.3" height="31.0" fill="rgb(205,68,22)" rx="2" ry="2"/>
-<text x="106.68" y="55.50">Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475</text>
+<circle cx="1785.0" cy="52.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
+<text x="106.68" y="55.50">Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475  O(log n + k)</text>
 </g>
 </g>
 </svg>
@@ -901,9 +940,9 @@ where ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y &lt; 1000))</code></pre>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:23Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:08Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -1020,6 +1059,44 @@ where ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y &lt; 1000))</code></pre>
       },
       &quot;note&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x) (t1)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` &lt; 1000))&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;Batched key access inner join starts=1 rows=24950&quot;,
+      &quot;short_label&quot;: &quot;Batched key access inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · log m)&quot;,
+        &quot;short&quot;: &quot;n · log m&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Batched Key Access: outer keys are buffered and sorted, then the inner side is fetched via Multi-Range Read in clustered order. Cuts random I/O but keeps the index-descent cost per outer row.&quot;,
+        &quot;confidence&quot;: &quot;typical&quot;,
+        &quot;learn_more&quot;: &quot;batched_key_access&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t2] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t2]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475&quot;,
+      &quot;short_label&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x)&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index range scan: one B+tree descent to the range start, then a sequential walk over k matching index entries.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_range_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -8427,8 +8504,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);

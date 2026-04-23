@@ -7,9 +7,9 @@
   <meta name="description" content="Query scans 1 table; returns 24,950 rows in 19 ms. Main finding: no index covers (y, x) on t2.">
   <script type="application/ld+json">
 {
-  "schema_version": "1.1",
-  "generated_at": "2026-04-13T18:24:23Z",
-  "myflames_version": "1.3.0",
+  "schema_version": "1.2",
+  "generated_at": "2026-04-23T18:47:08Z",
+  "myflames_version": "1.4.0",
   "source": {
     "type": "file"
   },
@@ -127,11 +127,48 @@
       "note": "Multi-range index lookup on t1 using idx_a (a=t2.x) (t1)",
       "query_sql": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))"
     }
+  ],
+  "operator_complexities": [
+    {
+      "folded_label": "Batched key access inner join starts=1 rows=24950",
+      "short_label": "Batched key access inner join",
+      "complexity": {
+        "big_o": "O(n · log m)",
+        "short": "n · log m",
+        "severity": "medium",
+        "rationale": "Batched Key Access: outer keys are buffered and sorted, then the inner side is fetched via Multi-Range Read in clustered order. Cuts random I/O but keeps the index-descent cost per outer row.",
+        "confidence": "typical",
+        "learn_more": "batched_key_access"
+      }
+    },
+    {
+      "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+      "short_label": "Table scan [t2]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "folded_label": "Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475",
+      "short_label": "Multi-range index lookup on t1 using idx_a (a=t2.x)",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index range scan: one B+tree descent to the range start, then a sequential walk over k matching index entries.",
+        "confidence": "exact",
+        "learn_more": "index_range_scan"
+      }
+    }
   ]
 }
   </script>
-  <style>
-:root {
+  <style>:root {
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
@@ -546,7 +583,7 @@ where ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y &lt; 1000))</code></pre>
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="752" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="862" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -561,6 +598,7 @@ where ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y &lt; 1000))</code></pre>
   #unzoom.hide { display: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
 <text x="600.0" y="26" text-anchor="middle" class="title">MySQL Query Plan</text>
@@ -569,23 +607,28 @@ where ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y &lt; 1000))</code></pre>
 <text id="breadcrumb" x="600.0" y="64" text-anchor="middle" class="subtitle"></text>
 <text id="search" x="1138" y="64" text-anchor="end">Search</text>
 <g id="zoomable">
-<rect id="cell-0" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Batched key access inner join" data-info="Batched key access inner join  ·  Self: 0.968 ms | Total: 19 ms  ·  Rows: 24950 | Loops: 1"><title>Batched key access inner join
+<rect id="cell-0" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Batched key access inner join" data-info="Batched key access inner join  ·  Self: 0.968 ms | Total: 19 ms  ·  Rows: 24950 | Loops: 1  ·  Complexity: O(n · log m) (typical)" data-complexity="O(n · log m)"><title>Batched key access inner join
 Self: 0.968 ms | Total: 19 ms
-Rows: 24950 | Loops: 1</title></rect>
+Rows: 24950 | Loops: 1
+Complexity: O(n · log m) (typical)</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Batched key access inner joi...</text>
+<g pointer-events="none"><rect x="1112.0" y="74.0" width="82.0" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="1153.0" y="84.0" text-anchor="middle" class="complexity-chip-text">~n · log m</text></g>
 <rect id="cell-1" class="treemap-cell" x="2" y="70" width="20" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="20" data-h="600" data-label="Filter: (((t2.y &lt; 1000) and (t2.x is not null)))" data-info="Filter: (((t2.y &lt; 1000) and (t2.x is not null)))  ·  Self: 0.074 ms | Total: 0.296 ms  ·  Rows: 499 | Loops: 1" data-teach-index="0"><title>Filter: (((t2.y &lt; 1000) and (t2.x is not null)))
 Self: 0.074 ms | Total: 0.296 ms
 Rows: 499 | Loops: 1</title></rect>
-<rect id="cell-2" class="treemap-cell" x="2" y="70" width="20" height="600" fill="rgb(255,218,185)" data-x="2" data-y="70" data-w="20" data-h="600" data-label="Table scan [t2]" data-info="Table scan [t2]  ·  Self: 0.222 ms | Total: 0.222 ms  ·  Rows: 2000 | Loops: 1  ·  Table: t2" data-teach-index="1"><title>Table scan [t2]
+<rect id="cell-2" class="treemap-cell" x="2" y="70" width="20" height="600" fill="rgb(255,218,185)" data-x="2" data-y="70" data-w="20" data-h="600" data-label="Table scan [t2]" data-info="Table scan [t2]  ·  Self: 0.222 ms | Total: 0.222 ms  ·  Rows: 2000 | Loops: 1  ·  Table: t2  ·  Complexity: O(n)" data-complexity="O(n)" data-teach-index="1"><title>Table scan [t2]
 Self: 0.222 ms | Total: 0.222 ms
 Rows: 2000 | Loops: 1
-Table: t2</title></rect>
-<rect id="cell-3" class="treemap-cell" x="22" y="70" width="1176" height="600" fill="rgb(255,160,122)" data-x="22" data-y="70" data-w="1176" data-h="600" data-label="Multi-range index lookup on t1 using idx_a (a=t2.x)" data-info="Multi-range index lookup on t1 using idx_a (a=t2.x)  ·  Self: 18 ms | Total: 18 ms  ·  Rows: 12475 | Loops: 2  ·  Table: t1  ·  Index: idx_a" data-teach-index="2"><title>Multi-range index lookup on t1 using idx_a (a=t2.x)
+Table: t2
+Complexity: O(n)</title></rect>
+<rect id="cell-3" class="treemap-cell" x="22" y="70" width="1176" height="600" fill="rgb(255,160,122)" data-x="22" data-y="70" data-w="1176" data-h="600" data-label="Multi-range index lookup on t1 using idx_a (a=t2.x)" data-info="Multi-range index lookup on t1 using idx_a (a=t2.x)  ·  Self: 18 ms | Total: 18 ms  ·  Rows: 12475 | Loops: 2  ·  Table: t1  ·  Index: idx_a  ·  Complexity: O(log n + k)" data-complexity="O(log n + k)" data-teach-index="2"><title>Multi-range index lookup on t1 using idx_a (a=t2.x)
 Self: 18 ms | Total: 18 ms
 Rows: 12475 | Loops: 2
 Table: t1
-Index: idx_a</title></rect>
+Index: idx_a
+Complexity: O(log n + k)</title></rect>
 <text x="26" y="666" fill="#333" font-size="10" pointer-events="none">Multi-range index lookup on ...</text>
+<g pointer-events="none"><rect x="1119.0" y="74.0" width="75.0" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="1156.5" y="84.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
 </g>
 <line x1="2" y1="676" x2="1198" y2="676" stroke="#e0e0e0" stroke-width="1"/>
 <rect x="2" y="680" width="1196" height="74" fill="#f5f5f5" rx="4"/>
@@ -595,9 +638,41 @@ Index: idx_a</title></rect>
 <text id="details-l3" x="12" y="732" text-anchor="start" class="details-line"></text>
 <text id="details-l4" x="12" y="746" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="2" y="764" width="1196" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="12" y="778" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1188" y="778" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="12" y="792" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="42.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="84" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="12" y="814" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="49.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="98" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="12" y="836" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="63.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="126" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="405" y="792" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="435.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="477" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="405" y="814" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="449.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="505" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="405" y="836" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="442.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="491" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="798" y="792" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="849.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="912" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="798" y="814" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="835.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="884" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="798" y="836" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="828.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="870" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
 <script type="text/ecmascript"><![CDATA[
 (function() {
-  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 752;
+  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 862;
   var N_LINES = 5;
   var zoomable, unzoomBtn, searchBtn, pinnedCell = null;
   var detailLines = [];
@@ -765,9 +840,9 @@ Index: idx_a</title></rect>
 <details class="raw-sidecar">
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
-  &quot;schema_version&quot;: &quot;1.1&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-13T18:24:23Z&quot;,
-  &quot;myflames_version&quot;: &quot;1.3.0&quot;,
+  &quot;schema_version&quot;: &quot;1.2&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T18:47:08Z&quot;,
+  &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
   },
@@ -884,6 +959,44 @@ Index: idx_a</title></rect>
       },
       &quot;note&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x) (t1)&quot;,
       &quot;query_sql&quot;: &quot;/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` &lt; 1000))&quot;
+    }
+  ],
+  &quot;operator_complexities&quot;: [
+    {
+      &quot;folded_label&quot;: &quot;Batched key access inner join starts=1 rows=24950&quot;,
+      &quot;short_label&quot;: &quot;Batched key access inner join&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n · log m)&quot;,
+        &quot;short&quot;: &quot;n · log m&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Batched Key Access: outer keys are buffered and sorted, then the inner side is fetched via Multi-Range Read in clustered order. Cuts random I/O but keeps the index-descent cost per outer row.&quot;,
+        &quot;confidence&quot;: &quot;typical&quot;,
+        &quot;learn_more&quot;: &quot;batched_key_access&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;TABLE SCAN [t2] starts=1 rows=2000&quot;,
+      &quot;short_label&quot;: &quot;Table scan [t2]&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(n)&quot;,
+        &quot;short&quot;: &quot;n&quot;,
+        &quot;severity&quot;: &quot;medium&quot;,
+        &quot;rationale&quot;: &quot;Full table scan: the storage engine returns every row; cost scales with the table size.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;full_table_scan&quot;
+      }
+    },
+    {
+      &quot;folded_label&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475&quot;,
+      &quot;short_label&quot;: &quot;Multi-range index lookup on t1 using idx_a (a=t2.x)&quot;,
+      &quot;complexity&quot;: {
+        &quot;big_o&quot;: &quot;O(log n + k)&quot;,
+        &quot;short&quot;: &quot;log n + k&quot;,
+        &quot;severity&quot;: &quot;good&quot;,
+        &quot;rationale&quot;: &quot;Index range scan: one B+tree descent to the range start, then a sequential walk over k matching index entries.&quot;,
+        &quot;confidence&quot;: &quot;exact&quot;,
+        &quot;learn_more&quot;: &quot;index_range_scan&quot;
+      }
     }
   ]
 }</code></pre>
@@ -8291,8 +8404,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "query_sql": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))"
   }
 ];</script>
-  <script>
-function exportSVG() {
+  <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
   var data = new XMLSerializer().serializeToString(svg);
