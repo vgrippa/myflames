@@ -2521,6 +2521,38 @@ class TestComplexityIntegration(unittest.TestCase):
                 self.assertIsInstance(c[key], str)
                 self.assertTrue(c[key])
 
+    def test_flamegraph_tooltip_unescaped_angle_brackets_render_cleanly(self):
+        """Regression: tooltips with <temporary> must not double-escape.
+
+        The bug was that ``enhance_tooltip_flame`` pre-escaped the table
+        name to ``&lt;temporary&gt;`` and the SVG wrapper then re-escaped
+        the ``&`` to produce ``&amp;lt;`` — browsers rendered that as the
+        literal string ``&lt;`` in the tooltip.
+        """
+        from myflames.parser import enhance_tooltip_flame
+        op_details = {
+            "TABLE SCAN [<temporary>]": {
+                "table_name": "<temporary>",
+                "access_type": "table",
+                "actual_rows": 9,
+                "condition": "x < 5",
+                "ranges": ["<a> to <b>"],
+            },
+        }
+        out = enhance_tooltip_flame("TABLE SCAN [<temporary>] starts=1 rows=9", op_details)
+        # enhance_tooltip_flame must return RAW angles (no &lt; / &gt;).
+        self.assertIn("<temporary>", out)
+        self.assertNotIn("&lt;", out)
+        self.assertNotIn("&gt;", out)
+        # The caller — render.render_explain — then escapes once on the way
+        # into the SVG. Check that end-to-end too, using the real pipeline.
+        from myflames.render import render_explain
+        svg = render_explain(self.json_text, output_type="flamegraph")
+        # Must contain the single-escaped form (what a browser will decode
+        # back to the raw < and >), NOT the double-escaped form.
+        self.assertNotIn("&amp;lt;", svg)
+        self.assertNotIn("&amp;gt;", svg)
+
     def test_nested_loop_join_chip_is_on_join_only(self):
         """Inner-of-join access boxes in the diagram should NOT draw a chip."""
         # Minimal query: 2-table join with indexed inner.

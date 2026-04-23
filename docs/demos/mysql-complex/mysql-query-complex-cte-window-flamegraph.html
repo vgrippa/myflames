@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T18:47:07Z",
+  "generated_at": "2026-04-23T19:05:30Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -1123,7 +1123,7 @@ order by da.avg_sal desc</code></pre>
 <text id="ignorecase" x="1774" y="24">ic</text>
 <text id="matched" x="1690" y="309"> </text>
 <g id="frames">
-<g data-teach-index="3"><title>FILTER ((tp.rn &lt;= 3)) starts=8 rows=3 (1 ms, 33.33%)&#10;&#10;Access: filter&#10;Rows: 3 actual (7 estimated) [OVERESTIMATE]&#10;Loops: 8&#10;Time: 0.298 ms (last row)&#10;Cost: 5.34&#10;Condition: (tp.rn &amp;lt;= 3)</title>
+<g data-teach-index="3"><title>FILTER ((tp.rn &lt;= 3)) starts=8 rows=3 (1 ms, 33.33%)&#10;&#10;Access: filter&#10;Rows: 3 actual (7 estimated) [OVERESTIMATE]&#10;Loops: 8&#10;Time: 0.298 ms (last row)&#10;Cost: 5.34&#10;Condition: (tp.rn &lt;= 3)</title>
 <rect x="1196.7" y="101.0" width="593.3" height="31.0" fill="rgb(222,101,2)" rx="2" ry="2"/>
 <text x="1199.67" y="119.50">FILTER ((tp.rn &lt;= 3)) starts=8 rows=3</text>
 </g>
@@ -1132,12 +1132,12 @@ order by da.avg_sal desc</code></pre>
 <circle cx="1191.7" cy="84.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
 <text x="606.33" y="87.50">GROUP starts=1 rows=8  O(~n log n)</text>
 </g>
-<g data-teach-index="8"><title>INDEX LOOKUP [da.&lt;auto_key0&gt;] starts=24 rows=1 (1 ms, 33.33%)  •  O(...): O(log n + k)&#10;&#10;Table: da (index: &amp;lt;auto_key0&amp;gt;)&#10;Access: index&#10;Rows: 1 actual (20 estimated) [OVERESTIMATE]&#10;Loops: 24&#10;Time: 0.057 ms (last row)&#10;Cost: 407.84&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
+<g data-teach-index="8"><title>INDEX LOOKUP [da.&lt;auto_key0&gt;] starts=24 rows=1 (1 ms, 33.33%)  •  O(...): O(log n + k)&#10;&#10;Table: da (index: &lt;auto_key0&gt;)&#10;Access: index&#10;Rows: 1 actual (20 estimated) [OVERESTIMATE]&#10;Loops: 24&#10;Time: 0.057 ms (last row)&#10;Cost: 407.84&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
 <rect x="603.3" y="133.0" width="593.3" height="31.0" fill="rgb(232,187,13)" rx="2" ry="2"/>
 <circle cx="1191.7" cy="148.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
 <text x="606.33" y="151.50">INDEX LOOKUP [da.&lt;auto_key0&gt;] starts=24 rows=1  O(log n + k)</text>
 </g>
-<g data-teach-index="4"><title>INDEX LOOKUP [tp.&lt;auto_key0&gt;] starts=8 rows=250 (1 ms, 33.33%)  •  O(...): O(log n + k)&#10;&#10;Table: tp (index: &amp;lt;auto_key0&amp;gt;)&#10;Access: index&#10;Rows: 250 actual (21 estimated) [UNDERESTIMATE]&#10;Loops: 8&#10;Time: 0.291 ms (last row)&#10;Cost: 205.34&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
+<g data-teach-index="4"><title>INDEX LOOKUP [tp.&lt;auto_key0&gt;] starts=8 rows=250 (1 ms, 33.33%)  •  O(...): O(log n + k)&#10;&#10;Table: tp (index: &lt;auto_key0&gt;)&#10;Access: index&#10;Rows: 250 actual (21 estimated) [UNDERESTIMATE]&#10;Loops: 8&#10;Time: 0.291 ms (last row)&#10;Cost: 205.34&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
 <rect x="1196.7" y="69.0" width="593.3" height="31.0" fill="rgb(239,144,15)" rx="2" ry="2"/>
 <circle cx="1785.0" cy="84.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
 <text x="1199.67" y="87.50">INDEX LOOKUP [tp.&lt;auto_key0&gt;] starts=8 rows=250  O(log n + k)</text>
@@ -1271,7 +1271,7 @@ order by da.avg_sal desc</code></pre>
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T18:47:07Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T19:05:30Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;

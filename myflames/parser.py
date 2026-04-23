@@ -947,11 +947,15 @@ def enhance_tooltip_flame(original, op_details):
             best = d
     if not best:
         return original or ""
+    # NOTE: we return RAW text; every caller re-escapes the whole blob via
+    # ``xml_escape(enhanced)`` before wrapping it in a ``<title>``. Pre-
+    # escaping here would produce ``&amp;lt;temporary&amp;gt;`` in the SVG
+    # and the browser would display the literal ``&lt;`` / ``&gt;``.
     lines = [original, ""]
     if best.get("table_name"):
         t = (best.get("schema_name") or "") + "." + best["table_name"] if best.get("schema_name") else best["table_name"]
-        idx = f" (index: {xml_escape(best['index_name'])})" if best.get("index_name") else ""
-        lines.append(f"Table: {xml_escape(t)}{idx}")
+        idx = f" (index: {best['index_name']})" if best.get("index_name") else ""
+        lines.append(f"Table: {t}{idx}")
     if best.get("access_type"):
         lines.append(f"Access: {best['access_type']}")
     if best.get("actual_rows") is not None:
@@ -971,13 +975,13 @@ def enhance_tooltip_flame(original, op_details):
         lines.append(f"Time: {best['actual_last_row_ms']:.3f} ms (last row)")
     if best.get("estimated_total_cost") is not None:
         lines.append(f"Cost: {best['estimated_total_cost']:.2f}")
-    cond = xml_escape(best.get("condition") or "")
+    cond = best.get("condition") or ""
     if len(cond) > 83:
         cond = cond[:80] + "..."
     if best.get("condition"):
         lines.append(f"Condition: {cond}")
     if best.get("ranges"):
-        lines.append("Ranges: " + xml_escape(", ".join(best["ranges"])))
+        lines.append("Ranges: " + ", ".join(best["ranges"]))
     if best.get("covering") is not None:
         lines.append("Covering: " + ("Yes" if best["covering"] else "No"))
     # Big O complexity (attached at parse time by myflames.complexity).
