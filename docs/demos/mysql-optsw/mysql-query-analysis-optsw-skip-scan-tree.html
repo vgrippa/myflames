@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T19:05:33Z",
+  "generated_at": "2026-04-23T23:04:52Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -512,6 +512,8 @@ where (testdb.ss.v &gt; 4900)</code></pre>
   .row-bg.pinned { fill: rgba(0,90,200,0.15); stroke: #1565c0; stroke-width: 1; }
   .row-time { font-size: 11px; fill: #444; }
   .row-pct { font-size: 11px; fill: #555; font-weight: bold; }
+  .complexity-chip-rect { pointer-events: none; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
   #search-btn { font-size: 11px; fill: #666; cursor: pointer; }
   #search-btn:hover { fill: #0d47a1; }
@@ -524,32 +526,34 @@ where (testdb.ss.v &gt; 4900)</code></pre>
 <text id="expand-all" class="ctrl-link" x="1100" y="44" text-anchor="start">Expand All</text>
 <text id="collapse-all" class="ctrl-link" x="1190" y="44" text-anchor="end">Collapse All</text>
 <line x1="10" y1="52" x2="1190" y2="52" stroke="#ddd" stroke-width="1"/>
-<text x="536" y="65" text-anchor="end" class="col-hdr">SELF</text>
-<text x="626" y="65" text-anchor="end" class="col-hdr">TOTAL</text>
-<text x="681" y="65" text-anchor="end" class="col-hdr">%</text>
-<text x="705" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
+<text x="496" y="65" text-anchor="end" class="col-hdr">SELF</text>
+<text x="586" y="65" text-anchor="end" class="col-hdr">TOTAL</text>
+<text x="641" y="65" text-anchor="end" class="col-hdr">%</text>
+<text x="699.0" y="65" text-anchor="middle" class="col-hdr">COMPLEXITY</text>
+<text x="773" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
 <text id="search-btn" x="1190" y="65" text-anchor="end">Search</text>
 <line x1="10" y1="68" x2="1190" y2="68" stroke="#ddd" stroke-width="1"/>
 <g class="tree-row" data-idx="0" data-depth="0" data-has-children="1" data-teach-index="0">
 <rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Filter: (ss.v &gt; 4900)  ·  Self: 6.8 µs (8.1%)  ·  Total: 83.8 µs  ·  Rows: 100  ·  Access: filter  ·  Est.rows: 1666  ⚠ overestimate  ·  Cond: (ss.v &gt; 4900)"/>
 <text class="toggle" x="12" y="90" data-idx="0">▾</text>
 <text class="row-label" x="26" y="90" pointer-events="none">Filter: ((ss.v &gt; 4900))</text>
-<text class="row-time" x="536" y="90" text-anchor="end" pointer-events="none">6.8 µs</text>
-<text class="row-time" x="626" y="90" text-anchor="end" pointer-events="none">83.8 µs</text>
-<text class="row-pct" x="681" y="90" text-anchor="end" pointer-events="none">8%</text>
-<rect x="705" y="77" width="475.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="77" width="38.5" height="16" fill="#cee0f1" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="90" text-anchor="end" pointer-events="none">6.8 µs</text>
+<text class="row-time" x="586" y="90" text-anchor="end" pointer-events="none">83.8 µs</text>
+<text class="row-pct" x="641" y="90" text-anchor="end" pointer-events="none">8%</text>
+<rect x="773" y="77" width="407.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="77" width="33.0" height="16" fill="#cee0f1" rx="2" pointer-events="none"/>
 <line x1="10" y1="98" x2="1190" y2="98" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="1" data-depth="1" data-has-children="0" data-teach-index="1">
-<rect class="row-bg" x="10" y="98" width="1180" height="26" fill="transparent" data-info="Covering index skip scan on ss using g over 4900 &lt; v  ·  Self: 77.0 µs (91.9%)  ·  Rows: 100  ·  Table: ss  ·  Index: g  ·  Access: index  ·  Est.rows: 1666  ⚠ overestimate"/>
+<rect class="row-bg" x="10" y="98" width="1180" height="26" fill="transparent" data-info="Covering index skip scan on ss using g over 4900 &lt; v  ·  Complexity: O(n)  ·  Covering index scan: walks the whole index in key order but never touches the clustered tree — all selected columns f…  ·  Self: 77.0 µs (91.9%)  ·  Rows: 100  ·  Table: ss  ·  Index: g  ·  Access: index  ·  Est.rows: 1666  ⚠ overestimate"/>
 <rect x="10" y="98" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="leaf-indicator" x="30" y="116" pointer-events="none">·</text>
 <text class="row-label" x="44" y="116" pointer-events="none">Covering index [ss.g]</text>
-<text class="row-time" x="536" y="116" text-anchor="end" pointer-events="none">77.0 µs</text>
-<text class="row-pct" x="681" y="116" text-anchor="end" pointer-events="none">92%</text>
-<rect x="705" y="103" width="436.5" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="103" width="436.5" height="16" fill="#2f7aba" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="116" text-anchor="end" pointer-events="none">77.0 µs</text>
+<text class="row-pct" x="641" y="116" text-anchor="end" pointer-events="none">92%</text>
+<g pointer-events="none"><title>O(n)</title><rect class="complexity-chip-rect" x="677.0" y="103.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="699.0" y="115.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<rect x="773" y="103" width="374.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="103" width="374.0" height="16" fill="#2f7aba" rx="2" pointer-events="none"/>
 <line x1="10" y1="124" x2="1190" y2="124" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <line x1="10" y1="140" x2="1190" y2="140" stroke="#e0e0e0" stroke-width="1"/>
@@ -740,7 +744,7 @@ where (testdb.ss.v &gt; 4900)</code></pre>
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T19:05:33Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T23:04:52Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;

@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T19:05:30Z",
+  "generated_at": "2026-04-23T23:04:50Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -823,10 +823,6 @@ order by org_chart.level</code></pre>
 <text x="140.0" y="250" text-anchor="middle" class="node-sublabel" fill="#111111">idx_mgr</text>
 <text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#111111">100 rows</text>
 </g>
-<g class="complexity-chip" data-big-o="O(log n + k)">
-<rect x="101.5" y="297.0" width="77" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">log n + k</text>
-</g>
 </g>
 <line x1="260" y1="238.0" x2="310" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
 <text x="285.0" y="232.0" text-anchor="middle" class="arrow-label">100 rows</text>
@@ -836,10 +832,6 @@ order by org_chart.level</code></pre>
 <polygon points="366,182.0 422,238.0 366,294.0 310,238.0" fill="#9cd83a" stroke="#2d3748" stroke-width="1"/>
 <text x="366" y="234.0" text-anchor="middle" class="node-label" fill="#111111">join</text>
 <text x="366" y="250.0" text-anchor="middle" class="node-sublabel" fill="#111111">1.00K rows</text>
-<g class="complexity-chip" data-big-o="build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all">
-<rect x="324.0" y="299.0" width="84" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="366.0" y="309.5" text-anchor="middle" class="complexity-chip-text">build+scan</text>
-</g>
 </g>
 <g class="diagram-node" data-info="Ran 2 times (e.g. inner side of nested loop).  ·  —  ·  Scan new records on oc  ·  Total: 43.6 µs  ·  Cost: 13.75  ·  Rows: 500  ·  Loops: 2  ·  Table: oc  ·  Est.rows: 100">
 <title>Ran 2 times (e.g. inner side of nested loop).  ·  —  ·  Scan new records on oc  ·  Total: 43.6 µs  ·  Cost: 13.75  ·  Rows: 500  ·  Loops: 2  ·  Table: oc  ·  Est.rows: 100</title>
@@ -864,10 +856,6 @@ order by org_chart.level</code></pre>
 <text x="656" y="234.0" text-anchor="middle" class="node-label" fill="#111111">inner join</text>
 <text x="656" y="250.0" text-anchor="middle" class="node-sublabel" fill="#111111">450 rows</text>
 <text x="656" y="264.0" text-anchor="middle" class="loops-line" fill="#111111">↻ 2</text>
-<g class="complexity-chip" data-big-o="O(n · log m)">
-<rect x="617.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="656.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
-</g>
 </g>
 <g class="diagram-node hotspot" data-info="Ran 900 times (e.g. inner side of nested loop).  ·  —  ·  Index lookup on e using idx_mgr (manager_id=oc.id)  ·  Total: 966.8 µs  ·  Cost: 0.27  ·  Rows: 1  ·  Loops: 900  ·  Table: employees  ·  Index: idx_mgr  ·  Est.rows: 1  ·  Covering: no  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th…" data-teach-index="8">
 <title>Ran 900 times (e.g. inner side of nested loop).  ·  —  ·  Index lookup on e using idx_mgr (manager_id=oc.id)  ·  Total: 966.8 µs  ·  Cost: 0.27  ·  Rows: 1  ·  Loops: 900  ·  Table: employees  ·  Index: idx_mgr  ·  Est.rows: 1  ·  Covering: no  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th…</title>
@@ -895,6 +883,20 @@ order by org_chart.level</code></pre>
 <rect x="890" y="210.0" width="160" height="56" fill="#f7e625" stroke="#2d3748" stroke-width="1" rx="6"/>
 <text x="970.0" y="230.0" text-anchor="middle" class="node-label" fill="#111111">query_block #1</text>
 <text x="970.0" y="248.0" text-anchor="middle" class="cost" fill="#111111">7.6 µs</text>
+</g>
+<g class="complexity-chips-layer" pointer-events="none">
+<g class="complexity-chip" data-big-o="O(log n + k)">
+<rect x="101.5" y="297.0" width="77" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">log n + k</text>
+</g>
+<g class="complexity-chip" data-big-o="build: O(log n + k)  •  scan: O(1) per probe, O(rows) to fetch all">
+<rect x="324.0" y="299.0" width="84" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="366.0" y="309.5" text-anchor="middle" class="complexity-chip-text">build+scan</text>
+</g>
+<g class="complexity-chip" data-big-o="O(n · log m)">
+<rect x="617.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="656.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
+</g>
 </g>
 </g>
 <g class="zoom-controls">
@@ -1199,7 +1201,7 @@ order by org_chart.level</code></pre>
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T19:05:30Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T23:04:50Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;

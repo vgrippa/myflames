@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T19:05:29Z",
+  "generated_at": "2026-04-23T23:04:48Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -641,10 +641,6 @@ from testdb.users u
 <text x="140.0" y="234" text-anchor="middle" class="node-sublabel" fill="#ffffff">users</text>
 <text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#ffffff">3.00K rows</text>
 </g>
-<g class="complexity-chip" data-big-o="O(n)">
-<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
-</g>
 </g>
 <line x1="260" y1="238.0" x2="310" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
 <text x="285.0" y="232.0" text-anchor="middle" class="arrow-label">3.00K rows</text>
@@ -654,10 +650,6 @@ from testdb.users u
 <polygon points="366,182.0 422,238.0 366,294.0 310,238.0" fill="#3b4f89" stroke="#2d3748" stroke-width="1"/>
 <text x="366" y="234.0" text-anchor="middle" class="node-label" fill="#ffffff">hash join</text>
 <text x="366" y="250.0" text-anchor="middle" class="node-sublabel" fill="#ffffff">12.00K rows</text>
-<g class="complexity-chip" data-big-o="O(n + m)">
-<rect x="341.5" y="299.0" width="49" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="366.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n + m</text>
-</g>
 </g>
 <g class="diagram-node hotspot" data-info="Table scan on orders (hash build)  ·  Total: 3.81 ms  ·  Cost: 1191.40  ·  Rows: 12.00K  ·  Loops: 1  ·  Table: orders  ·  Est.rows: 11834  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size." data-teach-index="2">
 <title>Table scan on orders (hash build)  ·  Total: 3.81 ms  ·  Cost: 1191.40  ·  Rows: 12.00K  ·  Loops: 1  ·  Table: orders  ·  Est.rows: 11834  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.</title>
@@ -683,6 +675,16 @@ from testdb.users u
 <rect x="600" y="210.0" width="160" height="56" fill="#3b4f89" stroke="#2d3748" stroke-width="1" rx="6"/>
 <text x="680.0" y="230.0" text-anchor="middle" class="node-label" fill="#ffffff">query_block #1</text>
 <text x="680.0" y="248.0" text-anchor="middle" class="cost" fill="#ffffff">1.90 ms</text>
+</g>
+<g class="complexity-chips-layer" pointer-events="none">
+<g class="complexity-chip" data-big-o="O(n)">
+<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
+</g>
+<g class="complexity-chip" data-big-o="O(n + m)">
+<rect x="341.5" y="299.0" width="49" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="366.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n + m</text>
+</g>
 </g>
 </g>
 <g class="zoom-controls">
@@ -952,7 +954,7 @@ from testdb.users u
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T19:05:29Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T23:04:48Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;

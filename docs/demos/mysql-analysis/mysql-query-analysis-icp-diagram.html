@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T19:05:29Z",
+  "generated_at": "2026-04-23T23:04:49Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -545,10 +545,6 @@ where (testdb.users.country = 'US')</code></pre>
 <text x="140.0" y="250" text-anchor="middle" class="node-sublabel" fill="#ffffff">idx_country</text>
 <text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#ffffff">600 rows</text>
 </g>
-<g class="complexity-chip" data-big-o="O(log n + k)">
-<rect x="101.5" y="297.0" width="77" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">log n + k</text>
-</g>
 <g class="hotspot-badge">
 <rect x="194" y="175.0" width="60" height="14" rx="7" ry="7"/>
 <text x="224.0" y="186.0" text-anchor="middle">SLOWEST</text>
@@ -561,6 +557,12 @@ where (testdb.users.country = 'US')</code></pre>
 <rect x="310" y="210.0" width="160" height="56" fill="#440154" stroke="#2d3748" stroke-width="1" rx="6"/>
 <text x="390.0" y="230.0" text-anchor="middle" class="node-label" fill="#ffffff">query_block #1</text>
 <text x="390.0" y="248.0" text-anchor="middle" class="cost" fill="#ffffff">419.5 µs</text>
+</g>
+<g class="complexity-chips-layer" pointer-events="none">
+<g class="complexity-chip" data-big-o="O(log n + k)">
+<rect x="101.5" y="297.0" width="77" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">log n + k</text>
+</g>
 </g>
 </g>
 <g class="zoom-controls">
@@ -788,7 +790,7 @@ where (testdb.users.country = 'US')</code></pre>
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T19:05:29Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T23:04:49Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;

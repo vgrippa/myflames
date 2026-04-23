@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T19:05:31Z",
+  "generated_at": "2026-04-23T23:04:51Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -682,10 +682,6 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
 <text x="140.0" y="234" text-anchor="middle" class="node-sublabel" fill="#ffffff">t2</text>
 <text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#ffffff">2.00K rows</text>
 </g>
-<g class="complexity-chip" data-big-o="O(n)">
-<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
-</g>
 <g class="hotspot-badge">
 <rect x="194" y="175.0" width="60" height="14" rx="7" ry="7"/>
 <text x="224.0" y="186.0" text-anchor="middle">SLOWEST</text>
@@ -699,10 +695,6 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
 <polygon points="366,182.0 422,238.0 366,294.0 310,238.0" fill="#eee526" stroke="#2d3748" stroke-width="1"/>
 <text x="366" y="234.0" text-anchor="middle" class="node-label" fill="#111111">inner join</text>
 <text x="366" y="250.0" text-anchor="middle" class="node-sublabel" fill="#111111">49 rows</text>
-<g class="complexity-chip" data-big-o="O(n · log m)">
-<rect x="327.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="366.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
-</g>
 </g>
 <g class="diagram-node" data-info="Ran 49 times (e.g. inner side of nested loop).  ·  —  ·  Single-row index lookup on t1 using PRIMARY (id=t2.x)  ·  Total: 38.1 µs  ·  Cost: 0.25  ·  Rows: 1  ·  Loops: 49  ·  Table: t1  ·  Index: PRIMARY  ·  Est.rows: 1  ·  Covering: no  ·  Complexity: O(log n)  ·  Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get." data-teach-index="4">
 <title>Ran 49 times (e.g. inner side of nested loop).  ·  —  ·  Single-row index lookup on t1 using PRIMARY (id=t2.x)  ·  Total: 38.1 µs  ·  Cost: 0.25  ·  Rows: 1  ·  Loops: 49  ·  Table: t1  ·  Index: PRIMARY  ·  Est.rows: 1  ·  Covering: no  ·  Complexity: O(log n)  ·  Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.</title>
@@ -726,6 +718,16 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
 <rect x="600" y="210.0" width="160" height="56" fill="#dce229" stroke="#2d3748" stroke-width="1" rx="6"/>
 <text x="680.0" y="230.0" text-anchor="middle" class="node-label" fill="#111111">query_block #1</text>
 <text x="680.0" y="248.0" text-anchor="middle" class="cost" fill="#111111">13.7 µs</text>
+</g>
+<g class="complexity-chips-layer" pointer-events="none">
+<g class="complexity-chip" data-big-o="O(n)">
+<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
+</g>
+<g class="complexity-chip" data-big-o="O(n · log m)">
+<rect x="327.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="366.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
+</g>
 </g>
 </g>
 <g class="zoom-controls">
@@ -1005,7 +1007,7 @@ where ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y &lt; 100))</code></pre>
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T19:05:31Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T23:04:51Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;

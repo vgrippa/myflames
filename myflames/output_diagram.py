@@ -569,6 +569,10 @@ def render_diagram(
     lines.append('<g id="diagram-content" clip-path="url(#diagram-clip)">')
 
     clip_counter = [0]
+    # Defer all Big O chips to a second pass so they render on top of the
+    # connector arrows (SVG painter's order — last drawn wins). Each entry
+    # is ``(node, cx, cy)`` describing where the chip should sit.
+    deferred_chips = []
 
     def draw_access_box(x, y, kind, node, total_ms, self_ms, cost_val, rows, *, suppress_chip=False):
         # Show self-time on the box (time spent in this stage only)
@@ -615,12 +619,13 @@ def render_diagram(
             lines.append(f'<text x="{x + box_w/2}" y="{y + box_h - 24}" text-anchor="middle" class="loops-line" fill="{tc}">↻ {xml_escape(loops_str)} loops</text>')
         lines.append(f'<text x="{x + box_w/2}" y="{y + box_h - 10}" text-anchor="middle" class="row-count" fill="{tc}">{rows_str} rows</text>')
         lines.append("</g>")
-        # Big O complexity chip (drawn outside the clip, just below the box).
-        # For joins the chip goes on the diamond instead — caller sets
-        # suppress_chip=True for access boxes that are inner children of a
-        # join so the join frame is the only place the O(n · m) story lives.
+        # Big O complexity chip — deferred to a second pass (see
+        # ``deferred_chips``) so it renders on top of the connector arrows
+        # instead of being covered by them. For joins the chip goes on the
+        # diamond instead; caller sets ``suppress_chip=True`` on inner
+        # children of a join so the join frame owns the O(n · m) story.
         if not suppress_chip:
-            lines.extend(_complexity_chip_svg(node, x + box_w / 2, y + box_h + 10, anchor="middle"))
+            deferred_chips.append((node, x + box_w / 2, y + box_h + 10))
         # SLOWEST badge on hotspot (drawn last, outside the clip, so it floats
         # above the top-right corner of the box).
         if is_hotspot:
@@ -674,8 +679,9 @@ def render_diagram(
         jloops_str = _format_loops(jloops) if (jloops and jloops > 1) else None
         if jloops_str:
             lines.append(f'<text x="{cx}" y="{cy + 26}" text-anchor="middle" class="loops-line" fill="{tc}">↻ {xml_escape(jloops_str)}</text>')
-        # Big O complexity chip — sits just below the diamond's bottom vertex.
-        lines.extend(_complexity_chip_svg(node, cx, cy + diamond_r + 12, anchor="middle"))
+        # Big O complexity chip — deferred (see ``deferred_chips``) so it
+        # sits on top of the connector arrows instead of being covered.
+        deferred_chips.append((node, cx, cy + diamond_r + 12))
         # SLOWEST badge on hotspot — sits above the diamond's top vertex
         if is_hotspot:
             bw, bh = 60, 14
@@ -744,6 +750,14 @@ def render_diagram(
     lines.append(f'<text x="{x + qbox_w/2}" y="{y_main + box_h/2 - 8}" text-anchor="middle" class="node-label" fill="{qbox_tc}">query_block #1</text>')
     lines.append(f'<text x="{x + qbox_w/2}" y="{y_main + box_h/2 + 10}" text-anchor="middle" class="cost" fill="{qbox_tc}">{root_self_str}</text>')
     lines.append("</g>")
+
+    # Second pass: emit the deferred Big O chips INSIDE the diagram-content
+    # group but AFTER every box / diamond / arrow, so they render on top.
+    if deferred_chips:
+        lines.append('<g class="complexity-chips-layer" pointer-events="none">')
+        for chip_node, chip_cx, chip_cy in deferred_chips:
+            lines.extend(_complexity_chip_svg(chip_node, chip_cx, chip_cy, anchor="middle"))
+        lines.append("</g>")
 
     lines.append("</g>")  # close diagram-content
 

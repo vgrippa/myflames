@@ -1,6 +1,7 @@
 """Generate interactive collapsible plan tree SVG from parsed EXPLAIN tree."""
 import math
 from .parser import xml_escape, flatten_nodes, render_info_panel
+from .complexity import SEVERITY_COLORS, SEVERITY_BORDERS
 
 _LOW_RGB = (0xde, 0xeb, 0xf7)   # light blue (low self-time)
 _HIGH_RGB = (0x21, 0x71, 0xb5)  # dark blue (high self-time)
@@ -49,6 +50,15 @@ def _row_info(node, root_total, unit_display):
     full_label = node.get("full_label") or node.get("short_label") or ""
     if full_label:
         parts.append(full_label[:80])
+    complexity = details.get("complexity")
+    if isinstance(complexity, dict) and complexity.get("big_o"):
+        conf = complexity.get("confidence", "exact")
+        conf_tag = "" if conf == "exact" else " ({})".format(conf.replace("_", " "))
+        parts.append("Complexity: {}{}".format(complexity["big_o"], conf_tag))
+        rationale = complexity.get("rationale")
+        if rationale:
+            rat = rationale if len(rationale) <= 120 else rationale[:117] + "…"
+            parts.append(rat)
     self_t = float(node.get("self_time") or 0)
     total_t = float(node.get("total_time") or 0)
     pct = (self_t / root_total * 100) if root_total > 0 else 0
@@ -102,17 +112,21 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
     LEFT = 10
     INDENT = 18
     TOGGLE_W = 16
-    LABEL_W = 440
+    LABEL_W = 400
     SELF_W = 90
     TOTAL_W = 90
     PCT_W = 55
+    # Big O complexity column — auto-hidden on narrow canvases to avoid
+    # crowding the self-time bar (same width threshold as bargraph).
+    COMPLEXITY_W = 0 if width < 900 else 108
     HEADER_H = 72
-    BAR_X = LEFT + LABEL_W + SELF_W + TOTAL_W + PCT_W + 20
+    BAR_X = LEFT + LABEL_W + SELF_W + TOTAL_W + PCT_W + COMPLEXITY_W + 20
     BAR_MAX_W = max(80, width - BAR_X - LEFT - 10)
 
     self_col_x = LEFT + LABEL_W
     total_col_x = self_col_x + SELF_W
     pct_col_x = total_col_x + TOTAL_W
+    complexity_col_x = pct_col_x + PCT_W
 
     details_lines_n = 6
     details_line_h = 16
@@ -158,6 +172,8 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         "  .row-bg.pinned { fill: rgba(0,90,200,0.15); stroke: #1565c0; stroke-width: 1; }",
         "  .row-time { font-size: 11px; fill: #444; }",
         "  .row-pct { font-size: 11px; fill: #555; font-weight: bold; }",
+        "  .complexity-chip-rect { pointer-events: none; }",
+        "  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }",
         "  .details-line { font-size: 12px; fill: #222; user-select: text;"
         " -webkit-user-select: text; cursor: text; }",
         "  #search-btn { font-size: 11px; fill: #666; cursor: pointer; }",
@@ -176,10 +192,16 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         f'<text x="{self_col_x + SELF_W - 4}" y="65" text-anchor="end" class="col-hdr">SELF</text>',
         f'<text x="{total_col_x + TOTAL_W - 4}" y="65" text-anchor="end" class="col-hdr">TOTAL</text>',
         f'<text x="{pct_col_x + PCT_W - 4}" y="65" text-anchor="end" class="col-hdr">%</text>',
+    ]
+    if COMPLEXITY_W > 0:
+        lines.append(
+            f'<text x="{complexity_col_x + COMPLEXITY_W/2}" y="65" text-anchor="middle" class="col-hdr">COMPLEXITY</text>'
+        )
+    lines.extend([
         f'<text x="{BAR_X}" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>',
         f'<text id="search-btn" x="{width - LEFT}" y="65" text-anchor="end">Search</text>',
         f'<line x1="{LEFT}" y1="68" x2="{width - LEFT}" y2="68" stroke="#ddd" stroke-width="1"/>',
-    ]
+    ])
 
     for idx, (node, depth) in enumerate(rows_data):
         y = HEADER_H + idx * ROW_H
@@ -262,6 +284,31 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
             f'<text class="row-pct" x="{pct_col_x + PCT_W - 4}" y="{text_y}"'
             f' text-anchor="end" pointer-events="none">{xml_escape(pct_str)}</text>'
         )
+        # Big O complexity chip (column is hidden on narrow canvases).
+        if COMPLEXITY_W > 0:
+            complexity = (node.get("details") or {}).get("complexity")
+            if isinstance(complexity, dict) and complexity.get("short"):
+                chip_short = complexity["short"]
+                if complexity.get("confidence", "exact") != "exact":
+                    chip_short = "~" + chip_short
+                sev = complexity.get("severity", "medium")
+                chip_fill = SEVERITY_COLORS.get(sev, SEVERITY_COLORS["medium"])
+                chip_stroke = SEVERITY_BORDERS.get(sev, SEVERITY_BORDERS["medium"])
+                chip_w = min(COMPLEXITY_W - 10, max(44, 7 * len(chip_short) + 14))
+                chip_h = 16
+                chip_x = complexity_col_x + (COMPLEXITY_W - chip_w) / 2
+                chip_y = y + (ROW_H - chip_h) / 2
+                chip_title = xml_escape(complexity.get("big_o") or chip_short)
+                lines.append(
+                    f'<g pointer-events="none">'
+                    f'<title>{chip_title}</title>'
+                    f'<rect class="complexity-chip-rect" x="{chip_x:.1f}" y="{chip_y:.1f}" '
+                    f'width="{chip_w:.1f}" height="{chip_h}" rx="8" ry="8" '
+                    f'fill="{chip_fill}" stroke="{chip_stroke}" stroke-width="0.8"/>'
+                    f'<text x="{chip_x + chip_w/2:.1f}" y="{chip_y + chip_h - 4:.1f}" '
+                    f'text-anchor="middle" class="complexity-chip-text">{xml_escape(chip_short)}</text>'
+                    f'</g>'
+                )
         # Total bar (outline, drawn first so self bar appears on top)
         if total_bar_w > 0.5:
             lines.append(

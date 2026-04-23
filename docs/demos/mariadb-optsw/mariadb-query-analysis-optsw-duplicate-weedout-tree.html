@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T19:05:27Z",
+  "generated_at": "2026-04-23T23:04:47Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -601,6 +601,8 @@ aside.glossary-aside { background: #f1f8ff; }
   .row-bg.pinned { fill: rgba(0,90,200,0.15); stroke: #1565c0; stroke-width: 1; }
   .row-time { font-size: 11px; fill: #444; }
   .row-pct { font-size: 11px; fill: #555; font-weight: bold; }
+  .complexity-chip-rect { pointer-events: none; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
   #search-btn { font-size: 11px; fill: #666; cursor: pointer; }
   #search-btn:hover { fill: #0d47a1; }
@@ -613,48 +615,53 @@ aside.glossary-aside { background: #f1f8ff; }
 <text id="expand-all" class="ctrl-link" x="1100" y="44" text-anchor="start">Expand All</text>
 <text id="collapse-all" class="ctrl-link" x="1190" y="44" text-anchor="end">Collapse All</text>
 <line x1="10" y1="52" x2="1190" y2="52" stroke="#ddd" stroke-width="1"/>
-<text x="536" y="65" text-anchor="end" class="col-hdr">SELF</text>
-<text x="626" y="65" text-anchor="end" class="col-hdr">TOTAL</text>
-<text x="681" y="65" text-anchor="end" class="col-hdr">%</text>
-<text x="705" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
+<text x="496" y="65" text-anchor="end" class="col-hdr">SELF</text>
+<text x="586" y="65" text-anchor="end" class="col-hdr">TOTAL</text>
+<text x="641" y="65" text-anchor="end" class="col-hdr">%</text>
+<text x="699.0" y="65" text-anchor="middle" class="col-hdr">COMPLEXITY</text>
+<text x="773" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
 <text id="search-btn" x="1190" y="65" text-anchor="end">Search</text>
 <line x1="10" y1="68" x2="1190" y2="68" stroke="#ddd" stroke-width="1"/>
 <g class="tree-row" data-idx="0" data-depth="0" data-has-children="1" data-teach-index="0">
-<rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Remove duplicates using temporary table (weedout)  ·  Self: — (0.0%)  ·  Rows: 1  ·  Access: weedout"/>
+<rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Remove duplicates using temporary table (weedout)  ·  Complexity: O(n log n) (typical)  ·  DuplicateWeedout semijoin: runs as a plain inner join, then drops duplicates using a temp-table index on the outer ro…  ·  Self: — (0.0%)  ·  Rows: 1  ·  Access: weedout"/>
 <text class="toggle" x="12" y="90" data-idx="0">▾</text>
 <text class="row-label" x="26" y="90" pointer-events="none">Remove duplicates using temporary table (weed…</text>
-<text class="row-time" x="536" y="90" text-anchor="end" pointer-events="none">—</text>
-<text class="row-pct" x="681" y="90" text-anchor="end" pointer-events="none">0.0%</text>
+<text class="row-time" x="496" y="90" text-anchor="end" pointer-events="none">—</text>
+<text class="row-pct" x="641" y="90" text-anchor="end" pointer-events="none">0.0%</text>
+<g pointer-events="none"><title>O(n log n)</title><rect class="complexity-chip-rect" x="664.0" y="77.0" width="70.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="89.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
 <line x1="10" y1="98" x2="1190" y2="98" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="1" data-depth="1" data-has-children="1" data-teach-index="1">
-<rect class="row-bg" x="10" y="98" width="1180" height="26" fill="transparent" data-info="Nested loop inner join  ·  Self: — (0.0%)  ·  Rows: 1  ·  Access: join"/>
+<rect class="row-bg" x="10" y="98" width="1180" height="26" fill="transparent" data-info="Nested loop inner join  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent.  ·  Self: — (0.0%)  ·  Rows: 1  ·  Access: join"/>
 <rect x="10" y="98" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="30" y="116" data-idx="1">▾</text>
 <text class="row-label" x="44" y="116" pointer-events="none">Nested loop inner join</text>
-<text class="row-time" x="536" y="116" text-anchor="end" pointer-events="none">—</text>
-<text class="row-pct" x="681" y="116" text-anchor="end" pointer-events="none">0.0%</text>
+<text class="row-time" x="496" y="116" text-anchor="end" pointer-events="none">—</text>
+<text class="row-pct" x="641" y="116" text-anchor="end" pointer-events="none">0.0%</text>
+<g pointer-events="none"><title>O(n · log m)</title><rect class="complexity-chip-rect" x="660.5" y="103.0" width="77.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="115.0" text-anchor="middle" class="complexity-chip-text">n · log m</text></g>
 <line x1="10" y1="124" x2="1190" y2="124" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="2" data-depth="2" data-has-children="0" data-teach-index="2">
-<rect class="row-bg" x="10" y="124" width="1180" height="26" fill="transparent" data-info="Table scan on t2  ·  Self: 68.9 µs (6892.4%)  ·  Rows: 1000  ·  Table: t2  ·  Access: table  ·  Est.rows: 1000  ·  Cond: t2.y &lt; 100 and t2.x is not null"/>
+<rect class="row-bg" x="10" y="124" width="1180" height="26" fill="transparent" data-info="Table scan on t2  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Self: 68.9 µs (6892.4%)  ·  Rows: 1000  ·  Table: t2  ·  Access: table  ·  Est.rows: 1000  ·  Cond: t2.y &lt; 100 and t2.x is not null"/>
 <text class="leaf-indicator" x="48" y="142" pointer-events="none">·</text>
 <text class="row-label" x="62" y="142" pointer-events="none">Table scan [t2]</text>
-<text class="row-time" x="536" y="142" text-anchor="end" pointer-events="none">68.9 µs</text>
-<text class="row-pct" x="681" y="142" text-anchor="end" pointer-events="none">6892%</text>
-<rect x="705" y="129" width="32738.8" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="129" width="32738.8" height="16" fill="#2171b5" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="142" text-anchor="end" pointer-events="none">68.9 µs</text>
+<text class="row-pct" x="641" y="142" text-anchor="end" pointer-events="none">6892%</text>
+<g pointer-events="none"><title>O(n)</title><rect class="complexity-chip-rect" x="677.0" y="129.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="141.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<rect x="773" y="129" width="28052.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="129" width="28052.0" height="16" fill="#2171b5" rx="2" pointer-events="none"/>
 <line x1="10" y1="150" x2="1190" y2="150" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="3" data-depth="2" data-has-children="0" data-teach-index="3">
-<rect class="row-bg" x="10" y="150" width="1180" height="26" fill="transparent" data-info="Index lookup on t1 using PRIMARY  ·  Self: 28.3 µs (2827.2%)  ·  Rows: 1  ·  Loops: 49  ·  Table: t1  ·  Index: PRIMARY  ·  Access: ref  ·  Est.rows: 1"/>
+<rect class="row-bg" x="10" y="150" width="1180" height="26" fill="transparent" data-info="Index lookup on t1 using PRIMARY  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th…  ·  Self: 28.3 µs (2827.2%)  ·  Rows: 1  ·  Loops: 49  ·  Table: t1  ·  Index: PRIMARY  ·  Access: ref  ·  Est.rows: 1"/>
 <rect x="10" y="150" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="leaf-indicator" x="48" y="168" pointer-events="none">·</text>
 <text class="row-label" x="62" y="168" pointer-events="none">Index lookup [t1.PRIMARY]</text>
-<text class="row-time" x="536" y="168" text-anchor="end" pointer-events="none">28.3 µs</text>
-<text class="row-pct" x="681" y="168" text-anchor="end" pointer-events="none">2827%</text>
-<rect x="705" y="155" width="13429.3" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="155" width="13429.3" height="16" fill="#2171b5" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="168" text-anchor="end" pointer-events="none">28.3 µs</text>
+<text class="row-pct" x="641" y="168" text-anchor="end" pointer-events="none">2827%</text>
+<g pointer-events="none"><title>O(log n + k)</title><rect class="complexity-chip-rect" x="660.5" y="155.0" width="77.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="699.0" y="167.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<rect x="773" y="155" width="11506.8" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="155" width="11506.8" height="16" fill="#2171b5" rx="2" pointer-events="none"/>
 <line x1="10" y1="176" x2="1190" y2="176" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <line x1="10" y1="192" x2="1190" y2="192" stroke="#e0e0e0" stroke-width="1"/>
@@ -910,7 +917,7 @@ aside.glossary-aside { background: #f1f8ff; }
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T19:05:27Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T23:04:47Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;

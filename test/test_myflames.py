@@ -2503,6 +2503,15 @@ class TestComplexityIntegration(unittest.TestCase):
         # Grepping for chip count is brittle; instead verify the legend and at
         # least one chip are present.
         self.assertIn("data-big-o=", svg)
+        # Chips must be drawn in the deferred layer so arrows don't cover them.
+        self.assertIn("complexity-chips-layer", svg)
+
+    def test_tree_svg_contains_complexity_column(self):
+        """Tree view must expose a COMPLEXITY column with chips per row."""
+        svg = render_tree(self.root, width=1400, analysis=self.analysis)
+        self.assertIn(">COMPLEXITY<", svg)
+        self.assertIn("complexity-chip-text", svg)
+        self.assertIn("O(", svg)
 
     def test_sidecar_emits_operator_complexities_array(self):
         from myflames.output_sidecar import build_sidecar, SCHEMA_VERSION, validate_sidecar

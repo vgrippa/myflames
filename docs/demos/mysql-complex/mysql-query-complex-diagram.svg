@@ -69,10 +69,6 @@
 <text x="140.0" y="234" text-anchor="middle" class="node-sublabel" fill="#ffffff">dept_emp</text>
 <text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#ffffff">331.60K rows</text>
 </g>
-<g class="complexity-chip" data-big-o="O(n)">
-<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
-</g>
 <g class="hotspot-badge">
 <rect x="194" y="175.0" width="60" height="14" rx="7" ry="7"/>
 <text x="224.0" y="186.0" text-anchor="middle">SLOWEST</text>
@@ -110,10 +106,6 @@
 <polygon points="656,182.0 712,238.0 656,294.0 600,238.0" fill="#297b8b" stroke="#2d3748" stroke-width="1"/>
 <text x="656" y="234.0" text-anchor="middle" class="node-label" fill="#ffffff">inner join</text>
 <text x="656" y="250.0" text-anchor="middle" class="node-sublabel" fill="#ffffff">240.12K rows</text>
-<g class="complexity-chip" data-big-o="O(n · log m)">
-<rect x="617.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="656.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
-</g>
 </g>
 <g class="diagram-node" data-info="Ran 240.1K times (e.g. inner side of nested loop).  ·  —  ·  Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)  ·  Total: 1.15 s  ·  Cost: 1.00  ·  Rows: 1  ·  Loops: 240124  ·  Table: departments  ·  Index: PRIMARY  ·  Est.rows: 1  ·  Covering: no  ·  Complexity: O(log n)  ·  Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get." data-teach-index="8">
 <title>Ran 240.1K times (e.g. inner side of nested loop).  ·  —  ·  Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)  ·  Total: 1.15 s  ·  Cost: 1.00  ·  Rows: 1  ·  Loops: 240124  ·  Table: departments  ·  Index: PRIMARY  ·  Est.rows: 1  ·  Covering: no  ·  Complexity: O(log n)  ·  Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.</title>
@@ -137,6 +129,16 @@
 <rect x="890" y="210.0" width="160" height="56" fill="#f9e625" stroke="#2d3748" stroke-width="1" rx="6"/>
 <text x="970.0" y="230.0" text-anchor="middle" class="node-label" fill="#111111">query_block #1</text>
 <text x="970.0" y="248.0" text-anchor="middle" class="cost" fill="#111111">66.6 µs</text>
+</g>
+<g class="complexity-chips-layer" pointer-events="none">
+<g class="complexity-chip" data-big-o="O(n)">
+<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
+</g>
+<g class="complexity-chip" data-big-o="O(n · log m)">
+<rect x="617.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="656.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
+</g>
 </g>
 </g>
 <g class="zoom-controls">

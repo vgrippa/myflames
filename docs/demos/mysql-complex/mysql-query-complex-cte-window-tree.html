@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T19:05:30Z",
+  "generated_at": "2026-04-23T23:04:50Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -851,6 +851,8 @@ order by da.avg_sal desc</code></pre>
   .row-bg.pinned { fill: rgba(0,90,200,0.15); stroke: #1565c0; stroke-width: 1; }
   .row-time { font-size: 11px; fill: #444; }
   .row-pct { font-size: 11px; fill: #555; font-weight: bold; }
+  .complexity-chip-rect { pointer-events: none; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
   #search-btn { font-size: 11px; fill: #666; cursor: pointer; }
   #search-btn:hover { fill: #0d47a1; }
@@ -863,21 +865,23 @@ order by da.avg_sal desc</code></pre>
 <text id="expand-all" class="ctrl-link" x="1100" y="44" text-anchor="start">Expand All</text>
 <text id="collapse-all" class="ctrl-link" x="1190" y="44" text-anchor="end">Collapse All</text>
 <line x1="10" y1="52" x2="1190" y2="52" stroke="#ddd" stroke-width="1"/>
-<text x="536" y="65" text-anchor="end" class="col-hdr">SELF</text>
-<text x="626" y="65" text-anchor="end" class="col-hdr">TOTAL</text>
-<text x="681" y="65" text-anchor="end" class="col-hdr">%</text>
-<text x="705" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
+<text x="496" y="65" text-anchor="end" class="col-hdr">SELF</text>
+<text x="586" y="65" text-anchor="end" class="col-hdr">TOTAL</text>
+<text x="641" y="65" text-anchor="end" class="col-hdr">%</text>
+<text x="699.0" y="65" text-anchor="middle" class="col-hdr">COMPLEXITY</text>
+<text x="773" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
 <text id="search-btn" x="1190" y="65" text-anchor="end">Search</text>
 <line x1="10" y1="68" x2="1190" y2="68" stroke="#ddd" stroke-width="1"/>
 <g class="tree-row" data-idx="0" data-depth="0" data-has-children="1" data-teach-index="0">
-<rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Sort: da.avg_sal DESC  ·  Self: 13.0 µs (0.3%)  ·  Total: 3.79 ms  ·  Rows: 24  ·  Access: sort"/>
+<rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Sort: da.avg_sal DESC  ·  Complexity: O(n log n) (worst case)  ·  Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we repo…  ·  Self: 13.0 µs (0.3%)  ·  Total: 3.79 ms  ·  Rows: 24  ·  Access: sort"/>
 <text class="toggle" x="12" y="90" data-idx="0">▾</text>
 <text class="row-label" x="26" y="90" pointer-events="none">Sort</text>
-<text class="row-time" x="536" y="90" text-anchor="end" pointer-events="none">13.0 µs</text>
-<text class="row-time" x="626" y="90" text-anchor="end" pointer-events="none">3.79 ms</text>
-<text class="row-pct" x="681" y="90" text-anchor="end" pointer-events="none">0.3%</text>
-<rect x="705" y="77" width="475.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="77" width="1.6" height="16" fill="#dce9f6" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="90" text-anchor="end" pointer-events="none">13.0 µs</text>
+<text class="row-time" x="586" y="90" text-anchor="end" pointer-events="none">3.79 ms</text>
+<text class="row-pct" x="641" y="90" text-anchor="end" pointer-events="none">0.3%</text>
+<g pointer-events="none"><title>O(n log n)</title><rect class="complexity-chip-rect" x="664.0" y="77.0" width="70.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="89.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<rect x="773" y="77" width="407.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="77" width="1.4" height="16" fill="#dce9f6" rx="2" pointer-events="none"/>
 <line x1="10" y1="98" x2="1190" y2="98" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="1" data-depth="1" data-has-children="1">
@@ -885,22 +889,23 @@ order by da.avg_sal desc</code></pre>
 <rect x="10" y="98" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="30" y="116" data-idx="1">▾</text>
 <text class="row-label" x="44" y="116" pointer-events="none">Stream results</text>
-<text class="row-time" x="536" y="116" text-anchor="end" pointer-events="none">6.3 µs</text>
-<text class="row-time" x="626" y="116" text-anchor="end" pointer-events="none">3.78 ms</text>
-<text class="row-pct" x="681" y="116" text-anchor="end" pointer-events="none">0.2%</text>
-<rect x="705" y="103" width="473.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="103" width="0.8" height="16" fill="#ddeaf6" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="116" text-anchor="end" pointer-events="none">6.3 µs</text>
+<text class="row-time" x="586" y="116" text-anchor="end" pointer-events="none">3.78 ms</text>
+<text class="row-pct" x="641" y="116" text-anchor="end" pointer-events="none">0.2%</text>
+<rect x="773" y="103" width="405.6" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="103" width="0.7" height="16" fill="#ddeaf6" rx="2" pointer-events="none"/>
 <line x1="10" y1="124" x2="1190" y2="124" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="2" data-depth="2" data-has-children="1" data-teach-index="1">
-<rect class="row-bg" x="10" y="124" width="1180" height="26" fill="transparent" data-info="Nested loop inner join  ·  Self: 4.7 µs (0.1%)  ·  Total: 3.77 ms  ·  Rows: 24  ·  Access: join  ·  Est.rows: 448  ⚠ overestimate"/>
+<rect class="row-bg" x="10" y="124" width="1180" height="26" fill="transparent" data-info="Nested loop inner join  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent.  ·  Self: 4.7 µs (0.1%)  ·  Total: 3.77 ms  ·  Rows: 24  ·  Access: join  ·  Est.rows: 448  ⚠ overestimate"/>
 <text class="toggle" x="48" y="142" data-idx="2">▾</text>
 <text class="row-label" x="62" y="142" pointer-events="none">Nested loop inner join</text>
-<text class="row-time" x="536" y="142" text-anchor="end" pointer-events="none">4.7 µs</text>
-<text class="row-time" x="626" y="142" text-anchor="end" pointer-events="none">3.77 ms</text>
-<text class="row-pct" x="681" y="142" text-anchor="end" pointer-events="none">0.1%</text>
-<rect x="705" y="129" width="472.6" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="129" width="0.6" height="16" fill="#ddeaf6" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="142" text-anchor="end" pointer-events="none">4.7 µs</text>
+<text class="row-time" x="586" y="142" text-anchor="end" pointer-events="none">3.77 ms</text>
+<text class="row-pct" x="641" y="142" text-anchor="end" pointer-events="none">0.1%</text>
+<g pointer-events="none"><title>O(n · log m)</title><rect class="complexity-chip-rect" x="660.5" y="129.0" width="77.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="141.0" text-anchor="middle" class="complexity-chip-text">n · log m</text></g>
+<rect x="773" y="129" width="404.9" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="129" width="0.5" height="16" fill="#ddeaf6" rx="2" pointer-events="none"/>
 <line x1="10" y1="150" x2="1190" y2="150" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="3" data-depth="3" data-has-children="1" data-teach-index="1">
@@ -908,20 +913,21 @@ order by da.avg_sal desc</code></pre>
 <rect x="10" y="150" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="66" y="168" data-idx="3">▾</text>
 <text class="row-label" x="80" y="168" pointer-events="none">Nested loop inner join</text>
-<text class="row-time" x="536" y="168" text-anchor="end" pointer-events="none">3.2 µs</text>
-<text class="row-time" x="626" y="168" text-anchor="end" pointer-events="none">2.41 ms</text>
-<text class="row-pct" x="681" y="168" text-anchor="end" pointer-events="none">0.1%</text>
-<rect x="705" y="155" width="301.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="168" text-anchor="end" pointer-events="none">3.2 µs</text>
+<text class="row-time" x="586" y="168" text-anchor="end" pointer-events="none">2.41 ms</text>
+<text class="row-pct" x="641" y="168" text-anchor="end" pointer-events="none">0.1%</text>
+<rect x="773" y="155" width="258.3" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
 <line x1="10" y1="176" x2="1190" y2="176" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="4" data-depth="4" data-has-children="0" data-teach-index="2">
-<rect class="row-bg" x="10" y="176" width="1180" height="26" fill="transparent" data-info="Table scan on d  ·  Self: 15.4 µs (0.4%)  ·  Rows: 8  ·  Table: departments  ·  Access: table  ·  Est.rows: 8"/>
+<rect class="row-bg" x="10" y="176" width="1180" height="26" fill="transparent" data-info="Table scan on d  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Self: 15.4 µs (0.4%)  ·  Rows: 8  ·  Table: departments  ·  Access: table  ·  Est.rows: 8"/>
 <text class="leaf-indicator" x="84" y="194" pointer-events="none">·</text>
 <text class="row-label" x="98" y="194" pointer-events="none">Table scan [departments]</text>
-<text class="row-time" x="536" y="194" text-anchor="end" pointer-events="none">15.4 µs</text>
-<text class="row-pct" x="681" y="194" text-anchor="end" pointer-events="none">0.4%</text>
-<rect x="705" y="181" width="1.9" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="181" width="1.9" height="16" fill="#dce9f6" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="194" text-anchor="end" pointer-events="none">15.4 µs</text>
+<text class="row-pct" x="641" y="194" text-anchor="end" pointer-events="none">0.4%</text>
+<g pointer-events="none"><title>O(n)</title><rect class="complexity-chip-rect" x="677.0" y="181.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="193.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<rect x="773" y="181" width="1.7" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="181" width="1.7" height="16" fill="#dce9f6" rx="2" pointer-events="none"/>
 <line x1="10" y1="202" x2="1190" y2="202" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="5" data-depth="4" data-has-children="1" data-teach-index="3">
@@ -929,112 +935,120 @@ order by da.avg_sal desc</code></pre>
 <rect x="10" y="202" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="84" y="220" data-idx="5">▾</text>
 <text class="row-label" x="98" y="220" pointer-events="none">Filter: ((tp.rn &lt;= 3))</text>
-<text class="row-time" x="536" y="220" text-anchor="end" pointer-events="none">55.0 µs</text>
-<text class="row-time" x="626" y="220" text-anchor="end" pointer-events="none">2.39 ms</text>
-<text class="row-pct" x="681" y="220" text-anchor="end" pointer-events="none">1%</text>
-<rect x="705" y="207" width="299.1" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="207" width="6.9" height="16" fill="#d7e6f4" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="220" text-anchor="end" pointer-events="none">55.0 µs</text>
+<text class="row-time" x="586" y="220" text-anchor="end" pointer-events="none">2.39 ms</text>
+<text class="row-pct" x="641" y="220" text-anchor="end" pointer-events="none">1%</text>
+<rect x="773" y="207" width="256.3" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="207" width="5.9" height="16" fill="#d7e6f4" rx="2" pointer-events="none"/>
 <line x1="10" y1="228" x2="1190" y2="228" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="6" data-depth="5" data-has-children="1" data-teach-index="4">
-<rect class="row-bg" x="10" y="228" width="1180" height="26" fill="transparent" data-info="Index lookup on tp using &lt;auto_key0&gt; (dept_id=d.id)  ·  Self: 231.6 µs (6.1%)  ·  Total: 2.33 ms  ·  Rows: 250  ·  Loops: 8  ·  Table: tp  ·  Index: &lt;auto_key0&gt;  ·  Access: index  ·  Est.rows: 21  ⚠ underestimate (11.9×)"/>
+<rect class="row-bg" x="10" y="228" width="1180" height="26" fill="transparent" data-info="Index lookup on tp using &lt;auto_key0&gt; (dept_id=d.id)  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th…  ·  Self: 231.6 µs (6.1%)  ·  Total: 2.33 ms  ·  Rows: 250  ·  Loops: 8  ·  Table: tp  ·  Index: &lt;auto_key0&gt;  ·  Access: index  ·  Est.rows: 21  ⚠ underestimate (11.9×)"/>
 <text class="toggle" x="102" y="246" data-idx="6">▾</text>
 <text class="row-label" x="116" y="246" pointer-events="none">Index lookup [tp.&lt;auto_key0&gt;]</text>
-<text class="row-time" x="536" y="246" text-anchor="end" pointer-events="none">231.6 µs</text>
-<text class="row-time" x="626" y="246" text-anchor="end" pointer-events="none">2.33 ms</text>
-<text class="row-pct" x="681" y="246" text-anchor="end" pointer-events="none">6%</text>
-<rect x="705" y="233" width="292.2" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="233" width="29.0" height="16" fill="#c4daee" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="246" text-anchor="end" pointer-events="none">231.6 µs</text>
+<text class="row-time" x="586" y="246" text-anchor="end" pointer-events="none">2.33 ms</text>
+<text class="row-pct" x="641" y="246" text-anchor="end" pointer-events="none">6%</text>
+<g pointer-events="none"><title>O(log n + k)</title><rect class="complexity-chip-rect" x="660.5" y="233.0" width="77.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="699.0" y="245.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<rect x="773" y="233" width="250.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="233" width="24.9" height="16" fill="#c4daee" rx="2" pointer-events="none"/>
 <line x1="10" y1="254" x2="1190" y2="254" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="7" data-depth="6" data-has-children="1" data-teach-index="5">
-<rect class="row-bg" x="10" y="254" width="1180" height="26" fill="transparent" data-info="Materialize CTE top_paid  ·  Self: 1.06 ms (27.9%)  ·  Total: 2.10 ms  ·  Rows: 2000  ·  Access: materialize  ·  Est.rows: 2000"/>
+<rect class="row-bg" x="10" y="254" width="1180" height="26" fill="transparent" data-info="Materialize CTE top_paid  ·  Complexity: build: O(m)  •  scan: O(1) per probe, O(rows) to fetch all (typical)  ·  Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is ef…  ·  Self: 1.06 ms (27.9%)  ·  Total: 2.10 ms  ·  Rows: 2000  ·  Access: materialize  ·  Est.rows: 2000"/>
 <rect x="10" y="254" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="120" y="272" data-idx="7">▾</text>
 <text class="row-label" x="134" y="272" pointer-events="none">Materialize</text>
-<text class="row-time" x="536" y="272" text-anchor="end" pointer-events="none">1.06 ms</text>
-<text class="row-time" x="626" y="272" text-anchor="end" pointer-events="none">2.10 ms</text>
-<text class="row-pct" x="681" y="272" text-anchor="end" pointer-events="none">28%</text>
-<rect x="705" y="259" width="263.2" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="259" width="132.4" height="16" fill="#87b2d8" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="272" text-anchor="end" pointer-events="none">1.06 ms</text>
+<text class="row-time" x="586" y="272" text-anchor="end" pointer-events="none">2.10 ms</text>
+<text class="row-pct" x="641" y="272" text-anchor="end" pointer-events="none">28%</text>
+<g pointer-events="none"><title>build: O(m)  •  scan: O(1) per probe, O(rows) to fetch all</title><rect class="complexity-chip-rect" x="653.5" y="259.0" width="91.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="271.0" text-anchor="middle" class="complexity-chip-text">~build+scan</text></g>
+<rect x="773" y="259" width="225.5" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="259" width="113.4" height="16" fill="#87b2d8" rx="2" pointer-events="none"/>
 <line x1="10" y1="280" x2="1190" y2="280" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="8" data-depth="7" data-has-children="1">
 <rect class="row-bg" x="10" y="280" width="1180" height="26" fill="transparent" data-info="Window aggregate: row_number() OVER (PARTITION BY e.dept_id ORDER BY e.salary de  ·  Self: 326.8 µs (8.6%)  ·  Total: 1.04 ms  ·  Rows: 2000  ·  Access: window  ·  Est.rows: 2000"/>
 <text class="toggle" x="138" y="298" data-idx="8">▾</text>
 <text class="row-label" x="152" y="298" pointer-events="none">Window aggregate: row_number() OVER (PARTITIO…</text>
-<text class="row-time" x="536" y="298" text-anchor="end" pointer-events="none">326.8 µs</text>
-<text class="row-time" x="626" y="298" text-anchor="end" pointer-events="none">1.04 ms</text>
-<text class="row-pct" x="681" y="298" text-anchor="end" pointer-events="none">9%</text>
-<rect x="705" y="285" width="130.8" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="285" width="41.0" height="16" fill="#bbd4eb" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="298" text-anchor="end" pointer-events="none">326.8 µs</text>
+<text class="row-time" x="586" y="298" text-anchor="end" pointer-events="none">1.04 ms</text>
+<text class="row-pct" x="641" y="298" text-anchor="end" pointer-events="none">9%</text>
+<rect x="773" y="285" width="112.1" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="285" width="35.1" height="16" fill="#bbd4eb" rx="2" pointer-events="none"/>
 <line x1="10" y1="306" x2="1190" y2="306" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="9" data-depth="8" data-has-children="1" data-teach-index="6">
-<rect class="row-bg" x="10" y="306" width="1180" height="26" fill="transparent" data-info="Sort: e.dept_id, e.salary DESC  ·  Self: 363.9 µs (9.6%)  ·  Total: 716.8 µs  ·  Rows: 2000  ·  Access: sort  ·  Est.rows: 2000"/>
+<rect class="row-bg" x="10" y="306" width="1180" height="26" fill="transparent" data-info="Sort: e.dept_id, e.salary DESC  ·  Complexity: O(n log n) (worst case)  ·  Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we repo…  ·  Self: 363.9 µs (9.6%)  ·  Total: 716.8 µs  ·  Rows: 2000  ·  Access: sort  ·  Est.rows: 2000"/>
 <rect x="10" y="306" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="156" y="324" data-idx="9">▾</text>
 <text class="row-label" x="170" y="324" pointer-events="none">Sort</text>
-<text class="row-time" x="536" y="324" text-anchor="end" pointer-events="none">363.9 µs</text>
-<text class="row-time" x="626" y="324" text-anchor="end" pointer-events="none">716.8 µs</text>
-<text class="row-pct" x="681" y="324" text-anchor="end" pointer-events="none">10%</text>
-<rect x="705" y="311" width="89.8" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="311" width="45.6" height="16" fill="#b8d2e9" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="324" text-anchor="end" pointer-events="none">363.9 µs</text>
+<text class="row-time" x="586" y="324" text-anchor="end" pointer-events="none">716.8 µs</text>
+<text class="row-pct" x="641" y="324" text-anchor="end" pointer-events="none">10%</text>
+<g pointer-events="none"><title>O(n log n)</title><rect class="complexity-chip-rect" x="664.0" y="311.0" width="70.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="323.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<rect x="773" y="311" width="77.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="311" width="39.1" height="16" fill="#b8d2e9" rx="2" pointer-events="none"/>
 <line x1="10" y1="332" x2="1190" y2="332" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="10" data-depth="9" data-has-children="0" data-teach-index="7">
-<rect class="row-bg" x="10" y="332" width="1180" height="26" fill="transparent" data-info="Table scan on e  ·  Self: 352.9 µs (9.3%)  ·  Rows: 2000  ·  Table: employees  ·  Access: table  ·  Est.rows: 2000"/>
+<rect class="row-bg" x="10" y="332" width="1180" height="26" fill="transparent" data-info="Table scan on e  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Self: 352.9 µs (9.3%)  ·  Rows: 2000  ·  Table: employees  ·  Access: table  ·  Est.rows: 2000"/>
 <text class="leaf-indicator" x="174" y="350" pointer-events="none">·</text>
 <text class="row-label" x="188" y="350" pointer-events="none">Table scan [employees]</text>
-<text class="row-time" x="536" y="350" text-anchor="end" pointer-events="none">352.9 µs</text>
-<text class="row-pct" x="681" y="350" text-anchor="end" pointer-events="none">9%</text>
-<rect x="705" y="337" width="44.2" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="337" width="44.2" height="16" fill="#b9d3ea" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="350" text-anchor="end" pointer-events="none">352.9 µs</text>
+<text class="row-pct" x="641" y="350" text-anchor="end" pointer-events="none">9%</text>
+<g pointer-events="none"><title>O(n)</title><rect class="complexity-chip-rect" x="677.0" y="337.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="349.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<rect x="773" y="337" width="37.9" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="337" width="37.9" height="16" fill="#b9d3ea" rx="2" pointer-events="none"/>
 <line x1="10" y1="358" x2="1190" y2="358" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="11" data-depth="3" data-has-children="1" data-teach-index="8">
-<rect class="row-bg" x="10" y="358" width="1180" height="26" fill="transparent" data-info="Index lookup on da using &lt;auto_key0&gt; (dept_id=d.id)  ·  Self: 10.5 µs (0.3%)  ·  Total: 1.36 ms  ·  Rows: 1  ·  Loops: 24  ·  Table: da  ·  Index: &lt;auto_key0&gt;  ·  Access: index  ·  Est.rows: 20  ⚠ overestimate"/>
+<rect class="row-bg" x="10" y="358" width="1180" height="26" fill="transparent" data-info="Index lookup on da using &lt;auto_key0&gt; (dept_id=d.id)  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th…  ·  Self: 10.5 µs (0.3%)  ·  Total: 1.36 ms  ·  Rows: 1  ·  Loops: 24  ·  Table: da  ·  Index: &lt;auto_key0&gt;  ·  Access: index  ·  Est.rows: 20  ⚠ overestimate"/>
 <rect x="10" y="358" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="66" y="376" data-idx="11">▾</text>
 <text class="row-label" x="80" y="376" pointer-events="none">Index lookup [da.&lt;auto_key0&gt;]</text>
-<text class="row-time" x="536" y="376" text-anchor="end" pointer-events="none">10.5 µs</text>
-<text class="row-time" x="626" y="376" text-anchor="end" pointer-events="none">1.36 ms</text>
-<text class="row-pct" x="681" y="376" text-anchor="end" pointer-events="none">0.3%</text>
-<rect x="705" y="363" width="170.6" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="363" width="1.3" height="16" fill="#dceaf6" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="376" text-anchor="end" pointer-events="none">10.5 µs</text>
+<text class="row-time" x="586" y="376" text-anchor="end" pointer-events="none">1.36 ms</text>
+<text class="row-pct" x="641" y="376" text-anchor="end" pointer-events="none">0.3%</text>
+<g pointer-events="none"><title>O(log n + k)</title><rect class="complexity-chip-rect" x="660.5" y="363.0" width="77.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="699.0" y="375.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<rect x="773" y="363" width="146.1" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="363" width="1.1" height="16" fill="#dceaf6" rx="2" pointer-events="none"/>
 <line x1="10" y1="384" x2="1190" y2="384" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="12" data-depth="4" data-has-children="1" data-teach-index="9">
-<rect class="row-bg" x="10" y="384" width="1180" height="26" fill="transparent" data-info="Materialize CTE dept_avg  ·  Self: 11.5 µs (0.3%)  ·  Total: 1.35 ms  ·  Rows: 8  ·  Access: materialize  ·  Est.rows: 8"/>
+<rect class="row-bg" x="10" y="384" width="1180" height="26" fill="transparent" data-info="Materialize CTE dept_avg  ·  Complexity: build: O(n log n)  •  scan: O(1) per probe, O(rows) to fetch all (typical)  ·  Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is ef…  ·  Self: 11.5 µs (0.3%)  ·  Total: 1.35 ms  ·  Rows: 8  ·  Access: materialize  ·  Est.rows: 8"/>
 <text class="toggle" x="84" y="402" data-idx="12">▾</text>
 <text class="row-label" x="98" y="402" pointer-events="none">Materialize</text>
-<text class="row-time" x="536" y="402" text-anchor="end" pointer-events="none">11.5 µs</text>
-<text class="row-time" x="626" y="402" text-anchor="end" pointer-events="none">1.35 ms</text>
-<text class="row-pct" x="681" y="402" text-anchor="end" pointer-events="none">0.3%</text>
-<rect x="705" y="389" width="169.2" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="389" width="1.4" height="16" fill="#dceaf6" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="402" text-anchor="end" pointer-events="none">11.5 µs</text>
+<text class="row-time" x="586" y="402" text-anchor="end" pointer-events="none">1.35 ms</text>
+<text class="row-pct" x="641" y="402" text-anchor="end" pointer-events="none">0.3%</text>
+<g pointer-events="none"><title>build: O(n log n)  •  scan: O(1) per probe, O(rows) to fetch all</title><rect class="complexity-chip-rect" x="653.5" y="389.0" width="91.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="401.0" text-anchor="middle" class="complexity-chip-text">~build+scan</text></g>
+<rect x="773" y="389" width="145.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="389" width="1.2" height="16" fill="#dceaf6" rx="2" pointer-events="none"/>
 <line x1="10" y1="410" x2="1190" y2="410" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="13" data-depth="5" data-has-children="1">
-<rect class="row-bg" x="10" y="410" width="1180" height="26" fill="transparent" data-info="Group aggregate: avg(employees.salary), count(0)  ·  Self: 138.6 µs (3.7%)  ·  Total: 1.34 ms  ·  Rows: 8  ·  Access: aggregate  ·  Est.rows: 8"/>
+<rect class="row-bg" x="10" y="410" width="1180" height="26" fill="transparent" data-info="Group aggregate: avg(employees.salary), count(0)  ·  Complexity: O(n log n) (typical)  ·  Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates.  ·  Self: 138.6 µs (3.7%)  ·  Total: 1.34 ms  ·  Rows: 8  ·  Access: aggregate  ·  Est.rows: 8"/>
 <rect x="10" y="410" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="102" y="428" data-idx="13">▾</text>
 <text class="row-label" x="116" y="428" pointer-events="none">Group</text>
-<text class="row-time" x="536" y="428" text-anchor="end" pointer-events="none">138.6 µs</text>
-<text class="row-time" x="626" y="428" text-anchor="end" pointer-events="none">1.34 ms</text>
-<text class="row-pct" x="681" y="428" text-anchor="end" pointer-events="none">4%</text>
-<rect x="705" y="415" width="167.8" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="415" width="17.4" height="16" fill="#cee0f1" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="428" text-anchor="end" pointer-events="none">138.6 µs</text>
+<text class="row-time" x="586" y="428" text-anchor="end" pointer-events="none">1.34 ms</text>
+<text class="row-pct" x="641" y="428" text-anchor="end" pointer-events="none">4%</text>
+<g pointer-events="none"><title>O(n log n)</title><rect class="complexity-chip-rect" x="664.0" y="415.0" width="70.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="427.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<rect x="773" y="415" width="143.8" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="415" width="14.9" height="16" fill="#cee0f1" rx="2" pointer-events="none"/>
 <line x1="10" y1="436" x2="1190" y2="436" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <g class="tree-row" data-idx="14" data-depth="6" data-has-children="0" data-teach-index="10">
-<rect class="row-bg" x="10" y="436" width="1180" height="26" fill="transparent" data-info="Index scan on employees using idx_dept  ·  Self: 1.20 ms (31.7%)  ·  Rows: 2000  ·  Table: employees  ·  Index: idx_dept  ·  Access: index  ·  Est.rows: 2000"/>
+<rect class="row-bg" x="10" y="436" width="1180" height="26" fill="transparent" data-info="Index scan on employees using idx_dept  ·  Complexity: O(n)  ·  Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but …  ·  Self: 1.20 ms (31.7%)  ·  Rows: 2000  ·  Table: employees  ·  Index: idx_dept  ·  Access: index  ·  Est.rows: 2000"/>
 <text class="leaf-indicator" x="120" y="454" pointer-events="none">·</text>
 <text class="row-label" x="134" y="454" pointer-events="none">Index scan [employees.idx_dept]</text>
-<text class="row-time" x="536" y="454" text-anchor="end" pointer-events="none">1.20 ms</text>
-<text class="row-pct" x="681" y="454" text-anchor="end" pointer-events="none">32%</text>
-<rect x="705" y="441" width="150.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="441" width="150.4" height="16" fill="#7eadd5" rx="2" pointer-events="none"/>
+<text class="row-time" x="496" y="454" text-anchor="end" pointer-events="none">1.20 ms</text>
+<text class="row-pct" x="641" y="454" text-anchor="end" pointer-events="none">32%</text>
+<g pointer-events="none"><title>O(n)</title><rect class="complexity-chip-rect" x="677.0" y="441.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="699.0" y="453.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
+<rect x="773" y="441" width="128.9" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="773" y="441" width="128.9" height="16" fill="#7eadd5" rx="2" pointer-events="none"/>
 <line x1="10" y1="462" x2="1190" y2="462" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <line x1="10" y1="478" x2="1190" y2="478" stroke="#e0e0e0" stroke-width="1"/>
@@ -1310,7 +1324,7 @@ order by da.avg_sal desc</code></pre>
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T19:05:30Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T23:04:50Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;

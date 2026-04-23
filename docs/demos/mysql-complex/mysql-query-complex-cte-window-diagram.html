@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T19:05:30Z",
+  "generated_at": "2026-04-23T23:04:50Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -904,10 +904,6 @@ order by da.avg_sal desc</code></pre>
 <text x="140.0" y="234" text-anchor="middle" class="node-sublabel" fill="#111111">departments</text>
 <text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#111111">8 rows</text>
 </g>
-<g class="complexity-chip" data-big-o="O(n)">
-<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
-</g>
 </g>
 <line x1="260" y1="238.0" x2="310" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
 <text x="285.0" y="232.0" text-anchor="middle" class="arrow-label">8 rows</text>
@@ -939,10 +935,6 @@ order by da.avg_sal desc</code></pre>
 <polygon points="656,182.0 712,238.0 656,294.0 600,238.0" fill="#fae625" stroke="#2d3748" stroke-width="1"/>
 <text x="656" y="234.0" text-anchor="middle" class="node-label" fill="#111111">inner join</text>
 <text x="656" y="250.0" text-anchor="middle" class="node-sublabel" fill="#111111">24 rows</text>
-<g class="complexity-chip" data-big-o="O(n · log m)">
-<rect x="617.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="656.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
-</g>
 </g>
 <g class="diagram-node hotspot" data-info="Index scan on employees using idx_dept  ·  Total: 1.20 ms  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Index: idx_dept  ·  Est.rows: 2000  ·  Covering: no  ·  Complexity: O(n)  ·  Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but …" data-teach-index="10">
 <title>Index scan on employees using idx_dept  ·  Total: 1.20 ms  ·  Cost: 202.00  ·  Rows: 2.00K  ·  Loops: 1  ·  Table: employees  ·  Index: idx_dept  ·  Est.rows: 2000  ·  Covering: no  ·  Complexity: O(n)  ·  Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but …</title>
@@ -969,6 +961,16 @@ order by da.avg_sal desc</code></pre>
 <rect x="890" y="210.0" width="160" height="56" fill="#f5e526" stroke="#2d3748" stroke-width="1" rx="6"/>
 <text x="970.0" y="230.0" text-anchor="middle" class="node-label" fill="#111111">query_block #1</text>
 <text x="970.0" y="248.0" text-anchor="middle" class="cost" fill="#111111">13.0 µs</text>
+</g>
+<g class="complexity-chips-layer" pointer-events="none">
+<g class="complexity-chip" data-big-o="O(n)">
+<rect x="122.0" y="297.0" width="36" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="140.0" y="307.5" text-anchor="middle" class="complexity-chip-text">n</text>
+</g>
+<g class="complexity-chip" data-big-o="O(n · log m)">
+<rect x="617.5" y="299.0" width="77" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="656.0" y="309.5" text-anchor="middle" class="complexity-chip-text">n · log m</text>
+</g>
 </g>
 </g>
 <g class="zoom-controls">
@@ -1268,7 +1270,7 @@ order by da.avg_sal desc</code></pre>
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T19:05:30Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-23T23:04:50Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
