@@ -78,6 +78,13 @@ def render_explain(
         folded_text = "\n".join(folded_lines)
         if not folded_text.strip():
             raise ValueError("No flame graph data (all zero self-time)")
+        # Build a folded-label → complexity map so flamegraph bars can show
+        # the severity dot and (where space permits) the compact O(...) form.
+        _complexity_by_folded = {}
+        for _n in flatten_nodes(root):
+            _c = (_n.get("details") or {}).get("complexity")
+            if isinstance(_c, dict) and _c.get("big_o"):
+                _complexity_by_folded.setdefault(_n.get("folded_label") or "", _c)
         svg = folded_to_svg(
             folded_text,
             title=title,
@@ -87,6 +94,7 @@ def render_explain(
             inverted=inverted,
             colors=colors,
             teach_index_by_folded=teach_maps["by_folded_label"],
+            complexity_by_folded=_complexity_by_folded or None,
         )
         if not no_enhance:
             op_details = {n["folded_label"]: n["details"] for n in flatten_nodes(root)}

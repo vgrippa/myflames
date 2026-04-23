@@ -1,5 +1,5 @@
 # MySQL & MariaDB EXPLAIN Flame Graphs - Python
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 
 def render_lesson(name: str) -> str:

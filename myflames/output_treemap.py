@@ -1,5 +1,7 @@
 """Generate treemap SVG from parsed EXPLAIN tree."""
 from .parser import xml_escape, flatten_nodes, render_info_panel
+from .complexity import SEVERITY_COLORS, SEVERITY_BORDERS
+from .complexity_legend import render_complexity_legend_svg
 
 
 def _layout_treemap(node, x, y, w, h, depth, results):
@@ -48,6 +50,12 @@ def _cell_info_text(node, unit_display):
         parts.append("Table: " + details["table_name"])
     if details.get("index_name"):
         parts.append("Index: " + details["index_name"])
+    # Big O complexity from myflames.complexity, attached at parse time.
+    complexity = details.get("complexity")
+    if isinstance(complexity, dict) and complexity.get("big_o"):
+        conf = complexity.get("confidence", "exact")
+        conf_tag = "" if conf == "exact" else f" ({conf.replace('_', ' ')})"
+        parts.append(f"Complexity: {complexity['big_o']}{conf_tag}")
     return "  ·  ".join(parts)
 
 
@@ -67,7 +75,11 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         else ([], 0)
     )
     info_gap = 8 if analysis is not None else 0
-    chart_height = top_margin + treemap_height + details_strip_h + info_gap + info_panel_h
+    _legend_scratch_lines, legend_h = render_complexity_legend_svg(
+        x=pad, y=0, width=treemap_width
+    )
+    legend_gap = 12
+    chart_height = top_margin + treemap_height + details_strip_h + info_gap + info_panel_h + legend_gap + legend_h
     details_y_start = top_margin + treemap_height + 20
 
     rects = []
@@ -106,6 +118,7 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         "  #unzoom.hide { display: none; }",
         "  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }",
         "  .details-line.dim { fill: #999; }",
+        "  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }",
         "</style>",
         '<rect width="100%" height="100%" fill="#fafafa"/>',
         f'<text x="{width/2}" y="26" text-anchor="middle" class="title">{xml_escape(title)}</text>',
@@ -138,11 +151,17 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         teach_attr = ""
         if teach_index_by_folded and folded in teach_index_by_folded:
             teach_attr = f' data-teach-index="{teach_index_by_folded[folded]}"'
+        details = n.get("details") or {}
+        complexity = details.get("complexity") if isinstance(details, dict) else None
+        complexity_attr = ""
+        if isinstance(complexity, dict) and complexity.get("big_o"):
+            complexity_attr = f' data-complexity="{attr_escape(complexity["big_o"])}"'
         title_text = info_text.replace("  ·  ", "\n")
         lines.append(
             f'<rect id="cell-{cell_id}" class="{cell_class}" x="{x}" y="{y}" width="{w}" height="{h}" fill="{color}" '
             f'data-x="{x}" data-y="{y}" data-w="{w}" data-h="{h}" data-label="{label_attr}" data-info="{info_attr}"'
             + (f' data-analysis-msg="{analysis_attr}"' if analysis_attr else "")
+            + complexity_attr
             + teach_attr
             + f'>'
             f"<title>{xml_escape(title_text)}</title></rect>"
@@ -150,6 +169,27 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         if w > 40 and h > 14:
             tx, ty = x + 4, y + h - 4
             lines.append(f'<text x="{tx}" y="{ty}" fill="#333" font-size="10" pointer-events="none">{xml_escape(label)}</text>')
+        # Big O complexity chip, top-right corner, only for tiles big enough
+        # that it won't overlap the label.
+        if isinstance(complexity, dict) and complexity.get("short") and w > 80 and h > 40:
+            chip_short = complexity["short"]
+            if complexity.get("confidence", "exact") != "exact":
+                chip_short = "~" + chip_short
+            sev = complexity.get("severity", "medium")
+            chip_fill = SEVERITY_COLORS.get(sev, SEVERITY_COLORS["medium"])
+            chip_stroke = SEVERITY_BORDERS.get(sev, SEVERITY_BORDERS["medium"])
+            chip_w = min(w - 8, max(36, 7 * len(chip_short) + 12))
+            chip_h = 14
+            chip_x = x + w - chip_w - 4
+            chip_y = y + 4
+            lines.append(
+                f'<g pointer-events="none">'
+                f'<rect x="{chip_x:.1f}" y="{chip_y:.1f}" width="{chip_w:.1f}" height="{chip_h}" '
+                f'rx="7" ry="7" fill="{chip_fill}" stroke="{chip_stroke}" stroke-width="0.8"/>'
+                f'<text x="{chip_x + chip_w/2:.1f}" y="{chip_y + chip_h - 4:.1f}" '
+                f'text-anchor="middle" class="complexity-chip-text">{xml_escape(chip_short)}</text>'
+                f'</g>'
+            )
 
     lines.append("</g>")
 
@@ -166,8 +206,16 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         )
     lines.append("<!-- end details area -->")
 
+    # Big O complexity legend — rendered below the details strip so newcomers
+    # can decode the corner chips on larger tiles.
+    legend_y = top_margin + treemap_height + details_strip_h + legend_gap
+    legend_lines, _ = render_complexity_legend_svg(
+        x=pad, y=legend_y, width=treemap_width
+    )
+    lines.extend(legend_lines)
+
     if analysis is not None:
-        panel_y = top_margin + treemap_height + details_strip_h + info_gap
+        panel_y = top_margin + treemap_height + details_strip_h + info_gap + legend_h + legend_gap
         panel_lines, _ = render_info_panel(analysis, pad, panel_y, treemap_width, view_type="treemap")
         lines.extend(panel_lines)
 

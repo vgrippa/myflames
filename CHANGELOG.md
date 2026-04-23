@@ -5,6 +5,99 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-04-23
+
+Minor release adding **Big O complexity annotations to every operator in every
+view**, a **JSON sidecar schema bump** (1.2), and a refreshed README with
+inline screenshots. People who use myflames to learn MySQL internals can now
+see `O(n · log m)`, `O(n · m)`, `O(log n + k)`, …  on each operator, backed
+by a vetted decision table and a shared severity palette.
+
+### Added
+
+- **`myflames/complexity.py`** — single source of truth for per-operator Big O
+  annotations. `compute_complexity(node, parent=None)` returns a dict with
+  `big_o`, `short`, `severity` (`good` / `medium` / `bad`), `rationale`,
+  `confidence` (`exact` / `typical` / `worst_case`), and an optional glossary
+  `learn_more` key. Returns `None` on uncertainty so renderers can omit
+  chips rather than display a misleading value.
+- **`myflames/complexity_legend.py`** — shared SVG legend fragment
+  (`render_complexity_legend_svg`) embedded at the bottom of the diagram,
+  bargraph, and treemap views so a newcomer can decode the chips without
+  leaving the page.
+- **Big O surfaces in every renderer**:
+  - **Flame graph**: colored severity dot at the right edge of every bar;
+    compact `O(...)` appended to the bar label when there is ≥ 120 px of
+    width available; tooltip gains a `Complexity: O(...)` line.
+  - **Bar chart**: dedicated **COMPLEXITY** column between the label and the
+    loops count (auto-hidden below 900 px canvas width), with color-coded
+    chips matching the severity palette.
+  - **Treemap**: `data-complexity="O(...)"` attribute on every tile, plus a
+    corner chip on tiles larger than `80 × 40 px`.
+  - **Diagram**: colored chip below each access box and below each join
+    diamond. The chip lives on the join frame only — inner children of a
+    join never duplicate the chip — so the `O(n · m)` / `O(n · log m)`
+    story sits in the right place.
+- **JSON sidecar schema 1.2** — new optional top-level
+  `operator_complexities` array, one entry per operator node that carries
+  complexity metadata. Each entry is keyed by `folded_label` and
+  `short_label` (matching the existing `teach_hooks` convention) and
+  contains the full complexity dict. The array is omitted entirely when no
+  node has complexity metadata, keeping payloads minimal and avoiding any
+  shape surprise for consumers pinned to 1.1.
+- **`test/test_complexity.py`** — 41 unit tests, one per row of the decision
+  table plus contract and palette tests. The decision table is the
+  authoritative reference for what Big O class we claim for each operator.
+- **README refresh** — hero diagram, an "output types" table with thumbnail
+  previews of each view, and a "What does the output look like?" section
+  highlighting the Big O chips. Screenshots live under `docs/screenshots/`.
+- **docs/VISUAL_EXPLAIN_REFERENCE.md** — new section documenting the
+  complexity dict shape, the per-renderer surface area, the severity
+  palette, and the schema 1.2 sidecar contract.
+
+### Changed
+
+- **`myflames/parser.py`** — `parse_node` now attaches
+  `details["complexity"]` once per node via `compute_complexity(node)`;
+  downstream consumers read the same field.
+- **`myflames/output_sidecar.py`** — `SCHEMA_VERSION` bumped to `"1.2"`;
+  `validate_sidecar()` extended to validate `operator_complexities` entries
+  (severity enum, confidence enum, required string fields, optional
+  `build_complexity` / `scan_complexity` sub-dicts for Materialize).
+- **`myflames/flamegraph.py`** — `folded_to_svg` accepts a new optional
+  `complexity_by_folded` mapping; `enhance_tooltip_flame` (in
+  `parser.py`) appends a `Complexity: ...` line to flamegraph tooltips.
+- **`.github/workflows/test.yml`** — broadened the discovery pattern from
+  `test_myflames.py` to `test_*.py` so the new `test_complexity.py` and
+  `test_sidecar.py` suites run in CI.
+
+### Notes on correctness
+
+The complexity claims were vetted against the MySQL 8.4 and MariaDB 11.x
+cost model via the `/mysql-expert` skill before landing:
+
+- Nested loop with indexed inner (`ref` / `eq_ref` / `range`) is reported
+  as `O(n · log m)` (exact). Block Nested Loop is `O(n · m)` (exact) and
+  Batched Key Access gets its own distinct `O(n · log m)` entry so the
+  pedagogical difference is preserved.
+- Hash join is `O(n + m)` (exact). Disk-spill does not change the
+  asymptotic class, only the constants — the rationale says so.
+- Filesort defaults to `O(n log n)` at `worst_case` confidence; a future
+  release will narrow to `O(n log k)` for priority-queue filesort once
+  outer-LIMIT parsing lands.
+- Skip scan is `O(d · log n)` at `typical` confidence with `d = distinct
+  prefix values, not exposed by EXPLAIN` called out in the rationale.
+- Materialize emits two-phase `build_complexity` + `scan_complexity`
+  rather than a single `big_o` string — collapsing into one would mislead
+  students about how `actual_loops` compounds with the build phase.
+
+### Deferred
+
+- Priority-queue filesort detection (needs outer LIMIT parsing, which
+  `parse_explain` does not walk today).
+- Per-node disk-spill rationale for hash join (needs `join_buffer_size`
+  awareness).
+
 ## [1.3.1] — 2026-04-13
 
 Feature and maintenance release adding **interactive teach lessons**,

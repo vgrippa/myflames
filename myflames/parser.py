@@ -11,6 +11,8 @@ Supports:
 import re
 import json
 
+from .complexity import compute_complexity
+
 
 # ---------------------------------------------------------------------------
 # SQL formatting
@@ -316,7 +318,7 @@ def parse_node(node):
         "mariadb_block_nl_join": node.get("mariadb_block_nl_join") or {},
         "mariadb_index_merge": node.get("mariadb_index_merge") or {},
     }
-    return {
+    result = {
         "short_label": short,
         "folded_label": folded,
         "full_label": op,
@@ -327,6 +329,13 @@ def parse_node(node):
         "loops": loops,
         "children": children,
     }
+    # Attach Big O complexity once so every downstream consumer (flamegraph,
+    # bargraph, treemap, diagram, JSON sidecar) reads the same field. Returns
+    # None for unknowns; we only insert the key when we have a real answer.
+    complexity = compute_complexity(result)
+    if complexity is not None:
+        details["complexity"] = complexity
+    return result
 
 
 def load_explain_json(text):
@@ -971,6 +980,16 @@ def enhance_tooltip_flame(original, op_details):
         lines.append("Ranges: " + xml_escape(", ".join(best["ranges"])))
     if best.get("covering") is not None:
         lines.append("Covering: " + ("Yes" if best["covering"] else "No"))
+    # Big O complexity (attached at parse time by myflames.complexity).
+    complexity = best.get("complexity")
+    if isinstance(complexity, dict) and complexity.get("big_o"):
+        conf = complexity.get("confidence", "exact")
+        conf_tag = "" if conf == "exact" else " (" + conf.replace("_", " ") + ")"
+        lines.append("Complexity: " + complexity["big_o"] + conf_tag)
+        rationale = complexity.get("rationale")
+        if rationale:
+            rat = rationale if len(rationale) <= 120 else rationale[:117] + "..."
+            lines.append(rat)
     return "\n".join(lines)
 
 

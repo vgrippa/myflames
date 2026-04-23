@@ -35,7 +35,7 @@ from .teach_hooks import build_teach_hooks, SUPPORTED_LESSONS
 # Schema constants
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 # Allowed enum values. ``build_sidecar`` + ``validate_sidecar`` reject anything
 # outside these sets to keep downstream agents stable.
@@ -54,6 +54,8 @@ _SUGGESTION_CATEGORIES = frozenset({
     "engine", "durability", "rewrite", "other",
 })
 _WARNING_SOURCES = frozenset({"plan", "environment"})
+_COMPLEXITY_SEVERITIES = frozenset({"good", "medium", "bad"})
+_COMPLEXITY_CONFIDENCES = frozenset({"exact", "typical", "worst_case"})
 
 # Matches the advisor's convention: an action sentence followed by a ``Why:``
 # clause. Used to split suggestion strings into structured {action, why}.
@@ -188,6 +190,39 @@ def _compute_plan_summary(root):
         "operator_count": stats["op_count"],
         "max_depth": stats["max_depth"],
     }
+
+
+def _collect_operator_complexities(root):
+    """Walk the parsed tree and return per-operator complexity entries.
+
+    One entry per node that carries ``details.complexity`` (attached by
+    ``parser.parse_node`` via :mod:`myflames.complexity`). The list is
+    emitted in depth-first pre-order to match the visual reading order of
+    the diagram view — first index is the outermost operator.
+
+    Entries are keyed by ``folded_label`` and ``short_label`` so HTML
+    consumers can cross-reference with the ``teach_hooks`` list (same
+    convention). Omitted entirely if no node has complexity metadata.
+    """
+    out = []
+
+    def _walk(node):
+        if not isinstance(node, dict):
+            return
+        details = node.get("details") or {}
+        complexity = details.get("complexity")
+        if isinstance(complexity, dict):
+            entry = {
+                "folded_label": node.get("folded_label") or "",
+                "short_label": node.get("short_label") or "",
+                "complexity": dict(complexity),
+            }
+            out.append(entry)
+        for child in node.get("children") or []:
+            _walk(child)
+
+    _walk(root)
+    return out
 
 
 def _executive_summary_fallback(plan_summary, warnings, suggestions):
@@ -404,6 +439,13 @@ def build_sidecar(
     if teach_hooks:
         payload["teach_hooks"] = list(teach_hooks)
 
+    # Big O complexity per operator (schema 1.2). Omitted if the tree has
+    # no complexity metadata — keeps payloads minimal and keeps consumers
+    # that pin to 1.1 shape-compatible (they just see an optional extra key).
+    op_complexities = _collect_operator_complexities(root)
+    if op_complexities:
+        payload["operator_complexities"] = op_complexities
+
     validate_sidecar(payload)
     return payload
 
@@ -545,6 +587,59 @@ def validate_sidecar(payload):
                 raise SidecarValidationError("teach_hook.query_sql must be string")
             if "note" in hook and not isinstance(hook["note"], str):
                 raise SidecarValidationError("teach_hook.note must be string")
+
+    if "operator_complexities" in payload:
+        ops = payload["operator_complexities"]
+        if not isinstance(ops, list):
+            raise SidecarValidationError("operator_complexities must be a list")
+        for op in ops:
+            if not isinstance(op, dict):
+                raise SidecarValidationError("operator_complexity must be a dict")
+            if not op.get("folded_label") and not op.get("short_label"):
+                raise SidecarValidationError(
+                    "operator_complexity missing folded_label and short_label"
+                )
+            c = op.get("complexity")
+            if not isinstance(c, dict):
+                raise SidecarValidationError(
+                    "operator_complexity.complexity must be a dict"
+                )
+            for required in ("big_o", "short", "severity", "rationale", "confidence"):
+                if required not in c:
+                    raise SidecarValidationError(
+                        "operator_complexity.complexity missing: " + required
+                    )
+                if not isinstance(c[required], str) or not c[required]:
+                    raise SidecarValidationError(
+                        "operator_complexity.complexity.{} must be non-empty string".format(required)
+                    )
+            if c["severity"] not in _COMPLEXITY_SEVERITIES:
+                raise SidecarValidationError(
+                    "operator_complexity.complexity.severity invalid: " + c["severity"]
+                )
+            if c["confidence"] not in _COMPLEXITY_CONFIDENCES:
+                raise SidecarValidationError(
+                    "operator_complexity.complexity.confidence invalid: " + c["confidence"]
+                )
+            if "learn_more" in c and not isinstance(c["learn_more"], str):
+                raise SidecarValidationError(
+                    "operator_complexity.complexity.learn_more must be string"
+                )
+            # Materialize emits two-phase sub-complexities; validate shape if present.
+            for sub_key in ("build_complexity", "scan_complexity"):
+                if sub_key in c:
+                    sub = c[sub_key]
+                    if not isinstance(sub, dict):
+                        raise SidecarValidationError(
+                            "operator_complexity.complexity.{} must be a dict".format(sub_key)
+                        )
+                    for sub_req in ("big_o", "short", "severity", "rationale", "confidence"):
+                        if sub_req not in sub:
+                            raise SidecarValidationError(
+                                "operator_complexity.complexity.{}.{} missing".format(
+                                    sub_key, sub_req,
+                                )
+                            )
 
     return True
 

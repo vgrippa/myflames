@@ -1,0 +1,267 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1155" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1155" style="max-width: 100%; height: auto;">
+<style>
+  text { font-family: Arial, sans-serif; font-size: 12px; }
+  .title { font-size: 18px; font-weight: bold; }
+  .subtitle { font-size: 11px; fill: #666; }
+  .col-header { font-size: 10px; fill: #888; font-weight: bold; letter-spacing: 0.5px; }
+  .label { font-size: 11px; fill: #333; }
+  .loops { font-size: 10px; fill: #777; }
+  .value { font-size: 11px; font-weight: bold; fill: #222; }
+  .bar { transition: opacity 0.12s; }
+  .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
+  .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
+  .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
+  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .complexity-chip-rect { pointer-events: none; }
+  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
+  .details-line.dim { fill: #999; }
+  #search { font-size: 12px; fill: #666; cursor: pointer; }
+  #search:hover { fill: #111; }
+</style>
+<rect width="100%" height="100%" fill="#fafafa"/>
+<text x="600.0" y="28" text-anchor="middle" class="title">Big O annotations in myflames</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 13 ms</text>
+<text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
+<text x="378.0" y="68" text-anchor="middle" class="col-header">COMPLEXITY</text>
+<text x="466.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="778.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text id="search" x="1190" y="68" text-anchor="end">Search</text>
+<line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="10" y1="1021" x2="1190" y2="1021" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="1025" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="1033" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="1047" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="1061" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="1075" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="1089" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="1103" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="1117" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="1131" text-anchor="start" class="details-line"></text>
+<!-- end details area -->
+<text x="320" y="98.0" text-anchor="end" class="label">Index lookup [order_items.idx_order]</text>
+<g><title>O(log n + k)</title><rect class="complexity-chip-rect" x="338.5" y="86.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="98.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<text x="466.0" y="98.0" text-anchor="middle" class="loops">2,400</text>
+<rect class="bar" x="506" y="80" width="240.11914740421602" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Index lookup on oi using idx_order (order_id=o.id)  ·  Self: 6 ms (44.1%)  ·  Rows: 3  ·  Loops: 2,400  ·  Table: order_items  ·  Index: idx_order  ·  Access: index  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the i…  ·  Est.rows: 10  ⚠ Optimizer overestimate" data-label="Index lookup [order_items.idx_order]" data-teach-index="6"/>
+<text x="1060" y="98.0" class="value">6 ms (44.1%)</text>
+<text x="320" y="132.0" text-anchor="end" class="label">Sort</text>
+<g><title>O(n log n)</title><rect class="complexity-chip-rect" x="342.0" y="120.0" width="72.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="132.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<text x="466.0" y="132.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="506" y="114" width="71.50513861007742" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Sort: u.country  ·  Self: 2 ms (13.1%)  ·  Total: 12 ms  ·  Rows: 8000  ·  Loops: 1  ·  Access: sort  ·  Complexity: O(n log n) (worst case)  ·  Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report …" data-label="Sort" data-analysis-msg="2 sort operation(s) — 8000 rows; may use disk-based filesort" data-teach-index="1"/>
+<text x="1060" y="132.0" class="value">2 ms (13.1%)</text>
+<text x="320" y="166.0" text-anchor="end" class="label">Single-row lookup [users.PRIMARY]</text>
+<g><title>O(log n)</title><rect class="complexity-chip-rect" x="352.5" y="154.0" width="51.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="166.0" text-anchor="middle" class="complexity-chip-text">log n</text></g>
+<text x="466.0" y="166.0" text-anchor="middle" class="loops">2,400</text>
+<rect class="bar" x="506" y="148" width="60.87165540333425" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Single-row index lookup on u using PRIMARY (id=o.user_id)  ·  Self: 1 ms (11.2%)  ·  Rows: 1  ·  Loops: 2,400  ·  Table: users  ·  Index: PRIMARY  ·  Access: index  ·  Complexity: O(log n)  ·  Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.  ·  Est.rows: 1" data-label="Single-row lookup [users.PRIMARY]" data-teach-index="5"/>
+<text x="1060" y="166.0" class="value">1 ms (11.2%)</text>
+<text x="320" y="200.0" text-anchor="end" class="label">Index lookup [orders.idx_status]</text>
+<g><title>O(log n + k)</title><rect class="complexity-chip-rect" x="338.5" y="188.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="378.0" y="200.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
+<text x="466.0" y="200.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="182" width="58.705172002238314" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Index lookup on o using idx_status (status='delivered'), with index condition: (o.status = 'delivered')  ·  Self: 1 ms (10.8%)  ·  Rows: 2400  ·  Loops: 1  ·  Table: orders  ·  Index: idx_status  ·  Access: index  ·  Complexity: O(log n + k)  ·  Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the i…  ·  Est.rows: 2400" data-label="Index lookup [orders.idx_status]" data-teach-index="4"/>
+<text x="1060" y="200.0" class="value">1 ms (10.8%)</text>
+<text x="320" y="234.0" text-anchor="end" class="label">Stream results</text>
+<text x="466.0" y="234.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="216" width="43.701406253464775" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Stream results  ·  Self: 1 ms (8.0%)  ·  Total: 10 ms  ·  Rows: 8000  ·  Loops: 1  ·  Access: stream  ·  Est.rows: 24326  ⚠ Optimizer overestimate" data-label="Stream results"/>
+<text x="1060" y="234.0" class="value">1 ms (8.0%)</text>
+<text x="320" y="268.0" text-anchor="end" class="label">Group</text>
+<g><title>O(n log n)</title><rect class="complexity-chip-rect" x="342.0" y="256.0" width="72.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="268.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<text x="466.0" y="268.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="250" width="41.353812119528286" height="28" fill="rgb(200,200,100)" rx="3" ry="3" data-info="Group aggregate: count(distinct orders.id), sum(tmp_field)  ·  Self: 0.991 ms (7.6%)  ·  Total: 13 ms  ·  Rows: 1  ·  Loops: 1  ·  Access: aggregate  ·  Complexity: O(n log n) (typical)  ·  Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates." data-label="Group"/>
+<text x="1060" y="268.0" class="value">0.991 ms (7.6%)</text>
+<text x="320" y="302.0" text-anchor="end" class="label">Nested loop inner join</text>
+<g><title>O(n · log m)</title><rect class="complexity-chip-rect" x="338.5" y="290.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="302.0" text-anchor="middle" class="complexity-chip-text">n · log m</text></g>
+<text x="466.0" y="302.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="284" width="17.97758812073868" height="28" fill="rgb(150,200,150)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 0.431 ms (3.3%)  ·  Total: 9 ms  ·  Rows: 8000  ·  Loops: 1  ·  Access: join  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent.  ·  Est.rows: 24326  ⚠ Optimizer overestimate" data-label="Nested loop inner join" data-teach-index="2"/>
+<text x="1060" y="302.0" class="value">0.431 ms (3.3%)</text>
+<text x="320" y="336.0" text-anchor="end" class="label">Nested loop inner join</text>
+<g><title>O(n · log m)</title><rect class="complexity-chip-rect" x="338.5" y="324.0" width="79.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="336.0" text-anchor="middle" class="complexity-chip-text">n · log m</text></g>
+<text x="466.0" y="336.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="318" width="9.350472903435357" height="28" fill="rgb(100,180,180)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 0.224 ms (1.7%)  ·  Total: 3 ms  ·  Rows: 2400  ·  Loops: 1  ·  Access: join  ·  Complexity: O(n · log m)  ·  Indexed nested loop: each outer row probes the inner table via an index descent.  ·  Est.rows: 2400" data-label="Nested loop inner join" data-teach-index="3"/>
+<text x="1060" y="336.0" class="value">0.224 ms (1.7%)</text>
+<text x="320" y="370.0" text-anchor="end" class="label">Sort</text>
+<g><title>O(n log n)</title><rect class="complexity-chip-rect" x="342.0" y="358.0" width="72.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="370.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
+<text x="466.0" y="370.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="506" y="352" width="3" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Sort: revenue DESC  ·  Self: 0.006 ms (0.0%)  ·  Total: 13 ms  ·  Rows: 1  ·  Loops: 1  ·  Access: sort  ·  Complexity: O(n log n) (worst case)  ·  Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report …" data-label="Sort" data-analysis-msg="2 sort operation(s) — 8000 rows; may use disk-based filesort" data-teach-index="0"/>
+<text x="1060" y="370.0" class="value">0.006 ms (0.0%)</text>
+<text x="320" y="404.0" text-anchor="end" class="label">Stream results</text>
+<text x="466.0" y="404.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="506" y="386" width="3" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Stream results  ·  Self: 0.004 ms (0.0%)  ·  Total: 13 ms  ·  Rows: 1  ·  Loops: 1  ·  Access: stream" data-label="Stream results"/>
+<text x="1060" y="404.0" class="value">0.004 ms (0.0%)</text>
+<g class="complexity-legend" aria-label="Big O complexity legend">
+<rect x="10" y="564" width="1180" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<text x="20" y="578" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
+<text x="1180" y="578" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
+<rect x="20" y="592" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="50.0" y="605" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
+<text x="92" y="605" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
+<rect x="20" y="614" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="57.0" y="627" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
+<text x="106" y="627" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
+<rect x="20" y="636" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="71.0" y="649" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
+<text x="134" y="649" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
+<rect x="408" y="592" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="438.0" y="605" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
+<text x="480" y="605" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
+<rect x="408" y="614" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="452.0" y="627" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
+<text x="508" y="627" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
+<rect x="408" y="636" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
+<text x="445.0" y="649" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
+<text x="494" y="649" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
+<rect x="796" y="592" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
+<text x="847.0" y="605" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
+<text x="910" y="605" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
+<rect x="796" y="614" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="833.0" y="627" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
+<text x="882" y="627" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
+<rect x="796" y="636" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
+<text x="826.0" y="649" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
+<text x="868" y="649" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
+</g>
+<rect x="10" y="678" width="1180" height="477" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="10" y="688" width="1180" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="10" y="694" width="1180" height="24" fill="#e8eaf6"/>
+<text x="26" y="707" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="14" y="726" width="1172" height="22" fill="#f5f5f5" rx="4"/>
+<text x="26" y="741" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="36" y="765" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select u.country AS country,count(distinct testdb.orders.id) AS orders,sum(tmp_field) AS revenue</text>
+<text x="36" y="782" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from testdb.users u</text>
+<text x="36" y="799" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.orders o</text>
+<text x="36" y="816" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.order_items oi</text>
+<text x="36" y="833" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((u.id = o.user_id) and (oi.order_id = o.id) and (o.status = 'delivered'))</text>
+<text x="36" y="850" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by testdb.u.country</text>
+<text x="36" y="867" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by revenue desc</text>
+<rect x="14" y="877" width="1172" height="22" fill="#f1f8e9" rx="4"/>
+<text x="26" y="892" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="36" y="916" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
+<text x="36" y="933" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
+<rect x="14" y="943" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="958" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="36" y="982" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_condition_pushdown=on — Parts of the WHERE clause are evaluated inside the storage engine using index columns before fetching the full row — reduces rows handed to the server</text>
+<text x="36" y="999" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">layer.</text>
+<text x="36" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
+<rect x="14" y="1026" width="1172" height="22" fill="#fff3f3" rx="4"/>
+<text x="26" y="1041" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="36" y="1065" font-family="Arial,sans-serif" font-size="11" fill="#c62828">2 sort operation(s) — 8000 rows; may use disk-based filesort</text>
+<text x="36" y="1082" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="14" y="1092" width="1172" height="22" fill="#e8f5e9" rx="4"/>
+<text x="26" y="1107" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="36" y="1131" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<script type="text/ecmascript"><![CDATA[
+(function() {
+  var detailLines = [];
+  var N_LINES = 8;
+  var searchBtn;
+  var defaultHint = "Hover a bar for details; click a bar to pin details  ·  Ctrl+F to search";
+  var searching = false;
+  var pinnedBar = null;
+
+  function setDetailsText(parts) {
+    for (var i = 0; i < N_LINES; i++) {
+      if (!detailLines[i]) continue;
+      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+      detailLines[i].setAttribute("class", "details-line" + (i > 0 && i >= parts.length - 1 && parts.length > 1 ? " dim" : ""));
+    }
+  }
+
+  function clearDetails() {
+    if (detailLines[0]) detailLines[0].textContent = defaultHint;
+    for (var i = 1; i < N_LINES; i++) {
+      if (detailLines[i]) { detailLines[i].textContent = ""; detailLines[i].setAttribute("class", "details-line"); }
+    }
+  }
+
+  function setDetailsForBar(bar) {
+    if (!bar || !detailLines[0]) return;
+    var info = bar.getAttribute("data-info") || "";
+    var analysisMsg = bar.getAttribute("data-analysis-msg");
+    if (analysisMsg)
+      info = info + "  ·  ⚠ In Query Analysis: " + analysisMsg;
+    var sep = "  ·  ";
+    var parts = info.split(sep);
+    setDetailsText(parts);
+  }
+
+  function init(evt) {
+    for (var i = 0; i < N_LINES; i++) {
+      var el = document.getElementById("details-l" + i);
+      if (el) detailLines.push(el);
+    }
+    searchBtn = document.getElementById("search");
+    if (!detailLines[0]) return;
+    document.addEventListener("mouseover", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        if (!pinnedBar) setDetailsForBar(e.target);
+      }
+    });
+    document.addEventListener("mouseout", function(e) {
+      if (e.target.classList && e.target.classList.contains("bar") && !searching && !pinnedBar)
+        clearDetails();
+    });
+    document.addEventListener("click", function(e) {
+      if (e.target.id === "search") { searchPrompt(); return; }
+      if (e.target.classList && e.target.classList.contains("bar")) {
+        var bars = document.querySelectorAll(".bar.pinned");
+        for (var i = 0; i < bars.length; i++) bars[i].classList.remove("pinned");
+        if (pinnedBar === e.target) {
+          pinnedBar = null;
+          clearDetails();
+        } else {
+          pinnedBar = e.target;
+          pinnedBar.classList.add("pinned");
+          setDetailsForBar(pinnedBar);
+        }
+        return;
+      }
+      if (pinnedBar) {
+        pinnedBar.classList.remove("pinned");
+        pinnedBar = null;
+        clearDetails();
+      }
+    });
+    document.addEventListener("keydown", function(e) {
+      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
+    });
+  }
+
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") {
+      var bars = document.querySelectorAll(".bar");
+      for (var i = 0; i < bars.length; i++) {
+        bars[i].style.opacity = "";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+      searchBtn.textContent = "Search";
+      if (!pinnedBar) clearDetails();
+      searching = false;
+      return;
+    }
+    var term = prompt("Search (regex):");
+    if (term == null) return;
+    var re;
+    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
+    var bars = document.querySelectorAll(".bar");
+    for (var i = 0; i < bars.length; i++) {
+      var label = bars[i].getAttribute("data-label") || "";
+      if (re.test(label)) {
+        bars[i].style.opacity = "1";
+        bars[i].style.stroke = "rgb(230,0,230)";
+        bars[i].style.strokeWidth = "2";
+      } else {
+        bars[i].style.opacity = "0.3";
+        bars[i].style.stroke = "";
+        bars[i].style.strokeWidth = "";
+      }
+    }
+    searchBtn.textContent = "Reset Search";
+    searching = true;
+    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+  }
+
+  window.init = init;
+})();
+]]></script>
+</svg>

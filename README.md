@@ -11,6 +11,30 @@ Visualize MySQL <code>EXPLAIN ANALYZE FORMAT=JSON</code> and MariaDB <code>ANALY
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
+<p align="center">
+  <img src="docs/screenshots/hero-diagram.svg" alt="myflames diagram view with Big O complexity chips on every operator" width="920">
+  <br><em>Every operator now carries a Big O chip: <code>O(log n + k)</code>, <code>O(n · log m)</code>, <code>O(n · m)</code>, …  with a color-coded severity ramp.</em>
+</p>
+
+---
+
+## What does the output look like?
+
+Four views of the same query, each annotated with Big O complexity:
+
+<table>
+<tr>
+<td align="center"><strong>Flame graph</strong> — time hierarchy + severity dots<br><img src="docs/screenshots/complex-flamegraph.svg" alt="flame graph with severity dots" width="420"></td>
+<td align="center"><strong>Bar chart</strong> — slowest ops with a complexity column<br><img src="docs/screenshots/complex-bargraph.svg" alt="bar chart with complexity column" width="420"></td>
+</tr>
+<tr>
+<td align="center"><strong>Treemap</strong> — corner chips on larger tiles<br><img src="docs/screenshots/complex-treemap.svg" alt="treemap with complexity chips" width="420"></td>
+<td align="center"><strong>Diagram</strong> — Visual Explain style, Big O per node<br><img src="docs/screenshots/complex-diagram.svg" alt="visual explain diagram with complexity chips" width="420"></td>
+</tr>
+</table>
+
+> **New in 1.4.0** — every operator carries a vetted Big O complexity chip (see the [shared complexity legend](myflames/complexity_legend.py) that renders at the bottom of every view). Open any HTML demo below to hover and inspect: `O(log n + k)` for index lookups, `O(n log n)` for filesort, `O(n · m)` when a nested loop has no inner index, and so on.
+
 ---
 
 ## Install
@@ -42,13 +66,13 @@ myflames -h db.example.com -u admin -p -D mydb \
 
 ## Output types
 
-| Type | Best for | Command |
-|------|----------|---------|
-| **Flame graph** | Full execution hierarchy, time distribution | `myflames explain.json` |
-| **Bar chart** | Finding the slowest individual operations | `myflames --type bargraph explain.json` |
-| **Treemap** | Comparing relative cost at a glance | `myflames --type treemap explain.json` |
-| **Diagram** | Join order & access paths (Visual Explain style) | `myflames --type diagram explain.json` |
-| **Execution tree** | Collapsible per-subtree with self/total time | `myflames --type tree explain.json` |
+| Preview | Type | Best for | Command |
+|---|------|----------|---------|
+| <img src="docs/screenshots/complex-flamegraph.svg" alt="flame graph preview" width="160"> | **Flame graph** | Full execution hierarchy, time distribution | `myflames explain.json` |
+| <img src="docs/screenshots/complex-bargraph.svg" alt="bar chart preview" width="160"> | **Bar chart** | Finding the slowest individual operations | `myflames --type bargraph explain.json` |
+| <img src="docs/screenshots/complex-treemap.svg" alt="treemap preview" width="160"> | **Treemap** | Comparing relative cost at a glance | `myflames --type treemap explain.json` |
+| <img src="docs/screenshots/complex-diagram.svg" alt="diagram preview" width="160"> | **Diagram** | Join order & access paths (Visual Explain style) | `myflames --type diagram explain.json` |
+| — | **Execution tree** | Collapsible per-subtree with self/total time | `myflames --type tree explain.json` |
 
 Not sure which view? Run `myflames guide`.
 

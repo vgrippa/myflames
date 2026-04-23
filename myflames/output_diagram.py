@@ -32,6 +32,8 @@ NestedLoopNode, TableNode, etc.), layout, and rendering. Our mapping:
 import math
 import re
 from .parser import xml_escape, build_diagram_steps, render_info_panel
+from .complexity import SEVERITY_COLORS, SEVERITY_BORDERS
+from .complexity_legend import render_complexity_legend_svg
 
 # Perceptually-uniform viridis-inspired heat palette.
 # Yellow = fast/cold, deep purple = slow/hot. Colorblind-safe and legible
@@ -273,6 +275,52 @@ def _format_loops(loops):
     return str(n)
 
 
+def _complexity_of(node):
+    """Return the complexity dict attached at parse time, or None."""
+    details = node.get("details") or {}
+    c = details.get("complexity")
+    if isinstance(c, dict) and c.get("big_o"):
+        return c
+    return None
+
+
+def _complexity_chip_svg(node, cx, cy, anchor="middle"):
+    """Emit SVG lines for a small colored Big O chip at (cx, cy).
+
+    The chip is a rounded rect sized to the ``short`` field with a background
+    in the severity color. When the computed ``confidence`` is not ``exact``
+    we prefix the text with ``~`` so a student can tell worst-case from
+    "measured today". Returns a list of SVG lines (empty if the node has
+    no complexity metadata).
+    """
+    c = _complexity_of(node)
+    if not c:
+        return []
+    short = c.get("short") or c.get("big_o") or ""
+    if c.get("confidence") and c["confidence"] != "exact":
+        short = "~" + short
+    # Width heuristic — 7 px per char + 14 px padding, clamped.
+    chip_w = max(36, min(120, 7 * len(short) + 14))
+    chip_h = 14
+    if anchor == "middle":
+        x = cx - chip_w / 2
+    elif anchor == "start":
+        x = cx
+    else:  # end
+        x = cx - chip_w
+    y = cy - chip_h / 2
+    fill = SEVERITY_COLORS.get(c.get("severity") or "medium", SEVERITY_COLORS["medium"])
+    stroke = SEVERITY_BORDERS.get(c.get("severity") or "medium", SEVERITY_BORDERS["medium"])
+    return [
+        f'<g class="complexity-chip" data-big-o="{xml_escape(c.get("big_o") or "")}">',
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="{chip_w}" height="{chip_h}" '
+        f'rx="7" ry="7" fill="{fill}" stroke="{stroke}" stroke-width="0.8"/>',
+        f'<text x="{x + chip_w/2:.1f}" y="{y + chip_h - 3.5:.1f}" '
+        f'text-anchor="middle" class="complexity-chip-text">{xml_escape(short)}</text>',
+        "</g>",
+    ]
+
+
 def _node_tooltip(node, kind, time_str, cost_val, rows_str, total_ms=None, self_ms=None):
     """Build rich tooltip: plain-English hint first, then full technical details."""
     details = node.get("details") or {}
@@ -319,6 +367,18 @@ def _node_tooltip(node, kind, time_str, cost_val, rows_str, total_ms=None, self_
         parts.append("Ranges: " + "; ".join(str(r) for r in ranges[:2]))
     if details.get("covering") is not None:
         parts.append("Covering: " + ("yes" if details["covering"] else "no"))
+    # Big O complexity — appended last so the operator metadata stays near the
+    # top of the tooltip and the pedagogical note reads as a summary.
+    complexity = _complexity_of(node)
+    if complexity:
+        conf = complexity.get("confidence", "exact")
+        conf_tag = "" if conf == "exact" else " ({})".format(conf.replace("_", " "))
+        parts.append("Complexity: {}{}".format(complexity.get("big_o", ""), conf_tag))
+        if complexity.get("rationale"):
+            rat = complexity["rationale"]
+            if len(rat) > 120:
+                rat = rat[:117] + "…"
+            parts.append(rat)
     return "  ·  ".join(parts)
 
 
@@ -405,7 +465,13 @@ def render_diagram(
         else ([], 0)
     )
     info_gap = 8 if analysis is not None else 0
-    height = diagram_height + info_gap + info_panel_h
+    # Reserve room for the shared Big O complexity legend, rendered just above
+    # any analysis info panel. Measured once so the SVG height is final.
+    _legend_scratch_lines, legend_h = render_complexity_legend_svg(
+        x=pad, y=0, width=max(400, total_width - 2 * pad)
+    )
+    legend_gap = 12
+    height = diagram_height + info_gap + info_panel_h + legend_gap + legend_h
 
     # Escape for use in HTML attribute (tooltip / details bar)
     def attr_escape(s):
@@ -460,6 +526,8 @@ def render_diagram(
         "  .diagram-node { cursor: pointer; }",
         "  .diagram-node:hover rect, .diagram-node:hover polygon { stroke-width: 2.5; }",
         "  .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }",
+        "  .complexity-chip { pointer-events: none; }",
+        "  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }",
         "  .loops-line { font-size: 9.5px; font-weight: 500; }",
         "  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }",
         "  .details-line.dim { fill: #999; }",
@@ -502,7 +570,7 @@ def render_diagram(
 
     clip_counter = [0]
 
-    def draw_access_box(x, y, kind, node, total_ms, self_ms, cost_val, rows):
+    def draw_access_box(x, y, kind, node, total_ms, self_ms, cost_val, rows, *, suppress_chip=False):
         # Show self-time on the box (time spent in this stage only)
         time_str = _format_time(self_ms) if self_ms is not None else "—"
         rows_str = _format_rows(rows)
@@ -547,6 +615,12 @@ def render_diagram(
             lines.append(f'<text x="{x + box_w/2}" y="{y + box_h - 24}" text-anchor="middle" class="loops-line" fill="{tc}">↻ {xml_escape(loops_str)} loops</text>')
         lines.append(f'<text x="{x + box_w/2}" y="{y + box_h - 10}" text-anchor="middle" class="row-count" fill="{tc}">{rows_str} rows</text>')
         lines.append("</g>")
+        # Big O complexity chip (drawn outside the clip, just below the box).
+        # For joins the chip goes on the diamond instead — caller sets
+        # suppress_chip=True for access boxes that are inner children of a
+        # join so the join frame is the only place the O(n · m) story lives.
+        if not suppress_chip:
+            lines.extend(_complexity_chip_svg(node, x + box_w / 2, y + box_h + 10, anchor="middle"))
         # SLOWEST badge on hotspot (drawn last, outside the clip, so it floats
         # above the top-right corner of the box).
         if is_hotspot:
@@ -600,6 +674,8 @@ def render_diagram(
         jloops_str = _format_loops(jloops) if (jloops and jloops > 1) else None
         if jloops_str:
             lines.append(f'<text x="{cx}" y="{cy + 26}" text-anchor="middle" class="loops-line" fill="{tc}">↻ {xml_escape(jloops_str)}</text>')
+        # Big O complexity chip — sits just below the diamond's bottom vertex.
+        lines.extend(_complexity_chip_svg(node, cx, cy + diamond_r + 12, anchor="middle"))
         # SLOWEST badge on hotspot — sits above the diamond's top vertex
         if is_hotspot:
             bw, bh = 60, 14
@@ -635,7 +711,7 @@ def render_diagram(
             inner_item = inner_list[k]
             ikind, inode, itotal_ms, iself_ms, icost_val, irows = inner_item
             inner_x = cx - box_w / 2
-            draw_access_box(inner_x, y_inner, ikind, inode, itotal_ms, iself_ms, icost_val, irows)
+            draw_access_box(inner_x, y_inner, ikind, inode, itotal_ms, iself_ms, icost_val, irows, suppress_chip=True)
             # Arrow from inner box (top center) up to diamond (bottom vertex)
             ax1, ay1 = cx, y_inner
             ax2, ay2 = cx, cy + diamond_r
@@ -851,8 +927,16 @@ def render_diagram(
 }})();
 ]]></script>""")
 
+    # Big O complexity legend — sits just below the diagram body and above
+    # any analysis panel. Always rendered so a newcomer can decode chips.
+    legend_y = diagram_height + 4
+    legend_lines, _ = render_complexity_legend_svg(
+        x=pad, y=legend_y, width=max(400, total_width - 2 * pad)
+    )
+    lines.extend(legend_lines)
+
     if analysis is not None:
-        panel_y = diagram_height + info_gap
+        panel_y = diagram_height + info_gap + legend_h + legend_gap
         panel_lines, _ = render_info_panel(analysis, pad, panel_y, total_width - 2 * pad, view_type="diagram")
         lines.extend(panel_lines)
 

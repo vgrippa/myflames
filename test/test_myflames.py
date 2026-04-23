@@ -2442,6 +2442,102 @@ class TestCompare(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Big O complexity integration — every renderer must surface it, and the
+# sidecar must expose an ``operator_complexities`` array.
+# ---------------------------------------------------------------------------
+
+_COMPLEX_FIXTURE = os.path.join(
+    TEST_DIR, "fixtures", "explain-065-complex-join-agg-sort.json"
+)
+
+
+class TestComplexityIntegration(unittest.TestCase):
+    """Big O complexity appears in every parsed tree + every SVG + the sidecar."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not os.path.exists(_COMPLEX_FIXTURE):
+            raise unittest.SkipTest("complex fixture missing")
+        with open(_COMPLEX_FIXTURE, encoding="utf-8") as f:
+            cls.json_text = f.read()
+        cls.root = parse_explain(cls.json_text)
+        cls.analysis = analyze_plan(cls.root)
+
+    def test_parser_attaches_complexity_to_access_nodes(self):
+        # Flatten and assert at least 3 operator nodes got a complexity field.
+        found = 0
+        for n in flatten_nodes(self.root):
+            c = (n.get("details") or {}).get("complexity")
+            if isinstance(c, dict) and c.get("big_o"):
+                self.assertIn(c["severity"], {"good", "medium", "bad"})
+                self.assertIn(c["confidence"], {"exact", "typical", "worst_case"})
+                self.assertTrue(c["big_o"].startswith("O("))
+                found += 1
+        self.assertGreaterEqual(found, 3)
+
+    def test_flamegraph_svg_contains_severity_dot_and_big_o(self):
+        # Flamegraph uses a <circle> for the severity dot and prefixes Big O in
+        # the tooltip <title> (" • O(...)" or "Complexity: O(...)" after enhance).
+        from myflames.render import render_explain
+        svg = render_explain(self.json_text, output_type="flamegraph")
+        self.assertIn("<circle", svg)
+        self.assertIn("O(", svg)
+
+    def test_bargraph_svg_contains_chip_and_complexity_column(self):
+        svg = render_bargraph(self.root, width=1400, analysis=self.analysis)
+        self.assertIn("complexity-chip-rect", svg)
+        self.assertIn("COMPLEXITY", svg)
+        self.assertIn("O(", svg)
+        self.assertIn("complexity-legend", svg)
+
+    def test_treemap_svg_exposes_data_complexity_attribute(self):
+        svg = render_treemap(self.root, width=1400, analysis=self.analysis)
+        self.assertIn('data-complexity="O(', svg)
+        self.assertIn("complexity-legend", svg)
+
+    def test_diagram_svg_contains_chip_and_legend(self):
+        svg = render_diagram(self.root, width=1400, analysis=self.analysis)
+        self.assertIn("complexity-chip", svg)
+        self.assertIn("complexity-legend", svg)
+        # Chip should not be double-emitted on an inner child of a join.
+        # Grepping for chip count is brittle; instead verify the legend and at
+        # least one chip are present.
+        self.assertIn("data-big-o=", svg)
+
+    def test_sidecar_emits_operator_complexities_array(self):
+        from myflames.output_sidecar import build_sidecar, SCHEMA_VERSION, validate_sidecar
+        payload = build_sidecar(self.root, self.analysis, source_type="file", engine="mysql")
+        validate_sidecar(payload)
+        self.assertEqual(payload["schema_version"], "1.2")
+        self.assertEqual(SCHEMA_VERSION, "1.2")
+        ops = payload.get("operator_complexities")
+        self.assertIsInstance(ops, list)
+        self.assertGreater(len(ops), 0)
+        for op in ops:
+            self.assertIn("complexity", op)
+            c = op["complexity"]
+            for key in ("big_o", "short", "severity", "rationale", "confidence"):
+                self.assertIn(key, c)
+                self.assertIsInstance(c[key], str)
+                self.assertTrue(c[key])
+
+    def test_nested_loop_join_chip_is_on_join_only(self):
+        """Inner-of-join access boxes in the diagram should NOT draw a chip."""
+        # Minimal query: 2-table join with indexed inner.
+        with open(os.path.join(TEST_DIR, "fixtures", "explain-035-join-2t-users-orders.json")) as f:
+            root = parse_explain(f.read())
+        svg = render_diagram(root, width=1200, analysis=None)
+        # One chip for the outer access box, one for the join frame.
+        # (Inner access box under the join has suppress_chip=True.)
+        # We assert at most 2 `<g class="complexity-chip"` groups.
+        n_chips = svg.count('<g class="complexity-chip"')
+        self.assertEqual(
+            n_chips, 2,
+            "expected 2 chips (outer + join frame), got {}".format(n_chips),
+        )
+
+
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
