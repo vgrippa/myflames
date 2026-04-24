@@ -215,14 +215,22 @@ def _rule_tmp_table_size_vs_materialize(analysis, schema, stats, variables):
 
 
 def _rule_optimizer_switch_disables(analysis, schema, stats, variables):
-    """If a switch the plan would otherwise benefit from is turned OFF
-    in session variables, point it out.
+    """Flag optimizer_switch settings whose OFF value matters for *this* plan.
 
-    Two concrete cases:
-    - hash_join=off but plan has a BNL → turning on hash_join lets the
-      optimizer pick hash join instead on MySQL 8.0.20+.
-    - mrr=off but plan has a range scan on a secondary index → enabling
-      MRR usually helps on spinning disks / large ranges.
+    Engine detection: MariaDB's optimizer_switch includes keys like
+    ``join_cache_hashed`` that don't exist on MySQL. MySQL's ``hash_join``
+    switch, on the other hand, is defined in sys_vars.cc but never checked
+    in the 8.0.20+ planner/executor — it is a no-op kept for compatibility.
+    Recommending ``hash_join=on`` on MySQL is therefore meaningless.
+
+    Rules:
+      - BNL present on MariaDB with ``join_cache_hashed=off`` → flip it on.
+      - BNL present on MySQL → the executor already rewrites BNL to a hash
+        join at execution time, so the real fix is an index or more join
+        buffer; do not recommend any optimizer_switch change.
+      - MRR present on a secondary-index range scan with ``mrr=off`` → advise
+        ``mrr_cost_based=on`` (the cost-based gate), never force ``mrr=on``.
+      - derived_condition_pushdown=off with a materialized temp table.
     """
     if not analysis or not variables:
         return []
@@ -232,35 +240,78 @@ def _rule_optimizer_switch_disables(analysis, schema, stats, variables):
     pairs = dict(
         tuple(p.split("=", 1)) for p in sw.split(",") if "=" in p
     )
+    is_mariadb = "join_cache_hashed" in pairs
     results = []
-    if analysis.get("bnl_nodes") and pairs.get("hash_join") == "off":
+
+    if analysis.get("bnl_nodes"):
+        if is_mariadb and pairs.get("join_cache_hashed") == "off":
+            results.append((
+                "MARIADB_JOIN_CACHE_HASHED_OFF_WITH_BNL",
+                "medium",
+                "optimizer_switch has join_cache_hashed=off but the plan "
+                "uses Block Nested-Loop — enabling join_cache_hashed lets "
+                "MariaDB use a hashed join buffer (BNLH) for equi-joins.",
+                "SET SESSION optimizer_switch='join_cache_hashed=on'; "
+                "Why: with join_cache_hashed=on and "
+                "join_cache_level >= 3, MariaDB uses a hash table inside "
+                "the join buffer instead of a linear scan per batch. For "
+                "equi-joins on big inner tables this is typically much "
+                "cheaper than plain BNL because each outer batch probes "
+                "the hash table in O(1) instead of re-scanning the inner "
+                "side. Bigger win: add an index on the join column."
+            ))
+        elif not is_mariadb:
+            # MySQL 8.0.20+: BNL is rewritten to hash join at execution
+            # (sql/sql_executor.cc ~2891). The hash_join switch is a
+            # no-op. Never recommend block_nested_loop=off — disabling BNL
+            # in the planner also kills the BNL→hash rewrite.
+            results.append((
+                "MYSQL_BNL_LABEL_MISLEADING",
+                "low",
+                "Plan reports Block Nested-Loop, but on MySQL 8.0.20+ the "
+                "executor rewrites BNL into a hash join at runtime — the "
+                "label does not mean you are running a classic BNL.",
+                "Do not change optimizer_switch here. "
+                "Why: the hash_join switch is defined but never checked "
+                "by the 8.0.20+ planner (sql/sql_const.h:221 vs "
+                "sql/sql_optimizer.cc — zero usage sites), so turning it "
+                "on changes nothing; and setting block_nested_loop=off "
+                "disables the planner's join-buffering path, which is "
+                "exactly what triggers the BNL→hash rewrite at execution "
+                "time (sql/sql_executor.cc:~2891). The real win is an "
+                "index on the join column (which converts the join into "
+                "eq_ref / ref lookup); if no index is possible, raise "
+                "join_buffer_size so the hash build side fits in memory "
+                "and avoids a Grace (multi-pass) hash."
+            ))
+
+    # MRR: gate on an actual secondary-index range scan in the plan.
+    # Without a range scan, MRR has nothing to reorder, so the classic
+    # "mrr=off hurts you" advice does not apply. On SSDs the cost-based
+    # gate usually decides MRR is not worth it even when enabled — only
+    # recommend turning on mrr_cost_based, never force mrr itself.
+    range_scans = analysis.get("range_scans") or []
+    if range_scans and pairs.get("mrr") == "off":
         results.append((
-            "optimizer_switch has hash_join=off but the plan uses Block "
-            "Nested-Loop — enabling hash_join would let the optimizer pick "
-            "hash join instead (MySQL 8.0.20+).",
-            "SET SESSION optimizer_switch='hash_join=on,block_nested_loop=off'; "
-            "Why: Block Nested-Loop scans the inner table once per outer "
-            "batch, so its cost grows with the outer side (O(outer/batch × "
-            "inner)). Hash join reads each side exactly once (build + "
-            "probe), so for joins without a usable index its total I/O is "
-            "typically far lower — especially when the inner table is big."
+            "MRR_OFF_WITH_RANGE_SCAN",
+            "low",
+            "optimizer_switch has mrr=off and the plan has a range scan "
+            "on a secondary index — fetching rows in secondary-index "
+            "order hits the clustered index randomly.",
+            "Consider SET SESSION optimizer_switch='mrr_cost_based=on'; "
+            "Why: Multi-Range Read collects row IDs from a secondary-"
+            "index range scan, sorts them by primary key, and fetches "
+            "rows in (mostly) physical order. On rotational disks this "
+            "converts random I/O into sequential I/O. On SSDs the "
+            "improvement is usually small and the cost-based gate "
+            "(mrr_cost_based) will decide when MRR is worth it — do not "
+            "force mrr=on blindly; let the optimizer decide."
         ))
-    if analysis.get("filesorts") and pairs.get("mrr") == "off":
-        # MRR only helps ranges but filesorts often follow them; advise
-        # conservatively with a "consider" suggestion.
-        results.append((
-            "optimizer_switch has mrr=off; range scans followed by filesort "
-            "may read rows in random order.",
-            "Consider SET SESSION optimizer_switch='mrr=on,mrr_cost_based=on'; "
-            "Why: Multi-Range Read collects row IDs from a secondary-index "
-            "range scan, sorts them by primary key, and then fetches rows "
-            "in (mostly) physical order. Without MRR, InnoDB has to "
-            "dereference each secondary-index row in secondary-index order, "
-            "which translates to random I/O on the clustered index and "
-            "hurts both disk and buffer-pool cache locality."
-        ))
+
     if pairs.get("derived_condition_pushdown") == "off" and analysis.get("temp_tables"):
         results.append((
+            "DERIVED_CONDITION_PUSHDOWN_OFF",
+            "medium",
             "optimizer_switch has derived_condition_pushdown=off but the "
             "plan materializes derived tables — pushing predicates could "
             "reduce the materialized row count.",
@@ -357,17 +408,41 @@ def _rule_flush_log_durability(analysis, schema, stats, variables):
     val = _to_int(variables.get("innodb_flush_log_at_trx_commit"), default=1)
     if val == 1:
         return (None, None)
+    # Durability semantics (verified in storage/innobase/handler/ha_innodb.cc
+    # around line 5896 and trx/trx0trx.cc): with value 2 the redo log is
+    # written to the OS file at each commit but only fsynced once per
+    # second, so a mysqld crash keeps the last-second commits (the OS
+    # buffer cache still holds them) while an OS crash or power loss
+    # drops them. With value 0 the redo log is NOT even written at
+    # commit — the background thread writes+fsyncs once per second, so
+    # a mysqld crash drops the last ~1s of transactions, too.
+    if val == 2:
+        rule_id = "FLUSH_LOG_COMMIT_2"
+        durability = (
+            "writes go to the OS file at each COMMIT but are only "
+            "fsynced once per second. A mysqld crash is survivable "
+            "(the OS buffer cache still holds the last-second "
+            "commits) but OS crash / power loss drops them."
+        )
+    else:
+        rule_id = "FLUSH_LOG_COMMIT_0"
+        durability = (
+            "writes are neither flushed nor fsynced at COMMIT — the "
+            "background thread writes+fsyncs once per second, so ANY "
+            "crash (including a plain mysqld crash) drops the last "
+            "~1s of transactions."
+        )
     return (
-        "innodb_flush_log_at_trx_commit={} — writes are not fsynced on "
-        "COMMIT; a crash can lose the last second of transactions.".format(val),
+        rule_id,
+        "high",
+        "innodb_flush_log_at_trx_commit={} — {}".format(val, durability),
         "SET GLOBAL innodb_flush_log_at_trx_commit=1; "
         "Why: with value 1, every COMMIT flushes and fsyncs the redo log, "
         "which is what makes the D (Durability) in ACID actually true — "
-        "a successfully committed transaction survives power loss. "
-        "Values 2 and 0 batch fsyncs to save I/O but can lose up to the "
-        "last ~1s of transactions on OS crash or power loss. Only leave "
-        "it at {} if the data is reproducible (caches, metrics, derived "
-        "rollups) and you are explicitly OK with losing recent commits."
+        "a successfully committed transaction survives both a mysqld "
+        "crash and power loss. Only leave it at {} if the data is "
+        "reproducible (caches, metrics, derived rollups) and you are "
+        "explicitly OK with the durability loss described above."
         .format(val),
     )
 
@@ -391,35 +466,71 @@ _RULES = (
 )
 
 
+def _normalize_rule_output(result):
+    """Convert any rule return shape into a list of 4-tuples.
+
+    Rules may return:
+      * ``None``                                           → 0 results
+      * ``(warning, suggestion)``                          → legacy 2-tuple
+      * ``(rule_id, severity, warning, suggestion)``       → 4-tuple
+      * a ``list`` whose items are any of the tuples above → 0..N results
+
+    Legacy 2-tuples get synthesized ``rule_id = UNCLASSIFIED`` and
+    ``severity = medium`` so the digest still has something stable.
+    """
+    if result is None:
+        return []
+    if isinstance(result, tuple):
+        items = [result]
+    elif isinstance(result, list):
+        items = result
+    else:
+        return []
+    out = []
+    for item in items:
+        if not isinstance(item, tuple):
+            continue
+        if len(item) == 2:
+            w, s = item
+            out.append(("UNCLASSIFIED", "medium", w, s))
+        elif len(item) == 4:
+            out.append(item)
+    return out
+
+
 def advise(analysis, schema=None, stats=None, variables=None):
     """Run all rules and extend *analysis* in-place.
 
     Adds:
       * ``analysis["environment_warnings"]`` — list[str]
       * ``analysis["environment_suggestions"]`` — list[str]
+      * ``analysis["environment_findings"]`` — list[dict] with
+        ``rule_id`` / ``severity`` / ``warning`` / ``suggestion`` per hit.
+        This is the presentation-free shape used by the advisor-digest
+        golden test (Slice 1 / P2).
       * ``analysis["collected_variables"]`` — the filtered session variables
         (echoed so the renderer can show them in the info panel).
     """
     warnings = []
     suggestions = []
+    findings = []
     for rule in _RULES:
         result = rule(analysis, schema, stats, variables)
-        if result is None:
-            continue
-        if isinstance(result, tuple) and len(result) == 2:
-            results = [result]
-        elif isinstance(result, list):
-            results = result
-        else:
-            continue
-        for w, s in results:
+        for rule_id, severity, w, s in _normalize_rule_output(result):
             if w:
                 warnings.append(w)
             if s:
                 suggestions.append(s)
+            findings.append({
+                "rule_id": rule_id,
+                "severity": severity,
+                "warning": w or "",
+                "suggestion": s or "",
+            })
 
     analysis["environment_warnings"] = warnings
     analysis["environment_suggestions"] = suggestions
+    analysis["environment_findings"] = findings
     analysis["collected_variables"] = dict(variables or {})
     analysis["collected_schema"] = dict(schema or {})
     analysis["collected_stats"] = dict(stats or {})

@@ -2554,8 +2554,8 @@ class TestComplexityIntegration(unittest.TestCase):
         from myflames.output_sidecar import build_sidecar, SCHEMA_VERSION, validate_sidecar
         payload = build_sidecar(self.root, self.analysis, source_type="file", engine="mysql")
         validate_sidecar(payload)
-        self.assertEqual(payload["schema_version"], "1.2")
-        self.assertEqual(SCHEMA_VERSION, "1.2")
+        self.assertEqual(payload["schema_version"], "1.3")
+        self.assertEqual(SCHEMA_VERSION, "1.3")
         ops = payload.get("operator_complexities")
         self.assertIsInstance(ops, list)
         self.assertGreater(len(ops), 0)

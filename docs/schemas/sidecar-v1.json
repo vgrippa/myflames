@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myflames.dev/schemas/sidecar-v1.json",
+  "title": "myflames sidecar v1",
+  "description": "Machine-readable sidecar emitted alongside every myflames SVG / HTML output. Documents the analysis of one MySQL or MariaDB EXPLAIN ANALYZE plan. Versioned via schema_version; new optional fields bump the minor, new required fields bump the major.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "myflames_version",
+    "source",
+    "plan_summary",
+    "optimizer_switches",
+    "warnings",
+    "suggestions",
+    "executive_summary"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "Absolute URL of this schema document. Consumers may use it for schema discovery; the URL is stable per version."
+    },
+    "schema_version": {
+      "type": "string",
+      "description": "Semver-lite version of this sidecar payload. See docs/schemas/ for version history.",
+      "enum": ["1.0", "1.1", "1.2", "1.3"]
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp, second precision."
+    },
+    "myflames_version": {
+      "type": "string",
+      "description": "Version of the myflames package that produced this sidecar."
+    },
+    "source": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type":          { "type": "string", "enum": ["file", "live", "stdin"] },
+        "engine":        { "type": "string", "enum": ["mysql", "mariadb", "unknown"] },
+        "engine_version":{ "type": "string" },
+        "fixture_path":  { "type": "string" }
+      }
+    },
+    "plan_summary":   { "type": "object" },
+    "plan_tree": {
+      "$ref": "#/$defs/planTreeNode",
+      "description": "Identity graph of the parsed plan. Every node has a stable node_id; other sidecar fields reference those ids."
+    },
+    "optimizer_switches": { "type": "array", "items": { "$ref": "#/$defs/optimizerSwitch" } },
+    "warnings":           { "type": "array", "items": { "$ref": "#/$defs/warning" } },
+    "suggestions":        { "type": "array", "items": { "$ref": "#/$defs/suggestion" } },
+    "executive_summary":  { "type": "string" },
+    "query": {
+      "type": "object",
+      "properties": {
+        "raw":         { "type": "string" },
+        "beautified":  { "type": "string" }
+      }
+    },
+    "index_suggestions": { "type": "array" },
+    "primary_action": {
+      "type": "object",
+      "properties": {
+        "ref": { "type": "string", "description": "Typed pointer: suggestions[N] — references primary suggestion by array index." }
+      }
+    },
+    "collected": {
+      "type": "object",
+      "properties": {
+        "variables": { "type": "object" },
+        "stats":     { "type": "object" },
+        "schema":    { "type": "object" }
+      }
+    },
+    "teach_hooks": { "type": "array" },
+    "operator_complexities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["folded_label", "short_label", "complexity"],
+        "properties": {
+          "node_id":      { "$ref": "#/$defs/nodeId" },
+          "folded_label": { "type": "string" },
+          "short_label":  { "type": "string" },
+          "complexity":   { "type": "object" }
+        }
+      }
+    },
+    "environment_findings": {
+      "type": "array",
+      "description": "Presentation-free advisor digest. One entry per rule that fired, with rule_id + severity. Used by the goldens test and by CI regression gates; no prose is required to be stable here.",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "severity"],
+        "properties": {
+          "rule_id":    { "type": "string" },
+          "severity":   { "type": "string", "enum": ["low", "medium", "high"] },
+          "warning":    { "type": "string" },
+          "suggestion": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nodeId": {
+      "type": "string",
+      "pattern": "^n:[0-9a-f]{12}$",
+      "description": "Stable identity of a plan tree node. Derived from (operation, table_name, access_type, key, sibling_position) walked from root. Guaranteed identical across reruns of the same fixture."
+    },
+    "planTreeNode": {
+      "type": "object",
+      "required": ["node_id", "short_label", "children"],
+      "properties": {
+        "node_id":      { "$ref": "#/$defs/nodeId" },
+        "short_label":  { "type": "string" },
+        "folded_label": { "type": "string" },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/planTreeNode" }
+        }
+      }
+    },
+    "optimizerSwitch": {
+      "type": "object",
+      "required": ["name", "value"],
+      "properties": {
+        "name":        { "type": "string" },
+        "value":       { "type": "string" },
+        "explanation": { "type": "string" },
+        "node_labels": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "warning": {
+      "type": "object",
+      "required": ["severity", "category", "source", "text"],
+      "properties": {
+        "severity": { "type": "string", "enum": ["error", "warn", "info"] },
+        "category": { "type": "string", "enum": ["full_scan","filesort","temp_table","hash_join","bnl","semijoin","index_merge","nonsargable_join","env","engine","durability","other"] },
+        "source":   { "type": "string", "enum": ["plan", "environment"] },
+        "text":     { "type": "string" },
+        "node_labels": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "suggestion": {
+      "type": "object",
+      "required": ["severity", "category", "action"],
+      "properties": {
+        "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+        "category": { "type": "string", "enum": ["tuning_variable","index","optimizer_switch","engine","durability","rewrite","other"] },
+        "action":   { "type": "string" },
+        "why":      { "type": "string" }
+      }
+    }
+  }
+}

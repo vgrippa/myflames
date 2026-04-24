@@ -8,10 +8,50 @@ Supports:
   - MariaDB 10.5+ / 11.x ANALYZE FORMAT=JSON
   - MariaDB SHOW ANALYZE FORMAT=JSON FOR <connection_id>
 """
+import hashlib
 import re
 import json
 
 from .complexity import compute_complexity
+
+
+# ---------------------------------------------------------------------------
+# node_id — stable identity for every tree node
+# ---------------------------------------------------------------------------
+#
+# Slice 2 primitive. Derived from
+#   (operation, table_name, access_type, key, sibling_position)
+# along the path from the root. The tuple is canonicalized to lowercase
+# and concatenated with a separator so the sha1 digest is stable across
+# reruns of the same fixture and across MySQL ↔ MariaDB variants whose
+# normalized trees share operation + table shape.
+#
+# NOT derived from: preorder index, JSON offset, `short_label` prose, or
+# any other field that churns with renderer/formatter changes.
+
+def _node_id_component(node, sibling_idx):
+    det = node.get("details") or {}
+    op = (det.get("operation") or "").strip().lower()
+    tbl = (det.get("table_name") or "").strip().lower()
+    at = (det.get("access_type") or "").strip().lower()
+    key = (det.get("index_name") or "").strip().lower()
+    return "{}|{}|{}|{}|{}".format(op, tbl, at, key, sibling_idx)
+
+
+def _assign_node_ids(root, _parent_path="", _sibling_idx=0):
+    """Post-parse walk that attaches a ``node_id`` to every tree node.
+
+    The id is ``n:`` + 12 hex chars of sha1(path-through-tree). Stable
+    across runs; survives MariaDB normalization because we key on the
+    normalized shape, not the raw JSON.
+    """
+    if not isinstance(root, dict):
+        return
+    my_path = _parent_path + "/" + _node_id_component(root, _sibling_idx)
+    digest = hashlib.sha1(my_path.encode("utf-8")).hexdigest()[:12]
+    root["node_id"] = "n:" + digest
+    for i, child in enumerate(root.get("children") or []):
+        _assign_node_ids(child, my_path, i)
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +681,27 @@ def _normalize_mariadb_nested_loop(nested_loop):
                     "inputs": [inner],
                 }
                 table_nodes.append(ls)
+        elif "range-checked-for-each-record" in entry:
+            # MariaDB emits this when the optimizer decided at plan time that
+            # a single access method wasn't stable across outer rows — so it
+            # re-picks per outer row between a full scan, an index_merge, or
+            # one of several named ranges. Verified in
+            # sql/sql_explain.cc:3111 (Explain_range_checked_fer::print_json).
+            # The wrapper contains the candidate "keys" and an optional
+            # "table" child with the default access; surface it so advisor /
+            # UI can flag the "re-decide per outer row" cost.
+            rcf = entry["range-checked-for-each-record"] or {}
+            inner_tbl = rcf.get("table")
+            if isinstance(inner_tbl, dict):
+                node = _normalize_mariadb_table(inner_tbl)
+                node["mariadb_range_checked"] = {
+                    "keys": list(rcf.get("keys") or []),
+                    "r_keys": rcf.get("r_keys") or {},
+                }
+                # Force the access_type signal so advisor rules that key on
+                # "this plan re-decides per row" can match it.
+                node["range_checked_per_record"] = True
+                table_nodes.append(node)
 
     if not table_nodes:
         return None
@@ -884,6 +945,7 @@ def parse_explain(text):
     root = parse_node(data)
     if not root:
         raise ValueError("Failed to parse EXPLAIN JSON")
+    _assign_node_ids(root)
     return root
 
 
@@ -1402,6 +1464,7 @@ def analyze_plan(root):
     hash_joins = []
     temp_tables = []
     filesorts = []
+    range_scans = []  # secondary-index range scans (gate for the MRR advisor rule)
     has_icp = False
     has_bka = False
     has_semijoin = False
@@ -1437,6 +1500,27 @@ def analyze_plan(root):
 
         if access_type == "sort":
             filesorts.append({"rows": rows, "short_label": short_label})
+
+        # Secondary-index range scan: the optimizer only considers MRR for
+        # range access over a non-primary key.
+        # Sources for the range signal:
+        #   - MySQL 8.4 FORMAT=JSON: `index_access_type == "index_range_scan"`
+        #   - MariaDB: normalized to `access_type == "range"` by
+        #     _normalize_mariadb_table when raw access_type is "RANGE".
+        # We intentionally DON'T include primary-key range scans — rows
+        # already come out in PK order so MRR has nothing to do.
+        idx_access_type = (details.get("index_access_type") or "").lower()
+        is_range_access = (
+            access_type == "range"
+            or idx_access_type == "index_range_scan"
+        )
+        if is_range_access and not details.get("using_primary_key"):
+            range_scans.append({
+                "table": details.get("table_name") or "",
+                "key": details.get("key") or details.get("used_key") or "",
+                "rows": rows,
+                "short_label": short_label,
+            })
 
         if details.get("pushed_index_condition"):
             has_icp = True
@@ -1623,6 +1707,7 @@ def analyze_plan(root):
         "hash_joins": hash_joins,
         "temp_tables": temp_tables,
         "filesorts": filesorts,
+        "range_scans": range_scans,
         "bnl_nodes": bnl_nodes,
         "nonsargable_joins": nonsargable_joins,
         "optimizer_features": features,

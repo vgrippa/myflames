@@ -845,7 +845,10 @@ var teachRuntime = (function() {
     phaseContainer: null,
     marks: []
   };
-  var BASELINE_SPEED_SCALE = 0.52;
+  // User-calibrated baseline: the dropdown's "1×" maps to this internal
+  // speed. 0.312 = previous 0.52 × 0.6 (40% slower per user request
+  // 2026-04-24; the animations felt rushed at the old baseline).
+  var BASELINE_SPEED_SCALE = 0.312;
 
   // --- DOM refs (resolved once in wireToolbar) ---
   var _dom = {};

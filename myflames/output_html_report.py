@@ -260,6 +260,73 @@ def _render_exec_summary(sidecar):
     return "\n".join(parts)
 
 
+#: Category-level fallback *why* strings. Used by :func:`_render_primary_action`
+#: when the advisor emits a suggestion without a ``why`` field. This is Slice 4
+#: U1: the "Fix first" card must always carry a rationale or the newcomer just
+#: sees a bare imperative with no path to understand it.
+_WHY_BY_CATEGORY = {
+    "index": (
+        "An index turns a full-table scan into a direct lookup — MySQL "
+        "jumps straight to the matching rows instead of reading every row "
+        "and discarding the ones that don't match. For joins, the benefit "
+        "compounds: a nested loop over N outer rows that had to scan the "
+        "inner table becomes N fast lookups."
+    ),
+    "tuning_variable": (
+        "The knob being recommended controls how much memory a specific "
+        "step of the plan gets to use. Too little memory forces the step "
+        "to spill to disk, which is typically 10–100× slower than the "
+        "in-memory version. Raising the variable lets the work stay in "
+        "RAM."
+    ),
+    "optimizer_switch": (
+        "optimizer_switch flags steer which execution strategies the "
+        "planner is allowed to pick. Flipping one changes the *plan*, "
+        "not the data — so you can try the change in a session and roll "
+        "back instantly if it doesn't help."
+    ),
+    "engine": (
+        "InnoDB is the storage engine every other piece of modern MySQL "
+        "tuning assumes — row-level locking, the buffer pool, MVCC, "
+        "transactions, and crash recovery are all InnoDB-only. Non-InnoDB "
+        "engines make most of the advice in this report inapplicable."
+    ),
+    "durability": (
+        "Durability settings control what you lose on a crash. The "
+        "default (=1) fsyncs on every commit so no committed "
+        "transaction is ever lost. Relaxed values trade durability for "
+        "write throughput — only accept the trade if the data is "
+        "genuinely reproducible."
+    ),
+    "rewrite": (
+        "Rewriting the query changes the shape the optimizer sees. A "
+        "non-sargable predicate (a function applied to a column in WHERE "
+        "or ON) can't use an index; moving the function to the constant "
+        "side lets the index apply."
+    ),
+}
+
+
+def _why_fallback(suggestion):
+    """Return a non-empty `why` for the primary-action card.
+
+    Preference order: the advisor's explicit `why` → a category-keyed
+    fallback → a generic last-resort line. This guarantees the
+    "Why does this help?" details block is never empty (Slice 4 / U1).
+    """
+    why = (suggestion.get("why") or "").strip()
+    if why:
+        return why
+    cat = (suggestion.get("category") or "").strip().lower()
+    if cat in _WHY_BY_CATEGORY:
+        return _WHY_BY_CATEGORY[cat]
+    return (
+        "This recommendation follows the pattern the advisor matched "
+        "in your plan — expand the full suggestion below to see the "
+        "detailed reasoning behind it."
+    )
+
+
 def _render_primary_action(sidecar):
     """The single "Fix first" card above the fold.
 
@@ -278,7 +345,9 @@ def _render_primary_action(sidecar):
     s = suggestions[idx]
     sev = s.get("severity", "medium")
     action = s.get("action", "")
-    why = s.get("why", "")
+    # Slice 4 / U1: every primary action must carry a why — backstop
+    # category-level suggestions where the advisor left it empty.
+    why = _why_fallback(s)
 
     parts = [
         '<section class="primary-action sev-{}" aria-labelledby="primary-heading" role="region">'.format(
@@ -658,7 +727,8 @@ with open(_os.path.join(_DIR, "output_html_report.js"), encoding="utf-8") as _f:
 
 def render_html_report(json_text, view_type="flamegraph", width=1200,
                        title="MySQL Query Plan", query_text="",
-                       live_artifacts=None, **kwargs):
+                       live_artifacts=None, alternate_json_href=None,
+                       **kwargs):
     """Produce a self-contained HTML report string for a parsed EXPLAIN plan.
 
     The return value is a single UTF-8 HTML document containing:
@@ -777,7 +847,19 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     ]
     sections_html = "\n\n".join(s for s in sections if s)
 
-    jsonld = _sanitize_for_jsonld(sidecar)
+    # Slice 6 / S2: Real JSON-LD. Wrap the sidecar in a
+    # schema.org-compatible envelope so crawlers and LLM retrieval
+    # pipelines recognize the payload. ``@context`` / ``@type`` /
+    # ``@id`` are the three fields that turn a ``<script
+    # type="application/ld+json">`` from opaque JSON into actual
+    # linked data.
+    jsonld_payload = {
+        "@context": "https://myflames.dev/ns/v1",
+        "@type": "QueryPlanAnalysis",
+        "@id": sidecar.get("$schema", ""),
+    }
+    jsonld_payload.update(sidecar)
+    jsonld = _sanitize_for_jsonld(jsonld_payload)
     description = sidecar.get("executive_summary", "")
     teach_hooks_json = _sanitize_for_jsonld(sidecar.get("teach_hooks") or [])
     complexity_json = _sanitize_for_jsonld(_build_complexity_lookup(sidecar))
@@ -795,6 +877,17 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         )
     complexity_charts_json = _sanitize_for_jsonld(_variants)
 
+    # Slice 6 / S3: cross-link the machine-readable sibling when the
+    # caller knows it. ``alternate_json_href`` is a relative path like
+    # ``"./foo.json"`` that resolves next to the HTML file.
+    if alternate_json_href:
+        alternate_link = (
+            '  <link rel="alternate" type="application/json" href="{}">\n'
+            .format(xml_escape(alternate_json_href))
+        )
+    else:
+        alternate_link = ""
+
     html = (
         '<!DOCTYPE html>\n'
         '<html lang="en">\n'
@@ -803,6 +896,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
         '  <title>{title_esc} — myflames report</title>\n'
         '  <meta name="description" content="{desc_esc}">\n'
+        '{alternate_link}'
         '  <script type="application/ld+json">\n{jsonld}\n  </script>\n'
         '  <style>{css}</style>\n'
         '</head>\n'
@@ -828,6 +922,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     ).format(
         title_esc=xml_escape(title),
         desc_esc=xml_escape(description),
+        alternate_link=alternate_link,
         jsonld=jsonld,
         css=_CSS,
         sections=sections_html,

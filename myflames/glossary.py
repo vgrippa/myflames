@@ -204,14 +204,25 @@ GLOSSARY = {
             "the Extra column. MySQL fills ``join_buffer_size`` with outer "
             "rows, then scans the inner table (type=ALL/index/range) once "
             "for the whole batch. Cost grows with the outer size: "
-            "O(outer/batch × inner). On MySQL 8.0.20+, set "
-            "``block_nested_loop=off`` to force a hash join instead."
+            "O(outer/batch × inner). On MySQL 8.0.20+ the executor "
+            "**rewrites this BNL to a hash join at runtime** "
+            "(sql/sql_executor.cc), so the label is slightly misleading — "
+            "you are usually already running hash. The ``hash_join`` "
+            "optimizer_switch is defined but never checked by the planner "
+            "and is effectively a no-op; setting ``block_nested_loop=off`` "
+            "would kill the BNL→hash rewrite, not enable it. The real fix "
+            "is an index on the join column (converts the join into "
+            "eq_ref / ref) or a bigger ``join_buffer_size`` so the hash "
+            "build side fits. MariaDB uses ``join_cache_hashed`` + "
+            "``join_cache_level >= 3`` to select a hashed join buffer."
         ),
         "newcomer": (
-            "MySQL is reading chunks of the outer table into memory, then "
-            "scanning the entire inner table once per chunk. This is slow "
-            "on big tables — an index on the join column removes the problem "
-            "entirely, or turning on hash_join lets MySQL pick a better plan."
+            "MySQL has no index to look up matching rows, so it reads a "
+            "chunk of the first table into memory and scans the second "
+            "table once per chunk. This is slow on big tables. The real "
+            "fix is almost always to add an index on the join column — "
+            "that converts the join into a direct lookup and the chunking "
+            "goes away."
         ),
         "aliases": ["Block Nested-Loop", "BNL", "Using join buffer (Block Nested Loop)"],
     },
@@ -221,13 +232,20 @@ GLOSSARY = {
             "BKA: collects keys from the outer into the join buffer, sorts "
             "them, then uses Multi-Range Read on the inner side to fetch "
             "rows in (mostly) clustered-index order. Cuts random I/O on "
-            "large indexed joins. Off by default on MySQL 8.4 — enable via "
-            "``optimizer_switch='batched_key_access=on,mrr_cost_based=off'``."
+            "large indexed joins. BKA is **off by default** on MySQL 8.0 / "
+            "8.4 (verified in sql/sys_vars.cc — OPTIMIZER_SWITCH_BKA is "
+            "not in the OPTIMIZER_SWITCH_DEFAULT mask) and depends on MRR "
+            "being enabled; enable both via "
+            "``optimizer_switch='batched_key_access=on,mrr_cost_based=off'``. "
+            "myflames only flags BKA when you've explicitly enabled it and "
+            "the plan actually picked it."
         ),
         "newcomer": (
-            "MySQL is batching up keys from the outer table and using them "
-            "to fetch inner rows in a smart order that minimizes random "
-            "disk access."
+            "BKA is an optimization that can reorder inner-table fetches "
+            "to reduce random disk I/O — but it is **off by default** in "
+            "MySQL 8, and it relies on MRR also being enabled. If you see "
+            "this term in myflames output, it means you (or a DBA) turned "
+            "it on explicitly and the optimizer picked it for this plan."
         ),
         "aliases": ["Batched key access", "BKA", "batch_key_access"],
     },

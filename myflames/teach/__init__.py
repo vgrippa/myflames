@@ -46,6 +46,50 @@ for _family in ("join_family", "index_family", "scan_family", "cache_family"):
     LESSONS.update(LESSON_FAMILIES[_family])
 
 
+# Slice 4 / T1: curriculum order. A first-time reader following this
+# sequence will encounter each concept in the order the earlier lessons
+# build up — full_scan first (why indexes exist), then B-tree lookup
+# (what an index is), then the join family (how lookups compose into
+# plans), then scan-avoidance (covering / skip / range), then cache
+# layer. Junior-developer-first per the teaching skill.
+#
+# Only lesson keys that actually exist under myflames/teach/*_family/
+# are in the list; renderers filter against LESSONS so a missing key
+# degrades to "curriculum skips this step" rather than 404.
+CURRICULUM = [
+    "full_scan",       # scan_family
+    "btree",           # index_family — flagship
+    "unique_lookup",   # index_family
+    "non_unique_lookup",
+    "icp",
+    "nested_loop",     # join_family
+    "hash",
+    "bnl",
+    "bka_join",
+    "semijoin_weedout",
+    "derived_table",   # scan_family → materialization
+    "lru",             # cache_family
+]
+
+
+def curriculum_neighbors(lesson_key):
+    """Return ``(prev_key, next_key)`` for T1's Prev/Next footer.
+
+    Skips curriculum entries whose lessons don't exist yet. Returns
+    ``(None, None)`` for unknown lessons so callers can choose not to
+    render a nav bar for out-of-curriculum lessons.
+    """
+    if lesson_key not in LESSONS:
+        return (None, None)
+    track = [k for k in CURRICULUM if k in LESSONS]
+    if lesson_key not in track:
+        return (None, None)
+    i = track.index(lesson_key)
+    prev_key = track[i - 1] if i > 0 else None
+    next_key = track[i + 1] if i + 1 < len(track) else None
+    return (prev_key, next_key)
+
+
 def render_lesson(name: str) -> str:
     """Render lesson *name* to a complete HTML document string."""
     if name not in LESSONS:
@@ -66,9 +110,20 @@ _FAMILY_LABELS = {
 
 
 def _print_catalog(stream=sys.stdout) -> None:
-    """Print the list of available lessons grouped by family."""
+    """Print the list of available lessons grouped by family.
+
+    Also emits the curriculum (T1) at the top so first-time readers
+    get a "start here" path instead of dict-insertion order.
+    """
     print("myflames teach \u2014 interactive database algorithm lessons\n", file=stream)
     print("Usage: myflames teach <lesson> [-o out.html]\n", file=stream)
+
+    track = [k for k in CURRICULUM if k in LESSONS]
+    if track:
+        print("  Start here (recommended order):", file=stream)
+        print("    " + " → ".join(track), file=stream)
+        print("", file=stream)
+
     for family_key in ("join_family", "index_family", "scan_family", "cache_family"):
         family_lessons = LESSON_FAMILIES[family_key]
         if not family_lessons:

@@ -1,13 +1,17 @@
 :root {
+  /* Slice 3 design tokens. One source of truth for HTML and SVG. */
   --bg: #f5f6fa;
   --card: #ffffff;
   --fg: #1a1a2e;
-  --muted: #5a6475;
+  /* --muted: darkened from #5a6475 for WCAG AA at 12–13px on --bg */
+  --muted: #4a5260;
   --border: #e0e4ec;
   --accent: #283593;
   --accent-soft: #e8eaf6;
 
-  /* Severity palette (from progressive-ux skill) */
+  /* Severity palette — advisor chrome only. Chart renderers must NOT
+     reuse these for magnitude encoding (guards V1 vs D4 from
+     colliding "red = problem" vs "red = hot frame"). */
   --sev-error: #b71c1c;
   --sev-warn: #ef6c00;
   --sev-info: #0d47a1;
@@ -21,6 +25,57 @@
   --code-fg: #eceff1;
   --code-str: #c3e88d;
   --code-kw: #82aaff;
+
+  /* Typography stack — shared with SVG renderers via font-family. */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+             "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas,
+               "Liberation Mono", "Courier New", monospace;
+
+  /* Spacing scale: 4/8/12/16/24/32. Replaces ad-hoc 10/14/18/22 px values. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* Radius scale: 6 / 10 (chrome corners) / 4 (inline chips). */
+  --rad-sm: 4px;
+  --rad: 6px;
+  --rad-lg: 10px;
+
+  /* Motion tokens — used by CSS transitions AND SVG animations that
+     emit these via the teach HTML scaffold. */
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-sm: 150ms;
+  --dur-md: 250ms;
+  --dur-lg: 400ms;
+}
+
+/* Global reduced-motion guard (A3). Honors the user's OS setting and
+   collapses every animation / transition to essentially-instant. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-sm: 0ms;
+    --dur-md: 0ms;
+    --dur-lg: 0ms;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Global :focus-visible ring — previously only two teach buttons had
+   focus styles (D3 a11y floor). */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--rad-sm);
 }
 
 * { box-sizing: border-box; }

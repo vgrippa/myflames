@@ -35,7 +35,13 @@ from .teach_hooks import build_teach_hooks, SUPPORTED_LESSONS
 # Schema constants
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
+
+# Stable URL pointing at the JSON Schema for this version. Kept as a
+# per-version path under docs/schemas/ so old consumers can pin an older
+# version by URL. Consumers should treat this as an opaque identifier —
+# the myflames repo ships the schema document itself.
+SCHEMA_URL = "https://myflames.dev/schemas/sidecar-v1.json"
 
 # Allowed enum values. ``build_sidecar`` + ``validate_sidecar`` reject anything
 # outside these sets to keep downstream agents stable.
@@ -200,9 +206,10 @@ def _collect_operator_complexities(root):
     emitted in depth-first pre-order to match the visual reading order of
     the diagram view — first index is the outermost operator.
 
-    Entries are keyed by ``folded_label`` and ``short_label`` so HTML
-    consumers can cross-reference with the ``teach_hooks`` list (same
-    convention). Omitted entirely if no node has complexity metadata.
+    Entries are keyed by ``node_id`` (Slice 2 primitive), ``folded_label``,
+    and ``short_label`` so HTML consumers and external agents can
+    cross-reference deterministically. Omitted entirely if no node has
+    complexity metadata.
     """
     out = []
 
@@ -213,6 +220,7 @@ def _collect_operator_complexities(root):
         complexity = details.get("complexity")
         if isinstance(complexity, dict):
             entry = {
+                "node_id": node.get("node_id") or "",
                 "folded_label": node.get("folded_label") or "",
                 "short_label": node.get("short_label") or "",
                 "complexity": dict(complexity),
@@ -223,6 +231,30 @@ def _collect_operator_complexities(root):
 
     _walk(root)
     return out
+
+
+def _build_plan_tree_index(root):
+    """Emit a compact tree of ``node_id`` / ``short_label`` / ``children``.
+
+    This is the single source of truth an external agent needs to resolve
+    any ``node_id`` reference in the rest of the sidecar back to a human
+    label and a position in the plan. Intentionally slim — full per-node
+    details live in the renderers' data-attributes and the teach bridge;
+    this index is just the identity graph.
+    """
+    if not isinstance(root, dict):
+        return None
+
+    def _walk(node):
+        children = [_walk(c) for c in (node.get("children") or [])]
+        return {
+            "node_id": node.get("node_id") or "",
+            "short_label": node.get("short_label") or "",
+            "folded_label": node.get("folded_label") or "",
+            "children": [c for c in children if c is not None],
+        }
+
+    return _walk(root)
 
 
 def _executive_summary_fallback(plan_summary, warnings, suggestions):
@@ -400,6 +432,7 @@ def build_sidecar(
         )
 
     payload = {
+        "$schema": SCHEMA_URL,
         "schema_version": SCHEMA_VERSION,
         "generated_at": _utc_now_iso(),
         "myflames_version": __version__,
@@ -410,6 +443,13 @@ def build_sidecar(
         "suggestions": suggestions,
         "executive_summary": exec_summary,
     }
+
+    # Identity graph for every node in the plan (Slice 2 / S5). Every
+    # other structured field that references a node does so by
+    # ``node_id``; ``plan_tree`` is where consumers resolve that id.
+    plan_tree = _build_plan_tree_index(root)
+    if plan_tree:
+        payload["plan_tree"] = plan_tree
 
     if query_raw or query_beautified:
         query = {}

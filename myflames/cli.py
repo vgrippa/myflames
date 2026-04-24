@@ -2,6 +2,7 @@
 Unified CLI: flame graph, bar chart, or treemap from MySQL EXPLAIN ANALYZE JSON.
 """
 import argparse
+import os
 import sys
 from . import __version__
 from .parser import (
@@ -537,7 +538,16 @@ Subcommands:
 
     if is_html:
         from .output_html_report import render_html_report
+        from .output_sidecar import sidecar_path_for
         query_text = _resolve_query_text(args, json_text)
+        # Slice 6 / S3: point the HTML head at its sibling .json so an
+        # AI agent that found the HTML can enumerate the sidecar.
+        sc_path = sidecar_path_for(output_path)
+        alternate_href = (
+            "./" + os.path.basename(sc_path)
+            if sc_path and not getattr(args, "no_sidecar", False)
+            else None
+        )
         html = render_html_report(
             json_text,
             view_type=args.type,
@@ -548,6 +558,7 @@ Subcommands:
             frame_height=args.height,
             colors=args.colors,
             inverted=args.inverted,
+            alternate_json_href=alternate_href,
         )
         _write_output(html, output_path)
         # Sidecar emission for HTML path — same precedence as the SVG path.

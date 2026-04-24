@@ -180,20 +180,76 @@ class TestTmpTableRule(unittest.TestCase):
 
 class TestOptimizerSwitchRule(unittest.TestCase):
 
-    def test_hash_join_disabled_with_bnl(self):
-        analysis = {"bnl_nodes": [{"short_label": "x"}]}
-        variables = {"optimizer_switch": "hash_join=off,block_nested_loop=on"}
-        results = _rule_optimizer_switch_disables(analysis, None, None, variables)
-        self.assertTrue(any("hash_join=off" in w for w, _ in results))
+    # ---- BNL / hash_join (M1) --------------------------------------------
+    # MySQL 8.0.20+: hash_join switch is a no-op (defined in sql/sql_const.h
+    # but never checked by planner/executor). BNL is rewritten to hash join
+    # at execution time. Setting block_nested_loop=off disables BOTH the
+    # planner's BNL path and the rewrite — never recommend it.
 
-    def test_mrr_off_with_filesort(self):
-        analysis = {"filesorts": [{"rows": 100}]}
+    def test_mysql_bnl_label_misleading_fires_on_plain_bnl(self):
+        """MySQL plan (no join_cache_hashed key) with BNL: tell the user
+        the label is misleading and do NOT recommend optimizer_switch."""
+        analysis = {"bnl_nodes": [{"short_label": "x"}]}
+        # A real MySQL optimizer_switch string — note NO join_cache_hashed.
+        variables = {"optimizer_switch": "hash_join=on,block_nested_loop=on,mrr=on"}
+        results = _rule_optimizer_switch_disables(analysis, None, None, variables)
+        rule_ids = [r[0] for r in results]
+        self.assertIn("MYSQL_BNL_LABEL_MISLEADING", rule_ids)
+        # The suggestion may MENTION those knobs (to explain why touching
+        # them is wrong), but must not actually issue a SET for them.
+        for rid, _, _, sug in results:
+            if rid == "MYSQL_BNL_LABEL_MISLEADING":
+                self.assertNotIn("SET SESSION optimizer_switch", sug)
+                self.assertNotIn("SET GLOBAL optimizer_switch", sug)
+
+    def test_mariadb_join_cache_hashed_off_with_bnl_fires(self):
+        """MariaDB plan with BNL + join_cache_hashed=off: flip the hashed
+        cache on. join_cache_hashed is the MariaDB-only key we detect on."""
+        analysis = {"bnl_nodes": [{"short_label": "x"}]}
+        variables = {"optimizer_switch":
+                     "mrr=on,join_cache_hashed=off,join_cache_bka=off"}
+        results = _rule_optimizer_switch_disables(analysis, None, None, variables)
+        rule_ids = [r[0] for r in results]
+        self.assertIn("MARIADB_JOIN_CACHE_HASHED_OFF_WITH_BNL", rule_ids)
+        # And MUST NOT fire the MySQL-flavored rule on a MariaDB plan.
+        self.assertNotIn("MYSQL_BNL_LABEL_MISLEADING", rule_ids)
+
+    def test_silent_without_bnl(self):
+        """No BNL in the plan → no BNL-related rule fires, regardless of
+        optimizer_switch contents."""
+        analysis = {"bnl_nodes": []}
+        variables = {"optimizer_switch": "hash_join=on,block_nested_loop=on"}
+        results = _rule_optimizer_switch_disables(analysis, None, None, variables)
+        rule_ids = [r[0] for r in results]
+        self.assertNotIn("MYSQL_BNL_LABEL_MISLEADING", rule_ids)
+        self.assertNotIn("MARIADB_JOIN_CACHE_HASHED_OFF_WITH_BNL", rule_ids)
+
+    # ---- MRR (M2) --------------------------------------------------------
+
+    def test_mrr_off_with_range_scan_fires(self):
+        """MRR rule fires only when a secondary-index range scan is present."""
+        analysis = {"range_scans": [{"table": "t1", "key": "idx_ts"}]}
         variables = {"optimizer_switch": "mrr=off,mrr_cost_based=off"}
         results = _rule_optimizer_switch_disables(analysis, None, None, variables)
-        self.assertTrue(any("mrr=off" in w for w, _ in results))
+        rule_ids = [r[0] for r in results]
+        self.assertIn("MRR_OFF_WITH_RANGE_SCAN", rule_ids)
+        # Recommend mrr_cost_based only — never force mrr=on.
+        for rid, _, _, sug in results:
+            if rid == "MRR_OFF_WITH_RANGE_SCAN":
+                self.assertIn("mrr_cost_based=on", sug)
+                self.assertNotIn("'mrr=on'", sug)
+
+    def test_mrr_silent_on_filesort_only_plan(self):
+        """Counter-example: a plan with a filesort but no range scan must
+        NOT fire the MRR rule (the old rule over-fired here)."""
+        analysis = {"filesorts": [{"rows": 100}], "range_scans": []}
+        variables = {"optimizer_switch": "mrr=off"}
+        results = _rule_optimizer_switch_disables(analysis, None, None, variables)
+        rule_ids = [r[0] for r in results]
+        self.assertNotIn("MRR_OFF_WITH_RANGE_SCAN", rule_ids)
 
     def test_silent_when_all_enabled(self):
-        analysis = {"bnl_nodes": [], "filesorts": [], "temp_tables": []}
+        analysis = {"bnl_nodes": [], "range_scans": [], "temp_tables": []}
         variables = {"optimizer_switch": "hash_join=on,mrr=on"}
         results = _rule_optimizer_switch_disables(analysis, None, None, variables)
         self.assertEqual(results, [])
@@ -303,12 +359,26 @@ class TestEngineRule(unittest.TestCase):
 
 class TestFlushLogRule(unittest.TestCase):
 
-    def test_fires_for_update_with_lax_flush(self):
+    def test_fires_for_update_with_flush_2_names_os_crash_only(self):
+        """=2 is safe across mysqld crash; only OS/power loss drops last-second
+        commits (storage/innobase/handler/ha_innodb.cc:5896)."""
         analysis = {"query_text_lines": ["UPDATE t1 SET x = 1 WHERE id = 2"]}
         variables = {"innodb_flush_log_at_trx_commit": "2"}
-        w, s = _rule_flush_log_durability(analysis, None, None, variables)
-        self.assertIsNotNone(w)
-        self.assertIn("innodb_flush_log_at_trx_commit", w)
+        rule_id, severity, w, s = _rule_flush_log_durability(
+            analysis, None, None, variables)
+        self.assertEqual(rule_id, "FLUSH_LOG_COMMIT_2")
+        self.assertEqual(severity, "high")
+        self.assertIn("OS crash", w)
+        self.assertIn("mysqld crash is survivable", w)
+
+    def test_fires_for_insert_with_flush_0_names_any_crash(self):
+        """=0 drops commits on ANY crash including mysqld (trx/trx0trx.cc)."""
+        analysis = {"query_text_lines": ["INSERT INTO t1 VALUES (1)"]}
+        variables = {"innodb_flush_log_at_trx_commit": "0"}
+        rule_id, severity, w, s = _rule_flush_log_durability(
+            analysis, None, None, variables)
+        self.assertEqual(rule_id, "FLUSH_LOG_COMMIT_0")
+        self.assertIn("ANY crash", w)
 
     def test_silent_for_select(self):
         analysis = {"query_text_lines": ["SELECT * FROM t1"]}

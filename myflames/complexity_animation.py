@@ -90,7 +90,7 @@ def render_complexity_animation_svg(
     height=280,
     n_max=1_000_000,
     ops_max=10 ** 12,
-    animation_seconds=8,
+    animation_seconds=11,   # 8s × (1/0.7) ≈ 11 — 30% slower per user
     label="Big O complexity",
 ):
     """Return an SVG fragment (no outer wrapper) plotting six complexity
@@ -247,26 +247,33 @@ def render_complexity_animation_svg(
 
         # Animated marker that rides the curve. Highlighted curve gets a
         # bigger, darker-stroked marker; the rest fade into the background.
+        # Motion uses calcMode="spline" with a cubic ease-in-out (Slice 3
+        # A3: linear motion is banned except for progress bars, per the
+        # animation-expert skill). Class "anim" lets the page-level
+        # reduced-motion CSS collapse the sweep for users who opt out.
         marker_path_id = f"cpath-{key}"
         marker_blocks.append(
             f'<path id="{marker_path_id}" d="{d}" fill="none" stroke="none"/>'
-            f'<circle r="{"5" if highlighted else "3"}" '
+            f'<circle class="anim" r="{"5" if highlighted else "3"}" '
             f'fill="{color}" stroke="{"#0f172a" if highlighted else "white"}" '
             f'stroke-width="{1.4 if highlighted else 1}" opacity="{1 if highlighted else 0.65}">'
             f'<animateMotion dur="{animation_seconds}s" repeatCount="indefinite" '
-            f'calcMode="linear" rotate="0">'
+            f'calcMode="spline" keyTimes="0;1" '
+            f'keySplines="0.4 0 0.2 1" rotate="0">'
             f'<mpath href="#{marker_path_id}"/>'
             f'</animateMotion></circle>'
         )
 
     # --- animated n-cursor (vertical dashed line that sweeps left→right) ---
     cursor_block = (
-        f'<line class="n-cursor" x1="{x0}" y1="{y1}" x2="{x0}" y2="{y0}" '
+        f'<line class="anim n-cursor" x1="{x0}" y1="{y1}" x2="{x0}" y2="{y0}" '
         f'stroke="#0f172a" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.55">'
         f'<animate attributeName="x1" from="{x0}" to="{x1}" '
-        f'dur="{animation_seconds}s" repeatCount="indefinite"/>'
+        f'dur="{animation_seconds}s" repeatCount="indefinite" '
+        f'calcMode="spline" keyTimes="0;1" keySplines="0.4 0 0.2 1"/>'
         f'<animate attributeName="x2" from="{x0}" to="{x1}" '
-        f'dur="{animation_seconds}s" repeatCount="indefinite"/>'
+        f'dur="{animation_seconds}s" repeatCount="indefinite" '
+        f'calcMode="spline" keyTimes="0;1" keySplines="0.4 0 0.2 1"/>'
         f'</line>'
     )
 
@@ -323,12 +330,28 @@ def render_complexity_animation_svg(
             f'{_xml_escape(big_o)}</text></g>'
         )
 
+    # Inline style block so the standalone SVG honors OS-level
+    # reduced-motion even when embedded outside an HTML page that
+    # carries the global rule. Freezing animations via SMIL "end" is
+    # the only CSS-free way to halt SMIL cleanly across browsers.
+    reduced_motion_style = (
+        '<style>'
+        '@media (prefers-reduced-motion: reduce) {'
+        '  .anim animateMotion, .anim animate, .anim animateTransform {'
+        '    display: none;'
+        '  }'
+        '  .anim { animation: none !important; }'
+        '}'
+        '</style>'
+    )
+
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
         f'role="img" aria-label="Animated log-log plot of Big O complexity classes — '
         f'O(1), O(log n), O(n), O(n log n), O(n squared), and O(2 to the n) — '
         f'drawn from their actual functions. A vertical cursor sweeps left to right '
         f'showing where each curve sits at each n.">'
+        f'{reduced_motion_style}'
         f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff" rx="8" ry="8"/>'
         f'{title_text}{subtitle_text}'
         f'{"".join(grid_lines)}'
