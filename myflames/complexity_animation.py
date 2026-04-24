@@ -116,8 +116,11 @@ def render_complexity_animation_svg(
     highlight_key = _classify(complexity_dict)
 
     # --- plot geometry ------------------------------------------------------
-    margin_l, margin_r = 58, 84         # room for y-tick labels / curve labels
-    margin_t, margin_b = 32, 44         # room for title / x-tick labels
+    # Generous top margin so the title never collides with the y-axis ticks
+    # (the old 32 px put the subtitle on the same line as the first gridline
+    # label which overlapped at narrow widths).
+    margin_l, margin_r = 64, 96         # room for y-tick labels / curve labels
+    margin_t, margin_b = 44, 48         # room for title / x-tick labels
     plot_w = width - margin_l - margin_r
     plot_h = height - margin_t - margin_b
     x0, x1 = margin_l, margin_l + plot_w
@@ -264,23 +267,24 @@ def render_complexity_animation_svg(
     )
 
     # --- axis titles + chart title ------------------------------------------
+    # Title is on its own line with ~14 px clearance above the plot border.
+    # The old "log-log · computed from …" subtitle was redundant (axis labels
+    # already say "log scale") and collided with the title at narrow widths;
+    # it has been removed.
+    title_y = margin_t - 16
     title_text = (
-        f'<text x="{x0}" y="{margin_t - 14}" font-family="Inter, system-ui, sans-serif" '
-        f'font-size="12" font-weight="700" fill="#0f172a">{_xml_escape(label)}</text>'
+        f'<text x="{x0}" y="{title_y}" font-family="Inter, system-ui, sans-serif" '
+        f'font-size="13" font-weight="700" fill="#0f172a">{_xml_escape(label)}</text>'
     )
-    subtitle_text = (
-        f'<text x="{x1}" y="{margin_t - 14}" text-anchor="end" '
-        f'font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">'
-        f'log-log · n on x, operations on y · computed from the actual functions</text>'
-    )
+    subtitle_text = ""  # retained for grep/back-compat; no longer drawn.
     x_axis_title = (
-        f'<text x="{(x0 + x1) / 2}" y="{y0 + 32}" text-anchor="middle" '
+        f'<text x="{(x0 + x1) / 2}" y="{y0 + 36}" text-anchor="middle" '
         f'font-family="Inter, system-ui, sans-serif" font-size="10" fill="#475569">'
-        f'input size <tspan font-style="italic">n</tspan> (log scale)</text>'
+        f'input size n (log scale)</text>'
     )
     y_axis_title = (
-        f'<text x="{x0 - 42}" y="{(y0 + y1) / 2}" text-anchor="middle" '
-        f'transform="rotate(-90 {x0 - 42} {(y0 + y1) / 2})" '
+        f'<text x="{x0 - 48}" y="{(y0 + y1) / 2}" text-anchor="middle" '
+        f'transform="rotate(-90 {x0 - 48} {(y0 + y1) / 2})" '
         f'font-family="Inter, system-ui, sans-serif" font-size="10" fill="#475569">'
         f'operations (log scale)</text>'
     )
@@ -291,23 +295,27 @@ def render_complexity_animation_svg(
         f'<line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y0}" stroke="#cbd5e1"/>'
     )
 
-    # Optional severity badge corner overlay.
+    # Optional severity badge — rendered on the title row, right-aligned.
+    # Positioned at margin_t - 30 so it sits above the plot, on the same
+    # horizontal line as the title but at the far right so the two never
+    # collide even at the narrowest intended width (≈ 540 px).
     badge_block = ""
     if complexity_dict and complexity_dict.get("big_o"):
         sev = complexity_dict.get("severity") or "medium"
         fill = SEVERITY_COLORS.get(sev, SEVERITY_COLORS["medium"])
         stroke = SEVERITY_BORDERS.get(sev, SEVERITY_BORDERS["medium"])
         big_o = complexity_dict.get("big_o")
-        badge_w = max(68, 8 * len(big_o) + 14)
+        badge_w = max(68, 8 * len(big_o) + 16)
+        badge_h = 22
         badge_x = x1 - badge_w
-        badge_y = y1 + 4
+        badge_y = title_y - badge_h + 6
         badge_block = (
             f'<g class="complexity-animation-badge">'
-            f'<rect x="{badge_x}" y="{badge_y}" width="{badge_w}" height="20" '
-            f'rx="10" ry="10" fill="{fill}" stroke="{stroke}" stroke-width="1"/>'
-            f'<text x="{badge_x + badge_w/2:.1f}" y="{badge_y + 14}" '
+            f'<rect x="{badge_x}" y="{badge_y}" width="{badge_w}" height="{badge_h}" '
+            f'rx="11" ry="11" fill="{fill}" stroke="{stroke}" stroke-width="1"/>'
+            f'<text x="{badge_x + badge_w/2:.1f}" y="{badge_y + badge_h - 6}" '
             f'text-anchor="middle" font-family="ui-monospace, Menlo, monospace" '
-            f'font-size="11" font-weight="700" fill="#0f172a">'
+            f'font-size="12" font-weight="700" fill="#0f172a">'
             f'{_xml_escape(big_o)}</text></g>'
         )
 
