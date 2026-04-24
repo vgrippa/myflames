@@ -1,5 +1,6 @@
 """Generate bar chart SVG from parsed EXPLAIN tree."""
 from .parser import xml_escape, flatten_nodes, render_info_panel
+from ._labels import fit_label
 
 
 def format_number(n):
@@ -111,7 +112,7 @@ def render_bargraph(
     lines = [
         '<?xml version="1.0" standalone="no"?>',
         '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">',
-        f'<svg version="1.1" width="{width}" height="{chart_height}" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
+        f'<svg version="1.1" width="{width}" height="{chart_height}" viewBox="0 0 {width} {chart_height}" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
         "<style>",
         "  text { font-family: Arial, sans-serif; font-size: 12px; }",
         "  .title { font-size: 18px; font-weight: bold; }",
@@ -162,7 +163,15 @@ def render_bargraph(
         pct = (op["self_time"] / total_time) * 100
         bar_width = max(3, (op["self_time"] / total_time) * bar_area_width) if op["self_time"] > 0 else 0
         color = colors[i % len(colors)]
-        label = (op["short_label"] or "")[:48] + ("..." if len(op["short_label"] or "") > 48 else "")
+        # Pixel-budget fit via the shared helper (V5). The label column
+        # is `label_width` px wide at 11 px Arial (font-width ratio ≈ 0.55);
+        # subtract a small gutter so the text never touches the column edge.
+        label = fit_label(
+            op["short_label"] or "",
+            px_width=label_width - 14,
+            font_size=11,
+            font_width=0.55,
+        )
         text_y = y + (bar_height / 2) + 4
         st = f"{op['self_time']:.0f}" if op["self_time"] >= 1 else f"{op['self_time']:.3f}"
         loops_t = format_number(op["loops"])

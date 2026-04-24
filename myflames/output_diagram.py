@@ -32,6 +32,7 @@ NestedLoopNode, TableNode, etc.), layout, and rendering. Our mapping:
 import math
 import re
 from .parser import xml_escape, build_diagram_steps, render_info_panel
+from ._labels import fit_label
 
 # Perceptually-uniform viridis-inspired heat palette.
 # Yellow = fast/cold, deep purple = slow/hot. Colorblind-safe and legible
@@ -249,8 +250,9 @@ def _access_diagram_label(node):
         return ("Index Scan", f"{table}\n{index}" if index else table, False)
     if re.match(r"^Covering index", op, re.I):
         return ("Covering Index", f"{table}\n{index}" if index else table, False)
-    # Generic
-    short = (op[:30] + "..") if len(op) > 32 else op
+    # Generic: V5 pixel-budget fit. Diagram boxes are ~140 px wide at
+    # 12 px sans; leave 12 px gutter for the chip border.
+    short = fit_label(op, px_width=128, font_size=12, font_width=0.55)
     return (short, table or "—", False)
 
 

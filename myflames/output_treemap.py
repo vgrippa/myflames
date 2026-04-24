@@ -1,5 +1,6 @@
 """Generate treemap SVG from parsed EXPLAIN tree."""
 from .parser import xml_escape, flatten_nodes, render_info_panel
+from ._labels import fit_label
 
 
 def _layout_treemap(node, x, y, w, h, depth, results):
@@ -91,7 +92,7 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     lines = [
         '<?xml version="1.0" standalone="no"?>',
         '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">',
-        f'<svg version="1.1" width="{width}" height="{chart_height}" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
+        f'<svg version="1.1" width="{width}" height="{chart_height}" viewBox="0 0 {width} {chart_height}" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
         "<style>",
         "  text { font-family: Arial, sans-serif; font-size: 11px; }",
         "  .title { font-size: 18px; font-weight: bold; }",
@@ -124,7 +125,13 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
             continue
         color = tm_colors[d % len(tm_colors)]
         short_label = n["short_label"]
-        label = (short_label[:28] + "...") if len(short_label) > 28 else short_label
+        # V5: pixel-budget fit. Cells use ~11 px Arial; leave 6 px gutter.
+        label = fit_label(
+            short_label,
+            px_width=max(0, w - 12),
+            font_size=11,
+            font_width=0.55,
+        )
         info_text = _cell_info_text(n, unit_display)
         short_lbl = (short_label or "").strip()
         analysis_msg = highlight_msg_by_label.get(short_lbl, "")
