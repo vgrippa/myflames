@@ -66,7 +66,7 @@ function buildPool(id) {
   var colsPerRow = 8;
   for (var i = 0; i < POOL_SIZE; i++) {
     var row = Math.floor(i / colsPerRow);
-    var col = i %% colsPerRow;
+    var col = i % colsPerRow;
     var x = 16 + col * (CELL_W + GAP);
     var y = 48 + row * (CELL_H + GAP);
     var r = anim.svgEl("rect", {
@@ -101,8 +101,8 @@ function findSlot(pool, pageKey) {
 }
 
 function placePage(pool, pageKey, color) {
-  var slot = pool.nextSlot %% POOL_SIZE;
-  pool.nextSlot = (pool.nextSlot + 1) %% POOL_SIZE;
+  var slot = pool.nextSlot % POOL_SIZE;
+  pool.nextSlot = (pool.nextSlot + 1) % POOL_SIZE;
   pool.cells[slot].setAttribute("fill", color);
   pool.labels[slot].textContent = pageKey;
   anim.arrival(pool.cells[slot]);

@@ -91,7 +91,7 @@ function buildStage() {
   // Pre-render join pair labels
   var pairLabels = [];
   for (var p = 0; p < JOIN_PAIRS.length; p++) {
-    var px = 50 + (p %% 4) * 185;
+    var px = 50 + (p % 4) * 185;
     var py = 55 + Math.floor(p / 4) * 30;
     var pl = anim.svgEl("text", {
       x: px, y: py, "font-size": 10, "font-weight": 600, fill: "#1e3a8a", opacity: 0

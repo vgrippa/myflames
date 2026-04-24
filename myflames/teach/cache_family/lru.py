@@ -60,7 +60,7 @@ function buildInnoDB(poolSize, oldPct) {
   var colsPerRow = Math.min(youngCap, 9);
   for (var i = 0; i < youngCap; i++) {
     var row = Math.floor(i / colsPerRow);
-    var col = i %% colsPerRow;
+    var col = i % colsPerRow;
     var r = anim.svgEl("rect", {
       x: 16 + col * (CELL_W + GAP), y: 32 + row * (CELL_H + GAP),
       width: CELL_W, height: CELL_H,
@@ -103,7 +103,7 @@ function buildInnoDB(poolSize, oldPct) {
   var oldColsPerRow = Math.min(oldCap, 9);
   for (var j = 0; j < oldCap; j++) {
     var orow = Math.floor(j / oldColsPerRow);
-    var ocol = j %% oldColsPerRow;
+    var ocol = j % oldColsPerRow;
     var r2 = anim.svgEl("rect", {
       x: 16 + ocol * (CELL_W + GAP), y: oldStartY + orow * (CELL_H + GAP),
       width: CELL_W, height: CELL_H,
@@ -147,7 +147,7 @@ function buildClassic(poolSize) {
   var colsPerRow = Math.min(poolSize, 9);
   for (var i = 0; i < poolSize; i++) {
     var row = Math.floor(i / colsPerRow);
-    var col = i %% colsPerRow;
+    var col = i % colsPerRow;
     var r = anim.svgEl("rect", {
       x: 16 + col * (CELL_W + GAP), y: 32 + row * (CELL_H + GAP),
       width: CELL_W, height: CELL_H,

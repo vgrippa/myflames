@@ -285,7 +285,7 @@ function renderChart(tableRows) {
         fn: function(n) { return n; } },
       { label: "Full index scan", color: "#f59e0b",
         fn: function(n) { return n; } },
-      { label: "Skip Scan (NDV=" + c.ndv_leading + ", sel=" + c.selectivity + "%%)", color: "#059669",
+      { label: "Skip Scan (NDV=" + c.ndv_leading + ", sel=" + c.selectivity + "%)", color: "#059669",
         fn: function(n) {
           var height = Math.max(2, Math.ceil(Math.log(n) / Math.log(500)));
           var rpg = n / c.ndv_leading;

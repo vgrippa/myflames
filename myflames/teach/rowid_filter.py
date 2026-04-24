@@ -219,7 +219,7 @@ function buildTimeline() {
     (function(idx) {
       var row = SAMPLE_ROWS[idx];
 
-      if (idx %% 3 === 0) {
+      if (idx % 3 === 0) {
         tl.mark("Check id=" + row.id);
       }
 
@@ -288,9 +288,9 @@ function renderChart(mainRows) {
     curves: [
       { label: "Without rowid filter (all rows fetched)", color: "#dc2626",
         fn: function(n) { return n; } },
-      { label: "With rowid filter (20%% selectivity)", color: "#059669",
+      { label: "With rowid filter (20% selectivity)", color: "#059669",
         fn: function(n) { return Math.max(1, Math.ceil(n * 0.20)); } },
-      { label: "With rowid filter (5%% selectivity)", color: "#0284c7",
+      { label: "With rowid filter (5% selectivity)", color: "#0284c7",
         fn: function(n) { return Math.max(1, Math.ceil(n * 0.05)); } }
     ],
     current: { x: mainRows },
@@ -303,7 +303,7 @@ function recompute() {
   var c = teachRuntime.readControls();
   var cost = rowidFilterCost(c.main_rows, c.filter_selectivity, c.row_size);
   document.getElementById("out-main-rows").textContent = teachRuntime.formatInt(cost.mainRows);
-  document.getElementById("out-selectivity").textContent = cost.filterSelectivity + "%%";
+  document.getElementById("out-selectivity").textContent = cost.filterSelectivity + "%";
   document.getElementById("out-after-filter").textContent = teachRuntime.formatInt(cost.rowsAfterFilter);
   document.getElementById("out-skipped").textContent = teachRuntime.formatInt(cost.rowsSkipped);
   document.getElementById("out-skipped").className = "value " + (cost.rowsSkipped > 0 ? "ok" : "");
@@ -314,7 +314,7 @@ function recompute() {
   document.getElementById("out-explanation").textContent =
     "Without rowid filter: all " + teachRuntime.formatInt(cost.withoutFilterFetches) +
     " main-index rows trigger a table fetch. With filter: bitmap passes " +
-    cost.filterSelectivity + "%% of rows \u2014 only " +
+    cost.filterSelectivity + "% of rows \u2014 only " +
     teachRuntime.formatInt(cost.withFilterFetches) + " fetches, saving " +
     teachRuntime.formatInt(cost.savings) + " random I/Os.";
   renderChart(c.main_rows);
@@ -347,7 +347,7 @@ def render():
     </div>
 
     <div class="control">
-      <label for="filter_selectivity">Filter selectivity (%%): <span class="value-pill" data-pill-for="filter_selectivity">20</span></label>
+      <label for="filter_selectivity">Filter selectivity (%): <span class="value-pill" data-pill-for="filter_selectivity">20</span></label>
       <input type="range" id="filter_selectivity" name="filter_selectivity" min="1" max="100" step="1" value="20">
       <div class="hint">Percentage of rows passing the filtering index (idx_status bitmap).</div>
     </div>

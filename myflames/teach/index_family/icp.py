@@ -295,7 +295,7 @@ function buildTimeline() {
       var startsWithJ = entry.first.charAt(0) === "J";
 
       // Add a phase mark every 3 entries
-      if (idx %% 3 === 0) {
+      if (idx % 3 === 0) {
         tl.mark("Check " + entry.last + ", " + entry.first);
       }
 
