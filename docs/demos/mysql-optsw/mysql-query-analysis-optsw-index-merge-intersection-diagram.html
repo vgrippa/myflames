@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-24T18:25:58Z",
+  "generated_at": "2026-04-24T18:39:50Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -327,8 +327,13 @@ main.report h2 .count {
 .teach-dialog-shell {
   display: flex;
   flex-direction: column;
-  max-height: 85vh;
+  max-height: 90vh;
   background: #fff;
+  /* The whole dialog scrolls as one unit so the lesson iframe + Big O
+     complexity panel read as a continuous page. Without this, the iframe
+     scrolls internally and the panel at the bottom stays pinned. */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .teach-dialog-header {
   display: flex;
@@ -356,12 +361,15 @@ main.report h2 .count {
   cursor: pointer;
 }
 .teach-dialog-body {
+  /* Height is driven by the iframe's content (auto-resized by JS on load).
+     Fallback min-height keeps the dialog a sensible size before the lesson
+     loads. */
   min-height: 420px;
-  height: 55vh;
 }
 #teach-dialog-frame {
   width: 100%;
-  height: 100%;
+  /* Default height before the content-resize JS adjusts it. */
+  height: 640px;
   border: 0;
   display: block;
 }
@@ -901,7 +909,7 @@ where ((testdb.t1.b = 100) and (testdb.t1.a = 50))</code></pre>
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-24T18:25:58Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-24T18:39:50Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
@@ -6043,6 +6051,24 @@ function exportJSON() {
     }
     return html + inject;
   }
+  function resizeFrameToContent() {
+    // Iframe content scrolling inside the dialog made the Big O panel at
+    // the bottom feel "pinned" — the outer dialog didn't scroll, the iframe
+    // did. We auto-size the iframe to its content's scrollHeight so the
+    // whole dialog scrolls as one unit and the panel reads as a page-end
+    // footer. Runs after the lesson's DOM has settled.
+    if (!frame) return;
+    try {
+      var doc = frame.contentDocument;
+      if (!doc || !doc.documentElement) return;
+      var h = Math.max(
+        doc.documentElement.scrollHeight || 0,
+        doc.body ? (doc.body.scrollHeight || 0) : 0,
+        640
+      );
+      frame.style.height = h + "px";
+    } catch (_e) { /* cross-origin; fall back to CSS height */ }
+  }
   function openForIndex(idx) {
     var hook = hookAt(idx);
     if (!hook || !dialog || !frame) return;
@@ -6052,6 +6078,14 @@ function exportJSON() {
       subtitle.textContent = (hook.note || "").slice(0, 180) || ("Lesson: " + lesson);
     }
     populateComplexityFor(hook);
+    // Attach the load handler BEFORE setting srcdoc so we can't race the
+    // load event. Size the iframe once on load, and again a beat later to
+    // catch post-load async content growth (some lessons mount widgets
+    // after DOMContentLoaded).
+    frame.addEventListener("load", function onload() {
+      resizeFrameToContent();
+      setTimeout(resizeFrameToContent, 300);
+    }, { once: true });
     frame.setAttribute("srcdoc", srcDocForHook(hook));
     if (typeof dialog.showModal === "function") {
       dialog.showModal();

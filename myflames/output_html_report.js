@@ -114,6 +114,24 @@ function exportJSON() {
     }
     return html + inject;
   }
+  function resizeFrameToContent() {
+    // Iframe content scrolling inside the dialog made the Big O panel at
+    // the bottom feel "pinned" — the outer dialog didn't scroll, the iframe
+    // did. We auto-size the iframe to its content's scrollHeight so the
+    // whole dialog scrolls as one unit and the panel reads as a page-end
+    // footer. Runs after the lesson's DOM has settled.
+    if (!frame) return;
+    try {
+      var doc = frame.contentDocument;
+      if (!doc || !doc.documentElement) return;
+      var h = Math.max(
+        doc.documentElement.scrollHeight || 0,
+        doc.body ? (doc.body.scrollHeight || 0) : 0,
+        640
+      );
+      frame.style.height = h + "px";
+    } catch (_e) { /* cross-origin; fall back to CSS height */ }
+  }
   function openForIndex(idx) {
     var hook = hookAt(idx);
     if (!hook || !dialog || !frame) return;
@@ -123,6 +141,14 @@ function exportJSON() {
       subtitle.textContent = (hook.note || "").slice(0, 180) || ("Lesson: " + lesson);
     }
     populateComplexityFor(hook);
+    // Attach the load handler BEFORE setting srcdoc so we can't race the
+    // load event. Size the iframe once on load, and again a beat later to
+    // catch post-load async content growth (some lessons mount widgets
+    // after DOMContentLoaded).
+    frame.addEventListener("load", function onload() {
+      resizeFrameToContent();
+      setTimeout(resizeFrameToContent, 300);
+    }, { once: true });
     frame.setAttribute("srcdoc", srcDocForHook(hook));
     if (typeof dialog.showModal === "function") {
       dialog.showModal();
