@@ -261,6 +261,36 @@ function classicAccess(panel, pageId, color, pageName) {
 
 var innoPanel = null, classPanel = null;
 
+// Slice 3 / A4 — staged fade for verdict labels at act boundaries.
+// The old code relied on a flat tl.delay(1200) after setting .textContent
+// directly; the label appeared instantly and the pause was dead air.
+// This helper tweens opacity 0→1 over the pause so the act's conclusion
+// visibly lands, then holds.
+function fadeLabelIn(tl, el, durationMs) {
+  if (!el) return;
+  tl.call(function() { el.setAttribute("opacity", "0"); });
+  tl.add({
+    from: 0, to: 1, duration: durationMs || 400,
+    ease: anim.easeOutCubic,
+    onUpdate: function(t) { el.setAttribute("opacity", t.toFixed(3)); }
+  });
+}
+
+// Slice 3 / A4 — hit/miss flash via lerpColor instead of a hard swap.
+// The color crossfades through EMPTY_COLOR so we never dip into muddy
+// intermediates (web-design's Round 2 warning about blue→orange
+// mid-transitions hitting low-contrast browns).
+function flashSlot(tl, slotEl, fromColor, toColor) {
+  if (!slotEl) return;
+  tl.add({
+    from: 0, to: 1, duration: 220, ease: anim.easeOutCubic,
+    onUpdate: function(t) {
+      slotEl.setAttribute("fill", anim.lerpColor(fromColor, toColor, t));
+    },
+    onComplete: function() { anim.arrival(slotEl); }
+  });
+}
+
 // Build the timeline as a 3-act story
 function buildCurrentTimeline() {
   var c = teachRuntime.readControls();
@@ -301,7 +331,10 @@ function buildCurrentTimeline() {
     innoPanel.verdictLbl.textContent = "8 hot pages safe in young sublist";
     classPanel.verdictLbl.textContent = "8 hot pages at the top of the list";
   });
-  tl.delay(1200);
+  // A4: stage the pause with a synchronized verdict fade-in.
+  fadeLabelIn(tl, innoPanel.verdictLbl, 400);
+  fadeLabelIn(tl, classPanel.verdictLbl, 400);
+  tl.delay(800);
 
   // ====== Act 2: Scan pages stream in ======
   tl.mark("Act 2: Scan arrives");
@@ -342,7 +375,10 @@ function buildCurrentTimeline() {
     classPanel.verdictLbl.textContent = classicSurvived + "/8 hot pages survived \u2717";
     classPanel.verdictLbl.setAttribute("fill", "#991b1b");
   });
-  tl.delay(1500);
+  // A4: staged fade-in during the act-2 → act-3 pause.
+  fadeLabelIn(tl, innoPanel.verdictLbl, 500);
+  fadeLabelIn(tl, classPanel.verdictLbl, 500);
+  tl.delay(900);
 
   // ====== Act 3: Re-access the 8 hot pages ======
   tl.mark("Act 3: Hot queries return");
@@ -359,33 +395,75 @@ function buildCurrentTimeline() {
     (function(pageId) {
       var pageName = HOT_PAGE_NAMES[pageId] || ("page:" + pageId);
       tl.call(function() {
-        var innoResult = "miss";
+        // A4: resolve state, then fire a lerpColor flash directly
+        // (not via tl.add — the resolution has to happen at play
+        // time but the flash has to be same-step so it reads the
+        // freshly-resolved state).
+        var innoFlashTarget = null, innoFlashFrom = HOT_COLOR, innoFlashTo = HIT_COLOR;
+        var classFlashTarget = null, classFlashFrom = HOT_COLOR, classFlashTo = HIT_COLOR;
+        var innoResult = "miss", classResult = "miss";
+
         for (var iy = 0; iy < innoPanel.young.length; iy++) {
           if (innoPanel.young[iy].id === pageId) {
             innoResult = "hit";
             innoPanel.young[iy].color = HIT_COLOR;
             act3InnoHits++;
+            innoFlashTarget = innoPanel.youngSlots[iy];
+            innoFlashFrom = HOT_COLOR;
+            innoFlashTo = HIT_COLOR;
             break;
           }
         }
         if (innoResult === "miss") {
           innodbAccess(innoPanel, pageId, MISS_COLOR, 9999, pageName);
+          innoFlashTarget = innoPanel.oldSlots[0];
+          innoFlashFrom = innoPanel.oldSlots[0].getAttribute("fill");
+          innoFlashTo = MISS_COLOR;
         }
         renderInnoDB(innoPanel);
 
-        var classResult = "miss";
         for (var ic = 0; ic < classPanel.list.length; ic++) {
           if (classPanel.list[ic].id === pageId) {
             classResult = "hit";
             classPanel.list[ic].color = HIT_COLOR;
             act3ClassicHits++;
+            classFlashTarget = classPanel.slots[ic];
+            classFlashFrom = HOT_COLOR;
+            classFlashTo = HIT_COLOR;
             break;
           }
         }
         if (classResult === "miss") {
           classicAccess(classPanel, pageId, MISS_COLOR, pageName);
+          classFlashTarget = classPanel.slots[0];
+          classFlashFrom = classPanel.slots[0].getAttribute("fill");
+          classFlashTo = MISS_COLOR;
         }
         renderClassic(classPanel);
+
+        // Fire the lerpColor flashes directly. anim.tween is
+        // standalone — not queued on the timeline — so it plays
+        // concurrently with the 500 ms tl.delay() that follows.
+        if (innoFlashTarget) {
+          anim.tween({
+            from: 0, to: 1, duration: 240, ease: anim.easeOutCubic,
+            onUpdate: function(t) {
+              innoFlashTarget.setAttribute(
+                "fill", anim.lerpColor(innoFlashFrom, innoFlashTo, t));
+            },
+            onComplete: function() { anim.arrival(innoFlashTarget); }
+          });
+        }
+        if (classFlashTarget) {
+          anim.tween({
+            from: 0, to: 1, duration: 240, ease: anim.easeOutCubic,
+            onUpdate: function(t) {
+              classFlashTarget.setAttribute(
+                "fill", anim.lerpColor(classFlashFrom, classFlashTo, t));
+            },
+            onComplete: function() { anim.arrival(classFlashTarget); }
+          });
+        }
 
         phase.textContent = "Act 3 \u2014 Re-accessing " + pageName + " (" + (pageId + 1) + "/8): " +
           "InnoDB " + (innoResult === "hit" ? "HIT \u2713" : "MISS \u2717") +
