@@ -228,7 +228,8 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         "  .treemap-cell { stroke: #fff; stroke-width: 1; cursor: pointer; }",
         "  .treemap-cell:hover { opacity: 0.9; stroke: #333; stroke-width: 1.5; }",
         "  .treemap-cell.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }",
-        "  .treemap-cell.highlight { stroke: rgb(230,0,230); stroke-width: 2; }",
+        "  .treemap-cell.highlight { stroke: rgb(210,140,210); stroke-width: 1.5; }",
+        "  .treemap-cell.highlight-active { stroke: rgb(230,0,230); stroke-width: 3; }",
         "  .treemap-cell.zoomed { stroke: #111; stroke-width: 2; }",
         "  #unzoom, #search { font-size: 12px; fill: #666; cursor: pointer; }",
         "  #unzoom:hover, #search:hover { fill: #111; }",
@@ -395,10 +396,39 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     var bcEl = document.getElementById("breadcrumb");
     if (bcEl) bcEl.textContent = "";
   }}
+  // Slice 4 / V4 — unified search: honest match count + next/prev.
+  var _searchMatches = [];
+  var _searchIdx = 0;
+
+  function _clearSearchState() {{
+    var cells = document.querySelectorAll(".treemap-cell");
+    for (var i = 0; i < cells.length; i++) {{
+      cells[i].classList.remove("highlight");
+      cells[i].classList.remove("highlight-active");
+    }}
+    _searchMatches = [];
+  }}
+
+  function _focusMatch(idx) {{
+    if (!_searchMatches.length) return;
+    var n = _searchMatches.length;
+    _searchIdx = ((idx %% n) + n) %% n;
+    for (var i = 0; i < n; i++) {{
+      _searchMatches[i].classList.toggle("highlight-active", i === _searchIdx);
+    }}
+    try {{
+      _searchMatches[_searchIdx].scrollIntoView(
+        {{block: "center", behavior: "smooth"}});
+    }} catch (e) {{}}
+    setDetailsText([
+      "Match " + (_searchIdx + 1) + "/" + n +
+      "  \u00b7  n=next, N=prev, Esc=clear"
+    ]);
+  }}
+
   function searchPrompt() {{
     if (searchBtn.textContent === "Reset Search") {{
-      var cells = document.querySelectorAll(".treemap-cell");
-      for (var i = 0; i < cells.length; i++) cells[i].classList.remove("highlight");
+      _clearSearchState();
       searchBtn.textContent = "Search";
       if (!pinnedCell) clearDetails();
       return;
@@ -408,13 +438,41 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
     var re;
     try {{ re = new RegExp(term, "i"); }} catch (err) {{ alert("Invalid regex"); return; }}
     var cells = document.querySelectorAll(".treemap-cell");
+    _searchMatches = [];
     for (var i = 0; i < cells.length; i++) {{
       var label = cells[i].getAttribute("data-label") || "";
-      cells[i].classList.toggle("highlight", re.test(label));
+      var match = re.test(label);
+      cells[i].classList.toggle("highlight", match);
+      if (match) _searchMatches.push(cells[i]);
     }}
     searchBtn.textContent = "Reset Search";
-    setDetailsText(["Matches: " + term + "  \u00b7  Click \u2018Reset Search\u2019 to clear"]);
+    if (!_searchMatches.length) {{
+      setDetailsText([
+        "0 matches for " + term + "  \u00b7  Click \u2018Reset Search\u2019 to clear"
+      ]);
+      return;
+    }}
+    _focusMatch(0);
   }}
+
+  function _searchNext(delta) {{
+    if (!_searchMatches.length) return;
+    _focusMatch(_searchIdx + delta);
+  }}
+
+  document.addEventListener("keydown", function(e) {{
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (e.key === "n" && _searchMatches.length) {{ _searchNext(1); e.preventDefault(); }}
+    else if (e.key === "N" && _searchMatches.length) {{ _searchNext(-1); e.preventDefault(); }}
+    else if (e.key === "Escape" && _searchMatches.length) {{
+      _clearSearchState();
+      searchBtn.textContent = "Search";
+      if (!pinnedCell) clearDetails();
+      e.preventDefault();
+    }}
+    else if (e.key === "/") {{ e.preventDefault(); searchPrompt(); }}
+  }});
+
   window.init = init;
 }})();
 ]]></script>
