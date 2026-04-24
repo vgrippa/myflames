@@ -365,6 +365,13 @@ def _render_teach_templates(sidecar):
         '</div>'
         '<button id="teach-dialog-close" type="button" aria-label="Close teach panel">Close</button>'
         '</header>'
+        '<div class="teach-dialog-body">'
+        '<iframe id="teach-dialog-frame" title="Teach lesson" sandbox="allow-scripts allow-same-origin"></iframe>'
+        '</div>'
+        # Big O complexity panel — rendered at the BOTTOM of the dialog so
+        # the teach lesson iframe stays the primary content. The panel is
+        # hidden by default; the teach bridge unhides and populates it on
+        # "Learn This Operator" clicks.
         '<section id="teach-complexity-panel" class="teach-complexity-panel" hidden aria-labelledby="teach-complexity-heading">'
         '<header class="teach-complexity-header">'
         '<h3 id="teach-complexity-heading">Big O complexity</h3>'
@@ -374,9 +381,6 @@ def _render_teach_templates(sidecar):
         '<p id="teach-complexity-confidence" class="teach-complexity-confidence" hidden></p>'
         '<div id="teach-complexity-chart" class="teach-complexity-chart">{chart}</div>'
         '</section>'
-        '<div class="teach-dialog-body">'
-        '<iframe id="teach-dialog-frame" title="Teach lesson" sandbox="allow-scripts allow-same-origin"></iframe>'
-        '</div>'
         '</div>'
         '</dialog>'.format(chart=chart_svg)
     )

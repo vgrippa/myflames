@@ -236,13 +236,13 @@ main.report h2 .count {
   display: block;
 }
 .teach-complexity-panel {
-  padding: 14px 18px 12px;
+  padding: 14px 18px 16px;
   border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
   background: #f8fafc;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  border-radius: 0 0 8px 8px;  /* match dialog-shell's rounded bottom */
 }
 .teach-complexity-panel[hidden] { display: none; }
 .teach-complexity-header {
