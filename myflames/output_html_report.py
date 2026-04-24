@@ -789,6 +789,80 @@ def _render_glossary_aside(sidecar):
     return "\n".join(parts)
 
 
+def _render_myteach_section(sidecar):
+    """Centralized myteach link section — below the glossary aside.
+
+    Surfaces a link to the algorithm catalog hub (``./teach/index.html``
+    by convention) and lists the specific lessons that apply to the
+    jargon actually present in *this* report, so a curious reader
+    doesn't have to scan the full catalog. User request: "I want to
+    have centralized space for myteach where we will add everything
+    related to this" — this section is the anchor.
+    """
+    # Figure out which lessons are relevant to this plan. Reuse the
+    # same find_terms_in_text pass used by the glossary aside.
+    referenced_keys = set()
+    fields = [sidecar.get("executive_summary") or ""]
+    for w in sidecar.get("warnings") or []:
+        fields.append(w.get("text", ""))
+    for s in sidecar.get("suggestions") or []:
+        fields.append(s.get("action", ""))
+        fields.append(s.get("why", ""))
+    for sw in sidecar.get("optimizer_switches") or []:
+        fields.append(sw.get("explanation", ""))
+    for text in fields:
+        for hit in find_terms_in_text(text):
+            referenced_keys.add(hit["key"])
+
+    # Map glossary keys → teach lesson slugs (same table the U4 chip
+    # bridge uses). Keep it local here to avoid cross-module coupling
+    # for the newcomer spine.
+    relevant_lessons = []
+    for key in sorted(referenced_keys):
+        lesson_slug = _GLOSSARY_TO_LESSON.get(key)
+        if lesson_slug:
+            relevant_lessons.append((key, lesson_slug))
+
+    items_html = ""
+    if relevant_lessons:
+        rows = []
+        for gloss_key, lesson_slug in relevant_lessons:
+            label = gloss_key.replace("_", " ")
+            rows.append(
+                '      <li><a href="./teach/{slug}.html"'
+                ' data-teach-key="{slug}">'
+                '<code>{label}</code></a></li>'.format(
+                    slug=xml_escape(lesson_slug),
+                    label=xml_escape(label),
+                )
+            )
+        items_html = (
+            '  <div class="myteach-relevant">\n'
+            '    <h3>Lessons relevant to this plan</h3>\n'
+            '    <ul>\n'
+            + "\n".join(rows) +
+            '\n    </ul>\n'
+            '  </div>\n'
+        )
+
+    return (
+        '<section class="myteach-hub" aria-labelledby="myteach-heading">\n'
+        '  <h2 id="myteach-heading">myteach — interactive algorithm catalog</h2>\n'
+        '  <p class="myteach-intro">\n'
+        '    Every operator shown above has a hands-on lesson with a '
+        'cost-model slider and an animated walk-through. The catalog is '
+        'the central index — bookmark it once, revisit per query:\n'
+        '  </p>\n'
+        '  <p class="myteach-cta">\n'
+        '    <a class="myteach-cta-link" href="./teach/index.html">\n'
+        '      Open the full catalog  →\n'
+        '    </a>\n'
+        '  </p>\n'
+        + items_html +
+        '</section>'
+    )
+
+
 def _render_raw_sidecar(sidecar):
     """Collapsed ``<details>`` with the full sidecar JSON — the same content
     the JSON-LD script tag carries. Useful for DBAs who want to verify
@@ -933,6 +1007,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         _render_suggestions(sidecar),
         _render_environment(sidecar),
         _render_glossary_aside(sidecar),
+        _render_myteach_section(sidecar),
         _render_raw_sidecar(sidecar),
         _render_teach_templates(sidecar),
     ]

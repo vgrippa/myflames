@@ -435,6 +435,54 @@ aside.glossary-aside summary h2 { display: inline; margin: 0; }
 .schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
 .schema-list li { padding: 3px 0; }
 
+/* myteach hub section (below the glossary). Centralized space that
+   links every report into the catalog of interactive algorithm
+   lessons — user request 2026-04-24. */
+section.myteach-hub {
+  background: #eef2ff;
+  border-left: 3px solid var(--accent);
+}
+section.myteach-hub h2 {
+  color: var(--accent);
+}
+section.myteach-hub .myteach-intro {
+  color: var(--muted); margin: 8px 0 12px 0; max-width: 780px;
+}
+section.myteach-hub .myteach-cta {
+  margin: 12px 0;
+}
+a.myteach-cta-link {
+  display: inline-block;
+  background: var(--accent); color: #fff;
+  padding: 10px 18px; border-radius: var(--rad);
+  text-decoration: none; font-weight: 600;
+  transition: background var(--dur-sm) var(--ease-out);
+}
+a.myteach-cta-link:hover { background: #1a52b0; }
+section.myteach-hub .myteach-relevant {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+section.myteach-hub .myteach-relevant h3 {
+  font-size: 13px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin: 0 0 8px 0;
+}
+section.myteach-hub .myteach-relevant ul {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+section.myteach-hub .myteach-relevant a {
+  display: inline-block; padding: 4px 10px;
+  background: #fff; border: 1px solid var(--border);
+  border-radius: var(--rad-sm);
+  text-decoration: none; color: var(--accent);
+  font-size: 13px;
+}
+section.myteach-hub .myteach-relevant a:hover {
+  background: var(--accent-soft); border-color: var(--accent);
+}
+
 /* Glossary aside */
 aside.glossary-aside { background: #f1f8ff; }
 .glossary-list { margin: 12px 0 0 0; display: grid; gap: 12px; }
