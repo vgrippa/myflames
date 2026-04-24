@@ -24,3 +24,6 @@ build/
 
 # Local test output (optional; uncomment to ignore)
 # test/results/
+
+# Claude Code skills — kept local only, not part of the distributed package
+.claude/skills/
