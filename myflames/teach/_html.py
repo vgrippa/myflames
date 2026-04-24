@@ -20,6 +20,34 @@ from typing import Iterable
 from ._anim import ANIM_JS
 
 
+def _load_tier1_runtime() -> str:
+    """Read the committed Tier-1 bundle produced by assets/build.mjs.
+
+    The bundle wraps Motion One (FLIP/spring animations) and d3
+    (squarified treemap, Catmull-Rom paths) into additive helpers on
+    window.anim. Install order matters: ANIM_JS runs first to set up
+    the hand-rolled primitives (tween, timeline, pulse, arrival,
+    svgEl, complexityChart…); this bundle then merges its new keys
+    (flip, spring, squarify, smoothPath) without overwriting the
+    existing ones. If the bundle file is missing (not yet built on
+    the contributor's machine) we return an empty string so lessons
+    still work — they just lose the Tier-1 helpers.
+    """
+    import os as _os
+    bundle = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+        "assets", "anim-runtime.js",
+    )
+    try:
+        with open(bundle, "r", encoding="utf-8") as f:
+            return f.read()
+    except (FileNotFoundError, OSError):
+        return "/* tier-1 anim-runtime.js not built — run 'cd assets && npm install && npm run build' */"
+
+
+TIER1_RUNTIME_JS = _load_tier1_runtime()
+
+
 # System font stack — same one used by myflames/output_diagram.py.
 _FONT_STACK = (
     '"Google Sans", Roboto, "Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", '
@@ -1461,6 +1489,7 @@ def render_page(
     interactive database algorithm lessons. Offline-first, stdlib-only.</p>
   </footer>
   <script>{ANIM_JS}
+{TIER1_RUNTIME_JS}
 {_BASE_JS}
 {lesson_js}
   </script>

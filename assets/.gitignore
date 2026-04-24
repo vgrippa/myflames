@@ -1,0 +1,5 @@
+# assets/ workspace is for building the committed Tier-1 bundle at
+# myflames/assets/anim-runtime.js. The node_modules tree is a
+# contributor-local dependency; only the bundle output is checked in.
+node_modules/
+*.tsbuildinfo
