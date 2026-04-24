@@ -62,6 +62,7 @@ CURRICULUM = [
     "unique_lookup",   # index_family
     "non_unique_lookup",
     "icp",
+    "covering_index",  # scan_family: when index avoids the clustered lookup
     "nested_loop",     # join_family
     "hash",
     "bnl",

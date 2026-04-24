@@ -1,7 +1,7 @@
 """Scan/filter/sort/temp teach lessons."""
 from __future__ import annotations
 
-from . import derived_table, filesort, tmp, full_scan, filter
+from . import derived_table, filesort, tmp, full_scan, filter, covering_index
 
 LESSONS = {
     "filesort": {
@@ -28,5 +28,10 @@ LESSONS = {
         "title": "Derived Table Materialization",
         "summary": "FROM-clause subquery materialized into temp table, auto-indexed, then probed.",
         "render": derived_table.render,
+    },
+    "covering_index": {
+        "title": "Covering index — why \"Using index\" in EXPLAIN is the goal",
+        "summary": "Non-covering vs covering plan; the InnoDB PK-append trick that silently covers many queries.",
+        "render": covering_index.render,
     },
 }
