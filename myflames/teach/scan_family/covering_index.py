@@ -241,7 +241,7 @@ function runAct3(tl, idxCells) {
   });
 }
 
-function runAll() {
+function _buildStage() {
   var idxCells = drawIndex(
     "svg-index", "status",
     ["status", "email"],
@@ -250,15 +250,37 @@ function runAll() {
     )
   );
   var tblCells = drawTable("svg-table", "users");
+  return {idxCells: idxCells, tblCells: tblCells};
+}
+
+function buildCurrentTimeline() {
+  var s = _buildStage();
   var tl = anim.timeline();
-  runAct1(tl, idxCells, tblCells);
-  runAct2(tl, idxCells);
-  runAct3(tl, idxCells);
-  tl.start();
+  runAct1(tl, s.idxCells, s.tblCells);
+  runAct2(tl, s.idxCells);
+  runAct3(tl, s.idxCells);
+  return tl;
+}
+
+function resetAnim() {
+  _buildStage();
+  setStat("out-phase", "Ready — press Play");
+  setStat("out-extra", "—");
+  setStat("out-index-reads", "—");
+  setStat("out-table-reads", "—");
+  document.getElementById("phase-label").textContent = "Ready — press Play";
 }
 
 document.addEventListener("DOMContentLoaded", function() {
-  document.getElementById("btn-play").addEventListener("click", runAll);
+  _buildStage();
+});
+teachRuntime.wireToolbar({
+  build: buildCurrentTimeline,
+  reset: resetAnim
+});
+teachRuntime.wirePhaseNav("phase-nav", {
+  build: buildCurrentTimeline,
+  reset: resetAnim
 });
 """
 

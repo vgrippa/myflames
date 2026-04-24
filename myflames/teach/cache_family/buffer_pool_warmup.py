@@ -237,17 +237,36 @@ function runAct3(tl, pool) {
   });
 }
 
-function runAll() {
+function buildCurrentTimeline() {
   var pool = buildPool("svg-pool");
   var tl = anim.timeline();
   runAct1(tl, pool);
   runAct2(tl, pool);
   runAct3(tl, pool);
-  tl.start();
+  return tl;
 }
 
+function resetAnim() {
+  buildPool("svg-pool");
+  setStat("out-phase", "Ready — press Play");
+  setStat("out-hits", "—");
+  setStat("out-misses", "—");
+  setStat("out-total-ms", "—");
+  document.getElementById("phase-label").textContent = "Ready — press Play";
+}
+
+// Build stage on first load so it's not empty, then wire the runtime
+// so Play/Pause/Scrub work like every other lesson.
 document.addEventListener("DOMContentLoaded", function() {
-  document.getElementById("btn-play").addEventListener("click", runAll);
+  buildPool("svg-pool");
+});
+teachRuntime.wireToolbar({
+  build: buildCurrentTimeline,
+  reset: resetAnim
+});
+teachRuntime.wirePhaseNav("phase-nav", {
+  build: buildCurrentTimeline,
+  reset: resetAnim
 });
 """
 

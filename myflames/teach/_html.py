@@ -846,9 +846,12 @@ var teachRuntime = (function() {
     marks: []
   };
   // User-calibrated baseline: the dropdown's "1×" maps to this internal
-  // speed. 0.312 = previous 0.52 × 0.6 (40% slower per user request
-  // 2026-04-24; the animations felt rushed at the old baseline).
-  var BASELINE_SPEED_SCALE = 0.312;
+  // speed. Started at 0.52 (original); user asked for 40% slower →
+  // 0.312 felt too slow for state-swap lessons (icp etc.) where flat
+  // tl.delay times then stretched to 3× wallclock and looked frozen.
+  // 0.42 is a compromise: ~20% slower than the original 0.52 baseline
+  // — tweened animations still breathe, stepped ones stay responsive.
+  var BASELINE_SPEED_SCALE = 0.42;
 
   // --- DOM refs (resolved once in wireToolbar) ---
   var _dom = {};
