@@ -282,30 +282,57 @@ def render_bargraph(
     });
   }
 
-  function searchPrompt() {
-    if (searchBtn.textContent === "Reset Search") {
-      var bars = document.querySelectorAll(".bar");
-      for (var i = 0; i < bars.length; i++) {
-        bars[i].style.opacity = "";
-        bars[i].style.stroke = "";
-        bars[i].style.strokeWidth = "";
-      }
-      searchBtn.textContent = "Search";
-      if (!pinnedBar) clearDetails();
-      searching = false;
-      return;
+  // Slice 4 / V4 — unified search: honest match count + next/prev.
+  var _searchMatches = [];
+  var _searchIdx = 0;
+
+  function _clearSearchStyles() {
+    var bars = document.querySelectorAll(".bar");
+    for (var i = 0; i < bars.length; i++) {
+      bars[i].style.opacity = "";
+      bars[i].style.stroke = "";
+      bars[i].style.strokeWidth = "";
     }
+  }
+
+  function _focusMatch(idx) {
+    if (!_searchMatches.length) return;
+    var n = _searchMatches.length;
+    _searchIdx = ((idx %% n) + n) %% n;
+    for (var i = 0; i < n; i++) {
+      var active = (i === _searchIdx);
+      _searchMatches[i].style.stroke = active ? "rgb(230,0,230)" : "rgb(210,140,210)";
+      _searchMatches[i].style.strokeWidth = active ? "3" : "1.5";
+    }
+    try {
+      _searchMatches[_searchIdx].scrollIntoView({block: "center", behavior: "smooth"});
+    } catch (e) {}
+    setDetailsText([
+      "Match " + (_searchIdx + 1) + "/" + n + "  ·  n=next, N=prev, Esc=clear"
+    ]);
+  }
+
+  function _clearSearch() {
+    _clearSearchStyles();
+    _searchMatches = [];
+    searchBtn.textContent = "Search";
+    if (!pinnedBar) clearDetails();
+    searching = false;
+  }
+
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") { _clearSearch(); return; }
     var term = prompt("Search (regex):");
     if (term == null) return;
     var re;
     try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
     var bars = document.querySelectorAll(".bar");
+    _searchMatches = [];
     for (var i = 0; i < bars.length; i++) {
       var label = bars[i].getAttribute("data-label") || "";
       if (re.test(label)) {
         bars[i].style.opacity = "1";
-        bars[i].style.stroke = "rgb(230,0,230)";
-        bars[i].style.strokeWidth = "2";
+        _searchMatches.push(bars[i]);
       } else {
         bars[i].style.opacity = "0.3";
         bars[i].style.stroke = "";
@@ -314,8 +341,27 @@ def render_bargraph(
     }
     searchBtn.textContent = "Reset Search";
     searching = true;
-    setDetailsText(["Matches: " + term + "  \u00b7  Click \u2018Reset Search\u2019 to clear"]);
+    if (!_searchMatches.length) {
+      setDetailsText([
+        "0 matches for " + term + "  \u00b7  Click \u2018Reset Search\u2019 to clear"
+      ]);
+      return;
+    }
+    _focusMatch(0);
   }
+
+  function _searchNext(delta) {
+    if (!_searchMatches.length) return;
+    _focusMatch(_searchIdx + delta);
+  }
+
+  document.addEventListener("keydown", function(e) {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (e.key === "n" && _searchMatches.length) { _searchNext(1); e.preventDefault(); }
+    else if (e.key === "N" && _searchMatches.length) { _searchNext(-1); e.preventDefault(); }
+    else if (e.key === "Escape" && _searchMatches.length) { _clearSearch(); e.preventDefault(); }
+    else if (e.key === "/") { e.preventDefault(); searchPrompt(); }
+  });
 
   window.init = init;
 })();
