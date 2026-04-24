@@ -1162,6 +1162,33 @@ var teachRuntime = (function() {
 """
 
 
+def load_lesson_js(module_file: str, js_name: str = None) -> str:
+    """Load a lesson's JavaScript from a sibling ``.js`` file on disk.
+
+    Tier-0 authoring ergonomics: each lesson's JS lives in a real
+    ``.js`` file next to its ``.py``, not inside a Python raw-string
+    literal. Editors highlight the syntax, eslint/prettier can touch
+    it, and the whole class of ``%% vs %`` escape bugs goes away.
+
+    Usage from a lesson module::
+
+        from .. import _html
+        _LESSON_JS = _html.load_lesson_js(__file__)
+
+    The helper looks up ``<same-dir>/<same-basename>.js`` by default.
+    Pass ``js_name`` to override (e.g. when a lesson bundles multiple
+    JS files).
+    """
+    import os as _os
+    if js_name is None:
+        base = _os.path.splitext(_os.path.basename(module_file))[0]
+        js_name = base + ".js"
+    js_path = _os.path.join(_os.path.dirname(_os.path.abspath(module_file)),
+                             js_name)
+    with open(js_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 def esc(s: str) -> str:
     """HTML-escape *s*."""
     return html.escape(s, quote=True)

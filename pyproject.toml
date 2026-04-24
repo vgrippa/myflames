@@ -18,4 +18,13 @@ where = ["."]
 include = ["myflames*"]
 
 [tool.setuptools.package-data]
-myflames = ["*.css", "*.js"]
+# Include CSS + all JS files (including the per-lesson .js files in
+# teach/ that Tier-0 migrated out of raw-string literals).
+myflames = [
+    "*.css",
+    "*.js",
+    "assets/*.js",
+    "assets/*.css",
+    "teach/*.js",
+    "teach/*_family/*.js",
+]
