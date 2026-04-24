@@ -69,6 +69,7 @@ CURRICULUM = [
     "semijoin_weedout",
     "derived_table",   # scan_family → materialization
     "lru",             # cache_family
+    "buffer_pool_warmup",  # cache_family: why cold queries hurt
 ]
 
 
