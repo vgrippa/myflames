@@ -140,14 +140,50 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
 # Glossary-aware text rendering
 # ---------------------------------------------------------------------------
 
-def _chipify(text):
-    """Return *text* HTML-escaped, with jargon terms wrapped in ``<abbr>``.
+#: Glossary-key → teach-lesson key. Only entries that have a matching
+#: lesson under myflames/teach/*_family/ are listed. Missing keys mean
+#: "no Learn→ bridge for this chip" — clicking the chip still jumps to
+#: the glossary definition via the #gloss-{key} anchor (U3) but no
+#: "Learn →" sibling button is added (U4).
+_GLOSSARY_TO_LESSON = {
+    "hash_join": "hash",
+    "block_nested_loop": "bnl",
+    "batched_key_access": "bka_join",
+    "nested_loop": "nested_loop",
+    "index_condition_pushdown": "icp",
+    "rowid_filter": "rowid_filter",
+    "skip_scan": "skip_scan",
+    "index_merge": "index_merge",
+    "semijoin": "semijoin_weedout",
+    "full_scan": "full_scan",
+    "btree": "btree",
+    "unique_lookup": "unique_lookup",
+    "non_unique_lookup": "non_unique_lookup",
+    "filesort": "filesort",
+    "derived_table": "derived_table",
+    "temp_table": "tmp",
+}
 
-    Each jargon hit uses :func:`glossary.find_terms_in_text` + lookup to
-    find the short definition, and wraps the surface text in ``<abbr>``.
-    This gives zero-JS tooltips on hover, and screen readers announce the
-    full definition. Overlapping matches are impossible — ``find_terms_in_text``
-    already picks the longest phrase per span.
+
+def _chipify(text):
+    """Return *text* HTML-escaped, with jargon terms wrapped in a glossary
+    chip. Slice 4 / U3 + U4.
+
+    Chips are now anchor links (``<a href="#gloss-{key}">``) pointing at
+    the glossary-aside entry for that term. When the user clicks a chip
+    the browser scrolls + fires ``:target``, which the CSS highlights
+    and which a tiny inline script uses to auto-expand the collapsed
+    glossary ``<details>``.
+
+    When a glossary key also has a matching teach lesson, a sibling
+    "Learn →" link with ``data-teach-key`` is emitted after the chip
+    (U4). The attribute lets the existing teach bridge route the click;
+    as a graceful fallback the ``href`` points at ``./teach/{lesson}.html``
+    for users who unpack myflames outputs next to a ``docs/teach/``
+    mirror.
+
+    Tooltip text (``<abbr title>``) is preserved via an inner ``<abbr>``
+    nested inside the anchor so zero-JS hover tooltips still work.
     """
     if not text:
         return ""
@@ -159,14 +195,29 @@ def _chipify(text):
     for h in hits:
         if h["start"] > cursor:
             out.append(xml_escape(text[cursor:h["start"]]))
-        entry = glossary_lookup(h["key"])
+        key = h["key"]
+        entry = glossary_lookup(key)
         tooltip = (entry or {}).get("short", "")
         out.append(
-            '<abbr class="glossary-chip" title="{}">{}</abbr>'.format(
-                xml_escape(tooltip),
-                xml_escape(h["term"]),
+            '<a class="glossary-chip" href="#gloss-{key}"'
+            ' data-gloss-key="{key}">'
+            '<abbr title="{tip}">{surface}</abbr></a>'.format(
+                key=xml_escape(key),
+                tip=xml_escape(tooltip),
+                surface=xml_escape(h["term"]),
             )
         )
+        lesson = _GLOSSARY_TO_LESSON.get(key)
+        if lesson:
+            out.append(
+                '<a class="learn-more" href="./teach/{lesson}.html"'
+                ' data-teach-key="{lesson}"'
+                ' aria-label="Open teach lesson for {surface}">'
+                'Learn&nbsp;→</a>'.format(
+                    lesson=xml_escape(lesson),
+                    surface=xml_escape(h["term"]),
+                )
+            )
         cursor = h["end"]
     if cursor < len(text):
         out.append(xml_escape(text[cursor:]))
@@ -362,6 +413,31 @@ def _render_primary_action(sidecar):
         parts.append('  <pre class="sql-action"><code>{}</code></pre>'.format(xml_escape(action)))
     else:
         parts.append('  <p class="action-text">{}</p>'.format(_chipify(action)))
+
+    # Slice 4 / U2: concrete CREATE INDEX DDL. When the primary
+    # suggestion's category is "index", surface the matching
+    # `index_suggestions[].ddl` — a DBA can paste it into a ticket, and
+    # a newcomer sees an actionable statement instead of "add an index
+    # on the filter columns". Collapsed <details> keeps vertical
+    # rhythm of the card; a "Copy" button is cheap to add (delegated
+    # to the main report JS which already handles exports).
+    category = (s.get("category") or "").strip().lower()
+    idx_hints = sidecar.get("index_suggestions") or []
+    if category == "index" and idx_hints:
+        # Render all candidate DDLs; the advisor emits at most a handful.
+        ddl_block = "\n".join(
+            h.get("ddl", "") for h in idx_hints if h.get("ddl")
+        ).strip()
+        if ddl_block:
+            parts.append('  <details class="ddl-candidate" open>')
+            parts.append('    <summary>Candidate DDL (copy &amp; run)</summary>')
+            parts.append(
+                '    <pre class="sql-action"><code>{}</code></pre>'.format(
+                    xml_escape(ddl_block)
+                )
+            )
+            parts.append('  </details>')
+
     if why:
         parts.append('  <details class="why-details" open>')
         parts.append('    <summary>Why does this help?</summary>')
@@ -687,7 +763,14 @@ def _render_glossary_aside(sidecar):
         if not entry:
             continue
         canonical = key.replace("_", " ")
-        parts.append('      <div class="glossary-item">')
+        # Slice 4 / U3: id="gloss-{key}" turns each entry into a jump
+        # target. The chip's href="#gloss-{key}" lands the reader here
+        # and :target CSS highlights the item + auto-opens the wrapper
+        # <details>.
+        parts.append(
+            '      <div class="glossary-item" id="gloss-{}"'
+            ' tabindex="-1">'.format(xml_escape(key))
+        )
         parts.append('        <dt><code>{}</code></dt>'.format(xml_escape(canonical)))
         parts.append('        <dd class="newcomer">{}</dd>'.format(xml_escape(entry.get("newcomer", ""))))
         parts.append('        <dd class="technical">{}</dd>'.format(xml_escape(entry.get("technical", ""))))
@@ -888,6 +971,37 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     else:
         alternate_link = ""
 
+    # Slice 4 / D5: muted metadata strip under the main header row.
+    # Engine / version / total time / generated_at pulled from the
+    # sidecar so machine and human read from the same bag (no parallel
+    # templated strings per structured-output's Round 2 critique).
+    _src = sidecar.get("source") or {}
+    _ps = sidecar.get("plan_summary") or {}
+    meta_items = []
+    if _src.get("engine") and _src.get("engine_version"):
+        meta_items.append("{} {}".format(
+            _src["engine"].capitalize(), _src["engine_version"]))
+    elif _src.get("engine"):
+        meta_items.append(_src["engine"].capitalize())
+    if _ps.get("operator_count"):
+        meta_items.append("{} operators".format(_ps["operator_count"]))
+    if _ps.get("total_time_ms"):
+        meta_items.append("{:.2f} ms total".format(_ps["total_time_ms"]))
+    if sidecar.get("generated_at"):
+        meta_items.append("generated " + sidecar["generated_at"])
+    if meta_items:
+        header_meta = (
+            '    <div class="site-header-meta" role="doc-subtitle">{}</div>\n'
+            .format(
+                ' <span class="meta-sep">·</span> '.join(
+                    '<span class="meta-item">{}</span>'.format(xml_escape(m))
+                    for m in meta_items
+                )
+            )
+        )
+    else:
+        header_meta = ""
+
     html = (
         '<!DOCTYPE html>\n'
         '<html lang="en">\n'
@@ -903,12 +1017,15 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         '<body>\n'
         '  <a class="skip-link" href="#main-content">Skip to content</a>\n'
         '  <header class="site-header" role="banner">\n'
-        '    <h1>{title_esc}</h1>\n'
-        '    <nav class="toolbar" aria-label="Report actions">\n'
-        '      <button type="button" onclick="exportSVG()">Export SVG</button>\n'
-        '      <button type="button" onclick="exportJSON()">Export Analysis JSON</button>\n'
-        '      <button type="button" onclick="window.print()">Print / PDF</button>\n'
-        '    </nav>\n'
+        '    <div class="site-header-main">\n'
+        '      <h1>{title_esc}</h1>\n'
+        '      <nav class="toolbar" aria-label="Report actions">\n'
+        '        <button type="button" onclick="exportSVG()">Export SVG</button>\n'
+        '        <button type="button" onclick="exportJSON()">Export Analysis JSON</button>\n'
+        '        <button type="button" onclick="window.print()">Print / PDF</button>\n'
+        '      </nav>\n'
+        '    </div>\n'
+        '{header_meta}'
         '  </header>\n'
         '  <main id="main-content" class="report" role="main">\n'
         '{sections}\n'
@@ -923,6 +1040,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         title_esc=xml_escape(title),
         desc_esc=xml_escape(description),
         alternate_link=alternate_link,
+        header_meta=header_meta,
         jsonld=jsonld,
         css=_CSS,
         sections=sections_html,

@@ -238,4 +238,23 @@ function exportJSON() {
   window.addEventListener("keydown", function(e) {
     if (e.key === "Escape") closeTeachDialog();
   });
+
+  // Slice 4 / U3: when the URL hash targets a glossary item, make sure
+  // its wrapper <details> is open. Pure CSS can't toggle [open] so a
+  // small shim runs on load and on every hashchange.
+  function openGlossaryForHash() {
+    var h = (window.location.hash || "").replace(/^#/, "");
+    if (!h || h.indexOf("gloss-") !== 0) return;
+    var el = document.getElementById(h);
+    if (!el) return;
+    var details = el.closest ? el.closest("details") : null;
+    if (details && !details.open) details.open = true;
+    // Re-scroll after opening — some browsers ignore the initial
+    // :target scroll when the element was inside a collapsed details.
+    try { el.scrollIntoView({block: "center"}); } catch (_) {}
+  }
+  window.addEventListener("hashchange", openGlossaryForHash);
+  if (document.readyState !== "loading") openGlossaryForHash();
+  else document.addEventListener("DOMContentLoaded", openGlossaryForHash,
+                                  {once: true});
 })();

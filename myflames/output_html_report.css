@@ -98,13 +98,23 @@ body {
 }
 .skip-link:focus { top: 0; }
 
-/* Header */
+/* Header — Slice 4 / D5: one sticky region with two rows.
+   Row 1: .site-header-main carries title + toolbar.
+   Row 2: .site-header-meta carries muted engine/version/total metadata. */
 .site-header {
   background: #1a1a2e; color: #fff;
-  padding: 14px 24px;
+  padding: var(--sp-3) var(--sp-5) var(--sp-2) var(--sp-5);
+}
+.site-header-main {
   display: flex; align-items: center; justify-content: space-between;
   flex-wrap: wrap; gap: 12px;
 }
+.site-header-meta {
+  margin-top: 6px; font-size: 11.5px; opacity: 0.78;
+  letter-spacing: 0.2px; font-feature-settings: "tnum";
+}
+.site-header-meta .meta-sep { opacity: 0.5; margin: 0 2px; }
+.site-header-meta .meta-item { white-space: nowrap; }
 .site-header h1 {
   font-size: 17px; font-weight: 600; margin: 0;
 }
@@ -348,10 +358,39 @@ main.report h2 .count {
   font-size: 11px;
 }
 
-/* Glossary chips (<abbr>) */
-abbr.glossary-chip {
+/* Glossary chips (Slice 4 / U3: now anchor links, not just abbrs). */
+a.glossary-chip,
+abbr.glossary-chip,
+a.glossary-chip abbr {
   text-decoration: underline dotted rgba(40,53,147,0.5);
   cursor: help; text-underline-offset: 2px;
+  color: inherit;
+}
+a.glossary-chip { text-decoration-line: underline; }
+a.glossary-chip:hover { color: var(--accent); }
+/* Learn → bridge (Slice 4 / U4) — small adjacent chip when a glossary
+   term also has a matching teach lesson. Visually subordinate to the
+   chip so prose doesn't get crowded. */
+a.learn-more {
+  display: inline-block; margin-left: 4px;
+  font-size: 11px; font-weight: 500; color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 8px; border-radius: var(--rad-sm);
+  text-decoration: none; vertical-align: 2px;
+}
+a.learn-more:hover { background: var(--accent); color: #fff; }
+/* :target highlight when a chip jumps to its glossary item. Uses a
+   left-border accent (survives the existing card background); the
+   short fade matches the motion token for reduced-motion opt-outs. */
+.glossary-item:target {
+  scroll-margin-top: 96px;
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  animation: gloss-flash var(--dur-lg) var(--ease-out) 1;
+}
+@keyframes gloss-flash {
+  0%   { background: var(--accent-soft); }
+  100% { background: transparent; }
 }
 
 /* Environment section */
