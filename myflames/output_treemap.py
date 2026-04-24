@@ -3,29 +3,157 @@ from .parser import xml_escape, flatten_nodes, render_info_panel
 from ._labels import fit_label
 
 
-def _layout_treemap(node, x, y, w, h, depth, results):
+def _worst_aspect(row_sum, weights, side):
+    """Worst aspect ratio if *weights* are laid out along *side*.
+
+    Used by the squarified packer to decide whether adding another
+    child to the current row improves or degrades the row's cells.
+    Returns ``+inf`` when the packed side has zero length (safety net
+    for degenerate inputs).
+    """
+    if side <= 0 or row_sum <= 0 or not weights:
+        return float("inf")
+    worst = 0.0
+    # Total row area = row_sum; packed dimension length = side; cross
+    # dimension = row_sum / side.
+    for w in weights:
+        if w <= 0:
+            continue
+        ratio = (side * side * w) / (row_sum * row_sum)
+        # Aspect = max(ratio, 1/ratio) — squareness bounded at 1.
+        if ratio == 0:
+            continue
+        inv = 1.0 / ratio
+        worst = max(worst, ratio, inv)
+    return worst if worst > 0 else float("inf")
+
+
+def _emit_row(row_weights, row_nodes, x, y, w, h, depth, results, along_x):
+    """Place one squarified row inside the rectangle (x,y,w,h)."""
+    total = sum(row_weights)
+    if total <= 0 or not row_weights:
+        return x, y, w, h
+    if along_x:
+        # Row runs along the x-axis; each cell takes full band height
+        # (h here = the row band height we chose before calling us).
+        cx = x
+        for i, (weight, node) in enumerate(zip(row_weights, row_nodes)):
+            if i == len(row_weights) - 1:
+                cw = max(0, (x + w) - cx)
+            else:
+                cw = int(round(w * weight / total))
+            _layout_squarified(node, cx, y, cw, h, depth + 1, results)
+            cx += cw
+    else:
+        cy = y
+        for i, (weight, node) in enumerate(zip(row_weights, row_nodes)):
+            if i == len(row_weights) - 1:
+                ch = max(0, (y + h) - cy)
+            else:
+                ch = int(round(h * weight / total))
+            _layout_squarified(node, x, cy, w, ch, depth + 1, results)
+            cy += ch
+    return x, y, w, h
+
+
+def _layout_squarified(node, x, y, w, h, depth, results):
+    """Slice 3 / V3 — Bruls/Huijsen/van Wijk squarified treemap.
+
+    Keeps cell aspect ratios near 1:1 regardless of value distribution,
+    which matters for deep plans where the old slice-and-dice produced
+    1-pixel slivers that lost their labels. Pure function; one cell
+    per node pushed into ``results`` in pre-order.
+    """
     if w < 4 or h < 4:
         return
     results.append({"x": x, "y": y, "w": w, "h": h, "node": node, "depth": depth})
     children = node.get("children") or []
     if not children:
         return
-    total = sum(c["total_time"] for c in children)
+    # Sort children by value descending — required by the algorithm for
+    # optimal squareness.
+    weighted = [
+        (c["total_time"], c)
+        for c in children if (c["total_time"] or 0) > 0
+    ]
+    if not weighted:
+        return
+    weighted.sort(key=lambda pair: pair[0], reverse=True)
+    total = sum(v for v, _ in weighted)
     if total <= 0:
         return
-    ax, ay, aw, ah = x, y, w, h
-    if w >= h:
-        for i, c in enumerate(children):
-            frac = c["total_time"] / total
-            cw = (w - (ax - x)) if i == len(children) - 1 else int(w * frac + 0.5)
-            _layout_treemap(c, ax, ay, cw, ah, depth + 1, results)
-            ax += cw
-    else:
-        for i, c in enumerate(children):
-            frac = c["total_time"] / total
-            ch = (h - (ay - y)) if i == len(children) - 1 else int(h * frac + 0.5)
-            _layout_treemap(c, ax, ay, aw, ch, depth + 1, results)
-            ay += ch
+
+    # Scale weights to the current rectangle's area so the packer's
+    # aspect-ratio math stays in pixel units.
+    area_per_unit = (w * h) / total
+
+    # Remaining rectangle being packed. Each iteration of the outer
+    # loop either extends the current row or emits it and starts a new
+    # one on the new shorter side.
+    rx, ry, rw, rh = x, y, w, h
+    row_weights = []   # in pixel-area units
+    row_nodes = []
+    i = 0
+    while i < len(weighted):
+        weight_px = weighted[i][0] * area_per_unit
+        node_i = weighted[i][1]
+        side = min(rw, rh)
+        if not row_weights:
+            # First child of the row — always add, then decide later.
+            row_weights.append(weight_px)
+            row_nodes.append(node_i)
+            i += 1
+            continue
+        current_worst = _worst_aspect(sum(row_weights), row_weights, side)
+        with_new = _worst_aspect(
+            sum(row_weights) + weight_px,
+            row_weights + [weight_px],
+            side,
+        )
+        if with_new <= current_worst:
+            row_weights.append(weight_px)
+            row_nodes.append(node_i)
+            i += 1
+            continue
+        # New child would degrade the row — emit the row, shrink the
+        # remaining rect along the packed side, then restart the loop
+        # (without consuming the current child).
+        row_sum = sum(row_weights)
+        band = row_sum / side if side > 0 else 0
+        band = max(0, int(round(band)))
+        if rw >= rh:
+            # Packed row ran along the y-axis (shorter side = height),
+            # cell width = band. NOTE: when w >= h we pack along the
+            # *taller* direction of the rectangle's cross-axis. The
+            # convention used here: side = min(rw, rh); we split the
+            # rect so the row consumes a vertical strip of width=band
+            # on the left, remaining rect is on the right.
+            _emit_row(row_weights, row_nodes, rx, ry, band, rh,
+                      depth, results, along_x=False)
+            rx += band
+            rw -= band
+        else:
+            _emit_row(row_weights, row_nodes, rx, ry, rw, band,
+                      depth, results, along_x=True)
+            ry += band
+            rh -= band
+        row_weights = []
+        row_nodes = []
+        # Loop continues with current child; it will start the next row.
+
+    # Flush the final row into whatever rectangle is left.
+    if row_weights:
+        if rw >= rh:
+            _emit_row(row_weights, row_nodes, rx, ry, rw, rh,
+                      depth, results, along_x=False)
+        else:
+            _emit_row(row_weights, row_nodes, rx, ry, rw, rh,
+                      depth, results, along_x=True)
+
+
+# Back-compat wrapper — existing callers passed _layout_treemap.
+def _layout_treemap(node, x, y, w, h, depth, results):
+    _layout_squarified(node, x, y, w, h, depth, results)
 
 
 def attr_escape(s):

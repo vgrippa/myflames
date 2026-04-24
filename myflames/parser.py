@@ -240,6 +240,87 @@ def build_short_label(op, table=None, index=None, condition=None):
     return label
 
 
+#: Canonical operator families keyed off EXPLAIN semantics (Slice 3 / V1).
+#: Mirrors mysql-expert's Round 2 taxonomy: the 12 stable categories that
+#: map cleanly to MySQL's ``access_type`` + ``operation`` fields. Anything
+#: we can't classify falls back to ``"other"`` — never invent a family.
+OPERATOR_FAMILIES = (
+    "table_scan",
+    "index_scan",
+    "index_lookup",
+    "range",
+    "nested_loop_join",
+    "hash_join",
+    "aggregate",
+    "sort",
+    "temp_table",
+    "limit",
+    "filter",
+    "other",
+)
+
+
+def operator_family(details):
+    """Classify a node into one of :data:`OPERATOR_FAMILIES`.
+
+    ``details`` is the per-node dict produced by :func:`parse_node`.
+    The classifier prefers structured fields (``access_type``,
+    ``index_access_type``, ``join_algorithm``) over operation-string
+    regex — the structured fields survive format churn, and the
+    operation-string fallback catches pre-normalized MariaDB trees.
+    """
+    if not isinstance(details, dict):
+        return "other"
+    at = (details.get("access_type") or "").lower()
+    iat = (details.get("index_access_type") or "").lower()
+    ja = (details.get("join_algorithm") or "").lower()
+    op = (details.get("operation") or "").lower()
+
+    # Joins first — outermost semantic.
+    if ja == "hash" or "hash join" in op:
+        return "hash_join"
+    if ja in ("nested_loop",) or ("nested loop" in op and "join" in op):
+        return "nested_loop_join"
+
+    # Aggregations / stream / group.
+    if at in ("aggregate", "stream", "count_rows", "temp_table_aggregate"):
+        return "aggregate"
+    if op.startswith("aggregate") or "group" in op and "aggregate" in op:
+        return "aggregate"
+
+    # Sort / filesort.
+    if at == "sort" or "sort" in op or "filesort" in op:
+        return "sort"
+
+    # Materialization / temp table / union.
+    if at in ("materialize", "append", "union", "temp_table_aggregate"):
+        return "temp_table"
+    if "materialize" in op or "union_result" in op or "weedout" in op:
+        return "temp_table"
+
+    # Limit.
+    if at == "limit" or op.startswith("limit"):
+        return "limit"
+
+    # Filter.
+    if at == "filter" or op.startswith("filter"):
+        return "filter"
+
+    # Index access variants.
+    if iat == "index_range_scan" or at == "range":
+        return "range"
+    if iat in ("ref", "eq_ref", "const", "system") or op.startswith(
+            ("index lookup", "single-row index lookup",
+             "rows fetched before execution")):
+        return "index_lookup"
+    if at == "index" or "index scan" in op or "covering index" in op:
+        return "index_scan"
+    if at == "table" or "table scan" in op:
+        return "table_scan"
+
+    return "other"
+
+
 def build_folded_label(node):
     op = (node.get("operation") or "unknown").replace("`", "")
     table = node.get("table_name") or ""

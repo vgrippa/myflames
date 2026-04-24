@@ -35,6 +35,32 @@ def _color_hot(name):
     return f"rgb({r},{g},{b})"
 
 
+#: Slice 3 / V1 — categorical fill per operator family. Chroma-locked
+#: OKLCH-ish palette kept inside sRGB; families never collide with the
+#: severity red (`--sev-error` #b71c1c) so "red = problem" stays reserved
+#: for advisor chrome.
+_FAMILY_PALETTE = {
+    "table_scan":        "#e67e22",  # warm orange — cost of a full scan
+    "index_scan":        "#f1c40f",  # yellow — unfocused index touch
+    "index_lookup":      "#2ecc71",  # green — the good case (direct fetch)
+    "range":             "#16a085",  # teal — between lookup and scan
+    "nested_loop_join":  "#3498db",  # blue — join structure
+    "hash_join":         "#9b59b6",  # purple — different join strategy
+    "aggregate":         "#1abc9c",  # mint — stream aggregation
+    "sort":              "#e74c3c",  # light-red — expensive sort, but NOT
+                                      # the severity red (reserved for errors)
+    "temp_table":        "#7f8c8d",  # grey — materialization / side table
+    "limit":             "#bdc3c7",  # light grey — cheap
+    "filter":            "#95a5a6",  # grey-blue — cheap
+    "other":             None,       # fall through to _color_hot
+}
+
+
+def _color_family(family):
+    """Return the categorical fill for ``family`` or ``None``."""
+    return _FAMILY_PALETTE.get(family)
+
+
 def _flow(last, this, v, node_map, tmp):
     """Merge two stacks into node_map (same algorithm as flamegraph.pl)."""
     len_a = len(last) - 1
@@ -109,6 +135,7 @@ def folded_to_svg(
     colors="hot",
     teach_index_by_folded=None,
     complexity_by_folded=None,
+    family_by_folded=None,
 ):
     """
     Convert folded stack input (string) to SVG.
@@ -227,7 +254,11 @@ def folded_to_svg(
         elif func == "-":
             color = DGREY
         else:
-            color = _color_hot(func)
+            # V1: categorical fill when we know the family; else legacy hot.
+            fam = family_by_folded.get(func) if family_by_folded else None
+            color = _color_family(fam) if fam else None
+            if not color:
+                color = _color_hot(func)
         teach_attr = ""
         if teach_index_by_folded and func in teach_index_by_folded:
             teach_attr = f' data-teach-index="{teach_index_by_folded[func]}"'

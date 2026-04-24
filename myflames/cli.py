@@ -647,11 +647,17 @@ Subcommands:
         if not folded_text.strip():
             sys.stderr.write("No flame graph data (all zero self-time).\n")
             sys.exit(1)
+        from .parser import operator_family
         _complexity_by_folded = {}
+        _family_by_folded = {}
         for _n in flatten_nodes(root):
-            _c = (_n.get("details") or {}).get("complexity")
+            _det = _n.get("details") or {}
+            _c = _det.get("complexity")
             if isinstance(_c, dict) and _c.get("big_o"):
                 _complexity_by_folded.setdefault(_n.get("folded_label") or "", _c)
+            _folded = _n.get("folded_label") or ""
+            if _folded:
+                _family_by_folded.setdefault(_folded, operator_family(_det))
         svg = folded_to_svg(
             folded_text,
             title=args.title,
@@ -662,6 +668,7 @@ Subcommands:
             colors=args.colors,
             teach_index_by_folded=teach_maps["by_folded_label"],
             complexity_by_folded=_complexity_by_folded or None,
+            family_by_folded=_family_by_folded or None,
         )
         if not args.no_enhance:
             from .parser import xml_escape

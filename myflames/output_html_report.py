@@ -110,10 +110,17 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
     if not folded_text.strip():
         return ""
     _complexity_by_folded = {}
+    _family_by_folded = {}
     for _n in _flat(root):
-        _c = (_n.get("details") or {}).get("complexity")
+        _det = _n.get("details") or {}
+        _c = _det.get("complexity")
         if isinstance(_c, dict) and _c.get("big_o"):
             _complexity_by_folded.setdefault(_n.get("folded_label") or "", _c)
+        # V1: per-frame operator family for categorical coloring.
+        _folded = _n.get("folded_label") or ""
+        if _folded:
+            from .parser import operator_family
+            _family_by_folded.setdefault(_folded, operator_family(_det))
     svg = folded_to_svg(
         folded_text, title=title, width=width,
         height=kwargs.get("frame_height", 32),
@@ -122,6 +129,7 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
         colors=kwargs.get("colors", "hot"),
         teach_index_by_folded=teach_index_by_folded,
         complexity_by_folded=_complexity_by_folded or None,
+        family_by_folded=_family_by_folded or None,
     )
     # Enhance tooltips with parser details (still useful on hover).
     op_details = {n["folded_label"]: n["details"] for n in _flat(root)}
