@@ -300,39 +300,32 @@
 <rect x="355.8" y="69.0" width="1111.5" height="31.0" fill="rgb(249,124,31)" rx="2" ry="2"/>
 <text x="358.75" y="87.50">FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1</text>
 </g>
-<g data-teach-index="7"><title>INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11 (3,568 ms, 56.12%)  •  O(...): O(log n + k)&#10;&#10;Table: employees.salaries (index: PRIMARY)&#10;Access: index&#10;Rows: 11 actual (1 estimated) [UNDERESTIMATE]&#10;Loops: 240124&#10;Time: 0.015 ms (last row)&#10;Cost: 0.39&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
+<g data-teach-index="7"><title>INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11 (3,568 ms, 56.12%)&#10;&#10;Table: employees.salaries (index: PRIMARY)&#10;Access: index&#10;Rows: 11 actual (1 estimated) [UNDERESTIMATE]&#10;Loops: 240124&#10;Time: 0.015 ms (last row)&#10;Cost: 0.39&#10;Covering: No</title>
 <rect x="468.3" y="37.0" width="998.9" height="31.0" fill="rgb(208,195,27)" rx="2" ry="2"/>
-<circle cx="1462.2" cy="52.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
-<text x="471.30" y="55.50">INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11  O(log n + k)</text>
+<text x="471.30" y="55.50">INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11</text>
 </g>
-<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=240124 (5,625 ms, 88.47%)  •  O(...): O(n · log m)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
+<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=240124 (5,625 ms, 88.47%)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
 <rect x="215.2" y="133.0" width="1574.8" height="31.0" fill="rgb(212,202,43)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="148.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="218.21" y="151.50">NESTED LOOP INNER starts=1 rows=240124  O(n · log m)</text>
+<text x="218.21" y="151.50">NESTED LOOP INNER starts=1 rows=240124</text>
 </g>
-<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=240124 (4,378 ms, 68.86%)  •  O(...): O(n · log m)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
+<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=240124 (4,378 ms, 68.86%)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
 <rect x="241.5" y="101.0" width="1225.7" height="31.0" fill="rgb(212,202,43)" rx="2" ry="2"/>
-<circle cx="1462.2" cy="116.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="244.53" y="119.50">NESTED LOOP INNER starts=1 rows=240124  O(n · log m)</text>
+<text x="244.53" y="119.50">NESTED LOOP INNER starts=1 rows=240124</text>
 </g>
-<g data-teach-index="8"><title>SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1 (1,153 ms, 18.13%)  •  O(...): O(log n)&#10;&#10;Table: employees.departments (index: PRIMARY)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 240124&#10;Time: 0.005 ms (last row)&#10;Cost: 1.00&#10;Covering: No&#10;Complexity: O(log n)&#10;Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.</title>
+<g data-teach-index="8"><title>SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1 (1,153 ms, 18.13%)&#10;&#10;Table: employees.departments (index: PRIMARY)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 240124&#10;Time: 0.005 ms (last row)&#10;Cost: 1.00&#10;Covering: No</title>
 <rect x="1467.2" y="101.0" width="322.8" height="31.0" fill="rgb(235,9,4)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="116.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
-<text x="1470.20" y="119.50">SINGLE ROW LOOKUP [departments.PR..  O(log n)</text>
+<text x="1470.20" y="119.50">SINGLE ROW LOOKUP [departments.PRIMARY] sta..</text>
 </g>
-<g data-teach-index="0"><title>SORT starts=1 rows=9 (6,358 ms, 100.00%)  •  O(...): O(n log n) (worst case)&#10;&#10;Access: sort&#10;Rows: 9 actual&#10;Time: 6357.230 ms (last row)&#10;Complexity: O(n log n) (worst case)&#10;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we repo...</title>
+<g data-teach-index="0"><title>SORT starts=1 rows=9 (6,358 ms, 100.00%)&#10;&#10;Access: sort&#10;Rows: 9 actual&#10;Time: 6357.230 ms (last row)</title>
 <rect x="10.0" y="229.0" width="1780.0" height="31.0" fill="rgb(223,97,15)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="244.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="13.00" y="247.50">SORT starts=1 rows=9  O(~n log n)</text>
+<text x="13.00" y="247.50">SORT starts=1 rows=9</text>
 </g>
-<g data-teach-index="1"><title>TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9 (6,357 ms, 99.98%)  •  O(...): O(n)&#10;&#10;Table: &lt;temporary&gt;&#10;Access: table&#10;Rows: 9 actual&#10;Time: 6357.164 ms (last row)&#10;Complexity: O(n)&#10;Full table scan: the storage engine returns every row; cost scales with the table size.</title>
+<g data-teach-index="1"><title>TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9 (6,357 ms, 99.98%)&#10;&#10;Table: &lt;temporary&gt;&#10;Access: table&#10;Rows: 9 actual&#10;Time: 6357.164 ms (last row)</title>
 <rect x="10.3" y="197.0" width="1779.7" height="31.0" fill="rgb(230,54,38)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="212.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="13.28" y="215.50">TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9  O(n)</text>
+<text x="13.28" y="215.50">TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9</text>
 </g>
-<g data-teach-index="5"><title>TABLE SCAN [dept_emp] starts=1 rows=331603 (211 ms, 3.32%)  •  O(...): O(n)&#10;&#10;Table: employees.dept_emp&#10;Access: table&#10;Rows: 331603 actual (331143 estimated)&#10;Time: 210.978 ms (last row)&#10;Cost: 33298.55&#10;Complexity: O(n)&#10;Full table scan: the storage engine returns every row; cost scales with the table size.</title>
+<g data-teach-index="5"><title>TABLE SCAN [dept_emp] starts=1 rows=331603 (211 ms, 3.32%)&#10;&#10;Table: employees.dept_emp&#10;Access: table&#10;Rows: 331603 actual (331143 estimated)&#10;Time: 210.978 ms (last row)&#10;Cost: 33298.55</title>
 <rect x="296.7" y="37.0" width="59.1" height="31.0" fill="rgb(220,208,0)" rx="2" ry="2"/>
-<circle cx="350.8" cy="52.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
 <text x="299.68" y="55.50">TABLE ..</text>
 </g>
 </g>

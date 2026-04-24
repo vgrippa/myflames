@@ -8,7 +8,7 @@
   <script type="application/ld+json">
 {
   "schema_version": "1.2",
-  "generated_at": "2026-04-23T23:04:47Z",
+  "generated_at": "2026-04-24T00:43:14Z",
   "myflames_version": "1.4.0",
   "source": {
     "type": "file"
@@ -406,13 +406,82 @@ main.report h2 .count {
 }
 .teach-dialog-body {
   min-height: 420px;
-  height: 75vh;
+  height: 55vh;
 }
 #teach-dialog-frame {
   width: 100%;
   height: 100%;
   border: 0;
   display: block;
+}
+.teach-complexity-panel {
+  padding: 14px 18px 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.teach-complexity-panel[hidden] { display: none; }
+.teach-complexity-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+.teach-complexity-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.1px;
+}
+.teach-complexity-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  background: rgb(255,200,50);
+  border: 1px solid rgba(0,0,0,0.12);
+}
+.teach-complexity-badge[data-severity="good"] { background: rgb(100,180,180); }
+.teach-complexity-badge[data-severity="medium"] { background: rgb(255,200,50); }
+.teach-complexity-badge[data-severity="bad"] { background: rgb(255,90,90); color: #1a0000; }
+.teach-complexity-rationale {
+  margin: 0;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.teach-complexity-confidence {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-style: italic;
+}
+.teach-complexity-chart {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+}
+.teach-complexity-chart svg { max-width: 100%; height: auto; }
+/* Runtime highlight — toggled by JS via data-kind on the panel.
+   Non-matching curves fade; the matching curve thickens and brightens. */
+.teach-complexity-panel[data-kind] .complexity-curve { opacity: 0.35; stroke-width: 1.6; }
+.teach-complexity-panel[data-kind="const"]  [data-complexity-kind="const"],
+.teach-complexity-panel[data-kind="log"]    [data-complexity-kind="log"],
+.teach-complexity-panel[data-kind="linear"] [data-complexity-kind="linear"],
+.teach-complexity-panel[data-kind="nlogn"]  [data-complexity-kind="nlogn"],
+.teach-complexity-panel[data-kind="quad"]   [data-complexity-kind="quad"],
+.teach-complexity-panel[data-kind="exp"]    [data-complexity-kind="exp"] {
+  opacity: 1 !important;
+  stroke-width: 3.6 !important;
+  filter: drop-shadow(0 0 2px rgba(15, 23, 42, 0.2));
 }
 @media (prefers-reduced-motion: no-preference) {
   .teach-dialog[open] { animation: teachDialogIn 160ms ease-out; }
@@ -588,7 +657,7 @@ aside.glossary-aside { background: #f1f8ff; }
     <button id="open-teach-btn" class="teach-cta-btn" type="button" hidden>Learn This Operator</button>
   </div>
   <div class="chart-panel" id="chart-panel">
-<svg version="1.1" width="1200" height="432" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<svg version="1.1" width="1200" height="322" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -601,8 +670,6 @@ aside.glossary-aside { background: #f1f8ff; }
   .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }
   .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
   .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }
-  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-  .complexity-chip-rect { pointer-events: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
   #search { font-size: 12px; fill: #666; cursor: pointer; }
@@ -612,69 +679,33 @@ aside.glossary-aside { background: #f1f8ff; }
 <text x="600.0" y="28" text-anchor="middle" class="title">MySQL Query Plan</text>
 <text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 186 ms</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
-<text x="378.0" y="68" text-anchor="middle" class="col-header">COMPLEXITY</text>
-<text x="466.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
-<text x="778.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
+<text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
+<text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="298" x2="1190" y2="298" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="302" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="310" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="324" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="338" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="352" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="366" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="380" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="394" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="408" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="188" x2="1190" y2="188" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="192" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="200" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="214" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="228" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="242" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="256" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="270" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="284" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="298" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
 <text x="320" y="98.0" text-anchor="end" class="label">Nested loop inner join</text>
-<g><title>O(n · m)</title><rect class="complexity-chip-rect" x="352.5" y="86.0" width="51.0" height="16" rx="8" ry="8" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/><text x="378.0" y="98.0" text-anchor="middle" class="complexity-chip-text">n · m</text></g>
-<text x="466.0" y="98.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="506" y="80" width="542.822857423012" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 185 ms (99.8%)  ·  Total: 186 ms  ·  Rows: 3000  ·  Loops: 1  ·  Access: join  ·  Complexity: O(n · m)  ·  Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up." data-label="Nested loop inner join" data-teach-index="0"/>
+<text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="80" width="638.6151263800141" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Nested loop inner join  ·  Self: 185 ms (99.8%)  ·  Total: 186 ms  ·  Rows: 3000  ·  Loops: 1  ·  Access: join" data-label="Nested loop inner join" data-teach-index="0"/>
 <text x="1060" y="98.0" class="value">185 ms (99.8%)</text>
 <text x="320" y="132.0" text-anchor="end" class="label">Table scan [t1]</text>
-<g><title>O(n)</title><rect class="complexity-chip-rect" x="356.0" y="120.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="132.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
-<text x="466.0" y="132.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="506" y="114" width="3" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Table scan on t1  ·  Self: 0.305 ms (0.2%)  ·  Rows: 3000  ·  Loops: 1  ·  Table: t1  ·  Access: table  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Est.rows: 3000  ·  Cond: t1.d = convert(concat('r',t2.y) using utf8mb4)" data-label="Table scan [t1]" data-teach-index="2"/>
+<text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="114" width="3" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Table scan on t1  ·  Self: 0.305 ms (0.2%)  ·  Rows: 3000  ·  Loops: 1  ·  Table: t1  ·  Access: table  ·  Est.rows: 3000  ·  Cond: t1.d = convert(concat('r',t2.y) using utf8mb4)" data-label="Table scan [t1]" data-teach-index="2"/>
 <text x="1060" y="132.0" class="value">0.305 ms (0.2%)</text>
 <text x="320" y="166.0" text-anchor="end" class="label">Table scan [t2]</text>
-<g><title>O(n)</title><rect class="complexity-chip-rect" x="356.0" y="154.0" width="44.0" height="16" rx="8" ry="8" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="378.0" y="166.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
-<text x="466.0" y="166.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="506" y="148" width="3" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Table scan on t2  ·  Self: 0.097 ms (0.1%)  ·  Rows: 1000  ·  Loops: 1  ·  Table: t2  ·  Access: table  ·  Complexity: O(n)  ·  Full table scan: the storage engine returns every row; cost scales with the table size.  ·  Est.rows: 1000" data-label="Table scan [t2]" data-teach-index="1"/>
+<text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar" x="410" y="148" width="3" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Table scan on t2  ·  Self: 0.097 ms (0.1%)  ·  Rows: 1000  ·  Loops: 1  ·  Table: t2  ·  Access: table  ·  Est.rows: 1000" data-label="Table scan [t2]" data-teach-index="1"/>
 <text x="1060" y="166.0" class="value">0.097 ms (0.1%)</text>
-<g class="complexity-legend" aria-label="Big O complexity legend">
-<rect x="10" y="326" width="1180" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
-<text x="20" y="340" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
-<text x="1180" y="340" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
-<rect x="20" y="354" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="50.0" y="367" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
-<text x="92" y="367" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
-<rect x="20" y="376" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="57.0" y="389" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
-<text x="106" y="389" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
-<rect x="20" y="398" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="71.0" y="411" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
-<text x="134" y="411" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
-<rect x="408" y="354" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="438.0" y="367" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
-<text x="480" y="367" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
-<rect x="408" y="376" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="452.0" y="389" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
-<text x="508" y="389" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
-<rect x="408" y="398" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="445.0" y="411" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
-<text x="494" y="411" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
-<rect x="796" y="354" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="847.0" y="367" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
-<text x="910" y="367" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
-<rect x="796" y="376" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
-<text x="833.0" y="389" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
-<text x="882" y="389" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
-<rect x="796" y="398" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
-<text x="826.0" y="411" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
-<text x="868" y="411" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
-</g>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];
@@ -887,7 +918,7 @@ aside.glossary-aside { background: #f1f8ff; }
   <summary><h2>Raw sidecar (JSON)</h2></summary>
   <pre class="raw-json"><code>{
   &quot;schema_version&quot;: &quot;1.2&quot;,
-  &quot;generated_at&quot;: &quot;2026-04-23T23:04:47Z&quot;,
+  &quot;generated_at&quot;: &quot;2026-04-24T00:43:14Z&quot;,
   &quot;myflames_version&quot;: &quot;1.4.0&quot;,
   &quot;source&quot;: {
     &quot;type&quot;: &quot;file&quot;
@@ -8408,7 +8439,7 @@ teachRuntime.wirePhaseNav("phase-nav", {
 </html>
 </template>
 </section>
-<dialog id="teach-dialog" class="teach-dialog" aria-modal="true" aria-labelledby="teach-dialog-title"><div class="teach-dialog-shell"><header class="teach-dialog-header"><div class="teach-dialog-titles"><h2 id="teach-dialog-title">Teach: Operator deep dive</h2><p id="teach-dialog-subtitle"></p></div><button id="teach-dialog-close" type="button" aria-label="Close teach panel">Close</button></header><div class="teach-dialog-body"><iframe id="teach-dialog-frame" title="Teach lesson" sandbox="allow-scripts allow-same-origin"></iframe></div></div></dialog>
+<dialog id="teach-dialog" class="teach-dialog" aria-modal="true" aria-labelledby="teach-dialog-title"><div class="teach-dialog-shell"><header class="teach-dialog-header"><div class="teach-dialog-titles"><h2 id="teach-dialog-title">Teach: Operator deep dive</h2><p id="teach-dialog-subtitle"></p></div><button id="teach-dialog-close" type="button" aria-label="Close teach panel">Close</button></header><section id="teach-complexity-panel" class="teach-complexity-panel" hidden aria-labelledby="teach-complexity-heading"><header class="teach-complexity-header"><h3 id="teach-complexity-heading">Big O complexity</h3><span id="teach-complexity-badge" class="teach-complexity-badge"></span></header><p id="teach-complexity-rationale" class="teach-complexity-rationale"></p><p id="teach-complexity-confidence" class="teach-complexity-confidence" hidden></p><div id="teach-complexity-chart" class="teach-complexity-chart"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" role="img" aria-label="Animated log-log plot of Big O complexity classes — O(1), O(log n), O(n), O(n log n), O(n squared), and O(2 to the n) — drawn from their actual functions. A vertical cursor sweeps left to right showing where each curve sits at each n."><rect x="0" y="0" width="640" height="300" fill="#ffffff" rx="8" ry="8"/><text x="58" y="18" font-family="Inter, system-ui, sans-serif" font-size="12" font-weight="700" fill="#0f172a">Big O complexity</text><text x="556" y="18" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">log-log · n on x, operations on y · computed from the actual functions</text><line x1="58.0" y1="32" x2="58.0" y2="256" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="141.0" y1="32" x2="141.0" y2="256" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="224.0" y1="32" x2="224.0" y2="256" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="307.0" y1="32" x2="307.0" y2="256" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="390.0" y1="32" x2="390.0" y2="256" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="473.0" y1="32" x2="473.0" y2="256" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="556.0" y1="32" x2="556.0" y2="256" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="58" y1="256.0" x2="556" y2="256.0" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="58" y1="218.7" x2="556" y2="218.7" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="58" y1="181.3" x2="556" y2="181.3" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="58" y1="144.0" x2="556" y2="144.0" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="58" y1="88.0" x2="556" y2="88.0" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="58" y1="32.0" x2="556" y2="32.0" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="2 3"/><line x1="58" y1="32" x2="58" y2="256" stroke="#cbd5e1"/><line x1="58" y1="256" x2="556" y2="256" stroke="#cbd5e1"/><path class="complexity-curve" data-complexity-kind="const" d="M 58.0 256.0 L 62.2 256.0 L 66.4 256.0 L 70.6 256.0 L 74.7 256.0 L 78.9 256.0 L 83.1 256.0 L 87.3 256.0 L 91.5 256.0 L 95.7 256.0 L 99.8 256.0 L 104.0 256.0 L 108.2 256.0 L 112.4 256.0 L 116.6 256.0 L 120.8 256.0 L 125.0 256.0 L 129.1 256.0 L 133.3 256.0 L 137.5 256.0 L 141.7 256.0 L 145.9 256.0 L 150.1 256.0 L 154.3 256.0 L 158.4 256.0 L 162.6 256.0 L 166.8 256.0 L 171.0 256.0 L 175.2 256.0 L 179.4 256.0 L 183.5 256.0 L 187.7 256.0 L 191.9 256.0 L 196.1 256.0 L 200.3 256.0 L 204.5 256.0 L 208.7 256.0 L 212.8 256.0 L 217.0 256.0 L 221.2 256.0 L 225.4 256.0 L 229.6 256.0 L 233.8 256.0 L 237.9 256.0 L 242.1 256.0 L 246.3 256.0 L 250.5 256.0 L 254.7 256.0 L 258.9 256.0 L 263.1 256.0 L 267.2 256.0 L 271.4 256.0 L 275.6 256.0 L 279.8 256.0 L 284.0 256.0 L 288.2 256.0 L 292.4 256.0 L 296.5 256.0 L 300.7 256.0 L 304.9 256.0 L 309.1 256.0 L 313.3 256.0 L 317.5 256.0 L 321.6 256.0 L 325.8 256.0 L 330.0 256.0 L 334.2 256.0 L 338.4 256.0 L 342.6 256.0 L 346.8 256.0 L 350.9 256.0 L 355.1 256.0 L 359.3 256.0 L 363.5 256.0 L 367.7 256.0 L 371.9 256.0 L 376.1 256.0 L 380.2 256.0 L 384.4 256.0 L 388.6 256.0 L 392.8 256.0 L 397.0 256.0 L 401.2 256.0 L 405.3 256.0 L 409.5 256.0 L 413.7 256.0 L 417.9 256.0 L 422.1 256.0 L 426.3 256.0 L 430.5 256.0 L 434.6 256.0 L 438.8 256.0 L 443.0 256.0 L 447.2 256.0 L 451.4 256.0 L 455.6 256.0 L 459.7 256.0 L 463.9 256.0 L 468.1 256.0 L 472.3 256.0 L 476.5 256.0 L 480.7 256.0 L 484.9 256.0 L 489.0 256.0 L 493.2 256.0 L 497.4 256.0 L 501.6 256.0 L 505.8 256.0 L 510.0 256.0 L 514.2 256.0 L 518.3 256.0 L 522.5 256.0 L 526.7 256.0 L 530.9 256.0 L 535.1 256.0 L 539.3 256.0 L 543.4 256.0 L 547.6 256.0 L 551.8 256.0 L 556.0 256.0" fill="none" stroke="#10b981" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/><path class="complexity-curve" data-complexity-kind="log" d="M 58.0 256.0 L 62.2 255.3 L 66.4 254.7 L 70.6 254.0 L 74.7 253.4 L 78.9 252.8 L 83.1 252.2 L 87.3 251.7 L 91.5 251.1 L 95.7 250.6 L 99.8 250.1 L 104.0 249.6 L 108.2 249.1 L 112.4 248.7 L 116.6 248.2 L 120.8 247.8 L 125.0 247.4 L 129.1 247.0 L 133.3 246.6 L 137.5 246.2 L 141.7 245.9 L 145.9 245.5 L 150.1 245.2 L 154.3 244.9 L 158.4 244.5 L 162.6 244.2 L 166.8 243.9 L 171.0 243.7 L 175.2 243.4 L 179.4 243.1 L 183.5 242.8 L 187.7 242.6 L 191.9 242.3 L 196.1 242.1 L 200.3 241.9 L 204.5 241.6 L 208.7 241.4 L 212.8 241.2 L 217.0 241.0 L 221.2 240.8 L 225.4 240.6 L 229.6 240.4 L 233.8 240.2 L 237.9 240.0 L 242.1 239.8 L 246.3 239.6 L 250.5 239.4 L 254.7 239.3 L 258.9 239.1 L 263.1 238.9 L 267.2 238.8 L 271.4 238.6 L 275.6 238.5 L 279.8 238.3 L 284.0 238.1 L 288.2 238.0 L 292.4 237.9 L 296.5 237.7 L 300.7 237.6 L 304.9 237.4 L 309.1 237.3 L 313.3 237.2 L 317.5 237.0 L 321.6 236.9 L 325.8 236.8 L 330.0 236.6 L 334.2 236.5 L 338.4 236.4 L 342.6 236.3 L 346.8 236.2 L 350.9 236.0 L 355.1 235.9 L 359.3 235.8 L 363.5 235.7 L 367.7 235.6 L 371.9 235.5 L 376.1 235.4 L 380.2 235.3 L 384.4 235.2 L 388.6 235.1 L 392.8 235.0 L 397.0 234.9 L 401.2 234.8 L 405.3 234.7 L 409.5 234.6 L 413.7 234.5 L 417.9 234.4 L 422.1 234.3 L 426.3 234.2 L 430.5 234.1 L 434.6 234.0 L 438.8 233.9 L 443.0 233.8 L 447.2 233.7 L 451.4 233.7 L 455.6 233.6 L 459.7 233.5 L 463.9 233.4 L 468.1 233.3 L 472.3 233.2 L 476.5 233.2 L 480.7 233.1 L 484.9 233.0 L 489.0 232.9 L 493.2 232.8 L 497.4 232.8 L 501.6 232.7 L 505.8 232.6 L 510.0 232.5 L 514.2 232.5 L 518.3 232.4 L 522.5 232.3 L 526.7 232.2 L 530.9 232.2 L 535.1 232.1 L 539.3 232.0 L 543.4 231.9 L 547.6 231.9 L 551.8 231.8 L 556.0 231.7" fill="none" stroke="#0ea5e9" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/><path class="complexity-curve" data-complexity-kind="linear" d="M 58.0 256.0 L 62.2 255.1 L 66.4 254.1 L 70.6 253.2 L 74.7 252.2 L 78.9 251.3 L 83.1 250.4 L 87.3 249.4 L 91.5 248.5 L 95.7 247.5 L 99.8 246.6 L 104.0 245.6 L 108.2 244.7 L 112.4 243.8 L 116.6 242.8 L 120.8 241.9 L 125.0 240.9 L 129.1 240.0 L 133.3 239.1 L 137.5 238.1 L 141.7 237.2 L 145.9 236.2 L 150.1 235.3 L 154.3 234.4 L 158.4 233.4 L 162.6 232.5 L 166.8 231.5 L 171.0 230.6 L 175.2 229.6 L 179.4 228.7 L 183.5 227.8 L 187.7 226.8 L 191.9 225.9 L 196.1 224.9 L 200.3 224.0 L 204.5 223.1 L 208.7 222.1 L 212.8 221.2 L 217.0 220.2 L 221.2 219.3 L 225.4 218.4 L 229.6 217.4 L 233.8 216.5 L 237.9 215.5 L 242.1 214.6 L 246.3 213.6 L 250.5 212.7 L 254.7 211.8 L 258.9 210.8 L 263.1 209.9 L 267.2 208.9 L 271.4 208.0 L 275.6 207.1 L 279.8 206.1 L 284.0 205.2 L 288.2 204.2 L 292.4 203.3 L 296.5 202.4 L 300.7 201.4 L 304.9 200.5 L 309.1 199.5 L 313.3 198.6 L 317.5 197.6 L 321.6 196.7 L 325.8 195.8 L 330.0 194.8 L 334.2 193.9 L 338.4 192.9 L 342.6 192.0 L 346.8 191.1 L 350.9 190.1 L 355.1 189.2 L 359.3 188.2 L 363.5 187.3 L 367.7 186.4 L 371.9 185.4 L 376.1 184.5 L 380.2 183.5 L 384.4 182.6 L 388.6 181.6 L 392.8 180.7 L 397.0 179.8 L 401.2 178.8 L 405.3 177.9 L 409.5 176.9 L 413.7 176.0 L 417.9 175.1 L 422.1 174.1 L 426.3 173.2 L 430.5 172.2 L 434.6 171.3 L 438.8 170.4 L 443.0 169.4 L 447.2 168.5 L 451.4 167.5 L 455.6 166.6 L 459.7 165.6 L 463.9 164.7 L 468.1 163.8 L 472.3 162.8 L 476.5 161.9 L 480.7 160.9 L 484.9 160.0 L 489.0 159.1 L 493.2 158.1 L 497.4 157.2 L 501.6 156.2 L 505.8 155.3 L 510.0 154.4 L 514.2 153.4 L 518.3 152.5 L 522.5 151.5 L 526.7 150.6 L 530.9 149.6 L 535.1 148.7 L 539.3 147.8 L 543.4 146.8 L 547.6 145.9 L 551.8 144.9 L 556.0 144.0" fill="none" stroke="#6366f1" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/><path class="complexity-curve" data-complexity-kind="nlogn" d="M 58.0 256.0 L 62.2 254.4 L 66.4 252.8 L 70.6 251.2 L 74.7 249.7 L 78.9 248.1 L 83.1 246.6 L 87.3 245.1 L 91.5 243.6 L 95.7 242.1 L 99.8 240.7 L 104.0 239.3 L 108.2 237.8 L 112.4 236.4 L 116.6 235.1 L 120.8 233.7 L 125.0 232.3 L 129.1 231.0 L 133.3 229.7 L 137.5 228.4 L 141.7 227.1 L 145.9 225.8 L 150.1 224.5 L 154.3 223.2 L 158.4 222.0 L 162.6 220.7 L 166.8 219.5 L 171.0 218.2 L 175.2 217.0 L 179.4 215.8 L 183.5 214.6 L 187.7 213.4 L 191.9 212.2 L 196.1 211.0 L 200.3 209.9 L 204.5 208.7 L 208.7 207.5 L 212.8 206.4 L 217.0 205.2 L 221.2 204.1 L 225.4 202.9 L 229.6 201.8 L 233.8 200.6 L 237.9 199.5 L 242.1 198.4 L 246.3 197.3 L 250.5 196.1 L 254.7 195.0 L 258.9 193.9 L 263.1 192.8 L 267.2 191.7 L 271.4 190.6 L 275.6 189.5 L 279.8 188.4 L 284.0 187.3 L 288.2 186.2 L 292.4 185.1 L 296.5 184.1 L 300.7 183.0 L 304.9 181.9 L 309.1 180.8 L 313.3 179.7 L 317.5 178.7 L 321.6 177.6 L 325.8 176.5 L 330.0 175.5 L 334.2 174.4 L 338.4 173.3 L 342.6 172.3 L 346.8 171.2 L 350.9 170.2 L 355.1 169.1 L 359.3 168.1 L 363.5 167.0 L 367.7 165.9 L 371.9 164.9 L 376.1 163.8 L 380.2 162.8 L 384.4 161.8 L 388.6 160.7 L 392.8 159.7 L 397.0 158.6 L 401.2 157.6 L 405.3 156.5 L 409.5 155.5 L 413.7 154.5 L 417.9 153.4 L 422.1 152.4 L 426.3 151.4 L 430.5 150.3 L 434.6 149.3 L 438.8 148.3 L 443.0 147.2 L 447.2 146.2 L 451.4 145.2 L 455.6 144.2 L 459.7 143.1 L 463.9 142.1 L 468.1 141.1 L 472.3 140.1 L 476.5 139.0 L 480.7 138.0 L 484.9 137.0 L 489.0 136.0 L 493.2 135.0 L 497.4 133.9 L 501.6 132.9 L 505.8 131.9 L 510.0 130.9 L 514.2 129.9 L 518.3 128.9 L 522.5 127.8 L 526.7 126.8 L 530.9 125.8 L 535.1 124.8 L 539.3 123.8 L 543.4 122.8 L 547.6 121.8 L 551.8 120.8 L 556.0 119.7" fill="none" stroke="#a855f7" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/><path class="complexity-curve" data-complexity-kind="quad" d="M 58.0 256.0 L 62.2 254.1 L 66.4 252.2 L 70.6 250.4 L 74.7 248.5 L 78.9 246.6 L 83.1 244.7 L 87.3 242.8 L 91.5 240.9 L 95.7 239.1 L 99.8 237.2 L 104.0 235.3 L 108.2 233.4 L 112.4 231.5 L 116.6 229.6 L 120.8 227.8 L 125.0 225.9 L 129.1 224.0 L 133.3 222.1 L 137.5 220.2 L 141.7 218.4 L 145.9 216.5 L 150.1 214.6 L 154.3 212.7 L 158.4 210.8 L 162.6 208.9 L 166.8 207.1 L 171.0 205.2 L 175.2 203.3 L 179.4 201.4 L 183.5 199.5 L 187.7 197.6 L 191.9 195.8 L 196.1 193.9 L 200.3 192.0 L 204.5 190.1 L 208.7 188.2 L 212.8 186.4 L 217.0 184.5 L 221.2 182.6 L 225.4 180.7 L 229.6 178.8 L 233.8 176.9 L 237.9 175.1 L 242.1 173.2 L 246.3 171.3 L 250.5 169.4 L 254.7 167.5 L 258.9 165.6 L 263.1 163.8 L 267.2 161.9 L 271.4 160.0 L 275.6 158.1 L 279.8 156.2 L 284.0 154.4 L 288.2 152.5 L 292.4 150.6 L 296.5 148.7 L 300.7 146.8 L 304.9 144.9 L 309.1 143.1 L 313.3 141.2 L 317.5 139.3 L 321.6 137.4 L 325.8 135.5 L 330.0 133.6 L 334.2 131.8 L 338.4 129.9 L 342.6 128.0 L 346.8 126.1 L 350.9 124.2 L 355.1 122.4 L 359.3 120.5 L 363.5 118.6 L 367.7 116.7 L 371.9 114.8 L 376.1 112.9 L 380.2 111.1 L 384.4 109.2 L 388.6 107.3 L 392.8 105.4 L 397.0 103.5 L 401.2 101.6 L 405.3 99.8 L 409.5 97.9 L 413.7 96.0 L 417.9 94.1 L 422.1 92.2 L 426.3 90.4 L 430.5 88.5 L 434.6 86.6 L 438.8 84.7 L 443.0 82.8 L 447.2 80.9 L 451.4 79.1 L 455.6 77.2 L 459.7 75.3 L 463.9 73.4 L 468.1 71.5 L 472.3 69.6 L 476.5 67.8 L 480.7 65.9 L 484.9 64.0 L 489.0 62.1 L 493.2 60.2 L 497.4 58.4 L 501.6 56.5 L 505.8 54.6 L 510.0 52.7 L 514.2 50.8 L 518.3 48.9 L 522.5 47.1 L 526.7 45.2 L 530.9 43.3 L 535.1 41.4 L 539.3 39.5 L 543.4 37.6 L 547.6 35.8 L 551.8 33.9 L 556.0 32.0" fill="none" stroke="#ef4444" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/><path class="complexity-curve" data-complexity-kind="exp" d="M 58.0 250.4 L 62.2 249.7 L 66.4 248.9 L 70.6 248.0 L 74.7 247.1 L 78.9 246.0 L 83.1 244.7 L 87.3 243.3 L 91.5 241.8 L 95.7 240.0 L 99.8 238.1 L 104.0 235.8 L 108.2 233.4 L 112.4 230.6 L 116.6 227.5 L 120.8 223.9 L 125.0 220.0 L 129.1 215.6 L 133.3 210.6 L 137.5 205.0 L 141.7 198.7 L 145.9 191.7 L 150.1 183.7 L 154.3 174.8 L 158.4 164.8 L 162.6 153.6 L 166.8 141.0 L 171.0 126.9 L 175.2 111.0 L 179.4 93.1 L 183.5 73.1 L 187.7 50.6 L 190.8 32.0" fill="none" stroke="#be123c" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/><path id="cpath-const" d="M 58.0 256.0 L 62.2 256.0 L 66.4 256.0 L 70.6 256.0 L 74.7 256.0 L 78.9 256.0 L 83.1 256.0 L 87.3 256.0 L 91.5 256.0 L 95.7 256.0 L 99.8 256.0 L 104.0 256.0 L 108.2 256.0 L 112.4 256.0 L 116.6 256.0 L 120.8 256.0 L 125.0 256.0 L 129.1 256.0 L 133.3 256.0 L 137.5 256.0 L 141.7 256.0 L 145.9 256.0 L 150.1 256.0 L 154.3 256.0 L 158.4 256.0 L 162.6 256.0 L 166.8 256.0 L 171.0 256.0 L 175.2 256.0 L 179.4 256.0 L 183.5 256.0 L 187.7 256.0 L 191.9 256.0 L 196.1 256.0 L 200.3 256.0 L 204.5 256.0 L 208.7 256.0 L 212.8 256.0 L 217.0 256.0 L 221.2 256.0 L 225.4 256.0 L 229.6 256.0 L 233.8 256.0 L 237.9 256.0 L 242.1 256.0 L 246.3 256.0 L 250.5 256.0 L 254.7 256.0 L 258.9 256.0 L 263.1 256.0 L 267.2 256.0 L 271.4 256.0 L 275.6 256.0 L 279.8 256.0 L 284.0 256.0 L 288.2 256.0 L 292.4 256.0 L 296.5 256.0 L 300.7 256.0 L 304.9 256.0 L 309.1 256.0 L 313.3 256.0 L 317.5 256.0 L 321.6 256.0 L 325.8 256.0 L 330.0 256.0 L 334.2 256.0 L 338.4 256.0 L 342.6 256.0 L 346.8 256.0 L 350.9 256.0 L 355.1 256.0 L 359.3 256.0 L 363.5 256.0 L 367.7 256.0 L 371.9 256.0 L 376.1 256.0 L 380.2 256.0 L 384.4 256.0 L 388.6 256.0 L 392.8 256.0 L 397.0 256.0 L 401.2 256.0 L 405.3 256.0 L 409.5 256.0 L 413.7 256.0 L 417.9 256.0 L 422.1 256.0 L 426.3 256.0 L 430.5 256.0 L 434.6 256.0 L 438.8 256.0 L 443.0 256.0 L 447.2 256.0 L 451.4 256.0 L 455.6 256.0 L 459.7 256.0 L 463.9 256.0 L 468.1 256.0 L 472.3 256.0 L 476.5 256.0 L 480.7 256.0 L 484.9 256.0 L 489.0 256.0 L 493.2 256.0 L 497.4 256.0 L 501.6 256.0 L 505.8 256.0 L 510.0 256.0 L 514.2 256.0 L 518.3 256.0 L 522.5 256.0 L 526.7 256.0 L 530.9 256.0 L 535.1 256.0 L 539.3 256.0 L 543.4 256.0 L 547.6 256.0 L 551.8 256.0 L 556.0 256.0" fill="none" stroke="none"/><circle r="3" fill="#10b981" stroke="white" stroke-width="1" opacity="0.85"><animateMotion dur="8s" repeatCount="indefinite" calcMode="linear" rotate="0"><mpath href="#cpath-const"/></animateMotion></circle><path id="cpath-log" d="M 58.0 256.0 L 62.2 255.3 L 66.4 254.7 L 70.6 254.0 L 74.7 253.4 L 78.9 252.8 L 83.1 252.2 L 87.3 251.7 L 91.5 251.1 L 95.7 250.6 L 99.8 250.1 L 104.0 249.6 L 108.2 249.1 L 112.4 248.7 L 116.6 248.2 L 120.8 247.8 L 125.0 247.4 L 129.1 247.0 L 133.3 246.6 L 137.5 246.2 L 141.7 245.9 L 145.9 245.5 L 150.1 245.2 L 154.3 244.9 L 158.4 244.5 L 162.6 244.2 L 166.8 243.9 L 171.0 243.7 L 175.2 243.4 L 179.4 243.1 L 183.5 242.8 L 187.7 242.6 L 191.9 242.3 L 196.1 242.1 L 200.3 241.9 L 204.5 241.6 L 208.7 241.4 L 212.8 241.2 L 217.0 241.0 L 221.2 240.8 L 225.4 240.6 L 229.6 240.4 L 233.8 240.2 L 237.9 240.0 L 242.1 239.8 L 246.3 239.6 L 250.5 239.4 L 254.7 239.3 L 258.9 239.1 L 263.1 238.9 L 267.2 238.8 L 271.4 238.6 L 275.6 238.5 L 279.8 238.3 L 284.0 238.1 L 288.2 238.0 L 292.4 237.9 L 296.5 237.7 L 300.7 237.6 L 304.9 237.4 L 309.1 237.3 L 313.3 237.2 L 317.5 237.0 L 321.6 236.9 L 325.8 236.8 L 330.0 236.6 L 334.2 236.5 L 338.4 236.4 L 342.6 236.3 L 346.8 236.2 L 350.9 236.0 L 355.1 235.9 L 359.3 235.8 L 363.5 235.7 L 367.7 235.6 L 371.9 235.5 L 376.1 235.4 L 380.2 235.3 L 384.4 235.2 L 388.6 235.1 L 392.8 235.0 L 397.0 234.9 L 401.2 234.8 L 405.3 234.7 L 409.5 234.6 L 413.7 234.5 L 417.9 234.4 L 422.1 234.3 L 426.3 234.2 L 430.5 234.1 L 434.6 234.0 L 438.8 233.9 L 443.0 233.8 L 447.2 233.7 L 451.4 233.7 L 455.6 233.6 L 459.7 233.5 L 463.9 233.4 L 468.1 233.3 L 472.3 233.2 L 476.5 233.2 L 480.7 233.1 L 484.9 233.0 L 489.0 232.9 L 493.2 232.8 L 497.4 232.8 L 501.6 232.7 L 505.8 232.6 L 510.0 232.5 L 514.2 232.5 L 518.3 232.4 L 522.5 232.3 L 526.7 232.2 L 530.9 232.2 L 535.1 232.1 L 539.3 232.0 L 543.4 231.9 L 547.6 231.9 L 551.8 231.8 L 556.0 231.7" fill="none" stroke="none"/><circle r="3" fill="#0ea5e9" stroke="white" stroke-width="1" opacity="0.85"><animateMotion dur="8s" repeatCount="indefinite" calcMode="linear" rotate="0"><mpath href="#cpath-log"/></animateMotion></circle><path id="cpath-linear" d="M 58.0 256.0 L 62.2 255.1 L 66.4 254.1 L 70.6 253.2 L 74.7 252.2 L 78.9 251.3 L 83.1 250.4 L 87.3 249.4 L 91.5 248.5 L 95.7 247.5 L 99.8 246.6 L 104.0 245.6 L 108.2 244.7 L 112.4 243.8 L 116.6 242.8 L 120.8 241.9 L 125.0 240.9 L 129.1 240.0 L 133.3 239.1 L 137.5 238.1 L 141.7 237.2 L 145.9 236.2 L 150.1 235.3 L 154.3 234.4 L 158.4 233.4 L 162.6 232.5 L 166.8 231.5 L 171.0 230.6 L 175.2 229.6 L 179.4 228.7 L 183.5 227.8 L 187.7 226.8 L 191.9 225.9 L 196.1 224.9 L 200.3 224.0 L 204.5 223.1 L 208.7 222.1 L 212.8 221.2 L 217.0 220.2 L 221.2 219.3 L 225.4 218.4 L 229.6 217.4 L 233.8 216.5 L 237.9 215.5 L 242.1 214.6 L 246.3 213.6 L 250.5 212.7 L 254.7 211.8 L 258.9 210.8 L 263.1 209.9 L 267.2 208.9 L 271.4 208.0 L 275.6 207.1 L 279.8 206.1 L 284.0 205.2 L 288.2 204.2 L 292.4 203.3 L 296.5 202.4 L 300.7 201.4 L 304.9 200.5 L 309.1 199.5 L 313.3 198.6 L 317.5 197.6 L 321.6 196.7 L 325.8 195.8 L 330.0 194.8 L 334.2 193.9 L 338.4 192.9 L 342.6 192.0 L 346.8 191.1 L 350.9 190.1 L 355.1 189.2 L 359.3 188.2 L 363.5 187.3 L 367.7 186.4 L 371.9 185.4 L 376.1 184.5 L 380.2 183.5 L 384.4 182.6 L 388.6 181.6 L 392.8 180.7 L 397.0 179.8 L 401.2 178.8 L 405.3 177.9 L 409.5 176.9 L 413.7 176.0 L 417.9 175.1 L 422.1 174.1 L 426.3 173.2 L 430.5 172.2 L 434.6 171.3 L 438.8 170.4 L 443.0 169.4 L 447.2 168.5 L 451.4 167.5 L 455.6 166.6 L 459.7 165.6 L 463.9 164.7 L 468.1 163.8 L 472.3 162.8 L 476.5 161.9 L 480.7 160.9 L 484.9 160.0 L 489.0 159.1 L 493.2 158.1 L 497.4 157.2 L 501.6 156.2 L 505.8 155.3 L 510.0 154.4 L 514.2 153.4 L 518.3 152.5 L 522.5 151.5 L 526.7 150.6 L 530.9 149.6 L 535.1 148.7 L 539.3 147.8 L 543.4 146.8 L 547.6 145.9 L 551.8 144.9 L 556.0 144.0" fill="none" stroke="none"/><circle r="3" fill="#6366f1" stroke="white" stroke-width="1" opacity="0.85"><animateMotion dur="8s" repeatCount="indefinite" calcMode="linear" rotate="0"><mpath href="#cpath-linear"/></animateMotion></circle><path id="cpath-nlogn" d="M 58.0 256.0 L 62.2 254.4 L 66.4 252.8 L 70.6 251.2 L 74.7 249.7 L 78.9 248.1 L 83.1 246.6 L 87.3 245.1 L 91.5 243.6 L 95.7 242.1 L 99.8 240.7 L 104.0 239.3 L 108.2 237.8 L 112.4 236.4 L 116.6 235.1 L 120.8 233.7 L 125.0 232.3 L 129.1 231.0 L 133.3 229.7 L 137.5 228.4 L 141.7 227.1 L 145.9 225.8 L 150.1 224.5 L 154.3 223.2 L 158.4 222.0 L 162.6 220.7 L 166.8 219.5 L 171.0 218.2 L 175.2 217.0 L 179.4 215.8 L 183.5 214.6 L 187.7 213.4 L 191.9 212.2 L 196.1 211.0 L 200.3 209.9 L 204.5 208.7 L 208.7 207.5 L 212.8 206.4 L 217.0 205.2 L 221.2 204.1 L 225.4 202.9 L 229.6 201.8 L 233.8 200.6 L 237.9 199.5 L 242.1 198.4 L 246.3 197.3 L 250.5 196.1 L 254.7 195.0 L 258.9 193.9 L 263.1 192.8 L 267.2 191.7 L 271.4 190.6 L 275.6 189.5 L 279.8 188.4 L 284.0 187.3 L 288.2 186.2 L 292.4 185.1 L 296.5 184.1 L 300.7 183.0 L 304.9 181.9 L 309.1 180.8 L 313.3 179.7 L 317.5 178.7 L 321.6 177.6 L 325.8 176.5 L 330.0 175.5 L 334.2 174.4 L 338.4 173.3 L 342.6 172.3 L 346.8 171.2 L 350.9 170.2 L 355.1 169.1 L 359.3 168.1 L 363.5 167.0 L 367.7 165.9 L 371.9 164.9 L 376.1 163.8 L 380.2 162.8 L 384.4 161.8 L 388.6 160.7 L 392.8 159.7 L 397.0 158.6 L 401.2 157.6 L 405.3 156.5 L 409.5 155.5 L 413.7 154.5 L 417.9 153.4 L 422.1 152.4 L 426.3 151.4 L 430.5 150.3 L 434.6 149.3 L 438.8 148.3 L 443.0 147.2 L 447.2 146.2 L 451.4 145.2 L 455.6 144.2 L 459.7 143.1 L 463.9 142.1 L 468.1 141.1 L 472.3 140.1 L 476.5 139.0 L 480.7 138.0 L 484.9 137.0 L 489.0 136.0 L 493.2 135.0 L 497.4 133.9 L 501.6 132.9 L 505.8 131.9 L 510.0 130.9 L 514.2 129.9 L 518.3 128.9 L 522.5 127.8 L 526.7 126.8 L 530.9 125.8 L 535.1 124.8 L 539.3 123.8 L 543.4 122.8 L 547.6 121.8 L 551.8 120.8 L 556.0 119.7" fill="none" stroke="none"/><circle r="3" fill="#a855f7" stroke="white" stroke-width="1" opacity="0.85"><animateMotion dur="8s" repeatCount="indefinite" calcMode="linear" rotate="0"><mpath href="#cpath-nlogn"/></animateMotion></circle><path id="cpath-quad" d="M 58.0 256.0 L 62.2 254.1 L 66.4 252.2 L 70.6 250.4 L 74.7 248.5 L 78.9 246.6 L 83.1 244.7 L 87.3 242.8 L 91.5 240.9 L 95.7 239.1 L 99.8 237.2 L 104.0 235.3 L 108.2 233.4 L 112.4 231.5 L 116.6 229.6 L 120.8 227.8 L 125.0 225.9 L 129.1 224.0 L 133.3 222.1 L 137.5 220.2 L 141.7 218.4 L 145.9 216.5 L 150.1 214.6 L 154.3 212.7 L 158.4 210.8 L 162.6 208.9 L 166.8 207.1 L 171.0 205.2 L 175.2 203.3 L 179.4 201.4 L 183.5 199.5 L 187.7 197.6 L 191.9 195.8 L 196.1 193.9 L 200.3 192.0 L 204.5 190.1 L 208.7 188.2 L 212.8 186.4 L 217.0 184.5 L 221.2 182.6 L 225.4 180.7 L 229.6 178.8 L 233.8 176.9 L 237.9 175.1 L 242.1 173.2 L 246.3 171.3 L 250.5 169.4 L 254.7 167.5 L 258.9 165.6 L 263.1 163.8 L 267.2 161.9 L 271.4 160.0 L 275.6 158.1 L 279.8 156.2 L 284.0 154.4 L 288.2 152.5 L 292.4 150.6 L 296.5 148.7 L 300.7 146.8 L 304.9 144.9 L 309.1 143.1 L 313.3 141.2 L 317.5 139.3 L 321.6 137.4 L 325.8 135.5 L 330.0 133.6 L 334.2 131.8 L 338.4 129.9 L 342.6 128.0 L 346.8 126.1 L 350.9 124.2 L 355.1 122.4 L 359.3 120.5 L 363.5 118.6 L 367.7 116.7 L 371.9 114.8 L 376.1 112.9 L 380.2 111.1 L 384.4 109.2 L 388.6 107.3 L 392.8 105.4 L 397.0 103.5 L 401.2 101.6 L 405.3 99.8 L 409.5 97.9 L 413.7 96.0 L 417.9 94.1 L 422.1 92.2 L 426.3 90.4 L 430.5 88.5 L 434.6 86.6 L 438.8 84.7 L 443.0 82.8 L 447.2 80.9 L 451.4 79.1 L 455.6 77.2 L 459.7 75.3 L 463.9 73.4 L 468.1 71.5 L 472.3 69.6 L 476.5 67.8 L 480.7 65.9 L 484.9 64.0 L 489.0 62.1 L 493.2 60.2 L 497.4 58.4 L 501.6 56.5 L 505.8 54.6 L 510.0 52.7 L 514.2 50.8 L 518.3 48.9 L 522.5 47.1 L 526.7 45.2 L 530.9 43.3 L 535.1 41.4 L 539.3 39.5 L 543.4 37.6 L 547.6 35.8 L 551.8 33.9 L 556.0 32.0" fill="none" stroke="none"/><circle r="3" fill="#ef4444" stroke="white" stroke-width="1" opacity="0.85"><animateMotion dur="8s" repeatCount="indefinite" calcMode="linear" rotate="0"><mpath href="#cpath-quad"/></animateMotion></circle><path id="cpath-exp" d="M 58.0 250.4 L 62.2 249.7 L 66.4 248.9 L 70.6 248.0 L 74.7 247.1 L 78.9 246.0 L 83.1 244.7 L 87.3 243.3 L 91.5 241.8 L 95.7 240.0 L 99.8 238.1 L 104.0 235.8 L 108.2 233.4 L 112.4 230.6 L 116.6 227.5 L 120.8 223.9 L 125.0 220.0 L 129.1 215.6 L 133.3 210.6 L 137.5 205.0 L 141.7 198.7 L 145.9 191.7 L 150.1 183.7 L 154.3 174.8 L 158.4 164.8 L 162.6 153.6 L 166.8 141.0 L 171.0 126.9 L 175.2 111.0 L 179.4 93.1 L 183.5 73.1 L 187.7 50.6 L 190.8 32.0" fill="none" stroke="none"/><circle r="3" fill="#be123c" stroke="white" stroke-width="1" opacity="0.85"><animateMotion dur="8s" repeatCount="indefinite" calcMode="linear" rotate="0"><mpath href="#cpath-exp"/></animateMotion></circle><line class="n-cursor" x1="58" y1="32" x2="58" y2="256" stroke="#0f172a" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.55"><animate attributeName="x1" from="58" to="556" dur="8s" repeatCount="indefinite"/><animate attributeName="x2" from="58" to="556" dur="8s" repeatCount="indefinite"/></line><text x="58.0" y="270" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">1</text><text x="141.0" y="270" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">10</text><text x="224.0" y="270" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">100</text><text x="307.0" y="270" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">1K</text><text x="390.0" y="270" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">10K</text><text x="473.0" y="270" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">100K</text><text x="556.0" y="270" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">1M</text><text x="52" y="260.0" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">1</text><text x="52" y="222.7" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">100</text><text x="52" y="185.3" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">10K</text><text x="52" y="148.0" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">1M</text><text x="52" y="92.0" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">1B</text><text x="52" y="36.0" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#64748b">1T</text><text x="307.0" y="288" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#475569">input size <tspan font-style="italic">n</tspan> (log scale)</text><text x="16" y="144.0" text-anchor="middle" transform="rotate(-90 16 144.0)" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#475569">operations (log scale)</text></svg></div></section><div class="teach-dialog-body"><iframe id="teach-dialog-frame" title="Teach lesson" sandbox="allow-scripts allow-same-origin"></iframe></div></div></dialog>
   </main>
   <script>window.__MYFLAMES_TEACH_HOOKS = [
   {
@@ -8451,6 +8482,32 @@ teachRuntime.wirePhaseNav("phase-nav", {
     "note": "Table scan on t1 (t1)"
   }
 ];</script>
+  <script>window.__MYFLAMES_COMPLEXITY = {
+  "NESTED LOOP INNER starts=1 rows=3000": {
+    "big_o": "O(n · m)",
+    "short": "n · m",
+    "severity": "bad",
+    "rationale": "Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up.",
+    "confidence": "exact",
+    "kind": "quad"
+  },
+  "TABLE SCAN [t2] starts=1 rows=1000": {
+    "big_o": "O(n)",
+    "short": "n",
+    "severity": "medium",
+    "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+    "confidence": "exact",
+    "kind": "linear"
+  },
+  "TABLE SCAN [t1] starts=1 rows=3000": {
+    "big_o": "O(n)",
+    "short": "n",
+    "severity": "medium",
+    "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+    "confidence": "exact",
+    "kind": "linear"
+  }
+};</script>
   <script>function exportSVG() {
   var svg = document.querySelector('#chart-panel svg');
   if (!svg) { alert('No SVG found'); return; }
@@ -8482,6 +8539,7 @@ function exportJSON() {
 (function wireTeachBridge() {
   var hooks = window.__MYFLAMES_TEACH_HOOKS || [];
   if (!hooks.length) return;
+  var complexityMap = window.__MYFLAMES_COMPLEXITY || {};
 
   var chart = document.getElementById("chart-panel");
   var ctaBtn = document.getElementById("open-teach-btn");
@@ -8490,7 +8548,44 @@ function exportJSON() {
   var frame = document.getElementById("teach-dialog-frame");
   var closeBtn = document.getElementById("teach-dialog-close");
   var subtitle = document.getElementById("teach-dialog-subtitle");
+  var complexityPanel = document.getElementById("teach-complexity-panel");
+  var complexityBadge = document.getElementById("teach-complexity-badge");
+  var complexityRationale = document.getElementById("teach-complexity-rationale");
+  var complexityConfidence = document.getElementById("teach-complexity-confidence");
   var selectedIndex = -1;
+
+  function populateComplexityFor(hook) {
+    if (!complexityPanel) return;
+    var folded = (hook && hook.match && hook.match.folded_label) || "";
+    var info = folded ? complexityMap[folded] : null;
+    if (!info || !info.big_o) {
+      complexityPanel.hidden = true;
+      complexityPanel.removeAttribute("data-kind");
+      return;
+    }
+    complexityPanel.hidden = false;
+    complexityPanel.setAttribute("data-severity", info.severity || "medium");
+    complexityPanel.setAttribute("data-kind", info.kind || "");
+    if (complexityBadge) {
+      complexityBadge.textContent = info.big_o;
+      complexityBadge.setAttribute("data-severity", info.severity || "medium");
+    }
+    if (complexityRationale) {
+      complexityRationale.textContent = info.rationale || "";
+    }
+    if (complexityConfidence) {
+      var conf = info.confidence || "exact";
+      if (conf === "exact") {
+        complexityConfidence.hidden = true;
+        complexityConfidence.textContent = "";
+      } else {
+        complexityConfidence.hidden = false;
+        complexityConfidence.textContent =
+          conf === "typical" ? "Confidence: typical (EXPLAIN does not expose every parameter)."
+          : "Confidence: worst-case upper bound.";
+      }
+    }
+  }
 
   function hookAt(idx) {
     var i = Number(idx);
@@ -8537,6 +8632,7 @@ function exportJSON() {
     if (subtitle) {
       subtitle.textContent = (hook.note || "").slice(0, 180) || ("Lesson: " + lesson);
     }
+    populateComplexityFor(hook);
     frame.setAttribute("srcdoc", srcDocForHook(hook));
     if (typeof dialog.showModal === "function") {
       dialog.showModal();
@@ -8546,6 +8642,10 @@ function exportJSON() {
     if (!dialog || !dialog.open) return;
     dialog.close();
     if (frame) frame.removeAttribute("srcdoc");
+    if (complexityPanel) {
+      complexityPanel.hidden = true;
+      complexityPanel.removeAttribute("data-kind");
+    }
   }
   if (chart) {
     // Use capture phase so we see the click before SVG-internal handlers

@@ -2475,43 +2475,61 @@ class TestComplexityIntegration(unittest.TestCase):
                 found += 1
         self.assertGreaterEqual(found, 3)
 
-    def test_flamegraph_svg_contains_severity_dot_and_big_o(self):
-        # Flamegraph uses a <circle> for the severity dot and prefixes Big O in
-        # the tooltip <title> (" • O(...)" or "Complexity: O(...)" after enhance).
+    # --- Invariant: Big O is NOT shown in any of the 5 view SVGs ----------
+    # Complexity lives in the sidecar and in the HTML report's teach dialog.
+    # The five SVG views are intentionally chip-free so the visual noise
+    # footprint stays as it was pre-1.4.0.
+
+    def _assert_no_complexity_in(self, svg):
+        forbidden = (
+            "complexity-chip", "complexity-chips-layer", "complexity-legend",
+            ">COMPLEXITY<", "data-complexity=", "data-big-o=",
+        )
+        for needle in forbidden:
+            self.assertNotIn(
+                needle, svg,
+                "view SVG must not contain {!r} — Big O belongs in the teach dialog".format(needle),
+            )
+
+    def test_flamegraph_svg_has_no_visible_big_o(self):
         from myflames.render import render_explain
         svg = render_explain(self.json_text, output_type="flamegraph")
-        self.assertIn("<circle", svg)
-        self.assertIn("O(", svg)
+        self._assert_no_complexity_in(svg)
 
-    def test_bargraph_svg_contains_chip_and_complexity_column(self):
+    def test_bargraph_svg_has_no_complexity_column(self):
         svg = render_bargraph(self.root, width=1400, analysis=self.analysis)
-        self.assertIn("complexity-chip-rect", svg)
-        self.assertIn("COMPLEXITY", svg)
-        self.assertIn("O(", svg)
-        self.assertIn("complexity-legend", svg)
+        self._assert_no_complexity_in(svg)
 
-    def test_treemap_svg_exposes_data_complexity_attribute(self):
+    def test_treemap_svg_has_no_chip_or_data_attr(self):
         svg = render_treemap(self.root, width=1400, analysis=self.analysis)
-        self.assertIn('data-complexity="O(', svg)
-        self.assertIn("complexity-legend", svg)
+        self._assert_no_complexity_in(svg)
 
-    def test_diagram_svg_contains_chip_and_legend(self):
+    def test_diagram_svg_has_no_chip_or_legend(self):
         svg = render_diagram(self.root, width=1400, analysis=self.analysis)
-        self.assertIn("complexity-chip", svg)
-        self.assertIn("complexity-legend", svg)
-        # Chip should not be double-emitted on an inner child of a join.
-        # Grepping for chip count is brittle; instead verify the legend and at
-        # least one chip are present.
-        self.assertIn("data-big-o=", svg)
-        # Chips must be drawn in the deferred layer so arrows don't cover them.
-        self.assertIn("complexity-chips-layer", svg)
+        self._assert_no_complexity_in(svg)
 
-    def test_tree_svg_contains_complexity_column(self):
-        """Tree view must expose a COMPLEXITY column with chips per row."""
+    def test_tree_svg_has_no_complexity_column(self):
         svg = render_tree(self.root, width=1400, analysis=self.analysis)
-        self.assertIn(">COMPLEXITY<", svg)
-        self.assertIn("complexity-chip-text", svg)
-        self.assertIn("O(", svg)
+        self._assert_no_complexity_in(svg)
+
+    def test_html_report_teach_dialog_has_complexity_panel(self):
+        """HTML report must carry the teach-dialog Big O panel + animated chart."""
+        from myflames.output_html_report import render_html_report
+        html = render_html_report(
+            self.json_text, view_type="diagram", title="test-complexity-panel",
+        )
+        # Panel scaffolding
+        self.assertIn('id="teach-complexity-panel"', html)
+        self.assertIn('id="teach-complexity-badge"', html)
+        self.assertIn('id="teach-complexity-rationale"', html)
+        self.assertIn('id="teach-complexity-chart"', html)
+        # Animated log-log chart is embedded with our distinct markers
+        self.assertIn('complexity-curve', html)
+        self.assertIn('data-complexity-kind="nlogn"', html)
+        self.assertIn('data-complexity-kind="exp"', html)
+        self.assertIn('n-cursor', html)
+        # JS payload map
+        self.assertIn('window.__MYFLAMES_COMPLEXITY', html)
 
     def test_sidecar_emits_operator_complexities_array(self):
         from myflames.output_sidecar import build_sidecar, SCHEMA_VERSION, validate_sidecar
@@ -2562,20 +2580,12 @@ class TestComplexityIntegration(unittest.TestCase):
         self.assertNotIn("&amp;lt;", svg)
         self.assertNotIn("&amp;gt;", svg)
 
-    def test_nested_loop_join_chip_is_on_join_only(self):
-        """Inner-of-join access boxes in the diagram should NOT draw a chip."""
-        # Minimal query: 2-table join with indexed inner.
+    def test_diagram_chip_free_for_joins_too(self):
+        """Regression: after the revert, diagrams with joins must still be chip-free."""
         with open(os.path.join(TEST_DIR, "fixtures", "explain-035-join-2t-users-orders.json")) as f:
             root = parse_explain(f.read())
         svg = render_diagram(root, width=1200, analysis=None)
-        # One chip for the outer access box, one for the join frame.
-        # (Inner access box under the join has suppress_chip=True.)
-        # We assert at most 2 `<g class="complexity-chip"` groups.
-        n_chips = svg.count('<g class="complexity-chip"')
-        self.assertEqual(
-            n_chips, 2,
-            "expected 2 chips (outer + join frame), got {}".format(n_chips),
-        )
+        self._assert_no_complexity_in(svg)
 
 
 # ---------------------------------------------------------------------------

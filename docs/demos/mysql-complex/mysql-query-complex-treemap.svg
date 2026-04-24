@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="1364" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1364" style="max-width: 100%; height: auto;">
+<svg version="1.1" width="1200" height="1254" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1254" style="max-width: 100%; height: auto;">
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -15,7 +15,6 @@
   #unzoom.hide { display: none; }
   .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }
   .details-line.dim { fill: #999; }
-  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
 <text x="600.0" y="26" text-anchor="middle" class="title">MySQL Query Plan</text>
@@ -24,31 +23,25 @@
 <text id="breadcrumb" x="600.0" y="64" text-anchor="middle" class="subtitle"></text>
 <text id="search" x="1138" y="64" text-anchor="end">Search</text>
 <g id="zoomable">
-<rect id="cell-0" class="treemap-cell in-query-analysis" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Sort" data-info="Sort  ·  Self: 0.067 ms | Total: 6357 ms  ·  Rows: 9 | Loops: 1  ·  Complexity: O(n log n) (worst case)  ·  ⚠ In Query Analysis: 1 sort operation(s) — 9 rows; may use disk-based filesort" data-analysis-msg="1 sort operation(s) — 9 rows; may use disk-based filesort" data-complexity="O(n log n)" data-teach-index="0"><title>Sort
+<rect id="cell-0" class="treemap-cell in-query-analysis" x="2" y="70" width="1196" height="600" fill="rgb(255,99,71)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Sort" data-info="Sort  ·  Self: 0.067 ms | Total: 6357 ms  ·  Rows: 9 | Loops: 1  ·  ⚠ In Query Analysis: 1 sort operation(s) — 9 rows; may use disk-based filesort" data-analysis-msg="1 sort operation(s) — 9 rows; may use disk-based filesort" data-teach-index="0"><title>Sort
 Self: 0.067 ms | Total: 6357 ms
 Rows: 9 | Loops: 1
-Complexity: O(n log n) (worst case)
 ⚠ In Query Analysis: 1 sort operation(s) — 9 rows; may use disk-based filesort</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Sort</text>
-<g pointer-events="none"><rect x="1126.0" y="74.0" width="68.0" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="1160.0" y="84.0" text-anchor="middle" class="complexity-chip-text">~n log n</text></g>
-<rect id="cell-1" class="treemap-cell in-query-analysis" x="2" y="70" width="1196" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Table scan [&lt;temporary&gt;]" data-info="Table scan [&lt;temporary&gt;]  ·  Self: 0.004 ms | Total: 6357 ms  ·  Rows: 9 | Loops: 1  ·  Table: &lt;temporary&gt;  ·  Complexity: O(n)  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-complexity="O(n)" data-teach-index="1"><title>Table scan [&lt;temporary&gt;]
+<rect id="cell-1" class="treemap-cell in-query-analysis" x="2" y="70" width="1196" height="600" fill="rgb(255,160,122)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Table scan [&lt;temporary&gt;]" data-info="Table scan [&lt;temporary&gt;]  ·  Self: 0.004 ms | Total: 6357 ms  ·  Rows: 9 | Loops: 1  ·  Table: &lt;temporary&gt;  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-teach-index="1"><title>Table scan [&lt;temporary&gt;]
 Self: 0.004 ms | Total: 6357 ms
 Rows: 9 | Loops: 1
 Table: &lt;temporary&gt;
-Complexity: O(n)
 ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [&lt;temporary&gt;]</text>
-<g pointer-events="none"><rect x="1158.0" y="74.0" width="36.0" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="1176.0" y="84.0" text-anchor="middle" class="complexity-chip-text">n</text></g>
 <rect id="cell-2" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(255,218,185)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Aggregate" data-info="Aggregate  ·  Self: 732 ms | Total: 6357 ms  ·  Rows: 9 | Loops: 1" data-teach-index="2"><title>Aggregate
 Self: 732 ms | Total: 6357 ms
 Rows: 9 | Loops: 1</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Aggregate</text>
-<rect id="cell-3" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(176,224,230)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Nested loop inner join" data-info="Nested loop inner join  ·  Self: 94 ms | Total: 5625 ms  ·  Rows: 240124 | Loops: 1  ·  Complexity: O(n · log m)" data-complexity="O(n · log m)" data-teach-index="3"><title>Nested loop inner join
+<rect id="cell-3" class="treemap-cell" x="2" y="70" width="1196" height="600" fill="rgb(176,224,230)" data-x="2" data-y="70" data-w="1196" data-h="600" data-label="Nested loop inner join" data-info="Nested loop inner join  ·  Self: 94 ms | Total: 5625 ms  ·  Rows: 240124 | Loops: 1" data-teach-index="3"><title>Nested loop inner join
 Self: 94 ms | Total: 5625 ms
-Rows: 240124 | Loops: 1
-Complexity: O(n · log m)</title></rect>
+Rows: 240124 | Loops: 1</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Nested loop inner join</text>
-<g pointer-events="none"><rect x="1119.0" y="74.0" width="75.0" height="14" rx="7" ry="7" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/><text x="1156.5" y="84.0" text-anchor="middle" class="complexity-chip-text">n · log m</text></g>
 <rect id="cell-4" class="treemap-cell" x="2" y="70" width="947" height="600" fill="rgb(135,206,250)" data-x="2" data-y="70" data-w="947" data-h="600" data-label="Nested loop inner join" data-info="Nested loop inner join  ·  Self: 89 ms | Total: 4378 ms  ·  Rows: 240124 | Loops: 1" data-teach-index="3"><title>Nested loop inner join
 Self: 89 ms | Total: 4378 ms
 Rows: 240124 | Loops: 1</title></rect>
@@ -57,33 +50,28 @@ Rows: 240124 | Loops: 1</title></rect>
 Self: 108 ms | Total: 319 ms
 Rows: 240124 | Loops: 1</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Filter: ((de.to_date = DATE'...</text>
-<rect id="cell-6" class="treemap-cell in-query-analysis" x="2" y="70" width="70" height="600" fill="rgb(144,238,144)" data-x="2" data-y="70" data-w="70" data-h="600" data-label="Table scan [dept_emp]" data-info="Table scan [dept_emp]  ·  Self: 211 ms | Total: 211 ms  ·  Rows: 331603 | Loops: 1  ·  Table: dept_emp  ·  Complexity: O(n)  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-complexity="O(n)" data-teach-index="5"><title>Table scan [dept_emp]
+<rect id="cell-6" class="treemap-cell in-query-analysis" x="2" y="70" width="70" height="600" fill="rgb(144,238,144)" data-x="2" data-y="70" data-w="70" data-h="600" data-label="Table scan [dept_emp]" data-info="Table scan [dept_emp]  ·  Self: 211 ms | Total: 211 ms  ·  Rows: 331603 | Loops: 1  ·  Table: dept_emp  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-teach-index="5"><title>Table scan [dept_emp]
 Self: 211 ms | Total: 211 ms
 Rows: 331603 | Loops: 1
 Table: dept_emp
-Complexity: O(n)
 ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [dept_emp]</text>
 <rect id="cell-7" class="treemap-cell" x="72" y="70" width="877" height="600" fill="rgb(173,216,230)" data-x="72" data-y="70" data-w="877" data-h="600" data-label="Filter: ((s.to_date = DATE'9999-01-01'))" data-info="Filter: ((s.to_date = DATE'9999-01-01'))  ·  Self: 402 ms | Total: 3970 ms  ·  Rows: 1 | Loops: 240124" data-teach-index="6"><title>Filter: ((s.to_date = DATE'9999-01-01'))
 Self: 402 ms | Total: 3970 ms
 Rows: 1 | Loops: 240124</title></rect>
 <text x="76" y="666" fill="#333" font-size="10" pointer-events="none">Filter: ((s.to_date = DATE'9...</text>
-<rect id="cell-8" class="treemap-cell" x="72" y="70" width="877" height="600" fill="rgb(144,238,144)" data-x="72" data-y="70" data-w="877" data-h="600" data-label="Index lookup [salaries.PRIMARY]" data-info="Index lookup [salaries.PRIMARY]  ·  Self: 3568 ms | Total: 3568 ms  ·  Rows: 11 | Loops: 240124  ·  Table: salaries  ·  Index: PRIMARY  ·  Complexity: O(log n + k)" data-complexity="O(log n + k)" data-teach-index="7"><title>Index lookup [salaries.PRIMARY]
+<rect id="cell-8" class="treemap-cell" x="72" y="70" width="877" height="600" fill="rgb(144,238,144)" data-x="72" data-y="70" data-w="877" data-h="600" data-label="Index lookup [salaries.PRIMARY]" data-info="Index lookup [salaries.PRIMARY]  ·  Self: 3568 ms | Total: 3568 ms  ·  Rows: 11 | Loops: 240124  ·  Table: salaries  ·  Index: PRIMARY" data-teach-index="7"><title>Index lookup [salaries.PRIMARY]
 Self: 3568 ms | Total: 3568 ms
 Rows: 11 | Loops: 240124
 Table: salaries
-Index: PRIMARY
-Complexity: O(log n + k)</title></rect>
+Index: PRIMARY</title></rect>
 <text x="76" y="666" fill="#333" font-size="10" pointer-events="none">Index lookup [salaries.PRIMA...</text>
-<g pointer-events="none"><rect x="870.0" y="74.0" width="75.0" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="907.5" y="84.0" text-anchor="middle" class="complexity-chip-text">log n + k</text></g>
-<rect id="cell-9" class="treemap-cell" x="949" y="70" width="249" height="600" fill="rgb(135,206,250)" data-x="949" data-y="70" data-w="249" data-h="600" data-label="Single-row lookup [departments.PRIMARY]" data-info="Single-row lookup [departments.PRIMARY]  ·  Self: 1153 ms | Total: 1153 ms  ·  Rows: 1 | Loops: 240124  ·  Table: departments  ·  Index: PRIMARY  ·  Complexity: O(log n)" data-complexity="O(log n)" data-teach-index="8"><title>Single-row lookup [departments.PRIMARY]
+<rect id="cell-9" class="treemap-cell" x="949" y="70" width="249" height="600" fill="rgb(135,206,250)" data-x="949" data-y="70" data-w="249" data-h="600" data-label="Single-row lookup [departments.PRIMARY]" data-info="Single-row lookup [departments.PRIMARY]  ·  Self: 1153 ms | Total: 1153 ms  ·  Rows: 1 | Loops: 240124  ·  Table: departments  ·  Index: PRIMARY" data-teach-index="8"><title>Single-row lookup [departments.PRIMARY]
 Self: 1153 ms | Total: 1153 ms
 Rows: 1 | Loops: 240124
 Table: departments
-Index: PRIMARY
-Complexity: O(log n)</title></rect>
+Index: PRIMARY</title></rect>
 <text x="953" y="666" fill="#333" font-size="10" pointer-events="none">Single-row lookup [departmen...</text>
-<g pointer-events="none"><rect x="1147.0" y="74.0" width="47.0" height="14" rx="7" ry="7" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/><text x="1170.5" y="84.0" text-anchor="middle" class="complexity-chip-text">log n</text></g>
 </g>
 <line x1="2" y1="676" x2="1198" y2="676" stroke="#e0e0e0" stroke-width="1"/>
 <rect x="2" y="680" width="1196" height="74" fill="#f5f5f5" rx="4"/>
@@ -93,71 +81,39 @@ Complexity: O(log n)</title></rect>
 <text id="details-l3" x="12" y="732" text-anchor="start" class="details-line"></text>
 <text id="details-l4" x="12" y="746" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
-<g class="complexity-legend" aria-label="Big O complexity legend">
-<rect x="2" y="764" width="1196" height="98" rx="6" ry="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
-<text x="12" y="778" style="font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill:#0f172a;">Big O complexity — how this query scales</text>
-<text x="1188" y="778" text-anchor="end" style="font: 10px ui-monospace, Menlo, monospace; fill:#64748b;">good = cheap  ·  medium = scales with data  ·  bad = risks timeout at scale</text>
-<rect x="12" y="792" width="60" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="42.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(1)</text>
-<text x="84" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">constant — one step, regardless of size</text>
-<rect x="12" y="814" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="49.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n)</text>
-<text x="98" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">logarithmic — B-tree / hash lookup</text>
-<rect x="12" y="836" width="102" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="63.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(log n + k)</text>
-<text x="126" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed range — descent + k matches</text>
-<rect x="405" y="792" width="60" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="435.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n)</text>
-<text x="477" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">linear — full table or index scan</text>
-<rect x="405" y="814" width="88" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="449.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n log n)</text>
-<text x="505" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">sort / group by (filesort)</text>
-<rect x="405" y="836" width="74" height="18" rx="9" ry="9" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.8"/>
-<text x="442.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n + m)</text>
-<text x="491" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">hash join — one pass each side</text>
-<rect x="798" y="792" width="102" height="18" rx="9" ry="9" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.8"/>
-<text x="849.0" y="805" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · log m)</text>
-<text x="912" y="805" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">indexed nested-loop join</text>
-<rect x="798" y="814" width="74" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
-<text x="835.0" y="827" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(n · m)</text>
-<text x="884" y="827" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">unindexed nested-loop — quadratic blow-up</text>
-<rect x="798" y="836" width="60" height="18" rx="9" ry="9" fill="rgb(255,90,90)" stroke="rgb(180,50,50)" stroke-width="0.8"/>
-<text x="828.0" y="849" text-anchor="middle" style="font: 700 10px ui-monospace, Menlo, monospace; fill:#0f172a;">O(2ⁿ)</text>
-<text x="870" y="849" style="font: 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill:#1f2937;">exponential — rare at run time, real at plan time</text>
-</g>
-<rect x="2" y="870" width="1196" height="494" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
-<rect x="2" y="880" width="1196" height="30" fill="#e8eaf6" rx="6"/>
-<rect x="2" y="886" width="1196" height="24" fill="#e8eaf6"/>
-<text x="18" y="899" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="6" y="918" width="1188" height="22" fill="#f5f5f5" rx="4"/>
-<text x="18" y="933" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
-<text x="28" y="957" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
-<text x="28" y="974" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
-<text x="28" y="991" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
-<text x="28" y="1008" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
-<text x="28" y="1025" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
-<text x="28" y="1042" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
-<text x="28" y="1059" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
-<rect x="6" y="1069" width="1188" height="22" fill="#f1f8e9" rx="4"/>
-<text x="18" y="1084" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="28" y="1108" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Cell area = total time (including children). Click a cell to zoom.</text>
-<text x="28" y="1125" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the cell — the details bar shows “In Query Analysis” and the label that appears in the panel below.</text>
-<rect x="6" y="1135" width="1188" height="22" fill="#e3f2fd" rx="4"/>
-<text x="18" y="1150" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="28" y="1174" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
-<rect x="6" y="1184" width="1188" height="22" fill="#fff3f3" rx="4"/>
-<text x="18" y="1199" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="28" y="1223" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
-<text x="28" y="1240" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
-<text x="28" y="1257" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
-<text x="28" y="1274" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
-<rect x="6" y="1284" width="1188" height="22" fill="#e8f5e9" rx="4"/>
-<text x="18" y="1299" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="28" y="1323" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="28" y="1340" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<rect x="2" y="760" width="1196" height="494" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="2" y="770" width="1196" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="2" y="776" width="1196" height="24" fill="#e8eaf6"/>
+<text x="18" y="789" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="6" y="808" width="1188" height="22" fill="#f5f5f5" rx="4"/>
+<text x="18" y="823" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="28" y="847" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
+<text x="28" y="864" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
+<text x="28" y="881" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
+<text x="28" y="898" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
+<text x="28" y="915" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
+<text x="28" y="932" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
+<text x="28" y="949" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
+<rect x="6" y="959" width="1188" height="22" fill="#f1f8e9" rx="4"/>
+<text x="18" y="974" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="28" y="998" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Cell area = total time (including children). Click a cell to zoom.</text>
+<text x="28" y="1015" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the cell — the details bar shows “In Query Analysis” and the label that appears in the panel below.</text>
+<rect x="6" y="1025" width="1188" height="22" fill="#e3f2fd" rx="4"/>
+<text x="18" y="1040" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="28" y="1064" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
+<rect x="6" y="1074" width="1188" height="22" fill="#fff3f3" rx="4"/>
+<text x="18" y="1089" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="28" y="1113" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
+<text x="28" y="1130" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
+<text x="28" y="1147" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
+<text x="28" y="1164" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="6" y="1174" width="1188" height="22" fill="#e8f5e9" rx="4"/>
+<text x="18" y="1189" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="28" y="1213" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="28" y="1230" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
 <script type="text/ecmascript"><![CDATA[
 (function() {
-  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 1364;
+  var pad = 2, topMargin = 70, tmWidth = 1196, tmHeight = 600, svgWidth = 1200, svgHeight = 1254;
   var N_LINES = 5;
   var zoomable, unzoomBtn, searchBtn, pinnedCell = null;
   var detailLines = [];

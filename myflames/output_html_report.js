@@ -29,6 +29,7 @@ function exportJSON() {
 (function wireTeachBridge() {
   var hooks = window.__MYFLAMES_TEACH_HOOKS || [];
   if (!hooks.length) return;
+  var complexityMap = window.__MYFLAMES_COMPLEXITY || {};
 
   var chart = document.getElementById("chart-panel");
   var ctaBtn = document.getElementById("open-teach-btn");
@@ -37,7 +38,44 @@ function exportJSON() {
   var frame = document.getElementById("teach-dialog-frame");
   var closeBtn = document.getElementById("teach-dialog-close");
   var subtitle = document.getElementById("teach-dialog-subtitle");
+  var complexityPanel = document.getElementById("teach-complexity-panel");
+  var complexityBadge = document.getElementById("teach-complexity-badge");
+  var complexityRationale = document.getElementById("teach-complexity-rationale");
+  var complexityConfidence = document.getElementById("teach-complexity-confidence");
   var selectedIndex = -1;
+
+  function populateComplexityFor(hook) {
+    if (!complexityPanel) return;
+    var folded = (hook && hook.match && hook.match.folded_label) || "";
+    var info = folded ? complexityMap[folded] : null;
+    if (!info || !info.big_o) {
+      complexityPanel.hidden = true;
+      complexityPanel.removeAttribute("data-kind");
+      return;
+    }
+    complexityPanel.hidden = false;
+    complexityPanel.setAttribute("data-severity", info.severity || "medium");
+    complexityPanel.setAttribute("data-kind", info.kind || "");
+    if (complexityBadge) {
+      complexityBadge.textContent = info.big_o;
+      complexityBadge.setAttribute("data-severity", info.severity || "medium");
+    }
+    if (complexityRationale) {
+      complexityRationale.textContent = info.rationale || "";
+    }
+    if (complexityConfidence) {
+      var conf = info.confidence || "exact";
+      if (conf === "exact") {
+        complexityConfidence.hidden = true;
+        complexityConfidence.textContent = "";
+      } else {
+        complexityConfidence.hidden = false;
+        complexityConfidence.textContent =
+          conf === "typical" ? "Confidence: typical (EXPLAIN does not expose every parameter)."
+          : "Confidence: worst-case upper bound.";
+      }
+    }
+  }
 
   function hookAt(idx) {
     var i = Number(idx);
@@ -84,6 +122,7 @@ function exportJSON() {
     if (subtitle) {
       subtitle.textContent = (hook.note || "").slice(0, 180) || ("Lesson: " + lesson);
     }
+    populateComplexityFor(hook);
     frame.setAttribute("srcdoc", srcDocForHook(hook));
     if (typeof dialog.showModal === "function") {
       dialog.showModal();
@@ -93,6 +132,10 @@ function exportJSON() {
     if (!dialog || !dialog.open) return;
     dialog.close();
     if (frame) frame.removeAttribute("srcdoc");
+    if (complexityPanel) {
+      complexityPanel.hidden = true;
+      complexityPanel.removeAttribute("data-kind");
+    }
   }
   if (chart) {
     // Use capture phase so we see the click before SVG-internal handlers

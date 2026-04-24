@@ -5,8 +5,6 @@ Port of flamegraph.pl core logic (flow merge + SVG output).
 import re
 import hashlib
 
-from .complexity import SEVERITY_COLORS, SEVERITY_BORDERS
-
 # Defaults (match flamegraph.pl)
 XPAD = 10
 FONT_SIZE = 12
@@ -115,11 +113,13 @@ def folded_to_svg(
     """
     Convert folded stack input (string) to SVG.
 
-    ``complexity_by_folded`` (optional) maps ``folded_label`` → a complexity
-    dict (``{"big_o", "short", "severity", ...}`` — see myflames.complexity).
-    When provided we render a small colored severity dot on each bar and
-    append the compact Big O form to the bar label when there is room.
+    ``complexity_by_folded`` is accepted for backwards compatibility but no
+    longer drawn on bars — Big O complexity is now surfaced in the
+    "Learn this operator" teach dialog of the HTML report rather than on
+    the flame-graph bars themselves. The backend sidecar still carries the
+    data under ``operator_complexities``.
     """
+    del complexity_by_folded  # intentionally unused; see docstring.
     lines = folded_text.strip().splitlines() if isinstance(folded_text, str) else folded_text
     node_map, timemax = _parse_folded_lines(lines)
     if not timemax or not node_map:
@@ -231,51 +231,15 @@ def folded_to_svg(
         teach_attr = ""
         if teach_index_by_folded and func in teach_index_by_folded:
             teach_attr = f' data-teach-index="{teach_index_by_folded[func]}"'
-        # Big O complexity lookup by folded label. A bar may fold several
-        # MySQL sub-stages under the same label; we pick the first match.
-        complexity = None
-        if complexity_by_folded:
-            complexity = complexity_by_folded.get(func)
-            if complexity and not isinstance(complexity, dict):
-                complexity = None
-        if complexity and complexity.get("big_o"):
-            conf = complexity.get("confidence", "exact")
-            conf_tag = "" if conf == "exact" else " (" + conf.replace("_", " ") + ")"
-            info += "  •  O(...): " + complexity["big_o"] + conf_tag
         out.append(f'<g{teach_attr}><title>{info}</title>')
         out.append(f'<rect x="{x1:.1f}" y="{y1:.1f}" width="{x2 - x1:.1f}" height="{y2 - y1:.1f}" fill="{color}" rx="2" ry="2"/>')
-        # Severity dot at the right edge of the bar — visible even on narrow
-        # frames because it's 3 px wide, so the user can tell "this call is
-        # in a fast-class / danger-class" at a glance.
-        bar_w = x2 - x1
-        if complexity and complexity.get("severity") and bar_w >= 6:
-            sev = complexity["severity"]
-            dot_fill = SEVERITY_COLORS.get(sev, SEVERITY_COLORS["medium"])
-            dot_stroke = SEVERITY_BORDERS.get(sev, SEVERITY_BORDERS["medium"])
-            dot_cx = x2 - 5
-            dot_cy = (y1 + y2) / 2
-            out.append(
-                f'<circle cx="{dot_cx:.1f}" cy="{dot_cy:.1f}" r="3" '
-                f'fill="{dot_fill}" stroke="{dot_stroke}" stroke-width="0.6" pointer-events="none"/>'
-            )
         chars = int((x2 - x1) / (fontsize * fontwidth))
-        # Reserve space for the Big O short form if the bar is wide enough.
-        suffix = ""
-        if complexity and complexity.get("short") and bar_w >= 120:
-            short = complexity["short"]
-            if complexity.get("confidence", "exact") != "exact":
-                short = "~" + short
-            suffix = "  O(" + short + ")"
         text = ""
         if chars >= 3:
-            budget = chars - len(suffix)
-            if budget < 3:
-                suffix = ""
-                budget = chars
-            raw = _strip_annotation(func)
-            if len(raw) > budget:
-                raw = raw[: max(2, budget - 2)] + ".."
-            text = _escape_svg(raw + suffix)
+            text = _strip_annotation(func)[:chars]
+            if len(func) > chars:
+                text = text[:-2] + ".." if len(text) >= 2 else ".."
+            text = _escape_svg(text)
         out.append(f'<text x="{x1 + 3:.2f}" y="{3 + (y1 + y2) / 2:.2f}">{text}</text>')
         out.append("</g>")
 

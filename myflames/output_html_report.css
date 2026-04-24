@@ -227,13 +227,82 @@ main.report h2 .count {
 }
 .teach-dialog-body {
   min-height: 420px;
-  height: 75vh;
+  height: 55vh;
 }
 #teach-dialog-frame {
   width: 100%;
   height: 100%;
   border: 0;
   display: block;
+}
+.teach-complexity-panel {
+  padding: 14px 18px 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.teach-complexity-panel[hidden] { display: none; }
+.teach-complexity-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+.teach-complexity-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.1px;
+}
+.teach-complexity-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  background: rgb(255,200,50);
+  border: 1px solid rgba(0,0,0,0.12);
+}
+.teach-complexity-badge[data-severity="good"] { background: rgb(100,180,180); }
+.teach-complexity-badge[data-severity="medium"] { background: rgb(255,200,50); }
+.teach-complexity-badge[data-severity="bad"] { background: rgb(255,90,90); color: #1a0000; }
+.teach-complexity-rationale {
+  margin: 0;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.teach-complexity-confidence {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-style: italic;
+}
+.teach-complexity-chart {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+}
+.teach-complexity-chart svg { max-width: 100%; height: auto; }
+/* Runtime highlight — toggled by JS via data-kind on the panel.
+   Non-matching curves fade; the matching curve thickens and brightens. */
+.teach-complexity-panel[data-kind] .complexity-curve { opacity: 0.35; stroke-width: 1.6; }
+.teach-complexity-panel[data-kind="const"]  [data-complexity-kind="const"],
+.teach-complexity-panel[data-kind="log"]    [data-complexity-kind="log"],
+.teach-complexity-panel[data-kind="linear"] [data-complexity-kind="linear"],
+.teach-complexity-panel[data-kind="nlogn"]  [data-complexity-kind="nlogn"],
+.teach-complexity-panel[data-kind="quad"]   [data-complexity-kind="quad"],
+.teach-complexity-panel[data-kind="exp"]    [data-complexity-kind="exp"] {
+  opacity: 1 !important;
+  stroke-width: 3.6 !important;
+  filter: drop-shadow(0 0 2px rgba(15, 23, 42, 0.2));
 }
 @media (prefers-reduced-motion: no-preference) {
   .teach-dialog[open] { animation: teachDialogIn 160ms ease-out; }

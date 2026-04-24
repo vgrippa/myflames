@@ -1,7 +1,5 @@
 """Generate bar chart SVG from parsed EXPLAIN tree."""
 from .parser import xml_escape, flatten_nodes, render_info_panel
-from .complexity import SEVERITY_COLORS, SEVERITY_BORDERS
-from .complexity_legend import render_complexity_legend_svg
 
 
 def format_number(n):
@@ -44,16 +42,6 @@ def _build_bar_info(op, st, pct, unit_display):
         parts.append(f"Index: {index}")
     if access_type:
         parts.append(f"Access: {access_type}")
-    # Big O complexity, attached at parse-time by myflames.complexity.
-    complexity = details.get("complexity")
-    if isinstance(complexity, dict) and complexity.get("big_o"):
-        conf = complexity.get("confidence", "exact")
-        conf_tag = "" if conf == "exact" else f" ({conf.replace('_', ' ')})"
-        parts.append(f"Complexity: {complexity['big_o']}{conf_tag}")
-        rationale = complexity.get("rationale")
-        if rationale:
-            r_short = (rationale[:120] + "…") if len(rationale) > 122 else rationale
-            parts.append(r_short)
     actual_rows = float(op.get("rows") or 0)
     est_rows = details.get("estimated_rows")
     if est_rows is not None and float(est_rows) > 0:
@@ -94,11 +82,9 @@ def render_bargraph(
     details_line_h = 14          # px per line
     bottom_margin = 16 + details_lines_n * details_line_h + 12  # ~140px
     label_width = 320
-    # Big O complexity column — hidden at very narrow canvases (<900 px total).
-    complexity_width = 0 if width < 900 else 96
     loops_width = 80
     time_width = 120
-    bar_area_width = width - left_margin - right_margin - label_width - complexity_width - loops_width - time_width - 20
+    bar_area_width = width - left_margin - right_margin - label_width - loops_width - time_width - 20
     num_bars = len(all_nodes)
 
     _info_lines, info_panel_h = (
@@ -107,20 +93,14 @@ def render_bargraph(
         else ([], 0)
     )
     info_gap = 8 if analysis is not None else 0
-    # Reserve space for the shared Big O complexity legend at the bottom.
-    _legend_scratch_lines, legend_h = render_complexity_legend_svg(
-        x=left_margin, y=0, width=width - left_margin - right_margin
-    )
-    legend_gap = 12
-    chart_height = top_margin + (num_bars * (bar_height + bar_gap)) + bottom_margin + info_gap + info_panel_h + legend_gap + legend_h
+    chart_height = top_margin + (num_bars * (bar_height + bar_gap)) + bottom_margin + info_gap + info_panel_h
 
     colors = [
         "rgb(255,90,90)", "rgb(255,130,70)", "rgb(255,165,50)", "rgb(255,200,50)",
         "rgb(255,220,80)", "rgb(200,200,100)", "rgb(150,200,150)", "rgb(100,180,180)",
     ]
     col_label_x = left_margin
-    col_complexity_x = col_label_x + label_width
-    col_loops_x = col_complexity_x + complexity_width
+    col_loops_x = left_margin + label_width
     col_bar_x = col_loops_x + loops_width
     col_time_x = col_bar_x + bar_area_width + 10
 
@@ -144,8 +124,6 @@ def render_bargraph(
         "  .bar:hover { opacity: 0.82; cursor: pointer; stroke: #444; stroke-width: 2; }",
         "  .bar.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }",
         "  .bar.pinned { stroke: #1565c0; stroke-width: 2.5; }",
-        "  .complexity-chip-text { font-size: 10px; font-weight: 700; fill: #0f172a; letter-spacing: 0.1px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }",
-        "  .complexity-chip-rect { pointer-events: none; }",
         "  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; }",
         "  .details-line.dim { fill: #999; }",
         "  #search { font-size: 12px; fill: #666; cursor: pointer; }",
@@ -155,19 +133,13 @@ def render_bargraph(
         f'<text x="{width/2}" y="28" text-anchor="middle" class="title">{xml_escape(title)}</text>',
         f'<text x="{width/2}" y="46" text-anchor="middle" class="subtitle">Self-time per operation  \u00b7  Total: {total_str} {unit_display}</text>',
         f'<text x="{col_label_x + label_width - 10}" y="68" text-anchor="end" class="col-header">OPERATION</text>',
-    ]
-    if complexity_width > 0:
-        lines.append(
-            f'<text x="{col_complexity_x + complexity_width/2}" y="68" text-anchor="middle" class="col-header">COMPLEXITY</text>'
-        )
-    lines.extend([
         f'<text x="{col_loops_x + loops_width/2}" y="68" text-anchor="middle" class="col-header">LOOPS</text>',
         f'<text x="{col_bar_x + bar_area_width/2}" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>',
         f'<text id="search" x="{width - right_margin}" y="68" text-anchor="end">Search</text>',
         f'<line x1="{left_margin}" y1="72" x2="{width - right_margin}" y2="72" stroke="#e0e0e0" stroke-width="1"/>',
         f'<line x1="{left_margin}" y1="{sep_y}" x2="{width - right_margin}" y2="{sep_y}" stroke="#e0e0e0" stroke-width="1"/>',
         f'<rect x="{left_margin}" y="{sep_y + 4}" width="{width - left_margin - right_margin}" height="{bottom_margin - 10}" fill="#f5f5f5" rx="4"/>',
-    ])
+    ]
     # Pre-allocate multi-line details area: first line is the default hint
     for di in range(details_lines_n):
         dy = details_y_start + di * details_line_h
@@ -206,30 +178,6 @@ def render_bargraph(
         if teach_index_by_folded and folded in teach_index_by_folded:
             teach_attr = f' data-teach-index="{teach_index_by_folded[folded]}"'
         lines.append(f'<text x="{col_label_x + label_width - 10}" y="{text_y}" text-anchor="end" class="label">{xml_escape(label)}</text>')
-        # Big O complexity chip — column is hidden when complexity_width == 0.
-        if complexity_width > 0:
-            complexity = (op.get("details") or {}).get("complexity") or None
-            if isinstance(complexity, dict) and complexity.get("short"):
-                chip_short = complexity["short"]
-                if complexity.get("confidence", "exact") != "exact":
-                    chip_short = "~" + chip_short
-                sev = complexity.get("severity", "medium")
-                chip_fill = SEVERITY_COLORS.get(sev, SEVERITY_COLORS["medium"])
-                chip_stroke = SEVERITY_BORDERS.get(sev, SEVERITY_BORDERS["medium"])
-                chip_w = min(complexity_width - 12, max(44, 7 * len(chip_short) + 16))
-                chip_h = 16
-                chip_x = col_complexity_x + (complexity_width - chip_w) / 2
-                chip_y = y + (bar_height - chip_h) / 2
-                chip_title = xml_escape(complexity.get("big_o") or chip_short)
-                lines.append(
-                    f'<g><title>{chip_title}</title>'
-                    f'<rect class="complexity-chip-rect" x="{chip_x:.1f}" y="{chip_y:.1f}" '
-                    f'width="{chip_w:.1f}" height="{chip_h}" rx="8" ry="8" '
-                    f'fill="{chip_fill}" stroke="{chip_stroke}" stroke-width="0.8"/>'
-                    f'<text x="{chip_x + chip_w/2:.1f}" y="{chip_y + chip_h - 4:.1f}" '
-                    f'text-anchor="middle" class="complexity-chip-text">{xml_escape(chip_short)}</text>'
-                    f'</g>'
-                )
         lines.append(f'<text x="{col_loops_x + loops_width/2}" y="{text_y}" text-anchor="middle" class="loops">{loops_t}</text>')
         lines.append(
             f'<rect class="{bar_class}" x="{col_bar_x}" y="{y}" width="{bar_width}" height="{bar_height}" fill="{color}" rx="3" ry="3" '
@@ -242,15 +190,8 @@ def render_bargraph(
         lines.append(f'<text x="{col_time_x}" y="{text_y}" class="value">{value_text}</text>')
         y += bar_height + bar_gap
 
-    # Big O complexity legend, always rendered so chip colors are decodable.
-    legend_y = top_margin + (num_bars * (bar_height + bar_gap)) + bottom_margin + legend_gap - 8
-    legend_lines, _ = render_complexity_legend_svg(
-        x=left_margin, y=legend_y, width=width - left_margin - right_margin
-    )
-    lines.extend(legend_lines)
-
     if analysis is not None:
-        panel_y = top_margin + (num_bars * (bar_height + bar_gap)) + bottom_margin + info_gap + legend_h + legend_gap
+        panel_y = top_margin + (num_bars * (bar_height + bar_gap)) + bottom_margin + info_gap
         panel_w = width - left_margin - right_margin
         panel_lines, _ = render_info_panel(analysis, left_margin, panel_y, panel_w, view_type="bargraph")
         lines.extend(panel_lines)

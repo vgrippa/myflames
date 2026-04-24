@@ -44,6 +44,7 @@ from .glossary import (
 from .output_sidecar import build_sidecar, _compute_plan_summary
 from .teach import render_lesson
 from .teach_hooks import build_teach_hooks, build_teach_index_maps
+from .complexity_animation import render_complexity_animation_svg
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +352,9 @@ def _render_teach_templates(sidecar):
             )
         )
     parts.append("</section>")
+    # Pre-render the animated Big O chart once; the highlight is applied at
+    # runtime by the teach bridge via a data-kind attribute on the panel.
+    chart_svg = render_complexity_animation_svg(complexity_dict=None, width=640, height=300)
     parts.append(
         '<dialog id="teach-dialog" class="teach-dialog" aria-modal="true" aria-labelledby="teach-dialog-title">'
         '<div class="teach-dialog-shell">'
@@ -361,13 +365,62 @@ def _render_teach_templates(sidecar):
         '</div>'
         '<button id="teach-dialog-close" type="button" aria-label="Close teach panel">Close</button>'
         '</header>'
+        '<section id="teach-complexity-panel" class="teach-complexity-panel" hidden aria-labelledby="teach-complexity-heading">'
+        '<header class="teach-complexity-header">'
+        '<h3 id="teach-complexity-heading">Big O complexity</h3>'
+        '<span id="teach-complexity-badge" class="teach-complexity-badge"></span>'
+        '</header>'
+        '<p id="teach-complexity-rationale" class="teach-complexity-rationale"></p>'
+        '<p id="teach-complexity-confidence" class="teach-complexity-confidence" hidden></p>'
+        '<div id="teach-complexity-chart" class="teach-complexity-chart">{chart}</div>'
+        '</section>'
         '<div class="teach-dialog-body">'
         '<iframe id="teach-dialog-frame" title="Teach lesson" sandbox="allow-scripts allow-same-origin"></iframe>'
         '</div>'
         '</div>'
-        '</dialog>'
+        '</dialog>'.format(chart=chart_svg)
     )
     return "\n".join(parts)
+
+
+def _build_complexity_lookup(sidecar):
+    """Build a folded_label → complexity dict from the sidecar's
+    ``operator_complexities`` array. Used by the teach-bridge JS to
+    populate the complexity panel when a specific operator is opened."""
+    out = {}
+    for entry in sidecar.get("operator_complexities") or []:
+        folded = (entry.get("folded_label") or "").strip()
+        c = entry.get("complexity") or {}
+        if folded and isinstance(c, dict) and c.get("big_o"):
+            out.setdefault(folded, {
+                "big_o": c.get("big_o", ""),
+                "short": c.get("short", ""),
+                "severity": c.get("severity", "medium"),
+                "rationale": c.get("rationale", ""),
+                "confidence": c.get("confidence", "exact"),
+                "kind": _classify_for_js(c.get("big_o", "")),
+            })
+    return out
+
+
+def _classify_for_js(big_o):
+    """Return the curve-kind key (``'const'|'log'|'linear'|'nlogn'|'quad'|'exp'``)
+    that matches ``big_o``, so the JS can toggle the right highlight class."""
+    s = (big_o or "").lower()
+    if "2" in s and ("^" in s or "ⁿ" in s or "2^" in s):
+        return "exp"
+    # order matters — check the more specific patterns first
+    if "n²" in s or "n^2" in s or "n * n" in s or "n · m" in s or "n×m" in s:
+        return "quad"
+    if "n log n" in s or "n·log" in s or "n * log" in s or "nlog" in s or "n · log m" in s or "n log m" in s:
+        return "nlogn"
+    if "log n" in s or "log m" in s or "log k" in s:
+        return "log"
+    if "o(1)" in s:
+        return "const"
+    if "o(n" in s or "+ m" in s or "n+m" in s:
+        return "linear"
+    return ""
 
 
 def _render_warnings(sidecar):
@@ -723,6 +776,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     jsonld = _sanitize_for_jsonld(sidecar)
     description = sidecar.get("executive_summary", "")
     teach_hooks_json = _sanitize_for_jsonld(sidecar.get("teach_hooks") or [])
+    complexity_json = _sanitize_for_jsonld(_build_complexity_lookup(sidecar))
 
     html = (
         '<!DOCTYPE html>\n'
@@ -749,6 +803,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         '{sections}\n'
         '  </main>\n'
         '  <script>window.__MYFLAMES_TEACH_HOOKS = {teach_hooks_json};</script>\n'
+        '  <script>window.__MYFLAMES_COMPLEXITY = {complexity_json};</script>\n'
         '  <script>{js}</script>\n'
         '</body>\n'
         '</html>\n'
@@ -759,6 +814,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         css=_CSS,
         sections=sections_html,
         teach_hooks_json=teach_hooks_json,
+        complexity_json=complexity_json,
         js=_JS,
     )
     return html

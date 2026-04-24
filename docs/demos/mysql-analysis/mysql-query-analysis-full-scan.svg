@@ -288,10 +288,9 @@
 <text id="ignorecase" x="1774" y="24">ic</text>
 <text id="matched" x="1690" y="117"> </text>
 <g id="frames">
-<g data-teach-index="0"><title>TABLE SCAN [users] starts=1 rows=3000 (441 µs, 100.00%)  •  O(...): O(n)&#10;&#10;Table: testdb.users&#10;Access: table&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 0.441 ms (last row)&#10;Cost: 303.50&#10;Complexity: O(n)&#10;Full table scan: the storage engine returns every row; cost scales with the table size.</title>
+<g data-teach-index="0"><title>TABLE SCAN [users] starts=1 rows=3000 (441 µs, 100.00%)&#10;&#10;Table: testdb.users&#10;Access: table&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 0.441 ms (last row)&#10;Cost: 303.50</title>
 <rect x="10.0" y="37.0" width="1780.0" height="31.0" fill="rgb(232,118,7)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="52.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="13.00" y="55.50">TABLE SCAN [users] starts=1 rows=3000  O(n)</text>
+<text x="13.00" y="55.50">TABLE SCAN [users] starts=1 rows=3000</text>
 </g>
 </g>
 <rect x="4" y="142" width="1792" height="375" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>

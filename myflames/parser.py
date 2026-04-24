@@ -984,16 +984,6 @@ def enhance_tooltip_flame(original, op_details):
         lines.append("Ranges: " + ", ".join(best["ranges"]))
     if best.get("covering") is not None:
         lines.append("Covering: " + ("Yes" if best["covering"] else "No"))
-    # Big O complexity (attached at parse time by myflames.complexity).
-    complexity = best.get("complexity")
-    if isinstance(complexity, dict) and complexity.get("big_o"):
-        conf = complexity.get("confidence", "exact")
-        conf_tag = "" if conf == "exact" else " (" + conf.replace("_", " ") + ")"
-        lines.append("Complexity: " + complexity["big_o"] + conf_tag)
-        rationale = complexity.get("rationale")
-        if rationale:
-            rat = rationale if len(rationale) <= 120 else rationale[:117] + "..."
-            lines.append(rat)
     return "\n".join(lines)
 
 

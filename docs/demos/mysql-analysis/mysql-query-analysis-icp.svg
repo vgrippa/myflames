@@ -288,10 +288,9 @@
 <text id="ignorecase" x="1774" y="24">ic</text>
 <text id="matched" x="1690" y="117"> </text>
 <g id="frames">
-<g data-teach-index="0"><title>INDEX LOOKUP [users.idx_country] starts=1 rows=600 (420 µs, 100.00%)  •  O(...): O(log n + k)&#10;&#10;Table: testdb.users (index: idx_country)&#10;Access: index&#10;Rows: 600 actual (600 estimated)&#10;Time: 0.419 ms (last row)&#10;Cost: 70.50&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
+<g data-teach-index="0"><title>INDEX LOOKUP [users.idx_country] starts=1 rows=600 (420 µs, 100.00%)&#10;&#10;Table: testdb.users (index: idx_country)&#10;Access: index&#10;Rows: 600 actual (600 estimated)&#10;Time: 0.419 ms (last row)&#10;Cost: 70.50&#10;Covering: No</title>
 <rect x="10.0" y="37.0" width="1780.0" height="31.0" fill="rgb(232,160,47)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="52.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
-<text x="13.00" y="55.50">INDEX LOOKUP [users.idx_country] starts=1 rows=600  O(log n + k)</text>
+<text x="13.00" y="55.50">INDEX LOOKUP [users.idx_country] starts=1 rows=600</text>
 </g>
 </g>
 <rect x="4" y="142" width="1792" height="277" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
