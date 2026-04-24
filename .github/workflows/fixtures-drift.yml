@@ -1,0 +1,53 @@
+name: Fixtures drift
+
+# Slice 6 / P1 — nightly regen vs pinned MySQL 8.4 / MariaDB 11.4
+# images. Fails when `test/fixtures/` diverges from what the scripts
+# would produce against the pinned servers, so a DBA comparing
+# myflames output to their real 8.4.x server never sees silent
+# disagreements caused by stale fixtures.
+#
+# Cost note: this boots two Docker service containers per run. Keep
+# it on a schedule (daily) rather than every PR. Use
+# `workflow_dispatch` for manual reruns after intentional schema
+# changes.
+
+on:
+  schedule:
+    # 03:14 UTC daily — off-peak, deterministic.
+    - cron: "14 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  regenerate-and-diff:
+    runs-on: ubuntu-latest
+    # services:
+    #   We intentionally do NOT declare services: at the job level.
+    #   The generator scripts (scripts/generate-fixtures.sh and
+    #   scripts/generate-mariadb-fixtures.sh) bring up their own
+    #   ephemeral Docker containers so this workflow mirrors exactly
+    #   what a contributor runs locally.
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Regenerate MySQL fixtures
+        run: ./scripts/generate-fixtures.sh
+
+      - name: Regenerate MariaDB fixtures
+        run: ./scripts/generate-mariadb-fixtures.sh
+
+      - name: Show diff
+        run: git --no-pager diff --stat -- test/fixtures/
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code -- test/fixtures/; then
+            echo "::error::Fixtures drifted from pinned MySQL 8.4 / MariaDB 11.4 output."
+            echo "Run ./scripts/generate-fixtures.sh and ./scripts/generate-mariadb-fixtures.sh locally, commit, and re-run."
+            exit 1
+          fi

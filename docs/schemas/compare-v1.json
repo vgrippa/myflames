@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myflames.dev/schemas/compare-v1.json",
+  "title": "myflames compare sidecar v1",
+  "description": "Structured diff emitted alongside the HTML comparison report from myflames.output_compare. Pairs with docs/schemas/sidecar-v1.json — single-plan analyses live in that schema, before/after diffs live here.",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "myflames_version", "before", "after", "summary", "deltas"],
+  "properties": {
+    "$schema":         { "type": "string", "format": "uri" },
+    "schema_version":  { "type": "string", "enum": ["compare-1.0"] },
+    "generated_at":    { "type": "string", "format": "date-time" },
+    "myflames_version":{ "type": "string" },
+    "before":          { "$ref": "#/$defs/planSide" },
+    "after":           { "$ref": "#/$defs/planSide" },
+    "summary": {
+      "type": "object",
+      "required": ["time_delta_ms", "regressions", "improvements", "unchanged"],
+      "properties": {
+        "time_delta_ms":  { "type": "number" },
+        "time_delta_pct": { "type": ["number", "null"] },
+        "regressions":    { "type": "integer", "minimum": 0 },
+        "improvements":   { "type": "integer", "minimum": 0 },
+        "unchanged":      { "type": "integer", "minimum": 0 }
+      }
+    },
+    "deltas": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/delta" }
+    }
+  },
+  "$defs": {
+    "planSide": {
+      "type": "object",
+      "required": ["total_time_ms", "operator_count"],
+      "properties": {
+        "total_time_ms":  { "type": "number" },
+        "operator_count": { "type": "integer", "minimum": 0 },
+        "root_node_id":   { "type": "string", "pattern": "^n:[0-9a-f]{12}$" }
+      }
+    },
+    "change": {
+      "type": "object",
+      "properties": {
+        "before":     { "type": ["number", "null"] },
+        "after":      { "type": ["number", "null"] },
+        "change_pct": { "type": ["number", "null"] }
+      }
+    },
+    "delta": {
+      "type": "object",
+      "required": ["short_label", "classification"],
+      "properties": {
+        "short_label":    { "type": "string" },
+        "before_node_id": { "type": "string" },
+        "after_node_id":  { "type": "string" },
+        "self_time_ms":   { "$ref": "#/$defs/change" },
+        "rows":           { "$ref": "#/$defs/change" },
+        "classification": {
+          "type": "string",
+          "enum": ["improved", "regressed", "unchanged", "new_or_removed"]
+        }
+      }
+    }
+  }
+}

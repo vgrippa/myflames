@@ -1,0 +1,76 @@
+name: Live connector integration
+
+# Slice 6 / P5 — integration tests against real MySQL 8.4 and MariaDB
+# 11.4 service containers. Covers what test_connector_integration.py
+# silently skips when no live server is reachable.
+#
+# Cost note: every PR boots two DB containers. If that becomes too
+# expensive for the project, downgrade to `on: schedule:` only and
+# leave PRs with just the unit matrix in test.yml.
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch: {}
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        engine:
+          - { name: mysql,   image: "mysql:8.4",    port: 3306, host_env: MYFLAMES_MYSQL_HOST,   port_env: MYFLAMES_MYSQL_PORT }
+          - { name: mariadb, image: "mariadb:11.4", port: 3306, host_env: MYFLAMES_MARIADB_HOST, port_env: MYFLAMES_MARIADB_PORT }
+
+    services:
+      db:
+        # Image pinned via the matrix; setting MYSQL_ROOT_PASSWORD /
+        # MARIADB_ROOT_PASSWORD with the same name works across both.
+        image: ${{ matrix.engine.image }}
+        env:
+          MYSQL_ROOT_PASSWORD:   integrationpw
+          MARIADB_ROOT_PASSWORD: integrationpw
+          MYSQL_DATABASE:        myflames_test
+        ports:
+          - ${{ matrix.engine.port }}:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pintegrationpw || healthcheck.sh --connect"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install MySQL client (for mysqladmin in the runner)
+        run: sudo apt-get update && sudo apt-get install -y mysql-client
+
+      - name: Wait for DB to accept connections
+        run: |
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -pintegrationpw --silent; then
+              echo "DB ready"; exit 0
+            fi
+            echo "Waiting for ${{ matrix.engine.name }}… ($i)"
+            sleep 2
+          done
+          echo "::error::${{ matrix.engine.name }} never became ready"
+          exit 1
+
+      - name: Run live-connector integration tests
+        env:
+          MYFLAMES_REQUIRE_LIVE: "1"
+          MYFLAMES_DB_HOST:      "127.0.0.1"
+          MYFLAMES_DB_PORT:      "3306"
+          MYFLAMES_DB_USER:      "root"
+          MYFLAMES_DB_PASSWORD:  "integrationpw"
+          MYFLAMES_DB_DATABASE:  "myflames_test"
+          MYFLAMES_ENGINE:       "${{ matrix.engine.name }}"
+        run: |
+          python3 -m unittest discover -s test -p "test_connector_integration.py" -v
