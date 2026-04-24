@@ -352,9 +352,6 @@ def _render_teach_templates(sidecar):
             )
         )
     parts.append("</section>")
-    # Pre-render the animated Big O chart once; the highlight is applied at
-    # runtime by the teach bridge via a data-kind attribute on the panel.
-    chart_svg = render_complexity_animation_svg(complexity_dict=None, width=640, height=300)
     parts.append(
         '<dialog id="teach-dialog" class="teach-dialog" aria-modal="true" aria-labelledby="teach-dialog-title">'
         '<div class="teach-dialog-shell">'
@@ -368,21 +365,8 @@ def _render_teach_templates(sidecar):
         '<div class="teach-dialog-body">'
         '<iframe id="teach-dialog-frame" title="Teach lesson" sandbox="allow-scripts allow-same-origin"></iframe>'
         '</div>'
-        # Big O complexity panel — rendered at the BOTTOM of the dialog so
-        # the teach lesson iframe stays the primary content. The panel is
-        # hidden by default; the teach bridge unhides and populates it on
-        # "Learn This Operator" clicks.
-        '<section id="teach-complexity-panel" class="teach-complexity-panel" hidden aria-labelledby="teach-complexity-heading">'
-        '<header class="teach-complexity-header">'
-        '<h3 id="teach-complexity-heading">Big O complexity</h3>'
-        '<span id="teach-complexity-badge" class="teach-complexity-badge"></span>'
-        '</header>'
-        '<p id="teach-complexity-rationale" class="teach-complexity-rationale"></p>'
-        '<p id="teach-complexity-confidence" class="teach-complexity-confidence" hidden></p>'
-        '<div id="teach-complexity-chart" class="teach-complexity-chart">{chart}</div>'
-        '</section>'
         '</div>'
-        '</dialog>'.format(chart=chart_svg)
+        '</dialog>'
     )
     return "\n".join(parts)
 
@@ -405,6 +389,22 @@ def _build_complexity_lookup(sidecar):
                 "kind": _classify_for_js(c.get("big_o", "")),
             })
     return out
+
+
+def _kind_to_placeholder_big_o(kind):
+    """Placeholder formula used when pre-rendering a chart variant for a
+    specific curve-kind — picks the one string that triggers the
+    classifier inside ``render_complexity_animation_svg`` so the right
+    curve is highlighted (and the corner badge is drawn with a sensible
+    default text, though the real text is rewritten client-side)."""
+    return {
+        "const": "O(1)",
+        "log":   "O(log n)",
+        "linear":"O(n)",
+        "nlogn": "O(n log n)",
+        "quad":  "O(n²)",
+        "exp":   "O(2ⁿ)",
+    }.get(kind, "")
 
 
 def _classify_for_js(big_o):
@@ -781,6 +781,19 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     description = sidecar.get("executive_summary", "")
     teach_hooks_json = _sanitize_for_jsonld(sidecar.get("teach_hooks") or [])
     complexity_json = _sanitize_for_jsonld(_build_complexity_lookup(sidecar))
+    # Pre-render one chart variant per curve-kind (plus a generic fallback).
+    # The teach-bridge picks the right variant at runtime based on the
+    # selected operator's classification and injects the section directly
+    # into the lesson iframe's content as part of the normal flow.
+    _variants = {
+        "": render_complexity_animation_svg(complexity_dict=None, width=640, height=300),
+    }
+    for _k in ("const", "log", "linear", "nlogn", "quad", "exp"):
+        _variants[_k] = render_complexity_animation_svg(
+            complexity_dict={"big_o": _kind_to_placeholder_big_o(_k)},
+            width=640, height=300,
+        )
+    complexity_charts_json = _sanitize_for_jsonld(_variants)
 
     html = (
         '<!DOCTYPE html>\n'
@@ -808,6 +821,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         '  </main>\n'
         '  <script>window.__MYFLAMES_TEACH_HOOKS = {teach_hooks_json};</script>\n'
         '  <script>window.__MYFLAMES_COMPLEXITY = {complexity_json};</script>\n'
+        '  <script>window.__MYFLAMES_COMPLEXITY_CHARTS = {complexity_charts_json};</script>\n'
         '  <script>{js}</script>\n'
         '</body>\n'
         '</html>\n'
@@ -819,6 +833,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         sections=sections_html,
         teach_hooks_json=teach_hooks_json,
         complexity_json=complexity_json,
+        complexity_charts_json=complexity_charts_json,
         js=_JS,
     )
     return html

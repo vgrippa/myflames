@@ -219,8 +219,8 @@ def render_complexity_animation_svg(
             for i, (ln, ops) in enumerate(pts)
         )
         highlighted = key == highlight_key
-        stroke_w = 3.4 if highlighted else 2.0
-        opacity = 1.0 if highlighted else 0.72
+        stroke_w = 3.6 if highlighted else 1.8
+        opacity = 1.0 if highlighted else 0.45
         class_attr = "complexity-curve highlighted" if highlighted else "complexity-curve"
         curve_blocks.append(
             f'<path class="{class_attr}" data-complexity-kind="{key}" '
@@ -228,27 +228,31 @@ def render_complexity_animation_svg(
             f'stroke-width="{stroke_w}" stroke-linecap="round" '
             f'stroke-linejoin="round" opacity="{opacity}"/>'
         )
-        # Label at the end of the curve (or at the last clipped point).
+        # Label at the end of the curve — always rendered so the user can
+        # identify which line is which.
         last_ln, last_ops = pts[-1]
-        label_x = sx(last_ln) + 6
-        label_y = sy(math.log10(last_ops)) + 3
+        end_x = sx(last_ln)
+        end_y = sy(math.log10(last_ops))
+        label_x = end_x + 6
+        # Keep label inside the plot band; stagger highlighted labels slightly
+        # higher so the bold label doesn't collide with adjacent ones.
+        label_y = max(end_y + 4, y1 + 10)
+        font_size = 12 if highlighted else 11
         font_weight = 700 if highlighted else 600
         curve_labels.append(
             f'<text x="{label_x:.1f}" y="{label_y:.1f}" '
-            f'font-family="Inter, system-ui, sans-serif" font-size="11" '
+            f'font-family="Inter, system-ui, sans-serif" font-size="{font_size}" '
             f'font-weight="{font_weight}" fill="{color}">{lbl}</text>'
         )
 
-        # Animated marker on each curve — rides along the full path via
-        # <animateMotion mpath>. Pre-compute a path id so mpath can reference.
+        # Animated marker that rides the curve. Highlighted curve gets a
+        # bigger, darker-stroked marker; the rest fade into the background.
         marker_path_id = f"cpath-{key}"
-        # Repeat the same d-string in a hidden path element the marker
-        # references.
         marker_blocks.append(
             f'<path id="{marker_path_id}" d="{d}" fill="none" stroke="none"/>'
-            f'<circle r="{"4.5" if highlighted else "3"}" '
+            f'<circle r="{"5" if highlighted else "3"}" '
             f'fill="{color}" stroke="{"#0f172a" if highlighted else "white"}" '
-            f'stroke-width="{1.2 if highlighted else 1}" opacity="{1 if highlighted else 0.85}">'
+            f'stroke-width="{1.4 if highlighted else 1}" opacity="{1 if highlighted else 0.65}">'
             f'<animateMotion dur="{animation_seconds}s" repeatCount="indefinite" '
             f'calcMode="linear" rotate="0">'
             f'<mpath href="#{marker_path_id}"/>'
@@ -333,6 +337,7 @@ def render_complexity_animation_svg(
         f'{"".join(marker_blocks)}'
         f'{cursor_block}'
         f'{"".join(tick_labels)}'
+        f'{"".join(curve_labels)}'
         f'{x_axis_title}{y_axis_title}'
         f'{badge_block}'
         f'</svg>'

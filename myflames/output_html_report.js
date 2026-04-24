@@ -30,6 +30,7 @@ function exportJSON() {
   var hooks = window.__MYFLAMES_TEACH_HOOKS || [];
   if (!hooks.length) return;
   var complexityMap = window.__MYFLAMES_COMPLEXITY || {};
+  var complexityCharts = window.__MYFLAMES_COMPLEXITY_CHARTS || {};
 
   var chart = document.getElementById("chart-panel");
   var ctaBtn = document.getElementById("open-teach-btn");
@@ -38,43 +39,65 @@ function exportJSON() {
   var frame = document.getElementById("teach-dialog-frame");
   var closeBtn = document.getElementById("teach-dialog-close");
   var subtitle = document.getElementById("teach-dialog-subtitle");
-  var complexityPanel = document.getElementById("teach-complexity-panel");
-  var complexityBadge = document.getElementById("teach-complexity-badge");
-  var complexityRationale = document.getElementById("teach-complexity-rationale");
-  var complexityConfidence = document.getElementById("teach-complexity-confidence");
   var selectedIndex = -1;
 
-  function populateComplexityFor(hook) {
-    if (!complexityPanel) return;
+  function escapeHTML(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // Build an HTML fragment that renders the Big O complexity for a given
+  // operator — inserted inline at the bottom of each teach lesson so it's
+  // just part of the lesson's regular content flow (no modal panel, no
+  // floating overlay). Returns "" if we have no complexity for the op.
+  function complexityFragmentFor(hook) {
     var folded = (hook && hook.match && hook.match.folded_label) || "";
     var info = folded ? complexityMap[folded] : null;
-    if (!info || !info.big_o) {
-      complexityPanel.hidden = true;
-      complexityPanel.removeAttribute("data-kind");
-      return;
+    if (!info || !info.big_o) return "";
+    var chartSvg = complexityCharts[info.kind] || complexityCharts[""] || "";
+    var conf = info.confidence || "exact";
+    var confLine = "";
+    if (conf !== "exact") {
+      var confText = conf === "typical"
+        ? "Confidence: typical (EXPLAIN does not expose every parameter)."
+        : "Confidence: worst-case upper bound.";
+      confLine = '<p class="mf-complexity-confidence">' + escapeHTML(confText) + "</p>";
     }
-    complexityPanel.hidden = false;
-    complexityPanel.setAttribute("data-severity", info.severity || "medium");
-    complexityPanel.setAttribute("data-kind", info.kind || "");
-    if (complexityBadge) {
-      complexityBadge.textContent = info.big_o;
-      complexityBadge.setAttribute("data-severity", info.severity || "medium");
-    }
-    if (complexityRationale) {
-      complexityRationale.textContent = info.rationale || "";
-    }
-    if (complexityConfidence) {
-      var conf = info.confidence || "exact";
-      if (conf === "exact") {
-        complexityConfidence.hidden = true;
-        complexityConfidence.textContent = "";
-      } else {
-        complexityConfidence.hidden = false;
-        complexityConfidence.textContent =
-          conf === "typical" ? "Confidence: typical (EXPLAIN does not expose every parameter)."
-          : "Confidence: worst-case upper bound.";
-      }
-    }
+    var sevClass = "mf-sev-" + (info.severity || "medium");
+    return ""
+      + '<style>'
+      + '  .mf-complexity-section { margin: 28px auto 16px; max-width: 900px; '
+      +       'padding: 18px 22px 22px; background: #f8fafc; '
+      +       'border: 1px solid #e2e8f0; border-radius: 10px; '
+      +       'font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }'
+      + '  .mf-complexity-header { display: flex; justify-content: space-between; '
+      +       'align-items: center; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }'
+      + '  .mf-complexity-header h3 { margin: 0; font-size: 15px; font-weight: 700; '
+      +       'color: #0f172a; letter-spacing: 0.1px; }'
+      + '  .mf-complexity-badge { display: inline-block; padding: 4px 12px; '
+      +       'border-radius: 999px; font-family: ui-monospace, Menlo, monospace; '
+      +       'font-size: 13px; font-weight: 700; color: #0f172a; '
+      +       'border: 1px solid rgba(0,0,0,0.12); }'
+      + '  .mf-complexity-badge.mf-sev-good { background: rgb(100,180,180); }'
+      + '  .mf-complexity-badge.mf-sev-medium { background: rgb(255,200,50); }'
+      + '  .mf-complexity-badge.mf-sev-bad { background: rgb(255,90,90); color: #1a0000; }'
+      + '  .mf-complexity-rationale { margin: 0 0 10px; color: #1f2937; '
+      +       'font-size: 13.5px; line-height: 1.5; }'
+      + '  .mf-complexity-confidence { margin: 0 0 10px; color: #64748b; '
+      +       'font-size: 12px; font-style: italic; }'
+      + '  .mf-complexity-chart { overflow-x: auto; }'
+      + '  .mf-complexity-chart svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }'
+      + '</style>'
+      + '<section class="mf-complexity-section" aria-labelledby="mf-complexity-heading">'
+      +   '<header class="mf-complexity-header">'
+      +     '<h3 id="mf-complexity-heading">Big O complexity</h3>'
+      +     '<span class="mf-complexity-badge ' + sevClass + '">' + escapeHTML(info.big_o) + '</span>'
+      +   '</header>'
+      +   '<p class="mf-complexity-rationale">' + escapeHTML(info.rationale || "") + '</p>'
+      +   confLine
+      +   '<div class="mf-complexity-chart">' + chartSvg + '</div>'
+      + '</section>';
   }
 
   function hookAt(idx) {
@@ -100,7 +123,8 @@ function exportJSON() {
       query_sql: hook.query_sql || "",
       note: hook.note || ""
     };
-    var inject = "<script>(function(){"
+    // Bootstrap the lesson's teachRuntime controls.
+    var bootstrap = "<script>(function(){"
       + "var ctx=" + JSON.stringify(payload) + ";"
       + "function run(){"
       + "if(window.teachRuntime&&typeof window.teachRuntime.bootstrapFromObject==='function'){"
@@ -109,6 +133,11 @@ function exportJSON() {
       + "}"
       + "if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',run,{once:true});}else{run();}"
       + "})();<\/script>";
+    // Append the Big O complexity section as normal in-page content at
+    // the bottom of the lesson body. No modal, no overlay — just a
+    // regular <section> that scrolls with the rest of the lesson.
+    var complexity = complexityFragmentFor(hook);
+    var inject = complexity + bootstrap;
     if (/<\/body>/i.test(html)) {
       return html.replace(/<\/body>/i, inject + "</body>");
     }
@@ -140,7 +169,6 @@ function exportJSON() {
     if (subtitle) {
       subtitle.textContent = (hook.note || "").slice(0, 180) || ("Lesson: " + lesson);
     }
-    populateComplexityFor(hook);
     // Attach the load handler BEFORE setting srcdoc so we can't race the
     // load event. Size the iframe once on load, and again a beat later to
     // catch post-load async content growth (some lessons mount widgets
@@ -158,10 +186,6 @@ function exportJSON() {
     if (!dialog || !dialog.open) return;
     dialog.close();
     if (frame) frame.removeAttribute("srcdoc");
-    if (complexityPanel) {
-      complexityPanel.hidden = true;
-      complexityPanel.removeAttribute("data-kind");
-    }
   }
   if (chart) {
     // Use capture phase so we see the click before SVG-internal handlers

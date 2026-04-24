@@ -2512,24 +2512,43 @@ class TestComplexityIntegration(unittest.TestCase):
         svg = render_tree(self.root, width=1400, analysis=self.analysis)
         self._assert_no_complexity_in(svg)
 
-    def test_html_report_teach_dialog_has_complexity_panel(self):
-        """HTML report must carry the teach-dialog Big O panel + animated chart."""
+    def test_html_report_injects_complexity_into_lessons(self):
+        """HTML report must ship the per-operator complexity payload + chart
+        variants + client-side injection logic so the Big O section appears
+        INSIDE each teach lesson's iframe body (not as a separate modal)."""
         from myflames.output_html_report import render_html_report
         html = render_html_report(
-            self.json_text, view_type="diagram", title="test-complexity-panel",
+            self.json_text, view_type="diagram", title="test-complexity",
         )
-        # Panel scaffolding
-        self.assertIn('id="teach-complexity-panel"', html)
-        self.assertIn('id="teach-complexity-badge"', html)
-        self.assertIn('id="teach-complexity-rationale"', html)
-        self.assertIn('id="teach-complexity-chart"', html)
-        # Animated log-log chart is embedded with our distinct markers
-        self.assertIn('complexity-curve', html)
-        self.assertIn('data-complexity-kind="nlogn"', html)
-        self.assertIn('data-complexity-kind="exp"', html)
-        self.assertIn('n-cursor', html)
-        # JS payload map
+        # The old modal panel must NOT be in the DOM any more.
+        self.assertNotIn('id="teach-complexity-panel"', html)
+        self.assertNotIn('id="teach-complexity-badge"', html)
+
+        # Per-operator data + chart variants must be in the JS globals.
         self.assertIn('window.__MYFLAMES_COMPLEXITY', html)
+        self.assertIn('window.__MYFLAMES_COMPLEXITY_CHARTS', html)
+
+        # The animated log-log chart itself must be present (multiple times —
+        # one pre-rendered variant per curve-kind). The chart SVG markup is
+        # JSON-encoded into the CHARTS global so " becomes \".
+        self.assertIn('complexity-curve', html)
+        self.assertTrue(
+            'data-complexity-kind="nlogn"' in html or
+            'data-complexity-kind=\\"nlogn\\"' in html,
+            "nlogn curve marker missing from pre-rendered chart payload",
+        )
+        self.assertTrue(
+            'data-complexity-kind="exp"' in html or
+            'data-complexity-kind=\\"exp\\"' in html,
+            "exp curve marker missing from pre-rendered chart payload",
+        )
+        self.assertIn('n-cursor', html)
+
+        # The teach-bridge injects a `<section class="mf-complexity-section">`
+        # INTO each lesson's iframe body at runtime; the helper lives in
+        # output_html_report.js and must be present in the inline script.
+        self.assertIn('mf-complexity-section', html)
+        self.assertIn('complexityFragmentFor', html)
 
     def test_sidecar_emits_operator_complexities_array(self):
         from myflames.output_sidecar import build_sidecar, SCHEMA_VERSION, validate_sidecar
