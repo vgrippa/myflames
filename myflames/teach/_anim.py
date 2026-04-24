@@ -518,6 +518,27 @@ var anim = (function() {
     });
   }
 
+  // --- arrival: universal "something just landed here" pulse -----------
+  // Slice 3 / A5. Call after every tween/timeline step that places a
+  // node or cell in its final position. Centralizes the visual
+  // vocabulary so every lesson's arrival looks the same — users learn
+  // "short ring pulse = new state arrived" once, it applies everywhere.
+  //
+  //   anim.arrival(rect)                 // default ring pulse
+  //   anim.arrival(rect, {peakWidth: 3}) // tuning
+  //
+  // Respects reducedMotion() by short-circuiting to no-op.
+  function arrival(el, opts) {
+    if (!el || reducedMotion()) return;
+    opts = opts || {};
+    pulse(
+      el,
+      opts.peakWidth || 2.5,
+      opts.baseWidth || 1,
+      opts.durationMs || 320
+    );
+  }
+
   // --- svg element creators (tiny helpers to reduce boilerplate) -------
   function svgEl(tag, attrs) {
     var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -877,6 +898,7 @@ var anim = (function() {
     timeline: timeline,
     path: path,
     pulse: pulse,
+    arrival: arrival,
     svgEl: svgEl,
     reducedMotion: reducedMotion,
     setSpeed: setSpeed,

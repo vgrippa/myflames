@@ -1296,6 +1296,94 @@ def _family_chip(lesson_id: str) -> str:
     )
 
 
+def lesson_stage(
+    *,
+    sql: str,
+    note: str = "",
+    bullets: list = None,
+    svg_id: str = "viz",
+    viewbox: str = "0 0 960 540",
+    phase_default: str = "",
+    extra_stage_svg: str = "",
+    readout_placeholders: list = None,
+    explainer_title: str = "What you'll see",
+    learn_more_html: str = "",
+    toolbar_status: str = "Ready — press Play",
+) -> dict:
+    """Slice 3 / T4 — shared stage scaffold for every teach lesson.
+
+    Returns the four HTML blobs ``render_page`` expects, each already
+    composed using the smaller helpers above (``query_card``,
+    ``explainer``, ``stage_toolbar``, ``phase_nav``):
+
+        {
+          "controls_html": …,  # query card + explainer + toolbar
+          "stage_html":    …,  # <svg id=svg_id viewBox=viewbox>…</svg>
+          "readout_html":  …,  # optional dl of live-updated stats
+          "learn_more_html": … # as-passed; for curriculum Prev/Next etc.
+        }
+
+    Every output is pure HTML — the lesson is responsible only for the
+    SVG elements and the JS that animates them. Authors call
+    ``render_page(**lesson_stage(...), lesson_js=...)`` which
+    eliminates ~80 lines of duplicated per-lesson chrome and makes
+    cross-family drift impossible.
+
+    ``readout_placeholders`` is a list of ``(id, label)`` tuples that
+    render as ``<dt>label</dt><dd id="…">…</dd>`` for the lesson's JS
+    to populate at runtime.
+
+    ``phase_default`` seeds the visible phase label inside the
+    phase-nav block. The JS engine will swap it as the timeline runs.
+    """
+    if bullets is None:
+        bullets = []
+    if readout_placeholders is None:
+        readout_placeholders = []
+
+    controls = []
+    if sql:
+        controls.append(query_card(sql, note))
+    if bullets:
+        controls.append(explainer(explainer_title, bullets))
+    controls.append(stage_toolbar(toolbar_status))
+    controls_html = "\n".join(controls)
+
+    stage_html = (
+        '<div class="stage-wrap">\n'
+        f'  <svg id="{esc(svg_id)}" viewBox="{esc(viewbox)}"'
+        f' preserveAspectRatio="xMidYMid meet"'
+        f' role="img" aria-label="Lesson animation stage">\n'
+        f'    {extra_stage_svg}\n'
+        f'  </svg>\n'
+        f'  {phase_nav()}\n'
+        f'  <p class="phase-label" id="phase-label">{esc(phase_default)}</p>\n'
+        '</div>'
+    )
+
+    if readout_placeholders:
+        readout_items = "\n".join(
+            f'    <dt>{esc(label)}</dt>\n    <dd id="{esc(rid)}">—</dd>'
+            for rid, label in readout_placeholders
+        )
+        readout_html = (
+            '<section class="readout" aria-label="Live stats">\n'
+            '  <dl>\n'
+            f'{readout_items}\n'
+            '  </dl>\n'
+            '</section>'
+        )
+    else:
+        readout_html = ""
+
+    return {
+        "controls_html": controls_html,
+        "stage_html": stage_html,
+        "readout_html": readout_html,
+        "learn_more_html": learn_more_html,
+    }
+
+
 def render_page(
     *,
     lesson_id: str,
