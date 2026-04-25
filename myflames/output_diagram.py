@@ -351,6 +351,12 @@ def render_diagram(
     row_h = 100
     cost_y_offset = -20
     title_h = 82  # bumped from 56 to make room for the heat-scale legend strip
+    # bottom_pad must reserve enough vertical room for the details
+    # strip — the foreignObject sits at (details_sep_y + 4) with height
+    # = details_area_h, so ``details_area_h + small gap`` is the
+    # minimum. Was a hard 72 px which clipped the panel at the SVG
+    # bottom even before the 112 → 200 px expansion (2026-04-25).
+    # Recomputed below once details_area_h is known.
     bottom_pad = 72
     gap_between_rows = vspacing
     inner_row_offset = box_h + gap_between_rows
@@ -432,6 +438,16 @@ def render_diagram(
     details_lines_n = 6      # legacy, retained for layout math
     details_line_h = 16
     details_area_h = 200     # ~12 lines worth, was 112 px
+
+    # Now that details_area_h is known, recompute bottom_pad,
+    # diagram_height AND the SVG total height so the foreignObject
+    # actually fits inside the canvas. Otherwise it pokes out past
+    # the SVG bottom and gets clipped — which is what the user was
+    # seeing (only the first 2-3 lines of details visible, "Cost:"
+    # cut at the page edge).
+    bottom_pad = details_area_h + 16              # 16 px = sep gap + breathing room
+    diagram_height = y_inner + box_h + 56 + bottom_pad
+    height = diagram_height + info_gap + info_panel_h
     details_y_start = diagram_height - bottom_pad + 14
     details_sep_y = diagram_height - bottom_pad + 2
 
