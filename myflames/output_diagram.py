@@ -751,7 +751,12 @@ def render_diagram(
   var detailsHtml = null;
   var detailsFo = null;
   var searchBtn, content, svgEl;
-  var diagramBottom = {diagram_height};
+  // "diagramBottom" is the y below which clicks must NOT trigger
+  // pan/drag — i.e. the start of the details panel. Used to be the
+  // whole SVG height which made the details strip part of the drag
+  // region — clicking inside the foreignObject would start a chart
+  // pan instead of letting the user select+copy text. (2026-04-25)
+  var diagramBottom = {details_sep_y};
   var defaultHint = "Click a node to pin details  \u00b7  +/\u2212 to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search";
   var pinned = false, searchActive = false;
   var vx = 0, vy = 0, vs = 1;
@@ -846,6 +851,12 @@ def render_diagram(
 
     // Drag: only in diagram area, not on text and not on nodes
     svgEl.addEventListener("mousedown", function(e) {{
+      // Never start a chart pan from inside the details panel —
+      // users want to select/copy text there. The diagram-node and
+      // y > diagramBottom checks below normally cover this, but the
+      // foreignObject is an SVG element so the y-test isn't enough
+      // when the user clicks the embedded HTML directly.
+      if (e.target.closest && e.target.closest("#details-fo")) return;
       var tag = e.target.tagName ? e.target.tagName.toLowerCase() : '';
       if (tag === 'text' || tag === 'tspan') return;
       if (e.target.closest && e.target.closest(".diagram-node")) return;
@@ -866,6 +877,7 @@ def render_diagram(
       if (dragging) {{ dragging = false; svgEl.style.cursor = ""; }}
     }});
     svgEl.addEventListener("dblclick", function(e) {{
+      if (e.target.closest && e.target.closest("#details-fo")) return;
       if (e.target.closest && e.target.closest(".diagram-node")) return;
       if (svgYFromEvent(e) > diagramBottom) return;
       vx = 0; vy = 0; vs = 1;
@@ -880,6 +892,9 @@ def render_diagram(
       nodes[i].addEventListener("click", onNodeClick);
     }}
     svgEl.addEventListener("click", function(e) {{
+      // Don't unpin when the user is just clicking inside the
+      // details panel to select text.
+      if (e.target.closest && e.target.closest("#details-fo")) return;
       if (pinned && !(e.target.closest && e.target.closest(".diagram-node"))) unpinAll();
     }});
 
