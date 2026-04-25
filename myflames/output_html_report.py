@@ -661,12 +661,67 @@ def _render_suggestions(sidecar):
     return "\n".join(parts)
 
 
+#: Session variables that hold byte values. We humanize these
+#: ("134217728" → "128 MB") with the raw count preserved in the
+#: ``title`` tooltip so power users can still see the exact bytes.
+_BYTE_VARIABLES = frozenset({
+    "innodb_buffer_pool_size",
+    "innodb_log_file_size",
+    "innodb_log_buffer_size",
+    "sort_buffer_size",
+    "join_buffer_size",
+    "read_buffer_size",
+    "read_rnd_buffer_size",
+    "tmp_table_size",
+    "max_heap_table_size",
+    "key_buffer_size",
+    "query_cache_size",
+    "max_allowed_packet",
+    "binlog_cache_size",
+    "thread_stack",
+})
+
+
+def _humanize_bytes(n):
+    """Format *n* bytes as a short human string (``128 MB``, ``1.5 GB``).
+
+    Mirrors :func:`myflames.advisor._human_bytes` but kept local so
+    the report module has zero advisor coupling. Returns the input
+    unchanged when it isn't an integer-looking value.
+    """
+    try:
+        v = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    if v < 1:
+        return str(n)
+    units = ("B", "KB", "MB", "GB", "TB")
+    i = 0
+    while v >= 1024 and i < len(units) - 1:
+        v /= 1024
+        i += 1
+    if i == 0:
+        return "{:.0f} {}".format(v, units[i])
+    return "{:.1f} {}".format(v, units[i])
+
+
 def _render_environment(sidecar):
     """Collapsed ``<details>`` containing every collected artifact.
 
     Only rendered when the advisor actually ran — file-mode reports have
     no collected data and this section is skipped entirely (so newcomers
     don't see an empty expandable).
+
+    Polish pass (user request 2026-04-24):
+      * Byte-sized variables auto-humanized (134217728 → "128 MB"),
+        with raw bytes in the tooltip.
+      * optimizer_switch, which is a ~30-flag wall of text, becomes
+        an expandable chip list — the report doesn't shove the whole
+        string at the reader by default.
+      * The Tables card MERGES the previous "Table stats" + "Schema"
+        cards into one expandable per-table accordion. Click a table
+        name and it animates open to reveal columns + indexes inline.
+      * Sizes use thousands separators + human-byte suffix.
     """
     collected = sidecar.get("collected") or {}
     if not collected:
@@ -678,7 +733,6 @@ def _render_environment(sidecar):
     ]
     variables = collected.get("variables") or {}
     if variables:
-        # Show a curated subset first; then the rest in a nested details.
         SHOW = (
             "version", "innodb_buffer_pool_size", "sort_buffer_size",
             "join_buffer_size", "tmp_table_size", "max_heap_table_size",
@@ -688,51 +742,148 @@ def _render_environment(sidecar):
         parts.append('      <h3>Session variables</h3>')
         parts.append('      <table class="kv-table">')
         for name in SHOW:
-            if name in variables and variables[name]:
+            if name not in variables or not variables[name]:
+                continue
+            raw = str(variables[name])
+            if name == "optimizer_switch":
+                # 30+ flags — present as a click-to-expand chip list
+                # so the panel doesn't get dominated by one giant
+                # comma-separated string.
+                flags = [f.strip() for f in raw.split(",") if f.strip()]
+                chip_html = "".join(
+                    '<span class="opt-chip {state}">{name}</span>'.format(
+                        state="opt-on" if "=on" in f else "opt-off",
+                        name=xml_escape(f),
+                    ) for f in flags
+                )
+                parts.append(
+                    '        <tr><th>{name}</th><td>'
+                    '<details class="opt-switch-details">'
+                    '<summary>{n} flags <span class="muted">(click to expand)</span></summary>'
+                    '<div class="opt-chips">{chips}</div>'
+                    '</details></td></tr>'.format(
+                        name=xml_escape(name),
+                        n=len(flags),
+                        chips=chip_html,
+                    )
+                )
+            elif name in _BYTE_VARIABLES:
+                pretty = _humanize_bytes(raw)
+                parts.append(
+                    '        <tr><th>{name}</th>'
+                    '<td><code class="byte-val" title="{raw} bytes">{pretty}</code></td></tr>'
+                    .format(name=xml_escape(name),
+                            raw=xml_escape(raw),
+                            pretty=xml_escape(pretty))
+                )
+            else:
                 parts.append(
                     '        <tr><th>{}</th><td><code>{}</code></td></tr>'.format(
-                        xml_escape(name), xml_escape(str(variables[name])),
+                        xml_escape(name), xml_escape(raw),
                     )
                 )
         parts.append('      </table>')
         parts.append('    </div>')
+
     stats = collected.get("stats") or {}
-    if stats:
-        parts.append('    <div class="env-card">')
-        parts.append('      <h3>Table stats (information_schema.tables)</h3>')
-        parts.append('      <table class="kv-table">')
-        parts.append(
-            '        <thead><tr><th>Table</th><th>Rows</th><th>Data</th><th>Index</th></tr></thead>'
-        )
-        for name, row in stats.items():
-            parts.append(
-                '        <tr><th>{}</th><td>{:,}</td><td>{:,}</td><td>{:,}</td></tr>'.format(
-                    xml_escape(str(name)),
-                    int(row.get("table_rows") or 0),
-                    int(row.get("data_length") or 0),
-                    int(row.get("index_length") or 0),
-                )
-            )
-        parts.append('      </table>')
-        parts.append('    </div>')
     schema = collected.get("schema") or {}
-    if schema:
-        parts.append('    <div class="env-card">')
-        parts.append('      <h3>Schema (SHOW CREATE TABLE)</h3>')
-        parts.append('      <ul class="schema-list">')
-        for name, p in schema.items():
-            cols = len(p.get("columns") or [])
-            idxs = ", ".join(
-                (i.get("name") or "PRIMARY")
-                for i in (p.get("indexes") or [])
-            ) or "none"
+    # Merge stats + schema into one accordion per table. Falls back
+    # gracefully when only one of the two is populated.
+    table_names = sorted(set(stats.keys()) | set(schema.keys()))
+    if table_names:
+        parts.append('    <div class="env-card env-card-wide">')
+        parts.append(
+            '      <h3>Tables <span class="muted">'
+            '(click a name to expand)</span></h3>'
+        )
+        parts.append('      <div class="tables-accordion">')
+        for name in table_names:
+            row = stats.get(name) or {}
+            schm = schema.get(name) or {}
+            n_rows = int(row.get("table_rows") or 0)
+            data_b = int(row.get("data_length") or 0)
+            idx_b = int(row.get("index_length") or 0)
+            cols = schm.get("columns") or []
+            idxs = schm.get("indexes") or []
+            # Header row — always visible. Click toggles details.
+            parts.append('        <details class="table-details">')
             parts.append(
-                '        <li><strong>{}</strong> — {} columns · indexes: {}</li>'.format(
-                    xml_escape(str(name)), cols, xml_escape(idxs),
+                '          <summary class="table-row">'
+                '<span class="table-toggle" aria-hidden="true">▸</span>'
+                '<span class="table-name">{name}</span>'
+                '<span class="table-meta">'
+                '<span class="meta-pair"><span class="meta-label">rows</span>'
+                '<span class="meta-value">{rows}</span></span>'
+                '<span class="meta-pair"><span class="meta-label">data</span>'
+                '<span class="meta-value" title="{data_raw} bytes">{data_h}</span></span>'
+                '<span class="meta-pair"><span class="meta-label">indexes</span>'
+                '<span class="meta-value" title="{idx_raw} bytes">{idx_h}</span></span>'
+                '</span></summary>'.format(
+                    name=xml_escape(str(name)),
+                    rows="{:,}".format(n_rows),
+                    data_h=xml_escape(_humanize_bytes(data_b)),
+                    data_raw="{:,}".format(data_b),
+                    idx_h=xml_escape(_humanize_bytes(idx_b)),
+                    idx_raw="{:,}".format(idx_b),
                 )
             )
-        parts.append('      </ul>')
+            parts.append('          <div class="table-body">')
+            if cols:
+                parts.append('            <div class="cols-block">')
+                parts.append('              <h4>Columns ({})</h4>'.format(len(cols)))
+                parts.append('              <ul class="col-list">')
+                for c in cols:
+                    cname = c.get("name") or ""
+                    ctype = c.get("type") or ""
+                    nullable = c.get("nullable")
+                    null_tag = (
+                        ' <span class="col-null">NULL</span>'
+                        if nullable in (True, "YES", 1) else ""
+                    )
+                    parts.append(
+                        '                <li><code class="col-name">{n}</code>'
+                        ' <code class="col-type">{t}</code>{nl}</li>'.format(
+                            n=xml_escape(cname), t=xml_escape(ctype),
+                            nl=null_tag,
+                        )
+                    )
+                parts.append('              </ul>')
+                parts.append('            </div>')
+            if idxs:
+                parts.append('            <div class="idx-block">')
+                parts.append('              <h4>Indexes ({})</h4>'.format(len(idxs)))
+                parts.append('              <ul class="idx-list">')
+                for ix in idxs:
+                    ixn = ix.get("name") or "(unnamed)"
+                    ixcols = ix.get("columns") or []
+                    is_pk = ixn.upper() == "PRIMARY"
+                    is_uniq = ix.get("unique") in (True, 1, "YES")
+                    badge = (
+                        '<span class="idx-badge idx-pk">PK</span>' if is_pk else
+                        '<span class="idx-badge idx-uniq">UNIQUE</span>' if is_uniq else
+                        '<span class="idx-badge idx-norm">INDEX</span>'
+                    )
+                    parts.append(
+                        '                <li>{badge} <code class="idx-name">{n}</code>'
+                        ' <span class="idx-cols">({cols})</span></li>'.format(
+                            badge=badge,
+                            n=xml_escape(ixn),
+                            cols=xml_escape(", ".join(str(c) for c in ixcols)),
+                        )
+                    )
+                parts.append('              </ul>')
+                parts.append('            </div>')
+            if not cols and not idxs:
+                parts.append(
+                    '            <p class="muted">'
+                    'No SHOW CREATE TABLE data was collected for this table.'
+                    '</p>'
+                )
+            parts.append('          </div>')
+            parts.append('        </details>')
+        parts.append('      </div>')
         parts.append('    </div>')
+
     parts.append('  </div>')
     parts.append('</details>')
     return "\n".join(parts)

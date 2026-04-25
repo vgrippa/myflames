@@ -435,6 +435,202 @@ aside.glossary-aside summary h2 { display: inline; margin: 0; }
 .schema-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
 .schema-list li { padding: 3px 0; }
 
+/* Collected environment polish (2026-04-24 user request — bytes
+   should be human, tables should be expandable accordions). */
+
+.env-card-wide { grid-column: 1 / -1; }   /* Tables card spans full row */
+
+.env-card .muted {
+  font-weight: 400; color: var(--muted); text-transform: none;
+  letter-spacing: 0; font-size: 12px;
+}
+
+/* Byte values: highlight the human number, hide raw bytes in title. */
+.byte-val {
+  background: var(--accent-soft); color: var(--accent);
+  padding: 1px 8px; border-radius: var(--rad-sm);
+  font-weight: 600; font-family: var(--font-mono);
+  cursor: help;
+}
+
+/* optimizer_switch — expandable chip list, color-coded by on/off. */
+.opt-switch-details summary { cursor: pointer; }
+.opt-switch-details summary::marker { display: none; }
+.opt-switch-details summary::-webkit-details-marker { display: none; }
+.opt-switch-details summary {
+  display: inline-block; padding: 4px 8px;
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: var(--rad-sm); font-weight: 600;
+  list-style: none;
+}
+.opt-switch-details summary::before {
+  content: "▸ "; display: inline-block;
+  transition: transform var(--dur-sm) var(--ease-out);
+}
+.opt-switch-details[open] summary::before {
+  transform: rotate(90deg);
+}
+.opt-chips {
+  margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 8px; background: var(--card);
+  border: 1px solid var(--border); border-radius: var(--rad-sm);
+}
+.opt-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 4px;
+  font-family: var(--font-mono); white-space: nowrap;
+}
+.opt-chip.opt-on  { background: #e8f5e9; color: #1b5e20; }
+.opt-chip.opt-off { background: #f5f5f5; color: #757575; text-decoration: line-through; }
+
+/* Tables accordion — click row to expand columns + indexes. */
+.tables-accordion {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.table-details {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--rad);
+  transition: box-shadow var(--dur-sm) var(--ease-out);
+}
+.table-details[open] {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  border-color: var(--accent);
+}
+.table-details summary { list-style: none; cursor: pointer; }
+.table-details summary::marker { display: none; }
+.table-details summary::-webkit-details-marker { display: none; }
+.table-row {
+  /* Two-row layout. Top row: table name (flush-left, dominant) and
+     toggle chevron (far right). Bottom row: meta as a single
+     muted line. The whole <summary> is clickable, so users don't
+     have to hit the chevron — the name itself toggles the panel. */
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "name toggle"
+    "meta toggle";
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: center;
+  padding: 12px 16px;
+  user-select: none;
+  border-left: 3px solid transparent;
+  transition: border-color var(--dur-sm) var(--ease-out),
+              background var(--dur-sm) var(--ease-out);
+}
+.table-row:hover {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  border-radius: 0 var(--rad) var(--rad) 0;
+}
+.table-details[open] .table-row {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+.table-toggle {
+  /* Moved from leading the row to trailing it. The whole summary is
+     still clickable — the chevron just signals state. */
+  grid-area: toggle;
+  color: var(--muted);
+  align-self: center;
+  transition: transform var(--dur-sm) var(--ease-out),
+              color var(--dur-sm) var(--ease-out);
+  font-family: var(--font-mono);
+  font-size: 16px; font-weight: 700;
+}
+.table-row:hover .table-toggle { color: var(--accent); }
+.table-details[open] .table-toggle { transform: rotate(90deg); color: var(--accent); }
+.table-name {
+  /* Name is the anchor of each row — biggest, darkest, flush-left.
+     Eye lands here first when scanning the list. */
+  grid-area: name;
+  font-weight: 700; color: var(--fg);
+  font-family: var(--font-mono); font-size: 16px;
+  letter-spacing: -0.2px;
+}
+.table-name::before {
+  /* Small table icon to anchor the eye. Pure CSS, no external font. */
+  content: "▦";
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--accent); opacity: 0.7;
+  font-size: 14px;
+  vertical-align: 1px;
+}
+.table-row:hover .table-name { color: var(--accent); }
+.table-meta {
+  /* Meta is now a small muted line BELOW the name, not competing with
+     it on the same row. Wraps gracefully on narrow viewports. */
+  grid-area: meta;
+  display: flex; flex-wrap: wrap;
+  gap: 16px; align-items: baseline;
+  font-family: var(--font-mono); font-size: 11.5px;
+  opacity: 0.8;
+  padding-left: 22px;  /* indent to line up with the name's text */
+}
+.table-meta .meta-pair {
+  display: inline-flex; align-items: baseline; gap: 4px;
+}
+.table-meta .meta-label {
+  color: var(--muted); text-transform: uppercase;
+  font-size: 10px; letter-spacing: 0.5px; font-weight: 600;
+}
+.table-meta .meta-value {
+  color: var(--fg); font-weight: 600; cursor: help;
+}
+/* Body that animates open. <details> is binary open/closed in HTML;
+   the visual ease comes from the gentle reveal. */
+.table-body {
+  padding: 4px 18px 14px 38px;
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 18px;
+  border-top: 1px solid var(--border);
+  margin-top: -2px;
+}
+.table-body h4 {
+  font-size: 11px; margin: 8px 0 6px 0; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;
+}
+.col-list, .idx-list {
+  list-style: none; padding: 0; margin: 0;
+  font-size: 12px; line-height: 1.7;
+}
+.col-name {
+  font-family: var(--font-mono); color: var(--fg); font-weight: 600;
+  background: var(--bg); padding: 1px 6px; border-radius: 3px;
+}
+.col-type {
+  font-family: var(--font-mono); color: var(--muted); font-size: 11px;
+  margin-left: 4px;
+}
+.col-null {
+  font-size: 9px; color: var(--muted); padding: 0 4px;
+  border: 1px solid var(--border); border-radius: 3px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.idx-list li { padding: 2px 0; }
+.idx-name {
+  font-family: var(--font-mono); color: var(--fg);
+  background: var(--bg); padding: 1px 6px; border-radius: 3px;
+}
+.idx-cols {
+  font-family: var(--font-mono); color: var(--muted); font-size: 11px;
+  margin-left: 4px;
+}
+.idx-badge {
+  font-size: 9px; font-weight: 700; padding: 1px 6px;
+  border-radius: 3px; margin-right: 4px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.idx-badge.idx-pk   { background: #fff3e0; color: #e65100; }
+.idx-badge.idx-uniq { background: #e3f2fd; color: #1565c0; }
+.idx-badge.idx-norm { background: #f5f5f5; color: var(--muted); }
+
+@media (max-width: 720px) {
+  .table-meta { flex-wrap: wrap; gap: 8px; }
+  .table-body { grid-template-columns: 1fr; }
+}
+
 /* myteach hub section (below the glossary). Centralized space that
    links every report into the catalog of interactive algorithm
    lessons — user request 2026-04-24. */
