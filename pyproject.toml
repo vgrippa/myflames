@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myflames"
-version = "1.4.0"
+version = "1.5.0"
 description = "MySQL and MariaDB EXPLAIN ANALYZE visualizer: flame graphs, bar charts, treemaps, and diagrams"
 readme = "README.md"
 requires-python = ">=3.7"

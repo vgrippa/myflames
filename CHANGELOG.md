@@ -5,6 +5,206 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-04-25
+
+Minor release focused on **correctness, identity, accessibility, and
+authoring ergonomics**. Highlights: advisor rules verified against MySQL 8.4
+source (multiple incorrect claims fixed), every plan node gets a stable
+`node_id` referenced across JSON / SVG / warnings, every report ships with a
+JSON-LD envelope + cross-link to its sibling sidecar, the HTML report's
+"Collected environment" panel is a clickable accordion with human-readable
+byte values, and lesson JavaScript now lives in real `.js` files with a
+headless-browser regression harness that catches the kind of silent JS bugs
+`node --check` misses.
+
+Schema bump: sidecar **`1.2` → `1.3`** (added `$schema` URL, `plan_tree`
+identity graph, `node_id` references, `environment_findings` digest). New
+**`compare-1.0`** schema for the diff sidecar emitted alongside the
+comparison report.
+
+### Added
+
+#### Advisor correctness (verified against MySQL / MariaDB source)
+
+- **M1 — BNL / `hash_join` advice rewritten.** The pre-1.5 advice
+  recommended `optimizer_switch='hash_join=on,block_nested_loop=off'`. That's
+  wrong on MySQL 8.0.20+: `hash_join` is defined in `sql/sql_const.h:221` but
+  never checked anywhere in the planner, and `block_nested_loop=off` actually
+  *disables* the BNL→hash rewrite the executor performs at runtime
+  (`sql/sql_executor.cc:~2891`). The new rule explains directly and
+  recommends an index instead. MariaDB plans (detected by `join_cache_hashed`
+  in `optimizer_switch`) get a separate, correct branch.
+- **M2 — MRR rule gated** on a detected secondary-index range scan; never
+  forces `mrr=on` (only suggests `mrr_cost_based=on` so the cost-based gate
+  stays in charge — important on SSDs where MRR is often a regression).
+- **M3 — BKA + BNL glossary corrected.** BKA is **off by default**
+  (verified in `OPTIMIZER_SWITCH_DEFAULT` in `sql/sys_vars.cc:213`).
+- **M4 — MariaDB `range-checked-for-each-record` normalization** added.
+- **M5 — `innodb_flush_log_at_trx_commit` durability split.** `=2` (OS
+  crash only) and `=0` (any crash including mysqld) now have distinct
+  rule_ids, severities, and Why explanations.
+- **Advisor rule tagging.** Every finding carries a `rule_id` + `severity`
+  so external CI can gate on specific rules without scraping prose.
+
+#### Identity + schema backbone
+
+- **Stable `node_id`** on every parse-tree node. Derived from the canonical
+  tuple `(operation, table_name, access_type, key, sibling_position)` walked
+  from root, hashed to `n:` + 12 hex chars. Same fixture → same ids on every
+  parse. Test: `test/test_slice1_contracts.py::TestNodeIdStability`.
+- **`$schema` URL** in every sidecar pointing at the published JSON Schema
+  (`docs/schemas/sidecar-v1.json`).
+- **`plan_tree` identity graph** — compact tree of `{node_id, short_label,
+  children}` so external consumers can resolve any `node_id` reference back
+  to a position + label without parsing SVG.
+- **`operator_complexities[].node_id`** added.
+
+#### HTML report polish
+
+- **Design tokens** in `:root` — `--font-{ui,mono}`, `--sp-{1..6}`
+  (4/8/12/16/24/32), `--rad-{sm,,lg}`, `--dur-{sm,md,lg}`,
+  `--ease-{out,in-out}`.
+- **Accessibility floor.** Global `:focus-visible` ring, darkened `--muted`
+  for WCAG AA, skip-link.
+- **`prefers-reduced-motion: reduce`** guard collapses every animation
+  duration to ~0 across HTML, the standalone complexity SVG, and the Tier-1
+  lesson runtime.
+- **JSON-LD envelope** — sidecars wrap as `{ "@context":
+  "https://myflames.dev/ns/v1", "@type": "QueryPlanAnalysis", "@id": ... }`
+  so search crawlers and LLM retrieval pipelines parse correctly.
+- **`<link rel="alternate" type="application/json">`** in every HTML
+  `<head>` pointing at the sibling sidecar.
+- **Header metadata strip** (D5) — two-row sticky header with title +
+  toolbar above engine / version / operator-count / total-time / generated-at.
+- **Glossary chips become anchors.** `<abbr>` upgraded to `<a
+  href="#gloss-{key}">` with `:target` highlight + a JS shim that
+  auto-opens the collapsed `<details>`. Sibling **"Learn → "** button on
+  chips whose key has a matching teach lesson.
+- **Primary-action card always carries a `why`** — `_why_fallback()`
+  derives a non-empty rationale from the suggestion's `category`.
+- **Concrete `CREATE INDEX` DDL** in the primary-action card when the
+  primary suggestion has `category == "index"`.
+- **myteach hub.** New `myflames teach --index -o PATH` emits the
+  centralized algorithm catalog HTML; every report has a "myteach" section
+  below the glossary linking to it and listing the lessons relevant to
+  *this* plan.
+- **Collected environment panel rewrite.**
+  Bytes humanized (`134217728` → `128 MB`, raw bytes in tooltip).
+  `optimizer_switch` collapsed into a 27-flag chip list, color-coded
+  `=on` / `=off`. Tables card replaces the previous Stats + Schema cards
+  with a clickable per-table accordion: click the table name → expands
+  columns + indexes inline with PK / UNIQUE / INDEX badges.
+
+#### Visualization
+
+- **V1 — categorical flame palette** keyed to the 12 canonical access_type
+  families. Severity red stays reserved for advisor chrome (D4).
+- **V3 — squarified treemap.** Bruls/Huijsen/van Wijk replaces the old
+  slice-and-dice; cells stay near 1:1 aspect ratio.
+- **V4 — unified search counter.** Bargraph and treemap report honest
+  `Match N/M`, scroll-to-next via `n` / `N` / `Esc`.
+- **V5 — shared `fit_label()`** with Unicode middle-ellipsis and CJK-aware
+  width estimation. Migrated bargraph, treemap, diagram.
+- **viewBox** now emitted by bargraph and treemap (CLAUDE.md SVG rule was
+  previously unenforced).
+- **Hash chart winner annotation.** When a complexity chart sets
+  `lowerIsBetter: true`, the y-label gets `(lower = better ↓)` and the lower
+  curve at the cursor gets a green ✓ + a "N× cheaper" pill.
+- **Full-scan scanner is stroke-only** (was a 0.95-opacity overlay that
+  silently covered the row text underneath).
+
+#### teach lessons (Tier 0 + Tier 1)
+
+- **Tier 0 — JS authoring ergonomics.** Every lesson's JavaScript was
+  extracted from Python raw-string literals into a sibling `<lesson>.js`
+  file loaded at render time via `_html.load_lesson_js(__file__)`. Editor
+  syntax highlighting, eslint, prettier, and `node --check` all work now.
+- **Tier 1 — Motion One + d3 helpers via committed bundle.** New
+  `assets/` workspace with esbuild + TypeScript builds
+  `myflames/assets/anim-runtime.js` (68 KB minified, 25 KB gzipped) which
+  installs additive helpers on `window.anim`: `flip`, `spring`, `squarify`,
+  `smoothPath`. Bundle is checked in — end users never touch npm.
+- **`anim.arrival(el, opts)` primitive** — universal "this just landed"
+  pulse used in every lesson's `onComplete` for visual consistency.
+- **`lesson_stage()` scaffold** in `_html.py` that returns the four blobs
+  `render_page` expects.
+- **New lessons.** `teach/scan_family/covering_index.py`,
+  `teach/cache_family/buffer_pool_warmup.py`. Both verified against the
+  MySQL 8.4 source tree (`storage/innobase/dict/dict0dict.cc:3149` for the
+  PK-append behavior, `ha_innodb.cc:22692` for the dump_pct default).
+- **`nested_loop` flagship rewrite** — replaced state-swaps with tweens,
+  added arc'd probe pills via `anim.path` with 80 ms stagger, added
+  per-driver match verdicts ("Acme id=1 → 2 orders ✓").
+- **LRU lerpColor flashes + staged verdict fade-ins** (A4) — act
+  boundaries fade their conclusion in over 400 ms instead of appearing
+  instantly.
+- **`buffer_pool_warmup` + `covering_index` Play-button wiring** fixed —
+  were binding to `#btn-play` directly instead of via `wireToolbar`.
+- **`BASELINE_SPEED_SCALE`** retuned 0.52 → 0.42 (~20% slower).
+
+### Fixed
+
+- **Critical: `%%` in lesson JS was emitted as invalid JavaScript.** Six
+  lessons had `var col = i %% colsPerRow` in their raw-string templates —
+  a Python `.format()` escape mistakenly applied to lessons that never went
+  through `%`-formatting. Result: `SyntaxError` at script-parse time that
+  silently killed the whole lesson's animation in the browser.
+  `node --check` revealed it immediately.
+- **`tl.tween` was never a thing.** `skip_scan.js` called
+  `tl.tween(stage.cursor, {x,y}, 300, ease)` — that method doesn't exist
+  on the timeline API. Rewritten to `tl.call`-then-`tl.add({onUpdate})`.
+  Caught by the new headless harness on its first run.
+- **`<circle cy="NaN">` in `non_unique_lookup.js`.** Stage object missing
+  its `idxY` field; `resetStage()` did `setAttribute("cy", undefined +
+  220)` → NaN. Caught by the harness.
+
+### Test infrastructure
+
+- **`assets/verify-animations.mjs`** — headless Chromium harness that
+  loads every lesson, captures every `console.error` / `pageerror`, clicks
+  Play, and verifies the SVG byte-snapshot diverges after ~1.5 s of
+  animation. Three pre-existing silent JS bugs found on first run.
+- **`test/test_slice1_contracts.py`** — 7 contracts (advisor digest
+  goldens, MariaDB normalization invariants, `node_id` stability,
+  sidecar `$schema`, `plan_tree`, `operator_complexities[].node_id`).
+- **`test/test_compare_sidecar.py`** — round-trip + classification +
+  node-id validation for the new `compare-1.0` sidecar.
+- **`test/test_labels.py`** — pure-function tests for `fit_label()`
+  including CJK and surrogate-pair cases.
+- **`test/test_svg_contract.py`** — `assert_svg_contract()` helper:
+  asserts viewBox presence, no `calcMode="linear"` on SMIL, no unbounded
+  SMIL without a class/id/begin handle.
+
+### CI
+
+- **`.github/workflows/fixtures-drift.yml`** — nightly cron regenerates
+  fixtures from `mysql:8.4` and `mariadb:11.4` Docker images and fails on
+  drift.
+- **`.github/workflows/integration.yml`** — matrix integration tests
+  against live MySQL 8.4 + MariaDB 11.4 service containers with
+  `MYFLAMES_REQUIRE_LIVE=1` so connector tests fail rather than silently
+  skip.
+
+### Tests
+
+`1379` (1.4.0) → **`1423`** green at 1.5.0 (44 new). Headless harness
+reports **20 / 20 lessons passing**.
+
+### Build dependencies
+
+The Tier-1 bundle pulls these at build time only — they don't ship with
+the wheel and end users don't run npm:
+
+- **Motion One** (MIT) — animation runtime.
+- **d3-hierarchy** (ISC) — squarified treemap layout.
+- **d3-shape** (ISC) — Catmull-Rom curve generators.
+- **esbuild** (MIT, dev) — bundler.
+- **TypeScript** (Apache-2.0, dev) — runtime types.
+- **Puppeteer** (Apache-2.0, dev) — headless browser harness.
+
+All licenses verified by fetching upstream LICENSE files.
+
+
 ## [1.4.0] — 2026-04-23
 
 Minor release adding **Big O complexity annotations to every operator in every

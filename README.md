@@ -106,7 +106,11 @@ Interactive, offline-first HTML lessons that animate MySQL 8.4 and MariaDB 11.x 
 myflames teach btree -o btree.html && open btree.html
 ```
 
-**19 lessons** in four families:
+**21 lessons** in four families. Browse them all from one place — the catalog hub — with `myflames teach --index -o teach/index.html`:
+
+```bash
+myflames teach --index -o teach/index.html && open teach/index.html
+```
 
 ### Join family
 
@@ -140,12 +144,14 @@ myflames teach btree -o btree.html && open btree.html
 | [`teach filesort`](https://vgrippa.github.io/myflames/teach/scan/filesort.html) | How MySQL sorts without an index: `sort_buffer_size` fills, sorted runs spill to tmpdir, k-way merge. Bigger buffer = fewer runs = less I/O. |
 | [`teach tmp`](https://vgrippa.github.io/myflames/teach/scan/tmp.html) | Temporary tables — watch GROUP BY fill a MEMORY temp table, hit the limit, and convert to on-disk InnoDB. That cliff is why your query suddenly slows down. |
 | [`teach derived_table`](https://vgrippa.github.io/myflames/teach/scan/derived_table.html) | Derived Table Materialization — FROM-clause subquery materialized into temp table, auto-indexed, then probed. |
+| [`teach covering_index`](https://vgrippa.github.io/myflames/teach/scan/covering_index.html) | Covering index — non-covering vs covering vs the InnoDB PK-append property that silently covers many queries. Verified against `storage/innobase/dict/dict0dict.cc:3149`. |
 
 ### Cache family
 
 | Lesson | What you learn |
 |--------|---------------|
 | [`teach lru`](https://vgrippa.github.io/myflames/teach/cache/lru.html) | InnoDB's midpoint-insertion LRU — why MySQL's buffer pool survives full-scan pollution while a textbook LRU gets wiped. |
+| [`teach buffer_pool_warmup`](https://vgrippa.github.io/myflames/teach/cache/buffer_pool_warmup.html) | Cold start vs warm vs dump/load — `innodb_buffer_pool_dump_pct = 25` (verified in `storage/innobase/handler/ha_innodb.cc:22692`), `ib_buffer_pool` filename, `innodb_buffer_pool_load_now` async behavior. |
 
 Each lesson is a single self-contained HTML file: no external scripts, no external stylesheets, no external fonts. Drop one in a Slack DM or attach to a ticket and it just works. Hosted separately from the query-plan demos at [vgrippa.github.io/myflames/teach/](https://vgrippa.github.io/myflames/teach/).
 
@@ -230,15 +236,24 @@ myflames --output report.html explain.json
 
 ```jsonc
 {
-  "schema_version": "1.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
   "source": {"type": "live", "engine": "mysql", "engine_version": "8.4.8"},
   "plan_summary": { "total_time_ms": 12.4, "operator_count": 12, ... },
+  "plan_tree":   { "node_id": "n:a676d93c9d98", "short_label": "Limit",
+                   "children": [ ... ] },
   "warnings":    [ {"severity": "error", "category": "nonsargable_join", ...} ],
   "suggestions": [ {"severity": "high", "category": "rewrite", "action": "...", "why": "..."} ],
   "primary_action": {"ref": "suggestions[0]"},
+  "operator_complexities": [ {"node_id": "n:5416613cb59f", "big_o": "O(n · m)", ...} ],
+  "environment_findings":  [ {"rule_id": "FLUSH_LOG_COMMIT_2", "severity": "high", ...} ],
   "collected": { "variables": {...}, "stats": {...}, "schema": {...} }
 }
 ```
+
+The HTML report wraps this same payload in a JSON-LD envelope (`@context: https://myflames.dev/ns/v1`, `@type: QueryPlanAnalysis`) so search crawlers and LLM retrieval pipelines parse it correctly, and links to the sibling sidecar via `<link rel="alternate" type="application/json">`. The published JSON Schema lives at [docs/schemas/sidecar-v1.json](docs/schemas/sidecar-v1.json).
+
+For before/after diffs, `myflames compare before.json after.json --output diff.html` emits a separate sidecar at [docs/schemas/compare-v1.json](docs/schemas/compare-v1.json) (`schema_version: "compare-1.0"`) carrying `summary{regressions, improvements, unchanged}` and per-operator deltas keyed by the same `node_id`. CI can gate on `summary.regressions == 0` without scraping HTML.
 
 Read it with `jq` — no HTML parsing needed:
 
@@ -350,6 +365,63 @@ All views support **Ctrl+F** regex search. The bar chart, treemap, diagram, and 
 
 ---
 
+## For contributors
+
+End users never need anything beyond `pip install myflames` + Python 3.7. The notes here are only for people **editing the project's source**.
+
+### Editing lesson JavaScript
+
+Each `myflames/teach/<family>/<lesson>.py` has a sibling `<lesson>.js` file holding the lesson's animation code. Python reads it at render time via `_html.load_lesson_js(__file__)`. Edit the `.js` directly with full editor support (syntax highlighting, eslint, prettier).
+
+After editing, validate with the headless harness:
+
+```bash
+cd assets && node verify-animations.mjs <lesson>      # one lesson
+cd assets && node verify-animations.mjs               # all 20
+```
+
+The harness loads each lesson in real Chromium, captures every `console.error` / `pageerror`, clicks Play, and verifies the SVG actually moves over ~1.5 s. **`node --check` alone is not enough** — it catches parse errors but misses runtime issues like SVG/CSS-transform composition bugs.
+
+### Rebuilding the Tier-1 animation bundle
+
+`myflames/assets/anim-runtime.js` is a committed bundle (~68 KB minified) of [Motion One](https://motion.dev) + [d3-hierarchy](https://github.com/d3/d3-hierarchy) + [d3-shape](https://github.com/d3/d3-shape) wrapped into additive helpers on `window.anim` (`flip`, `spring`, `squarify`, `smoothPath`). The source is `assets/src/runtime.ts`. Rebuild after changes:
+
+```bash
+cd assets
+npm install          # first time only
+npm run build        # emits ../myflames/assets/anim-runtime.js
+npm run build:watch  # auto-rebuild during development
+```
+
+Runtime deps: Motion One (MIT), d3-hierarchy (ISC), d3-shape (ISC). Build-only: esbuild (MIT), TypeScript (Apache-2.0), Puppeteer (Apache-2.0). All licenses verified by fetching upstream LICENSE files.
+
+### Running the test suite
+
+```bash
+./run-tests.sh                                    # full Python suite (1423 tests)
+python3 -m unittest test/test_advisor.py          # one module
+python3 -m unittest test/test_slice1_contracts.py # advisor digest + node_id stability
+python3 -m unittest test/test_compare_sidecar.py  # compare-1.0 sidecar
+```
+
+### Regenerating fixtures
+
+`./scripts/generate-fixtures.sh` (MySQL 8.4) and `./scripts/generate-mariadb-fixtures.sh` (MariaDB 11.4) both spin up Docker containers and regenerate `test/fixtures/`. The nightly `.github/workflows/fixtures-drift.yml` job runs both and fails on any divergence so the committed fixtures stay in sync with what GA servers actually emit.
+
+### Verifying MySQL-internals claims
+
+Any new advisor rule, glossary entry, or teach lesson that quotes a specific MySQL default / file path / function name **must** be verified against the upstream source tree before merge. The required workflow:
+
+```bash
+cd /path/to/mysql-server          # or mariadb-server
+grep -n "OPTIMIZER_SWITCH_DEFAULT" sql/sys_vars.cc          # for switches
+grep -n "innodb_buffer_pool_dump_pct" storage/innobase/     # for InnoDB tunables
+```
+
+The CHANGELOG cites the file:line for every claim added in 1.5.0; follow that pattern.
+
+---
+
 ## Documentation
 
 | Page | Contents |
@@ -358,7 +430,7 @@ All views support **Ctrl+F** regex search. The bar chart, treemap, diagram, and 
 | [View Types](https://vgrippa.github.io/myflames/guide/views.html) | When to use each of the 5 visualization types |
 | [CLI Reference](https://vgrippa.github.io/myflames/guide/cli.html) | Every command, flag, and option |
 | [Architecture](https://vgrippa.github.io/myflames/guide/architecture.html) | Parser, renderers, advisor, teach module internals |
-| [Teach Lessons](https://vgrippa.github.io/myflames/teach/index.html) | All 19 interactive algorithm lessons with descriptions |
+| [Teach Lessons](https://vgrippa.github.io/myflames/teach/index.html) | All 21 interactive algorithm lessons with descriptions |
 | [Contributing](CONTRIBUTING.md) | Development setup, testing, adding lessons/rules |
 | [Visual Explain Reference](docs/VISUAL_EXPLAIN_REFERENCE.md) | Diagram layout conventions |
 | [test/README.md](test/README.md) | Running tests and fixture generation |
