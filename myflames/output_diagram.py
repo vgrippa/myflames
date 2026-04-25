@@ -713,9 +713,14 @@ def render_diagram(
     zb_size = 30
     zb_margin = 12
     zb_x = total_width - pad - zb_size - zb_margin
-    zb_y_minus = int(details_sep_y) - zb_margin - zb_size
-    zb_y_plus = zb_y_minus - 4 - zb_size
-    zb_y_reset = zb_y_minus + zb_size + 4
+    # Stack the three zoom buttons upward FROM the separator line so
+    # none of them extends past the separator into the details panel.
+    # Previous arrangement put ↺ at sep_y - 4 with height 30 → its
+    # bottom edge sat 26 px inside the details area, visibly overlapping
+    # the panel after the panel grew from 112 → 200 px (2026-04-25).
+    zb_y_reset = int(details_sep_y) - zb_margin - zb_size       # bottom button
+    zb_y_minus = zb_y_reset - 4 - zb_size                       # middle
+    zb_y_plus  = zb_y_minus  - 4 - zb_size                       # top
     lines.append(f'<g class="zoom-controls">')
     lines.append(f'<g class="zoom-btn" id="zoom-in"><rect x="{zb_x}" y="{zb_y_plus}" width="{zb_size}" height="{zb_size}"/><text x="{zb_x + zb_size/2}" y="{zb_y_plus + zb_size/2 + 6}" text-anchor="middle">+</text></g>')
     lines.append(f'<g class="zoom-btn" id="zoom-out"><rect x="{zb_x}" y="{zb_y_minus}" width="{zb_size}" height="{zb_size}"/><text x="{zb_x + zb_size/2}" y="{zb_y_minus + zb_size/2 + 6}" text-anchor="middle">\u2212</text></g>')
