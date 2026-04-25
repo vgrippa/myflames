@@ -139,6 +139,72 @@ def _write_output(content, output_path):
         sys.stdout.write(content)
 
 
+def _maybe_write_teach_bundle(args, output_path):
+    """Auto-emit the myteach catalog + every lesson into
+    ``<output_dir>/teach/`` so the report's myteach section + the
+    glossary "Learn → " chips have files to link to.
+
+    Idempotent: if ``<output_dir>/teach/index.html`` already exists,
+    skip everything (use ``--refresh-teach-bundle`` to force regen
+    after a myflames upgrade). Disabled entirely with
+    ``--no-teach-bundle`` for tests / CI / disk-constrained shells.
+
+    Cost: ~21 lesson HTML files (~70 KB each) + 1 catalog index
+    (~5 KB) = ~1.5 MB on first emission per directory. Subsequent
+    runs into the same directory are no-ops.
+
+    Errors during bundle emission never abort the main report —
+    they're logged to stderr and the report still ships.
+    """
+    if getattr(args, "no_teach_bundle", False):
+        return
+    if not output_path or output_path == "-":
+        return
+    if not output_path.lower().endswith(".html"):
+        return  # SVG / tree-text outputs don't reference teach links
+
+    out_dir = os.path.dirname(os.path.abspath(output_path))
+    teach_dir = os.path.join(out_dir, "teach")
+    index_path = os.path.join(teach_dir, "index.html")
+
+    refresh = getattr(args, "refresh_teach_bundle", False)
+    if not refresh and os.path.exists(index_path):
+        return  # Already populated.
+
+    try:
+        from .teach import LESSONS, render_lesson, render_catalog_html
+    except ImportError as e:
+        sys.stderr.write(
+            "WARN: skipping teach bundle (import failed): {}\n".format(e)
+        )
+        return
+
+    try:
+        os.makedirs(teach_dir, exist_ok=True)
+        with open(index_path, "w", encoding="utf-8") as f:
+            f.write(render_catalog_html())
+        wrote = 1
+        for slug in LESSONS:
+            lesson_path = os.path.join(teach_dir, slug + ".html")
+            if not refresh and os.path.exists(lesson_path):
+                continue
+            with open(lesson_path, "w", encoding="utf-8") as f:
+                f.write(render_lesson(slug))
+            wrote += 1
+        # Quiet by default — single-line confirmation only.
+        sys.stderr.write(
+            "Teach bundle: {} files in {}{}\n".format(
+                wrote, teach_dir,
+                " (refreshed)" if refresh else "",
+            )
+        )
+    except OSError as e:
+        sys.stderr.write(
+            "WARN: teach bundle emission failed: {} (report itself was "
+            "written successfully)\n".format(e)
+        )
+
+
 def _maybe_write_sidecar(args, root, analysis, json_text, live_artifacts, query_text):
     """Write a JSON sidecar alongside the current output, if applicable.
 
@@ -434,6 +500,24 @@ Subcommands:
         help="Do not emit a sidecar file even when --output is set.",
     )
     parser.add_argument(
+        "--no-teach-bundle", action="store_true", dest="no_teach_bundle",
+        help="When writing an HTML report, the report's myteach section "
+             "links to ./teach/index.html (the algorithm catalog) and "
+             "./teach/<lesson>.html (per-operator deep-dives) relative "
+             "to the output directory. By default myflames auto-emits "
+             "those files into <output_dir>/teach/ once per directory "
+             "so the links resolve. Pass this flag to opt out — useful "
+             "for tests and CI where the teach folder is not needed.",
+    )
+    parser.add_argument(
+        "--refresh-teach-bundle", action="store_true",
+        dest="refresh_teach_bundle",
+        help="Force the teach bundle to be regenerated even if it "
+             "already exists in <output_dir>/teach/. Use after upgrading "
+             "myflames to pick up new lesson content without manually "
+             "deleting the old folder.",
+    )
+    parser.add_argument(
         "--type",
         choices=["flamegraph", "bargraph", "treemap", "diagram", "tree"],
         default="flamegraph",
@@ -561,6 +645,10 @@ Subcommands:
             alternate_json_href=alternate_href,
         )
         _write_output(html, output_path)
+        # Auto-emit the myteach bundle alongside so the in-report
+        # links (./teach/index.html + ./teach/<lesson>.html) resolve.
+        # Idempotent — skip if teach/index.html already exists.
+        _maybe_write_teach_bundle(args, output_path)
         # Sidecar emission for HTML path — same precedence as the SVG path.
         # We re-parse here because the analyze_plan/advise pipeline below is
         # bypassed in the short-circuit branch; this stays cheap because
