@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1800" height="843" onload="init(evt)" viewBox="0 0 1800 843" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="max-width: 100%; height: auto;">
+<svg version="1.1" width="1800" height="845" onload="init(evt)" viewBox="0 0 1800 845" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="max-width: 100%; height: auto;">
 <defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs>
 <style type="text/css">text { font-family: Verdana; font-size: 12px; fill: rgb(0,0,0); }
 #search, #ignorecase { opacity:0.1; cursor:pointer; } #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
@@ -281,89 +281,83 @@
 
 ]]></script>
 <rect width="100%" height="100%" fill="url(#background)"/>
-<text id="title" x="900" y="24">Big O annotations in myflames</text>
-<text id="details" x="10" y="341"> </text>
+<text id="title" x="900" y="24">MySQL Query Plan</text>
+<text id="details" x="10" y="309"> </text>
 <text id="unzoom" class="hide" x="10" y="24">Reset Zoom</text>
 <text id="search" x="1690" y="24">Search</text>
 <text id="ignorecase" x="1774" y="24">ic</text>
-<text id="matched" x="1690" y="341"> </text>
+<text id="matched" x="1690" y="309"> </text>
 <g id="frames">
-<g><title>GROUP starts=1 rows=1 (12 ms, 92.31%)  •  O(...): O(n log n) (typical)&#10;&#10;Access: aggregate&#10;Rows: 1 actual&#10;Time: 13.023 ms (last row)&#10;Complexity: O(n log n) (typical)&#10;Sort-based aggregation: MySQL sorts by the grouping key before collapsing duplicates.</title>
-<rect x="146.9" y="197.0" width="1643.1" height="31.0" fill="rgb(208,161,40)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="212.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="149.92" y="215.50">GROUP starts=1 rows=1  O(~n log n)</text>
+<g data-teach-index="2"><title>AGGREGATE starts=1 rows=9 (6,357 ms, 99.98%)&#10;&#10;Access: temp_table_aggregate&#10;Rows: 9 actual&#10;Time: 6357.160 ms (last row)</title>
+<rect x="10.3" y="165.0" width="1779.7" height="31.0" fill="#1abc9c" rx="2" ry="2"/>
+<text x="13.28" y="183.50">AGGREGATE starts=1 rows=9</text>
 </g>
-<g data-teach-index="6"><title>INDEX LOOKUP [order_items.idx_order] starts=2400 rows=3 (6 ms, 46.15%)  •  O(...): O(log n + k)&#10;&#10;Table: testdb.order_items (index: idx_order)&#10;Access: index&#10;Rows: 3 actual (10 estimated) [OVERESTIMATE]&#10;Loops: 2400&#10;Time: 0.002 ms (last row)&#10;Cost: 2.53&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
-<rect x="694.6" y="69.0" width="821.5" height="31.0" fill="rgb(208,59,12)" rx="2" ry="2"/>
-<circle cx="1511.2" cy="84.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
-<text x="697.62" y="87.50">INDEX LOOKUP [order_items.idx_order] starts=2400 rows=3  O(log n + k)</text>
+<g data-teach-index="4"><title>FILTER ((de.to_date = DATE'9999-01-01')) starts=1 rows=240124 (319 ms, 5.02%)&#10;&#10;Access: filter&#10;Rows: 240124 actual (33114 estimated) [UNDERESTIMATE]&#10;Time: 319.156 ms (last row)&#10;Cost: 33298.55&#10;Condition: (de.to_date = DATE'9999-01-01')</title>
+<rect x="266.4" y="69.0" width="89.3" height="31.0" fill="#95a5a6" rx="2" ry="2"/>
+<text x="269.45" y="87.50">FILTER ((d..</text>
 </g>
-<g data-teach-index="4"><title>INDEX LOOKUP [orders.idx_status] starts=1 rows=2400 (1 ms, 7.69%)  •  O(...): O(log n + k)&#10;&#10;Table: testdb.orders (index: idx_status)&#10;Access: index&#10;Rows: 2400 actual (2400 estimated)&#10;Time: 1.406 ms (last row)&#10;Cost: 264.00&#10;Covering: No&#10;Complexity: O(log n + k)&#10;Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for th...</title>
-<rect x="1516.2" y="37.0" width="136.9" height="31.0" fill="rgb(205,17,26)" rx="2" ry="2"/>
-<circle cx="1648.1" cy="52.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
-<text x="1519.15" y="55.50">IND..  O(log n + k)</text>
+<g data-teach-index="6"><title>FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1 (3,970 ms, 62.44%)&#10;&#10;Access: filter&#10;Rows: 1 actual (0 estimated) [UNDERESTIMATE]&#10;Loops: 240124&#10;Time: 0.017 ms (last row)&#10;Cost: 0.39&#10;Condition: (s.to_date = DATE'9999-01-01')</title>
+<rect x="355.8" y="69.0" width="1111.5" height="31.0" fill="#95a5a6" rx="2" ry="2"/>
+<text x="358.75" y="87.50">FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1</text>
 </g>
-<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=2400 (2 ms, 15.38%)  •  O(...): O(n · log m)&#10;&#10;Access: join&#10;Rows: 2400 actual (2400 estimated)&#10;Time: 3.089 ms (last row)&#10;Cost: 1104.00&#10;Complexity: O(n · log m)&#10;Indexed nested loop: each outer row probes the inner table via an index descent.</title>
-<rect x="1516.2" y="69.0" width="273.8" height="31.0" fill="rgb(235,214,38)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="84.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="1519.15" y="87.50">NESTED LOOP INNER star..  O(n · log m)</text>
+<g data-teach-index="7"><title>INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11 (3,568 ms, 56.12%)&#10;&#10;Table: employees.salaries (index: PRIMARY)&#10;Access: index&#10;Rows: 11 actual (1 estimated) [UNDERESTIMATE]&#10;Loops: 240124&#10;Time: 0.015 ms (last row)&#10;Cost: 0.39&#10;Covering: No</title>
+<rect x="468.3" y="37.0" width="998.9" height="31.0" fill="#2ecc71" rx="2" ry="2"/>
+<text x="471.30" y="55.50">INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11</text>
 </g>
-<g data-teach-index="2"><title>NESTED LOOP INNER starts=1 rows=8000 (8 ms, 61.54%)  •  O(...): O(n · log m)&#10;&#10;Access: join&#10;Rows: 8000 actual (24326 estimated) [OVERESTIMATE]&#10;Time: 9.272 ms (last row)&#10;Cost: 9618.03&#10;Complexity: O(n · log m)&#10;Indexed nested loop: each outer row probes the inner table via an index descent.</title>
-<rect x="694.6" y="101.0" width="1095.4" height="31.0" fill="rgb(216,86,36)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="116.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="697.62" y="119.50">NESTED LOOP INNER starts=1 rows=8000  O(n · log m)</text>
+<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=240124 (5,625 ms, 88.47%)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
+<rect x="215.2" y="133.0" width="1574.8" height="31.0" fill="#3498db" rx="2" ry="2"/>
+<text x="218.21" y="151.50">NESTED LOOP INNER starts=1 rows=240124</text>
 </g>
-<g data-teach-index="5"><title>SINGLE ROW LOOKUP [users.PRIMARY] starts=2400 rows=1 (1 ms, 7.69%)  •  O(...): O(log n)&#10;&#10;Table: testdb.users (index: PRIMARY)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 2400&#10;Time: 0.001 ms (last row)&#10;Cost: 0.25&#10;Covering: No&#10;Complexity: O(log n)&#10;Unique-key lookup (eq_ref): one B+tree descent into the inner table per outer row — as fast as MySQL can get.</title>
-<rect x="1653.1" y="37.0" width="136.9" height="31.0" fill="rgb(208,213,16)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="52.5" r="3" fill="rgb(100,180,180)" stroke="rgb(40,120,120)" stroke-width="0.6" pointer-events="none"/>
-<text x="1656.08" y="55.50">SINGLE ..  O(log n)</text>
+<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=240124 (4,378 ms, 68.86%)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
+<rect x="241.5" y="101.0" width="1225.7" height="31.0" fill="#3498db" rx="2" ry="2"/>
+<text x="244.53" y="119.50">NESTED LOOP INNER starts=1 rows=240124</text>
 </g>
-<g data-teach-index="0"><title>SORT starts=1 rows=1 (13 ms, 100.00%)  •  O(...): O(n log n) (worst case)&#10;&#10;Access: sort&#10;Rows: 1 actual&#10;Time: 13.033 ms (last row)&#10;Complexity: O(n log n) (worst case)&#10;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we repo...</title>
-<rect x="10.0" y="261.0" width="1780.0" height="31.0" fill="rgb(213,14,0)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="276.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="13.00" y="279.50">SORT starts=1 rows=1  O(~n log n)</text>
+<g data-teach-index="8"><title>SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1 (1,153 ms, 18.13%)&#10;&#10;Table: employees.departments (index: PRIMARY)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 240124&#10;Time: 0.005 ms (last row)&#10;Cost: 1.00&#10;Covering: No</title>
+<rect x="1467.2" y="101.0" width="322.8" height="31.0" fill="#2ecc71" rx="2" ry="2"/>
+<text x="1470.20" y="119.50">SINGLE ROW LOOKUP [departments.PRIMARY] sta..</text>
 </g>
-<g data-teach-index="1"><title>SORT starts=1 rows=8000 (11 ms, 84.62%)  •  O(...): O(n log n) (worst case)&#10;&#10;Access: sort&#10;Rows: 8000 actual&#10;Time: 12.032 ms (last row)&#10;Complexity: O(n log n) (worst case)&#10;Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we repo...</title>
-<rect x="283.8" y="165.0" width="1506.2" height="31.0" fill="rgb(219,132,30)" rx="2" ry="2"/>
-<circle cx="1785.0" cy="180.5" r="3" fill="rgb(255,200,50)" stroke="rgb(180,140,20)" stroke-width="0.6" pointer-events="none"/>
-<text x="286.85" y="183.50">SORT starts=1 rows=8000  O(~n log n)</text>
+<g data-teach-index="0"><title>SORT starts=1 rows=9 (6,358 ms, 100.00%)&#10;&#10;Access: sort&#10;Rows: 9 actual&#10;Time: 6357.230 ms (last row)</title>
+<rect x="10.0" y="229.0" width="1780.0" height="31.0" fill="#e74c3c" rx="2" ry="2"/>
+<text x="13.00" y="247.50">SORT starts=1 rows=9</text>
 </g>
-<g><title>STREAM starts=1 rows=1 (12 ms, 92.31%)&#10;&#10;Access: stream&#10;Rows: 1 actual&#10;Time: 13.027 ms (last row)</title>
-<rect x="146.9" y="229.0" width="1643.1" height="31.0" fill="rgb(242,96,43)" rx="2" ry="2"/>
-<text x="149.92" y="247.50">STREAM starts=1 rows=1</text>
+<g data-teach-index="1"><title>TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9 (6,357 ms, 99.98%)&#10;&#10;Table: &lt;temporary&gt;&#10;Access: table&#10;Rows: 9 actual&#10;Time: 6357.164 ms (last row)</title>
+<rect x="10.3" y="197.0" width="1779.7" height="31.0" fill="#e67e22" rx="2" ry="2"/>
+<text x="13.28" y="215.50">TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9</text>
 </g>
-<g><title>STREAM starts=1 rows=8000 (9 ms, 69.23%)&#10;&#10;Access: stream&#10;Rows: 8000 actual (24326 estimated) [OVERESTIMATE]&#10;Time: 10.319 ms (last row)&#10;Cost: 9618.03</title>
-<rect x="557.7" y="133.0" width="1232.3" height="31.0" fill="rgb(229,152,49)" rx="2" ry="2"/>
-<text x="560.69" y="151.50">STREAM starts=1 rows=8000</text>
+<g data-teach-index="5"><title>TABLE SCAN [dept_emp] starts=1 rows=331603 (211 ms, 3.32%)&#10;&#10;Table: employees.dept_emp&#10;Access: table&#10;Rows: 331603 actual (331143 estimated)&#10;Time: 210.978 ms (last row)&#10;Cost: 33298.55</title>
+<rect x="296.7" y="37.0" width="59.1" height="31.0" fill="#e67e22" rx="2" ry="2"/>
+<text x="299.68" y="55.50">TABLE ..</text>
 </g>
 </g>
-<rect x="4" y="366" width="1792" height="477" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
-<rect x="4" y="376" width="1792" height="30" fill="#e8eaf6" rx="6"/>
-<rect x="4" y="382" width="1792" height="24" fill="#e8eaf6"/>
-<text x="20" y="395" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="8" y="414" width="1784" height="22" fill="#f5f5f5" rx="4"/>
-<text x="20" y="429" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
-<text x="30" y="453" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select u.country AS country,count(distinct testdb.orders.id) AS orders,sum(tmp_field) AS revenue</text>
-<text x="30" y="470" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from testdb.users u</text>
-<text x="30" y="487" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.orders o</text>
-<text x="30" y="504" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join testdb.order_items oi</text>
-<text x="30" y="521" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((u.id = o.user_id) and (oi.order_id = o.id) and (o.status = 'delivered'))</text>
-<text x="30" y="538" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by testdb.u.country</text>
-<text x="30" y="555" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by revenue desc</text>
-<rect x="8" y="565" width="1784" height="22" fill="#f1f8e9" rx="4"/>
-<text x="20" y="580" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="30" y="604" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Width = time for that operation (wider = slower). Bottom = query root; top = leaf table access.</text>
-<text x="30" y="621" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.</text>
-<text x="30" y="638" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
-<rect x="8" y="648" width="1784" height="22" fill="#e3f2fd" rx="4"/>
-<text x="20" y="663" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="30" y="687" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_condition_pushdown=on — Parts of the WHERE clause are evaluated inside the storage engine using index columns before fetching the full row — reduces rows handed to the server layer.</text>
-<text x="30" y="704" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
-<rect x="8" y="714" width="1784" height="22" fill="#fff3f3" rx="4"/>
-<text x="20" y="729" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="30" y="753" font-family="Arial,sans-serif" font-size="11" fill="#c62828">2 sort operation(s) — 8000 rows; may use disk-based filesort</text>
-<text x="30" y="770" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
-<rect x="8" y="780" width="1784" height="22" fill="#e8f5e9" rx="4"/>
-<text x="20" y="795" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="30" y="819" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<rect x="4" y="334" width="1792" height="511" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="4" y="344" width="1792" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="4" y="350" width="1792" height="24" fill="#e8eaf6"/>
+<text x="20" y="363" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="8" y="382" width="1784" height="22" fill="#f5f5f5" rx="4"/>
+<text x="20" y="397" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="30" y="421" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
+<text x="30" y="438" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
+<text x="30" y="455" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
+<text x="30" y="472" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
+<text x="30" y="489" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
+<text x="30" y="506" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
+<text x="30" y="523" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
+<rect x="8" y="533" width="1784" height="22" fill="#f1f8e9" rx="4"/>
+<text x="20" y="548" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="30" y="572" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Width = time for that operation (wider = slower). Bottom = query root; top = leaf table access.</text>
+<text x="30" y="589" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.</text>
+<text x="30" y="606" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
+<rect x="8" y="616" width="1784" height="22" fill="#e3f2fd" rx="4"/>
+<text x="20" y="631" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="30" y="655" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
+<rect x="8" y="665" width="1784" height="22" fill="#fff3f3" rx="4"/>
+<text x="20" y="680" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="30" y="704" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
+<text x="30" y="721" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
+<text x="30" y="738" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
+<text x="30" y="755" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="8" y="765" width="1784" height="22" fill="#e8f5e9" rx="4"/>
+<text x="20" y="780" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="30" y="804" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="30" y="821" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
 </svg>

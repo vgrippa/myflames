@@ -16,6 +16,8 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
   <br><em>Every operator now carries a Big O chip: <code>O(log n + k)</code>, <code>O(n · log m)</code>, <code>O(n · m)</code>, …  with a color-coded severity ramp.</em>
 </p>
 
+> **New in 1.5** — advisor rules verified line-by-line against MySQL 8.4 source (multiple incorrect claims fixed), every plan node gets a stable [`node_id`](docs/schemas/sidecar-v1.json) referenced across JSON / SVG / warnings, every report ships with a JSON-LD envelope + `<link rel="alternate">` to its sibling sidecar, the **Collected environment** panel is now an accordion with humanized byte values (`134217728` → `128 MB`) and click-to-expand columns + indexes per table, and the categorical flame palette + squarified treemap + unified search counter all landed. See the [full CHANGELOG entry](CHANGELOG.md#150--2026-04-25) for the file:line MySQL-source citations behind every advisor correction.
+
 ---
 
 ## What does the output look like?
@@ -219,9 +221,9 @@ myflames --type diagram --output report.html explain.json
 
 A self-contained file you can attach to a ticket or paste into Confluence. Built for three audiences at once:
 
-- **Newcomers** — plain-English executive summary, a single "Fix first" primary action card above the fold, glossary chips on every jargon term (`filesort`, `hash join`, `BNL`, `MRR`, `ICP`, …).
-- **Senior DBAs** — every metric, warning and `SET` / `CREATE INDEX` / `ALTER TABLE` recommendation in copy-paste-able `<pre><code>` blocks.
-- **AI agents / tools** — a `<script type="application/ld+json">` block in `<head>` with the full v1 sidecar payload, plus a `<base>.json` file written alongside. No SVG OCR needed.
+- **Newcomers** — plain-English executive summary, a single "Fix first" primary action card above the fold (always carries a `Why:` clause, even when the advisor doesn't supply one), glossary chips on every jargon term (`filesort`, `hash join`, `BNL`, `MRR`, `ICP`, …) that anchor-link to a glossary aside and to the matching `myflames teach` lesson via a sibling `Learn →` button. Below the glossary, a centralized **myteach hub** section links to the catalog of all 21 algorithm lessons and surfaces the lessons relevant to *this* plan as quick chips.
+- **Senior DBAs** — every metric, warning and `SET` / `CREATE INDEX` / `ALTER TABLE` recommendation in copy-paste-able `<pre><code>` blocks. The **Collected environment** panel renders byte-sized variables in human form (`innodb_buffer_pool_size: 128 MB`) with raw bytes in the tooltip, collapses `optimizer_switch` into a 27-flag chip list color-coded by `=on` / `=off`, and turns each touched table into a click-to-expand accordion that reveals columns (with types + NULL badges) and indexes (with PK / UNIQUE / INDEX badges + column tuples) inline. A two-row sticky header carries engine / version / operator-count / total-time / generated-at metadata pulled from the same source the JSON sidecar emits.
+- **AI agents / tools** — a `<script type="application/ld+json">` block in `<head>` wrapping the v1 sidecar payload as `{ "@context": "https://myflames.dev/ns/v1", "@type": "QueryPlanAnalysis", "@id": ... }`, a `<link rel="alternate" type="application/json">` pointing at the sibling JSON sidecar, and stable `node_id` references across warnings / `operator_complexities` / `plan_tree` so external consumers can correlate without OCR'ing SVG text.
 
 ---
 
