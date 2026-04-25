@@ -424,9 +424,14 @@ def render_diagram(
             if lbl:
                 highlight_msg_by_label[lbl] = nh.get("message") or ""
 
-    details_lines_n = 6
+    # User-feedback 2026-04-25: pre-allocated text lines clipped long
+    # node descriptions. Replaced with a foreignObject HTML div that
+    # scrolls on overflow and supports CSS resize for manual height.
+    # Default height is generous enough for typical content; users
+    # drag the handle inside the panel for taller cases.
+    details_lines_n = 6      # legacy, retained for layout math
     details_line_h = 16
-    details_area_h = 16 + details_lines_n * details_line_h  # ~112px strip
+    details_area_h = 200     # ~12 lines worth, was 112 px
     details_y_start = diagram_height - bottom_pad + 14
     details_sep_y = diagram_height - bottom_pad + 2
 
@@ -465,6 +470,23 @@ def render_diagram(
         "  .loops-line { font-size: 9.5px; font-weight: 500; }",
         "  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }",
         "  .details-line.dim { fill: #999; }",
+        # Details panel (foreignObject HTML) — scrollable + manually
+        # resizable via the inner div's CSS resize handle. The JS
+        # ResizeObserver bumps the SVG height to match so the
+        # expanded panel never gets clipped.
+        "  .details-html { box-sizing: border-box; width: 100%; height: 100%;",
+        "    padding: 8px 14px; overflow-y: auto; overflow-x: hidden;",
+        "    resize: vertical; min-height: 80px; max-height: 800px;",
+        "    background: transparent; color: #222;",
+        "    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,",
+        "      'Helvetica Neue', Arial, sans-serif;",
+        "    font-size: 12px; line-height: 1.55;",
+        "    user-select: text; -webkit-user-select: text;",
+        "    scrollbar-width: thin; }",
+        "  .details-html:focus { outline: 2px solid #1a73e8; outline-offset: -2px; }",
+        "  .details-html p { margin: 0 0 6px 0; }",
+        "  .details-html p:last-child { margin-bottom: 0; }",
+        "  .details-html .details-hint { color: #6b7280; font-style: italic; }",
         "  #search { font-size: 12px; fill: #666; cursor: pointer; }",
         "  #search:hover { fill: #000; }",
         "  .diagram-node.dim { opacity: 0.25; }",
@@ -485,20 +507,34 @@ def render_diagram(
     # Heat-scale legend strip — drawn outside diagram-content so clipPath
     # doesn't hide it. Positioned just below the subtitle.
     lines.extend(_render_legend(total_width, pad, 58, _HEAT_PALETTE, hotspot_idx is not None))
+    # Separator + details area. The details panel is now a real HTML
+    # <div> embedded via <foreignObject> so it can scroll on overflow
+    # and respond to CSS resize for manual height. Pre-allocated text
+    # lines previously clipped long descriptions (user-reported
+    # 2026-04-25).
+    fo_x = pad
+    fo_y = details_sep_y + 4
+    fo_w = total_width - 2 * pad
+    default_hint = (
+        "Click a node to pin details  \u00b7  +/\u2212 to zoom  \u00b7  "
+        "Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search"
+    )
     lines.extend([
-        # Separator + details area
-        f'<line x1="{pad}" y1="{details_sep_y}" x2="{total_width - pad}" y2="{details_sep_y}" stroke="#e0e0e0" stroke-width="1"/>',
-        f'<rect x="{pad}" y="{details_sep_y + 4}" width="{total_width - 2*pad}" height="{details_area_h}" fill="#f5f5f5" rx="4"/>',
-        f'<text id="search" x="{total_width - pad - 8}" y="{details_y_start}" text-anchor="end">Search</text>',
+        f'<line x1="{pad}" y1="{details_sep_y}" x2="{total_width - pad}" '
+        f'y2="{details_sep_y}" stroke="#e0e0e0" stroke-width="1"/>',
+        f'<rect x="{fo_x}" y="{fo_y}" width="{fo_w}" height="{details_area_h}" '
+        f'fill="#f5f5f5" rx="4"/>',
+        f'<text id="search" x="{total_width - pad - 8}" '
+        f'y="{details_y_start}" text-anchor="end">Search</text>',
+        f'<foreignObject id="details-fo" x="{fo_x}" y="{fo_y}" '
+        f'width="{fo_w}" height="{details_area_h}">'
+        f'<div xmlns="http://www.w3.org/1999/xhtml" id="details-html" '
+        f'class="details-html" tabindex="0" role="region" '
+        f'aria-label="Node details">'
+        f'<p class="details-hint">{xml_escape(default_hint)}</p>'
+        f'</div>'
+        f'</foreignObject>',
     ])
-    # Pre-allocate detail lines
-    for di in range(details_lines_n):
-        dy = details_y_start + di * details_line_h
-        default_text = "Click a node to pin details  \u00b7  +/\u2212 to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search" if di == 0 else ""
-        lines.append(
-            f'<text id="details-l{di}" x="{pad + 10}" y="{dy}" '
-            f'text-anchor="start" class="details-line">{xml_escape(default_text)}</text>'
-        )
 
     lines.append('<g id="diagram-content" clip-path="url(#diagram-clip)">')
 
@@ -688,8 +724,11 @@ def render_diagram(
 
     lines.append(f"""<script type="text/javascript"><![CDATA[
 (function() {{
-  var N_LINES = {details_lines_n};
-  var detailLines = [];
+  // Details panel is now a foreignObject HTML div (scrollable +
+  // CSS-resizable). Replaced the legacy pre-allocated <text> lines
+  // that clipped long descriptions (user-reported 2026-04-25).
+  var detailsHtml = null;
+  var detailsFo = null;
   var searchBtn, content, svgEl;
   var diagramBottom = {diagram_height};
   var defaultHint = "Click a node to pin details  \u00b7  +/\u2212 to zoom  \u00b7  Drag to pan  \u00b7  Dbl-click to reset  \u00b7  Ctrl+F to search";
@@ -704,18 +743,25 @@ def render_diagram(
     return (e.clientY - rect.top) * scale;
   }}
 
+  function _escapeHtml(s) {{
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }}
+
   function setDetailsText(parts) {{
-    for (var i = 0; i < N_LINES; i++) {{
-      if (!detailLines[i]) continue;
-      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
+    if (!detailsHtml) return;
+    var html = "";
+    for (var i = 0; i < parts.length; i++) {{
+      if (parts[i]) html += "<p>" + _escapeHtml(parts[i]) + "</p>";
     }}
+    detailsHtml.innerHTML = html;
+    detailsHtml.scrollTop = 0;
   }}
 
   function clearDetails() {{
-    if (detailLines[0]) detailLines[0].textContent = defaultHint;
-    for (var i = 1; i < N_LINES; i++) {{
-      if (detailLines[i]) detailLines[i].textContent = "";
-    }}
+    if (!detailsHtml) return;
+    detailsHtml.innerHTML = '<p class="details-hint">' +
+      _escapeHtml(defaultHint) + '</p>';
   }}
 
   function setDetailsForNode(infoStr) {{
@@ -729,9 +775,34 @@ def render_diagram(
     svgEl = document.querySelector("svg");
     content = document.getElementById("diagram-content");
     searchBtn = document.getElementById("search");
-    for (var i = 0; i < N_LINES; i++) {{
-      var el = document.getElementById("details-l" + i);
-      if (el) detailLines.push(el);
+    detailsHtml = document.getElementById("details-html");
+    detailsFo = document.getElementById("details-fo");
+    // Wire CSS resize: when the user drags the panel taller, grow the
+    // foreignObject + svg to match so the panel never clips. Falls
+    // back gracefully on browsers without ResizeObserver — the user
+    // just can't drag past the initial bounds in that case.
+    if (detailsHtml && detailsFo && typeof ResizeObserver !== "undefined") {{
+      // ResizeObserver fires once on observe() with the current
+      // contentRect. We must NOT collapse the foreignObject below
+      // its initial author-set height — only grow it when the user
+      // drags the resize handle past the original bound.
+      var initialFoH = parseFloat(detailsFo.getAttribute("height")) || 200;
+      var initialSvgH = parseFloat(svgEl.getAttribute("height")) || 0;
+      try {{
+        var ro = new ResizeObserver(function(entries) {{
+          for (var i = 0; i < entries.length; i++) {{
+            var measured = Math.round(entries[i].contentRect.height);
+            // Grow-only: ignore measurements smaller than the initial
+            // height. The user's drag is the only way to enlarge.
+            if (measured <= initialFoH) continue;
+            detailsFo.setAttribute("height", String(measured));
+            var foY = parseFloat(detailsFo.getAttribute("y")) || 0;
+            var newSvgH = Math.max(initialSvgH, foY + measured + 8);
+            svgEl.setAttribute("height", String(newSvgH));
+          }}
+        }});
+        ro.observe(detailsHtml);
+      }} catch (_) {{}}
     }}
     if (!content) return;
 

@@ -1516,7 +1516,11 @@ class TestDocumentation(unittest.TestCase):
         root = parse_explain(_load(self.HASH_JOIN))
         svg = render_diagram(root)
         self.assertIn("pinned", svg, "Click-to-pin JS missing from diagram")
-        self.assertIn("details-l0", svg, "Pre-allocated details strip missing from diagram")
+        # Details panel is now a foreignObject HTML div (id=details-html)
+        # — replaced the pre-allocated <text> lines that previously
+        # clipped long descriptions (2026-04-25 user feedback).
+        self.assertIn('id="details-html"', svg, "Details panel container missing from diagram")
+        self.assertIn('foreignObject', svg, "Details panel must use foreignObject for HTML scrolling/resize")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_details_text_is_selectable(self):
