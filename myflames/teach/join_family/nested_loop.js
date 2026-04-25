@@ -163,18 +163,28 @@ function releaseRow(tl, row) {
   });
 }
 
-// A2 — spawn one match pill at the outer-row's right edge, arc it into
-// the probe panel via anim.path(), then pulse on arrival. Pills are
-// capped to 5 visible at once to avoid cluttering the panel on wide
-// fan-outs; surplus matches just increment the counter.
+// A2 (Tier 1 migration) — spawn one match pill at the outer-row's
+// right edge, fly it into the probe panel via Motion One's spring()
+// instead of a hand-rolled quadratic-Bezier path tween. The spring
+// gives a natural over/undershoot on arrival; no separate
+// arrival-pulse is needed because the spring's settle IS the arrival
+// signal.
+//
+// What got removed (vs the previous A2 implementation):
+//   * anim.path() control-point math (~10 lines) — replaced by direct
+//     translate via anim.flip.
+//   * The per-frame onUpdate that called pill.setAttribute("transform"),
+//     because Motion One drives the CSS transform itself.
+//   * The trailing anim.arrival pulse, because spring damping handles
+//     the "I just landed" feel.
+//   * easeInOutQuad — superseded by physics.
+//
+// Pills are still capped to 5 visible at once to avoid cluttering the
+// panel on wide fan-outs; surplus matches just increment the counter.
 var PROBE_SLOT_H = 26;
 var PROBE_MAX_SLOTS = 5;
 
 function spawnProbePill(tl, row, orderId, slotIdx, totalThisIter) {
-  var cleared = false;
-  var pill = null;
-  var label = null;
-
   // Start point (at the outer row's right edge). End point is slot
   // position inside the probe panel.
   var x0 = row.cx + 4;
@@ -182,53 +192,51 @@ function spawnProbePill(tl, row, orderId, slotIdx, totalThisIter) {
   var slotClamped = Math.min(slotIdx, PROBE_MAX_SLOTS - 1);
   var x1 = stage.probePanelX + 6;
   var y1 = stage.probePanelY + slotClamped * PROBE_SLOT_H;
-  // Mid-control-point above the line so the arc has a clear curve.
-  var cx = (x0 + x1) / 2;
-  var cy = Math.min(y0, y1) - 40 - slotIdx * 4;
 
-  var pathFn = anim.path(x0, y0, cx, cy, x1, y1);
+  tl.call(function() {
+    // Build the pill at the start position. Use the SVG transform
+    // attribute for the initial placement; Motion One then animates
+    // the CSS transform, which composes on top.
+    var pill = anim.svgEl("g", {
+      transform: "translate(" + x0.toFixed(1) + "," + y0.toFixed(1) + ")"
+    });
+    var rect = anim.svgEl("rect", {
+      x: -40, y: -11, width: 96, height: 22, rx: 4, ry: 4,
+      fill: PILL_FILL, stroke: PILL_STROKE, "stroke-width": 1.2
+    });
+    var label = anim.svgEl("text", {
+      x: 8, y: 4, "text-anchor": "middle",
+      "font-size": 10.5, "font-weight": 600, fill: MATCH_TEXT
+    });
+    label.textContent = "order_id=" + orderId;
+    pill.appendChild(rect);
+    pill.appendChild(label);
+    stage.probeLanding.appendChild(pill);
 
-  tl.add({
-    from: 0, to: 1, duration: 360, ease: anim.easeInOutQuad,
-    onUpdate: function(t) {
-      if (!cleared) {
-        cleared = true;
-        // Build the pill on first frame so it doesn't flash before moving.
-        pill = anim.svgEl("g", {});
-        var rect = anim.svgEl("rect", {
-          x: -40, y: -11, width: 96, height: 22, rx: 4, ry: 4,
-          fill: PILL_FILL, stroke: PILL_STROKE, "stroke-width": 1.2
-        });
-        label = anim.svgEl("text", {
-          x: 8, y: 4, "text-anchor": "middle",
-          "font-size": 10.5, "font-weight": 600, fill: MATCH_TEXT
-        });
-        label.textContent = "order_id=" + orderId;
-        pill.appendChild(rect);
-        pill.appendChild(label);
-        stage.probeLanding.appendChild(pill);
-      }
-      var pt = pathFn(t);
+    // Tier 1: physics-damped flight to the landing slot.
+    // damping ≈ 14 gives a small overshoot then settle — visibly more
+    // "physical" than the previous easeInOutQuad path traversal.
+    if (anim.flip) {
+      anim.flip(pill, { x: x1 - x0, y: y1 - y0 }, {
+        spring: { stiffness: 160, damping: 14, mass: 1 }
+      });
+    } else {
+      // Tier 1 bundle missing (contributor without npm bundle built)
+      // — fall back to instant placement so the lesson still works.
       pill.setAttribute("transform",
-        "translate(" + pt.x.toFixed(1) + "," + pt.y.toFixed(1) + ")");
-    },
-    onComplete: function() {
-      if (pill) {
-        // A5 arrival pulse on the pill's rect.
-        anim.arrival(pill.firstChild, {peakWidth: 2.2, durationMs: 260});
-      }
-      // If more matches than visible slots, collapse surplus into a
-      // numeric counter in the last slot.
-      if (slotIdx >= PROBE_MAX_SLOTS && slotIdx === totalThisIter - 1) {
-        var overflow = anim.svgEl("text", {
-          x: stage.probePanelX + 120,
-          y: stage.probePanelY + (PROBE_MAX_SLOTS - 1) * PROBE_SLOT_H + 4,
-          "font-size": 11, "font-weight": 700, fill: MATCH_TEXT
-        });
-        overflow.textContent =
-          "… +" + (totalThisIter - PROBE_MAX_SLOTS) + " more";
-        stage.probeLanding.appendChild(overflow);
-      }
+        "translate(" + x1.toFixed(1) + "," + y1.toFixed(1) + ")");
+    }
+
+    // Overflow indicator (unchanged from previous implementation).
+    if (slotIdx >= PROBE_MAX_SLOTS && slotIdx === totalThisIter - 1) {
+      var overflow = anim.svgEl("text", {
+        x: stage.probePanelX + 120,
+        y: stage.probePanelY + (PROBE_MAX_SLOTS - 1) * PROBE_SLOT_H + 4,
+        "font-size": 11, "font-weight": 700, fill: MATCH_TEXT
+      });
+      overflow.textContent =
+        "… +" + (totalThisIter - PROBE_MAX_SLOTS) + " more";
+      stage.probeLanding.appendChild(overflow);
     }
   });
 }
