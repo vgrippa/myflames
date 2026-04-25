@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:29Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:22Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mariadb",
@@ -77,6 +78,25 @@
     }
   ],
   "executive_summary": "Query scans 2 tables and joins via block nested-loop; returns 3,000 rows in 186 ms. Main finding: join predicate wraps the column in CONVERT() — no index can be used.",
+  "plan_tree": {
+    "node_id": "n:4ee53c8ca1ad",
+    "short_label": "Nested loop inner join",
+    "folded_label": "NESTED LOOP INNER starts=1 rows=3000",
+    "children": [
+      {
+        "node_id": "n:7561bc6d0312",
+        "short_label": "Table scan [t2]",
+        "folded_label": "TABLE SCAN [t2] starts=1 rows=1000",
+        "children": []
+      },
+      {
+        "node_id": "n:d36789d76d9a",
+        "short_label": "Table scan [t1]",
+        "folded_label": "TABLE SCAN [t1] starts=1 rows=3000",
+        "children": []
+      }
+    ]
+  },
   "index_suggestions": [
     {
       "table": "t1",
@@ -133,6 +153,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:4ee53c8ca1ad",
       "folded_label": "NESTED LOOP INNER starts=1 rows=3000",
       "short_label": "Nested loop inner join",
       "complexity": {
@@ -145,6 +166,7 @@
       }
     },
     {
+      "node_id": "n:7561bc6d0312",
       "folded_label": "TABLE SCAN [t2] starts=1 rows=1000",
       "short_label": "Table scan [t2]",
       "complexity": {
@@ -157,6 +179,7 @@
       }
     },
     {
+      "node_id": "n:d36789d76d9a",
       "folded_label": "TABLE SCAN [t1] starts=1 rows=3000",
       "short_label": "Table scan [t1]",
       "complexity": {

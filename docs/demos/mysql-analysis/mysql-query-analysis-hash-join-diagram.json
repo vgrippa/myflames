@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:31Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:24Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -61,6 +62,25 @@
     }
   ],
   "executive_summary": "Query scans 2 tables and hash-joins 1 pair; returns 12,000 rows in 8.2 ms. Main finding: hash join uses join_buffer_size; an index on the join column would be faster.",
+  "plan_tree": {
+    "node_id": "n:d017511b6657",
+    "short_label": "Inner hash join (orders.user_id = users.id)",
+    "folded_label": "Inner hash join (orders.user_id = users.id) starts=1 rows=12000",
+    "children": [
+      {
+        "node_id": "n:f78dc713f35d",
+        "short_label": "Table scan [users]",
+        "folded_label": "TABLE SCAN [users] starts=1 rows=3000",
+        "children": []
+      },
+      {
+        "node_id": "n:ec47220d7a5f",
+        "short_label": "Table scan [orders]",
+        "folded_label": "TABLE SCAN [orders] starts=1 rows=12000",
+        "children": []
+      }
+    ]
+  },
   "query": {
     "raw": "/* select#1 */ select `u`.`name` AS `name`, `o`.`total` AS `total` from `testdb`.`users` `u` join `testdb`.`orders` `o` on (`o`.`user_id` = `u`.`id`)",
     "beautified": "select u.name AS name, o.total AS total\nfrom testdb.users u\n  join testdb.orders o on (o.user_id = u.id)"
@@ -114,6 +134,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:d017511b6657",
       "folded_label": "Inner hash join (orders.user_id = users.id) starts=1 rows=12000",
       "short_label": "Inner hash join (orders.user_id = users.id)",
       "complexity": {
@@ -126,6 +147,7 @@
       }
     },
     {
+      "node_id": "n:f78dc713f35d",
       "folded_label": "TABLE SCAN [users] starts=1 rows=3000",
       "short_label": "Table scan [users]",
       "complexity": {
@@ -138,6 +160,7 @@
       }
     },
     {
+      "node_id": "n:ec47220d7a5f",
       "folded_label": "TABLE SCAN [orders] starts=1 rows=12000",
       "short_label": "Table scan [orders]",
       "complexity": {

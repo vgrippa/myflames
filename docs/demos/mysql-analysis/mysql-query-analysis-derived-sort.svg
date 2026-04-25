@@ -289,31 +289,31 @@
 <text id="matched" x="1690" y="309"> </text>
 <g id="frames">
 <g><title>GROUP starts=1 rows=3000 (7 ms, 87.50%)&#10;&#10;Access: aggregate&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 6.423 ms (last row)&#10;Cost: 2374.80</title>
-<rect x="232.5" y="69.0" width="1557.5" height="31.0" fill="rgb(243,214,2)" rx="2" ry="2"/>
+<rect x="232.5" y="69.0" width="1557.5" height="31.0" fill="#1abc9c" rx="2" ry="2"/>
 <text x="235.50" y="87.50">GROUP starts=1 rows=3000</text>
 </g>
 <g data-teach-index="4"><title>INDEX SCAN [orders.idx_user] starts=1 rows=12000 (6 ms, 75.00%)&#10;&#10;Table: testdb.orders (index: idx_user)&#10;Access: index&#10;Rows: 12000 actual (11834 estimated)&#10;Time: 5.700 ms (last row)&#10;Cost: 1191.40&#10;Covering: No</title>
-<rect x="455.0" y="37.0" width="1335.0" height="31.0" fill="rgb(253,43,2)" rx="2" ry="2"/>
+<rect x="455.0" y="37.0" width="1335.0" height="31.0" fill="#f1c40f" rx="2" ry="2"/>
 <text x="458.00" y="55.50">INDEX SCAN [orders.idx_user] starts=1 rows=12000</text>
 </g>
 <g><title>LIMIT starts=1 rows=10 (8 ms, 100.00%)&#10;&#10;Access: limit&#10;Rows: 10 actual (10 estimated)&#10;Time: 7.127 ms (last row)&#10;Cost: 9738.52</title>
-<rect x="10.0" y="229.0" width="1780.0" height="31.0" fill="rgb(205,161,5)" rx="2" ry="2"/>
+<rect x="10.0" y="229.0" width="1780.0" height="31.0" fill="#bdc3c7" rx="2" ry="2"/>
 <text x="13.00" y="247.50">LIMIT starts=1 rows=10</text>
 </g>
 <g data-teach-index="3"><title>MATERIALIZE starts=1 rows=3000 (7 ms, 87.50%)&#10;&#10;Access: materialize&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 6.616 ms (last row)&#10;Cost: 2674.80</title>
-<rect x="232.5" y="101.0" width="1557.5" height="31.0" fill="rgb(251,67,29)" rx="2" ry="2"/>
+<rect x="232.5" y="101.0" width="1557.5" height="31.0" fill="#7f8c8d" rx="2" ry="2"/>
 <text x="235.50" y="119.50">MATERIALIZE starts=1 rows=3000</text>
 </g>
 <g data-teach-index="0"><title>NESTED LOOP INNER starts=1 rows=10 (7 ms, 87.50%)&#10;&#10;Access: join&#10;Rows: 10 actual (3000 estimated) [OVERESTIMATE]&#10;Time: 7.126 ms (last row)&#10;Cost: 9738.52</title>
-<rect x="232.5" y="197.0" width="1557.5" height="31.0" fill="rgb(231,166,46)" rx="2" ry="2"/>
+<rect x="232.5" y="197.0" width="1557.5" height="31.0" fill="#3498db" rx="2" ry="2"/>
 <text x="235.50" y="215.50">NESTED LOOP INNER starts=1 rows=10</text>
 </g>
 <g data-teach-index="1"><title>SORT starts=1 rows=10 (7 ms, 87.50%)&#10;&#10;Access: sort&#10;Rows: 10 actual (3000 estimated) [OVERESTIMATE]&#10;Time: 7.104 ms (last row)&#10;Cost: 6480.02</title>
-<rect x="232.5" y="165.0" width="1557.5" height="31.0" fill="rgb(213,143,4)" rx="2" ry="2"/>
+<rect x="232.5" y="165.0" width="1557.5" height="31.0" fill="#e74c3c" rx="2" ry="2"/>
 <text x="235.50" y="183.50">SORT starts=1 rows=10</text>
 </g>
 <g data-teach-index="2"><title>TABLE SCAN [agg] starts=1 rows=3000 (7 ms, 87.50%)&#10;&#10;Table: agg&#10;Access: table&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 6.767 ms (last row)&#10;Cost: 2714.80</title>
-<rect x="232.5" y="133.0" width="1557.5" height="31.0" fill="rgb(209,194,42)" rx="2" ry="2"/>
+<rect x="232.5" y="133.0" width="1557.5" height="31.0" fill="#e67e22" rx="2" ry="2"/>
 <text x="235.50" y="151.50">TABLE SCAN [agg] starts=1 rows=3000</text>
 </g>
 </g>

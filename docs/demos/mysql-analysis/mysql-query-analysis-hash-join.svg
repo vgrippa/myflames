@@ -289,15 +289,15 @@
 <text id="matched" x="1690" y="149"> </text>
 <g id="frames">
 <g data-teach-index="0"><title>Inner hash join (orders.user_id = users.id) starts=1 rows=12000 (9 ms, 100.00%)&#10;&#10;Access: join&#10;Rows: 12000 actual&#10;Time: 8.250 ms (last row)&#10;Cost: 1025.50</title>
-<rect x="10.0" y="69.0" width="1780.0" height="31.0" fill="rgb(243,34,46)" rx="2" ry="2"/>
+<rect x="10.0" y="69.0" width="1780.0" height="31.0" fill="#9b59b6" rx="2" ry="2"/>
 <text x="13.00" y="87.50">Inner hash join (orders.user_id = users.id) starts=1 rows=12000</text>
 </g>
 <g data-teach-index="2"><title>TABLE SCAN [orders] starts=1 rows=12000 (4 ms, 44.44%)&#10;&#10;Table: testdb.orders&#10;Access: table&#10;Rows: 12000 actual (11834 estimated)&#10;Time: 3.810 ms (last row)&#10;Cost: 1191.40</title>
-<rect x="405.6" y="37.0" width="791.1" height="31.0" fill="rgb(240,48,42)" rx="2" ry="2"/>
+<rect x="405.6" y="37.0" width="791.1" height="31.0" fill="#e67e22" rx="2" ry="2"/>
 <text x="408.56" y="55.50">TABLE SCAN [orders] starts=1 rows=12000</text>
 </g>
 <g data-teach-index="1"><title>TABLE SCAN [users] starts=1 rows=3000 (3 ms, 33.33%)&#10;&#10;Table: testdb.users&#10;Access: table&#10;Rows: 3000 actual (3000 estimated)&#10;Time: 2.540 ms (last row)&#10;Cost: 303.50</title>
-<rect x="1196.7" y="37.0" width="593.3" height="31.0" fill="rgb(232,118,7)" rx="2" ry="2"/>
+<rect x="1196.7" y="37.0" width="593.3" height="31.0" fill="#e67e22" rx="2" ry="2"/>
 <text x="1199.67" y="55.50">TABLE SCAN [users] starts=1 rows=3000</text>
 </g>
 </g>

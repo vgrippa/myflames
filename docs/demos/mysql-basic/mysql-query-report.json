@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:35Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:29Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -52,6 +53,73 @@
     }
   ],
   "executive_summary": "Query scans 2 tables and sorts the result; examines ~331,614 rows to return 9 in 6357 ms. Main finding: full scan of dept_emp (331,603 rows).",
+  "plan_tree": {
+    "node_id": "n:4b310806699e",
+    "short_label": "Sort",
+    "folded_label": "SORT starts=1 rows=9",
+    "children": [
+      {
+        "node_id": "n:d2dccead858b",
+        "short_label": "Table scan [<temporary>]",
+        "folded_label": "TABLE SCAN [<temporary>] starts=1 rows=9",
+        "children": [
+          {
+            "node_id": "n:36c719443bc0",
+            "short_label": "Aggregate",
+            "folded_label": "AGGREGATE starts=1 rows=9",
+            "children": [
+              {
+                "node_id": "n:62bcf2b0e81f",
+                "short_label": "Nested loop inner join",
+                "folded_label": "NESTED LOOP INNER starts=1 rows=240124",
+                "children": [
+                  {
+                    "node_id": "n:3f3b42eaef83",
+                    "short_label": "Nested loop inner join",
+                    "folded_label": "NESTED LOOP INNER starts=1 rows=240124",
+                    "children": [
+                      {
+                        "node_id": "n:9e86647097af",
+                        "short_label": "Filter: ((de.to_date = DATE'9999-01-01'))",
+                        "folded_label": "FILTER ((de.to_date = DATE'9999-01-01')) starts=1 rows=240124",
+                        "children": [
+                          {
+                            "node_id": "n:f594e5f3a9f7",
+                            "short_label": "Table scan [dept_emp]",
+                            "folded_label": "TABLE SCAN [dept_emp] starts=1 rows=331603",
+                            "children": []
+                          }
+                        ]
+                      },
+                      {
+                        "node_id": "n:d0f7a733b6e0",
+                        "short_label": "Filter: ((s.to_date = DATE'9999-01-01'))",
+                        "folded_label": "FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1",
+                        "children": [
+                          {
+                            "node_id": "n:9d8125b7e0a1",
+                            "short_label": "Index lookup [salaries.PRIMARY]",
+                            "folded_label": "INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11",
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "node_id": "n:661c6ab5d2c3",
+                    "short_label": "Single-row lookup [departments.PRIMARY]",
+                    "folded_label": "SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1",
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
   "query": {
     "raw": "/* select#1 */ select `d`.`dept_name` AS `dept_name`,round(AVG(s.salary),2) AS `avg_salary` from `employees`.`salaries` `s` join `employees`.`dept_emp` `de` join `employees`.`departments` `d` where ((`s`.`emp_no` = `de`.`emp_no`) and (`d`.`dept_no` = `de`.`dept_no`) and (`de`.`to_date` = DATE'9999-01-01') and (`s`.`to_date` = DATE'9999-01-01')) group by `employees`.`d`.`dept_name` order by `avg_salary` desc",
     "beautified": "select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary\nfrom employees.salaries s\n  join employees.dept_emp de\n  join employees.departments d\nwhere ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))\ngroup by employees.d.dept_name\norder by avg_salary desc"
@@ -184,6 +252,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:4b310806699e",
       "folded_label": "SORT starts=1 rows=9",
       "short_label": "Sort",
       "complexity": {
@@ -196,6 +265,7 @@
       }
     },
     {
+      "node_id": "n:d2dccead858b",
       "folded_label": "TABLE SCAN [<temporary>] starts=1 rows=9",
       "short_label": "Table scan [<temporary>]",
       "complexity": {
@@ -208,6 +278,7 @@
       }
     },
     {
+      "node_id": "n:62bcf2b0e81f",
       "folded_label": "NESTED LOOP INNER starts=1 rows=240124",
       "short_label": "Nested loop inner join",
       "complexity": {
@@ -220,6 +291,7 @@
       }
     },
     {
+      "node_id": "n:f594e5f3a9f7",
       "folded_label": "TABLE SCAN [dept_emp] starts=1 rows=331603",
       "short_label": "Table scan [dept_emp]",
       "complexity": {
@@ -232,6 +304,7 @@
       }
     },
     {
+      "node_id": "n:9d8125b7e0a1",
       "folded_label": "INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11",
       "short_label": "Index lookup [salaries.PRIMARY]",
       "complexity": {
@@ -244,6 +317,7 @@
       }
     },
     {
+      "node_id": "n:661c6ab5d2c3",
       "folded_label": "SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1",
       "short_label": "Single-row lookup [departments.PRIMARY]",
       "complexity": {

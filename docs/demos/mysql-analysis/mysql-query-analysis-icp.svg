@@ -289,7 +289,7 @@
 <text id="matched" x="1690" y="117"> </text>
 <g id="frames">
 <g data-teach-index="0"><title>INDEX LOOKUP [users.idx_country] starts=1 rows=600 (420 µs, 100.00%)&#10;&#10;Table: testdb.users (index: idx_country)&#10;Access: index&#10;Rows: 600 actual (600 estimated)&#10;Time: 0.419 ms (last row)&#10;Cost: 70.50&#10;Covering: No</title>
-<rect x="10.0" y="37.0" width="1780.0" height="31.0" fill="rgb(232,160,47)" rx="2" ry="2"/>
+<rect x="10.0" y="37.0" width="1780.0" height="31.0" fill="#2ecc71" rx="2" ry="2"/>
 <text x="13.00" y="55.50">INDEX LOOKUP [users.idx_country] starts=1 rows=600</text>
 </g>
 </g>

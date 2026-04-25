@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:32Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:25Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -18,6 +19,19 @@
   "warnings": [],
   "suggestions": [],
   "executive_summary": "Query runs 2 operators; returns 16,352 rows in 14 ms. No warnings.",
+  "plan_tree": {
+    "node_id": "n:c1ad68484bf7",
+    "short_label": "Filter: ((joinit.i > 50))",
+    "folded_label": "FILTER ((joinit.i > 50)) starts=1 rows=16352",
+    "children": [
+      {
+        "node_id": "n:c3c5b0dccd94",
+        "short_label": "Index range scan [joinit.PRIMARY]",
+        "folded_label": "INDEX RANGE SCAN [joinit.PRIMARY] starts=1 rows=16352",
+        "children": []
+      }
+    ]
+  },
   "query": {
     "raw": "/* select#1 */ select `test`.`joinit`.`g` AS `g` from `test`.`joinit` where (`test`.`joinit`.`i` > 50)",
     "beautified": "select test.joinit.g AS g\nfrom test.joinit\nwhere (test.joinit.i > 50)"
@@ -53,6 +67,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:c3c5b0dccd94",
       "folded_label": "INDEX RANGE SCAN [joinit.PRIMARY] starts=1 rows=16352",
       "short_label": "Index range scan [joinit.PRIMARY]",
       "complexity": {

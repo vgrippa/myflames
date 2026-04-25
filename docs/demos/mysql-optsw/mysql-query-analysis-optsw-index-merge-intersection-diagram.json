@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:34Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:28Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -35,6 +36,32 @@
   "warnings": [],
   "suggestions": [],
   "executive_summary": "Query runs 4 operators; returns 0 rows in 0.06 ms. No warnings.",
+  "plan_tree": {
+    "node_id": "n:054c50bb58f3",
+    "short_label": "Filter: (((t1.b = 100) and (t1.a = 50)))",
+    "folded_label": "FILTER (((t1.b = 100) and (t1.a = 50))) starts=1 rows=0",
+    "children": [
+      {
+        "node_id": "n:5975c5392d32",
+        "short_label": "Intersect (row ID)",
+        "folded_label": "Intersect rows sorted by row ID starts=1 rows=0",
+        "children": [
+          {
+            "node_id": "n:9e2dede1c469",
+            "short_label": "Index range scan [t1.idx_b]",
+            "folded_label": "INDEX RANGE SCAN [t1.idx_b] starts=1 rows=25",
+            "children": []
+          },
+          {
+            "node_id": "n:b47b84170ee2",
+            "short_label": "Index range scan [t1.idx_a]",
+            "folded_label": "INDEX RANGE SCAN [t1.idx_a] starts=1 rows=50",
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
   "query": {
     "raw": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`b` = 100) and (`testdb`.`t1`.`a` = 50))",
     "beautified": "select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t1\nwhere ((testdb.t1.b = 100) and (testdb.t1.a = 50))"
@@ -84,6 +111,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:5975c5392d32",
       "folded_label": "Intersect rows sorted by row ID starts=1 rows=0",
       "short_label": "Intersect (row ID)",
       "complexity": {
@@ -96,6 +124,7 @@
       }
     },
     {
+      "node_id": "n:9e2dede1c469",
       "folded_label": "INDEX RANGE SCAN [t1.idx_b] starts=1 rows=25",
       "short_label": "Index range scan [t1.idx_b]",
       "complexity": {
@@ -108,6 +137,7 @@
       }
     },
     {
+      "node_id": "n:b47b84170ee2",
       "folded_label": "INDEX RANGE SCAN [t1.idx_a] starts=1 rows=50",
       "short_label": "Index range scan [t1.idx_a]",
       "complexity": {

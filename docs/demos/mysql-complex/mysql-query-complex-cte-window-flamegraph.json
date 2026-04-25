@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:32Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:25Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -77,6 +78,108 @@
     }
   ],
   "executive_summary": "Query scans 2 tables, materializes 2 temp tables and sorts the result; examines ~4,008 rows to return 24 in 3.8 ms. Main finding: full scan of employees (2,000 rows).",
+  "plan_tree": {
+    "node_id": "n:1f1e4988985d",
+    "short_label": "Sort",
+    "folded_label": "SORT starts=1 rows=24",
+    "children": [
+      {
+        "node_id": "n:8415bc449e4d",
+        "short_label": "Stream results",
+        "folded_label": "STREAM starts=1 rows=24",
+        "children": [
+          {
+            "node_id": "n:e09d45a7f9ab",
+            "short_label": "Nested loop inner join",
+            "folded_label": "NESTED LOOP INNER starts=1 rows=24",
+            "children": [
+              {
+                "node_id": "n:e93f3abd5175",
+                "short_label": "Nested loop inner join",
+                "folded_label": "NESTED LOOP INNER starts=1 rows=24",
+                "children": [
+                  {
+                    "node_id": "n:b953fadc011c",
+                    "short_label": "Table scan [departments]",
+                    "folded_label": "TABLE SCAN [departments] starts=1 rows=8",
+                    "children": []
+                  },
+                  {
+                    "node_id": "n:28b9826d22a5",
+                    "short_label": "Filter: ((tp.rn <= 3))",
+                    "folded_label": "FILTER ((tp.rn <= 3)) starts=8 rows=3",
+                    "children": [
+                      {
+                        "node_id": "n:60bd34bb1b68",
+                        "short_label": "Index lookup [tp.<auto_key0>]",
+                        "folded_label": "INDEX LOOKUP [tp.<auto_key0>] starts=8 rows=250",
+                        "children": [
+                          {
+                            "node_id": "n:3d82bcbcdc50",
+                            "short_label": "Materialize",
+                            "folded_label": "MATERIALIZE starts=1 rows=2000",
+                            "children": [
+                              {
+                                "node_id": "n:ba04ee36d04e",
+                                "short_label": "Window aggregate: row_number() OVER (PARTITION BY ...",
+                                "folded_label": "Window aggregate: row_number() OVER (PARTITION BY e.dept_id .. starts=1 rows=2000",
+                                "children": [
+                                  {
+                                    "node_id": "n:4fab1d622697",
+                                    "short_label": "Sort",
+                                    "folded_label": "SORT starts=1 rows=2000",
+                                    "children": [
+                                      {
+                                        "node_id": "n:98ed0d4e2f31",
+                                        "short_label": "Table scan [employees]",
+                                        "folded_label": "TABLE SCAN [employees] starts=1 rows=2000",
+                                        "children": []
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "node_id": "n:c390875b730f",
+                "short_label": "Index lookup [da.<auto_key0>]",
+                "folded_label": "INDEX LOOKUP [da.<auto_key0>] starts=24 rows=1",
+                "children": [
+                  {
+                    "node_id": "n:b55f5202484b",
+                    "short_label": "Materialize",
+                    "folded_label": "MATERIALIZE starts=1 rows=8",
+                    "children": [
+                      {
+                        "node_id": "n:dff6f45b7a36",
+                        "short_label": "Group",
+                        "folded_label": "GROUP starts=1 rows=8",
+                        "children": [
+                          {
+                            "node_id": "n:90028dbcb362",
+                            "short_label": "Index scan [employees.idx_dept]",
+                            "folded_label": "INDEX SCAN [employees.idx_dept] starts=1 rows=2000",
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
   "query": {
     "raw": "with `dept_avg` as (/* select#2 */ select `demodb`.`employees`.`dept_id` AS `dept_id`,avg(`demodb`.`employees`.`salary`) AS `avg_sal`,count(0) AS `n` from `demodb`.`employees` group by `demodb`.`employees`.`dept_id`), `top_paid` as (/* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`dept_id` AS `dept_id`,`e`.`salary` AS `salary`,row_number() OVER (PARTITION BY `demodb`.`e`.`dept_id` ORDER BY `demodb`.`e`.`salary` desc )  AS `rn` from `demodb`.`employees` `e`) /* select#1 */ select `d`.`name` AS `dept`,`da`.`avg_sal` AS `avg_sal`,`tp`.`name` AS `top_earner`,`tp`.`salary` AS `salary` from `demodb`.`departments` `d` join `dept_avg` `da` join `top_paid` `tp` where ((`tp`.`dept_id` = `d`.`id`) and (`da`.`dept_id` = `d`.`id`) and (`tp`.`rn` <= 3)) order by `da`.`avg_sal` desc",
     "beautified": "with dept_avg as (/*\nselect#2 */\nselect demodb.employees.dept_id AS dept_id,avg(demodb.employees.salary) AS avg_sal,count(0) AS n\nfrom demodb.employees\ngroup by demodb.employees.dept_id), top_paid as (/*\nselect#3 */\nselect e.id AS id,e.name AS name,e.dept_id AS dept_id,e.salary AS salary,row_number() OVER (PARTITION BY demodb.e.dept_id\nORDER BY demodb.e.salary desc ) AS rn\nfrom demodb.employees e) /*\nselect#1 */\nselect d.name AS dept,da.avg_sal AS avg_sal,tp.name AS top_earner,tp.salary AS salary\nfrom demodb.departments d\n  join dept_avg da\n  join top_paid tp\nwhere ((tp.dept_id = d.id) and (da.dept_id = d.id) and (tp.rn <= 3))\norder by da.avg_sal desc"
@@ -238,6 +341,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:1f1e4988985d",
       "folded_label": "SORT starts=1 rows=24",
       "short_label": "Sort",
       "complexity": {
@@ -250,6 +354,7 @@
       }
     },
     {
+      "node_id": "n:e09d45a7f9ab",
       "folded_label": "NESTED LOOP INNER starts=1 rows=24",
       "short_label": "Nested loop inner join",
       "complexity": {
@@ -262,6 +367,7 @@
       }
     },
     {
+      "node_id": "n:b953fadc011c",
       "folded_label": "TABLE SCAN [departments] starts=1 rows=8",
       "short_label": "Table scan [departments]",
       "complexity": {
@@ -274,6 +380,7 @@
       }
     },
     {
+      "node_id": "n:60bd34bb1b68",
       "folded_label": "INDEX LOOKUP [tp.<auto_key0>] starts=8 rows=250",
       "short_label": "Index lookup [tp.<auto_key0>]",
       "complexity": {
@@ -286,6 +393,7 @@
       }
     },
     {
+      "node_id": "n:3d82bcbcdc50",
       "folded_label": "MATERIALIZE starts=1 rows=2000",
       "short_label": "Materialize",
       "complexity": {
@@ -314,6 +422,7 @@
       }
     },
     {
+      "node_id": "n:4fab1d622697",
       "folded_label": "SORT starts=1 rows=2000",
       "short_label": "Sort",
       "complexity": {
@@ -326,6 +435,7 @@
       }
     },
     {
+      "node_id": "n:98ed0d4e2f31",
       "folded_label": "TABLE SCAN [employees] starts=1 rows=2000",
       "short_label": "Table scan [employees]",
       "complexity": {
@@ -338,6 +448,7 @@
       }
     },
     {
+      "node_id": "n:c390875b730f",
       "folded_label": "INDEX LOOKUP [da.<auto_key0>] starts=24 rows=1",
       "short_label": "Index lookup [da.<auto_key0>]",
       "complexity": {
@@ -350,6 +461,7 @@
       }
     },
     {
+      "node_id": "n:b55f5202484b",
       "folded_label": "MATERIALIZE starts=1 rows=8",
       "short_label": "Materialize",
       "complexity": {
@@ -377,6 +489,7 @@
       }
     },
     {
+      "node_id": "n:dff6f45b7a36",
       "folded_label": "GROUP starts=1 rows=8",
       "short_label": "Group",
       "complexity": {
@@ -388,6 +501,7 @@
       }
     },
     {
+      "node_id": "n:90028dbcb362",
       "folded_label": "INDEX SCAN [employees.idx_dept] starts=1 rows=2000",
       "short_label": "Index scan [employees.idx_dept]",
       "complexity": {

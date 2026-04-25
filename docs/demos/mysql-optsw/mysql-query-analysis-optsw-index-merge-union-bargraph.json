@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:35Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:28Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -35,6 +36,32 @@
   "warnings": [],
   "suggestions": [],
   "executive_summary": "Query runs 4 operators; returns 75 rows in 0.18 ms. No warnings.",
+  "plan_tree": {
+    "node_id": "n:4bc09dd3516c",
+    "short_label": "Filter: (((t1.a = 50) or (t1.b = 100)))",
+    "folded_label": "FILTER (((t1.a = 50) or (t1.b = 100))) starts=1 rows=75",
+    "children": [
+      {
+        "node_id": "n:f85ded12d5b5",
+        "short_label": "Deduplicate rows sorted by row ID",
+        "folded_label": "Deduplicate rows sorted by row ID starts=1 rows=75",
+        "children": [
+          {
+            "node_id": "n:395d4e419799",
+            "short_label": "Index range scan [t1.idx_a]",
+            "folded_label": "INDEX RANGE SCAN [t1.idx_a] starts=1 rows=50",
+            "children": []
+          },
+          {
+            "node_id": "n:3b024c1dd920",
+            "short_label": "Index range scan [t1.idx_b]",
+            "folded_label": "INDEX RANGE SCAN [t1.idx_b] starts=1 rows=25",
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
   "query": {
     "raw": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` where ((`testdb`.`t1`.`a` = 50) or (`testdb`.`t1`.`b` = 100))",
     "beautified": "select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t1\nwhere ((testdb.t1.a = 50) or (testdb.t1.b = 100))"
@@ -84,6 +111,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:f85ded12d5b5",
       "folded_label": "Deduplicate rows sorted by row ID starts=1 rows=75",
       "short_label": "Deduplicate rows sorted by row ID",
       "complexity": {
@@ -96,6 +124,7 @@
       }
     },
     {
+      "node_id": "n:395d4e419799",
       "folded_label": "INDEX RANGE SCAN [t1.idx_a] starts=1 rows=50",
       "short_label": "Index range scan [t1.idx_a]",
       "complexity": {
@@ -108,6 +137,7 @@
       }
     },
     {
+      "node_id": "n:3b024c1dd920",
       "folded_label": "INDEX RANGE SCAN [t1.idx_b] starts=1 rows=25",
       "short_label": "Index range scan [t1.idx_b]",
       "complexity": {

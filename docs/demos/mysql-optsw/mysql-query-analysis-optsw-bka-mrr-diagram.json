@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:33Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:27Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -60,6 +61,32 @@
     }
   ],
   "executive_summary": "Query scans 1 table; returns 24,950 rows in 19 ms. Main finding: no index covers (y, x) on t2.",
+  "plan_tree": {
+    "node_id": "n:a5fa70f81162",
+    "short_label": "Batched key access inner join",
+    "folded_label": "Batched key access inner join starts=1 rows=24950",
+    "children": [
+      {
+        "node_id": "n:f57cd32a81a5",
+        "short_label": "Filter: (((t2.y < 1000) and (t2.x is not null)))",
+        "folded_label": "FILTER (((t2.y < 1000) and (t2.x is not null))) starts=1 rows=499",
+        "children": [
+          {
+            "node_id": "n:a7a05e53c0de",
+            "short_label": "Table scan [t2]",
+            "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+            "children": []
+          }
+        ]
+      },
+      {
+        "node_id": "n:5f37843a8944",
+        "short_label": "Multi-range index lookup on t1 using idx_a (a=t2.x)",
+        "folded_label": "Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475",
+        "children": []
+      }
+    ]
+  },
   "query": {
     "raw": "/* select#1 */ select straight_join `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t2` join `testdb`.`t1` where ((`testdb`.`t1`.`a` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 1000))",
     "beautified": "select straight_join testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t2\n  join testdb.t1\nwhere ((testdb.t1.a = testdb.t2.x) and (testdb.t2.y < 1000))"
@@ -124,6 +151,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:a5fa70f81162",
       "folded_label": "Batched key access inner join starts=1 rows=24950",
       "short_label": "Batched key access inner join",
       "complexity": {
@@ -136,6 +164,7 @@
       }
     },
     {
+      "node_id": "n:a7a05e53c0de",
       "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
       "short_label": "Table scan [t2]",
       "complexity": {
@@ -148,6 +177,7 @@
       }
     },
     {
+      "node_id": "n:5f37843a8944",
       "folded_label": "Multi-range index lookup on t1 using idx_a (a=t2.x) starts=2 rows=12475",
       "short_label": "Multi-range index lookup on t1 using idx_a (a=t2.x)",
       "complexity": {

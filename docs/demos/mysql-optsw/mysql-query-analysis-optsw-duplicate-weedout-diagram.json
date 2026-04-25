@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:34Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:27Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -52,6 +53,39 @@
     }
   ],
   "executive_summary": "Query scans 1 table; examines ~2,001 rows to return 49 in 0.35 ms. Main finding: no index covers (y, x) on t2.",
+  "plan_tree": {
+    "node_id": "n:0fc991f45412",
+    "short_label": "Remove duplicate t1 rows using temporary table (we...",
+    "folded_label": "Remove duplicate t1 rows using temporary table (weedout) starts=1 rows=49",
+    "children": [
+      {
+        "node_id": "n:e32c3e0bcf9b",
+        "short_label": "Nested loop inner join",
+        "folded_label": "NESTED LOOP INNER starts=1 rows=49",
+        "children": [
+          {
+            "node_id": "n:215e07533821",
+            "short_label": "Filter: (((t2.y < 100) and (t2.x is not null)))",
+            "folded_label": "FILTER (((t2.y < 100) and (t2.x is not null))) starts=1 rows=49",
+            "children": [
+              {
+                "node_id": "n:39a4125027ad",
+                "short_label": "Table scan [t2]",
+                "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
+                "children": []
+              }
+            ]
+          },
+          {
+            "node_id": "n:5c9e8b01da7e",
+            "short_label": "Single-row lookup [t1.PRIMARY]",
+            "folded_label": "SINGLE ROW LOOKUP [t1.PRIMARY] starts=49 rows=1",
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
   "query": {
     "raw": "/* select#1 */ select `testdb`.`t1`.`id` AS `id`,`testdb`.`t1`.`a` AS `a`,`testdb`.`t1`.`b` AS `b`,`testdb`.`t1`.`c` AS `c`,`testdb`.`t1`.`d` AS `d` from `testdb`.`t1` semi join (`testdb`.`t2`) where ((`testdb`.`t1`.`id` = `testdb`.`t2`.`x`) and (`testdb`.`t2`.`y` < 100))",
     "beautified": "select testdb.t1.id AS id,testdb.t1.a AS a,testdb.t1.b AS b,testdb.t1.c AS c,testdb.t1.d AS d\nfrom testdb.t1 semi\n  join (testdb.t2)\nwhere ((testdb.t1.id = testdb.t2.x) and (testdb.t2.y < 100))"
@@ -142,6 +176,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:0fc991f45412",
       "folded_label": "Remove duplicate t1 rows using temporary table (weedout) starts=1 rows=49",
       "short_label": "Remove duplicate t1 rows using temporary table (we...",
       "complexity": {
@@ -154,6 +189,7 @@
       }
     },
     {
+      "node_id": "n:e32c3e0bcf9b",
       "folded_label": "NESTED LOOP INNER starts=1 rows=49",
       "short_label": "Nested loop inner join",
       "complexity": {
@@ -166,6 +202,7 @@
       }
     },
     {
+      "node_id": "n:39a4125027ad",
       "folded_label": "TABLE SCAN [t2] starts=1 rows=2000",
       "short_label": "Table scan [t2]",
       "complexity": {
@@ -178,6 +215,7 @@
       }
     },
     {
+      "node_id": "n:5c9e8b01da7e",
       "folded_label": "SINGLE ROW LOOKUP [t1.PRIMARY] starts=49 rows=1",
       "short_label": "Single-row lookup [t1.PRIMARY]",
       "complexity": {

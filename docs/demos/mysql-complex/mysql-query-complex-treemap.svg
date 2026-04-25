@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="1254" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1254" style="max-width: 100%; height: auto;">
+<svg version="1.1" width="1200" height="1254" viewBox="0 0 1200 1254" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="max-width: 100%; height: auto;">
 <style>
   text { font-family: Arial, sans-serif; font-size: 11px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -8,7 +8,8 @@
   .treemap-cell { stroke: #fff; stroke-width: 1; cursor: pointer; }
   .treemap-cell:hover { opacity: 0.9; stroke: #333; stroke-width: 1.5; }
   .treemap-cell.in-query-analysis:hover { stroke: #c62828; stroke-width: 2.5; }
-  .treemap-cell.highlight { stroke: rgb(230,0,230); stroke-width: 2; }
+  .treemap-cell.highlight { stroke: rgb(210,140,210); stroke-width: 1.5; }
+  .treemap-cell.highlight-active { stroke: rgb(230,0,230); stroke-width: 3; }
   .treemap-cell.zoomed { stroke: #111; stroke-width: 2; }
   #unzoom, #search { font-size: 12px; fill: #666; cursor: pointer; }
   #unzoom:hover, #search:hover { fill: #111; }
@@ -46,32 +47,32 @@ Rows: 240124 | Loops: 1</title></rect>
 Self: 89 ms | Total: 4378 ms
 Rows: 240124 | Loops: 1</title></rect>
 <text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Nested loop inner join</text>
-<rect id="cell-5" class="treemap-cell" x="2" y="70" width="70" height="600" fill="rgb(173,216,230)" data-x="2" data-y="70" data-w="70" data-h="600" data-label="Filter: ((de.to_date = DATE'9999-01-01'))" data-info="Filter: ((de.to_date = DATE'9999-01-01'))  ·  Self: 108 ms | Total: 319 ms  ·  Rows: 240124 | Loops: 1" data-teach-index="4"><title>Filter: ((de.to_date = DATE'9999-01-01'))
-Self: 108 ms | Total: 319 ms
-Rows: 240124 | Loops: 1</title></rect>
-<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Filter: ((de.to_date = DATE'...</text>
-<rect id="cell-6" class="treemap-cell in-query-analysis" x="2" y="70" width="70" height="600" fill="rgb(144,238,144)" data-x="2" data-y="70" data-w="70" data-h="600" data-label="Table scan [dept_emp]" data-info="Table scan [dept_emp]  ·  Self: 211 ms | Total: 211 ms  ·  Rows: 331603 | Loops: 1  ·  Table: dept_emp  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-teach-index="5"><title>Table scan [dept_emp]
-Self: 211 ms | Total: 211 ms
-Rows: 331603 | Loops: 1
-Table: dept_emp
-⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</title></rect>
-<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Table scan [dept_emp]</text>
-<rect id="cell-7" class="treemap-cell" x="72" y="70" width="877" height="600" fill="rgb(173,216,230)" data-x="72" data-y="70" data-w="877" data-h="600" data-label="Filter: ((s.to_date = DATE'9999-01-01'))" data-info="Filter: ((s.to_date = DATE'9999-01-01'))  ·  Self: 402 ms | Total: 3970 ms  ·  Rows: 1 | Loops: 240124" data-teach-index="6"><title>Filter: ((s.to_date = DATE'9999-01-01'))
+<rect id="cell-5" class="treemap-cell" x="2" y="70" width="877" height="600" fill="rgb(173,216,230)" data-x="2" data-y="70" data-w="877" data-h="600" data-label="Filter: ((s.to_date = DATE'9999-01-01'))" data-info="Filter: ((s.to_date = DATE'9999-01-01'))  ·  Self: 402 ms | Total: 3970 ms  ·  Rows: 1 | Loops: 240124" data-teach-index="6"><title>Filter: ((s.to_date = DATE'9999-01-01'))
 Self: 402 ms | Total: 3970 ms
 Rows: 1 | Loops: 240124</title></rect>
-<text x="76" y="666" fill="#333" font-size="10" pointer-events="none">Filter: ((s.to_date = DATE'9...</text>
-<rect id="cell-8" class="treemap-cell" x="72" y="70" width="877" height="600" fill="rgb(144,238,144)" data-x="72" data-y="70" data-w="877" data-h="600" data-label="Index lookup [salaries.PRIMARY]" data-info="Index lookup [salaries.PRIMARY]  ·  Self: 3568 ms | Total: 3568 ms  ·  Rows: 11 | Loops: 240124  ·  Table: salaries  ·  Index: PRIMARY" data-teach-index="7"><title>Index lookup [salaries.PRIMARY]
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Filter: ((s.to_date = DATE'9999-01-01'))</text>
+<rect id="cell-6" class="treemap-cell" x="2" y="70" width="877" height="600" fill="rgb(144,238,144)" data-x="2" data-y="70" data-w="877" data-h="600" data-label="Index lookup [salaries.PRIMARY]" data-info="Index lookup [salaries.PRIMARY]  ·  Self: 3568 ms | Total: 3568 ms  ·  Rows: 11 | Loops: 240124  ·  Table: salaries  ·  Index: PRIMARY" data-teach-index="7"><title>Index lookup [salaries.PRIMARY]
 Self: 3568 ms | Total: 3568 ms
 Rows: 11 | Loops: 240124
 Table: salaries
 Index: PRIMARY</title></rect>
-<text x="76" y="666" fill="#333" font-size="10" pointer-events="none">Index lookup [salaries.PRIMA...</text>
+<text x="6" y="666" fill="#333" font-size="10" pointer-events="none">Index lookup [salaries.PRIMARY]</text>
+<rect id="cell-7" class="treemap-cell" x="879" y="70" width="70" height="600" fill="rgb(173,216,230)" data-x="879" data-y="70" data-w="70" data-h="600" data-label="Filter: ((de.to_date = DATE'9999-01-01'))" data-info="Filter: ((de.to_date = DATE'9999-01-01'))  ·  Self: 108 ms | Total: 319 ms  ·  Rows: 240124 | Loops: 1" data-teach-index="4"><title>Filter: ((de.to_date = DATE'9999-01-01'))
+Self: 108 ms | Total: 319 ms
+Rows: 240124 | Loops: 1</title></rect>
+<text x="883" y="666" fill="#333" font-size="10" pointer-events="none">Filt…1'))</text>
+<rect id="cell-8" class="treemap-cell in-query-analysis" x="879" y="70" width="70" height="600" fill="rgb(144,238,144)" data-x="879" data-y="70" data-w="70" data-h="600" data-label="Table scan [dept_emp]" data-info="Table scan [dept_emp]  ·  Self: 211 ms | Total: 211 ms  ·  Rows: 331603 | Loops: 1  ·  Table: dept_emp  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-teach-index="5"><title>Table scan [dept_emp]
+Self: 211 ms | Total: 211 ms
+Rows: 331603 | Loops: 1
+Table: dept_emp
+⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</title></rect>
+<text x="883" y="666" fill="#333" font-size="10" pointer-events="none">Table sc…</text>
 <rect id="cell-9" class="treemap-cell" x="949" y="70" width="249" height="600" fill="rgb(135,206,250)" data-x="949" data-y="70" data-w="249" data-h="600" data-label="Single-row lookup [departments.PRIMARY]" data-info="Single-row lookup [departments.PRIMARY]  ·  Self: 1153 ms | Total: 1153 ms  ·  Rows: 1 | Loops: 240124  ·  Table: departments  ·  Index: PRIMARY" data-teach-index="8"><title>Single-row lookup [departments.PRIMARY]
 Self: 1153 ms | Total: 1153 ms
 Rows: 1 | Loops: 240124
 Table: departments
 Index: PRIMARY</title></rect>
-<text x="953" y="666" fill="#333" font-size="10" pointer-events="none">Single-row lookup [departmen...</text>
+<text x="953" y="666" fill="#333" font-size="10" pointer-events="none">Single-row lookup [departments.PRIMARY]</text>
 </g>
 <line x1="2" y1="676" x2="1198" y2="676" stroke="#e0e0e0" stroke-width="1"/>
 <rect x="2" y="680" width="1196" height="74" fill="#f5f5f5" rx="4"/>
@@ -200,10 +201,39 @@ Index: PRIMARY</title></rect>
     var bcEl = document.getElementById("breadcrumb");
     if (bcEl) bcEl.textContent = "";
   }
+  // Slice 4 / V4 — unified search: honest match count + next/prev.
+  var _searchMatches = [];
+  var _searchIdx = 0;
+
+  function _clearSearchState() {
+    var cells = document.querySelectorAll(".treemap-cell");
+    for (var i = 0; i < cells.length; i++) {
+      cells[i].classList.remove("highlight");
+      cells[i].classList.remove("highlight-active");
+    }
+    _searchMatches = [];
+  }
+
+  function _focusMatch(idx) {
+    if (!_searchMatches.length) return;
+    var n = _searchMatches.length;
+    _searchIdx = ((idx %% n) + n) %% n;
+    for (var i = 0; i < n; i++) {
+      _searchMatches[i].classList.toggle("highlight-active", i === _searchIdx);
+    }
+    try {
+      _searchMatches[_searchIdx].scrollIntoView(
+        {block: "center", behavior: "smooth"});
+    } catch (e) {}
+    setDetailsText([
+      "Match " + (_searchIdx + 1) + "/" + n +
+      "  ·  n=next, N=prev, Esc=clear"
+    ]);
+  }
+
   function searchPrompt() {
     if (searchBtn.textContent === "Reset Search") {
-      var cells = document.querySelectorAll(".treemap-cell");
-      for (var i = 0; i < cells.length; i++) cells[i].classList.remove("highlight");
+      _clearSearchState();
       searchBtn.textContent = "Search";
       if (!pinnedCell) clearDetails();
       return;
@@ -213,13 +243,41 @@ Index: PRIMARY</title></rect>
     var re;
     try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
     var cells = document.querySelectorAll(".treemap-cell");
+    _searchMatches = [];
     for (var i = 0; i < cells.length; i++) {
       var label = cells[i].getAttribute("data-label") || "";
-      cells[i].classList.toggle("highlight", re.test(label));
+      var match = re.test(label);
+      cells[i].classList.toggle("highlight", match);
+      if (match) _searchMatches.push(cells[i]);
     }
     searchBtn.textContent = "Reset Search";
-    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+    if (!_searchMatches.length) {
+      setDetailsText([
+        "0 matches for " + term + "  ·  Click ‘Reset Search’ to clear"
+      ]);
+      return;
+    }
+    _focusMatch(0);
   }
+
+  function _searchNext(delta) {
+    if (!_searchMatches.length) return;
+    _focusMatch(_searchIdx + delta);
+  }
+
+  document.addEventListener("keydown", function(e) {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (e.key === "n" && _searchMatches.length) { _searchNext(1); e.preventDefault(); }
+    else if (e.key === "N" && _searchMatches.length) { _searchNext(-1); e.preventDefault(); }
+    else if (e.key === "Escape" && _searchMatches.length) {
+      _clearSearchState();
+      searchBtn.textContent = "Search";
+      if (!pinnedCell) clearDetails();
+      e.preventDefault();
+    }
+    else if (e.key === "/") { e.preventDefault(); searchPrompt(); }
+  });
+
   window.init = init;
 })();
 ]]></script>

@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:30Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:23Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mariadb",
@@ -35,6 +36,12 @@
   "warnings": [],
   "suggestions": [],
   "executive_summary": "Query runs 1 operator; returns 45 rows in 0.05 ms. No warnings.",
+  "plan_tree": {
+    "node_id": "n:67a526a822ff",
+    "short_label": "Deduplicate rows sorted by row ID on t1",
+    "folded_label": "Deduplicate rows sorted by row ID on t1 starts=1 rows=45",
+    "children": []
+  },
   "teach_hooks": [
     {
       "lesson": "index_merge",
@@ -53,6 +60,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:67a526a822ff",
       "folded_label": "Deduplicate rows sorted by row ID on t1 starts=1 rows=45",
       "short_label": "Deduplicate rows sorted by row ID on t1",
       "complexity": {

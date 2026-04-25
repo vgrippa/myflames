@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.2",
-  "generated_at": "2026-04-24T19:47:33Z",
-  "myflames_version": "1.4.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-04-25T12:51:26Z",
+  "myflames_version": "1.5.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -85,6 +86,73 @@
     }
   ],
   "executive_summary": "Query scans 2 tables, materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: full scan of org_chart (1,000 rows).",
+  "plan_tree": {
+    "node_id": "n:347eeced0b3c",
+    "short_label": "Sort",
+    "folded_label": "SORT starts=1 rows=10",
+    "children": [
+      {
+        "node_id": "n:ca439ce5f715",
+        "short_label": "Table scan [<temporary>]",
+        "folded_label": "TABLE SCAN [<temporary>] starts=1 rows=10",
+        "children": [
+          {
+            "node_id": "n:604ff20c53db",
+            "short_label": "Aggregate",
+            "folded_label": "AGGREGATE starts=1 rows=10",
+            "children": [
+              {
+                "node_id": "n:23956a72ce60",
+                "short_label": "Table scan [org_chart]",
+                "folded_label": "TABLE SCAN [org_chart] starts=1 rows=1000",
+                "children": [
+                  {
+                    "node_id": "n:0d118da99553",
+                    "short_label": "Materialize",
+                    "folded_label": "MATERIALIZE starts=1 rows=1000",
+                    "children": [
+                      {
+                        "node_id": "n:690d9483b0a5",
+                        "short_label": "Index lookup [employees.idx_mgr]",
+                        "folded_label": "INDEX LOOKUP [employees.idx_mgr] starts=1 rows=100",
+                        "children": []
+                      },
+                      {
+                        "node_id": "n:b76c70582649",
+                        "short_label": "Nested loop inner join",
+                        "folded_label": "NESTED LOOP INNER starts=2 rows=450",
+                        "children": [
+                          {
+                            "node_id": "n:e0f25f0beb5a",
+                            "short_label": "Filter: (((oc.level < 10) and (oc.id is not null)))",
+                            "folded_label": "FILTER (((oc.level < 10) and (oc.id is not null))) starts=2 rows=450",
+                            "children": [
+                              {
+                                "node_id": "n:621a4de55271",
+                                "short_label": "Scan new records on oc",
+                                "folded_label": "Scan new records on oc starts=2 rows=500",
+                                "children": []
+                              }
+                            ]
+                          },
+                          {
+                            "node_id": "n:911d971460cb",
+                            "short_label": "Index lookup [employees.idx_mgr]",
+                            "folded_label": "INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1",
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
   "query": {
     "raw": "with recursive `org_chart` as (/* select#2 */ select `demodb`.`employees`.`id` AS `id`,`demodb`.`employees`.`name` AS `name`,`demodb`.`employees`.`manager_id` AS `manager_id`,1 AS `level` from `demodb`.`employees` where (`demodb`.`employees`.`manager_id` is null) union all /* select#3 */ select `e`.`id` AS `id`,`e`.`name` AS `name`,`e`.`manager_id` AS `manager_id`,(`oc`.`level` + 1) AS `oc.level + 1` from `demodb`.`employees` `e` join `org_chart` `oc` where ((`e`.`manager_id` = `oc`.`id`) and (`oc`.`level` < 10))) /* select#1 */ select `org_chart`.`level` AS `level`,count(0) AS `headcount` from `org_chart` group by `org_chart`.`level` order by `org_chart`.`level`",
     "beautified": "with recursive org_chart as (/*\nselect#2 */\nselect demodb.employees.id AS id,demodb.employees.name AS name,demodb.employees.manager_id AS manager_id,1 AS level\nfrom demodb.employees\nwhere (demodb.employees.manager_id is null)\nunion all /*\nselect#3 */\nselect e.id AS id,e.name AS name,e.manager_id AS manager_id,(oc.level + 1) AS oc.level + 1\nfrom demodb.employees e\n  join org_chart oc\nwhere ((e.manager_id = oc.id) and (oc.level < 10))) /*\nselect#1 */\nselect org_chart.level AS level,count(0) AS headcount\nfrom org_chart\ngroup by org_chart.level\norder by org_chart.level"
@@ -218,6 +286,7 @@
   ],
   "operator_complexities": [
     {
+      "node_id": "n:347eeced0b3c",
       "folded_label": "SORT starts=1 rows=10",
       "short_label": "Sort",
       "complexity": {
@@ -230,6 +299,7 @@
       }
     },
     {
+      "node_id": "n:ca439ce5f715",
       "folded_label": "TABLE SCAN [<temporary>] starts=1 rows=10",
       "short_label": "Table scan [<temporary>]",
       "complexity": {
@@ -242,6 +312,7 @@
       }
     },
     {
+      "node_id": "n:23956a72ce60",
       "folded_label": "TABLE SCAN [org_chart] starts=1 rows=1000",
       "short_label": "Table scan [org_chart]",
       "complexity": {
@@ -254,6 +325,7 @@
       }
     },
     {
+      "node_id": "n:0d118da99553",
       "folded_label": "MATERIALIZE starts=1 rows=1000",
       "short_label": "Materialize",
       "complexity": {
@@ -282,6 +354,7 @@
       }
     },
     {
+      "node_id": "n:690d9483b0a5",
       "folded_label": "INDEX LOOKUP [employees.idx_mgr] starts=1 rows=100",
       "short_label": "Index lookup [employees.idx_mgr]",
       "complexity": {
@@ -294,6 +367,7 @@
       }
     },
     {
+      "node_id": "n:b76c70582649",
       "folded_label": "NESTED LOOP INNER starts=2 rows=450",
       "short_label": "Nested loop inner join",
       "complexity": {
@@ -306,6 +380,7 @@
       }
     },
     {
+      "node_id": "n:911d971460cb",
       "folded_label": "INDEX LOOKUP [employees.idx_mgr] starts=900 rows=1",
       "short_label": "Index lookup [employees.idx_mgr]",
       "complexity": {
