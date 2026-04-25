@@ -367,60 +367,9 @@ All views support **Ctrl+F** regex search. The bar chart, treemap, diagram, and 
 
 ---
 
-## For contributors
+## Contributing
 
-End users never need anything beyond `pip install myflames` + Python 3.7. The notes here are only for people **editing the project's source**.
-
-### Editing lesson JavaScript
-
-Each `myflames/teach/<family>/<lesson>.py` has a sibling `<lesson>.js` file holding the lesson's animation code. Python reads it at render time via `_html.load_lesson_js(__file__)`. Edit the `.js` directly with full editor support (syntax highlighting, eslint, prettier).
-
-After editing, validate with the headless harness:
-
-```bash
-cd assets && node verify-animations.mjs <lesson>      # one lesson
-cd assets && node verify-animations.mjs               # all 20
-```
-
-The harness loads each lesson in real Chromium, captures every `console.error` / `pageerror`, clicks Play, and verifies the SVG actually moves over ~1.5 s. **`node --check` alone is not enough** — it catches parse errors but misses runtime issues like SVG/CSS-transform composition bugs.
-
-### Rebuilding the Tier-1 animation bundle
-
-`myflames/assets/anim-runtime.js` is a committed bundle (~68 KB minified) of [Motion One](https://motion.dev) + [d3-hierarchy](https://github.com/d3/d3-hierarchy) + [d3-shape](https://github.com/d3/d3-shape) wrapped into additive helpers on `window.anim` (`flip`, `spring`, `squarify`, `smoothPath`). The source is `assets/src/runtime.ts`. Rebuild after changes:
-
-```bash
-cd assets
-npm install          # first time only
-npm run build        # emits ../myflames/assets/anim-runtime.js
-npm run build:watch  # auto-rebuild during development
-```
-
-Runtime deps: Motion One (MIT), d3-hierarchy (ISC), d3-shape (ISC). Build-only: esbuild (MIT), TypeScript (Apache-2.0), Puppeteer (Apache-2.0). All licenses verified by fetching upstream LICENSE files.
-
-### Running the test suite
-
-```bash
-./run-tests.sh                                    # full Python suite (1423 tests)
-python3 -m unittest test/test_advisor.py          # one module
-python3 -m unittest test/test_slice1_contracts.py # advisor digest + node_id stability
-python3 -m unittest test/test_compare_sidecar.py  # compare-1.0 sidecar
-```
-
-### Regenerating fixtures
-
-`./scripts/generate-fixtures.sh` (MySQL 8.4) and `./scripts/generate-mariadb-fixtures.sh` (MariaDB 11.4) both spin up Docker containers and regenerate `test/fixtures/`. The nightly `.github/workflows/fixtures-drift.yml` job runs both and fails on any divergence so the committed fixtures stay in sync with what GA servers actually emit.
-
-### Verifying MySQL-internals claims
-
-Any new advisor rule, glossary entry, or teach lesson that quotes a specific MySQL default / file path / function name **must** be verified against the upstream source tree before merge. The required workflow:
-
-```bash
-cd /path/to/mysql-server          # or mariadb-server
-grep -n "OPTIMIZER_SWITCH_DEFAULT" sql/sys_vars.cc          # for switches
-grep -n "innodb_buffer_pool_dump_pct" storage/innobase/     # for InnoDB tunables
-```
-
-The CHANGELOG cites the file:line for every claim added in 1.5.0; follow that pattern.
+End users never need anything beyond `pip install myflames` + Python 3.7. If you want to **edit the project's source** — write a new lesson, add an advisor rule, modify the Tier-1 animation runtime, or run the headless animation harness — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
