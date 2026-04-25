@@ -189,15 +189,28 @@ function buildTimeline() {
 
       tl.mark("Group: " + grp.label);
 
-      /* Jump cursor to this group */
+      /* Jump cursor to this group. tl.tween() never existed on the
+         timeline API — the call here was buggy and silently killed
+         the lesson script (caught 2026-04-25 by the headless harness).
+         The timeline only exposes add()/delay()/call()/mark(). The
+         right pattern is tl.call() to capture from-coords, then
+         tl.add() to interpolate. */
+      var fromX, fromY, fromOpacity;
+      var toX = gx + 2, toY = stage.cellStartY;
       tl.call(function() {
         phase.textContent = "Jump to group: " + grp.label;
+        fromX = parseFloat(stage.cursor.getAttribute("x")) || 0;
+        fromY = parseFloat(stage.cursor.getAttribute("y")) || 0;
+        fromOpacity = parseFloat(stage.cursor.getAttribute("opacity")) || 0;
       });
-      tl.tween(stage.cursor, {
-        x: gx + 2, y: stage.cellStartY,
-        opacity: 1
-      }, 300, anim.easeOutCubic);
-      tl.delay(300);
+      tl.add({
+        from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
+        onUpdate: function(t) {
+          stage.cursor.setAttribute("x", anim.lerp(fromX, toX, t));
+          stage.cursor.setAttribute("y", anim.lerp(fromY, toY, t));
+          stage.cursor.setAttribute("opacity", anim.lerp(fromOpacity, 1, t));
+        }
+      });
 
       /* Scan within group */
       for (var r = 0; r < cells.length; r++) {

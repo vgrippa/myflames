@@ -180,6 +180,9 @@ function buildStage() {
     probeDot: probeDot,
     nodes: {root: root, internal: internal, leaf: leafRect},
     idxX: idxX,
+    idxY: idxY,   // 2026-04-25: was missing — caused cy=NaN when
+                  // resetStage() did setAttribute("cy", idxY + 220).
+                  // Found by the headless animation harness.
     tblX: tblX,
     tblY: tblY
   };
