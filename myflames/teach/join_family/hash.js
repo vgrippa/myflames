@@ -349,6 +349,12 @@ function renderChart(buildRows, rowSize, jbs, currentProbe) {
     width: 560, height: 200,
     xMin: 1000, xMax: 1e8,
     xLabel: "employees row count", yLabel: "Row comparisons",
+    // lowerIsBetter appends "(lower = better)" to the y-label and
+    // marks the lower curve at the cursor with a green check + a
+    // "Hash is N cheaper" callout. Fixes the "is hash worse?"
+    // misread reported by the user (cost charts read inverse to the
+    // default "higher = better" eye bias).
+    lowerIsBetter: true,
     curves: [
       { label: "Hash: O(depts+emps) = O(n+m)", color: "#0d9488",
         fn: function(n) { return hashJoinCost(buildRows, n, rowSize, jbs).cmp; } },

@@ -665,12 +665,17 @@ var anim = (function() {
       svgEl.appendChild(xl);
     }
     if (opts.yLabel) {
+      // When lowerIsBetter is set, append a hint so readers don't
+      // bring the default "higher = better" intuition. User-reported
+      // confusion 2026-04-24 — the chart was correct but read wrong.
+      var yLabelText = opts.yLabel;
+      if (opts.lowerIsBetter) yLabelText += "  (lower = better ↓)";
       var yl = svgEl_create("text", {
         x: 12, y: padT + plotH/2,
         "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
         transform: "rotate(-90 12," + (padT + plotH/2) + ")"
       });
-      yl.textContent = opts.yLabel;
+      yl.textContent = yLabelText;
       svgEl.appendChild(yl);
     }
 
@@ -710,16 +715,22 @@ var anim = (function() {
     if (opts.current && opts.current.x) {
       var cx = opts.current.x;
       if (cx >= xMin && cx <= xMax) {
-        opts.curves.forEach(function(c, idx) {
+        // Compute each curve's y at the cursor — used both for the
+        // dots AND the lower-is-better winner annotation below.
+        var perCurve = opts.curves.map(function(c) {
           var cy = c.fn(cx);
-          if (!isFinite(cy) || cy <= 0) return;
-          var svg = toSvg(cx, cy);
+          return (isFinite(cy) && cy > 0) ? { c: c, cy: cy } : null;
+        }).filter(function(e) { return e !== null; });
+
+        perCurve.forEach(function(e) {
+          var svg = toSvg(cx, e.cy);
           var dot = svgEl_create("circle", {
             cx: svg.x, cy: svg.y, r: 5,
-            fill: c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+            fill: e.c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
           });
           svgEl.appendChild(dot);
         });
+
         // Vertical guide line at the current x
         var vx = toSvg(cx, yMin).x;
         var vline = svgEl_create("line", {
@@ -727,6 +738,58 @@ var anim = (function() {
           stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
         });
         svgEl.appendChild(vline);
+
+        // Winner annotation: when lowerIsBetter is set, mark the
+        // lowest curve at the cursor with a green ✓, and (when there
+        // are exactly 2 curves) draw a "N× cheaper" callout between
+        // their dots so the visual win is unambiguous. Without this
+        // the reader has to mentally translate "low number = good".
+        if (opts.lowerIsBetter && perCurve.length >= 2) {
+          var sorted = perCurve.slice().sort(function(a, b) { return a.cy - b.cy; });
+          var winner = sorted[0];
+          var loser = sorted[sorted.length - 1];
+          var winSvg = toSvg(cx, winner.cy);
+          var loseSvg = toSvg(cx, loser.cy);
+
+          // Green check next to the winning dot.
+          var check = svgEl_create("text", {
+            x: winSvg.x + 9, y: winSvg.y + 4,
+            "font-size": 14, "font-weight": 800,
+            fill: "#16a34a"
+          });
+          check.textContent = "✓";
+          svgEl.appendChild(check);
+
+          // Speedup label between the two dots, mid-y.
+          var ratio = loser.cy / winner.cy;
+          if (isFinite(ratio) && ratio >= 1.2) {
+            var ratioStr;
+            if (ratio >= 1000) ratioStr = (ratio / 1000).toFixed(1) + "k×";
+            else if (ratio >= 100) ratioStr = ratio.toFixed(0) + "×";
+            else ratioStr = ratio.toFixed(1) + "×";
+            var midY = (winSvg.y + loseSvg.y) / 2;
+            var labelText = (winner.c.label || "winner").split(":")[0]
+                          + " is " + ratioStr + " cheaper";
+            // Background pill so the callout reads cleanly across
+            // the chart grid.
+            var approxW = labelText.length * 6.2 + 16;
+            var pillX = winSvg.x + 14;
+            var pillY = midY - 9;
+            var pillBg = svgEl_create("rect", {
+              x: pillX, y: pillY, width: approxW, height: 18,
+              rx: 9, ry: 9,
+              fill: "rgba(22,163,74,0.12)",
+              stroke: "#16a34a", "stroke-width": 1
+            });
+            svgEl.appendChild(pillBg);
+            var pillTxt = svgEl_create("text", {
+              x: pillX + 8, y: midY + 3,
+              "font-size": 10.5, "font-weight": 700, fill: "#15803d"
+            });
+            pillTxt.textContent = labelText;
+            svgEl.appendChild(pillTxt);
+          }
+        }
       }
     }
 

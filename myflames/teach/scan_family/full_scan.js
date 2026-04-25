@@ -73,9 +73,14 @@ function buildStage() {
     rows.push({bg: r, txt: t, data: u});
   }
 
+  // Scanner highlight: stroke-only so the row text underneath stays
+  // legible. Earlier this used a 0.95-opacity fill ("#fef3c7") which
+  // sat on top of the row text and washed it out (user-reported bug
+  // 2026-04-24 — "I can't see the letters").
   var scanner = anim.svgEl("rect", {
     x: leftX + 10, y: topY + 8, width: tableW - 20, height: rowH - 8, rx: 6, ry: 6,
-    fill: "#fef3c7", stroke: "#f59e0b", "stroke-width": 2, opacity: 0.95
+    fill: "none", stroke: "#f59e0b", "stroke-width": 3,
+    "pointer-events": "none"
   });
   svg.appendChild(scanner);
 
