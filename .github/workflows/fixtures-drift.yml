@@ -41,12 +41,16 @@ jobs:
       - name: Regenerate MariaDB fixtures
         run: ./scripts/generate-mariadb-fixtures.sh
 
-      - name: Show diff
+      - name: Show raw diff (informational, includes timing noise)
         run: git --no-pager diff --stat -- test/fixtures/
 
-      - name: Fail on drift
+      - name: Fail on structural drift
+        # `actual_*_ms` and the MariaDB `r_*_time_ms` family are wall-clock
+        # measurements that vary every run, so a literal `git diff` is too
+        # noisy. The script strips those fields from both HEAD and the
+        # regenerated tree before comparing — only structural drift fails.
         run: |
-          if ! git diff --exit-code -- test/fixtures/; then
+          if ! python3 scripts/check_fixture_drift.py; then
             echo "::error::Fixtures drifted from pinned MySQL 8.4 / MariaDB 11.4 output."
             echo "Run ./scripts/generate-fixtures.sh and ./scripts/generate-mariadb-fixtures.sh locally, commit, and re-run."
             exit 1
