@@ -57,7 +57,6 @@ fi
 
 log "Starting MySQL 8.4 container..."
 docker run -d \
-  --platform linux/arm64 \
   --name "$CONTAINER_NAME" \
   -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" \
   -e MYSQL_DATABASE="$MYSQL_DATABASE" \
