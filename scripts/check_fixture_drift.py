@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 """Compare regenerated fixtures against committed fixtures, ignoring noisy
-timing fields.
+non-deterministic fields.
 
-`EXPLAIN ANALYZE` reports wall-clock measurements (`actual_last_row_ms`,
-`actual_first_row_ms`, and the MariaDB `r_*_time_ms` family) that vary every
-run. The `Fixtures drift` workflow is meant to catch *structural* drift
-between pinned MySQL 8.4 / MariaDB 11.4 output and the committed fixtures —
-not wall-clock noise — so this script strips those fields from both sides
-before diffing.
+`EXPLAIN ANALYZE` mixes deterministic plan structure (operation names, access
+types, index choices, conditions) with values that vary every run even
+against the same pinned server image:
 
-Exit 0 when only timing-noise differs; exit 1 (with a diff dump) when any
-other field changes.
+  - Wall-clock timing: `actual_last_row_ms`, `actual_first_row_ms`, and the
+    MariaDB `r_*_time_ms` family — these are real measurements.
+  - Optimizer estimates: `estimated_rows`, `estimated_total_cost`,
+    `estimated_first_row_cost` — these come from InnoDB statistics sampling,
+    which is randomized per `ANALYZE TABLE` run.
+
+The `Fixtures drift` workflow exists to catch *structural* drift between
+pinned MySQL 8.4 / MariaDB 11.4 output and the committed fixtures (e.g.
+MySQL changes an operation label, a new field appears, a hash join becomes
+a nested loop). It must not fail on inherently random values, so this
+script strips both families before diffing.
+
+Exit 0 when only noise differs; exit 1 (with a diff dump) when any other
+field changes.
 """
 from __future__ import annotations
 
@@ -22,13 +31,25 @@ from pathlib import Path
 from typing import List, Optional
 
 NOISY_KEYS = frozenset({
+    # Wall-clock timing (MySQL).
     "actual_last_row_ms",
     "actual_first_row_ms",
+    # Wall-clock timing (MariaDB).
     "r_total_time_ms",
     "r_table_time_ms",
     "r_other_time_ms",
     "r_buffer_size",
     "r_filesort_pass_count",
+    # Optimizer estimates derived from sampled InnoDB statistics —
+    # non-deterministic across `ANALYZE TABLE` runs.
+    "estimated_rows",
+    "estimated_total_cost",
+    "estimated_first_row_cost",
+    "rows",
+    "filtered",
+    "cost_info",
+    "r_rows",
+    "r_filtered",
 })
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
