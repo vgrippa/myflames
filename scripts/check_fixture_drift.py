@@ -38,6 +38,7 @@ NOISY_KEYS = frozenset({
     "r_total_time_ms",
     "r_table_time_ms",
     "r_other_time_ms",
+    "r_filling_time_ms",
     "r_buffer_size",
     "r_filesort_pass_count",
     # Optimizer estimates derived from sampled InnoDB statistics —
