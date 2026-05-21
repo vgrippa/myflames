@@ -41,6 +41,9 @@ NOISY_KEYS = frozenset({
     "r_filling_time_ms",
     "r_buffer_size",
     "r_filesort_pass_count",
+    # InnoDB buffer-pool counters — vary with page-cache warmup between
+    # container boots even on identical plans (e.g. `pages_accessed` 20→21).
+    "r_engine_stats",
     # Optimizer estimates derived from sampled InnoDB statistics —
     # non-deterministic across `ANALYZE TABLE` runs.
     "estimated_rows",
