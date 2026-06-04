@@ -291,9 +291,14 @@ docker run -d \
   > /dev/null
 
 log "Waiting for MariaDB 11.4..."
+# Probe over TCP, not the socket — the temporary init server the image boots
+# during MYSQL_DATABASE setup accepts socket connections but runs with
+# --skip-networking, so a socket probe returns a false "ready" and the next
+# command lands in the restart gap (ERROR 2002). See generate-fixtures.sh.
 for i in $(seq 1 60); do
   if docker exec "$CONTAINER_11" \
-       mariadb -u root -p"$MYSQL_ROOT_PASSWORD" --silent -e "SELECT 1" 2>/dev/null; then
+       mariadb -u root -p"$MYSQL_ROOT_PASSWORD" -h 127.0.0.1 --protocol=TCP \
+       --silent -e "SELECT 1" 2>/dev/null; then
     log "MariaDB 11.4 is ready (${i}s)"
     break
   fi
@@ -325,9 +330,12 @@ docker run -d \
   > /dev/null
 
 log "Waiting for MariaDB 10.11..."
+# Probe over TCP, not the socket (see the 11.4 block above and
+# generate-fixtures.sh for the temporary-init-server race this avoids).
 for i in $(seq 1 60); do
   if docker exec "$CONTAINER_10" \
-       mariadb -u root -p"$MYSQL_ROOT_PASSWORD" --silent -e "SELECT 1" 2>/dev/null; then
+       mariadb -u root -p"$MYSQL_ROOT_PASSWORD" -h 127.0.0.1 --protocol=TCP \
+       --silent -e "SELECT 1" 2>/dev/null; then
     log "MariaDB 10.11 is ready (${i}s)"
     break
   fi

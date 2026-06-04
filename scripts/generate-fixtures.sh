@@ -64,9 +64,18 @@ docker run -d \
   > /dev/null
 
 log "Waiting for MySQL to be ready..."
+# Probe over TCP (-h 127.0.0.1 --protocol=TCP), NOT the local socket. The
+# official mysql image boots a *temporary* initialization server to run the
+# MYSQL_DATABASE / init setup, then shuts it down and restarts the real
+# server. That temporary server accepts socket connections but runs with
+# --skip-networking, so a socket-based `SELECT 1` returns a false "ready"
+# during init — and the next command lands in the gap where the server has
+# bounced (ERROR 2002, can't connect to socket). A TCP probe only succeeds
+# once the real, fully-initialized server is listening on 3306.
 for i in $(seq 1 90); do
   if docker exec "$CONTAINER_NAME" \
-       mysql -u root -p"$MYSQL_ROOT_PASSWORD" --silent -e "SELECT 1" 2>/dev/null; then
+       mysql -u root -p"$MYSQL_ROOT_PASSWORD" -h 127.0.0.1 --protocol=TCP \
+       --silent -e "SELECT 1" 2>/dev/null; then
     log "MySQL is ready (${i}s)"
     break
   fi
