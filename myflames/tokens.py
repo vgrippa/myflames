@@ -102,11 +102,22 @@ def make_counter(exact=False, model=DEFAULT_PRICING_MODEL):
     try:
         import anthropic
     except Exception:
-        return estimate_tokens, "heuristic estimate (anthropic package not installed; --exact unavailable)"
+        return estimate_tokens, "heuristic estimate (anthropic package not installed)"
+
     try:
         client = anthropic.Anthropic()
-    except Exception:
-        return estimate_tokens, "heuristic estimate (no ANTHROPIC_API_KEY; --exact unavailable)"
+        # The SDK does NOT validate auth at construction — a missing key only
+        # raises when a request is made. count_tokens is a free endpoint, so a
+        # one-shot probe here confirms the key works (and the server is
+        # reachable) up front, instead of letting a TypeError escape mid-run.
+        client.messages.count_tokens(model=model, messages=[{"role": "user", "content": "x"}])
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "api_key" in msg or "authentication" in msg or "x-api-key" in msg:
+            reason = "no ANTHROPIC_API_KEY"
+        else:
+            reason = "count_tokens call failed ({})".format(type(exc).__name__)
+        return estimate_tokens, "heuristic estimate ({})".format(reason)
 
     def _count(text):
         resp = client.messages.count_tokens(

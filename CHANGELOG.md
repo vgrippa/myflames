@@ -5,6 +5,18 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`myflames tokens --exact` now degrades gracefully when no key is
+  configured.** The Anthropic SDK does not validate auth at construction (it
+  only fails when a request is made), so a regular user who had installed the
+  `[tokens]` extra but had no `ANTHROPIC_API_KEY` got an uncaught `TypeError`
+  mid-run. `make_counter` now probes `count_tokens` (a free endpoint) up front
+  and falls back to the offline heuristic with a clear stderr note
+  (`--exact unavailable (no ANTHROPIC_API_KEY)`) instead of crashing.
+
 ## [2.0.1] — 2026-06-05
 
 Advisor correctness pass. Every claim was verified against **real MySQL 8.4

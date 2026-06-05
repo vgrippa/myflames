@@ -584,6 +584,16 @@ def _cmd_tokens(argv):
         return
 
     count_fn, method = tk.make_counter(exact=args.exact, model=pricing_model)
+    if args.exact and method.startswith("heuristic"):
+        # --exact was asked for but couldn't be satisfied; say so on stderr (not
+        # stdout, which stays clean data) and explain how to enable it, then
+        # continue with the estimate. `method` carries the specific reason.
+        reason = method[len("heuristic estimate "):].strip("() ") or "unavailable"
+        sys.stderr.write(
+            "Note: --exact unavailable ({}); showing the offline estimate.\n"
+            "      For exact Claude counts: pip install 'myflames[tokens]' and set ANTHROPIC_API_KEY.\n"
+            .format(reason)
+        )
     comparison = tk.compare(raw_prompt, digest_prompt, count=count_fn, method=method)
     if args.as_json:
         import json as _json

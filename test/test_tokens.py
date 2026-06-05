@@ -177,6 +177,22 @@ class TestCompare(unittest.TestCase):
         self.assertEqual(count_fn("the quick brown fox"), estimate_tokens("the quick brown fox"))
         self.assertIn("heuristic", method)
 
+    def test_make_counter_exact_degrades_gracefully_without_key(self):
+        # The Anthropic SDK doesn't validate auth until request time, so a naive
+        # `--exact` could hand back a counter that throws mid-run. make_counter
+        # must instead probe up front and fall back to a WORKING heuristic
+        # counter (never one that raises) with a truthful label.
+        count_fn, method = make_counter(exact=True)
+        result = count_fn("the quick brown fox")  # must not raise, ever
+        self.assertIsInstance(result, int)
+        self.assertGreater(result, 0)
+        if method.startswith("heuristic"):
+            # No package / no key / unreachable: identical to the offline path.
+            self.assertEqual(result, estimate_tokens("the quick brown fox"))
+        else:
+            # A key was available in this env — then it must be honestly labelled.
+            self.assertTrue(method.startswith("exact"))
+
     def test_format_report_renders(self):
         report = format_report(self.result)
         self.assertIn("Token cost", report)
