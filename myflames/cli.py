@@ -373,20 +373,223 @@ def _cmd_compare(argv):
         help="Report title (default: Query Plan Comparison)",
     )
     parser.add_argument(
+        "--digest", action="store_true",
+        help="Emit a compact text diff (token-cheap; paste into an LLM) instead of the HTML report.",
+    )
+    parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit the structured compare-1.0 diff as JSON instead of the HTML report.",
+    )
+    parser.add_argument(
         "--output", "-o", default=None, metavar="PATH",
         help="Write output to file instead of stdout",
     )
     args = parser.parse_args(argv)
-
-    from .output_compare import render_compare
 
     with open(args.before, "r", encoding="utf-8", errors="replace") as f:
         json_before = f.read()
     with open(args.after, "r", encoding="utf-8", errors="replace") as f:
         json_after = f.read()
 
+    if args.digest or args.as_json:
+        from .output_compare_sidecar import build_compare_sidecar
+        sidecar = build_compare_sidecar(json_before, json_after)
+        if args.as_json:
+            import json as _json
+            _write_output(_json.dumps(sidecar, indent=2), args.output)
+        else:
+            from .tokens import build_compare_digest
+            _write_output(build_compare_digest(sidecar), args.output)
+        return
+
+    from .output_compare import render_compare
     html = render_compare(json_before, json_after, title=args.title)
     _write_output(html, args.output)
+
+
+def _sidecar_from_input(input_path):
+    """Read an EXPLAIN JSON file (or '-' for stdin), parse, analyze, and build
+    the sidecar. Shared by the tokens / check / findings subcommands.
+    """
+    if input_path == "-":
+        raw_text = sys.stdin.read()
+    else:
+        try:
+            with open(input_path, "r", encoding="utf-8", errors="replace") as f:
+                raw_text = f.read()
+        except (IOError, OSError) as e:
+            # Exit 2 = bad input (missing/unreadable file), consistent with the
+            # parse-error path below.
+            sys.stderr.write("Cannot read %s: %s\n" % (input_path, e))
+            sys.exit(2)
+    try:
+        root = parse_explain(raw_text)
+    except Exception as e:
+        sys.stderr.write("Failed to parse EXPLAIN JSON: %s\n" % e)
+        sys.exit(2)
+    analysis = analyze_plan(root)
+    engine = "unknown"
+    try:
+        from .parser import load_explain_json, _is_mariadb_format
+        engine = "mariadb" if _is_mariadb_format(load_explain_json(raw_text)) else "mysql"
+    except Exception:
+        pass
+    from .output_sidecar import build_sidecar
+    payload = build_sidecar(
+        root, analysis,
+        source_type="stdin" if input_path == "-" else "file",
+        engine=engine,
+        fixture_path=input_path if input_path != "-" else None,
+    )
+    return raw_text, payload
+
+
+def _cmd_check(argv):
+    """CI gate: exit nonzero if the plan trips any --fail-on trigger.
+
+    Exit codes: 0 = clean, 1 = a trigger matched, 2 = bad input/usage.
+    """
+    parser = argparse.ArgumentParser(
+        prog="myflames check",
+        description="Exit nonzero if a plan trips --fail-on categories. For CI and agent loops.",
+    )
+    parser.add_argument("input", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
+    parser.add_argument(
+        "--fail-on", default="any", metavar="LIST",
+        help="Comma-separated triggers: warning categories (full_scan, filesort, "
+             "temp_table, bnl, hash_join, index_merge, nonsargable_join, env), "
+             "severities (error, warn, info), or 'any' (default).",
+    )
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="Suppress the per-match output; rely on the exit code.",
+    )
+    args = parser.parse_args(argv)
+
+    _raw, payload = _sidecar_from_input(args.input)
+    from .findings import evaluate_check
+    triggers = args.fail_on.split(",")
+    matched = evaluate_check(payload, triggers)
+
+    if not matched:
+        # 'check' has no data payload — its result is the exit code, so status
+        # goes to stderr and stdout stays clean for piping.
+        if not args.quiet:
+            sys.stderr.write("OK: no findings matched --fail-on {}\n".format(args.fail_on))
+        return
+    if not args.quiet:
+        sys.stderr.write("FAIL: {} finding(s) matched --fail-on {}:\n".format(len(matched), args.fail_on))
+        for w in matched:
+            sys.stderr.write("  [{}/{}] {}\n".format(
+                w.get("severity"), w.get("category"), w.get("text", "").strip()))
+    sys.exit(1)
+
+
+def _cmd_findings(argv):
+    """Emit a ranked findings list (warnings + suggestions) with confidence."""
+    parser = argparse.ArgumentParser(
+        prog="myflames findings",
+        description="Ranked warnings + suggestions with confidence, for agents and triage.",
+    )
+    parser.add_argument("input", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
+    parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit findings as machine-readable JSON.",
+    )
+    parser.add_argument(
+        "--output", "-o", default=None, metavar="PATH",
+        help="Write output to a file instead of stdout.",
+    )
+    args = parser.parse_args(argv)
+
+    _raw, payload = _sidecar_from_input(args.input)
+    from .findings import build_findings
+    findings = build_findings(payload)
+
+    if args.as_json:
+        import json as _json
+        _write_output(_json.dumps(findings, indent=2) + "\n", args.output)
+        return
+
+    if not findings:
+        _write_output("No findings: the plan looks clean.\n", args.output)
+        return
+    lines = []
+    for f in findings:
+        line = "[{}/{}/{}] {}".format(
+            f["severity"], f["category"], f["confidence"], f["text"].strip())
+        if f.get("why"):
+            line += "\n    Why: " + f["why"].strip()
+        if f.get("node_labels"):
+            line += "\n    @ " + ", ".join(f["node_labels"])
+        lines.append(line)
+    _write_output("\n".join(lines) + "\n", args.output)
+
+
+def _cmd_tokens(argv):
+    """Compare the token cost of pasting a raw plan into an AI vs the myflames digest.
+
+    Quantifies the core AI-era value of myflames: a verbose
+    ``EXPLAIN ANALYZE FORMAT=JSON`` plan distilled into a compact, grounded
+    digest costs an order of magnitude fewer tokens to feed to an agent.
+    """
+    parser = argparse.ArgumentParser(
+        prog="myflames tokens",
+        description="Compare token cost: raw EXPLAIN JSON vs the myflames digest.",
+    )
+    parser.add_argument("input", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
+    parser.add_argument(
+        "--digest", action="store_true",
+        help="Emit the compact digest text itself (pipe this to your LLM) instead of the comparison.",
+    )
+    parser.add_argument(
+        "--show", action="store_true",
+        help="Print both prompts (raw-plan vs digest) side by side so you can see exactly what's compared.",
+    )
+    parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit the comparison as machine-readable JSON.",
+    )
+    parser.add_argument(
+        "--exact", action="store_true",
+        help="Count exact Claude tokens via Anthropic's count_tokens (needs `pip install myflames[tokens]` + ANTHROPIC_API_KEY). Falls back to the heuristic if unavailable.",
+    )
+    parser.add_argument(
+        "--model", default=None, metavar="MODEL_ID",
+        help="Pricing/counting model id (default: claude-sonnet-4-6). One of: claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5.",
+    )
+    parser.add_argument(
+        "--output", "-o", default=None, metavar="PATH",
+        help="Write output to a file instead of stdout.",
+    )
+    args = parser.parse_args(argv)
+
+    from . import tokens as tk
+    raw_text, payload = _sidecar_from_input(args.input)
+    digest_text = tk.build_digest(payload)
+
+    if args.digest:
+        _write_output(digest_text, args.output)
+        return
+
+    pricing_model = args.model or tk.DEFAULT_PRICING_MODEL
+    raw_prompt = tk.build_raw_prompt(raw_text)
+    digest_prompt = tk.build_digest_prompt(digest_text)
+
+    if args.show:
+        both = (
+            "===== BEFORE (raw plan + question) =====\n" + raw_prompt
+            + "\n===== AFTER (myflames digest + question) =====\n" + digest_prompt + "\n"
+        )
+        _write_output(both, args.output)
+        return
+
+    count_fn, method = tk.make_counter(exact=args.exact, model=pricing_model)
+    comparison = tk.compare(raw_prompt, digest_prompt, count=count_fn, method=method)
+    if args.as_json:
+        import json as _json
+        _write_output(_json.dumps(comparison, indent=2) + "\n", args.output)
+    else:
+        _write_output(tk.format_report(comparison, pricing_model=pricing_model), args.output)
 
 
 def main():
@@ -395,12 +598,21 @@ def main():
         if sys.argv[1] == "guide":
             sys.stdout.write(_GUIDE_TEXT)
             return
-        if sys.argv[1] == "compare":
+        if sys.argv[1] in ("compare", "diff"):
             _cmd_compare(sys.argv[2:])
             return
         if sys.argv[1] == "teach":
             from .teach import cmd_teach
             cmd_teach(sys.argv[2:])
+            return
+        if sys.argv[1] == "tokens":
+            _cmd_tokens(sys.argv[2:])
+            return
+        if sys.argv[1] == "check":
+            _cmd_check(sys.argv[2:])
+            return
+        if sys.argv[1] == "findings":
+            _cmd_findings(sys.argv[2:])
             return
 
     parser = argparse.ArgumentParser(
@@ -417,12 +629,19 @@ Examples:
   myflames --output report.html explain.json            # HTML report
   myflames -h db.example.com -u admin -p \\\
            -e 'SELECT * FROM t WHERE id=1'              # connect + explain
-  myflames compare before.json after.json               # before vs after diff
+  myflames compare before.json after.json               # before vs after (HTML)
+  myflames diff before.json after.json --digest         # token-cheap text diff
+  myflames tokens explain.json                          # tokens saved vs raw plan
+  myflames check explain.json --fail-on full_scan       # CI gate (exit code)
+  myflames findings explain.json --json                 # ranked findings for agents
   myflames guide                                        # which view?
   myflames teach btree -o btree.html                    # interactive lesson
 
 Subcommands:
-  compare   Compare before/after EXPLAIN JSON files
+  compare   Compare before/after EXPLAIN JSON files (alias: diff; --digest/--json for agents)
+  tokens    Compare token cost of the raw plan vs the myflames digest
+  check     Exit nonzero if the plan trips --fail-on categories (CI gate)
+  findings  Ranked warnings + suggestions with confidence (text or --json)
   guide     Show which view to pick for your use case
   teach     Interactive algorithm lessons (btree, bnl, hash, join, lru)
 """,
@@ -679,8 +898,10 @@ Subcommands:
     try:
         root = parse_explain(json_text)
     except Exception as e:
+        # Exit 2 = bad input (consistent with _sidecar_from_input). Exit 1 is
+        # reserved for "a gate/finding tripped" (the check subcommand).
         sys.stderr.write("Failed to parse EXPLAIN JSON: %s\n" % e)
-        sys.exit(1)
+        sys.exit(2)
 
     max_time = root["total_time"]
     use_microseconds = max_time > 0 and max_time < 1

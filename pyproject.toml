@@ -4,14 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myflames"
-version = "1.5.0"
+version = "2.0.0"
 description = "MySQL and MariaDB EXPLAIN ANALYZE visualizer: flame graphs, bar charts, treemaps, and diagrams"
 readme = "README.md"
 requires-python = ">=3.7"
 license = { text = "CDDL-1.0" }
 
+[project.optional-dependencies]
+# MCP server (agent-facing tools). Core myflames stays stdlib-only; this extra
+# pulls the Model Context Protocol SDK used only by myflames.mcp_server.
+mcp = ["mcp>=1.2"]
+# Exact Claude token counts for `myflames tokens --exact` (Anthropic SDK).
+# Without it, token counts fall back to the offline heuristic.
+tokens = ["anthropic>=0.40"]
+
 [project.scripts]
 myflames = "myflames.cli:main"
+myflames-mcp = "myflames.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

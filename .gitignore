@@ -27,3 +27,6 @@ build/
 
 # Claude Code skills — kept local only, not part of the distributed package
 .claude/skills/
+
+# Claude Code agent memory — private, machine-local, never committed
+.claude/projects/

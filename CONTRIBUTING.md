@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to myflames! This guide will help you get set up and make your first contribution.
 
+New here? Skim [ROADMAP.md](ROADMAP.md) first for the project's direction, what's already shipped, and the non-goals — it'll tell you whether an idea fits before you build it.
+
 ## Development setup
 
 ```bash

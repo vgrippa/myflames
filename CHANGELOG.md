@@ -5,6 +5,60 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] — 2026-06-05
+
+Major release: **myflames becomes an AI-era tool.** Raw `EXPLAIN ANALYZE
+FORMAT=JSON` is token-expensive to feed an LLM and invisible to agents; 2.0
+adds a token-cheap, source-grounded **digest** and the surface to use it — a
+token/cost comparison, agent + CI subcommands, and an MCP server — while
+keeping the core a zero-dependency stdlib package. One analysis, many
+projections (SVG for humans, digest/JSON for agents, exit code for CI).
+
+### Added
+
+- **`tokens` subcommand** — quantifies the saving from handing an LLM the
+  myflames digest instead of the raw plan: side-by-side token counts and USD
+  cost (Opus 4.8 / Sonnet 4.6 / Haiku 4.5 input pricing), `--digest` to emit
+  the digest itself, `--show` to print both prompts, `--exact` for real Claude
+  counts via Anthropic `count_tokens` (optional `myflames[tokens]` extra),
+  `--json` for machine output. New module `myflames/tokens.py`
+  (`build_digest`, `build_compare_digest`, `estimate_tokens`, `compare`).
+- **`findings` subcommand** — ranked warnings + suggestions, each with a
+  `confidence`, as text or `--json`. New module `myflames/findings.py`.
+- **`check` subcommand** — CI gate: `--fail-on <categories|severities|any>`
+  exits non-zero when the plan trips a trigger. Lives in `myflames/findings.py`.
+- **`diff` alias** for `compare`, plus `--digest` (token-cheap text diff) and
+  `--json` (structured `compare-1.0` delta) modes.
+- **MCP server** (`myflames-mcp`, optional `myflames[mcp]` extra) exposing
+  `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`,
+  and `explain_query` so agents call myflames directly. New module
+  `myflames/mcp_server.py`; tool logic is pure stdlib and unit-tested.
+- **"Agent-ready" panel** in every HTML report showing the token/cost saving,
+  plus a "Made with myflames" footer (carrying the Brendan Gregg / Tanel Poder
+  inspiration credit).
+- **`ROADMAP.md`** — contributor-facing vision, shipped/next, and non-goals.
+- **Browser playground scaffold** ([docs/playground/](docs/playground/)) —
+  client-side Pyodide page (pending a published wheel).
+- **Live, reproducible token-savings walkthrough**
+  ([docs/examples/](docs/examples/)) backed by a real MySQL 8.4 Docker script.
+- Optional dependency groups: `myflames[mcp]`, `myflames[tokens]`.
+
+### Changed
+
+- **Exit-code contract unified across all subcommands:** `0` success, `1` a
+  gate/finding tripped (`check`), `2` bad input (unreadable/missing file,
+  unparseable JSON). The default render path previously exited `1` on a parse
+  error — it now exits `2`. (Behavior change → major bump.)
+- `tokens` and `findings` gained `-o/--output`; machine output now goes to
+  stdout while diagnostics (including `check`'s status line) go to stderr, so
+  `| jq` and redirects stay clean.
+
+### Internal
+
+- `myflames[tokens]` exact counting uses Anthropic `count_tokens`, never
+  `tiktoken` (which mis-counts Claude tokens). The offline heuristic is the
+  zero-dependency default and is labelled as an estimate everywhere it surfaces.
+
 ## [1.5.0] — 2026-04-25
 
 Minor release focused on **correctness, identity, accessibility, and

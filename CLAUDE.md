@@ -14,7 +14,18 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 - **Web Design (`/web-design`)**: Located at `.claude/skills/web-design/SKILL.md`. Use when designing layouts, typography, color, spacing, or accessibility.
 - **MySQL Expert (`/mysql-expert`)**: Located at `.claude/skills/mysql-expert/SKILL.md`. The MySQL/MariaDB brain — owns correctness of advisor rules, optimizer_switch explanations, and every plain-English claim myflames makes about a plan. Consult before adding or modifying `advisor.py` rules or `OPTIMIZER_SWITCH_EXPLANATIONS`.
 - **Progressive UX (`/progressive-ux`)**: Located at `.claude/skills/progressive-ux/SKILL.md`. Designs outputs that serve newcomers AND senior DBAs via progressive disclosure (glossary chips, primary-action strips, collapsible details). Use when changing HTML wrappers, onboarding copy, or glossary entries.
-- **Structured Output (`/structured-output`)**: Located at `.claude/skills/structured-output/SKILL.md`. Owns the JSON sidecar schema and every decision about what gets serialized where. Consult when adding new data to an output or changing the shape of what myflames emits for external tools / AI agents.
+- **Structured Output (`/structured-output`)**: Located at `.claude/skills/structured-output/SKILL.md`. Owns the JSON sidecar schema, the token-cheap digest, and every decision about what gets serialized where. Consult when adding new data to an output or changing the shape of what myflames emits for external tools / AI agents.
+- **CLI UX (`/cli-ux`)**: Located at `.claude/skills/cli-ux/SKILL.md`. Owns the command-line surface — subcommand vs flag design, flag-name consistency, help text, the `0/1/2` exit-code contract, and stdout-vs-stderr discipline. Consult before adding or changing a subcommand or flag in `cli.py`. Distinct from progressive-ux (rendered output UX).
+
+See `.claude/skills/README.md` for the full ownership map (one owner per decision; who defers to whom).
+
+## 🤖 Agent Team (orchestrator-worker)
+The main session is the **coordinator**; it delegates well-scoped subtasks to the workers in `.claude/agents/` (see `.claude/agents/README.md`). Each worker has least-privilege tools and is bound to a skill above:
+- **`mysql-correctness-reviewer`** (read-only escalation) — verifies every MySQL/MariaDB claim against `mysql-server/` + `mariadb-server/` source. Delegate to it *before* shipping advisor/explanation/complexity changes.
+- **`test-author`** — writes + runs the mandatory paired tests.
+- **`renderer-builder`** — implements `output_*.py` / demo changes.
+- **`teach-lesson-author`** — authors `teach/*` lessons.
+Standard pattern for a logic change: implement → in parallel run `mysql-correctness-reviewer` + `test-author` → apply corrections → ship.
 
 ## 🧪 Development Workflow & Testing
 - **Mandatory Tests**: Every new feature or logic change in the Python package MUST include a corresponding test case.
@@ -42,5 +53,11 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 
 ## 📖 Commands Reference
 - **Run**: `python3 -m myflames --type [flamegraph|bargraph|treemap|diagram] explain.json > output.svg`
+- **Token savings** (AI-era): `python3 -m myflames tokens explain.json` — compares token cost (and $ cost) of pasting the raw plan into an AI vs the compact myflames digest. `--digest` emits the digest text (pipe to an LLM); `--show` prints both prompts; `--exact` uses Anthropic `count_tokens` (needs `myflames[tokens]`); `--json` for machine output. Lives in `myflames/tokens.py`.
+- **Plan diff**: `python3 -m myflames diff before.json after.json` (alias of `compare`). `--digest` = token-cheap text diff for an LLM; `--json` = structured `compare-1.0` delta.
+- **CI gate**: `python3 -m myflames check explain.json --fail-on full_scan,filesort` — exits 1 if a trigger matches (categories, severities, or `any`), 0 if clean, 2 on bad input. For pre-commit/CI/agent loops. Lives in `myflames/findings.py`.
+- **Findings**: `python3 -m myflames findings explain.json [--json]` — ranked warnings + suggestions with `confidence`. Also `myflames/findings.py`.
+- **MCP server** (agent tools): `myflames-mcp` (optional extra: `pip install myflames[mcp]`). Exposes `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`. Tool logic in `myflames/mcp_server.py` is stdlib + tested; only the transport needs the extra. Register: `claude mcp add myflames -- myflames-mcp`.
+- **Playground**: `docs/playground/index.html` — client-side Pyodide page (`python3 -m http.server -d docs/playground`).
 - **MySQL Fixtures**: `./scripts/generate-fixtures.sh` (requires Docker) to regenerate MySQL `test/fixtures/`.
 - **MariaDB Fixtures**: `./scripts/generate-mariadb-fixtures.sh` (requires Docker) to regenerate MariaDB `test/fixtures/`.

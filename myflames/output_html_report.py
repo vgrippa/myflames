@@ -1028,6 +1028,48 @@ def _render_raw_sidecar(sidecar):
     ).format(xml_escape(pretty))
 
 
+def _render_token_savings(sidecar, raw_plan_text):
+    """Render the 'agent-ready' panel: how many tokens the digest saves vs the
+    raw plan when handed to an AI. Compares the *actual raw EXPLAIN JSON*
+    (what you'd paste) against the digest, and is defensive — never breaks
+    report rendering.
+    """
+    try:
+        from . import tokens as tk
+        digest = tk.build_digest(sidecar)
+        raw_prompt = tk.build_raw_prompt(raw_plan_text or "")
+        digest_prompt = tk.build_digest_prompt(digest)
+        c = tk.compare(raw_prompt, digest_prompt)
+    except Exception:
+        return ""
+    if c["raw_tokens"] <= 0 or c["tokens_saved"] <= 0:
+        return ""
+    sonnet = c["cost_by_model"].get("claude-sonnet-4-6") or {}
+    parts = [
+        '<section class="token-savings" aria-labelledby="tok-heading">',
+        '  <h2 id="tok-heading">Agent-ready &middot; token savings</h2>',
+        '  <p class="tok-lede">Feeding this plan to an AI as the myflames digest instead '
+        'of raw <code>EXPLAIN</code> JSON cuts the prompt by '
+        '<strong>{ratio}&times;</strong> ({pct}% fewer tokens).</p>'.format(
+            ratio=c["ratio"], pct=c["reduction_pct"]),
+        '  <dl class="quick-stats">',
+        '    <div><dt>Raw plan</dt><dd>{} tokens</dd></div>'.format("{:,}".format(c["raw_tokens"])),
+        '    <div><dt>myflames digest</dt><dd>{} tokens</dd></div>'.format("{:,}".format(c["digest_tokens"])),
+        '    <div><dt>Saved</dt><dd>{} tokens</dd></div>'.format("{:,}".format(c["tokens_saved"])),
+    ]
+    if sonnet.get("saved_usd_per_1k_queries"):
+        parts.append(
+            '    <div><dt>Per 1,000 queries</dt><dd>~${:.2f} saved</dd></div>'.format(
+                sonnet["saved_usd_per_1k_queries"]))
+    parts.append('  </dl>')
+    parts.append(
+        '  <p class="tok-note">Estimate ({}). Prices as of {} ({} input). '
+        'Generate the digest with <code>myflames tokens --digest</code>.</p>'.format(
+            xml_escape(c["method"]), c["pricing_as_of"], sonnet.get("label", "Sonnet 4.6")))
+    parts.append('</section>')
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Top-level template
 # ---------------------------------------------------------------------------
@@ -1156,6 +1198,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         _render_viz_card(svg_embed, view_type),
         _render_warnings(sidecar),
         _render_suggestions(sidecar),
+        _render_token_savings(sidecar, json_text),
         _render_environment(sidecar),
         _render_glossary_aside(sidecar),
         _render_myteach_section(sidecar),
@@ -1264,6 +1307,11 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         '  <main id="main-content" class="report" role="main">\n'
         '{sections}\n'
         '  </main>\n'
+        '  <footer class="site-footer" role="contentinfo">\n'
+        '    <p>Made with <a href="https://github.com/viniciusgrippa/myflames">myflames</a>'
+        ' &middot; MySQL &amp; MariaDB query plan visualizer.'
+        ' Inspired by Brendan Gregg&rsquo;s FlameGraph and Tanel Poder&rsquo;s SQL Plan FlameGraphs.</p>\n'
+        '  </footer>\n'
         '  <script>window.__MYFLAMES_TEACH_HOOKS = {teach_hooks_json};</script>\n'
         '  <script>window.__MYFLAMES_COMPLEXITY = {complexity_json};</script>\n'
         '  <script>window.__MYFLAMES_COMPLEXITY_CHARTS = {complexity_charts_json};</script>\n'

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myflames playground — try it in the browser, no install</title>
+  <style>
+    :root { --bg:#f7f9fc; --ink:#1c2330; --muted:#5a6270; --line:#d8dee9; --accent:#c25a3a; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+           color:var(--ink); background:var(--bg); }
+    header { padding:1rem 1.25rem; border-bottom:1px solid var(--line); }
+    header h1 { margin:0; font-size:1.2rem; }
+    header p { margin:.25rem 0 0; color:var(--muted); font-size:.9rem; }
+    main { display:grid; grid-template-columns:1fr 1fr; gap:1rem; padding:1rem 1.25rem; }
+    @media (max-width: 860px) { main { grid-template-columns:1fr; } }
+    textarea { width:100%; height:340px; font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+               border:1px solid var(--line); border-radius:8px; padding:.6rem; resize:vertical; }
+    .controls { margin:.5rem 0; display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+    button { font:inherit; padding:.45rem .8rem; border:1px solid var(--line); border-radius:6px;
+             background:#fff; cursor:pointer; }
+    button:hover { border-color:var(--accent); }
+    button[disabled] { opacity:.5; cursor:progress; }
+    #out { border:1px solid var(--line); border-radius:8px; background:#fff; padding:.6rem;
+           min-height:340px; overflow:auto; }
+    #out pre { white-space:pre-wrap; font:13px/1.4 ui-monospace,Menlo,monospace; margin:0; }
+    #status { font-size:.85rem; color:var(--muted); }
+    footer { padding:1rem 1.25rem; border-top:1px solid var(--line); color:var(--muted);
+             font-size:.85rem; text-align:center; }
+    footer a { color:inherit; font-weight:600; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>myflames playground</h1>
+    <p>Paste <code>EXPLAIN ANALYZE FORMAT=JSON</code> and render it in your browser. myflames is pure-Python stdlib, so it runs entirely client-side via <a href="https://pyodide.org">Pyodide</a> — nothing is uploaded.</p>
+  </header>
+
+  <main>
+    <section>
+      <label for="in"><strong>EXPLAIN JSON</strong></label>
+      <textarea id="in" spellcheck="false" placeholder="Paste your EXPLAIN ANALYZE FORMAT=JSON here…"></textarea>
+      <div class="controls">
+        <button id="btn-flame" disabled>Flame graph</button>
+        <button id="btn-diagram" disabled>Diagram</button>
+        <button id="btn-digest" disabled>Digest</button>
+        <button id="btn-tokens" disabled>Token savings</button>
+        <button id="btn-sample" disabled>Load sample</button>
+        <span id="status">Loading Python runtime…</span>
+      </div>
+    </section>
+    <section>
+      <strong>Output</strong>
+      <div id="out"><pre>Render output appears here.</pre></div>
+    </section>
+  </main>
+
+  <footer>
+    Made with <a href="https://github.com/viniciusgrippa/myflames">myflames</a> ·
+    Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs.
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js"></script>
+  <script>
+    // NOTE: this loads myflames from PyPI via micropip. It works once the
+    // package is published (`pip install myflames`). To try it against a local
+    // build instead, set WHEEL_URL to a built wheel served from this directory
+    // (`python -m build` → copy the .whl here) and micropip will install that.
+    const WHEEL_URL = null; // e.g. "./myflames-1.5.0-py3-none-any.whl"
+    const SAMPLE = {
+      query: "SELECT u.name FROM users u WHERE u.country = 'US'",
+      inputs: [{
+        operation: "Table scan on users", table_name: "users", access_type: "table",
+        actual_rows: 3000.0, schema_name: "shop", actual_loops: 1,
+        used_columns: ["id", "name", "country"], estimated_rows: 3000.0,
+        actual_last_row_ms: 2.54, actual_first_row_ms: 0.10, estimated_total_cost: 303.5
+      }]
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const out = $("out");
+    const status = $("status");
+    let pyodide = null;
+
+    function show(kind, content) {
+      if (kind === "svg") { out.innerHTML = content; }
+      else { out.innerHTML = "<pre></pre>"; out.firstChild.textContent = content; }
+    }
+
+    async function boot() {
+      pyodide = await loadPyodide();
+      status.textContent = "Installing myflames…";
+      try {
+        await pyodide.loadPackage("micropip");
+        const micropip = pyodide.pyimport("micropip");
+        await micropip.install(WHEEL_URL || "myflames");
+      } catch (e) {
+        status.textContent = "Could not install myflames (publish to PyPI or set WHEEL_URL). " + e;
+        return;
+      }
+      status.textContent = "Ready.";
+      for (const id of ["btn-flame","btn-diagram","btn-digest","btn-tokens","btn-sample"]) {
+        $(id).disabled = false;
+      }
+    }
+
+    async function run(pyExpr) {
+      const input = $("in").value.trim();
+      if (!input) { show("text", "Paste an EXPLAIN JSON first."); return; }
+      status.textContent = "Rendering…";
+      pyodide.globals.set("PLAN_JSON", input);
+      try {
+        const result = await pyodide.runPythonAsync(pyExpr);
+        return result;
+      } catch (e) {
+        show("text", "Error: " + e);
+        return null;
+      } finally {
+        status.textContent = "Ready.";
+      }
+    }
+
+    $("btn-flame").onclick = async () => {
+      const svg = await run("from myflames.render import render_explain\nrender_explain(PLAN_JSON, 'flamegraph')");
+      if (svg) show("svg", svg);
+    };
+    $("btn-diagram").onclick = async () => {
+      const svg = await run("from myflames.render import render_explain\nrender_explain(PLAN_JSON, 'diagram')");
+      if (svg) show("svg", svg);
+    };
+    $("btn-digest").onclick = async () => {
+      const txt = await run("from myflames.parser import parse_explain, analyze_plan\nfrom myflames.output_sidecar import build_sidecar\nfrom myflames import tokens as tk\nroot=parse_explain(PLAN_JSON)\ntk.build_digest(build_sidecar(root, analyze_plan(root), source_type='stdin'))");
+      if (txt) show("text", txt);
+    };
+    $("btn-tokens").onclick = async () => {
+      const txt = await run("import json\nfrom myflames.parser import parse_explain, analyze_plan\nfrom myflames.output_sidecar import build_sidecar\nfrom myflames import tokens as tk\nroot=parse_explain(PLAN_JSON)\nd=tk.build_digest(build_sidecar(root, analyze_plan(root), source_type='stdin'))\nc=tk.compare(tk.build_raw_prompt(PLAN_JSON), tk.build_digest_prompt(d))\ntk.format_report(c)");
+      if (txt) show("text", txt);
+    };
+    $("btn-sample").onclick = () => { $("in").value = JSON.stringify(SAMPLE, null, 2); };
+
+    boot();
+  </script>
+</body>
+</html>

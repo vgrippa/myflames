@@ -716,3 +716,12 @@ aside.glossary-aside { background: #f1f8ff; }
   .site-header { padding: 10px 14px; }
   .site-header h1 { font-size: 15px; }
 }
+
+/* Agent-ready token-savings panel */
+.token-savings{margin:1.5rem 0;padding:1rem 1.25rem;border:1px solid #d8dee9;border-radius:8px;background:#f7f9fc}
+.token-savings h2{margin:0 0 .4rem;font-size:1rem}
+.token-savings .tok-lede{margin:.2rem 0 .6rem}
+.token-savings .tok-note{margin:.4rem 0 0;font-size:.8rem;color:#5a6270}
+/* Footer */
+.site-footer{margin-top:2rem;padding:1rem 1.25rem;border-top:1px solid #e2e6ee;font-size:.85rem;color:#5a6270;text-align:center}
+.site-footer a{color:inherit;font-weight:600}

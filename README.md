@@ -16,9 +16,70 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
   <br><em>Every operator now carries a Big O chip: <code>O(log n + k)</code>, <code>O(n · log m)</code>, <code>O(n · m)</code>, …  with a color-coded severity ramp.</em>
 </p>
 
-> **New in 1.5** — advisor rules verified line-by-line against MySQL 8.4 source (multiple incorrect claims fixed), every plan node gets a stable [`node_id`](docs/schemas/sidecar-v1.json) referenced across JSON / SVG / warnings, every report ships with a JSON-LD envelope + `<link rel="alternate">` to its sibling sidecar, the **Collected environment** panel is now an accordion with humanized byte values (`134217728` → `128 MB`) and click-to-expand columns + indexes per table, and the categorical flame palette + squarified treemap + unified search counter all landed. See the [full CHANGELOG entry](CHANGELOG.md#150--2026-04-25) for the file:line MySQL-source citations behind every advisor correction.
+> **New in 2.0** — myflames is now built for the **AI era**. The new `tokens` command shows how many tokens (and dollars) you save by handing an LLM a compact, source-grounded **digest** instead of raw `EXPLAIN` JSON; new `diff` / `check` / `findings` subcommands serve agents and CI; an **MCP server** (`myflames-mcp`) lets agents call myflames directly; and every HTML report gains an "Agent-ready" panel. The worked example below is the headline. See the [full CHANGELOG entry](CHANGELOG.md#200--2026-06-05).
 
 ---
+
+## Optimize a slow query for **6.5× fewer tokens** (a real before/after)
+
+Say you have a slow query and you want an LLM to help you fix it:
+
+```sql
+SELECT p.name, SUM(oi.quantity * oi.unit_price) AS revenue
+FROM order_items oi
+JOIN orders o   ON o.id = oi.order_id
+JOIN products p ON p.id = oi.product_id
+WHERE o.status = 'shipped'
+GROUP BY p.id
+ORDER BY revenue DESC
+LIMIT 20;
+```
+
+### ❌ Without myflames — paste the raw plan into the AI
+
+You run `EXPLAIN ANALYZE FORMAT=JSON …`, copy the **169 lines / ~7.6 KB** of deeply nested JSON, paste it into ChatGPT/Claude, and ask *"why is this slow, and how do I make it faster?"* That prompt is **2,182 tokens** — and the model has to parse all that structure before it can reason.
+
+### ✅ With myflames — paste the digest instead
+
+```bash
+myflames tokens plan.json --digest | pbcopy    # then paste
+```
+
+The digest is **335 tokens** and already contains the diagnosis (a `<temporary>`-table scan from the `GROUP BY`, plus a filesort) and the fixes — this is real output:
+
+```text
+# Query plan analysis (myflames digest)
+engine mysql | 11 ops | depth 8 | 12.049 ms | rows 20 sent / 2,404 examined
+
+SUMMARY: Query scans 1 table and sorts the result; examines ~2,404 rows to
+return 20 in 12 ms. Main finding: full scan of <temporary> (300 rows).
+
+WARNINGS (2):
+- [warn/full_scan] Full table scan: <temporary> (300 rows) (@ Table scan [<temporary>])
+- [warn/filesort] 1 sort operation(s) — 20 rows; may use disk-based filesort (@ Sort (limit 20))
+
+SUGGESTIONS (2):
+- [high/index] Add indexes on filter/join columns to avoid full table scans
+- [medium/tuning_variable] Increase sort_buffer_size or add an ordered index to avoid filesort
+```
+
+### The difference
+
+```bash
+myflames tokens plan.json
+```
+
+| What you paste | Tokens | Cost — Opus 4.8 | Cost — Sonnet 4.6 | Cost — Haiku 4.5 |
+|---|--:|--:|--:|--:|
+| **Before** — raw plan + question | 2,182 | $0.0109 | $0.0065 | $0.0022 |
+| **After** — myflames digest + question | 335 | $0.0017 | $0.0010 | $0.0003 |
+| **Saved** | **1,847 (84.6%, 6.5×)** | **$0.0092** | **$0.0055** | **$0.0018** |
+
+That's **~$5.54 saved per 1,000 such queries** on Sonnet 4.6 (input) — and you save more output tokens and round-trips too, because the digest already contains the answer. On a complex multi-join plan the saving climbs past **10×**.
+
+> Token counts are an offline estimate by default; add `--exact` for real Claude tokens (`pip install 'myflames[tokens]'` + `ANTHROPIC_API_KEY`). Prices as of 2026-05-26.
+
+**Reproduce all of this against a live MySQL 8.4** (one Docker script) in the [step-by-step walkthrough](docs/examples/token-savings-walkthrough.md). Prefer to skip the copy/paste entirely? Register the [MCP server](#mcp-server-for-ai-agents) and your agent calls myflames itself.
 
 ## What does the output look like?
 
@@ -291,10 +352,39 @@ Every suggestion carries a `Why:` clause — enforced by a test so no rule ships
 ## Compare before/after
 
 ```bash
-myflames compare before.json after.json --output diff.html
+myflames compare before.json after.json --output diff.html   # HTML report
+myflames diff    before.json after.json --digest             # token-cheap text diff for an LLM
+myflames diff    before.json after.json --json               # structured delta (compare-1.0)
 ```
 
-Shows total time delta, per-operator self-time/rows/loops changes, new or removed full table scans, and new/resolved warnings.
+Shows total time delta, per-operator self-time/rows/loops changes, new or removed full table scans, and new/resolved warnings. (`diff` is an alias of `compare`.)
+
+---
+
+## Agent & CI subcommands
+
+myflames serves AI agents and pipelines, not just human eyes:
+
+```bash
+myflames tokens   plan.json            # token + $ saving (raw plan vs digest); --digest, --exact, --json
+myflames findings plan.json --json     # ranked warnings + suggestions, each with a confidence
+myflames check    plan.json --fail-on full_scan,filesort   # CI gate: exit 1 if a trigger matches
+```
+
+Exit-code contract: **0** success · **1** a gate/finding tripped · **2** bad input. That makes `check` a drop-in pre-commit/CI guard and an agent-loop primitive.
+
+---
+
+## MCP server (for AI agents)
+
+Let Claude Code, Cursor, or any MCP client call myflames directly — no copy/paste, no OCR'ing an SVG:
+
+```bash
+pip install 'myflames[mcp]'
+claude mcp add myflames -- myflames-mcp
+```
+
+Exposed tools: `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch` (source-verified), and `explain_query` (connect + `EXPLAIN ANALYZE` live). The agent reasons over the 335-token digest instead of the 2,000+-token raw plan. The MCP transport is an optional extra; the core package stays stdlib-only.
 
 ---
 
@@ -382,6 +472,7 @@ End users never need anything beyond `pip install myflames` + Python 3.7. If you
 | [CLI Reference](https://vgrippa.github.io/myflames/guide/cli.html) | Every command, flag, and option |
 | [Architecture](https://vgrippa.github.io/myflames/guide/architecture.html) | Parser, renderers, advisor, teach module internals |
 | [Teach Lessons](https://vgrippa.github.io/myflames/teach/index.html) | All 21 interactive algorithm lessons with descriptions |
+| [Roadmap](ROADMAP.md) | Vision, what's shipped, what's next, non-goals |
 | [Contributing](CONTRIBUTING.md) | Development setup, testing, adding lessons/rules |
 | [Visual Explain Reference](docs/VISUAL_EXPLAIN_REFERENCE.md) | Diagram layout conventions |
 | [test/README.md](test/README.md) | Running tests and fixture generation |
