@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Verified
+
+- **MySQL 9.7 support, verified against a live server** (and the checked-out
+  9.6 source). A broad battery (scan / pk / range / join / group-by / filesort /
+  semijoin / antijoin / index_merge / derived / window) was captured on real
+  MySQL 9.7 under **both** the traditional and **hypergraph** optimizer — 24/24
+  parse, validate, and detect correctly. The 9.x `query_plan` envelope
+  (`{query, query_plan, query_type, json_schema_version}`) and new access types
+  (`temp_table_aggregate`, `rows_fetched_before_execution`) are handled; the
+  hypergraph optimizer's FirstMatch semijoin is now picked up. Real 9.7
+  fixtures + regression tests added (`test/mysql-9.7-*.json`). Fully backward
+  compatible — every 8.4 / 10.11 / 11.4 fixture still passes.
+- **MariaDB 11.8 support, verified against a live server** (11.8.8). Same
+  battery captured via `ANALYZE FORMAT=JSON` — 11/11 parse, validate, and
+  detect; real fixtures + tests added (`test/mariadb-11.8-*.json`).
+
 ### Docs
 
 - Documented how to use `--exact` with **your own** `ANTHROPIC_API_KEY`

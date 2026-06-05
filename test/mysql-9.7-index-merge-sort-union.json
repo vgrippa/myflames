@@ -1,0 +1,88 @@
+{
+  "query": "/* select#1 */ select `shop`.`products`.`id` AS `id`,`shop`.`products`.`category_id` AS `category_id`,`shop`.`products`.`price` AS `price`,`shop`.`products`.`stock` AS `stock` from `shop`.`products` where ((`shop`.`products`.`category_id` = 5) or (`shop`.`products`.`price` < 6))",
+  "query_plan": {
+    "inputs": [
+      {
+        "inputs": [
+          {
+            "ranges": [
+              "(category_id = 5)"
+            ],
+            "covering": false,
+            "operation": "Index range scan on products using idx_cat over (category_id = 5)",
+            "index_name": "idx_cat",
+            "table_name": "products",
+            "access_type": "index",
+            "actual_rows": 100.0,
+            "key_columns": [
+              "category_id"
+            ],
+            "schema_name": "shop",
+            "actual_loops": 1,
+            "used_columns": [
+              "id",
+              "category_id",
+              "price",
+              "stock"
+            ],
+            "estimated_rows": 100.0,
+            "index_access_type": "index_range_scan",
+            "actual_last_row_ms": 0.025032,
+            "actual_first_row_ms": 0.017459,
+            "estimated_total_cost": 10.287167947310648
+          },
+          {
+            "ranges": [
+              "(NULL < price < 6)"
+            ],
+            "covering": false,
+            "operation": "Index range scan on products using idx_price over (NULL < price < 6)",
+            "index_name": "idx_price",
+            "table_name": "products",
+            "access_type": "index",
+            "actual_rows": 50.0,
+            "key_columns": [
+              "price"
+            ],
+            "schema_name": "shop",
+            "actual_loops": 1,
+            "used_columns": [
+              "id",
+              "category_id",
+              "price",
+              "stock"
+            ],
+            "estimated_rows": 50.0,
+            "index_access_type": "index_range_scan",
+            "actual_last_row_ms": 0.009089,
+            "actual_first_row_ms": 0.001375,
+            "estimated_total_cost": 5.273446761800219
+          }
+        ],
+        "operation": "Sort-deduplicate by row ID",
+        "access_type": "index_merge",
+        "actual_rows": 140.0,
+        "actual_loops": 1,
+        "estimated_rows": 150.0,
+        "actual_last_row_ms": 0.14016,
+        "actual_first_row_ms": 0.059541,
+        "estimated_total_cost": 131.63205710987626
+      }
+    ],
+    "condition": "((products.category_id = 5) or (products.price < 6))",
+    "operation": "Filter: ((products.category_id = 5) or (products.price < 6))",
+    "access_type": "filter",
+    "actual_rows": 140.0,
+    "actual_loops": 1,
+    "estimated_rows": 150.0,
+    "filter_columns": [
+      "shop.products.category_id",
+      "shop.products.price"
+    ],
+    "actual_last_row_ms": 0.160786,
+    "actual_first_row_ms": 0.071541,
+    "estimated_total_cost": 131.63205710987626
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

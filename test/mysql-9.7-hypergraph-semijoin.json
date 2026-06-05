@@ -1,0 +1,88 @@
+{
+  "query": "/* select#1 */ select `shop`.`users`.`id` AS `id`,`shop`.`users`.`country` AS `country`,`shop`.`users`.`name` AS `name`,`shop`.`users`.`created_at` AS `created_at` from `shop`.`users` semi join (`shop`.`orders`) where ((`shop`.`orders`.`total` > 450.00) and (`shop`.`users`.`id` = `shop`.`orders`.`user_id`))",
+  "query_plan": {
+    "inputs": [
+      {
+        "covering": false,
+        "operation": "Index scan on users using PRIMARY",
+        "index_name": "PRIMARY",
+        "table_name": "users",
+        "access_type": "index",
+        "actual_rows": 5000.0,
+        "schema_name": "shop",
+        "actual_loops": 1,
+        "used_columns": [
+          "id",
+          "country",
+          "name",
+          "created_at"
+        ],
+        "estimated_rows": 5000.0,
+        "index_access_type": "index_scan",
+        "actual_last_row_ms": 0.591766,
+        "actual_first_row_ms": 0.042874999999999996,
+        "estimated_total_cost": 5299.539170506913,
+        "estimated_first_row_cost": 1.0599078341013826
+      },
+      {
+        "inputs": [
+          {
+            "covering": false,
+            "operation": "Index scan on orders using PRIMARY",
+            "index_name": "PRIMARY",
+            "table_name": "orders",
+            "access_type": "index",
+            "actual_rows": 20000.0,
+            "schema_name": "shop",
+            "actual_loops": 1,
+            "used_columns": [
+              "user_id",
+              "total"
+            ],
+            "estimated_rows": 20142.0,
+            "index_access_type": "index_scan",
+            "actual_last_row_ms": 1.6207820000000002,
+            "actual_first_row_ms": 0.091917,
+            "estimated_total_cost": 9467.668202764977,
+            "estimated_first_row_cost": 0.4700460829493087
+          }
+        ],
+        "heading": "Hash",
+        "condition": "(orders.total > 450.00)",
+        "operation": "Filter: (orders.total > 450.00)",
+        "access_type": "filter",
+        "actual_rows": 2030.0,
+        "actual_loops": 1,
+        "estimated_rows": 6713.328488588333,
+        "filter_columns": [
+          "shop.orders.total"
+        ],
+        "actual_last_row_ms": 2.5177929999999997,
+        "actual_first_row_ms": 0.093542,
+        "estimated_total_cost": 10627.921658986175,
+        "estimated_first_row_cost": 1.5831076457903217
+      }
+    ],
+    "join_type": "semijoin",
+    "operation": "Hash semijoin (FirstMatch) (users.id = orders.user_id)",
+    "access_type": "join",
+    "actual_rows": 1708.0,
+    "actual_loops": 1,
+    "join_columns": [
+      "shop.orders.user_id",
+      "shop.users.id"
+    ],
+    "estimated_rows": 5000.0,
+    "hash_condition": [
+      "(users.id = orders.user_id)"
+    ],
+    "join_algorithm": "hash",
+    "semijoin_strategy": "firstmatch",
+    "actual_last_row_ms": 3.555079,
+    "actual_first_row_ms": 2.729042,
+    "estimated_total_cost": 18965.31445749271,
+    "estimated_first_row_cost": 12881.522242746165
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

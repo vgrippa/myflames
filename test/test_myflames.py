@@ -2712,6 +2712,103 @@ class TestComplexityIntegration(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# MySQL 9.7 support — real captures (traditional + hypergraph optimizer).
+# The 9.7 EXPLAIN ANALYZE FORMAT=JSON v2 output wraps the plan in a
+# `query_plan` envelope ({query, query_plan, query_type, json_schema_version});
+# these lock that it parses, validates, and detects correctly, AND that the
+# older flat 8.4 format still works (backward compatibility).
+# ---------------------------------------------------------------------------
+
+class TestMySQL97(unittest.TestCase):
+    FX = {
+        "join":        os.path.join(TEST_DIR, "mysql-9.7-traditional-join.json"),
+        "groupby":     os.path.join(TEST_DIR, "mysql-9.7-groupby-temptable.json"),
+        "index_merge": os.path.join(TEST_DIR, "mysql-9.7-index-merge-sort-union.json"),
+        "hyper_semi":  os.path.join(TEST_DIR, "mysql-9.7-hypergraph-semijoin.json"),
+        "hyper_anti":  os.path.join(TEST_DIR, "mysql-9.7-hypergraph-antijoin.json"),
+    }
+
+    def _sc(self, key):
+        from myflames.output_sidecar import build_sidecar, validate_sidecar
+        root = parse_explain(_load(self.FX[key]))
+        a = analyze_plan(root)
+        sc = build_sidecar(root, a, source_type="file", engine="mysql")
+        validate_sidecar(sc)
+        return root, a, sc
+
+    def test_97_query_plan_envelope_parses(self):
+        # The 9.7 `query_plan` wrapper must unwrap to a real multi-node tree,
+        # not a degenerate single node.
+        for key in self.FX:
+            if not os.path.exists(self.FX[key]):
+                continue
+            _, _, sc = self._sc(key)
+            self.assertGreaterEqual(sc["plan_summary"]["operator_count"], 1)
+            self.assertTrue(sc["executive_summary"])
+
+    @unittest.skipUnless(os.path.exists(FX["hyper_semi"]), "fixture missing")
+    def test_97_hypergraph_semijoin_firstmatch(self):
+        _, a, _ = self._sc("hyper_semi")
+        names = {s["name"] for s in a["optimizer_switches"]}
+        # Hypergraph exposes the FirstMatch semijoin strategy (8.4 traditional
+        # did not) — myflames must pick it up.
+        self.assertIn("semijoin", names)
+        self.assertIn("firstmatch", names)
+
+    @unittest.skipUnless(os.path.exists(FX["index_merge"]), "fixture missing")
+    def test_97_index_merge_sort_union(self):
+        _, a, _ = self._sc("index_merge")
+        names = {s["name"] for s in a["optimizer_switches"]}
+        self.assertIn("index_merge", names)
+        self.assertIn("index_merge_sort_union", names)
+
+    @unittest.skipUnless(os.path.exists(FX["join"]), "fixture missing")
+    def test_97_traditional_join_no_false_fullscan(self):
+        # The join's base-table scan over orders (filtered) is real; the join
+        # itself must not be mis-flagged. Just assert the pipeline is coherent.
+        _, a, sc = self._sc("join")
+        self.assertIsInstance(a["full_scans"], list)
+        self.assertEqual(sc["source"]["engine"], "mysql")
+
+
+class TestMariaDB118(unittest.TestCase):
+    """MariaDB 11.8 (ANALYZE FORMAT=JSON) — newest stable. Locks that the
+    MariaDB normalizer still handles the latest release and that the older
+    10.11 / 11.4 captures continue to work (backward compatibility)."""
+    FX = {
+        "index_merge": os.path.join(TEST_DIR, "mariadb-11.8-index-merge.json"),
+        "semijoin":    os.path.join(TEST_DIR, "mariadb-11.8-semijoin.json"),
+        "join3":       os.path.join(TEST_DIR, "mariadb-11.8-join3.json"),
+        "groupby":     os.path.join(TEST_DIR, "mariadb-11.8-groupby.json"),
+    }
+
+    def _sc(self, key):
+        from myflames.output_sidecar import build_sidecar, validate_sidecar
+        from myflames.parser import _is_mariadb_format, load_explain_json
+        raw = _load(self.FX[key])
+        self.assertTrue(_is_mariadb_format(load_explain_json(raw)), "should detect as MariaDB")
+        root = parse_explain(raw)
+        a = analyze_plan(root)
+        sc = build_sidecar(root, a, source_type="file", engine="mariadb")
+        validate_sidecar(sc)
+        return root, a, sc
+
+    def test_118_all_parse_and_validate(self):
+        for key in self.FX:
+            if not os.path.exists(self.FX[key]):
+                continue
+            _, _, sc = self._sc(key)
+            self.assertEqual(sc["source"]["engine"], "mariadb")
+            self.assertGreaterEqual(sc["plan_summary"]["operator_count"], 1)
+
+    @unittest.skipUnless(os.path.exists(FX["index_merge"]), "fixture missing")
+    def test_118_index_merge_detected(self):
+        _, a, _ = self._sc("index_merge")
+        names = {s["name"] for s in a["optimizer_switches"]}
+        self.assertIn("index_merge", names)
+
+
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,0 +1,40 @@
+{
+  "query": "/* select#1 */ select `shop`.`users`.`country` AS `country`,count(0) AS `c` from `shop`.`users` group by `shop`.`users`.`country`",
+  "query_plan": {
+    "inputs": [
+      {
+        "covering": true,
+        "operation": "Covering index scan on users using idx_country",
+        "index_name": "idx_country",
+        "table_name": "users",
+        "access_type": "index",
+        "actual_rows": 5000.0,
+        "schema_name": "shop",
+        "actual_loops": 1,
+        "used_columns": [
+          "id",
+          "country"
+        ],
+        "estimated_rows": 5000.0,
+        "index_access_type": "index_scan",
+        "actual_last_row_ms": 0.383878,
+        "actual_first_row_ms": 0.028834,
+        "estimated_total_cost": 503.75
+      }
+    ],
+    "group_by": true,
+    "functions": [
+      "count(0)"
+    ],
+    "operation": "Group aggregate: count(0)",
+    "access_type": "aggregate",
+    "actual_rows": 5.0,
+    "actual_loops": 1,
+    "estimated_rows": 5.0,
+    "actual_last_row_ms": 0.637166,
+    "actual_first_row_ms": 0.146666,
+    "estimated_total_cost": 1655.823732718894
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

@@ -1,0 +1,71 @@
+{
+  "query": "/* select#1 */ select `u`.`id` AS `id`,`u`.`country` AS `country`,`u`.`name` AS `name`,`u`.`created_at` AS `created_at` from `shop`.`users` `u` anti join (`shop`.`orders` `o`) on((`u`.`id` = `o`.`user_id`)) where true",
+  "query_plan": {
+    "inputs": [
+      {
+        "alias": "u",
+        "covering": false,
+        "operation": "Index scan on u using PRIMARY",
+        "index_name": "PRIMARY",
+        "table_name": "users",
+        "access_type": "index",
+        "actual_rows": 5000.0,
+        "schema_name": "shop",
+        "actual_loops": 1,
+        "used_columns": [
+          "id",
+          "country",
+          "name",
+          "created_at"
+        ],
+        "estimated_rows": 5000.0,
+        "index_access_type": "index_scan",
+        "actual_last_row_ms": 0.5901730000000001,
+        "actual_first_row_ms": 0.045125,
+        "estimated_total_cost": 5299.539170506913,
+        "estimated_first_row_cost": 1.0599078341013826
+      },
+      {
+        "alias": "o",
+        "heading": "Hash",
+        "covering": true,
+        "operation": "Covering index scan on o using idx_user",
+        "index_name": "idx_user",
+        "table_name": "orders",
+        "access_type": "index",
+        "actual_rows": 20000.0,
+        "schema_name": "shop",
+        "actual_loops": 1,
+        "used_columns": [
+          "user_id"
+        ],
+        "estimated_rows": 20142.0,
+        "index_access_type": "index_scan",
+        "actual_last_row_ms": 1.530763,
+        "actual_first_row_ms": 0.059,
+        "estimated_total_cost": 5989.211981566821,
+        "estimated_first_row_cost": 0.29734941820905675
+      }
+    ],
+    "join_type": "antijoin",
+    "operation": "Hash antijoin (u.id = o.user_id)",
+    "access_type": "join",
+    "actual_rows": 0.0,
+    "actual_loops": 1,
+    "join_columns": [
+      "o.user_id",
+      "u.id"
+    ],
+    "estimated_rows": 500.0,
+    "hash_condition": [
+      "(u.id = o.user_id)"
+    ],
+    "join_algorithm": "hash",
+    "actual_last_row_ms": 3.4165419999999997,
+    "actual_first_row_ms": 3.4165419999999997,
+    "estimated_total_cost": 18744.502737593495,
+    "estimated_first_row_cost": 12719.398619755539
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

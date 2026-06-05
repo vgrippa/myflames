@@ -1,0 +1,84 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.056223193
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 56.7142156,
+    "r_loops": 1,
+    "r_total_time_ms": 0.187299256,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "ALL",
+          "possible_keys": ["PRIMARY"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 19637,
+          "r_rows": 1281,
+          "cost": 3.2937466,
+          "r_table_time_ms": 0.072388406,
+          "r_other_time_ms": 0.049038654,
+          "r_engine_stats": {
+            "pages_accessed": 5
+          },
+          "filtered": 100,
+          "r_total_filtered": 1.951600312,
+          "attached_condition": "o.total > 490",
+          "r_filtered": 1.951600312
+        }
+      },
+      {
+        "table": {
+          "table_name": "oi",
+          "access_type": "ref",
+          "possible_keys": ["idx_order", "idx_product"],
+          "key": "idx_order",
+          "key_length": "5",
+          "used_key_parts": ["order_id"],
+          "ref": ["shop.o.id"],
+          "loops": 19637,
+          "r_loops": 25,
+          "rows": 1,
+          "r_rows": 2,
+          "cost": 35.84652032,
+          "r_table_time_ms": 0.04289838,
+          "r_other_time_ms": 0.00651621,
+          "r_engine_stats": {
+            "pages_accessed": 150
+          },
+          "filtered": 100,
+          "r_total_filtered": 100,
+          "attached_condition": "oi.product_id is not null",
+          "r_filtered": 100
+        }
+      },
+      {
+        "table": {
+          "table_name": "p",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["shop.oi.product_id"],
+          "loops": 19637,
+          "r_loops": 50,
+          "r_table_loops": 25,
+          "rows": 1,
+          "r_rows": 1,
+          "cost": 17.57394868,
+          "r_table_time_ms": 0.011862843,
+          "r_other_time_ms": 0.001712594,
+          "r_engine_stats": {
+            "pages_accessed": 50
+          },
+          "filtered": 100,
+          "r_total_filtered": 100,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}

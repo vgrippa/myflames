@@ -243,8 +243,8 @@ Each lesson is a single self-contained HTML file: no external scripts, no extern
 ## Requirements
 
 - **Python 3.7+** (no extra packages)
-- **MySQL 8.4+** with `SET explain_json_format_version = 2`, **or**
-- **MariaDB 10.11+** / **11.4+** (supports `ANALYZE FORMAT=JSON` and `SHOW ANALYZE FORMAT=JSON FOR <conn_id>` out of the box)
+- **MySQL 8.4 through 9.7+** with `SET explain_json_format_version = 2` — including the **hypergraph optimizer** and the 9.x `query_plan` envelope (verified against real 9.7), **or**
+- **MariaDB 10.11+** / **11.4** / **11.8+** (supports `ANALYZE FORMAT=JSON` and `SHOW ANALYZE FORMAT=JSON FOR <conn_id>` out of the box)
 
 ---
 
