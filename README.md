@@ -83,7 +83,21 @@ Same quality answer — for a quarter of the input tokens:
 
 On Opus 4.8 input pricing that's **~$0.008 saved per query (~$7.90 per 1,000)**; on Sonnet 4.6, ~$4.80 per 1,000 — and you save output tokens and round-trips too, because the answer is already in the digest. On bigger, messier plans the saving climbs higher.
 
-> Numbers measured 2026-06-05 against Claude Opus 4.8 (real API key, obfuscated) and the GPT tokenizer. The offline heuristic is the zero-dependency default and slightly over-counts JSON; `myflames tokens --exact` gives real Claude counts (`pip install 'myflames[tokens]'` + `ANTHROPIC_API_KEY`).
+> Numbers measured 2026-06-05 against Claude Opus 4.8 and the GPT tokenizer. The offline heuristic is the zero-dependency default and slightly over-counts JSON.
+
+### Exact token counts (optional — use your own key)
+
+By default `myflames tokens` uses the offline heuristic, so it needs **no key and no network**. To get *exact* Claude counts instead, add `--exact`. That calls Anthropic's `count_tokens` endpoint, which needs **your own** Anthropic API key — supply it through the `ANTHROPIC_API_KEY` environment variable:
+
+```bash
+pip install 'myflames[tokens]'
+export ANTHROPIC_API_KEY="sk-ant-api03-REPLACE-WITH-YOUR-OWN-KEY-0000000000000000000000000000"   # example placeholder, not a real key
+myflames tokens explain.json --exact
+```
+
+- **myflames never stores your key.** It reads `ANTHROPIC_API_KEY` from the environment at call time and hands it straight to the Anthropic SDK — it is never written to a file, the JSON sidecar, the output, or anywhere on disk.
+- If the variable isn't set, `--exact` prints a one-line note and falls back to the offline estimate (it does not fail).
+- `count_tokens` is a free endpoint, so exact counts don't consume billable tokens.
 
 **Reproduce it** against a live MySQL 8.4 in the [step-by-step walkthrough](docs/examples/token-savings-walkthrough.md). Prefer to skip the copy/paste entirely? Register the [MCP server](#mcp-server-for-ai-agents) and your agent calls myflames itself.
 

@@ -551,7 +551,7 @@ def _cmd_tokens(argv):
     )
     parser.add_argument(
         "--exact", action="store_true",
-        help="Count exact Claude tokens via Anthropic's count_tokens (needs `pip install myflames[tokens]` + ANTHROPIC_API_KEY). Falls back to the heuristic if unavailable.",
+        help="Count exact Claude tokens via Anthropic count_tokens, using YOUR key from the ANTHROPIC_API_KEY env var (needs `pip install 'myflames[tokens]'`). The key is read from the environment and never stored. Falls back to the offline estimate if it's unset.",
     )
     parser.add_argument(
         "--model", default=None, metavar="MODEL_ID",

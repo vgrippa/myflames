@@ -83,7 +83,15 @@ We asked **Claude Opus 4.8 the question both ways** (raw plan vs digest). It gav
 
 The whole live demo (two `count_tokens` calls + two `messages.create` calls on Opus 4.8) cost **about $0.05**. On Opus input pricing you save ~$0.008 per query (~$7.90 per 1,000); on Sonnet 4.6, ~$4.80 per 1,000 — plus output tokens and round-trips, since the answer is already in the digest.
 
-> The offline heuristic (`myflames tokens`) is the zero-dependency default and slightly over-counts JSON (5.5× vs the measured ~4×). For exact Claude counts use `myflames tokens --exact` (`pip install 'myflames[tokens]'` + `ANTHROPIC_API_KEY`). API keys used to measure this were kept out of the repo and obfuscated.
+> The offline heuristic (`myflames tokens`) is the zero-dependency default (no key, no network) and slightly over-counts JSON (5.5× vs the measured ~4×). For exact Claude counts, add `--exact` with **your own** key:
+>
+> ```bash
+> pip install 'myflames[tokens]'
+> export ANTHROPIC_API_KEY="sk-ant-api03-REPLACE-WITH-YOUR-OWN-KEY-0000000000000000000000000000"   # placeholder
+> myflames tokens slow-query-plan.json --exact
+> ```
+>
+> myflames reads `ANTHROPIC_API_KEY` from the environment and passes it to the Anthropic SDK; it never writes your key anywhere. Without it, `--exact` falls back to the estimate. `count_tokens` is free, so exact counts cost nothing.
 
 ## Even less effort: let the agent do it (MCP)
 

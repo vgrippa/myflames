@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs
+
+- Documented how to use `--exact` with **your own** `ANTHROPIC_API_KEY`
+  (export the env var; example uses a clearly-fake placeholder key), and stated
+  explicitly that myflames reads the key from the environment at call time and
+  **never stores it** anywhere. README + walkthrough + `--exact` help text.
+
 ### Fixed
 
 - **`myflames tokens --exact` now degrades gracefully when no key is
