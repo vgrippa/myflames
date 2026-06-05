@@ -338,6 +338,38 @@ class TestMariaDBParser(unittest.TestCase):
         self.assertTrue(any("Full table scan" in w and "orders" in w for w in warns))
         self.assertFalse(any("<temporary>" in w for w in warns))
 
+    def test_full_scan_excludes_named_derived_or_cte(self):
+        # A "Table scan on agg" where `agg` is a derived table / CTE (the node
+        # has a sub-plan that materializes it) is NOT a base-table full scan —
+        # you cannot CREATE INDEX on a derived result. The structural signal is
+        # that the scan node has children. The base table inside still counts.
+        plan = {
+            "query": "SELECT * FROM (SELECT user_id, SUM(total) s FROM orders GROUP BY user_id) agg",
+            "operation": "Table scan on agg",
+            "access_type": "table",
+            "table_name": "agg",
+            "actual_rows": 3000,
+            "estimated_rows": 3000,
+            "inputs": [{
+                "operation": "Aggregate using temporary table",
+                "access_type": "aggregate",
+                "inputs": [{
+                    "operation": "Table scan on orders",
+                    "access_type": "table",
+                    "table_name": "orders",
+                    "actual_rows": 12000,
+                    "estimated_rows": 12000,
+                    "inputs": [],
+                }],
+            }],
+        }
+        analysis = analyze_plan(parse_explain(json.dumps(plan)))
+        tables = [s["table"] for s in analysis["full_scans"]]
+        self.assertIn("orders", tables)        # real base table — leaf
+        self.assertNotIn("agg", tables)        # derived table — has a sub-plan
+        warns = analysis.get("warnings") or []
+        self.assertFalse(any("agg" in w for w in warns))
+
     def test_analyze_plan_detects_nested_loop(self):
         root = parse_explain(self.join_text)
         analysis = analyze_plan(root)
@@ -1129,6 +1161,9 @@ class TestOptimizerSwitchDetection(unittest.TestCase):
     # MySQL fixtures (EXPLAIN ANALYZE FORMAT=JSON, explain_json_format_version=2)
     MYSQL_IM_UNION = os.path.join(TEST_DIR, "mysql-explain-index-merge-union.json")
     MYSQL_IM_INTER = os.path.join(TEST_DIR, "mysql-explain-index-merge-intersection.json")
+    # Real MySQL 8.4 captures (FORMAT=JSON v2) added during the switch audit.
+    MYSQL_IM_SORT_UNION = os.path.join(TEST_DIR, "mysql-explain-index-merge-sort-union.json")
+    MYSQL_COVERING = os.path.join(TEST_DIR, "mysql-explain-covering-read.json")
     MYSQL_SKIP_SCAN = os.path.join(TEST_DIR, "mysql-explain-skip-scan.json")
     MYSQL_HASH_JOIN = os.path.join(TEST_DIR, "mysql-explain-hash-join-probe.json")
     MYSQL_BKA_MRR = os.path.join(TEST_DIR, "mysql-explain-bka-mrr.json")
@@ -1208,6 +1243,22 @@ class TestOptimizerSwitchDetection(unittest.TestCase):
     def test_mysql_skip_scan_detected(self):
         names = self._names(self._switches(self.MYSQL_SKIP_SCAN))
         self.assertIn("skip_scan", names)
+
+    @unittest.skipUnless(os.path.exists(MYSQL_IM_SORT_UNION), "fixture missing")
+    def test_mysql_index_merge_sort_union_detected(self):
+        # Real MySQL 8.4 sort-union: access_type="index_merge",
+        # op="Sort-deduplicate by row ID". Previously detected NOTHING.
+        names = self._names(self._switches(self.MYSQL_IM_SORT_UNION))
+        self.assertIn("index_merge", names)
+        self.assertIn("index_merge_sort_union", names)
+
+    @unittest.skipUnless(os.path.exists(MYSQL_COVERING), "fixture missing")
+    def test_use_index_extensions_not_fabricated_from_covering(self):
+        # A covering read is NOT evidence of the use_index_extensions switch
+        # (proven by toggling the switch: identical plan). myflames must not
+        # claim the flag just because details["covering"] is True.
+        names = self._names(self._switches(self.MYSQL_COVERING))
+        self.assertNotIn("use_index_extensions", names)
 
     @unittest.skipUnless(os.path.exists(MYSQL_BKA_MRR), "fixture missing")
     def test_mysql_bka_detected(self):

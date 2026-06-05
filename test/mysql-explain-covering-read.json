@@ -1,0 +1,35 @@
+{
+  "query": "/* select#1 */ select `swdb`.`users`.`country` AS `country`,`swdb`.`users`.`name` AS `name` from `swdb`.`users` where (`swdb`.`users`.`country` = 'US')",
+  "inputs": [
+    {
+      "covering": true,
+      "operation": "Covering index lookup on users using idx_country_name (country='US')",
+      "index_name": "idx_country_name",
+      "table_name": "users",
+      "access_type": "index",
+      "actual_rows": 1000.0,
+      "schema_name": "swdb",
+      "actual_loops": 1,
+      "used_columns": [
+        "country",
+        "name"
+      ],
+      "estimated_rows": 1000.0,
+      "lookup_condition": "country='US'",
+      "index_access_type": "index_lookup",
+      "actual_last_row_ms": 0.123948,
+      "actual_first_row_ms": 0.018333,
+      "estimated_total_cost": 108.30645161290323
+    }
+  ],
+  "condition": "(users.country = 'US')",
+  "operation": "Filter: (users.country = 'US')",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 1000.0,
+  "actual_loops": 1,
+  "estimated_rows": 1000.0,
+  "actual_last_row_ms": 0.178236,
+  "actual_first_row_ms": 0.019666,
+  "estimated_total_cost": 108.30645161290323
+}

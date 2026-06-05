@@ -1,0 +1,73 @@
+{
+  "query": "/* select#1 */ select `swdb`.`products`.`id` AS `id`,`swdb`.`products`.`category_id` AS `category_id`,`swdb`.`products`.`price` AS `price` from `swdb`.`products` where ((`swdb`.`products`.`category_id` = 5) or (`swdb`.`products`.`price` < 6))",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "ranges": [
+            "(category_id = 5)"
+          ],
+          "covering": false,
+          "operation": "Index range scan on products using idx_cat over (category_id = 5)",
+          "index_name": "idx_cat",
+          "table_name": "products",
+          "access_type": "index",
+          "actual_rows": 100.0,
+          "schema_name": "swdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "category_id",
+            "price"
+          ],
+          "estimated_rows": 100.0,
+          "index_access_type": "index_range_scan",
+          "actual_last_row_ms": 0.024915,
+          "actual_first_row_ms": 0.019041,
+          "estimated_total_cost": 10.287167947310648
+        },
+        {
+          "ranges": [
+            "(NULL < price < 6)"
+          ],
+          "covering": false,
+          "operation": "Index range scan on products using idx_price over (NULL < price < 6)",
+          "index_name": "idx_price",
+          "table_name": "products",
+          "access_type": "index",
+          "actual_rows": 50.0,
+          "schema_name": "swdb",
+          "actual_loops": 1,
+          "used_columns": [
+            "id",
+            "category_id",
+            "price"
+          ],
+          "estimated_rows": 50.0,
+          "index_access_type": "index_range_scan",
+          "actual_last_row_ms": 0.009583,
+          "actual_first_row_ms": 0.00175,
+          "estimated_total_cost": 5.273446761800219
+        }
+      ],
+      "operation": "Sort-deduplicate by row ID",
+      "access_type": "index_merge",
+      "actual_rows": 140.0,
+      "actual_loops": 1,
+      "estimated_rows": 150.0,
+      "actual_last_row_ms": 0.14429899999999998,
+      "actual_first_row_ms": 0.057874999999999996,
+      "estimated_total_cost": 130.06020387434629
+    }
+  ],
+  "condition": "((products.category_id = 5) or (products.price < 6))",
+  "operation": "Filter: ((products.category_id = 5) or (products.price < 6))",
+  "query_type": "select",
+  "access_type": "filter",
+  "actual_rows": 140.0,
+  "actual_loops": 1,
+  "estimated_rows": 150.0,
+  "actual_last_row_ms": 0.15355,
+  "actual_first_row_ms": 0.059375,
+  "estimated_total_cost": 130.06020387434629
+}

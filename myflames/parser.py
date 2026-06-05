@@ -1335,12 +1335,24 @@ def _detect_optimizer_switches(root):
         elif access == "rowid_sort_intersection":
             _mark("index_merge", label)
             _mark("index_merge_intersection", label)
+        elif "sort-deduplicate by row id" in op:
+            # MySQL 8.4 FORMAT=JSON v2 sort-union variant. Verified against a
+            # live server (access_type="index_merge", op="Sort-deduplicate by
+            # row ID") and against mysql-server explain_access_path.cc:1382.
+            # The older rowid_sort_union access type is handled above.
+            _mark("index_merge", label)
+            _mark("index_merge_sort_union", label)
         elif "deduplicate rows sorted by row id" in op:
             _mark("index_merge", label)
             _mark("index_merge_union", label)
         elif "intersect rows sorted by row id" in op:
             _mark("index_merge", label)
             _mark("index_merge_intersection", label)
+        elif access == "index_merge":
+            # Generic MySQL 8.4 v2 index_merge node whose variant we couldn't
+            # classify from the operation text — still report the parent flag
+            # rather than miss it entirely.
+            _mark("index_merge", label)
         if mdb_im:
             _mark("index_merge", label)
             if "intersect" in mdb_im:
@@ -1378,9 +1390,14 @@ def _detect_optimizer_switches(root):
         if "hash union" in op or "hash intersect" in op or "hash except" in op:
             _mark("hash_set_operations", label)
 
-        # use_index_extensions — covering reads on secondary indexes.
-        if details.get("covering") is True:
-            _mark("use_index_extensions", label)
+        # NOTE: use_index_extensions is intentionally NOT detected. A covering
+        # read (details["covering"] is True) is NOT evidence that this switch
+        # was used. Verified against MySQL 8.4 by toggling the switch on/off on
+        # a covering query: the plan — including the covering read — is byte-for-
+        # byte identical either way, and the flag is not surfaced anywhere in
+        # EXPLAIN. Keying it on `covering` was a misattribution (it fired for
+        # every covering read, e.g. an incidental PK lookup). There is no
+        # reliable plan signal for this flag, so we report nothing.
 
         # MariaDB rowid_filter
         if details.get("using_rowid_filter"):
@@ -1400,7 +1417,7 @@ def _detect_optimizer_switches(root):
         "index_merge_intersection",
         "skip_scan", "materialization",
         "semijoin", "firstmatch", "loosescan", "duplicateweedout",
-        "hash_set_operations", "use_index_extensions",
+        "hash_set_operations",
         "rowid_filter",
     ]
     result = []
@@ -1566,20 +1583,23 @@ def analyze_plan(root):
         short_label = (node.get("short_label") or "").strip()
 
         table_name = details.get("table_name")
-        # Exclude angle-bracket pseudo-tables (<temporary>, <derived N>,
-        # <union M,N>, <subquery N>): a "table scan" over one is normal
-        # materialization (e.g. a GROUP BY temp table), not a missing-index
-        # problem — and you cannot add an index to a table that only exists at
-        # query time. Flagging these as full scans produced misleading
-        # "add an index" advice. Real base-table scans (no angle bracket)
-        # still count.
-        if access_type == "table" and table_name and not table_name.startswith("<"):
-            full_scans.append({
-                "table": table_name,
-                "rows": float(details.get("actual_rows") or 0),
-                "loops": int(details.get("actual_loops") or 1),
-                "short_label": short_label,
-            })
+        # A real base-table full scan is a LEAF. A "table scan" that has a
+        # sub-plan (children) is reading a materialized intermediate — a
+        # derived table, a CTE, or the <temporary> result of GROUP BY/DISTINCT —
+        # which you cannot add an index to, so flagging it as a missing-index
+        # full table scan is misleading. Two complementary signals exclude
+        # these: the angle-bracket name (<temporary>, <derived N>, <subquery N>)
+        # and, for named derived/CTE aliases (agg, sub, prod_stats, …), the
+        # presence of children. Real base scans (leaf node, plain name) count.
+        if access_type == "table" and table_name:
+            is_materialized = bool(node.get("children")) or table_name.startswith("<")
+            if not is_materialized:
+                full_scans.append({
+                    "table": table_name,
+                    "rows": float(details.get("actual_rows") or 0),
+                    "loops": int(details.get("actual_loops") or 1),
+                    "short_label": short_label,
+                })
 
         if join_algo == "hash" or "hash join" in op:
             hash_joins.append({"rows": rows, "short_label": short_label})
@@ -1662,6 +1682,13 @@ def analyze_plan(root):
         features.append("nested loop join")
     if has_antijoin:
         features.append("antijoin=on")
+    # A covering-index read (the index satisfies every column the query needs,
+    # so no row lookup) is a real, positive plan feature worth surfacing. It is
+    # NOT, however, evidence of the use_index_extensions optimizer_switch (see
+    # the note in _detect_optimizer_switches) — so it is a plain feature line,
+    # never an optimizer_switch claim.
+    if has_covering:
+        features.append("covering index")
 
     warnings = []
     suggestions = []

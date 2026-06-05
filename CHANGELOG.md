@@ -7,16 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Correctness pass: real MySQL 8.4 plans (and the checked-out mysql-server
+source) were used to verify every claim — not the LLM's say-so.
+
 ### Fixed
 
-- **Advisor no longer flags scans of `<temporary>` / `<derived>` / `<union>`
-  pseudo-tables as full table scans.** A "table scan" over the synthetic temp
-  table produced by `GROUP BY` / `DISTINCT` is normal materialization, not a
-  missing-index problem — you cannot index a table that only exists at query
-  time. myflames was emitting a misleading "Full table scan … add an index"
-  warning for it. The `full_scans` detector in `parser.py` now excludes
-  angle-bracket pseudo-tables; real base-table scans are unaffected. (Surfaced
-  by a live Claude run on the token-savings demo.)
+- **Advisor no longer flags scans of derived tables / CTEs / `<temporary>`
+  results as base-table full scans.** A "table scan" over a materialized
+  intermediate (the `GROUP BY`/`DISTINCT` temp table, a derived table, or a
+  CTE) is not a missing-index problem — you cannot index a result that only
+  exists at query time. The structural signal is that such a scan node has a
+  sub-plan (children); a real base-table scan is a leaf. The `full_scans`
+  detector now excludes both angle-bracket pseudo-tables (`<temporary>`,
+  `<derived N>`) and named derived/CTE aliases (`agg`, `prod_stats`, …).
+- **`use_index_extensions` is no longer reported.** It was keyed on
+  `details["covering"] is True`, but a covering-index read is not evidence the
+  switch was used — verified against MySQL 8.4 by toggling the switch on/off
+  (the plan, including the covering read, is identical either way; the flag is
+  not surfaced in EXPLAIN at all). A covering read is now surfaced as a plain
+  `covering index` feature instead, never as an optimizer_switch claim.
+- **`index_merge` sort-union is now detected on MySQL 8.4.** Real v2 output is
+  `access_type=index_merge`, operation `"Sort-deduplicate by row ID"`
+  (mysql-server `explain_access_path.cc:1382`) — myflames matched neither and
+  detected nothing. It now recognizes the sort-union operation text and a
+  generic `index_merge` access type as a fallback. Real-capture fixtures added.
 
 ## [2.0.0] — 2026-06-05
 
