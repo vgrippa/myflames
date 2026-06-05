@@ -22,7 +22,13 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 
 ## Ask an AI to fix a slow query for **4× fewer tokens** (real, measured)
 
-This is a real run against a live MySQL 8.4 — every number below is measured, not estimated (the [walkthrough](docs/examples/token-savings-walkthrough.md) reproduces it with one Docker script). The query scans every order because `orders.total` isn't indexed:
+**Why this works:** a raw `EXPLAIN ANALYZE FORMAT=JSON` plan is mostly *structure*, not information. The same field names (`cost_info`, `used_columns`, `actual_rows`, `actual_loops`, …) repeat for every operator, nested levels deep, and the LLM pays for all of it and must parse it before it can reason. myflames does that parsing once and hands the model only the facts that decide the answer — the summary, the warnings, and the fix. Same answer, a quarter of the tokens.
+
+<p align="center">
+  <img src="docs/screenshots/token-savings.svg" alt="Bar chart: raw EXPLAIN plan 2,110 tokens vs myflames digest 521 tokens — 4x fewer, ~$7.90 saved per 1,000 queries" width="720">
+</p>
+
+Every number here is **measured against a live MySQL 8.4**, not estimated (the [walkthrough](docs/examples/token-savings-walkthrough.md) reproduces it with one Docker script). The query scans every order because `orders.total` isn't indexed:
 
 ```sql
 SELECT o.id, o.total, oi.quantity, p.name

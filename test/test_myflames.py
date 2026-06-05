@@ -370,6 +370,21 @@ class TestMariaDBParser(unittest.TestCase):
         warns = analysis.get("warnings") or []
         self.assertFalse(any("agg" in w for w in warns))
 
+    def test_trivial_scan_not_flagged_but_looped_scan_is(self):
+        # A 50-row table scanned ONCE is trivial — an index can't beat a 1-2
+        # page scan — so it must not be flagged as a full table scan needing
+        # an index. The SAME 50-row table scanned 10,000x as a join inner side
+        # touches 500k rows and IS worth flagging (loops are load-bearing).
+        def scan(loops):
+            return {"operation": "Table scan on lookup", "access_type": "table",
+                    "table_name": "lookup", "actual_rows": 50, "actual_loops": loops,
+                    "inputs": []}
+        once = analyze_plan(parse_explain(json.dumps(scan(1))))
+        self.assertEqual(once["full_scans"], [])
+        self.assertFalse(once.get("warnings"))
+        looped = analyze_plan(parse_explain(json.dumps(scan(10000))))
+        self.assertEqual([s["table"] for s in looped["full_scans"]], ["lookup"])
+
     def test_analyze_plan_detects_nested_loop(self):
         root = parse_explain(self.join_text)
         analysis = analyze_plan(root)

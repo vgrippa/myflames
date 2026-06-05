@@ -5,13 +5,24 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.1] — 2026-06-05
 
-Correctness pass: real MySQL 8.4 plans (and the checked-out mysql-server
-source) were used to verify every claim — not the LLM's say-so.
+Advisor correctness pass. Every claim was verified against **real MySQL 8.4
+plans** (optimizer switches toggled on/off live) and the checked-out
+**mysql-server source** — not the LLM's say-so, which more than once was wrong.
 
 ### Fixed
 
+- **Main finding is ranked by impact, not a fixed category order.** A trivial
+  50-row scan no longer headlines over a 16,000-row sort: among scan / sort /
+  temp-table findings, the one that touches the most rows (rows × loops) wins
+  (cost is ~proportional to rows processed). Join-strategy findings (BNL, hash
+  join) still lead when present.
+- **Trivial full scans are no longer flagged.** A scan touching fewer than
+  ~100 rows total (rows × loops) cannot be helped by an index — for a narrow
+  InnoDB table it is one or two pages, and the optimizer itself declines an
+  index there — so "full table scan, add an index" was noise. Gating on
+  rows × loops keeps a small inner table of a large join flagged.
 - **Advisor no longer flags scans of derived tables / CTEs / `<temporary>`
   results as base-table full scans.** A "table scan" over a materialized
   intermediate (the `GROUP BY`/`DISTINCT` temp table, a derived table, or a

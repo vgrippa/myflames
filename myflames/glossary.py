@@ -763,23 +763,42 @@ def _pick_primary_issue(analysis):
         if "tmp_table_size" in w:
             return ("tmp_spill", "the temp table will spill to on-disk InnoDB because tmp_table_size is too small")
 
-    # Plan-level findings in priority order
+    # Join-strategy findings come first when present: a Block Nested-Loop
+    # (repeated full inner scans, ~O(outer × inner)) and then a hash join are
+    # structurally the headline issue regardless of the row counts of the other
+    # operators.
     if bnl_nodes:
         return ("bnl", "Block Nested-Loop join — each batch of outer rows triggers a full scan of the inner table")
     if hash_joins:
         return ("hash_join", "hash join uses join_buffer_size; an index on the join column would be faster")
+
+    # Among the remaining findings (scan / sort / temp table), rank by how many
+    # rows each actually TOUCHES (rows × loops for a scan) rather than a fixed
+    # category order — cost is ~proportional to rows processed, so a 16,000-row
+    # sort headlines over a 12,000-row scan, never the other way by default, and
+    # a trivial scan never outranks a real sort. Ties break toward the scan
+    # (the more actionable root cause).
+    candidates = []  # (weight, tie_rank, kind, text)
     if full_scans:
-        biggest = max(full_scans, key=lambda s: s.get("rows") or 0)
+        biggest = max(full_scans, key=lambda s: (s.get("rows") or 0) * (s.get("loops") or 1))
         rows = int(biggest.get("rows") or 0)
-        return ("full_scan", "full scan of {} ({} row{})".format(
+        weight = rows * (biggest.get("loops") or 1)
+        candidates.append((weight, 0, "full_scan", "full scan of {} ({} row{})".format(
             biggest.get("table") or "a table",
             "{:,}".format(rows),
             "" if rows == 1 else "s",
-        ))
+        )))
     if filesorts:
-        return ("filesort", "result is sorted without using an index")
+        w = max((f.get("rows") or 0) for f in filesorts)
+        candidates.append((w, 1, "filesort", "result is sorted without using an index"))
     if temp_tables:
-        return ("temp_table", "a temp table is materialized")
+        w = max((t.get("rows") or 0) for t in temp_tables)
+        candidates.append((w, 2, "temp_table", "a temp table is materialized"))
+    if candidates:
+        candidates.sort(key=lambda c: (-c[0], c[1]))
+        _, _, kind, text = candidates[0]
+        return (kind, text)
+
     if env_warnings:
         return ("env", env_warnings[0])
     if warnings:

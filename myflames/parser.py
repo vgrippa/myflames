@@ -1545,6 +1545,15 @@ def _detect_nonsargable_joins(root):
     return results
 
 
+# A full scan touching fewer than this many rows total (rows × loops) is not
+# worth an index. Rationale (not a voodoo constant): ~100 narrow rows fit in a
+# single 16 KB InnoDB page, so the scan is one or two page reads — cheaper than
+# a B-tree descent plus the random I/O of index seeks, which is why the
+# optimizer itself declines to use an index on tables this small. Gating on
+# rows × loops (not rows) keeps small inner tables of large joins flagged.
+_TRIVIAL_SCAN_ROWS = 100
+
+
 def analyze_plan(root):
     """Scan parsed EXPLAIN tree and return analysis dict.
 
@@ -1593,11 +1602,24 @@ def analyze_plan(root):
         # presence of children. Real base scans (leaf node, plain name) count.
         if access_type == "table" and table_name:
             is_materialized = bool(node.get("children")) or table_name.startswith("<")
-            if not is_materialized:
+            scan_rows = float(details.get("actual_rows") or 0)
+            scan_loops = int(details.get("actual_loops") or 1)
+            # Skip trivial scans. An index can only beat a full scan when the
+            # scan reads enough rows that random index seeks cost less than a
+            # sequential page scan. A scan that touches very few rows TOTAL
+            # (rows × loops) is 1-2 InnoDB pages — faster to scan than to seek,
+            # and the optimizer itself declines an index there, so flagging it
+            # "full table scan, add an index" is noise. Loops are load-bearing:
+            # a 50-row table on the inner side of a 10k-row join (loops=10000)
+            # touches 500k rows and IS worth flagging, so we gate on the product,
+            # not the row count. Threshold is intentionally low (one page of a
+            # narrow row ≈ 100+ rows) to only drop the clearly-trivial case.
+            is_trivial = scan_rows * scan_loops < _TRIVIAL_SCAN_ROWS
+            if not is_materialized and not is_trivial:
                 full_scans.append({
                     "table": table_name,
-                    "rows": float(details.get("actual_rows") or 0),
-                    "loops": int(details.get("actual_loops") or 1),
+                    "rows": scan_rows,
+                    "loops": scan_loops,
                     "short_label": short_label,
                 })
 

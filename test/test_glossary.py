@@ -306,6 +306,23 @@ class TestPickPrimaryIssue(unittest.TestCase):
         self.assertIn("big", text)
         self.assertIn("500,000", text)
 
+    def test_big_sort_outranks_small_scan(self):
+        # A 16,000-row sort is the real cost; it must headline over a tiny scan,
+        # not lose to a fixed full_scan-first category order.
+        a = self._empty()
+        a["full_scans"] = [{"table": "categories", "rows": 50, "loops": 1}]
+        a["filesorts"] = [{"rows": 16000}]
+        kind, _ = _pick_primary_issue(a)
+        self.assertEqual(kind, "filesort")
+
+    def test_big_scan_outranks_small_sort(self):
+        # Conversely, a 12,000-row scan headlines over a 20-row sort.
+        a = self._empty()
+        a["full_scans"] = [{"table": "orders", "rows": 12000, "loops": 1}]
+        a["filesorts"] = [{"rows": 20}]
+        kind, _ = _pick_primary_issue(a)
+        self.assertEqual(kind, "full_scan")
+
 
 # ---------------------------------------------------------------------------
 # generate_executive_summary end-to-end
