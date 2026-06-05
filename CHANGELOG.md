@@ -5,6 +5,19 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Advisor no longer flags scans of `<temporary>` / `<derived>` / `<union>`
+  pseudo-tables as full table scans.** A "table scan" over the synthetic temp
+  table produced by `GROUP BY` / `DISTINCT` is normal materialization, not a
+  missing-index problem — you cannot index a table that only exists at query
+  time. myflames was emitting a misleading "Full table scan … add an index"
+  warning for it. The `full_scans` detector in `parser.py` now excludes
+  angle-bracket pseudo-tables; real base-table scans are unaffected. (Surfaced
+  by a live Claude run on the token-savings demo.)
+
 ## [2.0.0] — 2026-06-05
 
 Major release: **myflames becomes an AI-era tool.** Raw `EXPLAIN ANALYZE

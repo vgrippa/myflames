@@ -304,6 +304,40 @@ class TestMariaDBParser(unittest.TestCase):
         self.assertTrue(len(analysis["full_scans"]) > 0)
         self.assertEqual(analysis["full_scans"][0]["table"], "users")
 
+    def test_full_scan_excludes_temporary_pseudo_table(self):
+        # A "table scan" over <temporary> (the GROUP BY materialization) is not
+        # a missing-index problem and must NOT be flagged as a full table scan
+        # (you can't index a table that only exists at query time). A real
+        # base-table scan in the same plan still must be flagged.
+        plan = {
+            "query": "SELECT c, COUNT(*) FROM orders GROUP BY c",
+            "operation": "Table scan on <temporary>",
+            "access_type": "table",
+            "table_name": "<temporary>",
+            "actual_rows": 300,
+            "estimated_rows": 300,
+            "inputs": [{
+                "operation": "Aggregate using temporary table",
+                "access_type": "aggregate",
+                "inputs": [{
+                    "operation": "Table scan on orders",
+                    "access_type": "table",
+                    "table_name": "orders",
+                    "actual_rows": 12000,
+                    "estimated_rows": 12000,
+                    "inputs": [],
+                }],
+            }],
+        }
+        analysis = analyze_plan(parse_explain(json.dumps(plan)))
+        tables = [s["table"] for s in analysis["full_scans"]]
+        self.assertIn("orders", tables)
+        self.assertNotIn("<temporary>", tables)
+        # The full-scan warning names the real table, never the pseudo-table.
+        warns = analysis.get("warnings") or []
+        self.assertTrue(any("Full table scan" in w and "orders" in w for w in warns))
+        self.assertFalse(any("<temporary>" in w for w in warns))
+
     def test_analyze_plan_detects_nested_loop(self):
         root = parse_explain(self.join_text)
         analysis = analyze_plan(root)

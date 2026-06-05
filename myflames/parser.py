@@ -1565,9 +1565,17 @@ def analyze_plan(root):
         rows = float(node.get("rows") or 0)
         short_label = (node.get("short_label") or "").strip()
 
-        if access_type == "table" and details.get("table_name"):
+        table_name = details.get("table_name")
+        # Exclude angle-bracket pseudo-tables (<temporary>, <derived N>,
+        # <union M,N>, <subquery N>): a "table scan" over one is normal
+        # materialization (e.g. a GROUP BY temp table), not a missing-index
+        # problem — and you cannot add an index to a table that only exists at
+        # query time. Flagging these as full scans produced misleading
+        # "add an index" advice. Real base-table scans (no angle bracket)
+        # still count.
+        if access_type == "table" and table_name and not table_name.startswith("<"):
             full_scans.append({
-                "table": details["table_name"],
+                "table": table_name,
                 "rows": float(details.get("actual_rows") or 0),
                 "loops": int(details.get("actual_loops") or 1),
                 "short_label": short_label,
