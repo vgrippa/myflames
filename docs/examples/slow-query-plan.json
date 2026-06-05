@@ -1,0 +1,146 @@
+{
+  "limit": 50,
+  "query": "/* select#1 */ select `o`.`id` AS `id`,`o`.`total` AS `total`,`oi`.`quantity` AS `quantity`,`p`.`name` AS `name` from `shop`.`orders` `o` join `shop`.`order_items` `oi` join `shop`.`products` `p` where ((`oi`.`order_id` = `o`.`id`) and (`p`.`id` = `oi`.`product_id`) and (`o`.`total` > 450.00)) order by `o`.`total` desc limit 50",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "alias": "o",
+                      "operation": "Table scan on o",
+                      "table_name": "orders",
+                      "access_type": "table",
+                      "actual_rows": 12000.0,
+                      "schema_name": "shop",
+                      "actual_loops": 1,
+                      "used_columns": [
+                        "id",
+                        "total"
+                      ],
+                      "estimated_rows": 12010.0,
+                      "actual_last_row_ms": 1.0092720000000002,
+                      "actual_first_row_ms": 0.06983299999999999,
+                      "estimated_total_cost": 1208.25
+                    }
+                  ],
+                  "condition": "(o.total > 450.00)",
+                  "operation": "Filter: (o.total > 450.00)",
+                  "access_type": "filter",
+                  "actual_rows": 1261.0,
+                  "actual_loops": 1,
+                  "estimated_rows": 12010.0,
+                  "actual_last_row_ms": 1.514054,
+                  "actual_first_row_ms": 0.07308300000000001,
+                  "estimated_total_cost": 1208.25
+                }
+              ],
+              "operation": "Sort: o.total DESC",
+              "access_type": "sort",
+              "actual_rows": 15.0,
+              "sort_fields": [
+                "o.total DESC"
+              ],
+              "actual_loops": 1,
+              "estimated_rows": 12010.0,
+              "actual_last_row_ms": 1.6852939999999998,
+              "actual_first_row_ms": 1.684833,
+              "estimated_total_cost": 1208.25
+            },
+            {
+              "inputs": [
+                {
+                  "alias": "oi",
+                  "covering": false,
+                  "operation": "Index lookup on oi using idx_order (order_id=o.id)",
+                  "index_name": "idx_order",
+                  "table_name": "order_items",
+                  "access_type": "index",
+                  "actual_rows": 3.3333333333333335,
+                  "schema_name": "shop",
+                  "actual_loops": 15,
+                  "used_columns": [
+                    "id",
+                    "order_id",
+                    "product_id",
+                    "quantity"
+                  ],
+                  "estimated_rows": 3.28041934967041,
+                  "lookup_condition": "order_id=o.id",
+                  "index_access_type": "index_lookup",
+                  "actual_last_row_ms": 0.006314,
+                  "actual_first_row_ms": 0.006055533333333333,
+                  "estimated_total_cost": 0.8201867878125783
+                }
+              ],
+              "condition": "(oi.product_id is not null)",
+              "operation": "Filter: (oi.product_id is not null)",
+              "access_type": "filter",
+              "actual_rows": 3.3333333333333335,
+              "actual_loops": 15,
+              "estimated_rows": 3.28041934967041,
+              "actual_last_row_ms": 0.0070556666666666676,
+              "actual_first_row_ms": 0.0066806,
+              "estimated_total_cost": 0.8201867878125783
+            }
+          ],
+          "join_type": "inner join",
+          "operation": "Nested loop inner join",
+          "access_type": "join",
+          "actual_rows": 50.0,
+          "actual_loops": 1,
+          "estimated_rows": 39397.836389541626,
+          "join_algorithm": "nested_loop",
+          "actual_last_row_ms": 1.794082,
+          "actual_first_row_ms": 1.713125,
+          "estimated_total_cost": 8430.858301632297
+        },
+        {
+          "alias": "p",
+          "covering": false,
+          "operation": "Single-row index lookup on p using PRIMARY (id=oi.product_id)",
+          "index_name": "PRIMARY",
+          "table_name": "products",
+          "access_type": "index",
+          "actual_rows": 1.0,
+          "schema_name": "shop",
+          "actual_loops": 50,
+          "used_columns": [
+            "id",
+            "name"
+          ],
+          "estimated_rows": 1.0,
+          "lookup_condition": "id=oi.product_id",
+          "index_access_type": "index_lookup",
+          "actual_last_row_ms": 0.0003458,
+          "actual_first_row_ms": 0.00033248,
+          "estimated_total_cost": 0.2500076153930133
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "actual_rows": 50.0,
+      "actual_loops": 1,
+      "estimated_rows": 39397.836389541626,
+      "join_algorithm": "nested_loop",
+      "actual_last_row_ms": 1.816498,
+      "actual_first_row_ms": 1.717417,
+      "estimated_total_cost": 15653.466603264595
+    }
+  ],
+  "operation": "Limit: 50 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 50.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "estimated_rows": 50.0,
+  "actual_last_row_ms": 1.8189149999999998,
+  "actual_first_row_ms": 1.7179179999999998,
+  "estimated_total_cost": 15653.466603264595
+}

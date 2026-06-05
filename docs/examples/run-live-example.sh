@@ -14,17 +14,19 @@ NAME="myflames-live-example"
 PW="examplepass"
 DB="shop"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PLAN="$HERE/orders-revenue-plan.json"
+PLAN="$HERE/slow-query-plan.json"
 
-# The query a human is staring at, wondering why it's slow:
-QUERY="SELECT p.name, SUM(oi.quantity * oi.unit_price) AS revenue
-       FROM order_items oi
-       JOIN orders o   ON o.id = oi.order_id
-       JOIN products p ON p.id = oi.product_id
-       WHERE o.status = 'shipped'
-       GROUP BY p.id
-       ORDER BY revenue DESC
-       LIMIT 20"
+# The query a human is staring at, wondering why it's slow. There is no index on
+# orders.total, so MySQL full-scans every order, joins out to items + products,
+# then filesorts the result. The full scan and the filesort are both real and
+# both fixed by one index on orders.total — exactly what myflames flags.
+QUERY="SELECT o.id, o.total, oi.quantity, p.name
+       FROM orders o
+       JOIN order_items oi ON oi.order_id = o.id
+       JOIN products p     ON p.id = oi.product_id
+       WHERE o.total > 450
+       ORDER BY o.total DESC
+       LIMIT 50"
 
 log() { echo "[live-example] $*"; }
 

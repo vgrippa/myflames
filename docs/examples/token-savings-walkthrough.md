@@ -1,131 +1,100 @@
-# Real example: the token saving, step by step
+# Real example: ask an AI to fix a slow query, for 4× fewer tokens
 
-Everything below is **real output** from a live MySQL 8.4 (in Docker), not a mock-up. Reproduce it yourself in ~30 seconds:
+Every number here is **measured**, against a live MySQL 8.4 (Docker) and a real Claude API key. Reproduce it in ~30 seconds:
 
 ```bash
 ./docs/examples/run-live-example.sh    # needs Docker
 ```
 
-It boots MySQL, seeds a small shop schema (3,000 users · 12,000 orders · 40,000 order_items · 1,500 products), runs the query below, and prints the comparison. The captured plan lives at [orders-revenue-plan.json](orders-revenue-plan.json).
+It boots MySQL, seeds a small shop schema (3,000 users · 12,000 orders · 40,000 order_items · 1,500 products), runs the query below, captures its plan to [slow-query-plan.json](slow-query-plan.json), and prints the token comparison.
 
-## The query you think is slow
+## The slow query
 
-A normal analytics query — top 20 products by revenue among shipped orders:
+`orders.total` has no index, so MySQL scans every order, joins out, and sorts the result:
 
 ```sql
-SELECT p.name, SUM(oi.quantity * oi.unit_price) AS revenue
-FROM order_items oi
-JOIN orders o   ON o.id = oi.order_id
-JOIN products p ON p.id = oi.product_id
-WHERE o.status = 'shipped'
-GROUP BY p.id
-ORDER BY revenue DESC
-LIMIT 20;
+SELECT o.id, o.total, oi.quantity, p.name
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+JOIN products p     ON p.id = oi.product_id
+WHERE o.total > 450
+ORDER BY o.total DESC
+LIMIT 50;
 ```
 
 ## Step 1 — get the plan from MySQL
 
-As a human you run one of these:
-
 ```sql
--- in the mysql client:
 SET explain_json_format_version = 2;
-EXPLAIN ANALYZE FORMAT=JSON SELECT ... ;   -- (the query above)
+EXPLAIN ANALYZE FORMAT=JSON SELECT ... ;   -- the query above
 ```
 
-…or let myflames pull it for you against a live server:
+…or let myflames pull it from a live server: `myflames -h host -u user -p -D shop -e "SELECT ..." > plan.json`. Either way you get **~5.5 KB of deeply nested JSON**.
+
+## Step 2a — without myflames: paste the whole plan in
+
+You copy the entire JSON blob, paste it into ChatGPT/Claude, and ask *"why is this slow, and how do I make it faster?"* That prompt is **2,110 tokens** measured on Claude (1,420 on GPT-4o). The model has to parse all the nesting before it can reason.
+
+## Step 2b — with myflames: paste the digest
 
 ```bash
-myflames -h db.example.com -u admin -p -D shop \
-  -e "SELECT p.name, SUM(oi.quantity*oi.unit_price) ..." > plan.json
+myflames tokens slow-query-plan.json --digest | pbcopy   # then paste
 ```
 
-Either way you get **169 lines / ~7.6 KB of deeply nested JSON**. The first dozen lines already show the problem — it's all structure, no answer:
+The digest is **521 tokens** (Claude) and already contains the diagnosis *and* the fix — real output:
 
-```json
-{
-    "limit": 20,
-    "query": "/* select#1 */ select `p`.`name` ... limit 20",
-    "inputs": [
-        { "inputs": [
-            { "inputs": [
-                { "inputs": [
-                    { "inputs": [
-                        { "alias": "o",
-                          "covering": true,
-                          "operation": "Covering index lookup on o using idx_status (status='shipped')",
-                          ...
-```
-
-## Step 2a — the usual way: paste the whole plan into your AI
-
-You select the entire JSON blob, paste it into ChatGPT/Claude, and type *"why is this query slow, and how do I make it faster?"* That prompt is about **2,182 tokens** — and the model still has to parse all that nesting before it can think.
-
-## Step 2b — the myflames way: paste the digest instead
-
-```bash
-myflames tokens orders-revenue-plan.json --digest | pbcopy   # now paste
-```
-
-The digest is **~335 tokens** and already contains the diagnosis (a temp-table scan from the `GROUP BY`, plus a filesort) and the fixes — this is the real output:
-
-```
+```text
 # Query plan analysis (myflames digest)
-engine mysql | 11 ops | depth 8 | 12.049 ms | rows 20 sent / 2,404 examined
+engine mysql | 9 ops | depth 6 | 1.819 ms | rows 50 sent / 12,004 examined
 
-SUMMARY: Query scans 1 table and sorts the result; examines ~2,404 rows to
-return 20 in 12 ms. Main finding: full scan of <temporary> (300 rows).
+SUMMARY: Query scans 1 table and sorts the result; examines ~12,004 rows to
+return 50 in 1.8 ms. Main finding: no index covers (total) on orders.
 
 WARNINGS (2):
-- [warn/full_scan] Full table scan: <temporary> (300 rows) (@ Table scan [<temporary>])
-- [warn/filesort] 1 sort operation(s) — 20 rows; may use disk-based filesort (@ Sort (limit 20))
+- [warn/full_scan] Full table scan: orders (12000 rows) (@ Table scan [orders])
+- [warn/filesort] 1 sort operation(s) — 15 rows; may use disk-based filesort (@ Sort)
 
-SUGGESTIONS (2):
-- [high/index] Add indexes on filter/join columns to avoid full table scans
-- [medium/tuning_variable] Increase sort_buffer_size or add an ordered index to avoid filesort
-
-OPTIMIZER_SWITCHES: use_index_extensions=on
+INDEXES:
+- CREATE INDEX idx_orders_total ON orders (total);
 
 PLAN:
-Limit: 20 rows
-`- Sort (limit 20)
-   `- Table scan [<temporary>]
-      `- Aggregate
-         `- Nested loop inner join
-            |- Nested loop inner join
-            |  |- Filter: ((o.status = 'shipped'))
-            |  |  `- Covering index [orders.idx_status]
-            |  `- Filter: ((oi.product_id is not null))
-            |     `- Index lookup [order_items.idx_order]
-            `- Single-row lookup [products.PRIMARY]
+Limit: 50 rows
+`- Nested loop inner join
+   |- Nested loop inner join
+   |  |- Sort
+   |  |  `- Filter: ((o.total > 450.00))
+   |  |     `- Table scan [orders]
+   |  `- Filter: ((oi.product_id is not null))
+   |     `- Index lookup [order_items.idx_order]
+   `- Single-row lookup [products.PRIMARY]
 ```
 
-## Step 3 — see the saving
+## Step 3 — same answer, 4× cheaper
 
-```bash
-myflames tokens orders-revenue-plan.json
-```
+We asked **Claude Opus 4.8 the question both ways** (raw plan vs digest). It gave the **same diagnosis and the same fix** either way. From the digest:
 
-```
-  What you'd paste                          Tokens     Cost (Sonnet 4.6 input)
-  BEFORE  raw plan JSON + your question      2,182     $0.0065
-  AFTER   myflames digest + your question      335     $0.0010
-  ------------------------------------------------------------
-  SAVED                                      1,847     $0.0055   (84.6% fewer, 6.5x smaller)
-```
+> The bottleneck is the first access path on `orders`: a **full table scan** — MySQL reads all ~12,000 rows because there's no index on `total`. You return 50 rows but examine 12,004, a ~240:1 read-to-return ratio. The surviving rows are then **filesorted**… The joins are fine (`order_items` uses `idx_order`, `products` uses its PRIMARY key). Fix: `CREATE INDEX idx_orders_total ON orders (total);`
 
-On this small, realistic plan it's **6.5× fewer tokens**; on a complex multi-join plan it's **10×+** (see the README). Bigger and messier plans — the ones you actually need help with — save the most. Counts are an offline estimate; add `--exact` for real Claude tokens (`pip install myflames[tokens]` + `ANTHROPIC_API_KEY`).
+| Measured with | Raw + question | Digest + question | Saving |
+|---|--:|--:|--:|
+| Claude Opus 4.8 (real API `count_tokens`) | 2,110 | 521 | **4.0× · 75% fewer** |
+| GPT-4o / 4.1 / 5 (tiktoken) | 1,420 | 320 | **4.4× · 78% fewer** |
+| Offline heuristic (`myflames tokens`) | 1,655 | 300 | 5.5× |
 
-## Even less effort: let the agent do it for you (MCP)
+The whole live demo (two `count_tokens` calls + two `messages.create` calls on Opus 4.8) cost **about $0.05**. On Opus input pricing you save ~$0.008 per query (~$7.90 per 1,000); on Sonnet 4.6, ~$4.80 per 1,000 — plus output tokens and round-trips, since the answer is already in the digest.
 
-If you drive MySQL through an AI agent (Claude Code, Cursor), you don't copy anything at all. Register the server once:
+> The offline heuristic (`myflames tokens`) is the zero-dependency default and slightly over-counts JSON (5.5× vs the measured ~4×). For exact Claude counts use `myflames tokens --exact` (`pip install 'myflames[tokens]'` + `ANTHROPIC_API_KEY`). API keys used to measure this were kept out of the repo and obfuscated.
+
+## Even less effort: let the agent do it (MCP)
+
+If you drive MySQL through an AI agent, you don't copy anything at all:
 
 ```bash
 pip install 'myflames[mcp]'
 claude mcp add myflames -- myflames-mcp
 ```
 
-Now when you ask your agent *"why is this query slow?"*, it calls the `analyze_plan` / `digest_plan` tool directly and reasons over the 335-token digest — never the 2,182-token raw plan.
+Ask *"why is this query slow?"* and the agent calls `analyze_plan` / `digest_plan` directly, reasoning over the 521-token digest instead of the 2,110-token raw plan.
 
 ## Clean up
 

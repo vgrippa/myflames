@@ -20,24 +20,23 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 
 ---
 
-## Optimize a slow query for **6.5× fewer tokens** (a real before/after)
+## Ask an AI to fix a slow query for **4× fewer tokens** (real, measured)
 
-Say you have a slow query and you want an LLM to help you fix it:
+This is a real run against a live MySQL 8.4 — every number below is measured, not estimated (the [walkthrough](docs/examples/token-savings-walkthrough.md) reproduces it with one Docker script). The query scans every order because `orders.total` isn't indexed:
 
 ```sql
-SELECT p.name, SUM(oi.quantity * oi.unit_price) AS revenue
-FROM order_items oi
-JOIN orders o   ON o.id = oi.order_id
-JOIN products p ON p.id = oi.product_id
-WHERE o.status = 'shipped'
-GROUP BY p.id
-ORDER BY revenue DESC
-LIMIT 20;
+SELECT o.id, o.total, oi.quantity, p.name
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+JOIN products p     ON p.id = oi.product_id
+WHERE o.total > 450
+ORDER BY o.total DESC
+LIMIT 50;
 ```
 
 ### ❌ Without myflames — paste the raw plan into the AI
 
-You run `EXPLAIN ANALYZE FORMAT=JSON …`, copy the **169 lines / ~7.6 KB** of deeply nested JSON, paste it into ChatGPT/Claude, and ask *"why is this slow, and how do I make it faster?"* That prompt is **2,182 tokens** — and the model has to parse all that structure before it can reason.
+You run `EXPLAIN ANALYZE FORMAT=JSON …`, copy the **~5.5 KB of deeply nested JSON**, paste it in, and ask *"why is this slow, and how do I make it faster?"* That prompt is **2,110 tokens** on Claude (1,420 on GPT-4o) — and the model parses all that structure before it can reason.
 
 ### ✅ With myflames — paste the digest instead
 
@@ -45,41 +44,42 @@ You run `EXPLAIN ANALYZE FORMAT=JSON …`, copy the **169 lines / ~7.6 KB** of d
 myflames tokens plan.json --digest | pbcopy    # then paste
 ```
 
-The digest is **335 tokens** and already contains the diagnosis (a `<temporary>`-table scan from the `GROUP BY`, plus a filesort) and the fixes — this is real output:
+The digest is **521 tokens** and already names the diagnosis *and the fix* — this is real output:
 
 ```text
 # Query plan analysis (myflames digest)
-engine mysql | 11 ops | depth 8 | 12.049 ms | rows 20 sent / 2,404 examined
+engine mysql | 9 ops | depth 6 | 1.819 ms | rows 50 sent / 12,004 examined
 
-SUMMARY: Query scans 1 table and sorts the result; examines ~2,404 rows to
-return 20 in 12 ms. Main finding: full scan of <temporary> (300 rows).
+SUMMARY: Query scans 1 table and sorts the result; examines ~12,004 rows to
+return 50 in 1.8 ms. Main finding: no index covers (total) on orders.
 
 WARNINGS (2):
-- [warn/full_scan] Full table scan: <temporary> (300 rows) (@ Table scan [<temporary>])
-- [warn/filesort] 1 sort operation(s) — 20 rows; may use disk-based filesort (@ Sort (limit 20))
+- [warn/full_scan] Full table scan: orders (12000 rows) (@ Table scan [orders])
+- [warn/filesort] 1 sort operation(s) — 15 rows; may use disk-based filesort (@ Sort)
 
-SUGGESTIONS (2):
-- [high/index] Add indexes on filter/join columns to avoid full table scans
-- [medium/tuning_variable] Increase sort_buffer_size or add an ordered index to avoid filesort
+INDEXES:
+- CREATE INDEX idx_orders_total ON orders (total);
 ```
 
-### The difference
+### Same answer, 4× cheaper
 
-```bash
-myflames tokens plan.json
-```
+We actually asked Claude (Opus 4.8) the question **both ways**. It reached the **same diagnosis and the same fix** either way. From the digest:
 
-| What you paste | Tokens | Cost — Opus 4.8 | Cost — Sonnet 4.6 | Cost — Haiku 4.5 |
-|---|--:|--:|--:|--:|
-| **Before** — raw plan + question | 2,182 | $0.0109 | $0.0065 | $0.0022 |
-| **After** — myflames digest + question | 335 | $0.0017 | $0.0010 | $0.0003 |
-| **Saved** | **1,847 (84.6%, 6.5×)** | **$0.0092** | **$0.0055** | **$0.0018** |
+> The bottleneck is the first access path on `orders`: a **full table scan** — MySQL reads all ~12,000 rows because there's no index on `total`. You return 50 rows but examine 12,004, a ~240:1 read-to-return ratio. The surviving rows are then **filesorted**… The joins are fine. Fix: `CREATE INDEX idx_orders_total ON orders (total);`
 
-That's **~$5.54 saved per 1,000 such queries** on Sonnet 4.6 (input) — and you save more output tokens and round-trips too, because the digest already contains the answer. On a complex multi-join plan the saving climbs past **10×**.
+Same quality answer — for a quarter of the input tokens:
 
-> Token counts are an offline estimate by default; add `--exact` for real Claude tokens (`pip install 'myflames[tokens]'` + `ANTHROPIC_API_KEY`). Prices as of 2026-05-26.
+| Measured with | Raw plan + question | myflames digest + question | Saving |
+|---|--:|--:|--:|
+| **Claude Opus 4.8** (real API `count_tokens`) | 2,110 | 521 | **4.0× · 75% fewer** |
+| **GPT-4o / 4.1 / 5** (tiktoken) | 1,420 | 320 | **4.4× · 78% fewer** |
+| Offline heuristic (myflames default) | 1,655 | 300 | 5.5× |
 
-**Reproduce all of this against a live MySQL 8.4** (one Docker script) in the [step-by-step walkthrough](docs/examples/token-savings-walkthrough.md). Prefer to skip the copy/paste entirely? Register the [MCP server](#mcp-server-for-ai-agents) and your agent calls myflames itself.
+On Opus 4.8 input pricing that's **~$0.008 saved per query (~$7.90 per 1,000)**; on Sonnet 4.6, ~$4.80 per 1,000 — and you save output tokens and round-trips too, because the answer is already in the digest. On bigger, messier plans the saving climbs higher.
+
+> Numbers measured 2026-06-05 against Claude Opus 4.8 (real API key, obfuscated) and the GPT tokenizer. The offline heuristic is the zero-dependency default and slightly over-counts JSON; `myflames tokens --exact` gives real Claude counts (`pip install 'myflames[tokens]'` + `ANTHROPIC_API_KEY`).
+
+**Reproduce it** against a live MySQL 8.4 in the [step-by-step walkthrough](docs/examples/token-savings-walkthrough.md). Prefer to skip the copy/paste entirely? Register the [MCP server](#mcp-server-for-ai-agents) and your agent calls myflames itself.
 
 ## What does the output look like?
 
