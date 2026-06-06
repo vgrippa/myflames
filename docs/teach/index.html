@@ -1,183 +1,181 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Teach Lessons - myflames documentation</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myflames teach — algorithm catalog</title>
+  <meta name="description" content="Catalog of interactive myflames teach lessons: join strategies, index access, scans, cache.">
   <style>
-    :root { --bg: #fafafa; --panel: #fff; --text: #1a1a1a; --muted: #6b7280; --border: #e5e7eb; --accent: #2563eb; }
+    :root {
+      --bg: #f5f6fa; --card: #fff; --fg: #111827;
+      --muted: #4a5260; --accent: #1a73e8;
+      --accent-soft: #e8eaf6; --border: #dbe4f0;
+      --rad: 10px; --rad-sm: 6px;
+      --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    }
     * { box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
-    nav.top { background: var(--panel); border-bottom: 1px solid var(--border); padding: 12px 20px; font-size: 14px; }
-    nav.top a { color: var(--accent); text-decoration: none; margin-right: 18px; font-weight: 500; }
-    nav.top a:hover { text-decoration: underline; }
-    nav.top .brand { font-weight: 700; color: var(--text); margin-right: 24px; }
-    main { max-width: 900px; margin: 0 auto; padding: 32px 20px 64px; }
-    h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.5px; }
-    h1 + p.subtitle { color: var(--muted); font-size: 16px; margin: 0 0 32px; }
-    h2 { font-size: 20px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-    p, li { font-size: 15px; }
-    code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 13.5px; }
-    pre { background: #1f2937; color: #e5e7eb; padding: 16px 20px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
-    pre code { background: none; padding: 0; color: inherit; }
-    a { color: var(--accent); }
-    .lesson-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
-    @media (max-width: 700px) { .lesson-grid { grid-template-columns: 1fr; } }
-    .lesson-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; transition: box-shadow 0.15s; }
-    .lesson-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-    .lesson-card h3 { margin: 0 0 6px; font-size: 16px; }
-    .lesson-card h3 a { text-decoration: none; }
-    .lesson-card h3 a:hover { text-decoration: underline; }
-    .lesson-card .cli { font-size: 12px; color: var(--muted); margin-bottom: 8px; font-family: monospace; }
-    .lesson-card p { font-size: 13.5px; margin: 0; color: #374151; }
-    .lesson-card .tag { display: inline-block; background: #eef2ff; color: #3730a3; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-right: 4px; margin-bottom: 4px; }
-    .section-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 32px 0 8px; }
-    footer { max-width: 900px; margin: 0 auto; padding: 16px 20px 32px; font-size: 12px; color: var(--muted); text-align: center; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font-family: var(--font-ui); line-height: 1.55; font-size: 15px;
+    }
+    :focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px;
+      border-radius: var(--rad-sm);
+    }
+    header.hub-header {
+      background: #1a1a2e; color: #fff;
+      padding: 18px 28px;
+    }
+    header.hub-header h1 {
+      font-size: 20px; font-weight: 600; margin: 0 0 4px 0;
+    }
+    header.hub-header p {
+      margin: 0; opacity: 0.8; font-size: 13px;
+    }
+    main {
+      max-width: 1100px; margin: 28px auto; padding: 0 24px;
+      display: flex; flex-direction: column; gap: 24px;
+    }
+    section.curriculum, section.family {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--rad); padding: 18px 22px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+    section h2 {
+      margin: 0 0 12px 0; font-size: 17px; font-weight: 600;
+    }
+    .curriculum-list, .lesson-list {
+      list-style: none; padding: 0; margin: 0;
+      display: grid; gap: 8px;
+    }
+    .curriculum-list {
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    }
+    .curriculum-list li {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; background: var(--accent-soft);
+      border-radius: var(--rad-sm);
+    }
+    .curriculum-list .step {
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 11px; color: var(--muted);
+      flex: 0 0 auto;
+    }
+    .curriculum-list a {
+      color: var(--accent); text-decoration: none; font-weight: 500;
+    }
+    .curriculum-list a:hover { text-decoration: underline; }
+    .lesson-list li {
+      padding: 0;
+    }
+    .lesson-list a {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 12px 14px; border: 1px solid var(--border);
+      border-radius: var(--rad-sm);
+      text-decoration: none; color: inherit;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .lesson-list a:hover {
+      background: var(--accent-soft); border-color: var(--accent);
+    }
+    .lesson-title {
+      font-weight: 600; color: var(--accent);
+    }
+    .lesson-summary {
+      color: var(--muted); font-size: 13px;
+    }
+    footer {
+      max-width: 1100px; margin: 24px auto 48px;
+      padding: 0 24px; color: var(--muted); font-size: 12px;
+    }
+    footer a { color: var(--accent); }
   </style>
 </head>
 <body>
-  <nav class="top">
-    <span class="brand">myflames docs</span>
-    <a href="../index.html">Home</a>
-    <a href="../guide/getting-started.html">Getting Started</a>
-    <a href="../guide/views.html">View Types</a>
-    <a href="../guide/cli.html">CLI Reference</a>
-    <a href="../guide/architecture.html">Architecture</a>
-    <a href="index.html">Teach Lessons</a>
-  </nav>
+  <header class="hub-header">
+    <h1>myflames teach</h1>
+    <p>Interactive database algorithm lessons — offline, stdlib-only,
+       each file self-contained.</p>
+  </header>
   <main>
-    <h1>Teach Lessons</h1>
-    <p class="subtitle">Interactive, offline-first HTML lessons that animate MySQL 8.4 and MariaDB 11.x internals with correct cost models.</p>
+    <section class="curriculum" aria-labelledby="curr-heading">
+  <h2 id="curr-heading">Start here — recommended order</h2>
+  <ol class="curriculum-list">
+    <li><span class="step">01</span><a href="./scan/full_scan.html">Full table scan — why every row gets read</a></li>
+    <li><span class="step">02</span><a href="./index/btree.html">B+tree lookup — how InnoDB finds a row</a></li>
+    <li><span class="step">03</span><a href="./index/unique_lookup.html">Unique Key Lookup — single-row index lookup</a></li>
+    <li><span class="step">04</span><a href="./index/non_unique_lookup.html">Non-Unique Key Lookup — index hits that return many rows</a></li>
+    <li><span class="step">05</span><a href="./index/icp.html">Index Condition Pushdown — filtering inside InnoDB</a></li>
+    <li><span class="step">06</span><a href="./scan/covering_index.html">Covering index — why "Using index" in EXPLAIN is the goal</a></li>
+    <li><span class="step">07</span><a href="./join/nested_loop.html">Nested Loop Join — dedicated operator view</a></li>
+    <li><span class="step">08</span><a href="./join/hash.html">Hash join — build, probe, and grace-hash spill</a></li>
+    <li><span class="step">09</span><a href="./join/bnl.html">Block Nested Loop join — MariaDB's default for non-indexed joins</a></li>
+    <li><span class="step">10</span><a href="./join/bka_join.html">Batched Key Access (BKA) join — batch, sort, MRR</a></li>
+    <li><span class="step">11</span><a href="./join/semijoin_weedout.html">Semijoin Duplicate Weedout — dedup via temp table</a></li>
+    <li><span class="step">12</span><a href="./scan/derived_table.html">Derived Table Materialization</a></li>
+    <li><span class="step">13</span><a href="./planner/join_order.html">Join-order search — why query planning is factorial</a></li>
+    <li><span class="step">14</span><a href="./cache/lru.html">InnoDB buffer pool — midpoint-insertion LRU</a></li>
+    <li><span class="step">15</span><a href="./cache/buffer_pool_warmup.html">InnoDB buffer pool — cold-start vs warm, dump/load cure</a></li>
+  </ol>
+</section>
 
-    <h2>Quick start</h2>
-    <pre><code>myflames teach              # list all lessons
-myflames teach btree -o btree.html && open btree.html</code></pre>
-    <p>Each lesson is a single self-contained HTML file. No external scripts, stylesheets, or fonts. Drop it in Slack, attach to a ticket, or email it — it just works offline.</p>
+    <section class="family">
+  <h2>Scan / Sort / Temp Family</h2>
+  <ul class="lesson-list">
+    <li><a href="./scan/filesort.html"><span class="lesson-title">Filesort — how MySQL sorts without an index</span><span class="lesson-summary">sort_buffer_size, sorted runs, k-way merge. Why ORDER BY is slow without an index.</span></a></li>
+    <li><a href="./scan/tmp.html"><span class="lesson-title">Temporary tables — MEMORY to on-disk conversion</span><span class="lesson-summary">Watch GROUP BY hit the tmp_table_size limit and convert to on-disk InnoDB.</span></a></li>
+    <li><a href="./scan/full_scan.html"><span class="lesson-title">Full table scan — why every row gets read</span><span class="lesson-summary">See O(n) row reads in action and compare against indexed access O(log n + k).</span></a></li>
+    <li><a href="./scan/filter.html"><span class="lesson-title">Filter operator — WHERE predicate row-by-row</span><span class="lesson-summary">Rows entering filter are all evaluated; only matching rows continue.</span></a></li>
+    <li><a href="./scan/derived_table.html"><span class="lesson-title">Derived Table Materialization</span><span class="lesson-summary">FROM-clause subquery materialized into temp table, auto-indexed, then probed.</span></a></li>
+    <li><a href="./scan/covering_index.html"><span class="lesson-title">Covering index — why "Using index" in EXPLAIN is the goal</span><span class="lesson-summary">Non-covering vs covering plan; the InnoDB PK-append trick that silently covers many queries.</span></a></li>
+  </ul>
+</section>
 
-    <h2>All 14 lessons</h2>
+<section class="family">
+  <h2>Index Access Family</h2>
+  <ul class="lesson-list">
+    <li><a href="./index/btree.html"><span class="lesson-title">B+tree lookup — how InnoDB finds a row</span><span class="lesson-summary">Clustered primary key vs secondary-to-clustered; 16 KiB page fan-out.</span></a></li>
+    <li><a href="./index/non_unique_lookup.html"><span class="lesson-title">Non-Unique Key Lookup — index hits that return many rows</span><span class="lesson-summary">Understand Index lookup / Index range scan and non-covering row fetch cost.</span></a></li>
+    <li><a href="./index/unique_lookup.html"><span class="lesson-title">Unique Key Lookup — single-row index lookup</span><span class="lesson-summary">Exact-key lookup path and why covering indexes can skip table-row fetch.</span></a></li>
+    <li><a href="./index/icp.html"><span class="lesson-title">Index Condition Pushdown — filtering inside InnoDB</span><span class="lesson-summary">See how ICP checks trailing index columns before fetching the row.</span></a></li>
+    <li><a href="./index/index_merge.html"><span class="lesson-title">Index Merge — combining two index scans</span><span class="lesson-summary">Union, intersection, sort-union: two indexes are better than a full table scan.</span></a></li>
+    <li><a href="./index/skip_scan.html"><span class="lesson-title">Skip Scan — range access without the leading index column</span><span class="lesson-summary">Low-NDV leading column lets MySQL do N small range scans instead of a full table scan.</span></a></li>
+    <li><a href="./index/rowid_filter.html"><span class="lesson-title">Rowid Filter — bitmap pre-filter before table access</span><span class="lesson-summary">MariaDB scans a filtering index to build a rowid bitmap, skipping table fetches for non-matching rows.</span></a></li>
+  </ul>
+</section>
 
-    <p class="section-label">Storage internals</p>
-    <div class="lesson-grid">
-      <div class="lesson-card">
-        <h3><a href="index/btree.html">B+tree Lookup</a></h3>
-        <div class="cli">myflames teach btree</div>
-        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
-        <p>How InnoDB finds a row: clustered PK vs covering secondary vs non-covering secondary. Move the row-count slider from 10 to 1 billion and watch the tree height change.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="cache/lru.html">InnoDB Buffer Pool LRU</a></h3>
-        <div class="cli">myflames teach lru</div>
-        <span class="tag">MySQL 8.4</span>
-        <p>Why MySQL's midpoint-insertion LRU survives full-scan pollution while textbook LRU gets wiped. 3-act story: hot set &rarr; scan arrives &rarr; hot queries return.</p>
-      </div>
-    </div>
+<section class="family">
+  <h2>Join Family</h2>
+  <ul class="lesson-list">
+    <li><a href="./join/bka_join.html"><span class="lesson-title">Batched Key Access (BKA) join — batch, sort, MRR</span><span class="lesson-summary">Batch outer keys, sort by rowid, and sweep the inner index sequentially via Multi-Range Read.</span></a></li>
+    <li><a href="./join/bnl.html"><span class="lesson-title">Block Nested Loop join — MariaDB's default for non-indexed joins</span><span class="lesson-summary">Watch `join_buffer_size` decide how many times the inner table is rescanned.</span></a></li>
+    <li><a href="./join/hash.html"><span class="lesson-title">Hash join — build, probe, and grace-hash spill</span><span class="lesson-summary">MySQL 8.4's default for non-indexed equi-joins; animated build + probe phases.</span></a></li>
+    <li><a href="./join/join.html"><span class="lesson-title">BNL vs hash join — side by side</span><span class="lesson-summary">MariaDB BNL (default) vs MySQL 8.4 hash join; move the sliders and feel the asymptotic difference.</span></a></li>
+    <li><a href="./join/nested_loop.html"><span class="lesson-title">Nested Loop Join — dedicated operator view</span><span class="lesson-summary">Single-operator view of the outer-driver/inner-probe loop shape from EXPLAIN.</span></a></li>
+    <li><a href="./join/semijoin_weedout.html"><span class="lesson-title">Semijoin Duplicate Weedout — dedup via temp table</span><span class="lesson-summary">IN/EXISTS rewritten as inner join; a temp table keyed on outer rowid removes duplicates.</span></a></li>
+  </ul>
+</section>
 
-    <p class="section-label">Join algorithms</p>
-    <div class="lesson-grid">
-      <div class="lesson-card">
-        <h3><a href="join/bnl.html">Block Nested Loop (BNL)</a></h3>
-        <div class="cli">myflames teach bnl</div>
-        <span class="tag">MariaDB 11.x</span>
-        <p>MariaDB's default join algorithm. Watch <code>join_buffer_size</code> decide how many times the inner table is rescanned. Includes warning: MySQL removed BNL in 8.0.20.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="join/hash.html">Hash Join</a></h3>
-        <div class="cli">myflames teach hash</div>
-        <span class="tag">MySQL 8.4</span>
-        <p>Build phase (hash departments into buckets), probe phase (find each employee's department), and grace-hash spill when <code>join_buffer_size</code> overflows.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="join/join.html">BNL vs Hash Join</a></h3>
-        <div class="cli">myflames teach join</div>
-        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.x</span>
-        <p>Side-by-side comparison with shared sliders. See the asymptotic difference at scale: BNL grows with blocks &times; inner, hash stays at build + probe.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="join/nested_loop.html">Nested Loop Join (Operator)</a></h3>
-        <div class="cli">myflames teach nested_loop</div>
-        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
-        <p>Dedicated operator view for EXPLAIN Nested loop nodes. Focuses on outer-driver + inner-probe behavior and O(n &times; m) growth.</p>
-      </div>
-    </div>
+<section class="family">
+  <h2>Cache / Memory Family</h2>
+  <ul class="lesson-list">
+    <li><a href="./cache/lru.html"><span class="lesson-title">InnoDB buffer pool — midpoint-insertion LRU</span><span class="lesson-summary">Why MySQL's LRU is scan-resistant — young/old sublists, innodb_old_blocks_time.</span></a></li>
+    <li><a href="./cache/buffer_pool_warmup.html"><span class="lesson-title">InnoDB buffer pool — cold-start vs warm, dump/load cure</span><span class="lesson-summary">Why repeat queries are fast, why restarts hurt, and what ib_buffer_pool does about it.</span></a></li>
+  </ul>
+</section>
 
-    <p class="section-label">Query optimization</p>
-    <div class="lesson-grid">
-      <div class="lesson-card">
-        <h3><a href="scan/filesort.html">Filesort</a></h3>
-        <div class="cli">myflames teach filesort</div>
-        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
-        <p>How MySQL sorts when there is no index: <code>sort_buffer_size</code> fills, sorted runs spill to tmpdir, then a k-way merge produces the final result. Bigger buffer = fewer runs = less I/O.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="scan/tmp.html">Temporary Tables</a></h3>
-        <div class="cli">myflames teach tmp</div>
-        <span class="tag">MySQL 8.4</span>
-        <p>Watch GROUP BY fill a MEMORY temp table, hit <code>min(tmp_table_size, max_heap_table_size)</code>, and convert to on-disk InnoDB. That cliff is why your query suddenly slows down.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="index/icp.html">Index Condition Pushdown (ICP)</a></h3>
-        <div class="cli">myflames teach icp</div>
-        <span class="tag">MySQL 5.6+</span><span class="tag">MariaDB 5.3+</span>
-        <p>Side-by-side: without ICP, every row is fetched then filtered. With ICP, the storage engine checks trailing index columns before fetching — saving unnecessary clustered-index lookups.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="index/index_merge.html">Index Merge</a></h3>
-        <div class="cli">myflames teach index_merge</div>
-        <span class="tag">MySQL 5.1+</span><span class="tag">MariaDB 5.1+</span>
-        <p>Two separate index scans combined via union, intersection, or sort-union. See how MySQL avoids a full table scan by merging row-ID sets from multiple indexes.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="scan/full_scan.html">Full Table Scan</a></h3>
-        <div class="cli">myflames teach full_scan</div>
-        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
-        <p>What a full table scan actually means: every row is read, then filtered. Compare O(n) scan work with indexed access O(log n + k) as selectivity changes.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="index/non_unique_lookup.html">Non-Unique Key Lookup</a></h3>
-        <div class="cli">myflames teach non_unique_lookup</div>
-        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
-        <p>What “Non-Unique Key Lookup” means in the diagram: one key/range can match many entries, then non-covering lookups fetch base rows by row-id.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="index/unique_lookup.html">Unique Key Lookup</a></h3>
-        <div class="cli">myflames teach unique_lookup</div>
-        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
-        <p>Single-row index lookup path (eq_ref/const style). Shows exact-key traversal and covering vs non-covering fetch behavior.</p>
-      </div>
-      <div class="lesson-card">
-        <h3><a href="scan/filter.html">Filter Operator</a></h3>
-        <div class="cli">myflames teach filter</div>
-        <span class="tag">MySQL 8.4</span><span class="tag">MariaDB 11.4</span>
-        <p>What a Filter stage means: every incoming row is evaluated against the predicate, only matching rows continue to parent stages.</p>
-      </div>
-    </div>
-
-    <h2>Lesson features</h2>
-    <ul>
-      <li><strong>In-page sliders</strong> &mdash; change parameters and see the cost model update instantly. No CLI flags, no re-running.</li>
-      <li><strong>Animated SVG stage</strong> &mdash; Play/Pause, Speed (0.25x&ndash;4x), YouTube-style scrubber, Reset button.</li>
-      <li><strong>Phase navigation</strong> &mdash; clickable sidebar listing all animation phases. Click to jump to any phase.</li>
-      <li><strong>Cost readout</strong> &mdash; live numeric displays with (?) help tooltips written at a 10th-grade reading level.</li>
-      <li><strong>Complexity chart</strong> &mdash; log-log plots showing how the algorithm scales (most lessons).</li>
-      <li><strong>Learn more</strong> &mdash; collapsible <code>&lt;details&gt;</code> block with deeper context and MySQL documentation sources.</li>
-      <li><strong>Accessibility</strong> &mdash; ARIA labels, keyboard navigation, <code>prefers-reduced-motion</code> support.</li>
-      <li><strong>Offline-first</strong> &mdash; no external scripts, stylesheets, or fonts. Single HTML file, works anywhere.</li>
-    </ul>
-
-    <h2>Python API</h2>
-    <pre><code>from myflames.teach import render_lesson, LESSONS
-
-# List available lessons
-for name, info in LESSONS.items():
-    print(f"{name}: {info['summary']}")
-
-# Render to HTML string
-html = render_lesson("btree")
-with open("btree.html", "w") as f:
-    f.write(html)</code></pre>
+<section class="family">
+  <h2>Planner / Optimizer Family</h2>
+  <ul class="lesson-list">
+    <li><a href="./planner/join_order.html"><span class="lesson-title">Join-order search — why query planning is factorial</span><span class="lesson-summary">MySQL's greedy_search picks the join order one table at a time; with deep lookahead and pruning off, the search space is O(N!).</span></a></li>
+  </ul>
+</section>
   </main>
   <footer>
-    <p>myflames &mdash; <a href="https://github.com/vgrippa/myflames">GitHub</a></p>
+    Generated by <a href="https://github.com/vgrippa/myflames">myflames</a>.
+    Lessons verified against MySQL 8.4 and MariaDB 11.4 source trees.
   </footer>
 </body>
 </html>

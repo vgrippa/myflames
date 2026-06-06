@@ -624,7 +624,7 @@ class TestTeachCLI(unittest.TestCase):
         """Lessons that teach an algorithm with O(…) scaling must include a
         live complexity chart. The LRU lesson uses a 3-act hit/miss story
         instead — its punchline is 8/8 vs 0/8 hits, not a log-log curve."""
-        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter"]
+        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter", "join_order"]
         for name in chart_lessons:
             html = render_lesson(name)
             self.assertIn(
@@ -657,6 +657,10 @@ class TestTeachCLI(unittest.TestCase):
             "non_unique_lookup": ["users"],
             "unique_lookup": ["users"],
             "filter": ["orders"],
+            "join_order": [
+                "users", "orders", "line_items", "products",
+                "suppliers", "categories", "warehouses",
+            ],
         }
         for name, names in expected_tables.items():
             html = render_lesson(name)
@@ -718,7 +722,7 @@ class TestTeachCLI(unittest.TestCase):
     def test_chart_lessons_are_interactive(self):
         """Lessons with a complexity chart must have hoverable charts with
         xSlider click-to-update binding."""
-        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter"]
+        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter", "join_order"]
         for name in chart_lessons:
             html = render_lesson(name)
             self.assertIn(
@@ -771,6 +775,84 @@ class TestTeachCLI(unittest.TestCase):
         self.assertIn("Filter operator", html)
         self.assertIn("WHERE", html)
         self.assertIn("incoming row", html)
+
+
+class TestJoinOrderLesson(unittest.TestCase):
+    """The planner-family lesson claims a factorial worst case and cites
+    real MySQL source-tree facts. Lock those claims down so a future
+    edit can't silently rewrite the cost model."""
+
+    def setUp(self):
+        self.html = render_lesson("join_order")
+
+    def test_names_the_actual_algorithm(self):
+        # The function in sql/sql_planner.cc is greedy_search; the per-step
+        # helper is best_extension_by_limited_search.
+        self.assertIn("greedy_search", self.html)
+        self.assertIn("best_extension_by_limited_search", self.html)
+
+    def test_states_factorial_complexity(self):
+        # The big claim the user asked us to surface: planning is O(N!)
+        # under exhaustive search.
+        self.assertIn("O(N!)", self.html)
+
+    def test_cites_real_session_variables(self):
+        self.assertIn("optimizer_search_depth", self.html)
+        self.assertIn("optimizer_prune_level", self.html)
+
+    def test_documents_default_search_depth(self):
+        # MAX_TABLES+1 = 62; verified in sql/sys_vars.cc Sys_optimizer_search_depth.
+        self.assertIn("62", self.html)
+        self.assertIn("MAX_TABLES", self.html)
+
+    def test_mentions_hypergraph_alternative(self):
+        # MySQL 8.0+ also has the DPhyp set-based optimizer.
+        self.assertIn("hypergraph", self.html.lower())
+        self.assertIn("optimizer_max_subgraph_pairs", self.html)
+
+    def test_quotes_source_comment(self):
+        # The lesson must surface the literal complexity claim from
+        # sql/sql_planner.cc so readers can verify it themselves.
+        self.assertIn("search_depth", self.html)
+        self.assertIn("complexity", self.html.lower())
+
+    def test_lesson_is_in_planner_family(self):
+        from myflames.teach import LESSONS
+        self.assertEqual(LESSONS["join_order"]["family"], "planner_family")
+
+    def test_in_curriculum(self):
+        from myflames.teach import CURRICULUM
+        self.assertIn("join_order", CURRICULUM)
+
+    def test_example_uses_7_tables(self):
+        # The lesson's example query has 7 tables; the SQL must mention
+        # all seven, plus the "7!" or "5,040" hook that motivates the
+        # factorial cost.
+        self.assertIn("categories", self.html)
+        self.assertIn("warehouses", self.html)
+        self.assertTrue(
+            "7! = 5,040" in self.html or "5,040" in self.html,
+            "lesson missing the 7! = 5,040 hook"
+        )
+
+    def test_animation_distinguishes_two_algorithms(self):
+        # The greedy_search animation walks a search tree of partial
+        # orderings; the hypergraph (DPhyp) animation walks a query
+        # graph and enumerates connected subgraphs. Both must be
+        # implemented in the same lesson JS.
+        self.assertIn("buildGreedyStage",      self.html)
+        self.assertIn("buildHypergraphStage",  self.html)
+        self.assertIn("buildGreedyTimeline",   self.html)
+        self.assertIn("buildHypergraphTimeline", self.html)
+        # The hypergraph view uses the DPhyp-specific vocabulary.
+        self.assertIn("CSG", self.html)          # connected subgraph
+        self.assertIn("Moerkotte", self.html)    # original DPhyp paper
+
+    def test_hypergraph_cost_caps_at_max_subgraph_pairs(self):
+        # The lesson's hypergraph cost model must respect
+        # optimizer_max_subgraph_pairs as a cap.
+        self.assertIn("OPTIMIZER_MAX_SUBGRAPH_PAIRS", self.html)
+        self.assertIn("100000", self.html)
 
 
 if __name__ == "__main__":

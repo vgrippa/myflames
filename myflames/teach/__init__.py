@@ -20,6 +20,7 @@ from typing import Callable, Dict
 from .cache_family import LESSONS as CACHE_FAMILY_LESSONS
 from .index_family import LESSONS as INDEX_FAMILY_LESSONS
 from .join_family import LESSONS as JOIN_FAMILY_LESSONS
+from .planner_family import LESSONS as PLANNER_FAMILY_LESSONS
 from .scan_family import LESSONS as SCAN_FAMILY_LESSONS
 
 Lesson = Dict[str, object]
@@ -29,6 +30,7 @@ LESSON_FAMILIES: Dict[str, Dict[str, Lesson]] = {
     "index_family": INDEX_FAMILY_LESSONS,
     "scan_family": SCAN_FAMILY_LESSONS,
     "cache_family": CACHE_FAMILY_LESSONS,
+    "planner_family": PLANNER_FAMILY_LESSONS,
 }
 
 # Map family keys to the output subdirectory name under docs/teach/.
@@ -37,10 +39,13 @@ FAMILY_DIRS = {
     "index_family": "index",
     "scan_family": "scan",
     "cache_family": "cache",
+    "planner_family": "planner",
 }
 
 LESSONS: Dict[str, Lesson] = {}
-for _family in ("join_family", "index_family", "scan_family", "cache_family"):
+for _family in (
+    "join_family", "index_family", "scan_family", "cache_family", "planner_family",
+):
     for _name, _lesson in LESSON_FAMILIES[_family].items():
         _lesson["family"] = _family
     LESSONS.update(LESSON_FAMILIES[_family])
@@ -69,6 +74,7 @@ CURRICULUM = [
     "bka_join",
     "semijoin_weedout",
     "derived_table",   # scan_family → materialization
+    "join_order",      # planner_family: how the planner *chose* the order above
     "lru",             # cache_family
     "buffer_pool_warmup",  # cache_family: why cold queries hurt
 ]
@@ -85,6 +91,20 @@ def render_catalog_html(title: str = "myflames teach — algorithm catalog") -> 
     Zero external dependencies — pure CSS + one <a> per lesson. The
     output is offline-first like every other myflames page.
     """
+    def _href_for(lesson_key: str) -> str:
+        """Return the path from teach/index.html to the lesson HTML.
+
+        Lessons are emitted into family subdirectories (docs/teach/join/,
+        /index/, /scan/, /cache/, /planner/) by the build scripts, so
+        the catalog has to include the family directory in its hrefs.
+        """
+        lesson = LESSONS.get(lesson_key) or {}
+        family = lesson.get("family")
+        subdir = FAMILY_DIRS.get(family) if family else None
+        if subdir:
+            return f"./{subdir}/{lesson_key}.html"
+        return f"./{lesson_key}.html"
+
     track = [k for k in CURRICULUM if k in LESSONS]
     track_html = ""
     if track:
@@ -94,8 +114,8 @@ def render_catalog_html(title: str = "myflames teach — algorithm catalog") -> 
             title_text = lesson.get("title") or k
             items.append(
                 '<li><span class="step">{n:02d}</span>'
-                '<a href="./{slug}.html">{title}</a></li>'.format(
-                    n=i + 1, slug=k, title=title_text
+                '<a href="{href}">{title}</a></li>'.format(
+                    n=i + 1, href=_href_for(k), title=title_text
                 )
             )
         track_html = (
@@ -108,7 +128,9 @@ def render_catalog_html(title: str = "myflames teach — algorithm catalog") -> 
         )
 
     family_sections = []
-    for family_key in ("scan_family", "index_family", "join_family", "cache_family"):
+    for family_key in (
+        "scan_family", "index_family", "join_family", "cache_family", "planner_family",
+    ):
         family_lessons = LESSON_FAMILIES.get(family_key) or {}
         if not family_lessons:
             continue
@@ -117,11 +139,11 @@ def render_catalog_html(title: str = "myflames teach — algorithm catalog") -> 
             title_text = lesson.get("title") or name
             summary = lesson.get("summary") or ""
             rows.append(
-                '<li><a href="./{slug}.html">'
+                '<li><a href="{href}">'
                 '<span class="lesson-title">{title}</span>'
                 '<span class="lesson-summary">{summary}</span>'
                 '</a></li>'.format(
-                    slug=name, title=title_text, summary=summary,
+                    href=_href_for(name), title=title_text, summary=summary,
                 )
             )
         family_sections.append(
@@ -284,6 +306,7 @@ _FAMILY_LABELS = {
     "index_family": "Index Access Family",
     "scan_family": "Scan / Sort / Temp Family",
     "cache_family": "Cache / Memory Family",
+    "planner_family": "Planner / Optimizer Family",
 }
 
 
@@ -302,7 +325,9 @@ def _print_catalog(stream=sys.stdout) -> None:
         print("    " + " → ".join(track), file=stream)
         print("", file=stream)
 
-    for family_key in ("join_family", "index_family", "scan_family", "cache_family"):
+    for family_key in (
+        "join_family", "index_family", "scan_family", "cache_family", "planner_family",
+    ):
         family_lessons = LESSON_FAMILIES[family_key]
         if not family_lessons:
             continue

@@ -1,0 +1,3371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Join-order search — why query planning is factorial</title>
+  <meta name="description" content="The greedy_search algorithm enumerates partial plans up to optimizer_search_depth tables ahead, costed by the optimizer, pruned by optimizer_prune_level.">
+  <meta name="generator" content="myflames teach">
+  <style>
+:root {
+  --bg: #f6f8fc;
+  --panel: #ffffff;
+  --panel-soft: #f8faff;
+  --text: #111827;
+  --muted: #637083;
+  --border: #dbe4f0;
+  --accent: #1a73e8;
+  --accent-strong: #1557b0;
+  --focus: #8ab4f8;
+  --elev-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.04);
+  --elev-2: 0 6px 18px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --hot: #ff3d3d;
+  --cool: #21918c;
+  --warm: #fde725;
+  --warn: #f59e0b;
+  --ok: #10b981;
+}
+/* Lesson-family color grading (shared semantics, different accent ramps). */
+body[data-lesson="bka"],
+body[data-lesson="bnl"],
+body[data-lesson="hash"],
+body[data-lesson="join"],
+body[data-lesson="nested_loop"],
+body[data-lesson="semijoin_weedout"] {
+  --accent: #1a73e8;
+  --accent-strong: #1557b0;
+  --focus: #8ab4f8;
+}
+body[data-lesson="full_scan"],
+body[data-lesson="filter"],
+body[data-lesson="filesort"],
+body[data-lesson="tmp"],
+body[data-lesson="derived_table"] {
+  --accent: #ea580c;
+  --accent-strong: #c2410c;
+  --focus: #fdba74;
+}
+body[data-lesson="btree"],
+body[data-lesson="non_unique_lookup"],
+body[data-lesson="unique_lookup"],
+body[data-lesson="icp"],
+body[data-lesson="index_merge"],
+body[data-lesson="skip_scan"] {
+  --accent: #0f766e;
+  --accent-strong: #0f5f59;
+  --focus: #5eead4;
+}
+body[data-lesson="lru"] {
+  --accent: #7c3aed;
+  --accent-strong: #6d28d9;
+  --focus: #c4b5fd;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Google Sans", Roboto, "Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+header {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border-bottom: 1px solid #e7eef8;
+  padding: 20px;
+  box-shadow: var(--elev-1);
+}
+header .inner { max-width: 1100px; margin: 0 auto; }
+header h1 {
+  margin: 0 0 6px;
+  font-size: 23px;
+  letter-spacing: -0.2px;
+  font-weight: 700;
+}
+header .subtitle {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0;
+}
+header .lesson-meta {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+header .meta-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+header .family-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 13%, #ffffff);
+  color: var(--accent-strong);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, #ffffff);
+}
+header .family-chip .chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+header .version-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 3px 10px;
+  background: #e8f0fe;
+  color: #174ea6;
+  border: 1px solid #c6dafc;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+.banner {
+  margin: 0 0 20px;
+  padding: 12px 16px;
+  border-left: 4px solid var(--warn);
+  background: #fffbeb;
+  color: #78350f;
+  border-radius: 4px;
+  font-size: 13.5px;
+}
+.banner strong { color: #92400e; }
+section.controls {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+section.controls h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px 20px;
+}
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.control label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.control .hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.control input[type="range"] { width: 100%; }
+.control input[type="number"],
+.control select {
+  padding: 8px 10px;
+  border: 1px solid #cfd8e5;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+}
+.control input[type="number"]:focus,
+.control select:focus,
+.control input[type="range"]:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.value-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  background: #eef4ff;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+  color: #1e3a8a;
+}
+section.stage {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+.query-card {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: #f8fbff;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+}
+.query-card .query-label {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.query-card .query-sql {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #0f172a;
+  white-space: pre-wrap;
+}
+.query-card .query-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.explainer-card {
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-left: 4px solid #059669;
+  border-radius: 8px;
+}
+.explainer-card .explainer-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #065f46;
+}
+.explainer-card .explainer-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: #064e3b;
+  line-height: 1.55;
+}
+.explainer-card .explainer-list li {
+  margin-bottom: 4px;
+}
+.explainer-card .explainer-list li:last-child {
+  margin-bottom: 0;
+}
+section.stage .stage-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--panel-soft);
+  border: 1px solid #dbe6f3;
+  border-radius: 12px;
+  font-size: 13px;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+section.stage .stage-toolbar:hover {
+  box-shadow: var(--elev-1);
+  border-color: #cddbef;
+}
+.stage-toolbar .speed-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #374151;
+  margin-left: 2px;
+  letter-spacing: 0.2px;
+}
+.stage-toolbar select {
+  padding: 6px 10px;
+  border: 1px solid #cfd8e5;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12.5px;
+  background: #fff;
+  cursor: pointer;
+}
+.stage-toolbar select:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.stage-toolbar .phase-label {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.stage-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: var(--panel-soft);
+  border: 1px solid #dbe6f3;
+  border-radius: 12px;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.stage-scrubber:hover {
+  box-shadow: var(--elev-1);
+  border-color: #cddbef;
+}
+.stage-scrubber input[type="range"] {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #c8ddff 0%, #dbeafe 100%);
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.stage-scrubber input[type="range"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.stage-scrubber input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #bed8ff 0%, #dbeafe 100%);
+}
+.stage-scrubber input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: var(--accent);
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.stage-scrubber input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.06);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.stage-scrubber input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #bed8ff 0%, #dbeafe 100%);
+}
+.stage-scrubber input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: var(--accent);
+  box-shadow: 0 1px 5px color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.stage-scrubber input[type="range"]::-moz-range-thumb:hover {
+  transform: scale(1.06);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.stage-scrubber .scrubber-time {
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 42px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.complexity-chart {
+  margin-top: 14px;
+  padding: 14px;
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.complexity-chart .chart-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.complexity-chart svg {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+}
+button {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid #cfd8e5;
+  border-radius: 999px;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+button:hover { background: #edf3ff; border-color: #9eb6d8; }
+button:active { transform: translateY(1px) scale(0.99); }
+button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent-strong);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset;
+}
+button.primary:hover { background: var(--accent-strong); border-color: #144a96; }
+button .btn-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+button .btn-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  transition: transform 0.16s ease;
+}
+button .btn-label {
+  line-height: 1;
+  white-space: nowrap;
+}
+button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 35%, #ffffff);
+}
+button#btn-reset {
+  background: #ffffff;
+}
+button#btn-reset:hover {
+  background: #eef2ff;
+}
+button#btn-play:hover .btn-icon svg {
+  transform: translateX(0.5px);
+}
+button#btn-loop[aria-pressed="true"] .btn-icon svg {
+  transform: rotate(12deg);
+}
+section.stage svg { width: 100%; height: auto; display: block; }
+section.readout {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  box-shadow: var(--elev-1);
+}
+section.readout h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 18px;
+}
+.readout-grid .item {
+  padding: 12px 14px;
+  background: #f8fbff;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.readout-grid .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.readout-grid .label .help-tip {
+  display: inline-block;
+  cursor: help;
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  border: 1px solid #d1d5db;
+  border-radius: 50%;
+  width: 15px;
+  height: 15px;
+  line-height: 14px;
+  text-align: center;
+  margin-left: 4px;
+  vertical-align: 1px;
+  text-transform: none;
+  letter-spacing: 0;
+  position: relative;
+}
+.readout-grid .label .help-tip:hover {
+  color: #374151;
+  border-color: #9ca3af;
+}
+.readout-grid .label .help-tip .tip-text {
+  display: none;
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  padding: 8px 10px;
+  background: #1f2937;
+  color: #f3f4f6;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  border-radius: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  z-index: 10;
+  pointer-events: none;
+}
+.readout-grid .label .help-tip:hover .tip-text {
+  display: block;
+}
+.readout-grid .value {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+.readout-grid .value.warn { color: var(--warn); }
+.readout-grid .value.ok { color: var(--ok); }
+.readout-grid .value.hot { color: var(--hot); }
+details.learn-more {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 20px;
+  box-shadow: var(--elev-1);
+}
+details.learn-more summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  outline: none;
+}
+details.learn-more[open] summary { color: #111827; }
+details.learn-more .body {
+  padding-bottom: 16px;
+  font-size: 13.5px;
+  color: #374151;
+}
+details.learn-more .body p { margin: 0 0 10px; }
+details.learn-more .body code {
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12.5px;
+}
+abbr.glossary-chip {
+  text-decoration: underline dotted;
+  text-decoration-color: #9ca3af;
+  cursor: help;
+}
+.explanation {
+  padding: 10px 14px;
+  background: #f0f9ff;
+  border-left: 3px solid #0284c7;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0c4a6e;
+  margin-top: 10px;
+}
+footer {
+  max-width: 1100px;
+  margin: 24px auto 0;
+  padding: 16px 20px 32px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+footer a { color: var(--muted); }
+@media (max-width: 640px) {
+  header h1 { font-size: 19px; }
+  .readout-grid .value { font-size: 17px; }
+}
+.stage-with-phases {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.stage-with-phases > svg {
+  flex: 1;
+  min-width: 0;
+}
+.phase-nav {
+  width: 180px;
+  flex-shrink: 0;
+  background: #f8fbff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 0;
+  font-size: 11px;
+  box-shadow: var(--elev-1);
+}
+.phase-nav .phase-nav-title {
+  padding: 0 10px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.phase-nav .phase-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: #6b7280;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s, transform 0.15s, border-color 0.15s;
+  border-left: 3px solid transparent;
+}
+.phase-nav .phase-item:hover {
+  background: #eef4ff;
+  color: #374151;
+  transform: translateX(1px);
+}
+.phase-nav .phase-item.active {
+  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
+  color: var(--accent-strong);
+  border-left-color: var(--accent);
+  font-weight: 700;
+  transform: translateX(2px);
+}
+.phase-nav .phase-item.done {
+  color: #059669;
+}
+.phase-nav .phase-item .phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d1d5db;
+  flex-shrink: 0;
+}
+.phase-nav .phase-item.active .phase-dot {
+  background: var(--accent);
+  animation: phaseDotPulse 1.15s ease-in-out infinite;
+}
+.phase-nav .phase-item.done .phase-dot {
+  background: #059669;
+}
+@keyframes phaseDotPulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 38%, transparent); }
+  70% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+@media (max-width: 700px) {
+  .stage-with-phases { flex-direction: column; }
+  .phase-nav { width: 100%; }
+  section.stage .stage-toolbar {
+    flex-wrap: wrap;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-tween { transition: none !important; animation: none !important; }
+  .phase-nav .phase-item,
+  .stage-scrubber input[type="range"]::-webkit-slider-thumb,
+  .stage-scrubber input[type="range"]::-moz-range-thumb,
+  button,
+  button .btn-icon svg {
+    transition: none !important;
+  }
+  .phase-nav .phase-item.active .phase-dot {
+    animation: none !important;
+  }
+}
+
+</style>
+</head>
+<body data-lesson="join_order">
+  <header>
+    <div class="inner">
+      <h1>Join-order search — why query planning is factorial<span class="version-chip">MySQL 8.4 • MariaDB 11.4</span></h1>
+      <p class="subtitle">The greedy_search algorithm enumerates partial plans up to optimizer_search_depth tables ahead, costed by the optimizer, pruned by optimizer_prune_level.</p>
+      
+    </div>
+  </header>
+  <main>
+    
+    
+<section class="controls" aria-labelledby="controls-h">
+  <h2 id="controls-h">Parameters</h2>
+  <div class="control-grid">
+
+    <div class="control">
+      <label for="tables">Tables in query (N): <span class="value-pill" data-pill-for="tables">7</span></label>
+      <input type="range" id="tables" name="tables" min="2" max="10" step="1" value="7">
+      <div class="hint">Real OLTP joins rarely exceed 6 tables; warehouse queries can hit 15+.</div>
+    </div>
+
+    <div class="control">
+      <label for="search_depth">optimizer_search_depth: <span class="value-pill" data-pill-for="search_depth">62</span></label>
+      <input type="range" id="search_depth" name="search_depth" min="1" max="10" step="1" value="10">
+      <div class="hint">Default is MAX_TABLES+1 = 62 (effective exhaustive). 1 = pure greedy.</div>
+    </div>
+
+    <div class="control">
+      <label for="prune_level">optimizer_prune_level</label>
+      <select id="prune_level" name="prune_level">
+        <option value="1" selected>1 — cost-based pruning (default)</option>
+        <option value="0">0 — no pruning, exhaustive</option>
+      </select>
+      <div class="hint">Set 0 only when debugging; pruning is what keeps planning sub-millisecond.</div>
+    </div>
+
+    <div class="control">
+      <label for="algo">Search algorithm</label>
+      <select id="algo" name="algo">
+        <option value="greedy" selected>greedy_search (default optimizer)</option>
+        <option value="hypergraph">hypergraph optimizer (MySQL 8.0+)</option>
+      </select>
+      <div class="hint">Hypergraph (DPhyp) is set-based with <code>optimizer_max_subgraph_pairs</code> cap.</div>
+    </div>
+
+  </div>
+</section>
+
+    
+<section class="stage" aria-labelledby="stage-h">
+  <h2 id="stage-h" class="sr-only" style="position:absolute;left:-9999px">Join-order search animation</h2>
+  
+<div class="query-card">
+  <p class="query-label">Example query this animation executes</p>
+  <pre class="query-sql">-- Seven-table join: the planner must pick an order before execution
+SELECT u.name, SUM(li.qty * li.unit_price) AS revenue
+FROM   users      u
+JOIN   orders     o  ON o.user_id     = u.id
+JOIN   line_items li ON li.order_id   = o.id
+JOIN   products   p  ON p.id          = li.product_id
+JOIN   suppliers  s  ON s.id          = p.supplier_id
+JOIN   categories c  ON c.id          = p.category_id
+JOIN   warehouses w  ON w.id          = li.warehouse_id
+WHERE  u.country = &#x27;US&#x27; AND s.region = &#x27;EU&#x27;
+GROUP BY u.name;</pre>
+  <p class="query-note">7! = 5,040 possible left-deep orders. EXPLAIN shows the one MySQL picked; this lesson shows the search that picked it.</p>
+</div>
+
+  
+<div class="explainer-card">
+  <p class="explainer-title">What you&#x27;ll see in the animation</p>
+  <ul class="explainer-list"><li>Top: the N tables as candidate roots — every search starts by picking one of them as the outermost loop.</li><li>Center: the search tree of partial plans. Each node is a (partial-order, cost) pair the planner evaluated.</li><li>Yellow pulses = a partial plan is being costed by best_extension_by_limited_search.</li><li>Grey-out = optimizer_prune_level=1 dropped this branch because its partial cost already exceeded the best complete plan found so far.</li><li>Bottom strip: the chosen final order — what EXPLAIN would print.</li><li>Counter (top-right of stage): how many partial plans were actually evaluated. Watch it explode when you raise search_depth and turn pruning off.</li></ul>
+</div>
+
+  
+<div class="stage-toolbar">
+  <button id="btn-play" class="primary">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    </span>
+    <span class="btn-label">Play</span>
+  </button>
+  <button id="btn-reset">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M12 6V3L8 7l4 4V8c2.8 0 5 2.2 5 5a5 5 0 1 1-9.9-1H5.1A7 7 0 1 0 12 6z"/></svg>
+    </span>
+    <span class="btn-label">Reset</span>
+  </button>
+  <button id="btn-loop" aria-pressed="false">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M7 7h9v3l4-4-4-4v3H6a4 4 0 0 0-4 4v3h2V9a2 2 0 0 1 2-2zm10 10H8v-3l-4 4 4 4v-3h10a4 4 0 0 0 4-4v-3h-2v2a2 2 0 0 1-2 2z"/></svg>
+    </span>
+    <span class="btn-label">Loop: Off</span>
+  </button>
+  <label for="sel-speed" class="speed-label">Speed:</label>
+  <select id="sel-speed" aria-label="Animation speed">
+    <option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option>
+    <option value="2">2×</option>
+    <option value="4">4×</option>
+  </select>
+  <span class="phase-label" id="phase-label">Adjust parameters, then press Play</span>
+</div>
+<div class="stage-scrubber">
+  <span class="scrubber-time" id="scrubber-time-current">0.0s</span>
+  <input type="range" id="scrubber" min="0" max="1000" value="0" step="1"
+    aria-label="Animation timeline scrubber" />
+  <span class="scrubber-time" id="scrubber-time-total">0.0s</span>
+</div>
+
+  <div class="stage-with-phases">
+    <svg id="planner-svg" viewBox="0 0 820 460" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="phase-nav" class="phase-nav"></div>
+  </div>
+</section>
+
+    
+<section class="readout">
+  <h2>Cost readout (updates live)</h2>
+  <div class="readout-grid">
+    <div class="item"><p class="label">N (tables) <span class="help-tip">?<span class="tip-text">Number of non-eq_ref tables plus eq_ref groups. const and eq_ref tables are pre-placed by the planner and do not enter greedy_search.</span></span></p><p class="value" id="out-n">—</p></div>
+    <div class="item"><p class="label">effective_search_depth <span class="help-tip">?<span class="tip-text">min(optimizer_search_depth, N). When equal to N the search reduces to full exhaustive enumeration.</span></span></p><p class="value" id="out-depth">—</p></div>
+    <div class="item"><p class="label">Plans evaluated <span class="help-tip">?<span class="tip-text">Concrete count for this N and depth. The number of times best_extension_by_limited_search is called.</span></span></p><p class="value" id="out-plans">—</p></div>
+    <div class="item"><p class="label">Worst-case complexity <span class="help-tip">?<span class="tip-text">From sql_planner.cc line 2311: when search_depth &gt;= N, greedy_search is O(N!). For smaller depth d: O(N * N^d / d).</span></span></p><p class="value" id="out-complexity">—</p></div>
+    <div class="item"><p class="label">Pruning ratio <span class="help-tip">?<span class="tip-text">Fraction of partial plans that optimizer_prune_level=1 dropped before evaluating their full subtree. 0% means pruning is off; real OLTP plans see 60-90%.</span></span></p><p class="value" id="out-prune">—</p></div>
+    <div class="item"><p class="label">Planning time estimate <span class="help-tip">?<span class="tip-text">At ~1 microsecond per partial plan on modern hardware. Compare to query execution: if planning approaches execution cost, raise optimizer_prune_level or lower optimizer_search_depth.</span></span></p><p class="value" id="out-time">—</p></div>
+  </div>
+  <div class="explanation" id="out-explanation"></div>
+  <div class="complexity-chart">
+    <p class="chart-title">Plans evaluated vs N (log–log)</p>
+    <svg id="complexity-chart" viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+</section>
+
+    
+<details class="learn-more">
+  <summary>Learn more — what the source actually says about greedy_search</summary>
+  <div class="body">
+    <p>The algorithm is <code>Optimize_table_order::greedy_search</code>
+    in <code>sql/sql_planner.cc</code>. The doxygen comment above its
+    body documents the complexity directly:</p>
+    <pre style="background:#0f172a;color:#e2e8f0;padding:10px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow-x:auto">
+procedure greedy_search
+  input: remaining_tables
+  output: pplan;
+{
+  pplan = &lt;&gt;;
+  do {
+    (t, a) = best_extension(pplan, remaining_tables);
+    pplan = concat(pplan, (t, a));
+    remaining_tables = remaining_tables - t;
+  } while (remaining_tables != {})
+  return pplan;
+}
+
+"the worst-case complexity of this algorithm is
+ &lt;= O(N * N^search_depth / search_depth).
+ When search_depth &gt;= N, then the complexity
+ of greedy_search is O(N!)."</pre>
+
+    <p><strong>Why N!, intuitively?</strong> A left-deep plan over N
+    tables is an ordering — there are N! orderings. With
+    <code>search_depth ≥ N</code> and pruning off, every ordering is
+    costed. With a depth limit <code>d</code>, only the next
+    <code>d</code> tables are enumerated exhaustively before the search
+    commits to a partial prefix, so the bound drops to
+    O(N · N<sup>d</sup> / d).</p>
+
+    <p><strong>Defaults you might tune (MySQL 8.4 / MariaDB 11.4):</strong></p>
+    <ul>
+      <li><code>optimizer_search_depth</code> = <strong>62</strong>
+      (MAX_TABLES + 1). Setting it to <code>0</code> tells the server to
+      pick a value automatically. Session-tunable, so you can drop it
+      per-query if planning is a bottleneck.</li>
+      <li><code>optimizer_prune_level</code> = <strong>1</strong>
+      (cost-based pruning enabled). Set <code>0</code> only when you
+      need to compare what the planner would have chosen without
+      heuristics — never in production.</li>
+      <li><code>optimizer_max_subgraph_pairs</code> = <strong>100000</strong>.
+      Only the hypergraph (DPhyp) optimizer respects this; it's the
+      modern set-based optimizer enabled per-query via
+      <code>SET optimizer_switch='hypergraph_optimizer=on'</code> on
+      MySQL 8.0+.</li>
+    </ul>
+
+    <p><strong>N is not always the table count in your FROM clause.</strong>
+    The source comment is precise: <em>"N is the number of non-eq_ref
+    tables + eq_ref groups, which normally are considerably less than
+    total numbers of tables in the query."</em> <code>const</code> and
+    <code>eq_ref</code> chains are placed before <code>greedy_search</code>
+    runs, so a 10-table join can have N=3 if seven of the joins are
+    primary-key equi-joins.</p>
+
+    <p><strong>How is this different from the join algorithms?</strong>
+    Hash join, BNL, nested loop are <em>execution</em> strategies — they
+    decide how a single join *runs* once the planner has fixed its place
+    in the tree. <code>greedy_search</code> is the layer above: given a
+    multi-way join, which pair joins first? Which result becomes the
+    outer side of the next join? EXPLAIN's table-order column is the
+    output of this search.</p>
+
+    <p>Sources: MySQL 8.4 Reference Manual §10.9.3 (Controlling
+    Switchable Optimizations); <code>sql/sql_planner.cc</code> lines
+    2275-2334 in mysql-server master. MariaDB Knowledge Base
+    "Optimizer Switch".</p>
+  </div>
+</details>
+
+  </main>
+  <footer>
+    <p>Generated by <a href="https://github.com/vgrippa/myflames">myflames teach</a> —
+    interactive database algorithm lessons. Offline-first, stdlib-only.</p>
+  </footer>
+  <script>
+// ---------------------------------------------------------------------------
+// myflames teach animation runtime — vanilla JS, no deps, offline-first.
+// See .claude/skills/animation-expert/SKILL.md for craft rules.
+// ---------------------------------------------------------------------------
+var anim = (function() {
+  // --- Easing functions --------------------------------------------------
+  function linear(t) { return t; }
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  function easeInCubic(t) { return t * t * t; }
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+  function easeOutQuart(t) { return 1 - Math.pow(1 - t, 4); }
+  function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+  function easeOutBack(t) {
+    var c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+
+  // --- Interpolation -----------------------------------------------------
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function _parseHex(h) {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+  function _toHex(c) {
+    var h = Math.round(c).toString(16);
+    return h.length < 2 ? "0" + h : h;
+  }
+  function lerpColor(a, b, t) {
+    var ca = _parseHex(a), cb = _parseHex(b);
+    return "#" + _toHex(lerp(ca[0], cb[0], t)) + _toHex(lerp(ca[1], cb[1], t)) + _toHex(lerp(ca[2], cb[2], t));
+  }
+
+  // --- prefers-reduced-motion -------------------------------------------
+  function reducedMotion() {
+    try {
+      return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (e) { return false; }
+  }
+
+  // --- Global speed multiplier (1 = real time, 0.5 = half speed, 2 = 2×) -
+  var _speed = 1;
+  function setSpeed(s) { _speed = Math.max(0.1, s); }
+  function getSpeed() { return _speed; }
+
+  // --- Global pause flag --------------------------------------------------
+  // When paused, every running tween suspends at its current progress and
+  // resumes from the same progress when unpaused.
+  var _paused = false;
+  var _onPauseChange = [];
+  function setPaused(p) {
+    if (_paused === p) return;
+    _paused = p;
+    _onPauseChange.forEach(function(fn) { try { fn(p); } catch (e) {} });
+  }
+  function isPaused() { return _paused; }
+  function onPauseChange(fn) { _onPauseChange.push(fn); }
+
+  // --- tween: single-value interpolation with RAF, pause-aware ----------
+  // opts: { from, to, duration, ease, onUpdate, onComplete, delay }
+  // Returns a callable cancel function that also exposes ``.getElapsed()``
+  // so the parent timeline can report precise scrubber positions. Duration
+  // is scaled by the global _speed at frame time, so a live speed change
+  // takes effect immediately.
+  function tween(opts) {
+    var from = opts.from;
+    var to = opts.to;
+    var baseDuration = opts.duration || 400;
+    var ease = opts.ease || easeOutCubic;
+    var onUpdate = opts.onUpdate || function() {};
+    var onComplete = opts.onComplete || function() {};
+    var delay = opts.delay || 0;
+    var cancelled = false;
+
+    function interpolate(f, t, eased) {
+      if (typeof f === "number") return lerp(f, t, eased);
+      var out = {};
+      for (var k in f) out[k] = lerp(f[k], t[k], eased);
+      return out;
+    }
+
+    var virtualElapsed = 0;  // accumulated virtual time inside this tween
+    var lastFrame = null;
+
+    // reduced-motion: skip to end state instantly
+    if (reducedMotion()) {
+      setTimeout(function() {
+        if (cancelled) return;
+        virtualElapsed = baseDuration;
+        onUpdate(to);
+        onComplete();
+      }, 0);
+      var handle_rm = function() { cancelled = true; };
+      handle_rm.getElapsed = function() { return virtualElapsed; };
+      return handle_rm;
+    }
+
+    function frame(now) {
+      if (cancelled) return;
+      if (lastFrame === null) lastFrame = now;
+      var delta = now - lastFrame;
+      lastFrame = now;
+      if (!_paused) {
+        virtualElapsed += delta * _speed;
+      }
+      var adjusted = virtualElapsed - delay;
+      if (adjusted < 0) { requestAnimationFrame(frame); return; }
+      var t = Math.min(1, adjusted / baseDuration);
+      var eased = ease(t);
+      onUpdate(interpolate(from, to, eased));
+      if (t < 1) requestAnimationFrame(frame);
+      else onComplete();
+    }
+    requestAnimationFrame(frame);
+
+    var handle = function() { cancelled = true; };
+    handle.getElapsed = function() { return virtualElapsed; };
+    return handle;
+  }
+
+  // --- stagger: run fn(item, i) at i*stepMs intervals -------------------
+  function stagger(items, stepMs, fn) {
+    if (reducedMotion()) {
+      for (var i = 0; i < items.length; i++) fn(items[i], i);
+      return function() {};
+    }
+    var timers = [];
+    items.forEach(function(item, i) {
+      timers.push(setTimeout(function() { fn(item, i); }, i * stepMs));
+    });
+    return function() { timers.forEach(clearTimeout); };
+  }
+
+  // --- timeline: sequential tween queue, pause-aware, scrubbable -------
+  //
+  // Each `.add(step)`, `.delay(ms)`, `.call(fn)` is assigned a cumulative
+  // position on the global timeline (``_start``, ``_duration``). This lets
+  // the scrubber seek to any point by calling ``fastForwardTo(ms)``, which
+  // synchronously applies every step's final state up to the target.
+  //
+  // During play a tiny RAF ticker advances ``virtualElapsed`` so external
+  // code (the toolbar scrubber) can read ``getCurrentTime()`` every frame.
+  // Pauses and speed changes update the ticker exactly like tween() does.
+  function _interpolateValue(from, to, eased) {
+    if (typeof from === "number") return lerp(from, to, eased);
+    var out = {};
+    for (var k in from) out[k] = lerp(from[k], to[k], eased);
+    return out;
+  }
+
+  function timeline() {
+    var steps = [];
+    var totalDuration = 0;
+    var current = null;
+    var playing = false;
+    var onDoneCb = null;
+    var pendingDelayTimer = null;
+    var pendingDelayRemaining = 0;
+    var marks = [];  // phase markers: [{name, ms}]
+
+    // Virtual-time ticker state. ``virtualElapsed`` is the total ms we have
+    // "played" across all steps, pause-adjusted and speed-adjusted. The
+    // currently-running tween reports its own elapsed; we add that to
+    // ``stepVirtualStart`` to get the precise scrubber position.
+    var virtualElapsed = 0;
+    var stepVirtualStart = 0;
+    var tickerLastFrame = null;
+
+    var tl = {};
+    tl.add = function(step) {
+      step._type = "tween";
+      step._start = totalDuration;
+      step._duration = step.duration || 400;
+      totalDuration += step._duration;
+      steps.push(step);
+      return tl;
+    };
+    tl.delay = function(ms) {
+      var s = { _type: "delay", _start: totalDuration, _duration: ms };
+      totalDuration += ms;
+      steps.push(s);
+      return tl;
+    };
+    tl.call = function(fn) {
+      steps.push({ _type: "call", _fn: fn, _start: totalDuration, _duration: 0 });
+      return tl;
+    };
+    tl.mark = function(name) {
+      marks.push({ name: name, ms: totalDuration });
+      return tl;
+    };
+    tl.getMarks = function() { return marks; };
+    tl.getTotalDuration = function() { return totalDuration; };
+    tl.getCurrentTime = function() {
+      // If a tween is mid-flight, add its local elapsed to the step start.
+      if (current && typeof current.getElapsed === "function") {
+        return stepVirtualStart + current.getElapsed();
+      }
+      return virtualElapsed;
+    };
+
+    // Synchronously apply every step's final state up to ``targetMs``.
+    // Used by the scrubber to seek to any point in the timeline.
+    // Tweens that straddle targetMs get one partial update at their local
+    // progress. Leaves ``virtualElapsed = targetMs`` and playing=false.
+    tl.fastForwardTo = function(targetMs) {
+      tl.stop();
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      for (var i = 0; i < steps.length; i++) {
+        var s = steps[i];
+        var stepEnd = s._start + s._duration;
+        if (stepEnd <= targetMs) {
+          // Fully elapsed — fire final state
+          if (s._type === "tween") {
+            if (s.onUpdate) s.onUpdate(s.to);
+            if (s.onComplete) s.onComplete();
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = stepEnd;
+        } else if (s._start < targetMs) {
+          // Step is currently running at targetMs
+          if (s._type === "tween") {
+            var progress = (targetMs - s._start) / s._duration;
+            var eased = (s.ease || easeOutCubic)(progress);
+            if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = targetMs;
+          stepVirtualStart = s._start;
+          return;
+        } else {
+          virtualElapsed = Math.min(targetMs, s._start);
+          return;
+        }
+      }
+      virtualElapsed = targetMs;
+    };
+
+    tl.play = function(onDone) {
+      playing = true;
+      onDoneCb = onDone || null;
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      tickerLastFrame = null;
+      var i = 0;
+
+      // Scrubber-tracking RAF loop. Runs while playing; updates
+      // virtualElapsed so getCurrentTime() reflects the current position
+      // even across delay gaps.
+      function ticker(now) {
+        if (!playing) return;
+        if (tickerLastFrame === null) tickerLastFrame = now;
+        var delta = now - tickerLastFrame;
+        tickerLastFrame = now;
+        if (!_paused && !current) {
+          // Only advance during delay windows; while a tween is running,
+          // getCurrentTime() reads the tween's own elapsed instead.
+          virtualElapsed += delta * _speed;
+        } else if (!_paused && current && typeof current.getElapsed === "function") {
+          // Keep virtualElapsed in sync with the running tween so
+          // getCurrentTime() is monotonic even if nothing queries it.
+          virtualElapsed = stepVirtualStart + current.getElapsed();
+        }
+        if (playing) requestAnimationFrame(ticker);
+      }
+      requestAnimationFrame(ticker);
+
+      function scheduleDelay(remaining, after) {
+        if (_paused) {
+          pendingDelayRemaining = remaining;
+          return;
+        }
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      function next() {
+        if (!playing) return;
+        if (i >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[i++];
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) {
+            virtualElapsed = step._start + step._duration;
+            next();
+            return;
+          }
+          scheduleDelay(step._duration, function() {
+            virtualElapsed = step._start + step._duration;
+            next();
+          });
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next();
+          return;
+        }
+        // tween
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next();
+          }
+        }));
+      }
+      var offPause = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay(pendingDelayRemaining, next);
+        }
+      };
+      onPauseChange(offPause);
+      next();
+      return tl;
+    };
+    // Resume from a specific time. Synchronously applies all steps up to
+    // ``fromMs``, then starts live playback from that point. This is how
+    // the scrubber implements "Resume from where I dragged to".
+    tl.playFrom = function(fromMs, onDone) {
+      tl.stop();
+      // Apply all steps up to fromMs synchronously
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      for (var k = 0; k < steps.length; k++) {
+        var s = steps[k];
+        var stepEnd = s._start + s._duration;
+        if (stepEnd <= fromMs) {
+          if (s._type === "tween") {
+            if (s.onUpdate) s.onUpdate(s.to);
+            if (s.onComplete) s.onComplete();
+          } else if (s._type === "call") {
+            s._fn();
+          }
+          virtualElapsed = stepEnd;
+        } else {
+          break;
+        }
+      }
+      // Now start live playback. The play() method will walk from step 0,
+      // but each step whose _start + _duration <= virtualElapsed will
+      // complete instantly because virtualElapsed is already past them.
+      // We override virtualElapsed inside play() to resume cleanly.
+      playing = true;
+      onDoneCb = onDone || null;
+      tickerLastFrame = null;
+      var resumeIdx = 0;
+      // Find the first step that hasn't been fully applied yet
+      for (var j = 0; j < steps.length; j++) {
+        if (steps[j]._start + steps[j]._duration > fromMs) {
+          resumeIdx = j;
+          break;
+        }
+        if (j === steps.length - 1) resumeIdx = steps.length;
+      }
+      virtualElapsed = fromMs;
+      stepVirtualStart = (resumeIdx < steps.length) ? steps[resumeIdx]._start : totalDuration;
+
+      function ticker2(now) {
+        if (!playing) return;
+        if (tickerLastFrame === null) tickerLastFrame = now;
+        var delta = now - tickerLastFrame;
+        tickerLastFrame = now;
+        if (!_paused && !current) {
+          virtualElapsed += delta * _speed;
+        } else if (!_paused && current && typeof current.getElapsed === "function") {
+          virtualElapsed = stepVirtualStart + current.getElapsed();
+        }
+        if (playing) requestAnimationFrame(ticker2);
+      }
+      requestAnimationFrame(ticker2);
+
+      function scheduleDelay2(remaining, after) {
+        if (_paused) { pendingDelayRemaining = remaining; return; }
+        pendingDelayRemaining = remaining;
+        pendingDelayTimer = setTimeout(function() {
+          pendingDelayTimer = null;
+          pendingDelayRemaining = 0;
+          after();
+        }, remaining / _speed);
+      }
+      var ri = resumeIdx;
+      function next2() {
+        if (!playing) return;
+        if (ri >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[ri++];
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) { virtualElapsed = step._start + step._duration; next2(); return; }
+          // If we're resuming mid-delay, shorten it
+          var elapsed = fromMs - step._start;
+          var remaining = Math.max(0, step._duration - elapsed);
+          if (remaining <= 0) { virtualElapsed = step._start + step._duration; next2(); return; }
+          scheduleDelay2(remaining, function() {
+            virtualElapsed = step._start + step._duration;
+            next2();
+          });
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next2();
+          return;
+        }
+        // tween — if we're resuming past this step, skip it
+        if (step._start + step._duration <= fromMs) {
+          if (step.onUpdate) step.onUpdate(step.to);
+          if (step.onComplete) step.onComplete();
+          virtualElapsed = step._start + step._duration;
+          next2();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next2();
+          }
+        }));
+      }
+      var offPause2 = function(p) {
+        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
+          scheduleDelay2(pendingDelayRemaining, next2);
+        }
+      };
+      onPauseChange(offPause2);
+      next2();
+      return tl;
+    };
+
+    tl.stop = function() {
+      playing = false;
+      if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }
+      pendingDelayRemaining = 0;
+      if (current) {
+        if (typeof current === "function") current();
+        current = null;
+      }
+    };
+    tl.isPlaying = function() { return playing; };
+    return tl;
+  }
+
+  // --- path: quadratic-bezier sampler (x1,y1) → (cx,cy) → (x2,y2) -------
+  function path(x1, y1, cx, cy, x2, y2) {
+    return function(t) {
+      var omt = 1 - t;
+      var x = omt * omt * x1 + 2 * omt * t * cx + t * t * x2;
+      var y = omt * omt * y1 + 2 * omt * t * cy + t * t * y2;
+      return { x: x, y: y };
+    };
+  }
+
+  // --- pulse: briefly grow an SVG element's stroke width ---------------
+  function pulse(el, peakWidth, baseWidth, durationMs) {
+    if (!el) return;
+    var dur = (durationMs || 400) / 2;
+    tween({
+      from: baseWidth || 1,
+      to: peakWidth || 3,
+      duration: dur,
+      ease: easeOutCubic,
+      onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); },
+      onComplete: function() {
+        tween({
+          from: peakWidth || 3,
+          to: baseWidth || 1,
+          duration: dur,
+          ease: easeInCubic,
+          onUpdate: function(v) { el.setAttribute("stroke-width", v.toFixed(2)); }
+        });
+      }
+    });
+  }
+
+  // --- arrival: universal "something just landed here" pulse -----------
+  // Slice 3 / A5. Call after every tween/timeline step that places a
+  // node or cell in its final position. Centralizes the visual
+  // vocabulary so every lesson's arrival looks the same — users learn
+  // "short ring pulse = new state arrived" once, it applies everywhere.
+  //
+  //   anim.arrival(rect)                 // default ring pulse
+  //   anim.arrival(rect, {peakWidth: 3}) // tuning
+  //
+  // Respects reducedMotion() by short-circuiting to no-op.
+  function arrival(el, opts) {
+    if (!el || reducedMotion()) return;
+    opts = opts || {};
+    pulse(
+      el,
+      opts.peakWidth || 2.5,
+      opts.baseWidth || 1,
+      opts.durationMs || 320
+    );
+  }
+
+  // --- svg element creators (tiny helpers to reduce boilerplate) -------
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // --- complexityChart: small log-log plot of cost vs input size -------
+  //
+  // Draws a line-chart SVG showing how a cost function scales with input
+  // size, with the current operating point highlighted. Useful for the
+  // "feel the asymptotic gap" moment at the bottom of each lesson.
+  //
+  // opts: {
+  //   svgId: "complexity-chart",
+  //   width: 400, height: 180,
+  //   xLabel: "Rows", yLabel: "Pages touched",
+  //   curves: [
+  //     {label: "BNL", color: "#ca8a04", fn: function(n) { return n * n; }},
+  //     {label: "Hash", color: "#0d9488", fn: function(n) { return n + 1000; }}
+  //   ],
+  //   xMin: 10, xMax: 1000000,
+  //   current: {x: 100000},  // highlight point
+  // }
+  function complexityChart(opts) {
+    var svgEl = document.getElementById(opts.svgId);
+    if (!svgEl) return;
+    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+    var W = opts.width || 400;
+    var H = opts.height || 180;
+    var padL = 44, padR = 20, padT = 20, padB = 32;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+    var xMin = opts.xMin || 1;
+    var xMax = opts.xMax || 1e9;
+    var NSAMP = 80;
+
+    // Sample every curve; use log X scale
+    function logMap(v, lo, hi) {
+      var lv = Math.log(v);
+      var llo = Math.log(lo);
+      var lhi = Math.log(hi);
+      return (lv - llo) / (lhi - llo);
+    }
+    var samples = opts.curves.map(function(c) {
+      var pts = [];
+      for (var i = 0; i < NSAMP; i++) {
+        var frac = i / (NSAMP - 1);
+        var x = Math.exp(Math.log(xMin) + frac * (Math.log(xMax) - Math.log(xMin)));
+        pts.push({x: x, y: c.fn(x)});
+      }
+      return pts;
+    });
+    // Compute global Y range (log scale)
+    var yAll = [];
+    samples.forEach(function(curve) { curve.forEach(function(p) { if (p.y > 0 && isFinite(p.y)) yAll.push(p.y); }); });
+    if (yAll.length === 0) return;
+    var yMin = Math.min.apply(null, yAll);
+    var yMax = Math.max.apply(null, yAll);
+    // Clamp yMin so it's not zero
+    if (yMin <= 0) yMin = 1;
+
+    function toSvg(x, y) {
+      var fx = logMap(x, xMin, xMax);
+      var fy = (y > 0) ? logMap(y, yMin, yMax) : 0;
+      return {
+        x: padL + fx * plotW,
+        y: padT + (1 - fy) * plotH
+      };
+    }
+
+    // Background grid (log decades)
+    for (var gx = Math.pow(10, Math.floor(Math.log10(xMin))); gx <= xMax; gx *= 10) {
+      if (gx < xMin) continue;
+      var gridX = toSvg(gx, yMin).x;
+      var gline = svgEl_create("line", {
+        x1: gridX, y1: padT, x2: gridX, y2: padT + plotH,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gline);
+      var glbl = svgEl_create("text", {
+        x: gridX, y: padT + plotH + 14,
+        "text-anchor": "middle", "font-size": 9, fill: "#9ca3af"
+      });
+      glbl.textContent = formatLog(gx);
+      svgEl.appendChild(glbl);
+    }
+    for (var gy = Math.pow(10, Math.floor(Math.log10(yMin))); gy <= yMax * 10; gy *= 10) {
+      if (gy < yMin) continue;
+      var gridY = toSvg(xMin, gy).y;
+      if (gridY < padT - 1 || gridY > padT + plotH + 1) continue;
+      var gln = svgEl_create("line", {
+        x1: padL, y1: gridY, x2: padL + plotW, y2: gridY,
+        stroke: "#e5e7eb", "stroke-width": 1
+      });
+      svgEl.appendChild(gln);
+      var glb = svgEl_create("text", {
+        x: padL - 6, y: gridY + 3,
+        "text-anchor": "end", "font-size": 9, fill: "#9ca3af"
+      });
+      glb.textContent = formatLog(gy);
+      svgEl.appendChild(glb);
+    }
+
+    // Axis lines
+    var axisX = svgEl_create("line", {
+      x1: padL, y1: padT + plotH, x2: padL + plotW, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisX);
+    var axisY = svgEl_create("line", {
+      x1: padL, y1: padT, x2: padL, y2: padT + plotH,
+      stroke: "#6b7280", "stroke-width": 1.5
+    });
+    svgEl.appendChild(axisY);
+
+    // Axis labels
+    if (opts.xLabel) {
+      var xl = svgEl_create("text", {
+        x: padL + plotW/2, y: H - 6,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151"
+      });
+      xl.textContent = opts.xLabel;
+      svgEl.appendChild(xl);
+    }
+    if (opts.yLabel) {
+      // When lowerIsBetter is set, append a hint so readers don't
+      // bring the default "higher = better" intuition. User-reported
+      // confusion 2026-04-24 — the chart was correct but read wrong.
+      var yLabelText = opts.yLabel;
+      if (opts.lowerIsBetter) yLabelText += "  (lower = better ↓)";
+      var yl = svgEl_create("text", {
+        x: 12, y: padT + plotH/2,
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
+        transform: "rotate(-90 12," + (padT + plotH/2) + ")"
+      });
+      yl.textContent = yLabelText;
+      svgEl.appendChild(yl);
+    }
+
+    // Curves
+    opts.curves.forEach(function(c, idx) {
+      var pts = samples[idx];
+      var d = "";
+      pts.forEach(function(p, i) {
+        if (!isFinite(p.y) || p.y <= 0) return;
+        var svg = toSvg(p.x, p.y);
+        d += (i === 0 ? "M " : " L ") + svg.x.toFixed(1) + "," + svg.y.toFixed(1);
+      });
+      var path = svgEl_create("path", {
+        d: d, fill: "none", stroke: c.color || "#1f2937", "stroke-width": 2.5,
+        "stroke-linecap": "round", "stroke-linejoin": "round"
+      });
+      svgEl.appendChild(path);
+    });
+
+    // Legend
+    var legendY = padT - 6;
+    var lx = padL;
+    opts.curves.forEach(function(c, idx) {
+      var sw = svgEl_create("rect", {
+        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "#1f2937"
+      });
+      svgEl.appendChild(sw);
+      var lt = svgEl_create("text", {
+        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "#1f2937"
+      });
+      lt.textContent = c.label;
+      svgEl.appendChild(lt);
+      lx += (c.label.length * 6) + 34;
+    });
+
+    // Highlight current operating point
+    if (opts.current && opts.current.x) {
+      var cx = opts.current.x;
+      if (cx >= xMin && cx <= xMax) {
+        // Compute each curve's y at the cursor — used both for the
+        // dots AND the lower-is-better winner annotation below.
+        var perCurve = opts.curves.map(function(c) {
+          var cy = c.fn(cx);
+          return (isFinite(cy) && cy > 0) ? { c: c, cy: cy } : null;
+        }).filter(function(e) { return e !== null; });
+
+        perCurve.forEach(function(e) {
+          var svg = toSvg(cx, e.cy);
+          var dot = svgEl_create("circle", {
+            cx: svg.x, cy: svg.y, r: 5,
+            fill: e.c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+          });
+          svgEl.appendChild(dot);
+        });
+
+        // Vertical guide line at the current x
+        var vx = toSvg(cx, yMin).x;
+        var vline = svgEl_create("line", {
+          x1: vx, y1: padT, x2: vx, y2: padT + plotH,
+          stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
+        });
+        svgEl.appendChild(vline);
+
+        // Winner annotation: when lowerIsBetter is set, mark the
+        // lowest curve at the cursor with a green ✓, and (when there
+        // are exactly 2 curves) draw a "N× cheaper" callout between
+        // their dots so the visual win is unambiguous. Without this
+        // the reader has to mentally translate "low number = good".
+        if (opts.lowerIsBetter && perCurve.length >= 2) {
+          var sorted = perCurve.slice().sort(function(a, b) { return a.cy - b.cy; });
+          var winner = sorted[0];
+          var loser = sorted[sorted.length - 1];
+          var winSvg = toSvg(cx, winner.cy);
+          var loseSvg = toSvg(cx, loser.cy);
+
+          // Green check next to the winning dot.
+          var check = svgEl_create("text", {
+            x: winSvg.x + 9, y: winSvg.y + 4,
+            "font-size": 14, "font-weight": 800,
+            fill: "#16a34a"
+          });
+          check.textContent = "✓";
+          svgEl.appendChild(check);
+
+          // Speedup label between the two dots, mid-y.
+          var ratio = loser.cy / winner.cy;
+          if (isFinite(ratio) && ratio >= 1.2) {
+            var ratioStr;
+            if (ratio >= 1000) ratioStr = (ratio / 1000).toFixed(1) + "k×";
+            else if (ratio >= 100) ratioStr = ratio.toFixed(0) + "×";
+            else ratioStr = ratio.toFixed(1) + "×";
+            var midY = (winSvg.y + loseSvg.y) / 2;
+            var labelText = (winner.c.label || "winner").split(":")[0]
+                          + " is " + ratioStr + " cheaper";
+            // Background pill so the callout reads cleanly across
+            // the chart grid.
+            var approxW = labelText.length * 6.2 + 16;
+            var pillX = winSvg.x + 14;
+            var pillY = midY - 9;
+            var pillBg = svgEl_create("rect", {
+              x: pillX, y: pillY, width: approxW, height: 18,
+              rx: 9, ry: 9,
+              fill: "rgba(22,163,74,0.12)",
+              stroke: "#16a34a", "stroke-width": 1
+            });
+            svgEl.appendChild(pillBg);
+            var pillTxt = svgEl_create("text", {
+              x: pillX + 8, y: midY + 3,
+              "font-size": 10.5, "font-weight": 700, fill: "#15803d"
+            });
+            pillTxt.textContent = labelText;
+            svgEl.appendChild(pillTxt);
+          }
+        }
+      }
+    }
+
+    // ------------- Interactivity: hover guide + tooltip + click ----------
+    // A transparent rect over the plot area captures mouse moves and
+    // clicks. On hover, a vertical guide tracks the pointer and each curve
+    // gets a small dot + label showing its value at that x.
+    var hitRect = svgEl_create("rect", {
+      x: padL, y: padT, width: plotW, height: plotH,
+      fill: "transparent", "pointer-events": "all",
+      style: "cursor: crosshair"
+    });
+    svgEl.appendChild(hitRect);
+
+    var hoverGroup = svgEl_create("g", { "pointer-events": "none", opacity: 0 });
+    var hoverLine = svgEl_create("line", {
+      y1: padT, y2: padT + plotH,
+      stroke: "#1f2937", "stroke-width": 1, "stroke-dasharray": "2 2"
+    });
+    hoverGroup.appendChild(hoverLine);
+    var hoverDots = [];
+    var hoverLabelBg = svgEl_create("rect", {
+      rx: 4, ry: 4, fill: "rgba(31,41,55,0.95)", stroke: "none"
+    });
+    hoverGroup.appendChild(hoverLabelBg);
+    var hoverLabelLines = [];
+    opts.curves.forEach(function(c, idx) {
+      var dot = svgEl_create("circle", {
+        r: 4, fill: c.color || "#1f2937", stroke: "#fff", "stroke-width": 1.5
+      });
+      hoverGroup.appendChild(dot);
+      hoverDots.push(dot);
+      var txt = svgEl_create("text", {
+        "font-size": 10, "font-weight": 600, fill: "#ffffff"
+      });
+      hoverGroup.appendChild(txt);
+      hoverLabelLines.push(txt);
+    });
+    svgEl.appendChild(hoverGroup);
+
+    function svgPointFromEvent(evt) {
+      var ctm = svgEl.getScreenCTM();
+      if (!ctm) return { x: evt.clientX, y: evt.clientY };
+      try {
+        var pt = svgEl.createSVGPoint();
+        pt.x = evt.clientX; pt.y = evt.clientY;
+        var inv = ctm.inverse();
+        return pt.matrixTransform(inv);
+      } catch (e) {
+        return { x: evt.clientX, y: evt.clientY };
+      }
+    }
+    function formatBig(n) {
+      if (!isFinite(n)) return "—";
+      if (n >= 1e12) return (n / 1e12).toFixed(2) + "T";
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+      return Math.round(n).toString();
+    }
+    function updateHover(svgX) {
+      var clamped = Math.max(padL, Math.min(padL + plotW, svgX));
+      var xFrac = (clamped - padL) / plotW;
+      var xVal = Math.exp(Math.log(xMin) + xFrac * (Math.log(xMax) - Math.log(xMin)));
+      hoverLine.setAttribute("x1", clamped);
+      hoverLine.setAttribute("x2", clamped);
+
+      var labelLines = [];
+      labelLines.push(opts.xLabel + ": " + formatBig(xVal));
+      opts.curves.forEach(function(c, idx) {
+        var y = c.fn(xVal);
+        if (!isFinite(y) || y <= 0) {
+          hoverDots[idx].setAttribute("opacity", 0);
+          hoverLabelLines[idx + 1] && hoverLabelLines[idx + 1].setAttribute("opacity", 0);
+          return;
+        }
+        var svgPt = toSvg(xVal, y);
+        hoverDots[idx].setAttribute("cx", svgPt.x);
+        hoverDots[idx].setAttribute("cy", svgPt.y);
+        hoverDots[idx].setAttribute("opacity", 1);
+        labelLines.push(c.label + ": " + formatBig(y));
+      });
+
+      // Compose tooltip on the left or right depending on cursor position
+      var labelX = (clamped < padL + plotW / 2) ? clamped + 10 : clamped - 150;
+      var labelY = padT + 6;
+      var maxLineW = 0;
+      for (var j = 0; j < labelLines.length; j++) {
+        if (!hoverLabelLines[j]) {
+          var t = svgEl_create("text", { "font-size": 10, "font-weight": 600, fill: "#ffffff" });
+          hoverGroup.appendChild(t);
+          hoverLabelLines[j] = t;
+        }
+        hoverLabelLines[j].textContent = labelLines[j];
+        hoverLabelLines[j].setAttribute("x", labelX + 6);
+        hoverLabelLines[j].setAttribute("y", labelY + 12 + j * 13);
+        hoverLabelLines[j].setAttribute("opacity", 1);
+        maxLineW = Math.max(maxLineW, labelLines[j].length * 5.8);
+      }
+      // Clear any extra stale labels
+      for (var k = labelLines.length; k < hoverLabelLines.length; k++) {
+        if (hoverLabelLines[k]) hoverLabelLines[k].setAttribute("opacity", 0);
+      }
+      hoverLabelBg.setAttribute("x", labelX);
+      hoverLabelBg.setAttribute("y", labelY);
+      hoverLabelBg.setAttribute("width", Math.max(140, maxLineW + 12));
+      hoverLabelBg.setAttribute("height", 8 + labelLines.length * 13);
+      hoverGroup.setAttribute("opacity", 1);
+    }
+
+    hitRect.addEventListener("mousemove", function(evt) {
+      var pt = svgPointFromEvent(evt);
+      updateHover(pt.x);
+    });
+    hitRect.addEventListener("mouseleave", function() {
+      hoverGroup.setAttribute("opacity", 0);
+    });
+
+    // Click to update a slider — opts.xSlider = "rows" to bind.
+    if (opts.xSlider) {
+      hitRect.addEventListener("click", function(evt) {
+        var pt = svgPointFromEvent(evt);
+        var clamped = Math.max(padL, Math.min(padL + plotW, pt.x));
+        var xFrac = (clamped - padL) / plotW;
+        var xVal = Math.exp(Math.log(xMin) + xFrac * (Math.log(xMax) - Math.log(xMin)));
+        var slider = document.getElementById(opts.xSlider);
+        if (!slider) return;
+        // Some sliders use linear values (outer_rows), some use a log index
+        // mapped from ROW_SCALE. The caller can provide a transform.
+        var newVal;
+        if (opts.xSliderTransform) {
+          newVal = opts.xSliderTransform(xVal);
+        } else {
+          newVal = Math.round(xVal);
+        }
+        slider.value = newVal;
+        // Fire input event so the lesson's recompute runs
+        var ev = new Event("input", { bubbles: true });
+        slider.dispatchEvent(ev);
+      });
+    }
+  }
+
+  function svgEl_create(tag, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function formatLog(n) {
+    if (n >= 1e9) return (n / 1e9) + "B";
+    if (n >= 1e6) return (n / 1e6) + "M";
+    if (n >= 1e3) return (n / 1e3) + "K";
+    return String(n);
+  }
+
+  return {
+    linear: linear,
+    easeOutCubic: easeOutCubic,
+    easeInCubic: easeInCubic,
+    easeInOutCubic: easeInOutCubic,
+    easeOutQuart: easeOutQuart,
+    easeInOutQuad: easeInOutQuad,
+    easeOutBack: easeOutBack,
+    lerp: lerp,
+    lerpColor: lerpColor,
+    tween: tween,
+    stagger: stagger,
+    timeline: timeline,
+    path: path,
+    pulse: pulse,
+    arrival: arrival,
+    svgEl: svgEl,
+    reducedMotion: reducedMotion,
+    setSpeed: setSpeed,
+    getSpeed: getSpeed,
+    setPaused: setPaused,
+    isPaused: isPaused,
+    onPauseChange: onPauseChange,
+    complexityChart: complexityChart
+  };
+})();
+
+// Auto-generated by assets/build.mjs — do not edit by hand.
+// Source: assets/src/runtime.ts + deps (motion, d3-hierarchy, d3-shape).
+// To regenerate: cd assets && npm install && npm run build.
+"use strict";var MyflamesAnim=(()=>{var Qt=Object.defineProperty;var ui=Object.getOwnPropertyDescriptor;var fi=Object.getOwnPropertyNames;var mi=Object.prototype.hasOwnProperty;var pi=(t,e)=>{for(var r in e)Qt(t,r,{get:e[r],enumerable:!0})},ci=(t,e,r,n)=>{if(e&&typeof e=="object"||typeof e=="function")for(let o of fi(e))!mi.call(t,o)&&o!==r&&Qt(t,o,{get:()=>e[o],enumerable:!(n=ui(e,o))||n.enumerable});return t};var di=t=>ci(Qt({},"__esModule",{value:!0}),t);var Zs={};pi(Zs,{anim:()=>Xs});var O=t=>t;var Q=O,K=O;var J=(t,e,r)=>{let n=e-t;return n===0?1:(r-t)/n};function de(t){let e;return()=>(e===void 0&&(e=t()),e)}var Br=de(()=>window.ScrollTimeline!==void 0);var nt=class{constructor(e){this.stop=()=>this.runAll("stop"),this.animations=e.filter(Boolean)}get finished(){return Promise.all(this.animations.map(e=>"finished"in e?e.finished:e))}getAll(e){return this.animations[0][e]}setAll(e,r){for(let n=0;n<this.animations.length;n++)this.animations[n][e]=r}attachTimeline(e,r){let n=this.animations.map(o=>{if(Br()&&o.attachTimeline)return o.attachTimeline(e);if(typeof r=="function")return r(o)});return()=>{n.forEach((o,i)=>{o&&o(),this.animations[i].stop()})}}get time(){return this.getAll("time")}set time(e){this.setAll("time",e)}get speed(){return this.getAll("speed")}set speed(e){this.setAll("speed",e)}get startTime(){return this.getAll("startTime")}get duration(){let e=0;for(let r=0;r<this.animations.length;r++)e=Math.max(e,this.animations[r].duration);return e}runAll(e){this.animations.forEach(r=>r[e]())}flatten(){this.runAll("flatten")}play(){this.runAll("play")}pause(){this.runAll("pause")}cancel(){this.runAll("cancel")}complete(){this.runAll("complete")}};var he=class extends nt{then(e,r){return Promise.all(this.animations).then(e).catch(r)}};var D=t=>t*1e3,R=t=>t/1e3;function ge(t){let e=0,r=50,n=t.next(e);for(;!n.done&&e<2e4;)e+=r,n=t.next(e);return e>=2e4?1/0:e}var ot=(t,e,r=10)=>{let n="",o=Math.max(Math.round(e/r),2);for(let i=0;i<o;i++)n+=t(J(0,o-1,i))+", ";return`linear(${n.substring(0,n.length-2)})`};var k=(t,e,r)=>r>e?e:r<t?t:r;function it(t,e){return e?t*(1e3/e):0}var hi=5;function st(t,e,r){let n=Math.max(e-hi,0);return it(r-t(n),e-n)}var M={stiffness:100,damping:10,mass:1,velocity:0,duration:800,bounce:.3,visualDuration:.3,restSpeed:{granular:.01,default:2},restDelta:{granular:.005,default:.5},minDuration:.01,maxDuration:10,minDamping:.05,maxDamping:1};var Jt=.001;function $r({duration:t=M.duration,bounce:e=M.bounce,velocity:r=M.velocity,mass:n=M.mass}){let o,i;Q(t<=D(M.maxDuration),"Spring duration must be 10 seconds or less");let s=1-e;s=k(M.minDamping,M.maxDamping,s),t=k(M.minDuration,M.maxDuration,R(t)),s<1?(o=f=>{let u=f*s,p=u*t,m=u-r,c=at(f,s),g=Math.exp(-p);return Jt-m/c*g},i=f=>{let p=f*s*t,m=p*r+r,c=Math.pow(s,2)*Math.pow(f,2)*t,g=Math.exp(-p),y=at(Math.pow(f,2),s);return(-o(f)+Jt>0?-1:1)*((m-c)*g)/y}):(o=f=>{let u=Math.exp(-f*t),p=(f-r)*t+1;return-Jt+u*p},i=f=>{let u=Math.exp(-f*t),p=(r-f)*(t*t);return u*p});let l=5/t,a=yi(o,i,l);if(t=D(t),isNaN(a))return{stiffness:M.stiffness,damping:M.damping,duration:t};{let f=Math.pow(a,2)*n;return{stiffness:f,damping:s*2*Math.sqrt(n*f),duration:t}}}var gi=12;function yi(t,e,r){let n=r;for(let o=1;o<gi;o++)n=n-t(n)/e(n);return n}function at(t,e){return t*Math.sqrt(1-e*e)}var xi=["duration","bounce"],vi=["stiffness","damping","mass"];function Kr(t,e){return e.some(r=>t[r]!==void 0)}function bi(t){let e={velocity:M.velocity,stiffness:M.stiffness,damping:M.damping,mass:M.mass,isResolvedFromDuration:!1,...t};if(!Kr(t,vi)&&Kr(t,xi))if(t.visualDuration){let r=t.visualDuration,n=2*Math.PI/(r*1.2),o=n*n,i=2*k(.05,1,1-(t.bounce||0))*Math.sqrt(o);e={...e,mass:M.mass,stiffness:o,damping:i}}else{let r=$r(t);e={...e,...r,mass:M.mass},e.isResolvedFromDuration=!0}return e}function U(t=M.visualDuration,e=M.bounce){let r=typeof t!="object"?{visualDuration:t,keyframes:[0,1],bounce:e}:t,{restSpeed:n,restDelta:o}=r,i=r.keyframes[0],s=r.keyframes[r.keyframes.length-1],l={done:!1,value:i},{stiffness:a,damping:f,mass:u,duration:p,velocity:m,isResolvedFromDuration:c}=bi({...r,velocity:-R(r.velocity||0)}),g=m||0,y=f/(2*Math.sqrt(a*u)),h=s-i,d=R(Math.sqrt(a/u)),b=Math.abs(h)<5;n||(n=b?M.restSpeed.granular:M.restSpeed.default),o||(o=b?M.restDelta.granular:M.restDelta.default);let S;if(y<1){let v=at(d,y);S=_=>{let C=Math.exp(-y*d*_);return s-C*((g+y*d*h)/v*Math.sin(v*_)+h*Math.cos(v*_))}}else if(y===1)S=v=>s-Math.exp(-d*v)*(h+(g+d*h)*v);else{let v=d*Math.sqrt(y*y-1);S=_=>{let C=Math.exp(-y*d*_),T=Math.min(v*_,300);return s-C*((g+y*d*h)*Math.sinh(T)+v*h*Math.cosh(T))/v}}let V={calculatedDuration:c&&p||null,next:v=>{let _=S(v);if(c)l.done=v>=p;else{let C=0;y<1&&(C=v===0?D(g):st(S,v,_));let T=Math.abs(C)<=n,w=Math.abs(s-_)<=o;l.done=T&&w}return l.value=l.done?s:_,l},toString:()=>{let v=Math.min(ge(V),2e4),_=ot(C=>V.next(v*C).value,v,30);return v+"ms "+_}};return V}function Lr(t,e=100,r){let n=r({...t,keyframes:[0,e]}),o=Math.min(ge(n),2e4);return{type:"keyframes",ease:i=>n.next(o*i).value/e,duration:R(o)}}function ee(t){return typeof t=="function"}var Gr=(t,e,r)=>{let n=e-t;return((r-t)%n+n)%n+t};var lt=t=>Array.isArray(t)&&typeof t[0]!="number";function ut(t,e){return lt(t)?t[Gr(0,t.length,e)]:t}var G=(t,e,r)=>t+(e-t)*r;function ft(t,e){let r=t[t.length-1];for(let n=1;n<=e;n++){let o=J(0,e,n);t.push(G(r,1,o))}}function mt(t){let e=[0];return ft(e,t.length-1),e}var A=t=>!!(t&&t.getVelocity);function qr(t,e,r){var n;if(t instanceof Element)return[t];if(typeof t=="string"){let o=document;e&&(o=e.current);let i=(n=r?.[t])!==null&&n!==void 0?n:o.querySelectorAll(t);return i?Array.from(i):[]}return Array.from(t)}function Le(t){return typeof t=="object"&&!Array.isArray(t)}function pt(t,e,r,n){return typeof t=="string"&&Le(e)?qr(t,r,n):t instanceof NodeList?Array.from(t):Array.isArray(t)?t:[t]}function Wr(t,e,r){return t*(e+1)}function tr(t,e,r,n){var o;return typeof e=="number"?e:e.startsWith("-")||e.startsWith("+")?Math.max(0,t+parseFloat(e)):e==="<"?r:(o=n.get(e))!==null&&o!==void 0?o:t}function zr(t,e){t.indexOf(e)===-1&&t.push(e)}function ct(t,e){let r=t.indexOf(e);r>-1&&t.splice(r,1)}function Ti(t,e,r){for(let n=0;n<t.length;n++){let o=t[n];o.at>e&&o.at<r&&(ct(t,o),n--)}}function jr(t,e,r,n,o,i){Ti(t,o,i);for(let s=0;s<e.length;s++)t.push({value:e[s],at:G(o,i,n[s]),easing:ut(r,s)})}function Ur(t,e){for(let r=0;r<t.length;r++)t[r]=t[r]/(e+1)}function Hr(t,e){return t.at===e.at?t.value===null?1:e.value===null?-1:0:t.at-e.at}var _i="easeInOut",Vi=20;function Zr(t,{defaultTransition:e={},...r}={},n,o){let i=e.duration||.3,s=new Map,l=new Map,a={},f=new Map,u=0,p=0,m=0;for(let c=0;c<t.length;c++){let g=t[c];if(typeof g=="string"){f.set(g,p);continue}else if(!Array.isArray(g)){f.set(g.name,tr(p,g.at,u,f));continue}let[y,h,d={}]=g;d.at!==void 0&&(p=tr(p,d.at,u,f));let b=0,S=(V,v,_,C=0,T=0)=>{let w=Si(V),{delay:E=0,times:L=mt(w),type:Zt="keyframes",repeat:Ie,repeatType:Qs,repeatDelay:Js=0,...li}=v,{ease:Z=e.ease||"easeOut",duration:$}=v,Or=typeof E=="function"?E(C,T):E,Rr=w.length,Er=ee(Zt)?Zt:o?.[Zt];if(Rr<=2&&Er){let Be=100;if(Rr===2&&Ai(w)){let $e=w[1]-w[0];Be=Math.abs($e)}let tt={...li};$!==void 0&&(tt.duration=D($));let rt=Lr(tt,Be,Er);Z=rt.ease,$=rt.duration}$??($=i);let kr=p+Or;L.length===1&&L[0]===0&&(L[1]=1);let Nr=L.length-w.length;if(Nr>0&&ft(L,Nr),w.length===1&&w.unshift(null),Ie){K(Ie<Vi,"Repeat count too high, must be less than 20"),$=Wr($,Ie);let Be=[...w],tt=[...L];Z=Array.isArray(Z)?[...Z]:[Z];let rt=[...Z];for(let $e=0;$e<Ie;$e++){w.push(...Be);for(let Ke=0;Ke<Be.length;Ke++)L.push(tt[Ke]+($e+1)),Z.push(Ke===0?"linear":ut(rt,Ke-1))}Ur(L,Ie)}let Ir=kr+$;jr(_,w,Z,L,kr,Ir),b=Math.max(Or+$,b),m=Math.max(Ir,m)};if(A(y)){let V=Yr(y,l);S(h,d,Xr("default",V))}else{let V=pt(y,h,n,a),v=V.length;for(let _=0;_<v;_++){h=h,d=d;let C=V[_],T=Yr(C,l);for(let w in h)S(h[w],wi(d,w),Xr(w,T),_,v)}}u=p,p+=b}return l.forEach((c,g)=>{for(let y in c){let h=c[y];h.sort(Hr);let d=[],b=[],S=[];for(let v=0;v<h.length;v++){let{at:_,value:C,easing:T}=h[v];d.push(C),b.push(J(0,m,_)),S.push(T||"easeOut")}b[0]!==0&&(b.unshift(0),d.unshift(d[0]),S.unshift(_i)),b[b.length-1]!==1&&(b.push(1),d.push(null)),s.has(g)||s.set(g,{keyframes:{},transition:{}});let V=s.get(g);V.keyframes[y]=d,V.transition[y]={...e,duration:m,ease:S,times:b,...r}}}),s}function Yr(t,e){return!e.has(t)&&e.set(t,{}),e.get(t)}function Xr(t,e){return e[t]||(e[t]=[]),e[t]}function Si(t){return Array.isArray(t)?t:[t]}function wi(t,e){return t&&t[e]?{...t,...t[e]}:{...t}}var Mi=t=>typeof t=="number",Ai=t=>t.every(Mi);var H=new WeakMap;function dt(t,e){return t?t[e]||t.default||t:void 0}var q=["transformPerspective","x","y","z","translateX","translateY","translateZ","scale","scaleX","scaleY","rotate","rotateX","rotateY","rotateZ","skew","skewX","skewY"],N=new Set(q);var ht=new Set(["width","height","top","left","right","bottom",...q]);var Qr=t=>Array.isArray(t);var Jr=t=>Qr(t)?t[t.length-1]||0:t;var ye={skipAnimations:!1,useManualTiming:!1};function en(t){let e=new Set,r=new Set,n=!1,o=!1,i=new WeakSet,s={delta:0,timestamp:0,isProcessing:!1};function l(f){i.has(f)&&(a.schedule(f),t()),f(s)}let a={schedule:(f,u=!1,p=!1)=>{let c=p&&n?e:r;return u&&i.add(f),c.has(f)||c.add(f),f},cancel:f=>{r.delete(f),i.delete(f)},process:f=>{if(s=f,n){o=!0;return}n=!0,[e,r]=[r,e],e.forEach(l),e.clear(),n=!1,o&&(o=!1,a.process(f))}};return a}var gt=["read","resolveKeyframes","update","preRender","render","postRender"],Ci=40;function tn(t,e){let r=!1,n=!0,o={delta:0,timestamp:0,isProcessing:!1},i=()=>r=!0,s=gt.reduce((d,b)=>(d[b]=en(i),d),{}),{read:l,resolveKeyframes:a,update:f,preRender:u,render:p,postRender:m}=s,c=()=>{let d=ye.useManualTiming?o.timestamp:performance.now();r=!1,o.delta=n?1e3/60:Math.max(Math.min(d-o.timestamp,Ci),1),o.timestamp=d,o.isProcessing=!0,l.process(o),a.process(o),f.process(o),u.process(o),p.process(o),m.process(o),o.isProcessing=!1,r&&e&&(n=!1,t(c))},g=()=>{r=!0,n=!0,o.isProcessing||t(c)};return{schedule:gt.reduce((d,b)=>{let S=s[b];return d[b]=(V,v=!1,_=!1)=>(r||g(),S.schedule(V,v,_)),d},{}),cancel:d=>{for(let b=0;b<gt.length;b++)s[gt[b]].cancel(d)},state:o,steps:s}}var{schedule:F,cancel:Ge,state:xe,steps:Ll}=tn(typeof requestAnimationFrame<"u"?requestAnimationFrame:O,!0);var yt;function Pi(){yt=void 0}var I={now:()=>(yt===void 0&&I.set(xe.isProcessing||ye.useManualTiming?xe.timestamp:performance.now()),yt),set:t=>{yt=t,queueMicrotask(Pi)}};var ve=class{constructor(){this.subscriptions=[]}add(e){return zr(this.subscriptions,e),()=>ct(this.subscriptions,e)}notify(e,r,n){let o=this.subscriptions.length;if(o)if(o===1)this.subscriptions[0](e,r,n);else for(let i=0;i<o;i++){let s=this.subscriptions[i];s&&s(e,r,n)}}getSize(){return this.subscriptions.length}clear(){this.subscriptions.length=0}};var rn=30,Di=t=>!isNaN(parseFloat(t)),nn={current:void 0},rr=class{constructor(e,r={}){this.version="11.18.2",this.canTrackVelocity=null,this.events={},this.updateAndNotify=(n,o=!0)=>{let i=I.now();this.updatedAt!==i&&this.setPrevFrameValue(),this.prev=this.current,this.setCurrent(n),this.current!==this.prev&&this.events.change&&this.events.change.notify(this.current),o&&this.events.renderRequest&&this.events.renderRequest.notify(this.current)},this.hasAnimated=!1,this.setCurrent(e),this.owner=r.owner}setCurrent(e){this.current=e,this.updatedAt=I.now(),this.canTrackVelocity===null&&e!==void 0&&(this.canTrackVelocity=Di(this.current))}setPrevFrameValue(e=this.current){this.prevFrameValue=e,this.prevUpdatedAt=this.updatedAt}onChange(e){return this.on("change",e)}on(e,r){this.events[e]||(this.events[e]=new ve);let n=this.events[e].add(r);return e==="change"?()=>{n(),F.read(()=>{this.events.change.getSize()||this.stop()})}:n}clearListeners(){for(let e in this.events)this.events[e].clear()}attach(e,r){this.passiveEffect=e,this.stopPassiveEffect=r}set(e,r=!0){!r||!this.passiveEffect?this.updateAndNotify(e,r):this.passiveEffect(e,this.updateAndNotify)}setWithVelocity(e,r,n){this.set(r),this.prev=void 0,this.prevFrameValue=e,this.prevUpdatedAt=this.updatedAt-n}jump(e,r=!0){this.updateAndNotify(e),this.prev=e,this.prevUpdatedAt=this.prevFrameValue=void 0,r&&this.stop(),this.stopPassiveEffect&&this.stopPassiveEffect()}get(){return nn.current&&nn.current.push(this),this.current}getPrevious(){return this.prev}getVelocity(){let e=I.now();if(!this.canTrackVelocity||this.prevFrameValue===void 0||e-this.updatedAt>rn)return 0;let r=Math.min(this.updatedAt-this.prevUpdatedAt,rn);return it(parseFloat(this.current)-parseFloat(this.prevFrameValue),r)}start(e){return this.stop(),new Promise(r=>{this.hasAnimated=!0,this.animation=e(r),this.events.animationStart&&this.events.animationStart.notify()}).then(()=>{this.events.animationComplete&&this.events.animationComplete.notify(),this.clearAnimation()})}stop(){this.animation&&(this.animation.stop(),this.events.animationCancel&&this.events.animationCancel.notify()),this.clearAnimation()}isAnimating(){return!!this.animation}clearAnimation(){delete this.animation}destroy(){this.clearListeners(),this.stop(),this.stopPassiveEffect&&this.stopPassiveEffect()}};function Y(t,e){return new rr(t,e)}function on(t){let e=[{},{}];return t?.values.forEach((r,n)=>{e[0][n]=r.get(),e[1][n]=r.getVelocity()}),e}function xt(t,e,r,n){if(typeof e=="function"){let[o,i]=on(n);e=e(r!==void 0?r:t.custom,o,i)}if(typeof e=="string"&&(e=t.variants&&t.variants[e]),typeof e=="function"){let[o,i]=on(n);e=e(r!==void 0?r:t.custom,o,i)}return e}function sn(t,e,r){let n=t.getProps();return xt(n,e,r!==void 0?r:n.custom,t)}function Fi(t,e,r){t.hasValue(e)?t.getValue(e).set(r):t.addValue(e,Y(r))}function an(t,e){let r=sn(t,e),{transitionEnd:n={},transition:o={},...i}=r||{};i={...i,...n};for(let s in i){let l=Jr(i[s]);Fi(t,s,l)}}function ln(t){return!!(A(t)&&t.add)}function un(t,e){let r=t.getValue("willChange");if(ln(r))return r.add(e)}var be=t=>t.replace(/([a-z])([A-Z])/gu,"$1-$2").toLowerCase();var Oi="framerAppearId",fn="data-"+be(Oi);function mn(t){return t.props[fn]}var vt={current:!1};function nr(t,e){t.timeline=e,t.onfinish=null}var qe=t=>Array.isArray(t)&&typeof t[0]=="number";var pn={linearEasing:void 0};function cn(t,e){let r=de(t);return()=>{var n;return(n=pn[e])!==null&&n!==void 0?n:r()}}var Te=cn(()=>{try{document.createElement("div").animate({opacity:0},{easing:"linear(0, 1)"})}catch{return!1}return!0},"linearEasing");function ir(t){return!!(typeof t=="function"&&Te()||!t||typeof t=="string"&&(t in or||Te())||qe(t)||Array.isArray(t)&&t.every(ir))}var We=([t,e,r,n])=>`cubic-bezier(${t}, ${e}, ${r}, ${n})`,or={linear:"linear",ease:"ease",easeIn:"ease-in",easeOut:"ease-out",easeInOut:"ease-in-out",circIn:We([0,.65,.55,1]),circOut:We([.55,0,1,.45]),backIn:We([.31,.01,.66,-.59]),backOut:We([.33,1.53,.69,.99])};function sr(t,e){if(t)return typeof t=="function"&&Te()?ot(t,e):qe(t)?We(t):Array.isArray(t)?t.map(r=>sr(r,e)||or.easeOut):or[t]}var dn=(t,e,r)=>(((1-3*r+3*e)*t+(3*r-6*e))*t+3*e)*t,Ri=1e-7,Ei=12;function ki(t,e,r,n,o){let i,s,l=0;do s=e+(r-e)/2,i=dn(s,n,o)-t,i>0?r=s:e=s;while(Math.abs(i)>Ri&&++l<Ei);return s}function te(t,e,r,n){if(t===e&&r===n)return O;let o=i=>ki(i,0,1,t,r);return i=>i===0||i===1?i:dn(o(i),e,n)}var bt=t=>e=>e<=.5?t(2*e)/2:(2-t(2*(1-e)))/2;var Tt=t=>e=>1-t(1-e);var ar=te(.33,1.53,.69,.99),ze=Tt(ar),_t=bt(ze);var Vt=t=>(t*=2)<1?.5*ze(t):.5*(2-Math.pow(2,-10*(t-1)));var St=t=>1-Math.sin(Math.acos(t)),hn=Tt(St),wt=bt(St);var Mt=t=>/^0[^.\s]+$/u.test(t);function gn(t){return typeof t=="number"?t===0:t!==null?t==="none"||t==="0"||Mt(t):!0}var W={test:t=>typeof t=="number",parse:parseFloat,transform:t=>t},X={...W,transform:t=>k(0,1,t)},je={...W,default:1};var re=t=>Math.round(t*1e5)/1e5;var _e=/-?(?:\d+(?:\.\d+)?|\.\d+)/gu;function yn(t){return t==null}var xn=/^(?:#[\da-f]{3,8}|(?:rgb|hsl)a?\((?:-?[\d.]+%?[,\s]+){2}-?[\d.]+%?\s*(?:[,/]\s*)?(?:\b\d+(?:\.\d+)?|\.\d+)?%?\))$/iu;var Ve=(t,e)=>r=>!!(typeof r=="string"&&xn.test(r)&&r.startsWith(t)||e&&!yn(r)&&Object.prototype.hasOwnProperty.call(r,e)),At=(t,e,r)=>n=>{if(typeof n!="string")return n;let[o,i,s,l]=n.match(_e);return{[t]:parseFloat(o),[e]:parseFloat(i),[r]:parseFloat(s),alpha:l!==void 0?parseFloat(l):1}};var Ni=t=>k(0,255,t),lr={...W,transform:t=>Math.round(Ni(t))},z={test:Ve("rgb","red"),parse:At("red","green","blue"),transform:({red:t,green:e,blue:r,alpha:n=1})=>"rgba("+lr.transform(t)+", "+lr.transform(e)+", "+lr.transform(r)+", "+re(X.transform(n))+")"};function Ii(t){let e="",r="",n="",o="";return t.length>5?(e=t.substring(1,3),r=t.substring(3,5),n=t.substring(5,7),o=t.substring(7,9)):(e=t.substring(1,2),r=t.substring(2,3),n=t.substring(3,4),o=t.substring(4,5),e+=e,r+=r,n+=n,o+=o),{red:parseInt(e,16),green:parseInt(r,16),blue:parseInt(n,16),alpha:o?parseInt(o,16)/255:1}}var Ue={test:Ve("#"),parse:Ii,transform:z.transform};var He=t=>({test:e=>typeof e=="string"&&e.endsWith(t)&&e.split(" ").length===1,parse:parseFloat,transform:e=>`${e}${t}`}),j=He("deg"),ne=He("%"),x=He("px"),vn=He("vh"),bn=He("vw"),ur={...ne,parse:t=>ne.parse(t)/100,transform:t=>ne.transform(t*100)};var oe={test:Ve("hsl","hue"),parse:At("hue","saturation","lightness"),transform:({hue:t,saturation:e,lightness:r,alpha:n=1})=>"hsla("+Math.round(t)+", "+ne.transform(re(e))+", "+ne.transform(re(r))+", "+re(X.transform(n))+")"};var P={test:t=>z.test(t)||Ue.test(t)||oe.test(t),parse:t=>z.test(t)?z.parse(t):oe.test(t)?oe.parse(t):Ue.parse(t),transform:t=>typeof t=="string"?t:t.hasOwnProperty("red")?z.transform(t):oe.transform(t)};var Tn=/(?:#[\da-f]{3,8}|(?:rgb|hsl)a?\((?:-?[\d.]+%?[,\s]+){2}-?[\d.]+%?\s*(?:[,/]\s*)?(?:\b\d+(?:\.\d+)?|\.\d+)?%?\))/giu;function Bi(t){var e,r;return isNaN(t)&&typeof t=="string"&&(((e=t.match(_e))===null||e===void 0?void 0:e.length)||0)+(((r=t.match(Tn))===null||r===void 0?void 0:r.length)||0)>0}var Vn="number",Sn="color",$i="var",Ki="var(",_n="${}",Li=/var\s*\(\s*--(?:[\w-]+\s*|[\w-]+\s*,(?:\s*[^)(\s]|\s*\((?:[^)(]|\([^)(]*\))*\))+\s*)\)|#[\da-f]{3,8}|(?:rgb|hsl)a?\((?:-?[\d.]+%?[,\s]+){2}-?[\d.]+%?\s*(?:[,/]\s*)?(?:\b\d+(?:\.\d+)?|\.\d+)?%?\)|-?(?:\d+(?:\.\d+)?|\.\d+)/giu;function ae(t){let e=t.toString(),r=[],n={color:[],number:[],var:[]},o=[],i=0,l=e.replace(Li,a=>(P.test(a)?(n.color.push(i),o.push(Sn),r.push(P.parse(a))):a.startsWith(Ki)?(n.var.push(i),o.push($i),r.push(a)):(n.number.push(i),o.push(Vn),r.push(parseFloat(a))),++i,_n)).split(_n);return{values:r,split:l,indexes:n,types:o}}function wn(t){return ae(t).values}function Mn(t){let{split:e,types:r}=ae(t),n=e.length;return o=>{let i="";for(let s=0;s<n;s++)if(i+=e[s],o[s]!==void 0){let l=r[s];l===Vn?i+=re(o[s]):l===Sn?i+=P.transform(o[s]):i+=o[s]}return i}}var Gi=t=>typeof t=="number"?0:t;function qi(t){let e=wn(t);return Mn(t)(e.map(Gi))}var B={test:Bi,parse:wn,createTransformer:Mn,getAnimatableNone:qi};var Wi=new Set(["brightness","contrast","saturate","opacity"]);function zi(t){let[e,r]=t.slice(0,-1).split("(");if(e==="drop-shadow")return t;let[n]=r.match(_e)||[];if(!n)return t;let o=r.replace(n,""),i=Wi.has(e)?1:0;return n!==r&&(i*=100),e+"("+i+o+")"}var ji=/\b([a-z-]*)\(.*?\)/gu,Ye={...B,getAnimatableNone:t=>{let e=t.match(ji);return e?e.map(zi).join(" "):t}};var An={borderWidth:x,borderTopWidth:x,borderRightWidth:x,borderBottomWidth:x,borderLeftWidth:x,borderRadius:x,radius:x,borderTopLeftRadius:x,borderTopRightRadius:x,borderBottomRightRadius:x,borderBottomLeftRadius:x,width:x,maxWidth:x,height:x,maxHeight:x,top:x,right:x,bottom:x,left:x,padding:x,paddingTop:x,paddingRight:x,paddingBottom:x,paddingLeft:x,margin:x,marginTop:x,marginRight:x,marginBottom:x,marginLeft:x,backgroundPositionX:x,backgroundPositionY:x};var Cn={rotate:j,rotateX:j,rotateY:j,rotateZ:j,scale:je,scaleX:je,scaleY:je,scaleZ:je,skew:j,skewX:j,skewY:j,distance:x,translateX:x,translateY:x,translateZ:x,x,y:x,z:x,perspective:x,transformPerspective:x,opacity:X,originX:ur,originY:ur,originZ:x};var fr={...W,transform:Math.round};var Se={...An,...Cn,zIndex:fr,size:x,fillOpacity:X,strokeOpacity:X,numOctaves:fr};var Ui={...Se,color:P,backgroundColor:P,outlineColor:P,fill:P,stroke:P,borderColor:P,borderTopColor:P,borderRightColor:P,borderBottomColor:P,borderLeftColor:P,filter:Ye,WebkitFilter:Ye},we=t=>Ui[t];function Ct(t,e){let r=we(t);return r!==Ye&&(r=B),r.getAnimatableNone?r.getAnimatableNone(e):void 0}var Hi=new Set(["auto","none","0"]);function Pn(t,e,r){let n=0,o;for(;n<t.length&&!o;){let i=t[n];typeof i=="string"&&!Hi.has(i)&&ae(i).values.length&&(o=t[n]),n++}if(o&&r)for(let i of e)t[i]=Ct(r,o)}var mr=t=>t===W||t===x,Dn=(t,e)=>parseFloat(t.split(", ")[e]),Fn=(t,e)=>(r,{transform:n})=>{if(n==="none"||!n)return 0;let o=n.match(/^matrix3d\((.+)\)$/u);if(o)return Dn(o[1],e);{let i=n.match(/^matrix\((.+)\)$/u);return i?Dn(i[1],t):0}},Yi=new Set(["x","y","z"]),Xi=q.filter(t=>!Yi.has(t));function On(t){let e=[];return Xi.forEach(r=>{let n=t.getValue(r);n!==void 0&&(e.push([r,n.get()]),n.set(r.startsWith("scale")?1:0))}),e}var le={width:({x:t},{paddingLeft:e="0",paddingRight:r="0"})=>t.max-t.min-parseFloat(e)-parseFloat(r),height:({y:t},{paddingTop:e="0",paddingBottom:r="0"})=>t.max-t.min-parseFloat(e)-parseFloat(r),top:(t,{top:e})=>parseFloat(e),left:(t,{left:e})=>parseFloat(e),bottom:({y:t},{top:e})=>parseFloat(e)+(t.max-t.min),right:({x:t},{left:e})=>parseFloat(e)+(t.max-t.min),x:Fn(4,13),y:Fn(5,14)};le.translateX=le.x;le.translateY=le.y;var ue=new Set,pr=!1,cr=!1;function Rn(){if(cr){let t=Array.from(ue).filter(n=>n.needsMeasurement),e=new Set(t.map(n=>n.element)),r=new Map;e.forEach(n=>{let o=On(n);o.length&&(r.set(n,o),n.render())}),t.forEach(n=>n.measureInitialState()),e.forEach(n=>{n.render();let o=r.get(n);o&&o.forEach(([i,s])=>{var l;(l=n.getValue(i))===null||l===void 0||l.set(s)})}),t.forEach(n=>n.measureEndState()),t.forEach(n=>{n.suspendedScrollY!==void 0&&window.scrollTo(0,n.suspendedScrollY)})}cr=!1,pr=!1,ue.forEach(t=>t.complete()),ue.clear()}function En(){ue.forEach(t=>{t.readKeyframes(),t.needsMeasurement&&(cr=!0)})}function kn(){En(),Rn()}var ie=class{constructor(e,r,n,o,i,s=!1){this.isComplete=!1,this.isAsync=!1,this.needsMeasurement=!1,this.isScheduled=!1,this.unresolvedKeyframes=[...e],this.onComplete=r,this.name=n,this.motionValue=o,this.element=i,this.isAsync=s}scheduleResolve(){this.isScheduled=!0,this.isAsync?(ue.add(this),pr||(pr=!0,F.read(En),F.resolveKeyframes(Rn))):(this.readKeyframes(),this.complete())}readKeyframes(){let{unresolvedKeyframes:e,name:r,element:n,motionValue:o}=this;for(let i=0;i<e.length;i++)if(e[i]===null)if(i===0){let s=o?.get(),l=e[e.length-1];if(s!==void 0)e[0]=s;else if(n&&r){let a=n.readValue(r,l);a!=null&&(e[0]=a)}e[0]===void 0&&(e[0]=l),o&&s===void 0&&o.set(e[0])}else e[i]=e[i-1]}setFinalKeyframe(){}measureInitialState(){}renderEndStyles(){}measureEndState(){}complete(){this.isComplete=!0,this.onComplete(this.unresolvedKeyframes,this.finalKeyframe),ue.delete(this)}cancel(){this.isComplete||(this.isScheduled=!1,ue.delete(this))}resume(){this.isComplete||this.scheduleResolve()}};var Pt=t=>/^-?(?:\d+(?:\.\d+)?|\.\d+)$/u.test(t);var Nn=t=>e=>typeof e=="string"&&e.startsWith(t),Dt=Nn("--"),Zi=Nn("var(--"),Me=t=>Zi(t)?Qi.test(t.split("/*")[0].trim()):!1,Qi=/var\(--(?:[\w-]+\s*|[\w-]+\s*,(?:\s*[^)(\s]|\s*\((?:[^)(]|\([^)(]*\))*\))+\s*)\)$/iu;var Ji=/^var\(--(?:([\w-]+)|([\w-]+), ?([a-zA-Z\d ()%#.,-]+))\)/u;function es(t){let e=Ji.exec(t);if(!e)return[,];let[,r,n,o]=e;return[`--${r??n}`,o]}var ts=4;function dr(t,e,r=1){K(r<=ts,`Max CSS variable fallback depth detected in property "${t}". This may indicate a circular fallback dependency.`);let[n,o]=es(t);if(!n)return;let i=window.getComputedStyle(e).getPropertyValue(n);if(i){let s=i.trim();return Pt(s)?parseFloat(s):s}return Me(o)?dr(o,e,r+1):o}var Ft=t=>e=>e.test(t);var In={test:t=>t==="auto",parse:t=>t};var hr=[W,x,ne,j,bn,vn,In],gr=t=>hr.find(Ft(t));var Ae=class extends ie{constructor(e,r,n,o,i){super(e,r,n,o,i,!0)}readKeyframes(){let{unresolvedKeyframes:e,element:r,name:n}=this;if(!r||!r.current)return;super.readKeyframes();for(let a=0;a<e.length;a++){let f=e[a];if(typeof f=="string"&&(f=f.trim(),Me(f))){let u=dr(f,r.current);u!==void 0&&(e[a]=u),a===e.length-1&&(this.finalKeyframe=f)}}if(this.resolveNoneKeyframes(),!ht.has(n)||e.length!==2)return;let[o,i]=e,s=gr(o),l=gr(i);if(s!==l)if(mr(s)&&mr(l))for(let a=0;a<e.length;a++){let f=e[a];typeof f=="string"&&(e[a]=parseFloat(f))}else this.needsMeasurement=!0}resolveNoneKeyframes(){let{unresolvedKeyframes:e,name:r}=this,n=[];for(let o=0;o<e.length;o++)gn(e[o])&&n.push(o);n.length&&Pn(e,n,r)}measureInitialState(){let{element:e,unresolvedKeyframes:r,name:n}=this;if(!e||!e.current)return;n==="height"&&(this.suspendedScrollY=window.pageYOffset),this.measuredOrigin=le[n](e.measureViewportBox(),window.getComputedStyle(e.current)),r[0]=this.measuredOrigin;let o=r[r.length-1];o!==void 0&&e.getValue(n,o).jump(o,!1)}measureEndState(){var e;let{element:r,name:n,unresolvedKeyframes:o}=this;if(!r||!r.current)return;let i=r.getValue(n);i&&i.jump(this.measuredOrigin,!1);let s=o.length-1,l=o[s];o[s]=le[n](r.measureViewportBox(),window.getComputedStyle(r.current)),l!==null&&this.finalKeyframe===void 0&&(this.finalKeyframe=l),!((e=this.removedTransforms)===null||e===void 0)&&e.length&&this.removedTransforms.forEach(([a,f])=>{r.getValue(a).set(f)}),this.resolveNoneKeyframes()}};var yr=(t,e)=>e==="zIndex"?!1:!!(typeof t=="number"||Array.isArray(t)||typeof t=="string"&&(B.test(t)||t==="0")&&!t.startsWith("url("));function rs(t){let e=t[0];if(t.length===1)return!0;for(let r=0;r<t.length;r++)if(t[r]!==e)return!0}function Bn(t,e,r,n){let o=t[0];if(o===null)return!1;if(e==="display"||e==="visibility")return!0;let i=t[t.length-1],s=yr(o,e),l=yr(i,e);return Q(s===l,`You are trying to animate ${e} from "${o}" to "${i}". ${o} is not an animatable value - to enable this animation set ${o} to a value animatable to ${i} via the \`style\` property.`),!s||!l?!1:rs(t)||(r==="spring"||ee(r))&&n}var ns=t=>t!==null;function se(t,{repeat:e,repeatType:r="loop"},n){let o=t.filter(ns),i=e&&r!=="loop"&&e%2===1?0:o.length-1;return!i||n===void 0?o[i]:n}var os=40,Ce=class{constructor({autoplay:e=!0,delay:r=0,type:n="keyframes",repeat:o=0,repeatDelay:i=0,repeatType:s="loop",...l}){this.isStopped=!1,this.hasAttemptedResolve=!1,this.createdAt=I.now(),this.options={autoplay:e,delay:r,type:n,repeat:o,repeatDelay:i,repeatType:s,...l},this.updateFinishedPromise()}calcStartTime(){return this.resolvedAt?this.resolvedAt-this.createdAt>os?this.resolvedAt:this.createdAt:this.createdAt}get resolved(){return!this._resolved&&!this.hasAttemptedResolve&&kn(),this._resolved}onKeyframesResolved(e,r){this.resolvedAt=I.now(),this.hasAttemptedResolve=!0;let{name:n,type:o,velocity:i,delay:s,onComplete:l,onUpdate:a,isGenerator:f}=this.options;if(!f&&!Bn(e,n,o,i))if(vt.current||!s){a&&a(se(e,this.options,r)),l&&l(),this.resolveFinishedPromise();return}else this.options.duration=0;let u=this.initPlayback(e,r);u!==!1&&(this._resolved={keyframes:e,finalKeyframe:r,...u},this.onPostResolved())}onPostResolved(){}then(e,r){return this.currentFinishedPromise.then(e,r)}flatten(){this.options.type="keyframes",this.options.ease="linear"}updateFinishedPromise(){this.currentFinishedPromise=new Promise(e=>{this.resolveFinishedPromise=e})}};function xr(t,e,r){return r<0&&(r+=1),r>1&&(r-=1),r<1/6?t+(e-t)*6*r:r<1/2?e:r<2/3?t+(e-t)*(2/3-r)*6:t}function $n({hue:t,saturation:e,lightness:r,alpha:n}){t/=360,e/=100,r/=100;let o=0,i=0,s=0;if(!e)o=i=s=r;else{let l=r<.5?r*(1+e):r+e-r*e,a=2*r-l;o=xr(a,l,t+1/3),i=xr(a,l,t),s=xr(a,l,t-1/3)}return{red:Math.round(o*255),green:Math.round(i*255),blue:Math.round(s*255),alpha:n}}function Pe(t,e){return r=>r>0?e:t}var vr=(t,e,r)=>{let n=t*t,o=r*(e*e-n)+n;return o<0?0:Math.sqrt(o)},is=[Ue,z,oe],ss=t=>is.find(e=>e.test(t));function Kn(t){let e=ss(t);if(Q(!!e,`'${t}' is not an animatable color. Use the equivalent color code instead.`),!e)return!1;let r=e.parse(t);return e===oe&&(r=$n(r)),r}var br=(t,e)=>{let r=Kn(t),n=Kn(e);if(!r||!n)return Pe(t,e);let o={...r};return i=>(o.red=vr(r.red,n.red,i),o.green=vr(r.green,n.green,i),o.blue=vr(r.blue,n.blue,i),o.alpha=G(r.alpha,n.alpha,i),z.transform(o))};var as=(t,e)=>r=>e(t(r)),De=(...t)=>t.reduce(as);var Ot=new Set(["none","hidden"]);function Ln(t,e){return Ot.has(t)?r=>r<=0?t:e:r=>r>=1?e:t}function ls(t,e){return r=>G(t,e,r)}function Rt(t){return typeof t=="number"?ls:typeof t=="string"?Me(t)?Pe:P.test(t)?br:ms:Array.isArray(t)?Gn:typeof t=="object"?P.test(t)?br:us:Pe}function Gn(t,e){let r=[...t],n=r.length,o=t.map((i,s)=>Rt(i)(i,e[s]));return i=>{for(let s=0;s<n;s++)r[s]=o[s](i);return r}}function us(t,e){let r={...t,...e},n={};for(let o in r)t[o]!==void 0&&e[o]!==void 0&&(n[o]=Rt(t[o])(t[o],e[o]));return o=>{for(let i in n)r[i]=n[i](o);return r}}function fs(t,e){var r;let n=[],o={color:0,var:0,number:0};for(let i=0;i<e.values.length;i++){let s=e.types[i],l=t.indexes[s][o[s]],a=(r=t.values[l])!==null&&r!==void 0?r:0;n[i]=a,o[s]++}return n}var ms=(t,e)=>{let r=B.createTransformer(e),n=ae(t),o=ae(e);return n.indexes.var.length===o.indexes.var.length&&n.indexes.color.length===o.indexes.color.length&&n.indexes.number.length>=o.indexes.number.length?Ot.has(t)&&!o.values.length||Ot.has(e)&&!n.values.length?Ln(t,e):De(Gn(fs(n,o),o.values),r):(Q(!0,`Complex values '${t}' and '${e}' too different to mix. Ensure all colors are of the same type, and that each contains the same quantity of number and color values. Falling back to instant transition.`),Pe(t,e))};function Et(t,e,r){return typeof t=="number"&&typeof e=="number"&&typeof r=="number"?G(t,e,r):Rt(t)(t,e)}function Tr({keyframes:t,velocity:e=0,power:r=.8,timeConstant:n=325,bounceDamping:o=10,bounceStiffness:i=500,modifyTarget:s,min:l,max:a,restDelta:f=.5,restSpeed:u}){let p=t[0],m={done:!1,value:p},c=T=>l!==void 0&&T<l||a!==void 0&&T>a,g=T=>l===void 0?a:a===void 0||Math.abs(l-T)<Math.abs(a-T)?l:a,y=r*e,h=p+y,d=s===void 0?h:s(h);d!==h&&(y=d-p);let b=T=>-y*Math.exp(-T/n),S=T=>d+b(T),V=T=>{let w=b(T),E=S(T);m.done=Math.abs(w)<=f,m.value=m.done?d:E},v,_,C=T=>{c(m.value)&&(v=T,_=U({keyframes:[m.value,g(m.value)],velocity:st(S,T,m.value),damping:o,stiffness:i,restDelta:f,restSpeed:u}))};return C(0),{calculatedDuration:null,next:T=>{let w=!1;return!_&&v===void 0&&(w=!0,V(T),C(T)),v!==void 0&&T>=v?_.next(T-v):(!w&&V(T),m)}}}var qn=te(.42,0,1,1),Wn=te(0,0,.58,1),kt=te(.42,0,.58,1);var zn={linear:O,easeIn:qn,easeInOut:kt,easeOut:Wn,circIn:St,circInOut:wt,circOut:hn,backIn:ze,backInOut:_t,backOut:ar,anticipate:Vt},_r=t=>{if(qe(t)){K(t.length===4,"Cubic bezier arrays must contain four numerical values.");let[e,r,n,o]=t;return te(e,r,n,o)}else if(typeof t=="string")return K(zn[t]!==void 0,`Invalid easing type '${t}'`),zn[t];return t};function ps(t,e,r){let n=[],o=r||Et,i=t.length-1;for(let s=0;s<i;s++){let l=o(t[s],t[s+1]);if(e){let a=Array.isArray(e)?e[s]||O:e;l=De(a,l)}n.push(l)}return n}function jn(t,e,{clamp:r=!0,ease:n,mixer:o}={}){let i=t.length;if(K(i===e.length,"Both input and output ranges must be the same length"),i===1)return()=>e[0];if(i===2&&e[0]===e[1])return()=>e[1];let s=t[0]===t[1];t[0]>t[i-1]&&(t=[...t].reverse(),e=[...e].reverse());let l=ps(e,n,o),a=l.length,f=u=>{if(s&&u<t[0])return e[0];let p=0;if(a>1)for(;p<t.length-2&&!(u<t[p+1]);p++);let m=J(t[p],t[p+1],u);return l[p](m)};return r?u=>f(k(t[0],t[i-1],u)):f}function Un(t,e){return t.map(r=>r*e)}function cs(t,e){return t.map(()=>e||kt).splice(0,t.length-1)}function Xe({duration:t=300,keyframes:e,times:r,ease:n="easeInOut"}){let o=lt(n)?n.map(_r):_r(n),i={done:!1,value:e[0]},s=Un(r&&r.length===e.length?r:mt(e),t),l=jn(s,e,{ease:Array.isArray(o)?o:cs(e,o)});return{calculatedDuration:t,next:a=>(i.value=l(a),i.done=a>=t,i)}}var Hn=t=>{let e=({timestamp:r})=>t(r);return{start:()=>F.update(e,!0),stop:()=>Ge(e),now:()=>xe.isProcessing?xe.timestamp:I.now()}};var ds={decay:Tr,inertia:Tr,tween:Xe,keyframes:Xe,spring:U},hs=t=>t/100,fe=class extends Ce{constructor(e){super(e),this.holdTime=null,this.cancelTime=null,this.currentTime=0,this.playbackSpeed=1,this.pendingPlayState="running",this.startTime=null,this.state="idle",this.stop=()=>{if(this.resolver.cancel(),this.isStopped=!0,this.state==="idle")return;this.teardown();let{onStop:a}=this.options;a&&a()};let{name:r,motionValue:n,element:o,keyframes:i}=this.options,s=o?.KeyframeResolver||ie,l=(a,f)=>this.onKeyframesResolved(a,f);this.resolver=new s(i,l,r,n,o),this.resolver.scheduleResolve()}flatten(){super.flatten(),this._resolved&&Object.assign(this._resolved,this.initPlayback(this._resolved.keyframes))}initPlayback(e){let{type:r="keyframes",repeat:n=0,repeatDelay:o=0,repeatType:i,velocity:s=0}=this.options,l=ee(r)?r:ds[r]||Xe,a,f;l!==Xe&&typeof e[0]!="number"&&(a=De(hs,Et(e[0],e[1])),e=[0,100]);let u=l({...this.options,keyframes:e});i==="mirror"&&(f=l({...this.options,keyframes:[...e].reverse(),velocity:-s})),u.calculatedDuration===null&&(u.calculatedDuration=ge(u));let{calculatedDuration:p}=u,m=p+o,c=m*(n+1)-o;return{generator:u,mirroredGenerator:f,mapPercentToKeyframes:a,calculatedDuration:p,resolvedDuration:m,totalDuration:c}}onPostResolved(){let{autoplay:e=!0}=this.options;this.play(),this.pendingPlayState==="paused"||!e?this.pause():this.state=this.pendingPlayState}tick(e,r=!1){let{resolved:n}=this;if(!n){let{keyframes:T}=this.options;return{done:!0,value:T[T.length-1]}}let{finalKeyframe:o,generator:i,mirroredGenerator:s,mapPercentToKeyframes:l,keyframes:a,calculatedDuration:f,totalDuration:u,resolvedDuration:p}=n;if(this.startTime===null)return i.next(0);let{delay:m,repeat:c,repeatType:g,repeatDelay:y,onUpdate:h}=this.options;this.speed>0?this.startTime=Math.min(this.startTime,e):this.speed<0&&(this.startTime=Math.min(e-u/this.speed,this.startTime)),r?this.currentTime=e:this.holdTime!==null?this.currentTime=this.holdTime:this.currentTime=Math.round(e-this.startTime)*this.speed;let d=this.currentTime-m*(this.speed>=0?1:-1),b=this.speed>=0?d<0:d>u;this.currentTime=Math.max(d,0),this.state==="finished"&&this.holdTime===null&&(this.currentTime=u);let S=this.currentTime,V=i;if(c){let T=Math.min(this.currentTime,u)/p,w=Math.floor(T),E=T%1;!E&&T>=1&&(E=1),E===1&&w--,w=Math.min(w,c+1),!!(w%2)&&(g==="reverse"?(E=1-E,y&&(E-=y/p)):g==="mirror"&&(V=s)),S=k(0,1,E)*p}let v=b?{done:!1,value:a[0]}:V.next(S);l&&(v.value=l(v.value));let{done:_}=v;!b&&f!==null&&(_=this.speed>=0?this.currentTime>=u:this.currentTime<=0);let C=this.holdTime===null&&(this.state==="finished"||this.state==="running"&&_);return C&&o!==void 0&&(v.value=se(a,this.options,o)),h&&h(v.value),C&&this.finish(),v}get duration(){let{resolved:e}=this;return e?R(e.calculatedDuration):0}get time(){return R(this.currentTime)}set time(e){e=D(e),this.currentTime=e,this.holdTime!==null||this.speed===0?this.holdTime=e:this.driver&&(this.startTime=this.driver.now()-e/this.speed)}get speed(){return this.playbackSpeed}set speed(e){let r=this.playbackSpeed!==e;this.playbackSpeed=e,r&&(this.time=R(this.currentTime))}play(){if(this.resolver.isScheduled||this.resolver.resume(),!this._resolved){this.pendingPlayState="running";return}if(this.isStopped)return;let{driver:e=Hn,onPlay:r,startTime:n}=this.options;this.driver||(this.driver=e(i=>this.tick(i))),r&&r();let o=this.driver.now();this.holdTime!==null?this.startTime=o-this.holdTime:this.startTime?this.state==="finished"&&(this.startTime=o):this.startTime=n??this.calcStartTime(),this.state==="finished"&&this.updateFinishedPromise(),this.cancelTime=this.startTime,this.holdTime=null,this.state="running",this.driver.start()}pause(){var e;if(!this._resolved){this.pendingPlayState="paused";return}this.state="paused",this.holdTime=(e=this.currentTime)!==null&&e!==void 0?e:0}complete(){this.state!=="running"&&this.play(),this.pendingPlayState=this.state="finished",this.holdTime=null}finish(){this.teardown(),this.state="finished";let{onComplete:e}=this.options;e&&e()}cancel(){this.cancelTime!==null&&this.tick(this.cancelTime),this.teardown(),this.updateFinishedPromise()}teardown(){this.state="idle",this.stopDriver(),this.resolveFinishedPromise(),this.updateFinishedPromise(),this.startTime=this.cancelTime=null,this.resolver.cancel()}stopDriver(){this.driver&&(this.driver.stop(),this.driver=void 0)}sample(e){return this.startTime=0,this.tick(e,!0)}};var Yn=new Set(["opacity","clipPath","filter","transform"]);function Xn(t,e,r,{delay:n=0,duration:o=300,repeat:i=0,repeatType:s="loop",ease:l="easeInOut",times:a}={}){let f={[e]:r};a&&(f.offset=a);let u=sr(l,o);return Array.isArray(u)&&(f.easing=u),t.animate(f,{delay:n,duration:o,easing:Array.isArray(u)?"linear":u,fill:"both",iterations:i+1,direction:s==="reverse"?"alternate":"normal"})}var Zn=de(()=>Object.hasOwnProperty.call(Element.prototype,"animate"));var Nt=10,gs=2e4;function ys(t){return ee(t.type)||t.type==="spring"||!ir(t.ease)}function xs(t,e){let r=new fe({...e,keyframes:t,repeat:0,delay:0,isGenerator:!0}),n={done:!1,value:t[0]},o=[],i=0;for(;!n.done&&i<gs;)n=r.sample(i),o.push(n.value),i+=Nt;return{times:void 0,keyframes:o,duration:i-Nt,ease:"linear"}}var Qn={anticipate:Vt,backInOut:_t,circInOut:wt};function vs(t){return t in Qn}var Ze=class extends Ce{constructor(e){super(e);let{name:r,motionValue:n,element:o,keyframes:i}=this.options;this.resolver=new Ae(i,(s,l)=>this.onKeyframesResolved(s,l),r,n,o),this.resolver.scheduleResolve()}initPlayback(e,r){let{duration:n=300,times:o,ease:i,type:s,motionValue:l,name:a,startTime:f}=this.options;if(!l.owner||!l.owner.current)return!1;if(typeof i=="string"&&Te()&&vs(i)&&(i=Qn[i]),ys(this.options)){let{onComplete:p,onUpdate:m,motionValue:c,element:g,...y}=this.options,h=xs(e,y);e=h.keyframes,e.length===1&&(e[1]=e[0]),n=h.duration,o=h.times,i=h.ease,s="keyframes"}let u=Xn(l.owner.current,a,e,{...this.options,duration:n,times:o,ease:i});return u.startTime=f??this.calcStartTime(),this.pendingTimeline?(nr(u,this.pendingTimeline),this.pendingTimeline=void 0):u.onfinish=()=>{let{onComplete:p}=this.options;l.set(se(e,this.options,r)),p&&p(),this.cancel(),this.resolveFinishedPromise()},{animation:u,duration:n,times:o,type:s,ease:i,keyframes:e}}get duration(){let{resolved:e}=this;if(!e)return 0;let{duration:r}=e;return R(r)}get time(){let{resolved:e}=this;if(!e)return 0;let{animation:r}=e;return R(r.currentTime||0)}set time(e){let{resolved:r}=this;if(!r)return;let{animation:n}=r;n.currentTime=D(e)}get speed(){let{resolved:e}=this;if(!e)return 1;let{animation:r}=e;return r.playbackRate}set speed(e){let{resolved:r}=this;if(!r)return;let{animation:n}=r;n.playbackRate=e}get state(){let{resolved:e}=this;if(!e)return"idle";let{animation:r}=e;return r.playState}get startTime(){let{resolved:e}=this;if(!e)return null;let{animation:r}=e;return r.startTime}attachTimeline(e){if(!this._resolved)this.pendingTimeline=e;else{let{resolved:r}=this;if(!r)return O;let{animation:n}=r;nr(n,e)}return O}play(){if(this.isStopped)return;let{resolved:e}=this;if(!e)return;let{animation:r}=e;r.playState==="finished"&&this.updateFinishedPromise(),r.play()}pause(){let{resolved:e}=this;if(!e)return;let{animation:r}=e;r.pause()}stop(){if(this.resolver.cancel(),this.isStopped=!0,this.state==="idle")return;this.resolveFinishedPromise(),this.updateFinishedPromise();let{resolved:e}=this;if(!e)return;let{animation:r,keyframes:n,duration:o,type:i,ease:s,times:l}=e;if(r.playState==="idle"||r.playState==="finished")return;if(this.time){let{motionValue:f,onUpdate:u,onComplete:p,element:m,...c}=this.options,g=new fe({...c,keyframes:n,duration:o,type:i,ease:s,times:l,isGenerator:!0}),y=D(this.time);f.setWithVelocity(g.sample(y-Nt).value,g.sample(y).value,Nt)}let{onStop:a}=this.options;a&&a(),this.cancel()}complete(){let{resolved:e}=this;e&&e.animation.finish()}cancel(){let{resolved:e}=this;e&&e.animation.cancel()}static supports(e){let{motionValue:r,name:n,repeatDelay:o,repeatType:i,damping:s,type:l}=e;if(!r||!r.owner||!(r.owner.current instanceof HTMLElement))return!1;let{onUpdate:a,transformTemplate:f}=r.owner.getProps();return Zn()&&n&&Yn.has(n)&&!a&&!f&&!o&&i!=="mirror"&&s!==0&&l!=="inertia"}};var bs={type:"spring",stiffness:500,damping:25,restSpeed:10},Ts=t=>({type:"spring",stiffness:550,damping:t===0?2*Math.sqrt(550):30,restSpeed:10}),_s={type:"keyframes",duration:.8},Vs={type:"keyframes",ease:[.25,.1,.35,1],duration:.3},Jn=(t,{keyframes:e})=>e.length>2?_s:N.has(t)?t.startsWith("scale")?Ts(e[1]):bs:Vs;function eo({when:t,delay:e,delayChildren:r,staggerChildren:n,staggerDirection:o,repeat:i,repeatType:s,repeatDelay:l,from:a,elapsed:f,...u}){return!!Object.keys(u).length}var It=(t,e,r,n={},o,i)=>s=>{let l=dt(n,t)||{},a=l.delay||n.delay||0,{elapsed:f=0}=n;f=f-D(a);let u={keyframes:Array.isArray(r)?r:[null,r],ease:"easeOut",velocity:e.getVelocity(),...l,delay:-f,onUpdate:m=>{e.set(m),l.onUpdate&&l.onUpdate(m)},onComplete:()=>{s(),l.onComplete&&l.onComplete()},name:t,motionValue:e,element:i?void 0:o};eo(l)||(u={...u,...Jn(t,u)}),u.duration&&(u.duration=D(u.duration)),u.repeatDelay&&(u.repeatDelay=D(u.repeatDelay)),u.from!==void 0&&(u.keyframes[0]=u.from);let p=!1;if((u.type===!1||u.duration===0&&!u.repeatDelay)&&(u.duration=0,u.delay===0&&(p=!0)),(vt.current||ye.skipAnimations)&&(p=!0,u.duration=0,u.delay=0),p&&!i&&e.get()!==void 0){let m=se(u.keyframes,l);if(m!==void 0)return F.update(()=>{u.onUpdate(m),u.onComplete()}),new he([])}return!i&&Ze.supports(u)?new Ze(u):new fe(u)};function Ss({protectedKeys:t,needsAnimating:e},r){let n=t.hasOwnProperty(r)&&e[r]!==!0;return e[r]=!1,n}function to(t,e,{delay:r=0,transitionOverride:n,type:o}={}){var i;let{transition:s=t.getDefaultTransition(),transitionEnd:l,...a}=e;n&&(s=n);let f=[],u=o&&t.animationState&&t.animationState.getState()[o];for(let p in a){let m=t.getValue(p,(i=t.latestValues[p])!==null&&i!==void 0?i:null),c=a[p];if(c===void 0||u&&Ss(u,p))continue;let g={delay:r,...dt(s||{},p)},y=!1;if(window.MotionHandoffAnimation){let d=mn(t);if(d){let b=window.MotionHandoffAnimation(d,p,F);b!==null&&(g.startTime=b,y=!0)}}un(t,p),m.start(It(p,m,c,t.shouldReduceMotion&&ht.has(p)?{type:!1}:g,t,y));let h=m.animation;h&&f.push(h)}return l&&Promise.all(f).then(()=>{F.update(()=>{l&&an(t,l)})}),f}function ro(t){return t instanceof SVGElement&&t.tagName!=="svg"}var no=()=>({min:0,max:0}),Fe=()=>({x:no(),y:no()});var oo={animation:["animate","variants","whileHover","whileTap","exit","whileInView","whileFocus","whileDrag"],exit:["exit"],drag:["drag","dragControls"],focus:["whileFocus"],hover:["whileHover","onHoverStart","onHoverEnd"],tap:["whileTap","onTap","onTapStart","onTapCancel"],pan:["onPan","onPanStart","onPanSessionStart","onPanEnd"],inView:["whileInView","onViewportEnter","onViewportLeave"],layout:["layout","layoutId"]},Bt={};for(let t in oo)Bt[t]={isEnabled:e=>oo[t].some(r=>!!e[r])};var io=typeof window<"u";var Qe={current:null},$t={current:!1};function so(){if($t.current=!0,!!io)if(window.matchMedia){let t=window.matchMedia("(prefers-reduced-motion)"),e=()=>Qe.current=t.matches;t.addListener(e),e()}else Qe.current=!1}var ws=[...hr,P,B],ao=t=>ws.find(Ft(t));function lo(t){return t!==null&&typeof t=="object"&&typeof t.start=="function"}function uo(t){return typeof t=="string"||Array.isArray(t)}var Ms=["animate","whileInView","whileFocus","whileHover","whileTap","whileDrag","exit"],fo=["initial",...Ms];function Vr(t){return lo(t.animate)||fo.some(e=>uo(t[e]))}function mo(t){return!!(Vr(t)||t.variants)}function po(t,e,r){for(let n in e){let o=e[n],i=r[n];if(A(o))t.addValue(n,o);else if(A(i))t.addValue(n,Y(o,{owner:t}));else if(i!==o)if(t.hasValue(n)){let s=t.getValue(n);s.liveStyle===!0?s.jump(o):s.hasAnimated||s.set(o)}else{let s=t.getStaticValue(n);t.addValue(n,Y(s!==void 0?s:o,{owner:t}))}}for(let n in r)e[n]===void 0&&t.removeValue(n);return e}var co=["AnimationStart","AnimationComplete","Update","BeforeLayoutMeasure","LayoutMeasure","LayoutAnimationStart","LayoutAnimationComplete"],Oe=class{scrapeMotionValuesFromProps(e,r,n){return{}}constructor({parent:e,props:r,presenceContext:n,reducedMotionConfig:o,blockInitialAnimation:i,visualState:s},l={}){this.current=null,this.children=new Set,this.isVariantNode=!1,this.isControllingVariants=!1,this.shouldReduceMotion=null,this.values=new Map,this.KeyframeResolver=ie,this.features={},this.valueSubscriptions=new Map,this.prevMotionValues={},this.events={},this.propEventSubscriptions={},this.notifyUpdate=()=>this.notify("Update",this.latestValues),this.render=()=>{this.current&&(this.triggerBuild(),this.renderInstance(this.current,this.renderState,this.props.style,this.projection))},this.renderScheduledAt=0,this.scheduleRender=()=>{let c=I.now();this.renderScheduledAt<c&&(this.renderScheduledAt=c,F.render(this.render,!1,!0))};let{latestValues:a,renderState:f,onUpdate:u}=s;this.onUpdate=u,this.latestValues=a,this.baseTarget={...a},this.initialValues=r.initial?{...a}:{},this.renderState=f,this.parent=e,this.props=r,this.presenceContext=n,this.depth=e?e.depth+1:0,this.reducedMotionConfig=o,this.options=l,this.blockInitialAnimation=!!i,this.isControllingVariants=Vr(r),this.isVariantNode=mo(r),this.isVariantNode&&(this.variantChildren=new Set),this.manuallyAnimateOnMount=!!(e&&e.current);let{willChange:p,...m}=this.scrapeMotionValuesFromProps(r,{},this);for(let c in m){let g=m[c];a[c]!==void 0&&A(g)&&g.set(a[c],!1)}}mount(e){this.current=e,H.set(e,this),this.projection&&!this.projection.instance&&this.projection.mount(e),this.parent&&this.isVariantNode&&!this.isControllingVariants&&(this.removeFromVariantTree=this.parent.addVariantChild(this)),this.values.forEach((r,n)=>this.bindToMotionValue(n,r)),$t.current||so(),this.shouldReduceMotion=this.reducedMotionConfig==="never"?!1:this.reducedMotionConfig==="always"?!0:Qe.current,this.parent&&this.parent.children.add(this),this.update(this.props,this.presenceContext)}unmount(){H.delete(this.current),this.projection&&this.projection.unmount(),Ge(this.notifyUpdate),Ge(this.render),this.valueSubscriptions.forEach(e=>e()),this.valueSubscriptions.clear(),this.removeFromVariantTree&&this.removeFromVariantTree(),this.parent&&this.parent.children.delete(this);for(let e in this.events)this.events[e].clear();for(let e in this.features){let r=this.features[e];r&&(r.unmount(),r.isMounted=!1)}this.current=null}bindToMotionValue(e,r){this.valueSubscriptions.has(e)&&this.valueSubscriptions.get(e)();let n=N.has(e),o=r.on("change",l=>{this.latestValues[e]=l,this.props.onUpdate&&F.preRender(this.notifyUpdate),n&&this.projection&&(this.projection.isTransformDirty=!0)}),i=r.on("renderRequest",this.scheduleRender),s;window.MotionCheckAppearSync&&(s=window.MotionCheckAppearSync(this,e,r)),this.valueSubscriptions.set(e,()=>{o(),i(),s&&s(),r.owner&&r.stop()})}sortNodePosition(e){return!this.current||!this.sortInstanceNodePosition||this.type!==e.type?0:this.sortInstanceNodePosition(this.current,e.current)}updateFeatures(){let e="animation";for(e in Bt){let r=Bt[e];if(!r)continue;let{isEnabled:n,Feature:o}=r;if(!this.features[e]&&o&&n(this.props)&&(this.features[e]=new o(this)),this.features[e]){let i=this.features[e];i.isMounted?i.update():(i.mount(),i.isMounted=!0)}}}triggerBuild(){this.build(this.renderState,this.latestValues,this.props)}measureViewportBox(){return this.current?this.measureInstanceViewportBox(this.current,this.props):Fe()}getStaticValue(e){return this.latestValues[e]}setStaticValue(e,r){this.latestValues[e]=r}update(e,r){(e.transformTemplate||this.props.transformTemplate)&&this.scheduleRender(),this.prevProps=this.props,this.props=e,this.prevPresenceContext=this.presenceContext,this.presenceContext=r;for(let n=0;n<co.length;n++){let o=co[n];this.propEventSubscriptions[o]&&(this.propEventSubscriptions[o](),delete this.propEventSubscriptions[o]);let i="on"+o,s=e[i];s&&(this.propEventSubscriptions[o]=this.on(o,s))}this.prevMotionValues=po(this,this.scrapeMotionValuesFromProps(e,this.prevProps,this),this.prevMotionValues),this.handleChildMotionValue&&this.handleChildMotionValue(),this.onUpdate&&this.onUpdate(this)}getProps(){return this.props}getVariant(e){return this.props.variants?this.props.variants[e]:void 0}getDefaultTransition(){return this.props.transition}getTransformPagePoint(){return this.props.transformPagePoint}getClosestVariantNode(){return this.isVariantNode?this:this.parent?this.parent.getClosestVariantNode():void 0}addVariantChild(e){let r=this.getClosestVariantNode();if(r)return r.variantChildren&&r.variantChildren.add(e),()=>r.variantChildren.delete(e)}addValue(e,r){let n=this.values.get(e);r!==n&&(n&&this.removeValue(e),this.bindToMotionValue(e,r),this.values.set(e,r),this.latestValues[e]=r.get())}removeValue(e){this.values.delete(e);let r=this.valueSubscriptions.get(e);r&&(r(),this.valueSubscriptions.delete(e)),delete this.latestValues[e],this.removeValueFromRenderState(e,this.renderState)}hasValue(e){return this.values.has(e)}getValue(e,r){if(this.props.values&&this.props.values[e])return this.props.values[e];let n=this.values.get(e);return n===void 0&&r!==void 0&&(n=Y(r===null?void 0:r,{owner:this}),this.addValue(e,n)),n}readValue(e,r){var n;let o=this.latestValues[e]!==void 0||!this.current?this.latestValues[e]:(n=this.getBaseTargetFromProps(this.props,e))!==null&&n!==void 0?n:this.readValueFromInstance(this.current,e,this.options);return o!=null&&(typeof o=="string"&&(Pt(o)||Mt(o))?o=parseFloat(o):!ao(o)&&B.test(r)&&(o=Ct(e,r)),this.setBaseTarget(e,A(o)?o.get():o)),A(o)?o.get():o}setBaseTarget(e,r){this.baseTarget[e]=r}getBaseTarget(e){var r;let{initial:n}=this.props,o;if(typeof n=="string"||typeof n=="object"){let s=xt(this.props,n,(r=this.presenceContext)===null||r===void 0?void 0:r.custom);s&&(o=s[e])}if(n&&o!==void 0)return o;let i=this.getBaseTargetFromProps(this.props,e);return i!==void 0&&!A(i)?i:this.initialValues[e]!==void 0&&o===void 0?void 0:this.baseTarget[e]}on(e,r){return this.events[e]||(this.events[e]=new ve),this.events[e].add(r)}notify(e,...r){this.events[e]&&this.events[e].notify(...r)}};var Re=class extends Oe{constructor(){super(...arguments),this.KeyframeResolver=Ae}sortInstanceNodePosition(e,r){return e.compareDocumentPosition(r)&2?1:-1}getBaseTargetFromProps(e,r){return e.style?e.style[r]:void 0}removeValueFromRenderState(e,{vars:r,style:n}){delete r[e],delete n[e]}handleChildMotionValue(){this.childSubscription&&(this.childSubscription(),delete this.childSubscription);let{children:e}=this.props;A(e)&&(this.childSubscription=e.on("change",r=>{this.current&&(this.current.textContent=`${r}`)}))}};var Kt=(t,e)=>e&&typeof t=="number"?e.transform(t):t;var As={x:"translateX",y:"translateY",z:"translateZ",transformPerspective:"perspective"},Cs=q.length;function ho(t,e,r){let n="",o=!0;for(let i=0;i<Cs;i++){let s=q[i],l=t[s];if(l===void 0)continue;let a=!0;if(typeof l=="number"?a=l===(s.startsWith("scale")?1:0):a=parseFloat(l)===0,!a||r){let f=Kt(l,Se[s]);if(!a){o=!1;let u=As[s]||s;n+=`${u}(${f}) `}r&&(e[s]=f)}}return n=n.trim(),r?n=r(e,o?"":n):o&&(n="none"),n}function Lt(t,e,r){let{style:n,vars:o,transformOrigin:i}=t,s=!1,l=!1;for(let a in e){let f=e[a];if(N.has(a)){s=!0;continue}else if(Dt(a)){o[a]=f;continue}else{let u=Kt(f,Se[a]);a.startsWith("origin")?(l=!0,i[a]=u):n[a]=u}}if(e.transform||(s||r?n.transform=ho(e,t.transform,r):n.transform&&(n.transform="none")),l){let{originX:a="50%",originY:f="50%",originZ:u=0}=i;n.transformOrigin=`${a} ${f} ${u}`}}var Ps={offset:"stroke-dashoffset",array:"stroke-dasharray"},Ds={offset:"strokeDashoffset",array:"strokeDasharray"};function go(t,e,r=1,n=0,o=!0){t.pathLength=1;let i=o?Ps:Ds;t[i.offset]=x.transform(-n);let s=x.transform(e),l=x.transform(r);t[i.array]=`${s} ${l}`}function yo(t,e,r){return typeof t=="string"?t:x.transform(e+r*t)}function xo(t,e,r){let n=yo(e,t.x,t.width),o=yo(r,t.y,t.height);return`${n} ${o}`}function vo(t,{attrX:e,attrY:r,attrScale:n,originX:o,originY:i,pathLength:s,pathSpacing:l=1,pathOffset:a=0,...f},u,p){if(Lt(t,f,p),u){t.style.viewBox&&(t.attrs.viewBox=t.style.viewBox);return}t.attrs=t.style,t.style={};let{attrs:m,style:c,dimensions:g}=t;m.transform&&(g&&(c.transform=m.transform),delete m.transform),g&&(o!==void 0||i!==void 0||c.transform)&&(c.transformOrigin=xo(g,o!==void 0?o:.5,i!==void 0?i:.5)),e!==void 0&&(m.x=e),r!==void 0&&(m.y=r),n!==void 0&&(m.scale=n),s!==void 0&&go(m,s,l,a,!1)}var Gt=new Set(["baseFrequency","diffuseConstant","kernelMatrix","kernelUnitLength","keySplines","keyTimes","limitingConeAngle","markerHeight","markerWidth","numOctaves","targetX","targetY","surfaceScale","specularConstant","specularExponent","stdDeviation","tableValues","viewBox","gradientTransform","pathLength","startOffset","textLength","lengthAdjust"]);var bo=t=>typeof t=="string"&&t.toLowerCase()==="svg";function qt(t,{style:e,vars:r},n,o){Object.assign(t.style,e,o&&o.getProjectionStyles(n));for(let i in r)t.style.setProperty(i,r[i])}function To(t,e,r,n){qt(t,e,void 0,n);for(let o in e.attrs)t.setAttribute(Gt.has(o)?o:be(o),e.attrs[o])}var _o={};function Vo(t,{layout:e,layoutId:r}){return N.has(t)||t.startsWith("origin")||(e||r!==void 0)&&(!!_o[t]||t==="opacity")}function Wt(t,e,r){var n;let{style:o}=t,i={};for(let s in o)(A(o[s])||e.style&&A(e.style[s])||Vo(s,t)||((n=r?.getValue(s))===null||n===void 0?void 0:n.liveStyle)!==void 0)&&(i[s]=o[s]);return i}function So(t,e,r){let n=Wt(t,e,r);for(let o in t)if(A(t[o])||A(e[o])){let i=q.indexOf(o)!==-1?"attr"+o.charAt(0).toUpperCase()+o.substring(1):o;n[i]=t[o]}return n}var zt=class extends Re{constructor(){super(...arguments),this.type="svg",this.isSVGTag=!1,this.measureInstanceViewportBox=Fe}getBaseTargetFromProps(e,r){return e[r]}readValueFromInstance(e,r){if(N.has(r)){let n=we(r);return n&&n.default||0}return r=Gt.has(r)?r:be(r),e.getAttribute(r)}scrapeMotionValuesFromProps(e,r,n){return So(e,r,n)}build(e,r,n){vo(e,r,this.isSVGTag,n.transformTemplate)}renderInstance(e,r,n,o){To(e,r,n,o)}mount(e){this.isSVGTag=bo(e.tagName),super.mount(e)}};function wo({top:t,left:e,right:r,bottom:n}){return{x:{min:e,max:r},y:{min:t,max:n}}}function Mo(t,e){if(!e)return t;let r=e({x:t.left,y:t.top}),n=e({x:t.right,y:t.bottom});return{top:r.y,left:r.x,bottom:n.y,right:n.x}}function Ao(t,e){return wo(Mo(t.getBoundingClientRect(),e))}function Fs(t){return window.getComputedStyle(t)}var jt=class extends Re{constructor(){super(...arguments),this.type="html",this.renderInstance=qt}readValueFromInstance(e,r){if(N.has(r)){let n=we(r);return n&&n.default||0}else{let n=Fs(e),o=(Dt(r)?n.getPropertyValue(r):n[r])||0;return typeof o=="string"?o.trim():o}}measureInstanceViewportBox(e,{transformPagePoint:r}){return Ao(e,r)}build(e,r,n){Lt(e,r,n.transformTemplate)}scrapeMotionValuesFromProps(e,r,n){return Wt(e,r,n)}};function Os(t,e){return t in e}var Ut=class extends Oe{constructor(){super(...arguments),this.type="object"}readValueFromInstance(e,r){if(Os(r,e)){let n=e[r];if(typeof n=="string"||typeof n=="number")return n}}getBaseTargetFromProps(){}removeValueFromRenderState(e,r){delete r.output[e]}measureInstanceViewportBox(){return Fe()}build(e,r){Object.assign(e.output,r)}renderInstance(e,{output:r}){Object.assign(e,r)}sortInstanceNodePosition(){return 0}};function Co(t){let e={presenceContext:null,props:{},visualState:{renderState:{transform:{},transformOrigin:{},style:{},vars:{},attrs:{}},latestValues:{}}},r=ro(t)?new zt(e):new jt(e);r.mount(t),H.set(t,r)}function Po(t){let e={presenceContext:null,props:{},visualState:{renderState:{output:{}},latestValues:{}}},r=new Ut(e);r.mount(t),H.set(t,r)}function Do(t,e,r){let n=A(t)?t:Y(t);return n.start(It("",n,e,r)),n.animation}function Rs(t,e){return A(t)||typeof t=="number"||typeof t=="string"&&!Le(e)}function Ht(t,e,r,n){let o=[];if(Rs(t,e))o.push(Do(t,Le(e)&&e.default||e,r&&(r.default||r)));else{let i=pt(t,e,n),s=i.length;K(!!s,"No valid elements provided.");for(let l=0;l<s;l++){let a=i[l],f=a instanceof Element?Co:Po;H.has(a)||f(a);let u=H.get(a),p={...r};"delay"in p&&typeof p.delay=="function"&&(p.delay=p.delay(l,s)),o.push(...to(u,{...e,transition:p},{}))}}return o}function Fo(t,e,r){let n=[];return Zr(t,e,r,{spring:U}).forEach(({keyframes:i,transition:s},l)=>{n.push(...Ht(l,i,s))}),n}function Es(t){return Array.isArray(t)&&t.some(Array.isArray)}function Oo(t){function e(r,n,o){let i=[];Es(r)?i=Fo(r,n,t):i=Ht(r,n,o,t);let s=new he(i);return t&&t.animations.push(s),s}return e}var Sr=Oo();function ks(t){var e=0,r=t.children,n=r&&r.length;if(!n)e=1;else for(;--n>=0;)e+=r[n].value;t.value=e}function Ro(){return this.eachAfter(ks)}function Eo(t,e){let r=-1;for(let n of this)t.call(e,n,++r,this);return this}function ko(t,e){for(var r=this,n=[r],o,i,s=-1;r=n.pop();)if(t.call(e,r,++s,this),o=r.children)for(i=o.length-1;i>=0;--i)n.push(o[i]);return this}function No(t,e){for(var r=this,n=[r],o=[],i,s,l,a=-1;r=n.pop();)if(o.push(r),i=r.children)for(s=0,l=i.length;s<l;++s)n.push(i[s]);for(;r=o.pop();)t.call(e,r,++a,this);return this}function Io(t,e){let r=-1;for(let n of this)if(t.call(e,n,++r,this))return n}function Bo(t){return this.eachAfter(function(e){for(var r=+t(e.data)||0,n=e.children,o=n&&n.length;--o>=0;)r+=n[o].value;e.value=r})}function $o(t){return this.eachBefore(function(e){e.children&&e.children.sort(t)})}function Ko(t){for(var e=this,r=Ns(e,t),n=[e];e!==r;)e=e.parent,n.push(e);for(var o=n.length;t!==r;)n.splice(o,0,t),t=t.parent;return n}function Ns(t,e){if(t===e)return t;var r=t.ancestors(),n=e.ancestors(),o=null;for(t=r.pop(),e=n.pop();t===e;)o=t,t=r.pop(),e=n.pop();return o}function Lo(){for(var t=this,e=[t];t=t.parent;)e.push(t);return e}function Go(){return Array.from(this)}function qo(){var t=[];return this.eachBefore(function(e){e.children||t.push(e)}),t}function Wo(){var t=this,e=[];return t.each(function(r){r!==t&&e.push({source:r.parent,target:r})}),e}function*zo(){var t=this,e,r=[t],n,o,i;do for(e=r.reverse(),r=[];t=e.pop();)if(yield t,n=t.children)for(o=0,i=n.length;o<i;++o)r.push(n[o]);while(r.length)}function Ee(t,e){t instanceof Map?(t=[void 0,t],e===void 0&&(e=$s)):e===void 0&&(e=Bs);for(var r=new Je(t),n,o=[r],i,s,l,a;n=o.pop();)if((s=e(n.data))&&(a=(s=Array.from(s)).length))for(n.children=s,l=a-1;l>=0;--l)o.push(i=s[l]=new Je(s[l])),i.parent=n,i.depth=n.depth+1;return r.eachBefore(Ls)}function Is(){return Ee(this).eachBefore(Ks)}function Bs(t){return t.children}function $s(t){return Array.isArray(t)?t[1]:null}function Ks(t){t.data.value!==void 0&&(t.value=t.data.value),t.data=t.data.data}function Ls(t){var e=0;do t.height=e;while((t=t.parent)&&t.height<++e)}function Je(t){this.data=t,this.depth=this.height=0,this.parent=null}Je.prototype=Ee.prototype={constructor:Je,count:Ro,each:Eo,eachAfter:No,eachBefore:ko,find:Io,sum:Bo,sort:$o,path:Ko,ancestors:Lo,descendants:Go,leaves:qo,links:Wo,copy:Is,[Symbol.iterator]:zo};function jo(t){if(typeof t!="function")throw new Error;return t}function ke(){return 0}function Ne(t){return function(){return t}}function Uo(t){t.x0=Math.round(t.x0),t.y0=Math.round(t.y0),t.x1=Math.round(t.x1),t.y1=Math.round(t.y1)}function Ho(t,e,r,n,o){for(var i=t.children,s,l=-1,a=i.length,f=t.value&&(n-e)/t.value;++l<a;)s=i[l],s.y0=r,s.y1=o,s.x0=e,s.x1=e+=s.value*f}function Yo(t,e,r,n,o){for(var i=t.children,s,l=-1,a=i.length,f=t.value&&(o-r)/t.value;++l<a;)s=i[l],s.x0=e,s.x1=n,s.y0=r,s.y1=r+=s.value*f}var Gs=(1+Math.sqrt(5))/2;function qs(t,e,r,n,o,i){for(var s=[],l=e.children,a,f,u=0,p=0,m=l.length,c,g,y=e.value,h,d,b,S,V,v,_;u<m;){c=o-r,g=i-n;do h=l[p++].value;while(!h&&p<m);for(d=b=h,v=Math.max(g/c,c/g)/(y*t),_=h*h*v,V=Math.max(b/_,_/d);p<m;++p){if(h+=f=l[p].value,f<d&&(d=f),f>b&&(b=f),_=h*h*v,S=Math.max(b/_,_/d),S>V){h-=f;break}V=S}s.push(a={value:h,dice:c<g,children:l.slice(u,p)}),a.dice?Ho(a,r,n,o,y?n+=g*h/y:i):Yo(a,r,n,y?r+=c*h/y:o,i),y-=h,u=p}return s}var et=function t(e){function r(n,o,i,s,l){qs(e,n,o,i,s,l)}return r.ratio=function(n){return t((n=+n)>1?n:1)},r}(Gs);function wr(){var t=et,e=!1,r=1,n=1,o=[0],i=ke,s=ke,l=ke,a=ke,f=ke;function u(m){return m.x0=m.y0=0,m.x1=r,m.y1=n,m.eachBefore(p),o=[0],e&&m.eachBefore(Uo),m}function p(m){var c=o[m.depth],g=m.x0+c,y=m.y0+c,h=m.x1-c,d=m.y1-c;h<g&&(g=h=(g+h)/2),d<y&&(y=d=(y+d)/2),m.x0=g,m.y0=y,m.x1=h,m.y1=d,m.children&&(c=o[m.depth+1]=i(m)/2,g+=f(m)-c,y+=s(m)-c,h-=l(m)-c,d-=a(m)-c,h<g&&(g=h=(g+h)/2),d<y&&(y=d=(y+d)/2),t(m,g,y,h,d))}return u.round=function(m){return arguments.length?(e=!!m,u):e},u.size=function(m){return arguments.length?(r=+m[0],n=+m[1],u):[r,n]},u.tile=function(m){return arguments.length?(t=jo(m),u):t},u.padding=function(m){return arguments.length?u.paddingInner(m).paddingOuter(m):u.paddingInner()},u.paddingInner=function(m){return arguments.length?(i=typeof m=="function"?m:Ne(+m),u):i},u.paddingOuter=function(m){return arguments.length?u.paddingTop(m).paddingRight(m).paddingBottom(m).paddingLeft(m):u.paddingTop()},u.paddingTop=function(m){return arguments.length?(s=typeof m=="function"?m:Ne(+m),u):s},u.paddingRight=function(m){return arguments.length?(l=typeof m=="function"?m:Ne(+m),u):l},u.paddingBottom=function(m){return arguments.length?(a=typeof m=="function"?m:Ne(+m),u):a},u.paddingLeft=function(m){return arguments.length?(f=typeof m=="function"?m:Ne(+m),u):f},u}function me(t){return function(){return t}}var Mr=1e-12,Xo=Math.PI,xy=Xo/2,vy=2*Xo;var Ar=Math.PI,Cr=2*Ar,pe=1e-6,Ws=Cr-pe;function Zo(t){this._+=t[0];for(let e=1,r=t.length;e<r;++e)this._+=arguments[e]+t[e]}function zs(t){let e=Math.floor(t);if(!(e>=0))throw new Error(`invalid digits: ${t}`);if(e>15)return Zo;let r=10**e;return function(n){this._+=n[0];for(let o=1,i=n.length;o<i;++o)this._+=Math.round(arguments[o]*r)/r+n[o]}}var ce=class{constructor(e){this._x0=this._y0=this._x1=this._y1=null,this._="",this._append=e==null?Zo:zs(e)}moveTo(e,r){this._append`M${this._x0=this._x1=+e},${this._y0=this._y1=+r}`}closePath(){this._x1!==null&&(this._x1=this._x0,this._y1=this._y0,this._append`Z`)}lineTo(e,r){this._append`L${this._x1=+e},${this._y1=+r}`}quadraticCurveTo(e,r,n,o){this._append`Q${+e},${+r},${this._x1=+n},${this._y1=+o}`}bezierCurveTo(e,r,n,o,i,s){this._append`C${+e},${+r},${+n},${+o},${this._x1=+i},${this._y1=+s}`}arcTo(e,r,n,o,i){if(e=+e,r=+r,n=+n,o=+o,i=+i,i<0)throw new Error(`negative radius: ${i}`);let s=this._x1,l=this._y1,a=n-e,f=o-r,u=s-e,p=l-r,m=u*u+p*p;if(this._x1===null)this._append`M${this._x1=e},${this._y1=r}`;else if(m>pe)if(!(Math.abs(p*a-f*u)>pe)||!i)this._append`L${this._x1=e},${this._y1=r}`;else{let c=n-s,g=o-l,y=a*a+f*f,h=c*c+g*g,d=Math.sqrt(y),b=Math.sqrt(m),S=i*Math.tan((Ar-Math.acos((y+m-h)/(2*d*b)))/2),V=S/b,v=S/d;Math.abs(V-1)>pe&&this._append`L${e+V*u},${r+V*p}`,this._append`A${i},${i},0,0,${+(p*c>u*g)},${this._x1=e+v*a},${this._y1=r+v*f}`}}arc(e,r,n,o,i,s){if(e=+e,r=+r,n=+n,s=!!s,n<0)throw new Error(`negative radius: ${n}`);let l=n*Math.cos(o),a=n*Math.sin(o),f=e+l,u=r+a,p=1^s,m=s?o-i:i-o;this._x1===null?this._append`M${f},${u}`:(Math.abs(this._x1-f)>pe||Math.abs(this._y1-u)>pe)&&this._append`L${f},${u}`,n&&(m<0&&(m=m%Cr+Cr),m>Ws?this._append`A${n},${n},0,1,${p},${e-l},${r-a}A${n},${n},0,1,${p},${this._x1=f},${this._y1=u}`:m>pe&&this._append`A${n},${n},0,${+(m>=Ar)},${p},${this._x1=e+n*Math.cos(i)},${this._y1=r+n*Math.sin(i)}`)}rect(e,r,n,o){this._append`M${this._x0=this._x1=+e},${this._y0=this._y1=+r}h${n=+n}v${+o}h${-n}Z`}toString(){return this._}};function Qo(){return new ce}Qo.prototype=ce.prototype;function Jo(t){let e=3;return t.digits=function(r){if(!arguments.length)return e;if(r==null)e=null;else{let n=Math.floor(r);if(!(n>=0))throw new RangeError(`invalid digits: ${r}`);e=n}return t},()=>new ce(e)}var Ay=Array.prototype.slice;function ei(t){return typeof t=="object"&&"length"in t?t:Array.from(t)}function ti(t){this._context=t}ti.prototype={areaStart:function(){this._line=0},areaEnd:function(){this._line=NaN},lineStart:function(){this._point=0},lineEnd:function(){(this._line||this._line!==0&&this._point===1)&&this._context.closePath(),this._line=1-this._line},point:function(t,e){switch(t=+t,e=+e,this._point){case 0:this._point=1,this._line?this._context.lineTo(t,e):this._context.moveTo(t,e);break;case 1:this._point=2;default:this._context.lineTo(t,e);break}}};function ri(t){return new ti(t)}function ni(t){return t[0]}function oi(t){return t[1]}function Pr(t,e){var r=me(!0),n=null,o=ri,i=null,s=Jo(l);t=typeof t=="function"?t:t===void 0?ni:me(t),e=typeof e=="function"?e:e===void 0?oi:me(e);function l(a){var f,u=(a=ei(a)).length,p,m=!1,c;for(n==null&&(i=o(c=s())),f=0;f<=u;++f)!(f<u&&r(p=a[f],f,a))===m&&((m=!m)?i.lineStart():i.lineEnd()),m&&i.point(+t(p,f,a),+e(p,f,a));if(c)return i=null,c+""||null}return l.x=function(a){return arguments.length?(t=typeof a=="function"?a:me(+a),l):t},l.y=function(a){return arguments.length?(e=typeof a=="function"?a:me(+a),l):e},l.defined=function(a){return arguments.length?(r=typeof a=="function"?a:me(!!a),l):r},l.curve=function(a){return arguments.length?(o=a,n!=null&&(i=o(n)),l):o},l.context=function(a){return arguments.length?(a==null?n=i=null:i=o(n=a),l):n},l}function ii(t,e,r){t._context.bezierCurveTo(t._x1+t._k*(t._x2-t._x0),t._y1+t._k*(t._y2-t._y0),t._x2+t._k*(t._x1-e),t._y2+t._k*(t._y1-r),t._x2,t._y2)}function Yt(t,e){this._context=t,this._k=(1-e)/6}Yt.prototype={areaStart:function(){this._line=0},areaEnd:function(){this._line=NaN},lineStart:function(){this._x0=this._x1=this._x2=this._y0=this._y1=this._y2=NaN,this._point=0},lineEnd:function(){switch(this._point){case 2:this._context.lineTo(this._x2,this._y2);break;case 3:ii(this,this._x1,this._y1);break}(this._line||this._line!==0&&this._point===1)&&this._context.closePath(),this._line=1-this._line},point:function(t,e){switch(t=+t,e=+e,this._point){case 0:this._point=1,this._line?this._context.lineTo(t,e):this._context.moveTo(t,e);break;case 1:this._point=2,this._x1=t,this._y1=e;break;case 2:this._point=3;default:ii(this,t,e);break}this._x0=this._x1,this._x1=this._x2,this._x2=t,this._y0=this._y1,this._y1=this._y2,this._y2=e}};var Iy=function t(e){function r(n){return new Yt(n,e)}return r.tension=function(n){return t(+n)},r}(0);function js(t,e,r){var n=t._x1,o=t._y1,i=t._x2,s=t._y2;if(t._l01_a>Mr){var l=2*t._l01_2a+3*t._l01_a*t._l12_a+t._l12_2a,a=3*t._l01_a*(t._l01_a+t._l12_a);n=(n*l-t._x0*t._l12_2a+t._x2*t._l01_2a)/a,o=(o*l-t._y0*t._l12_2a+t._y2*t._l01_2a)/a}if(t._l23_a>Mr){var f=2*t._l23_2a+3*t._l23_a*t._l12_a+t._l12_2a,u=3*t._l23_a*(t._l23_a+t._l12_a);i=(i*f+t._x1*t._l23_2a-e*t._l12_2a)/u,s=(s*f+t._y1*t._l23_2a-r*t._l12_2a)/u}t._context.bezierCurveTo(n,o,i,s,t._x2,t._y2)}function si(t,e){this._context=t,this._alpha=e}si.prototype={areaStart:function(){this._line=0},areaEnd:function(){this._line=NaN},lineStart:function(){this._x0=this._x1=this._x2=this._y0=this._y1=this._y2=NaN,this._l01_a=this._l12_a=this._l23_a=this._l01_2a=this._l12_2a=this._l23_2a=this._point=0},lineEnd:function(){switch(this._point){case 2:this._context.lineTo(this._x2,this._y2);break;case 3:this.point(this._x2,this._y2);break}(this._line||this._line!==0&&this._point===1)&&this._context.closePath(),this._line=1-this._line},point:function(t,e){if(t=+t,e=+e,this._point){var r=this._x2-t,n=this._y2-e;this._l23_a=Math.sqrt(this._l23_2a=Math.pow(r*r+n*n,this._alpha))}switch(this._point){case 0:this._point=1,this._line?this._context.lineTo(t,e):this._context.moveTo(t,e);break;case 1:this._point=2;break;case 2:this._point=3;default:js(this,t,e);break}this._l01_a=this._l12_a,this._l12_a=this._l23_a,this._l01_2a=this._l12_2a,this._l12_2a=this._l23_2a,this._x0=this._x1,this._x1=this._x2,this._x2=t,this._y0=this._y1,this._y1=this._y2,this._y2=e}};var Dr=function t(e){function r(n){return e?new si(n,e):new Yt(n,0)}return r.alpha=function(n){return t(+n)},r}(.5);var Xt=!1,Fr=typeof window<"u"&&window.matchMedia?window.matchMedia("(prefers-reduced-motion: reduce)"):null;Fr&&(Xt=Fr.matches,Fr.addEventListener?.("change",t=>{Xt=t.matches}));function ai(t,e,r={}){if(Xt){let i=[];return(e.x!==void 0||e.y!==void 0)&&i.push(`translate(${e.x??0}px, ${e.y??0}px)`),e.scale!==void 0&&i.push(`scale(${e.scale})`),e.rotate!==void 0&&i.push(`rotate(${e.rotate}deg)`),i.length&&(t.style.transform=i.join(" ")),e.opacity!==void 0&&(t.style.opacity=String(e.opacity)),{finished:Promise.resolve()}}let n={};e.x!==void 0&&(n.x=e.x),e.y!==void 0&&(n.y=e.y),e.scale!==void 0&&(n.scale=e.scale),e.rotate!==void 0&&(n.rotate=e.rotate),e.opacity!==void 0&&(n.opacity=e.opacity);let o=r.spring?{easing:U(r.spring)}:{duration:r.duration??.35,easing:r.easing??[.2,.7,.2,1]};return Sr(t,n,o)}function Us(t,e,r={}){return ai(t,e,{spring:{stiffness:r.stiffness??180,damping:r.damping??16,mass:r.mass??1}})}function Hs(t,e,r,n={}){let o=Ee(t,a=>a.children).sum(a=>typeof a.value=="number"?a.value:0).sort((a,f)=>(f.value??0)-(a.value??0)),s=wr().tile(et.ratio(n.ratio??1.618)).size([e,r]).paddingInner(n.paddingInner??1).paddingOuter(n.paddingOuter??0).round(!0)(o),l=[];return s.each(a=>{l.push({x:a.x0,y:a.y0,w:a.x1-a.x0,h:a.y1-a.y0,depth:a.depth,node:a.data})}),l}function Ys(t,e=.5){return Pr().x(n=>n.x).y(n=>n.y).curve(Dr.alpha(e))(t)??""}var Xs={flip:ai,spring:Us,squarify:Hs,smoothPath:Ys,reducedMotion(){return Xt}};return di(Zs);})();
+// Merge Tier-1 primitives into the existing window.anim (installed
+// by the hand-rolled ANIM_JS IIFE in _html.py). We copy each key
+// from MyflamesAnim.anim without overwriting the hand-rolled ones
+// that came first — the two surfaces are intentionally disjoint.
+if (typeof window !== 'undefined') {
+  window.anim = window.anim || {};
+  for (var _k in MyflamesAnim.anim) {
+    if (!(_k in window.anim)) window.anim[_k] = MyflamesAnim.anim[_k];
+  }
+  window.MyflamesTier1 = MyflamesAnim;
+}
+
+
+var teachRuntime = (function() {
+  function formatInt(n) {
+    if (!isFinite(n)) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(Math.round(n));
+  }
+  function formatBytes(b) {
+    if (!isFinite(b) || b < 0) return "—";
+    if (b >= 1024*1024*1024) return (b / (1024*1024*1024)).toFixed(2) + " GiB";
+    if (b >= 1024*1024) return (b / (1024*1024)).toFixed(2) + " MiB";
+    if (b >= 1024) return (b / 1024).toFixed(1) + " KiB";
+    return b + " B";
+  }
+  function formatMs(ms) {
+    if (!isFinite(ms)) return "—";
+    if (ms >= 1000) return (ms / 1000).toFixed(2) + " s";
+    if (ms >= 1) return ms.toFixed(1) + " ms";
+    return (ms * 1000).toFixed(1) + " µs";
+  }
+  function readControls(rootSel) {
+    var root = document.querySelector(rootSel || "section.controls");
+    var out = {};
+    if (!root) return out;
+    var els = root.querySelectorAll("input, select");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.name) continue;
+      var v;
+      if (el.type === "checkbox") v = el.checked;
+      else if (el.type === "number" || el.type === "range") v = Number(el.value);
+      else v = el.value;
+      out[el.name] = v;
+      var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+      if (pill) pill.textContent = el.value;
+    }
+    return out;
+  }
+  function wire(recompute) {
+    var els = document.querySelectorAll("section.controls input, section.controls select");
+    for (var i = 0; i < els.length; i++) {
+      els[i].addEventListener("input", recompute);
+      els[i].addEventListener("change", recompute);
+    }
+    window.__teachRecompute = recompute;
+    recompute();
+  }
+  function bootstrapFromObject(ctx) {
+    ctx = ctx || {};
+    var controls = ctx.controls || {};
+    var root = document.querySelector("section.controls");
+    if (root) {
+      var els = root.querySelectorAll("input, select");
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if (!el.name || !Object.prototype.hasOwnProperty.call(controls, el.name)) continue;
+        var v = controls[el.name];
+        if (el.type === "checkbox") {
+          el.checked = !!v;
+        } else {
+          el.value = String(v);
+        }
+        var pill = document.querySelector('[data-pill-for="' + el.name + '"]');
+        if (pill) pill.textContent = el.value;
+      }
+    }
+    // Keep the lesson's own example query — it is a pedagogical classic
+    // that matches the animated sample data (Alice, Bob, Carol, …).
+    // Only inject the operator note as context for which operator the
+    // user clicked on.
+    if (ctx.note) {
+      var note = document.querySelector(".query-card .query-note");
+      if (note) note.textContent = String(ctx.note);
+    }
+    if (typeof window.__teachRecompute === "function") {
+      window.__teachRecompute();
+    } else {
+      // Legacy fallback: try to trigger any control-driven recompute path.
+      var evt;
+      if (typeof Event === "function") evt = new Event("input", { bubbles: true });
+      var root2 = document.querySelector("section.controls");
+      if (evt && root2) {
+        var first = root2.querySelector("input, select");
+        if (first) first.dispatchEvent(evt);
+      }
+    }
+  }
+
+  // =====================================================================
+  // Playback controller — unified toolbar, scrubber, and phase navigation.
+  //
+  // One state machine, one RAF loop, one seek() primitive that every entry
+  // point (Play, Pause, Reset, scrubber drag, phase click) routes through.
+  //
+  // State diagram:
+  //   IDLE  → Play    → PLAYING
+  //   PLAYING → Pause  → PAUSED
+  //   PAUSED  → Resume → PLAYING  (continues from currentMs)
+  //   PAUSED  → Play   → PLAYING  (restart from 0)
+  //   *       → seek() → SEEKED   (paused at targetMs, Resume → PLAYING)
+  //   *       → Reset  → IDLE
+  // =====================================================================
+  var _ctrl = {
+    build: null,         // fn → returns fresh anim.timeline()
+    reset: null,         // fn → clears stage to ready state
+    legacyPlay: null,    // fn → old-style play callback
+    tl: null,            // current anim.timeline()
+    phase: "idle",       // "idle" | "playing" | "paused" | "seeked"
+    seekMs: 0,           // ms position we seeked to (valid when phase=seeked)
+    loopEnabled: false,
+    rafId: 0,            // current RAF id (0 = none)
+    dragging: false,     // true while scrubber thumb is held
+    // Phase nav
+    phaseContainer: null,
+    marks: []
+  };
+  // User-calibrated baseline: the dropdown's "1×" maps to this internal
+  // speed. Started at 0.52 (original); user asked for 40% slower →
+  // 0.312 felt too slow for state-swap lessons (icp etc.) where flat
+  // tl.delay times then stretched to 3× wallclock and looked frozen.
+  // 0.42 is a compromise: ~20% slower than the original 0.52 baseline
+  // — tweened animations still breathe, stepped ones stay responsive.
+  var BASELINE_SPEED_SCALE = 0.42;
+
+  // --- DOM refs (resolved once in wireToolbar) ---
+  var _dom = {};
+
+  // --- Helpers ---
+  function _formatSec(ms) { return (Math.max(0, ms) / 1000).toFixed(1) + "s"; }
+
+  function _setBtnLabel(btn, txt) {
+    if (!btn) return;
+    var lbl = btn.querySelector(".btn-label");
+    if (lbl) lbl.textContent = txt; else btn.textContent = txt;
+  }
+
+  function _syncUI() {
+    // Button label
+    var label = _ctrl.phase === "idle" ? "Play"
+              : _ctrl.phase === "playing" ? "Pause"
+              : "Resume";
+    _setBtnLabel(_dom.btnPlay, label);
+    // Scrubber + time labels
+    if (_ctrl.tl && _dom.scrubber) {
+      var total = _ctrl.tl.getTotalDuration();
+      if (_dom.timeTot) _dom.timeTot.textContent = _formatSec(total);
+      if (total > 0) {
+        var cur = _ctrl.tl.getCurrentTime();
+        _dom.scrubber.value = String(Math.round(Math.min(1, cur / total) * 1000));
+        if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(cur);
+      }
+    } else {
+      if (_dom.scrubber) _dom.scrubber.value = "0";
+      if (_dom.timeCur) _dom.timeCur.textContent = "0.0s";
+    }
+    // Loop button
+    if (_dom.btnLoop) {
+      _setBtnLabel(_dom.btnLoop, _ctrl.loopEnabled ? "Loop: On" : "Loop: Off");
+      _dom.btnLoop.setAttribute("aria-pressed", _ctrl.loopEnabled ? "true" : "false");
+    }
+  }
+
+  // --- Single RAF loop: runs only while phase = "playing" ---
+  // Uses a generation counter so stale loops from previous playbacks die.
+  var _tickGen = 0;
+  function _tick(gen) {
+    if (gen !== _tickGen) return;                // stale loop — die
+    if (_ctrl.phase !== "playing") { _ctrl.rafId = 0; return; }
+    if (_ctrl.tl && _dom.scrubber && !_ctrl.dragging) {
+      var total = _ctrl.tl.getTotalDuration();
+      if (total > 0) {
+        var cur = _ctrl.tl.getCurrentTime();
+        var frac = Math.min(1, cur / total);
+        _dom.scrubber.value = String(Math.round(frac * 1000));
+        if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(cur);
+        _updatePhaseHighlight(cur);
+      }
+    }
+    _ctrl.rafId = requestAnimationFrame(function() { _tick(gen); });
+  }
+  function _startTick() {
+    _tickGen++;
+    var gen = _tickGen;
+    _ctrl.rafId = requestAnimationFrame(function() { _tick(gen); });
+  }
+
+  // --- Core operations ---
+
+  // Fully stop everything and return to idle.  Does NOT call reset().
+  function _stopAll() {
+    if (_ctrl.tl) _ctrl.tl.stop();
+    _ctrl.tl = null;
+    _ctrl.phase = "idle";
+    _ctrl.seekMs = 0;
+    anim.setPaused(false);
+    _tickGen++;                                    // kill any stale _tick loop
+    if (_ctrl.rafId) { cancelAnimationFrame(_ctrl.rafId); _ctrl.rafId = 0; }
+  }
+
+  // Build a fresh timeline, apply all state up to `ms`, leave paused there.
+  // This is the single seek primitive — scrubber, phase-nav, and toolbar
+  // all route through here.
+  function _seek(ms) {
+    _stopAll();
+    if (_ctrl.reset) _ctrl.reset();
+    if (!_ctrl.build) return;
+    _ctrl.tl = _ctrl.build();
+    var total = _ctrl.tl.getTotalDuration();
+    if (ms > total) ms = total;
+    if (ms < 0) ms = 0;
+    _ctrl.tl.fastForwardTo(ms);
+    _ctrl.phase = "seeked";
+    _ctrl.seekMs = ms;
+    anim.setPaused(true);
+    _renderPhaseNav();
+    _syncUI();
+    // Override scrubber to exact seek position
+    if (_dom.scrubber && total > 0) {
+      _dom.scrubber.value = String(Math.round((ms / total) * 1000));
+    }
+    if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(ms);
+  }
+
+  // Start playing from `ms` (0 for fresh start).
+  function _playFrom(ms) {
+    _stopAll();
+    if (_ctrl.reset) _ctrl.reset();
+    if (!_ctrl.build) return;
+    _ctrl.tl = _ctrl.build();
+    _ctrl.phase = "playing";
+    _ctrl.seekMs = 0;
+    anim.setPaused(false);
+    _renderPhaseNav();
+    _syncUI();
+    if (ms > 0) {
+      _ctrl.tl.playFrom(ms, _onDone);
+    } else {
+      _ctrl.tl.play(_onDone);
+    }
+    _startTick();
+  }
+
+  function _onDone() {
+    if (_ctrl.loopEnabled) { _playFrom(0); return; }
+    _ctrl.phase = "idle";
+    if (_ctrl.rafId) { cancelAnimationFrame(_ctrl.rafId); _ctrl.rafId = 0; }
+    anim.setPaused(false);
+    _syncUI();
+    // Pin scrubber to end
+    if (_ctrl.tl && _dom.scrubber) _dom.scrubber.value = "1000";
+    if (_ctrl.tl && _dom.timeCur) _dom.timeCur.textContent = _formatSec(_ctrl.tl.getTotalDuration());
+  }
+
+  // --- Phase nav rendering & highlighting ---
+  function _renderPhaseNav() {
+    var c = _ctrl.phaseContainer;
+    if (!c || !_ctrl.tl || !_ctrl.tl.getMarks) return;
+    _ctrl.marks = _ctrl.tl.getMarks();
+    c.innerHTML = '<div class="phase-nav-title">Phases</div>';
+    for (var i = 0; i < _ctrl.marks.length; i++) {
+      (function(idx) {
+        var item = document.createElement("div");
+        item.className = "phase-item";
+        item.setAttribute("data-phase-idx", idx);
+        item.innerHTML = '<span class="phase-dot"></span>' + _ctrl.marks[idx].name;
+        item.addEventListener("click", function() {
+          _seek(_ctrl.marks[idx].ms);
+          _highlightPhaseIdx(idx);
+        });
+        c.appendChild(item);
+      })(i);
+    }
+    _highlightPhaseIdx(0);
+  }
+
+  function _highlightPhaseIdx(activeIdx) {
+    var c = _ctrl.phaseContainer;
+    if (!c) return;
+    var items = c.querySelectorAll(".phase-item");
+    for (var i = 0; i < items.length; i++) {
+      var cls = "phase-item";
+      if (i === activeIdx) cls += " active";
+      else if (i < activeIdx) cls += " done";
+      items[i].className = cls;
+    }
+  }
+
+  function _updatePhaseHighlight(currentMs) {
+    if (!_ctrl.marks.length) return;
+    var active = 0;
+    for (var i = _ctrl.marks.length - 1; i >= 0; i--) {
+      if (currentMs >= _ctrl.marks[i].ms) { active = i; break; }
+    }
+    _highlightPhaseIdx(active);
+  }
+
+  // --- Public API: wireToolbar ---
+  function wireToolbar(optsOrPlay, maybeReset) {
+    _dom.btnPlay  = document.getElementById("btn-play");
+    _dom.btnReset = document.getElementById("btn-reset");
+    _dom.btnLoop  = document.getElementById("btn-loop");
+    _dom.selSpeed = document.getElementById("sel-speed");
+    _dom.scrubber = document.getElementById("scrubber");
+    _dom.timeCur  = document.getElementById("scrubber-time-current");
+    _dom.timeTot  = document.getElementById("scrubber-time-total");
+
+    if (typeof optsOrPlay === "function") {
+      _ctrl.legacyPlay = optsOrPlay;
+      _ctrl.reset = maybeReset;
+    } else if (optsOrPlay && typeof optsOrPlay === "object") {
+      _ctrl.build = optsOrPlay.build;
+      _ctrl.reset = optsOrPlay.reset;
+    }
+
+    // --- Play / Pause / Resume button ---
+    if (_dom.btnPlay) _dom.btnPlay.addEventListener("click", function() {
+      switch (_ctrl.phase) {
+        case "idle":
+          if (_ctrl.legacyPlay) { _ctrl.legacyPlay(); return; }
+          _playFrom(0);
+          break;
+        case "playing":
+          // Pause
+          _ctrl.phase = "paused";
+          anim.setPaused(true);
+          _syncUI();
+          break;
+        case "paused":
+          // Resume from current position
+          _ctrl.phase = "playing";
+          anim.setPaused(false);
+          _syncUI();
+          _startTick();
+          break;
+        case "seeked":
+          // Resume from seeked position
+          _playFrom(_ctrl.seekMs);
+          break;
+      }
+    });
+
+    // --- Reset button ---
+    if (_dom.btnReset) _dom.btnReset.addEventListener("click", function() {
+      _stopAll();
+      if (_ctrl.reset) _ctrl.reset();
+      _syncUI();
+    });
+
+    // --- Loop button ---
+    if (_dom.btnLoop) _dom.btnLoop.addEventListener("click", function() {
+      _ctrl.loopEnabled = !_ctrl.loopEnabled;
+      _syncUI();
+    });
+
+    // --- Speed dropdown ---
+    function applyUiSpeed() {
+      if (!_dom.selSpeed) return;
+      anim.setSpeed(Number(_dom.selSpeed.value) * BASELINE_SPEED_SCALE);
+    }
+    if (_dom.selSpeed) _dom.selSpeed.addEventListener("change", applyUiSpeed);
+    if (_dom.selSpeed) applyUiSpeed();
+
+    // --- Scrubber (range input) ---
+    if (_dom.scrubber && _ctrl.build) {
+      _dom.scrubber.addEventListener("mousedown",  function() { _ctrl.dragging = true; });
+      _dom.scrubber.addEventListener("touchstart", function() { _ctrl.dragging = true; });
+      _dom.scrubber.addEventListener("input", function() {
+        var frac = Number(_dom.scrubber.value) / 1000;
+        if (!_ctrl.build) return;
+        // _seek rebuilds the timeline internally; we need total from a
+        // fresh build to convert frac → ms. Use _seek(0) first to get a
+        // timeline, read its total, then re-seek to the real target.
+        // Optimisation: if we already have a tl, reuse its totalDuration.
+        var total;
+        if (_ctrl.tl) {
+          total = _ctrl.tl.getTotalDuration();
+        } else {
+          // No timeline yet — do a throwaway seek to 0 to get one
+          _seek(0);
+          if (!_ctrl.tl) return;
+          total = _ctrl.tl.getTotalDuration();
+        }
+        _seek(frac * total);
+      });
+      function endDrag() { _ctrl.dragging = false; }
+      _dom.scrubber.addEventListener("change",  endDrag);
+      _dom.scrubber.addEventListener("mouseup",  endDrag);
+      _dom.scrubber.addEventListener("touchend", endDrag);
+    }
+
+    // Legacy done callback
+    window._teachOnDone = function() { _onDone(); };
+
+    _syncUI();
+  }
+
+  // --- Public API: wirePhaseNav ---
+  function wirePhaseNav(containerId, opts) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    _ctrl.phaseContainer = container;
+    // build/reset already set by wireToolbar; opts here are redundant but
+    // kept for backward compat.
+    if (opts && opts.build && !_ctrl.build) _ctrl.build = opts.build;
+    if (opts && opts.reset && !_ctrl.reset) _ctrl.reset = opts.reset;
+    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
+  }
+
+  // Backward-compat aliases used by older code paths
+  function _updatePhaseNav(tl) { _renderPhaseNav(); }
+  function _tickPhaseNav(currentMs) { _updatePhaseHighlight(currentMs); }
+
+  function animationDone() {
+    if (typeof window._teachOnDone === "function") window._teachOnDone();
+  }
+
+  return {
+    formatInt: formatInt,
+    formatBytes: formatBytes,
+    formatMs: formatMs,
+    readControls: readControls,
+    wire: wire,
+    bootstrapFromObject: bootstrapFromObject,
+    wireToolbar: wireToolbar,
+    wirePhaseNav: wirePhaseNav,
+    _updatePhaseNav: _updatePhaseNav,
+    _tickPhaseNav: _tickPhaseNav,
+    animationDone: animationDone
+  };
+})();
+
+// =============================================================================
+// Constants & cost model
+// =============================================================================
+
+// Real table aliases from the 7-table example query. Extra synthetic
+// names cover N > 7.
+var TABLE_NAMES = ["u", "o", "li", "p", "s", "c", "w", "t8", "t9", "ta"];
+var TABLE_FULL = {
+  u: "users", o: "orders", li: "line_items",
+  p: "products", s: "suppliers", c: "categories", w: "warehouses",
+  t8: "t8", t9: "t9", ta: "t10"
+};
+
+// Join edges from the example query (which table joins to which).
+// The query graph is a tree: u — o — li — p — s, with p — c and li — w.
+// For N != 7 we truncate or extend (chain) below.
+var BASE_JOIN_EDGES = [
+  ["u", "o"], ["o", "li"], ["li", "p"], ["p", "s"], ["p", "c"], ["li", "w"]
+];
+
+function joinEdgesFor(N) {
+  var names = TABLE_NAMES.slice(0, N);
+  var set = {};
+  for (var i = 0; i < names.length; i++) set[names[i]] = true;
+  var edges = [];
+  // Keep BASE edges whose both endpoints are in the first N tables.
+  for (var j = 0; j < BASE_JOIN_EDGES.length; j++) {
+    var e = BASE_JOIN_EDGES[j];
+    if (set[e[0]] && set[e[1]]) edges.push(e);
+  }
+  // For N > 7, chain extra synthetic tables off the last real one.
+  var prev = "w";
+  for (var k = 7; k < N; k++) {
+    edges.push([prev, names[k]]);
+    prev = names[k];
+  }
+  // For N < 4, ensure we still have edges to draw (chain the first N tables).
+  if (edges.length === 0 && N >= 2) {
+    for (var m = 0; m < N - 1; m++) edges.push([names[m], names[m + 1]]);
+  }
+  return edges;
+}
+
+// Stage geometry.
+var W = 820, H = 460;
+var TABLE_ROW_Y = 56;
+var FINAL_PLAN_Y = 408;
+
+// ---- Factorial / permutation helpers (greedy_search cost) ----
+function fact(n) {
+  if (n <= 1) return 1;
+  var r = 1;
+  for (var i = 2; i <= n; i++) {
+    r *= i;
+    if (r > 1e15) return 1e15;
+  }
+  return r;
+}
+function perm(a, b) {
+  if (b <= 0) return 1;
+  if (b > a) b = a;
+  var r = 1;
+  for (var i = 0; i < b; i++) {
+    r *= (a - i);
+    if (r > 1e15) return 1e15;
+  }
+  return r;
+}
+
+// greedy_search plan count, summed across its N commit steps.
+function plansEvaluated(N, d) {
+  var total = 0;
+  for (var i = 0; i < N; i++) {
+    var remaining = N - i;
+    total += perm(remaining, Math.min(d, remaining));
+    if (total > 1e15) return 1e15;
+  }
+  return total;
+}
+
+function applyPruning(plans, pruneLevel) {
+  if (pruneLevel === 0) return { plans: plans, ratio: 0 };
+  var ratio = 0.75;
+  return { plans: Math.max(1, Math.round(plans * (1 - ratio))), ratio: ratio };
+}
+
+function bigOLabel(N, d) {
+  if (d >= N) return "O(N!) — exhaustive enumeration";
+  if (d === 1) return "O(N²) — pure greedy, no lookahead";
+  return "O(N · N^" + d + " / " + d + ") — depth-" + d + " lookahead";
+}
+
+// =============================================================================
+// Hypergraph (DPhyp) cost model
+// =============================================================================
+// DPhyp enumerates connected subgraphs (CSGs) of the query graph plus
+// complement-pairs. Worst case is O(3^N) for clique queries; for
+// tree-shaped queries (our example) it's O(N^3). Capped at
+// optimizer_max_subgraph_pairs (default 100,000).
+var OPTIMIZER_MAX_SUBGRAPH_PAIRS = 100000;
+
+function dphypTreePairs(N) {
+  // Empirical: for a tree-shaped query graph, DPhyp examines roughly
+  // C(N, 2) + (N-2)*(N-1)/2 + ... ≈ N^3 / 6 pairs. Use N^3 / 6 as the
+  // teaching approximation — same order of magnitude as the real algo,
+  // and the lesson is about regimes not exact counts.
+  return Math.max(N, Math.round((N * N * N) / 6));
+}
+
+function dphypClique(N) {
+  // Worst case: complete graph → 3^N pairs.
+  return Math.min(Math.pow(3, N), 1e15);
+}
+
+function bigOLabelDPhyp() {
+  return "O(3^N) worst case, O(N³) on tree query (current example)";
+}
+
+// =============================================================================
+// Stage rendering — shared chrome
+// =============================================================================
+
+var stageState = {
+  svg: null, plansCounter: null, finalPlanText: null,
+  // Greedy mode
+  tree: null,
+  // Hypergraph mode
+  graph: null,
+  // Shared
+  tableCards: [],
+  algo: "greedy"
+};
+
+function clearStage() {
+  var svg = document.getElementById("planner-svg");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  stageState.svg = svg;
+  stageState.tableCards = [];
+  stageState.tree = null;
+  stageState.graph = null;
+  return svg;
+}
+
+function drawTablesStrip(svg, N) {
+  var stripBg = anim.svgEl("rect", {
+    x: 20, y: TABLE_ROW_Y - 22, width: W - 40, height: 40,
+    rx: 8, fill: "#eef4ff", stroke: "#c7d8f0"
+  });
+  svg.appendChild(stripBg);
+  var stripLabel = anim.svgEl("text", {
+    x: 28, y: TABLE_ROW_Y - 5, "font-size": 10, "font-weight": 700,
+    fill: "#1e3a8a", "letter-spacing": "0.4"
+  });
+  stripLabel.textContent = "TABLES IN QUERY (FROM-list)";
+  svg.appendChild(stripLabel);
+
+  var tables = TABLE_NAMES.slice(0, N);
+  stageState.tableCards = [];
+  var cardW = Math.min(56, (W - 80) / N);
+  var totalW = cardW * N + (N - 1) * 6;
+  var startX = (W - totalW) / 2;
+  for (var i = 0; i < N; i++) {
+    var x = startX + i * (cardW + 6);
+    var rect = anim.svgEl("rect", {
+      x: x, y: TABLE_ROW_Y, width: cardW, height: 22, rx: 5,
+      fill: "#ffffff", stroke: "#3b82f6", "stroke-width": 1.5
+    });
+    svg.appendChild(rect);
+    var t = anim.svgEl("text", {
+      x: x + cardW / 2, y: TABLE_ROW_Y + 15,
+      "text-anchor": "middle", "font-size": 11,
+      "font-weight": 700, fill: "#1e3a8a",
+      "font-family": "ui-monospace, Menlo, monospace"
+    });
+    t.textContent = tables[i];
+    svg.appendChild(t);
+    stageState.tableCards.push({ rect: rect, label: t, name: tables[i] });
+  }
+}
+
+function drawCounter(svg, title) {
+  var counterBg = anim.svgEl("rect", {
+    x: W - 220, y: 12, width: 200, height: 32, rx: 8,
+    fill: "#0f172a", stroke: "#1e293b"
+  });
+  svg.appendChild(counterBg);
+  var counterLbl = anim.svgEl("text", {
+    x: W - 212, y: 26, "font-size": 9, fill: "#94a3b8",
+    "font-weight": 700, "letter-spacing": "0.5"
+  });
+  counterLbl.textContent = title;
+  svg.appendChild(counterLbl);
+  var counterVal = anim.svgEl("text", {
+    x: W - 212, y: 39, "font-size": 14, fill: "#fde725",
+    "font-weight": 700,
+    "font-family": "ui-monospace, Menlo, monospace"
+  });
+  counterVal.textContent = "0";
+  svg.appendChild(counterVal);
+  stageState.plansCounter = counterVal;
+}
+
+function drawFinalPlanStrip(svg, label) {
+  var finalBg = anim.svgEl("rect", {
+    x: 20, y: FINAL_PLAN_Y - 18, width: W - 40, height: 36, rx: 8,
+    fill: "#f0fdf4", stroke: "#86efac"
+  });
+  svg.appendChild(finalBg);
+  var finalLbl = anim.svgEl("text", {
+    x: 28, y: FINAL_PLAN_Y - 3, "font-size": 10, "font-weight": 700,
+    fill: "#065f46", "letter-spacing": "0.4"
+  });
+  finalLbl.textContent = label;
+  svg.appendChild(finalLbl);
+  var finalText = anim.svgEl("text", {
+    x: W / 2, y: FINAL_PLAN_Y + 13, "text-anchor": "middle",
+    "font-size": 13, "font-weight": 700, fill: "#065f46",
+    "font-family": "ui-monospace, Menlo, monospace", opacity: 0.35
+  });
+  finalText.textContent = "— (run search to see) —";
+  svg.appendChild(finalText);
+  stageState.finalPlanText = finalText;
+}
+
+// =============================================================================
+// Greedy mode — search tree of partial orderings (left-deep)
+// =============================================================================
+
+var SAMPLE_BREADTH = 4;
+var SAMPLE_DEPTH = 3;
+var TREE_TOP_Y = 110;
+var TREE_BOT_Y = 360;
+
+function buildSampleTreeNodes(N, depth) {
+  var tables = TABLE_NAMES.slice(0, N);
+  var levels = [];
+  var maxLevels = Math.min(SAMPLE_DEPTH, depth, N);
+  var allNodes = [];
+  var idCounter = 0;
+  var lvl0 = [];
+  for (var i = 0; i < Math.min(SAMPLE_BREADTH, tables.length); i++) {
+    var node = {
+      id: idCounter++, parentId: null,
+      label: tables[i], used: [tables[i]],
+      onPath: (i === 0)
+    };
+    lvl0.push(node);
+    allNodes.push(node);
+  }
+  levels.push(lvl0);
+  for (var lv = 1; lv < maxLevels; lv++) {
+    var prevLevel = levels[lv - 1];
+    var thisLevel = [];
+    for (var p = 0; p < prevLevel.length; p++) {
+      var parent = prevLevel[p];
+      var remainingTables = tables.filter(function(t) { return parent.used.indexOf(t) < 0; });
+      var fan = parent.onPath ? Math.min(SAMPLE_BREADTH, remainingTables.length)
+                              : Math.min(2, remainingTables.length);
+      for (var c = 0; c < fan; c++) {
+        var nextTable = remainingTables[c];
+        var child = {
+          id: idCounter++, parentId: parent.id,
+          label: nextTable,
+          used: parent.used.concat([nextTable]),
+          onPath: parent.onPath && (c === 0)
+        };
+        thisLevel.push(child);
+        allNodes.push(child);
+      }
+    }
+    levels.push(thisLevel);
+  }
+
+  var levelGap = (TREE_BOT_Y - TREE_TOP_Y) / Math.max(1, levels.length - 1 || 1);
+  for (var lv2 = 0; lv2 < levels.length; lv2++) {
+    var lvlNodes = levels[lv2];
+    var yPos = TREE_TOP_Y + lv2 * levelGap;
+    for (var n = 0; n < lvlNodes.length; n++) {
+      lvlNodes[n].x = ((n + 1) / (lvlNodes.length + 1)) * (W - 80) + 40;
+      lvlNodes[n].y = yPos;
+    }
+  }
+  return { levels: levels, allNodes: allNodes };
+}
+
+function drawTreeSkeleton(svg, tree) {
+  var g = anim.svgEl("g", { id: "tree-g" });
+  svg.appendChild(g);
+  for (var lv = 1; lv < tree.levels.length; lv++) {
+    var lvl = tree.levels[lv];
+    for (var i = 0; i < lvl.length; i++) {
+      var node = lvl[i];
+      var parent = tree.allNodes.find(function(n) { return n.id === node.parentId; });
+      if (!parent) continue;
+      var line = anim.svgEl("line", {
+        x1: parent.x, y1: parent.y + 8,
+        x2: node.x, y2: node.y - 8,
+        stroke: "#cbd5e1", "stroke-width": 1, opacity: 0.6
+      });
+      g.appendChild(line);
+      node.edge = line;
+    }
+  }
+  for (var n = 0; n < tree.allNodes.length; n++) {
+    var nd = tree.allNodes[n];
+    var circle = anim.svgEl("circle", {
+      cx: nd.x, cy: nd.y, r: 11,
+      fill: "#f1f5f9", stroke: "#94a3b8", "stroke-width": 1.5
+    });
+    g.appendChild(circle);
+    var lbl = anim.svgEl("text", {
+      x: nd.x, y: nd.y + 3, "text-anchor": "middle",
+      "font-size": 9, "font-weight": 700, fill: "#334155",
+      "font-family": "ui-monospace, Menlo, monospace"
+    });
+    lbl.textContent = nd.label;
+    g.appendChild(lbl);
+    nd.circle = circle;
+    nd.labelEl = lbl;
+  }
+}
+
+function buildGreedyStage(N, depth) {
+  var svg = clearStage();
+  drawTablesStrip(svg, N);
+  drawCounter(svg, "PLANS EVALUATED (greedy_search)");
+
+  var treeTitle = anim.svgEl("text", {
+    x: 28, y: TREE_TOP_Y - 16,
+    "font-size": 10, "font-weight": 700, fill: "#6b7280",
+    "letter-spacing": "0.4"
+  });
+  treeTitle.textContent = "SEARCH TREE OF PARTIAL PLANS (left-deep order)";
+  svg.appendChild(treeTitle);
+
+  stageState.tree = buildSampleTreeNodes(N, Math.max(2, Math.min(SAMPLE_DEPTH, depth)));
+  drawTreeSkeleton(svg, stageState.tree);
+  drawFinalPlanStrip(svg, "CHOSEN PLAN (linear left-deep order)");
+}
+
+function resetGreedyColors() {
+  if (!stageState.tree) return;
+  for (var i = 0; i < stageState.tree.allNodes.length; i++) {
+    var nd = stageState.tree.allNodes[i];
+    nd.circle.setAttribute("fill", "#f1f5f9");
+    nd.circle.setAttribute("stroke", "#94a3b8");
+    nd.circle.setAttribute("stroke-width", 1.5);
+    nd.labelEl.setAttribute("fill", "#334155");
+    if (nd.edge) {
+      nd.edge.setAttribute("stroke", "#cbd5e1");
+      nd.edge.setAttribute("stroke-width", 1);
+      nd.edge.setAttribute("opacity", 0.6);
+    }
+  }
+}
+
+function buildGreedyTimeline(controls) {
+  var tl = anim.timeline();
+  var phaseLabel = document.getElementById("phase-label");
+  var N = controls.tables;
+  var depth = controls.search_depth;
+  var prune = controls.prune_level;
+  var tree = stageState.tree;
+  if (!tree) return tl;
+
+  var effDepth = Math.min(depth, N);
+  var totalPlans = plansEvaluated(N, effDepth);
+  var pruned = applyPruning(totalPlans, prune);
+  var finalPlanCount = pruned.plans;
+  var evaluatedSoFar = 0;
+
+  function bumpCounter(amount) {
+    evaluatedSoFar += amount;
+    if (evaluatedSoFar > finalPlanCount) evaluatedSoFar = finalPlanCount;
+    if (stageState.plansCounter) {
+      stageState.plansCounter.textContent = teachRuntime.formatInt(evaluatedSoFar);
+    }
+  }
+
+  tl.mark("Problem: pick an order for " + N + " tables");
+  tl.call(function() {
+    phaseLabel.textContent = "Problem: " + N + " tables, " + teachRuntime.formatInt(fact(N)) + " possible left-deep orderings.";
+  });
+  for (var i = 0; i < stageState.tableCards.length; i++) {
+    (function(idx) {
+      tl.call(function() {
+        var c = stageState.tableCards[idx];
+        c.rect.setAttribute("fill", "#dbeafe");
+        anim.pulse(c.rect, 3, 1, 200);
+      });
+      tl.delay(60);
+    })(i);
+  }
+  tl.delay(200);
+
+  tl.mark("Step 1: evaluate each candidate first table");
+  tl.call(function() {
+    phaseLabel.textContent = "Step 1 — best_extension_by_limited_search costs each candidate root";
+  });
+  var lvl0 = tree.levels[0];
+  for (var k = 0; k < lvl0.length; k++) {
+    (function(idx) {
+      var nd = lvl0[idx];
+      tl.call(function() {
+        nd.circle.setAttribute("fill", "#fef3c7");
+        nd.circle.setAttribute("stroke", "#d97706");
+        anim.pulse(nd.circle, 4, 1, 240);
+        bumpCounter(Math.max(1, Math.round(finalPlanCount / (lvl0.length * (tree.levels.length + 1)))));
+      });
+      tl.delay(220);
+    })(k);
+  }
+
+  tl.delay(150);
+  tl.mark("Pick lowest-cost partial plan");
+  tl.call(function() {
+    phaseLabel.textContent = "Greedy commit — lowest-cost candidate becomes the outer loop";
+    var winner = lvl0.find(function(n) { return n.onPath; });
+    if (winner) {
+      winner.circle.setAttribute("fill", "#34d399");
+      winner.circle.setAttribute("stroke", "#047857");
+      winner.circle.setAttribute("stroke-width", 2.5);
+      winner.labelEl.setAttribute("fill", "#064e3b");
+    }
+  });
+  tl.delay(280);
+
+  // Helper: a node is "reachable for evaluation" depending on prune_level.
+  //   prune=1 (default): only nodes whose every ancestor was on-path get
+  //     visited — pruned subtrees are never opened by
+  //     best_extension_by_limited_search.
+  //   prune=0 (exhaustive): every node at every level is costed.
+  function isReachable(node) {
+    if (prune === 0) return true;
+    var cur = node;
+    // Walk to root; any off-path ancestor means this subtree was pruned.
+    while (cur && cur.parentId !== null) {
+      var parent = null;
+      for (var pi = 0; pi < tree.allNodes.length; pi++) {
+        if (tree.allNodes[pi].id === cur.parentId) { parent = tree.allNodes[pi]; break; }
+      }
+      if (!parent) break;
+      if (!parent.onPath) return false;
+      cur = parent;
+    }
+    return true;
+  }
+
+  // When prune=1 we proactively grey out every never-visited node up-front
+  // so the viewer sees the "pruned forest" before the animation walks
+  // only the surviving path.
+  if (prune === 1) {
+    tl.delay(120);
+    tl.mark("optimizer_prune_level=1 — prune unreachable subtrees up-front");
+    tl.call(function() {
+      phaseLabel.textContent =
+        "optimizer_prune_level=1 — partial plans whose ancestor was already beaten are dropped without exploring their subtree";
+      for (var ai = 0; ai < tree.allNodes.length; ai++) {
+        var nd = tree.allNodes[ai];
+        if (nd.parentId === null) continue;
+        if (!isReachable(nd)) {
+          nd.circle.setAttribute("fill", "#e2e8f0");
+          nd.circle.setAttribute("stroke", "#cbd5e1");
+          nd.circle.setAttribute("stroke-width", 1);
+          nd.labelEl.setAttribute("fill", "#94a3b8");
+          if (nd.edge) {
+            nd.edge.setAttribute("stroke", "#e2e8f0");
+            nd.edge.setAttribute("opacity", 0.25);
+            nd.edge.setAttribute("stroke-dasharray", "3 3");
+          }
+        }
+      }
+    });
+    tl.delay(200);
+  }
+
+  for (var lv = 1; lv < tree.levels.length; lv++) {
+    (function(levelIdx) {
+      var levelNodes = tree.levels[levelIdx];
+      // The set we actually animate depends on prune_level.
+      var visited = levelNodes.filter(isReachable);
+      var onPath  = levelNodes.filter(function(n) { return n.onPath; });
+
+      tl.mark("Step " + (levelIdx + 1) +
+              (prune === 0
+                ? ": exhaustive — every partial plan costed"
+                : ": cost only the surviving prefix's extensions"));
+      tl.call(function() {
+        phaseLabel.textContent = (prune === 0
+          ? "Step " + (levelIdx + 1) + " (prune_level=0) — costing all " + levelNodes.length + " partial plans at this level"
+          : "Step " + (levelIdx + 1) + " (prune_level=1) — only the " + visited.length + " of " + levelNodes.length + " plans whose prefix survived are extended");
+      });
+
+      // Walk the visited set. With prune=0 this is the full level (every
+      // sibling, every subtree). With prune=1 it's only the on-path
+      // descendants — siblings stayed grey from the up-front prune step.
+      for (var s = 0; s < visited.length; s++) {
+        (function(nd) {
+          tl.call(function() {
+            nd.circle.setAttribute("fill", "#fef3c7");
+            nd.circle.setAttribute("stroke", "#d97706");
+            if (nd.edge) {
+              nd.edge.setAttribute("stroke", "#fbbf24");
+              nd.edge.setAttribute("stroke-width", 1.5);
+              nd.edge.setAttribute("opacity", 1);
+            }
+            anim.pulse(nd.circle, 3, 1, 160);
+            bumpCounter(Math.max(1, Math.round(finalPlanCount / Math.max(1, tree.allNodes.length))));
+          });
+          tl.delay(prune === 0 ? 120 : 160);
+        })(visited[s]);
+      }
+      tl.delay(120);
+
+      // Commit the winning extension at this level.
+      tl.call(function() {
+        for (var w = 0; w < onPath.length; w++) {
+          onPath[w].circle.setAttribute("fill", "#34d399");
+          onPath[w].circle.setAttribute("stroke", "#047857");
+          onPath[w].circle.setAttribute("stroke-width", 2.5);
+          onPath[w].labelEl.setAttribute("fill", "#064e3b");
+          if (onPath[w].edge) {
+            onPath[w].edge.setAttribute("stroke", "#10b981");
+            onPath[w].edge.setAttribute("stroke-width", 2);
+          }
+        }
+      });
+      tl.delay(220);
+    })(lv);
+  }
+
+  tl.mark("Final plan locked");
+  tl.call(function() {
+    phaseLabel.textContent = "✓ greedy_search complete — " +
+      teachRuntime.formatInt(finalPlanCount) + " partial plans evaluated";
+    if (stageState.plansCounter) {
+      stageState.plansCounter.textContent = teachRuntime.formatInt(finalPlanCount);
+    }
+    var tables = TABLE_NAMES.slice(0, N);
+    var chosenPrefix = [];
+    for (var lv3 = 0; lv3 < tree.levels.length; lv3++) {
+      var onPath = tree.levels[lv3].find(function(n) { return n.onPath; });
+      if (onPath) chosenPrefix.push(onPath.label);
+    }
+    var rest = tables.filter(function(t) { return chosenPrefix.indexOf(t) < 0; });
+    var finalOrder = chosenPrefix.concat(rest);
+    if (stageState.finalPlanText) {
+      stageState.finalPlanText.textContent = finalOrder.join(" ▶ ");
+      stageState.finalPlanText.setAttribute("opacity", 1);
+    }
+  });
+  return tl;
+}
+
+// =============================================================================
+// Hypergraph mode — query graph + connected subgraph enumeration
+// =============================================================================
+// DPhyp (Moerkotte & Neumann 2006) works on the query *graph*, not on
+// orderings. Vertices are tables, edges are join predicates. The
+// algorithm enumerates connected subgraphs (CSGs) of sizes 1..N and
+// pairs of disjoint CSGs that share a connecting edge — each such pair
+// is a candidate join. Final plan can be a bushy tree, not just
+// left-deep. Far fewer subgraph pairs than N! orderings: for our
+// 7-table tree query, ~57 pairs vs 5,040 orderings.
+
+var GRAPH_CENTER_X = W / 2;
+var GRAPH_CENTER_Y = 230;
+var GRAPH_RADIUS = 120;
+
+function layoutGraph(N) {
+  var names = TABLE_NAMES.slice(0, N);
+  var positions = {};
+  for (var i = 0; i < N; i++) {
+    var theta = (i / N) * 2 * Math.PI - Math.PI / 2;
+    positions[names[i]] = {
+      x: GRAPH_CENTER_X + Math.cos(theta) * GRAPH_RADIUS,
+      y: GRAPH_CENTER_Y + Math.sin(theta) * GRAPH_RADIUS
+    };
+  }
+  return positions;
+}
+
+function buildHypergraphStage(N) {
+  var svg = clearStage();
+  drawTablesStrip(svg, N);
+  drawCounter(svg, "SUBGRAPH PAIRS (DPhyp)");
+
+  var graphTitle = anim.svgEl("text", {
+    x: 28, y: 95,
+    "font-size": 10, "font-weight": 700, fill: "#6b7280",
+    "letter-spacing": "0.4"
+  });
+  graphTitle.textContent = "QUERY GRAPH — vertices = tables, edges = join predicates";
+  svg.appendChild(graphTitle);
+
+  // Layout
+  var edges = joinEdgesFor(N);
+  var positions = layoutGraph(N);
+
+  // Edges first (so vertices draw on top)
+  var edgeEls = [];
+  var g = anim.svgEl("g", { id: "graph-g" });
+  svg.appendChild(g);
+  for (var e = 0; e < edges.length; e++) {
+    var a = positions[edges[e][0]];
+    var b = positions[edges[e][1]];
+    if (!a || !b) continue;
+    var line = anim.svgEl("line", {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      stroke: "#cbd5e1", "stroke-width": 2, opacity: 0.6
+    });
+    g.appendChild(line);
+    edgeEls.push({ from: edges[e][0], to: edges[e][1], line: line });
+  }
+
+  // Vertices
+  var vertexEls = {};
+  var tables = TABLE_NAMES.slice(0, N);
+  for (var i = 0; i < tables.length; i++) {
+    var name = tables[i];
+    var pos = positions[name];
+    if (!pos) continue;
+    var circle = anim.svgEl("circle", {
+      cx: pos.x, cy: pos.y, r: 18,
+      fill: "#f1f5f9", stroke: "#94a3b8", "stroke-width": 2
+    });
+    g.appendChild(circle);
+    var lbl = anim.svgEl("text", {
+      x: pos.x, y: pos.y + 4, "text-anchor": "middle",
+      "font-size": 11, "font-weight": 700, fill: "#1e293b",
+      "font-family": "ui-monospace, Menlo, monospace"
+    });
+    lbl.textContent = name;
+    g.appendChild(lbl);
+    vertexEls[name] = { circle: circle, label: lbl, x: pos.x, y: pos.y };
+  }
+
+  // CSG box (right side panel for showing current subgraph)
+  var csgBoxBg = anim.svgEl("rect", {
+    x: W - 200, y: 100, width: 180, height: 90, rx: 8,
+    fill: "#fef3c7", stroke: "#f59e0b", "stroke-width": 1.5, opacity: 0.4
+  });
+  svg.appendChild(csgBoxBg);
+  var csgLbl = anim.svgEl("text", {
+    x: W - 192, y: 116, "font-size": 9, "font-weight": 700,
+    fill: "#92400e", "letter-spacing": "0.4"
+  });
+  csgLbl.textContent = "CURRENT SUBGRAPH (CSG)";
+  svg.appendChild(csgLbl);
+  var csgContent = anim.svgEl("text", {
+    x: W - 192, y: 140, "font-size": 13, "font-weight": 700,
+    fill: "#7c2d12",
+    "font-family": "ui-monospace, Menlo, monospace"
+  });
+  csgContent.textContent = "—";
+  svg.appendChild(csgContent);
+  var csgSize = anim.svgEl("text", {
+    x: W - 192, y: 168, "font-size": 10, fill: "#a16207"
+  });
+  csgSize.textContent = "size: 0";
+  svg.appendChild(csgSize);
+  var csgPair = anim.svgEl("text", {
+    x: W - 192, y: 182, "font-size": 9, fill: "#a16207"
+  });
+  csgPair.textContent = "";
+  svg.appendChild(csgPair);
+
+  stageState.graph = {
+    vertices: vertexEls,
+    edges: edgeEls,
+    csgBoxBg: csgBoxBg,
+    csgContent: csgContent,
+    csgSize: csgSize,
+    csgPair: csgPair
+  };
+
+  drawFinalPlanStrip(svg, "CHOSEN PLAN (DPhyp can produce a bushy tree)");
+}
+
+function resetHypergraphColors() {
+  if (!stageState.graph) return;
+  var v = stageState.graph.vertices;
+  for (var k in v) {
+    if (Object.prototype.hasOwnProperty.call(v, k)) {
+      v[k].circle.setAttribute("fill", "#f1f5f9");
+      v[k].circle.setAttribute("stroke", "#94a3b8");
+      v[k].circle.setAttribute("stroke-width", 2);
+      v[k].label.setAttribute("fill", "#1e293b");
+    }
+  }
+  for (var i = 0; i < stageState.graph.edges.length; i++) {
+    stageState.graph.edges[i].line.setAttribute("stroke", "#cbd5e1");
+    stageState.graph.edges[i].line.setAttribute("stroke-width", 2);
+    stageState.graph.edges[i].line.setAttribute("opacity", 0.6);
+  }
+  if (stageState.graph.csgContent) stageState.graph.csgContent.textContent = "—";
+  if (stageState.graph.csgSize) stageState.graph.csgSize.textContent = "size: 0";
+  if (stageState.graph.csgPair) stageState.graph.csgPair.textContent = "";
+}
+
+function highlightVertex(name, color, strokeColor) {
+  var v = stageState.graph && stageState.graph.vertices[name];
+  if (!v) return;
+  v.circle.setAttribute("fill", color);
+  v.circle.setAttribute("stroke", strokeColor);
+  v.circle.setAttribute("stroke-width", 2.5);
+  anim.pulse(v.circle, 4, 1, 240);
+}
+
+function highlightEdge(fromTo, color, width) {
+  if (!stageState.graph) return;
+  for (var i = 0; i < stageState.graph.edges.length; i++) {
+    var e = stageState.graph.edges[i];
+    if ((e.from === fromTo[0] && e.to === fromTo[1]) ||
+        (e.from === fromTo[1] && e.to === fromTo[0])) {
+      e.line.setAttribute("stroke", color);
+      e.line.setAttribute("stroke-width", width);
+      e.line.setAttribute("opacity", 1);
+      return;
+    }
+  }
+}
+
+function setCsgLabel(members, sizeLabel, pairLabel) {
+  if (!stageState.graph) return;
+  stageState.graph.csgContent.textContent = "{ " + members.join(", ") + " }";
+  stageState.graph.csgSize.textContent = "size: " + members.length + " of " + (TABLE_NAMES.slice(0, members.length).length);
+  if (sizeLabel) stageState.graph.csgSize.textContent = sizeLabel;
+  stageState.graph.csgPair.textContent = pairLabel || "";
+}
+
+function buildHypergraphTimeline(controls) {
+  var tl = anim.timeline();
+  var phaseLabel = document.getElementById("phase-label");
+  var N = controls.tables;
+  if (!stageState.graph) return tl;
+
+  var totalPairs = Math.min(dphypTreePairs(N), OPTIMIZER_MAX_SUBGRAPH_PAIRS);
+  var counterVal = 0;
+  function bumpCounter(amount) {
+    counterVal += amount;
+    if (counterVal > totalPairs) counterVal = totalPairs;
+    if (stageState.plansCounter) {
+      stageState.plansCounter.textContent = teachRuntime.formatInt(counterVal);
+    }
+  }
+
+  // ---- Phase 1: vertex enumeration (size-1 CSGs) ----
+  tl.mark("Phase 1: enumerate vertices (size-1 CSGs)");
+  tl.call(function() {
+    phaseLabel.textContent = "Phase 1 — each table is a size-1 connected subgraph (CSG)";
+  });
+  var tables = TABLE_NAMES.slice(0, N);
+  for (var i = 0; i < tables.length; i++) {
+    (function(name, idx) {
+      tl.call(function() {
+        highlightVertex(name, "#fef3c7", "#d97706");
+        setCsgLabel([name], "size: 1 of " + N, "DPhyp builds best plan for { " + name + " } (= just scan)");
+        bumpCounter(1);
+      });
+      tl.delay(180);
+    })(tables[i], i);
+  }
+  tl.delay(120);
+
+  // ---- Phase 2: enumerate pairs along edges (CSG + CMP pairs of size 2) ----
+  tl.mark("Phase 2: enumerate edge-induced pairs (CSG-CMP, size 2)");
+  tl.call(function() {
+    phaseLabel.textContent = "Phase 2 — each join edge is a candidate 2-table CSG-CMP pair";
+  });
+  var edges = stageState.graph.edges;
+  for (var e = 0; e < edges.length; e++) {
+    (function(edgeRec) {
+      tl.call(function() {
+        highlightEdge([edgeRec.from, edgeRec.to], "#fbbf24", 4);
+        highlightVertex(edgeRec.from, "#fcd34d", "#d97706");
+        highlightVertex(edgeRec.to,   "#fcd34d", "#d97706");
+        setCsgLabel(
+          [edgeRec.from, edgeRec.to],
+          "pair: { " + edgeRec.from + " } ⋈ { " + edgeRec.to + " }",
+          "best plan for this 2-set kept in DP table"
+        );
+        bumpCounter(2);
+      });
+      tl.delay(220);
+    })(edges[e]);
+  }
+  tl.delay(160);
+
+  // ---- Phase 3: grow CSGs by adjacent vertex (size 3, 4, ...) ----
+  tl.mark("Phase 3: grow CSGs by adjacent vertex");
+  tl.call(function() {
+    phaseLabel.textContent = "Phase 3 — extend each CSG with adjacent vertices via EnumerateCsgRec";
+  });
+  // Demonstrate growing from one seed (u) outward.
+  var seed = tables[0];
+  var grown = [seed];
+  var adjacency = {};
+  for (var ei = 0; ei < edges.length; ei++) {
+    adjacency[edges[ei].from] = adjacency[edges[ei].from] || [];
+    adjacency[edges[ei].to]   = adjacency[edges[ei].to]   || [];
+    adjacency[edges[ei].from].push(edges[ei].to);
+    adjacency[edges[ei].to].push(edges[ei].from);
+  }
+  // BFS-style growth, capped at min(N, 5) steps for readability.
+  var growthSteps = Math.min(N, 5);
+  for (var step = 1; step < growthSteps; step++) {
+    (function(stepIdx) {
+      tl.call(function() {
+        // Find a neighbor not yet in CSG.
+        var candidates = [];
+        for (var g = 0; g < grown.length; g++) {
+          var adj = adjacency[grown[g]] || [];
+          for (var j = 0; j < adj.length; j++) {
+            if (grown.indexOf(adj[j]) < 0 && candidates.indexOf(adj[j]) < 0) {
+              candidates.push(adj[j]);
+            }
+          }
+        }
+        if (candidates.length === 0) return;
+        var next = candidates[0];
+        grown.push(next);
+        for (var v = 0; v < grown.length; v++) {
+          highlightVertex(grown[v], "#a7f3d0", "#059669");
+        }
+        // Highlight all edges within the CSG.
+        for (var x = 0; x < grown.length; x++) {
+          for (var y = x + 1; y < grown.length; y++) {
+            highlightEdge([grown[x], grown[y]], "#34d399", 3);
+          }
+        }
+        setCsgLabel(
+          grown.slice(),
+          "size: " + grown.length + " of " + N,
+          "CSG grew via connecting edge"
+        );
+        bumpCounter(Math.max(1, Math.round(totalPairs / (growthSteps + edges.length))));
+      });
+      tl.delay(360);
+    })(step);
+  }
+  tl.delay(160);
+
+  // ---- Phase 4: final plan (bushy possible) ----
+  tl.mark("Phase 4: lock in plan (DPhyp may emit a bushy tree)");
+  tl.call(function() {
+    phaseLabel.textContent = "✓ DPhyp complete — " + teachRuntime.formatInt(totalPairs) + " subgraph pairs evaluated; plan can be bushy";
+    if (stageState.plansCounter) {
+      stageState.plansCounter.textContent = teachRuntime.formatInt(totalPairs);
+    }
+    // Color every vertex green to indicate it's in the final plan.
+    for (var t = 0; t < tables.length; t++) {
+      highlightVertex(tables[t], "#bbf7d0", "#047857");
+    }
+    for (var ei2 = 0; ei2 < edges.length; ei2++) {
+      highlightEdge([edges[ei2].from, edges[ei2].to], "#10b981", 3);
+    }
+    setCsgLabel(tables.slice(), "size: " + N + " of " + N + " (final)", "DP table now has best plan for { all tables }");
+    if (stageState.finalPlanText) {
+      // Render a bushy-style notation: ((u⋈o)⋈(li⋈p)) ⋈ ((s)⋈(c⋈w))
+      // Just show the table set; the bushy structure is implied.
+      stageState.finalPlanText.textContent =
+        "(bushy) " + tables.slice(0, Math.ceil(N / 2)).join("⋈") +
+        " ⋈ " + tables.slice(Math.ceil(N / 2)).join("⋈");
+      stageState.finalPlanText.setAttribute("opacity", 1);
+    }
+  });
+  return tl;
+}
+
+// =============================================================================
+// Dispatchers
+// =============================================================================
+
+function buildStage(N, depth, algo) {
+  stageState.algo = algo;
+  if (algo === "hypergraph") {
+    buildHypergraphStage(N);
+  } else {
+    buildGreedyStage(N, depth);
+  }
+}
+
+function resetStageColors() {
+  if (stageState.algo === "hypergraph") {
+    resetHypergraphColors();
+  } else {
+    resetGreedyColors();
+  }
+  if (stageState.plansCounter) stageState.plansCounter.textContent = "0";
+  if (stageState.finalPlanText) {
+    stageState.finalPlanText.textContent = "— (run search to see) —";
+    stageState.finalPlanText.setAttribute("opacity", 0.35);
+  }
+  for (var j = 0; j < stageState.tableCards.length; j++) {
+    stageState.tableCards[j].rect.setAttribute("fill", "#ffffff");
+    stageState.tableCards[j].rect.setAttribute("stroke", "#3b82f6");
+  }
+}
+
+function buildSearchTimeline(controls) {
+  resetStageColors();
+  if (controls.algo === "hypergraph") {
+    return buildHypergraphTimeline(controls);
+  }
+  return buildGreedyTimeline(controls);
+}
+
+// =============================================================================
+// Complexity chart
+// =============================================================================
+
+function renderChart(currentN, depth, prune, algo) {
+  function greedyCurve(d) {
+    return function(n) {
+      var p = plansEvaluated(n, Math.min(d, n));
+      var pr = applyPruning(p, prune).plans;
+      return Math.max(1, pr);
+    };
+  }
+  var curves = [
+    {
+      label: "Greedy d=1: O(N²)",
+      color: "#10b981",
+      fn: greedyCurve(1)
+    },
+    {
+      label: "Greedy d=" + Math.min(depth, currentN) + " (current setting)",
+      color: "#3b82f6",
+      fn: greedyCurve(depth)
+    },
+    {
+      label: "Greedy exhaustive: O(N!)",
+      color: "#dc2626",
+      fn: function(n) {
+        var p = plansEvaluated(n, n);
+        var pr = applyPruning(p, prune).plans;
+        return Math.max(1, pr);
+      }
+    },
+    {
+      label: "Hypergraph DPhyp (tree query): O(N³)",
+      color: "#ec4899",
+      fn: function(n) {
+        return Math.min(dphypTreePairs(n), OPTIMIZER_MAX_SUBGRAPH_PAIRS);
+      }
+    }
+  ];
+  if (algo === "hypergraph") {
+    // Reorder so the hypergraph curve is most prominent.
+    curves.unshift(curves.splice(3, 1)[0]);
+  }
+  anim.complexityChart({
+    svgId: "complexity-chart",
+    width: 560, height: 200,
+    xMin: 2, xMax: 14,
+    xLabel: "Tables in query (N)", yLabel: "Plans / subgraph pairs evaluated",
+    curves: curves,
+    current: { x: currentN },
+    xSlider: "tables",
+    xSliderTransform: function(xVal) {
+      return xVal;
+    }
+  });
+}
+
+// =============================================================================
+// Recompute
+// =============================================================================
+
+function recompute() {
+  var c = teachRuntime.readControls();
+  var N = Math.round(c.tables);
+  var rawDepth = Math.round(c.search_depth);
+  var pillDepth = document.querySelector('[data-pill-for="search_depth"]');
+  if (pillDepth) pillDepth.textContent = (rawDepth >= 10) ? "62 (max)" : String(rawDepth);
+  var depth = (rawDepth >= 10) ? 62 : rawDepth;
+  var prune = Number(c.prune_level);
+  var algo = c.algo;
+
+  var pillN = document.querySelector('[data-pill-for="tables"]');
+  if (pillN) pillN.textContent = String(N);
+
+  document.getElementById("out-n").textContent = String(N);
+
+  if (algo === "hypergraph") {
+    var pairs = Math.min(dphypTreePairs(N), OPTIMIZER_MAX_SUBGRAPH_PAIRS);
+    document.getElementById("out-depth").textContent = "n/a (set-based DP)";
+    document.getElementById("out-plans").textContent = teachRuntime.formatInt(pairs);
+    document.getElementById("out-complexity").textContent = bigOLabelDPhyp();
+    document.getElementById("out-prune").textContent = "n/a (DP, no prune_level)";
+    document.getElementById("out-time").textContent = teachRuntime.formatMs(pairs * 0.001);
+    document.getElementById("out-explanation").textContent =
+      "Hypergraph optimizer (DPhyp, Moerkotte & Neumann 2006). Treats the query as a graph: vertices = tables, edges = join predicates. Enumerates connected subgraphs bottom-up via the DP recurrence: for each CSG, find a non-overlapping CMP whose connecting edge merges them. Capped by optimizer_max_subgraph_pairs = " +
+      teachRuntime.formatInt(OPTIMIZER_MAX_SUBGRAPH_PAIRS) +
+      ". For our 7-table tree query, ~57 pairs vs greedy's worst-case 5,040 orderings — and DPhyp can emit a bushy plan tree.";
+  } else {
+    var effDepth = Math.min(depth, N);
+    var raw = plansEvaluated(N, effDepth);
+    var pruned = applyPruning(raw, prune);
+    var plans = pruned.plans;
+    document.getElementById("out-depth").textContent = String(effDepth);
+    document.getElementById("out-plans").textContent = teachRuntime.formatInt(plans);
+    document.getElementById("out-complexity").textContent = bigOLabel(N, effDepth);
+    document.getElementById("out-prune").textContent =
+      (prune === 1) ? (Math.round(pruned.ratio * 100) + "%") : "off";
+    document.getElementById("out-time").textContent = teachRuntime.formatMs(plans * 0.001);
+
+    var explanation;
+    if (effDepth >= N && prune === 0) {
+      explanation =
+        "Exhaustive enumeration: every one of N! left-deep orders is costed. At N=" + N + " that's " + teachRuntime.formatInt(fact(N)) + " plans. Beyond N≈12 this is what tanks query compilation time on giant analytical queries.";
+    } else if (effDepth >= N && prune === 1) {
+      explanation =
+        "Exhaustive but pruned: optimizer_prune_level=1 cuts branches whose partial cost already exceeds the best complete plan found so far. The shape is still O(N!), the constant is ~4-10× smaller.";
+    } else if (effDepth === 1) {
+      explanation =
+        "Pure greedy: at each step pick the locally-cheapest next table. O(N²) plans. Fast but can miss the globally-optimal order — that is why MySQL's default lookahead is much larger.";
+    } else {
+      explanation =
+        "Bounded lookahead: at each commit point the planner enumerates the next " + effDepth + " tables exhaustively, then commits one. Cost O(N · N^" + effDepth + " / " + effDepth + "). Reduce optimizer_search_depth on session queries that re-plan repeatedly.";
+    }
+    document.getElementById("out-explanation").textContent = explanation;
+  }
+
+  buildStage(N, (rawDepth >= 10) ? 62 : Math.min(rawDepth, N), algo);
+  resetStageColors();
+  renderChart(N, depth, prune, algo);
+}
+
+function resetAnim() {
+  resetStageColors();
+  document.getElementById("phase-label").textContent = "Ready — press Play";
+}
+
+teachRuntime.wire(recompute);
+teachRuntime.wireToolbar({
+  build: function() {
+    return buildSearchTimeline(teachRuntime.readControls());
+  },
+  reset: resetAnim
+});
+teachRuntime.wirePhaseNav("phase-nav", {
+  build: function() {
+    return buildSearchTimeline(teachRuntime.readControls());
+  },
+  reset: resetAnim
+});
+
+  </script>
+</body>
+</html>

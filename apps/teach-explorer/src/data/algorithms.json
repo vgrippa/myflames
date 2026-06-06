@@ -1,0 +1,491 @@
+{
+  "lessons": [
+    {
+      "name": "full_scan",
+      "family": "scan_family",
+      "familyLabel": "Scan / Sort / Temp",
+      "familyAccent": "#ef4444",
+      "title": "Full table scan \u2014 why every row gets read",
+      "summary": "See O(n) row reads in action and compare against indexed access O(log n + k).",
+      "complexity": {
+        "best": "O(n)",
+        "avg": "O(n)",
+        "worst": "O(n)"
+      },
+      "curveKind": "linear",
+      "tags": [
+        "scan",
+        "sequential-io"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/scan/full_scan.html",
+      "curriculumStep": 1
+    },
+    {
+      "name": "btree",
+      "family": "index_family",
+      "familyLabel": "Index Access",
+      "familyAccent": "#2563eb",
+      "title": "B+tree lookup \u2014 how InnoDB finds a row",
+      "summary": "Clustered primary key vs secondary-to-clustered; 16 KiB page fan-out.",
+      "complexity": {
+        "best": "O(log n)",
+        "avg": "O(log n)",
+        "worst": "O(log n)"
+      },
+      "curveKind": "log",
+      "tags": [
+        "index",
+        "btree",
+        "primary-key"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/index/btree.html",
+      "curriculumStep": 2
+    },
+    {
+      "name": "unique_lookup",
+      "family": "index_family",
+      "familyLabel": "Index Access",
+      "familyAccent": "#2563eb",
+      "title": "Unique Key Lookup \u2014 single-row index lookup",
+      "summary": "Exact-key lookup path and why covering indexes can skip table-row fetch.",
+      "complexity": {
+        "best": "O(1)",
+        "avg": "O(log n)",
+        "worst": "O(log n)"
+      },
+      "curveKind": "log",
+      "tags": [
+        "index",
+        "unique",
+        "eq_ref"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/index/unique_lookup.html",
+      "curriculumStep": 3
+    },
+    {
+      "name": "non_unique_lookup",
+      "family": "index_family",
+      "familyLabel": "Index Access",
+      "familyAccent": "#2563eb",
+      "title": "Non-Unique Key Lookup \u2014 index hits that return many rows",
+      "summary": "Understand Index lookup / Index range scan and non-covering row fetch cost.",
+      "complexity": {
+        "best": "O(log n)",
+        "avg": "O(log n + k)",
+        "worst": "O(n)"
+      },
+      "curveKind": "two_log",
+      "tags": [
+        "index",
+        "range"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/index/non_unique_lookup.html",
+      "curriculumStep": 4
+    },
+    {
+      "name": "icp",
+      "family": "index_family",
+      "familyLabel": "Index Access",
+      "familyAccent": "#2563eb",
+      "title": "Index Condition Pushdown \u2014 filtering inside InnoDB",
+      "summary": "See how ICP checks trailing index columns before fetching the row.",
+      "complexity": {
+        "best": "O(log n)",
+        "avg": "O(log n + k)",
+        "worst": "O(n)"
+      },
+      "curveKind": "log",
+      "tags": [
+        "index",
+        "pushdown"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/index/icp.html",
+      "curriculumStep": 5
+    },
+    {
+      "name": "covering_index",
+      "family": "scan_family",
+      "familyLabel": "Scan / Sort / Temp",
+      "familyAccent": "#ef4444",
+      "title": "Covering index \u2014 why \"Using index\" in EXPLAIN is the goal",
+      "summary": "Non-covering vs covering plan; the InnoDB PK-append trick that silently covers many queries.",
+      "complexity": {
+        "best": "O(log n)",
+        "avg": "O(log n + k)",
+        "worst": "O(log n + k)"
+      },
+      "curveKind": "log",
+      "tags": [
+        "index",
+        "covered"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/scan/covering_index.html",
+      "curriculumStep": 6
+    },
+    {
+      "name": "nested_loop",
+      "family": "join_family",
+      "familyLabel": "Join",
+      "familyAccent": "#a855f7",
+      "title": "Nested Loop Join \u2014 dedicated operator view",
+      "summary": "Single-operator view of the outer-driver/inner-probe loop shape from EXPLAIN.",
+      "complexity": {
+        "best": "O(n * log m)",
+        "avg": "O(n * log m)",
+        "worst": "O(n * m)"
+      },
+      "curveKind": "nested_indexed",
+      "tags": [
+        "join",
+        "indexed"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/join/nested_loop.html",
+      "curriculumStep": 7
+    },
+    {
+      "name": "hash",
+      "family": "join_family",
+      "familyLabel": "Join",
+      "familyAccent": "#a855f7",
+      "title": "Hash join \u2014 build, probe, and grace-hash spill",
+      "summary": "MySQL 8.4's default for non-indexed equi-joins; animated build + probe phases.",
+      "complexity": {
+        "best": "O(n + m)",
+        "avg": "O(n + m)",
+        "worst": "O(n * m)"
+      },
+      "curveKind": "linear_sum",
+      "tags": [
+        "join",
+        "mysql-8.0.18+",
+        "equi-join"
+      ],
+      "mysqlVersion": "8.0.18+",
+      "lessonHref": "../teach/join/hash.html",
+      "curriculumStep": 8
+    },
+    {
+      "name": "bnl",
+      "family": "join_family",
+      "familyLabel": "Join",
+      "familyAccent": "#a855f7",
+      "title": "Block Nested Loop join \u2014 MariaDB's default for non-indexed joins",
+      "summary": "Watch `join_buffer_size` decide how many times the inner table is rescanned.",
+      "complexity": {
+        "best": "O(n + m)",
+        "avg": "O(n * m / buf)",
+        "worst": "O(n * m)"
+      },
+      "curveKind": "block_nl",
+      "tags": [
+        "join",
+        "mariadb",
+        "no-index"
+      ],
+      "mysqlVersion": "removed in 8.0.20",
+      "lessonHref": "../teach/join/bnl.html",
+      "curriculumStep": 9
+    },
+    {
+      "name": "bka_join",
+      "family": "join_family",
+      "familyLabel": "Join",
+      "familyAccent": "#a855f7",
+      "title": "Batched Key Access (BKA) join \u2014 batch, sort, MRR",
+      "summary": "Batch outer keys, sort by rowid, and sweep the inner index sequentially via Multi-Range Read.",
+      "complexity": {
+        "best": "O(n * log m)",
+        "avg": "O(n + m)",
+        "worst": "O(n * m)"
+      },
+      "curveKind": "linear_sum",
+      "tags": [
+        "join",
+        "mrr",
+        "batched"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/join/bka_join.html",
+      "curriculumStep": 10
+    },
+    {
+      "name": "semijoin_weedout",
+      "family": "join_family",
+      "familyLabel": "Join",
+      "familyAccent": "#a855f7",
+      "title": "Semijoin Duplicate Weedout \u2014 dedup via temp table",
+      "summary": "IN/EXISTS rewritten as inner join; a temp table keyed on outer rowid removes duplicates.",
+      "complexity": {
+        "best": "O(n + m)",
+        "avg": "O(n * m)",
+        "worst": "O(n * m)"
+      },
+      "curveKind": "quadratic",
+      "tags": [
+        "join",
+        "subquery",
+        "dedup"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/join/semijoin_weedout.html",
+      "curriculumStep": 11
+    },
+    {
+      "name": "derived_table",
+      "family": "scan_family",
+      "familyLabel": "Scan / Sort / Temp",
+      "familyAccent": "#ef4444",
+      "title": "Derived Table Materialization",
+      "summary": "FROM-clause subquery materialized into temp table, auto-indexed, then probed.",
+      "complexity": {
+        "best": "O(n)",
+        "avg": "O(n + m)",
+        "worst": "O(n*m)"
+      },
+      "curveKind": "linear_sum",
+      "tags": [
+        "materialization",
+        "subquery"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/scan/derived_table.html",
+      "curriculumStep": 12
+    },
+    {
+      "name": "join_order",
+      "family": "planner_family",
+      "familyLabel": "Planner / Optimizer",
+      "familyAccent": "#ec4899",
+      "title": "Join-order search \u2014 why query planning is factorial",
+      "summary": "MySQL's greedy_search picks the join order one table at a time; with deep lookahead and pruning off, the search space is O(N!).",
+      "complexity": {
+        "best": "O(N\u00b2)",
+        "avg": "O(N\u00b7N^d/d)",
+        "worst": "O(N!)"
+      },
+      "curveKind": "factorial",
+      "tags": [
+        "planner",
+        "greedy_search",
+        "optimizer_search_depth"
+      ],
+      "mysqlVersion": "all versions (greedy_search)",
+      "lessonHref": "../teach/planner/join_order.html",
+      "curriculumStep": 13
+    },
+    {
+      "name": "lru",
+      "family": "cache_family",
+      "familyLabel": "Cache / Memory",
+      "familyAccent": "#f59e0b",
+      "title": "InnoDB buffer pool \u2014 midpoint-insertion LRU",
+      "summary": "Why MySQL's LRU is scan-resistant \u2014 young/old sublists, innodb_old_blocks_time.",
+      "complexity": {
+        "best": "O(1)",
+        "avg": "O(1)",
+        "worst": "O(1)"
+      },
+      "curveKind": "constant",
+      "tags": [
+        "cache",
+        "buffer-pool"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/cache/lru.html",
+      "curriculumStep": 14
+    },
+    {
+      "name": "buffer_pool_warmup",
+      "family": "cache_family",
+      "familyLabel": "Cache / Memory",
+      "familyAccent": "#f59e0b",
+      "title": "InnoDB buffer pool \u2014 cold-start vs warm, dump/load cure",
+      "summary": "Why repeat queries are fast, why restarts hurt, and what ib_buffer_pool does about it.",
+      "complexity": {
+        "best": "O(1)",
+        "avg": "O(p)",
+        "worst": "O(p)"
+      },
+      "curveKind": "linear",
+      "tags": [
+        "cache",
+        "cold-start"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/cache/buffer_pool_warmup.html",
+      "curriculumStep": 15
+    },
+    {
+      "name": "index_merge",
+      "family": "index_family",
+      "familyLabel": "Index Access",
+      "familyAccent": "#2563eb",
+      "title": "Index Merge \u2014 combining two index scans",
+      "summary": "Union, intersection, sort-union: two indexes are better than a full table scan.",
+      "complexity": {
+        "best": "O(log n)",
+        "avg": "O(k1 + k2)",
+        "worst": "O(n)"
+      },
+      "curveKind": "linear_sum",
+      "tags": [
+        "index",
+        "merge"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/index/index_merge.html",
+      "curriculumStep": null
+    },
+    {
+      "name": "rowid_filter",
+      "family": "index_family",
+      "familyLabel": "Index Access",
+      "familyAccent": "#2563eb",
+      "title": "Rowid Filter \u2014 bitmap pre-filter before table access",
+      "summary": "MariaDB scans a filtering index to build a rowid bitmap, skipping table fetches for non-matching rows.",
+      "complexity": {
+        "best": "O(k)",
+        "avg": "O(k + f*log n)",
+        "worst": "O(n)"
+      },
+      "curveKind": "linear",
+      "tags": [
+        "mariadb",
+        "filter",
+        "bitmap"
+      ],
+      "mysqlVersion": "MariaDB only",
+      "lessonHref": "../teach/index/rowid_filter.html",
+      "curriculumStep": null
+    },
+    {
+      "name": "skip_scan",
+      "family": "index_family",
+      "familyLabel": "Index Access",
+      "familyAccent": "#2563eb",
+      "title": "Skip Scan \u2014 range access without the leading index column",
+      "summary": "Low-NDV leading column lets MySQL do N small range scans instead of a full table scan.",
+      "complexity": {
+        "best": "O(d * log n)",
+        "avg": "O(d * log n)",
+        "worst": "O(n)"
+      },
+      "curveKind": "sqrt_n",
+      "tags": [
+        "index",
+        "low-cardinality"
+      ],
+      "mysqlVersion": "8.0.13+",
+      "lessonHref": "../teach/index/skip_scan.html",
+      "curriculumStep": null
+    },
+    {
+      "name": "join",
+      "family": "join_family",
+      "familyLabel": "Join",
+      "familyAccent": "#a855f7",
+      "title": "BNL vs hash join \u2014 side by side",
+      "summary": "MariaDB BNL (default) vs MySQL 8.4 hash join; move the sliders and feel the asymptotic difference.",
+      "complexity": {
+        "best": "O(n + m)",
+        "avg": "O(n * m / buf)",
+        "worst": "O(n * m)"
+      },
+      "curveKind": "block_nl",
+      "tags": [
+        "join",
+        "comparison"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/join/join.html",
+      "curriculumStep": null
+    },
+    {
+      "name": "filesort",
+      "family": "scan_family",
+      "familyLabel": "Scan / Sort / Temp",
+      "familyAccent": "#ef4444",
+      "title": "Filesort \u2014 how MySQL sorts without an index",
+      "summary": "sort_buffer_size, sorted runs, k-way merge. Why ORDER BY is slow without an index.",
+      "complexity": {
+        "best": "O(n)",
+        "avg": "O(n log n)",
+        "worst": "O(n log n)"
+      },
+      "curveKind": "nlogn",
+      "tags": [
+        "sort",
+        "memory-bound"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/scan/filesort.html",
+      "curriculumStep": null
+    },
+    {
+      "name": "filter",
+      "family": "scan_family",
+      "familyLabel": "Scan / Sort / Temp",
+      "familyAccent": "#ef4444",
+      "title": "Filter operator \u2014 WHERE predicate row-by-row",
+      "summary": "Rows entering filter are all evaluated; only matching rows continue.",
+      "complexity": {
+        "best": "O(n)",
+        "avg": "O(n)",
+        "worst": "O(n)"
+      },
+      "curveKind": "linear",
+      "tags": [
+        "scan",
+        "predicate"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/scan/filter.html",
+      "curriculumStep": null
+    },
+    {
+      "name": "tmp",
+      "family": "scan_family",
+      "familyLabel": "Scan / Sort / Temp",
+      "familyAccent": "#ef4444",
+      "title": "Temporary tables \u2014 MEMORY to on-disk conversion",
+      "summary": "Watch GROUP BY hit the tmp_table_size limit and convert to on-disk InnoDB.",
+      "complexity": {
+        "best": "O(n)",
+        "avg": "O(n)",
+        "worst": "O(n log n)"
+      },
+      "curveKind": "linear",
+      "tags": [
+        "materialization",
+        "memory-bound"
+      ],
+      "mysqlVersion": "",
+      "lessonHref": "../teach/scan/tmp.html",
+      "curriculumStep": null
+    }
+  ],
+  "curriculum": [
+    "full_scan",
+    "btree",
+    "unique_lookup",
+    "non_unique_lookup",
+    "icp",
+    "covering_index",
+    "nested_loop",
+    "hash",
+    "bnl",
+    "bka_join",
+    "semijoin_weedout",
+    "derived_table",
+    "join_order",
+    "lru",
+    "buffer_pool_warmup"
+  ]
+}

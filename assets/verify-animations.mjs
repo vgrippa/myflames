@@ -34,7 +34,7 @@ const ALL_LESSONS = [
   "covering_index", "nested_loop", "hash", "bnl", "bka_join",
   "semijoin_weedout", "derived_table", "lru", "buffer_pool_warmup",
   "filesort", "tmp", "filter", "skip_scan", "index_merge",
-  "rowid_filter",
+  "rowid_filter", "join_order",
 ];
 
 const argv = process.argv.slice(2);
