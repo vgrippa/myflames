@@ -42,43 +42,52 @@
   </nav>
   <main>
     <h1>Architecture</h1>
-    <p class="subtitle">How myflames works internally: parser, renderers, advisor, and the teach module.</p>
+    <p class="subtitle">How myflames works internally: parser, renderers, advisor, the agent/CI surface, and the teach module.</p>
 
     <h2>Design principles</h2>
     <ul>
-      <li><strong>Zero external dependencies</strong> &mdash; Python 3.7+ stdlib only. No pip install of MySQL drivers, templating engines, or JS frameworks.</li>
+      <li><strong>One analysis, many projections</strong> &mdash; a plan is parsed and analyzed once, then projected for whoever is asking: flame graph / bar chart / treemap / diagram / tree (for humans), a compact source-grounded digest and JSON sidecar (for AI agents), and an exit code (for CI).</li>
+      <li><strong>Zero external dependencies</strong> &mdash; Python 3.7+ stdlib only. No pip install of MySQL drivers, templating engines, or JS frameworks. The AI-era integrations (MCP transport, exact token counting) live behind optional extras (<code>myflames[mcp]</code>, <code>myflames[tokens]</code>, <code>myflames[gpt]</code>); the core stays stdlib-only.</li>
       <li><strong>Single parser, multiple renderers</strong> &mdash; JSON is parsed once into a unified tree. Renderers never re-parse JSON.</li>
       <li><strong>Offline-first output</strong> &mdash; every HTML file is self-contained. No external scripts, stylesheets, or fonts. Works in Slack DMs, email attachments, and air-gapped environments.</li>
       <li><strong>MySQL + MariaDB parity</strong> &mdash; the parser auto-detects the engine and normalizes MariaDB's different JSON structure into the same internal tree.</li>
+      <li><strong>Source-grounded, never guessing</strong> &mdash; every advisor rule and <code>optimizer_switch</code> explanation is verified against MySQL/MariaDB server source, so the digest an agent reads is factually correct.</li>
     </ul>
 
     <h2>Data flow</h2>
-    <div class="diagram">Input JSON             Parser               Renderer            Output
-(MySQL or MariaDB) &rarr;  parser.py          &rarr;  flamegraph.py    &rarr;  .svg / .html
+    <div class="diagram">Input JSON             Parser               Projection            Output / consumer
+(MySQL or MariaDB) &rarr;  parser.py          &rarr;  flamegraph.py     &rarr;  .svg / .html   (human)
                        &bull; auto-detect engine   output_bargraph.py
                        &bull; normalize MariaDB    output_treemap.py
                        &bull; build unified tree   output_diagram.py
                        &bull; analyze_plan()       output_tree.py
                                              &darr;
-                                          advisor.py        &rarr;  warnings + suggestions
-                                          output_sidecar.py &rarr;  .json sidecar
-                                          output_html.py    &rarr;  .html wrapper</div>
+                                          advisor.py         &rarr;  warnings + suggestions
+                                          output_sidecar.py  &rarr;  .json sidecar    (agent / tooling)
+                                          output_html.py     &rarr;  .html wrapper
+                                          digest.py          &rarr;  compact text digest + token-cost report
+                                          findings.py        &rarr;  advise list / check exit code  (agent / CI)
+                                          mcp_server.py      &rarr;  MCP tools          (agent, direct call)</div>
 
     <h2>Module map</h2>
     <table>
       <thead><tr><th>Module</th><th>Role</th></tr></thead>
       <tbody>
-        <tr><td><code>cli.py</code></td><td>Argument parsing, live-connection orchestration, SVG height patching for the analysis panel.</td></tr>
-        <tr><td><code>parser.py</code></td><td>Single entry point. Builds unified tree from MySQL or MariaDB JSON. <code>analyze_plan(root)</code> scans for full scans, hash joins, temp tables, filesorts, non-sargable joins, etc.</td></tr>
+        <tr><td><code>cli.py</code></td><td>Argument parsing, subcommand dispatch, live-connection orchestration, SVG height patching for the analysis panel.</td></tr>
+        <tr><td><code>parser.py</code></td><td>Single entry point. Builds unified tree from MySQL or MariaDB JSON. <code>analyze_plan(root)</code> scans for full scans, hash joins, temp tables, filesorts, non-sargable joins, etc. Also owns <code>OPTIMIZER_SWITCH_EXPLANATIONS</code> (source-verified).</td></tr>
         <tr><td><code>flamegraph.py</code></td><td>SVG flame graph renderer (pure-Python port of Brendan Gregg's FlameGraph).</td></tr>
         <tr><td><code>output_bargraph.py</code></td><td>SVG bar chart renderer, sorted by self-time.</td></tr>
         <tr><td><code>output_treemap.py</code></td><td>SVG treemap renderer with squarified layout.</td></tr>
         <tr><td><code>output_diagram.py</code></td><td>SVG Visual Explain-style diagram with drag/zoom.</td></tr>
         <tr><td><code>output_tree.py</code></td><td>SVG collapsible execution tree.</td></tr>
-        <tr><td><code>output_html.py</code></td><td>HTML wrapper with progressive-disclosure UI, glossary chips, and JSON-LD in &lt;head&gt;.</td></tr>
-        <tr><td><code>output_sidecar.py</code></td><td>JSON sidecar generator (v1 schema). Machine-readable plan summary, warnings, suggestions.</td></tr>
-        <tr><td><code>advisor.py</code></td><td>Environment advisor: 8 rules that combine plan signals with collected server state.</td></tr>
-        <tr><td><code>glossary.py</code></td><td>31 glossary entries with 3-tier explanations (short / technical / newcomer). Powers the HTML glossary chips.</td></tr>
+        <tr><td><code>output_html.py</code></td><td>HTML wrapper with progressive-disclosure UI, glossary chips, an "Agent-ready" panel, and JSON-LD in &lt;head&gt;.</td></tr>
+        <tr><td><code>output_sidecar.py</code></td><td>JSON sidecar generator (schema v1.3). Machine-readable plan summary, optimizer switches, warnings, suggestions, the node-id'd plan tree, and the executive summary.</td></tr>
+        <tr><td><code>output_compare_sidecar.py</code></td><td>Structured <code>compare-1.0</code> before/after delta consumed by <code>diff --json</code> and the MCP <code>compare_plans</code> tool.</td></tr>
+        <tr><td><code>digest.py</code></td><td>The compact, token-cheap text projection of a plan an LLM reads, plus the raw-plan-vs-digest token/$ savings report (offline heuristic, or exact via Anthropic <code>count_tokens</code> / tiktoken). Powers <code>myflames digest</code>.</td></tr>
+        <tr><td><code>findings.py</code></td><td>Ranked findings with confidence (<code>build_findings</code>) and the <code>--fail-on</code> gate evaluator (<code>evaluate_check</code>). Shared by <code>advise</code> and <code>check</code>.</td></tr>
+        <tr><td><code>mcp_server.py</code></td><td>The agent-facing MCP surface: <code>analyze_plan</code>, <code>digest_plan</code>, <code>compare_plans</code>, <code>explain_optimizer_switch</code>, <code>explain_query</code>. Tool logic is stdlib + tested; only the transport needs <code>myflames[mcp]</code>.</td></tr>
+        <tr><td><code>advisor.py</code></td><td>Environment advisor: 8 rules that combine plan signals with collected server state. Every suggestion carries a source-grounded <code>Why:</code> clause.</td></tr>
+        <tr><td><code>glossary.py</code></td><td>31 glossary entries with 3-tier explanations (short / technical / newcomer). Powers the HTML glossary chips and the digest's executive summary.</td></tr>
         <tr><td><code>teach/</code></td><td>Interactive algorithm lessons. Shared animation runtime + cost models + per-lesson renderers.</td></tr>
       </tbody>
     </table>
@@ -91,6 +100,26 @@
     </ul>
     <p>MariaDB normalization (<code>_normalize_mariadb*()</code> functions) converts MariaDB's structure into MySQL's <code>operation/inputs</code> tree <em>before</em> <code>parse_node()</code> processes it. This means every renderer and the advisor work with one canonical tree format.</p>
     <p><code>analyze_plan(root)</code> walks the parsed tree and returns a dictionary of detected features: <code>full_scans</code>, <code>hash_joins</code>, <code>temp_tables</code>, <code>filesorts</code>, <code>bnl_nodes</code>, <code>nonsargable_joins</code>, <code>index_suggestions</code>, and more.</p>
+
+    <h2>Agent &amp; CI surface</h2>
+    <p>The same parsed tree that feeds the SVG renderers also feeds a set of
+    text-and-exit-code projections built for AI agents and pipelines. Raw
+    <code>EXPLAIN ANALYZE FORMAT=JSON</code> is verbose — an LLM spends tokens
+    parsing structure before it can reason — and an SVG is invisible to an agent.
+    These projections give an agent the few facts it needs, source-grounded:</p>
+    <table>
+      <thead><tr><th>Surface</th><th>What it produces</th></tr></thead>
+      <tbody>
+        <tr><td><code>digest</code></td><td>A compact text digest (summary, warnings, fixes, plan skeleton) at roughly a quarter of the raw plan's tokens. <code>--cost</code> reports the measured token + $ saving (offline heuristic by default; exact via Anthropic <code>count_tokens</code> or tiktoken).</td></tr>
+        <tr><td><code>advise</code></td><td>Ranked warnings + suggestions, each with a <code>confidence</code>, as text or <code>--json</code>.</td></tr>
+        <tr><td><code>check</code></td><td>A CI/agent-loop gate: exit <code>1</code> if any <code>--fail-on</code> trigger matches, <code>0</code> if clean, <code>2</code> on bad input.</td></tr>
+        <tr><td><code>diff --json</code> / <code>--digest</code></td><td>A structured <code>compare-1.0</code> delta, or a token-cheap text diff, of two plans.</td></tr>
+        <tr><td><code>myflames-mcp</code></td><td>An MCP server exposing the above as callable tools for any MCP client (Claude Code, Cursor, agents).</td></tr>
+      </tbody>
+    </table>
+    <p>All of this logic is stdlib and unit-tested; only optional transports/counters
+    (<code>myflames[mcp]</code>, <code>myflames[tokens]</code>, <code>myflames[gpt]</code>)
+    pull in a dependency. See the <a href="cli.html#agent-ci">CLI Reference</a> for flags and exit codes.</p>
 
     <h2>Teach module architecture</h2>
     <p>The <code>teach/</code> subpackage is a self-contained animation platform:</p>
@@ -124,10 +153,15 @@
     <p>Every suggestion carries a <code>Why:</code> clause grounded in the MySQL cost model. This is enforced by a test.</p>
 
     <h2>Testing</h2>
-    <p>The test suite has 1200+ tests across two files:</p>
+    <p>The test suite has 1500+ tests across ~19 files in <code>test/</code>, including:</p>
     <ul>
-      <li><code>test/test_myflames.py</code> &mdash; parser, renderers, advisor, HTML wrapper, sidecar, compare, live-connection mode</li>
-      <li><code>test/test_teach.py</code> &mdash; cost-model invariants, version-accuracy strings, CLI scaffolding, shared runtime markers</li>
+      <li><code>test_myflames.py</code> &mdash; parser, renderers, advisor, HTML wrapper, live-connection mode</li>
+      <li><code>test_sidecar.py</code> / <code>test_compare_sidecar.py</code> &mdash; the JSON sidecar + compare delta schemas</li>
+      <li><code>test_digest.py</code> &mdash; the token estimator, digest builder, and raw-vs-digest savings comparison (incl. the GPT/tiktoken path)</li>
+      <li><code>test_findings.py</code> &mdash; ranked findings + the <code>--fail-on</code> gate evaluator</li>
+      <li><code>test_cli_contract.py</code> &mdash; the <code>0/1/2</code> exit-code contract and stdout/stderr discipline for every subcommand</li>
+      <li><code>test_mcp_server.py</code> &mdash; the MCP tool logic (stdlib, no transport needed)</li>
+      <li><code>test_advisor.py</code>, <code>test_glossary.py</code>, <code>test_nonsargable.py</code>, <code>test_complexity.py</code>, <code>test_teach.py</code> &mdash; rule correctness, glossary, and teach cost-model invariants</li>
     </ul>
     <pre><code># Full suite
 ./run-tests.sh

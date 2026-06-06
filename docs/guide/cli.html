@@ -48,8 +48,19 @@
     <pre><code>myflames [options] [explain.json]
 myflames -h HOST -u USER -p -D DB -e 'SQL' -o report.html
 myflames compare before.json after.json --output diff.html
+myflames digest explain.json [--cost] [--tokenizer claude|gpt]
+myflames advise explain.json [--json]
+myflames check  explain.json --fail-on full_scan,filesort
 myflames teach &lt;lesson&gt; [-o file.html]
 myflames guide</code></pre>
+
+    <div class="tip">
+      <strong>Built for the AI era.</strong> Beyond the visual renderers, myflames
+      projects a plan into forms an agent or CI pipeline can consume directly: a
+      compact text <code>digest</code>, ranked <code>advise</code> findings, a
+      <code>check</code> exit-code gate, and an <a href="#mcp">MCP server</a>. See
+      <a href="#agent-ci">Agent &amp; CI subcommands</a> below.
+    </div>
 
     <h2>Rendering options</h2>
     <table>
@@ -104,9 +115,11 @@ myflames guide</code></pre>
 
     <h2>Subcommands</h2>
 
-    <h3><code>myflames compare</code></h3>
-    <pre><code>myflames compare before.json after.json --output diff.html</code></pre>
-    <p>Side-by-side before/after comparison showing total time delta, per-operator self-time/rows/loops changes, and new/resolved warnings.</p>
+    <h3><code>myflames compare</code> <span style="font-weight:400;color:var(--muted);font-size:14px">(alias: <code>diff</code>)</span></h3>
+    <pre><code>myflames compare before.json after.json --output diff.html
+myflames diff    before.json after.json --digest   # token-cheap text diff for an LLM
+myflames diff    before.json after.json --json     # structured compare-1.0 delta</code></pre>
+    <p>Side-by-side before/after comparison showing total time delta, per-operator self-time/rows/loops changes, and new/resolved warnings. Default output is an HTML report; <code>--digest</code> emits a compact text diff (for pasting into an LLM) and <code>--json</code> emits the structured <code>compare-1.0</code> delta.</p>
 
     <h3><code>myflames guide</code></h3>
     <pre><code>myflames guide</code></pre>
@@ -126,6 +139,64 @@ myflames teach btree -o btree.html   # render a lesson</code></pre>
       </tbody>
     </table>
 
+    <h2 id="agent-ci">Agent &amp; CI subcommands</h2>
+    <p>These serve AI agents and pipelines, not just human eyes. A raw
+    <code>EXPLAIN ANALYZE FORMAT=JSON</code> plan is verbose and noisy; an LLM
+    burns tokens parsing it before it can reason, and an SVG is invisible to an
+    agent. myflames parses and analyzes a plan once, then projects it many ways.</p>
+
+    <h3 id="digest"><code>myflames digest</code></h3>
+    <pre><code>myflames digest explain.json                 # compact, LLM-ready digest (pipe to your model)
+myflames digest explain.json --cost          # tokens + $ saved vs pasting the raw plan
+myflames digest explain.json --cost --tokenizer claude   # exact Claude counts (your key)
+myflames digest explain.json --cost --tokenizer gpt      # exact GPT counts (tiktoken, keyless)
+myflames digest explain.json --show-prompts   # print both prompts (raw vs digest)
+myflames digest explain.json --json           # the savings comparison as JSON</code></pre>
+    <p>Bare <code>digest</code> emits the compact, source-grounded digest of a plan
+    (summary, warnings, fixes, plan skeleton) at a fraction of the tokens of the raw
+    JSON. <code>--cost</code> shows the token and dollar saving instead of the digest.</p>
+    <table>
+      <thead><tr><th>Option</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--cost</code></td><td>Show the token + $ saving of the digest vs the raw plan, instead of the digest text</td></tr>
+        <tr><td><code>--tokenizer {heuristic,claude,gpt}</code></td><td>How to count tokens for <code>--cost</code>/<code>--json</code>. <code>heuristic</code> (offline default, no key/network), <code>claude</code> (Anthropic <code>count_tokens</code>; needs <code>myflames[tokens]</code> + <code>ANTHROPIC_API_KEY</code>), <code>gpt</code> (tiktoken; exact for GPT, keyless; needs <code>myflames[gpt]</code>)</td></tr>
+        <tr><td><code>--show-prompts</code></td><td>Print the raw-plan prompt and digest prompt side by side</td></tr>
+        <tr><td><code>--json</code></td><td>Emit the savings comparison as machine-readable JSON (implies <code>--cost</code>)</td></tr>
+        <tr><td><code>--model MODEL_ID</code></td><td>Pricing/counting model id (default <code>claude-sonnet-4-6</code>)</td></tr>
+        <tr><td><code>--output FILE</code>, <code>-o</code></td><td>Write to a file instead of stdout</td></tr>
+      </tbody>
+    </table>
+    <div class="tip">A deprecated <code>tokens</code> alias still works (it warns on stderr and defaults to <code>--cost</code>); use <code>digest</code> instead.</div>
+
+    <h3><code>myflames advise</code></h3>
+    <pre><code>myflames advise explain.json          # ranked warnings + suggestions (text)
+myflames advise explain.json --json   # same, machine-readable, each with a confidence</code></pre>
+    <p>A ranked list of advisor findings — warnings and tuning suggestions, each
+    carrying a <code>confidence</code> — for an agent to act on. (Deprecated alias:
+    <code>findings</code>.)</p>
+
+    <h3><code>myflames check</code></h3>
+    <pre><code>myflames check explain.json --fail-on full_scan,filesort   # CI gate
+myflames check explain.json --fail-on any -q               # silent; rely on exit code</code></pre>
+    <p>A CI / pre-commit / agent-loop gate. Exits <code>1</code> if any trigger
+    matches, <code>0</code> if the plan is clean, <code>2</code> on bad input.</p>
+    <table>
+      <thead><tr><th>Option</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--fail-on LIST</code></td><td>Comma-separated triggers: warning categories (<code>full_scan</code>, <code>filesort</code>, <code>temp_table</code>, <code>bnl</code>, <code>hash_join</code>, <code>index_merge</code>, <code>nonsargable_join</code>, <code>env</code>), severities (<code>error</code>, <code>warn</code>, <code>info</code>), or <code>any</code> (default)</td></tr>
+        <tr><td><code>--quiet</code>, <code>-q</code></td><td>Suppress per-match output; rely on the exit code</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="mcp"><code>myflames-mcp</code> — MCP server</h3>
+    <pre><code>pip install 'myflames[mcp]'
+claude mcp add myflames -- myflames-mcp</code></pre>
+    <p>Exposes myflames as tools an MCP client (Claude Code, Cursor, any agent)
+    can call directly: <code>analyze_plan</code>, <code>digest_plan</code>,
+    <code>compare_plans</code>, <code>explain_optimizer_switch</code>, and
+    <code>explain_query</code>. Only the transport needs the extra; the tool logic
+    is stdlib and unit-tested.</p>
+
     <h2>Query embedding</h2>
     <table>
       <thead><tr><th>Option</th><th>Description</th></tr></thead>
@@ -136,15 +207,23 @@ myflames teach btree -o btree.html   # render a lesson</code></pre>
     </table>
 
     <h2>Environment variables</h2>
-    <p>myflames does not read any environment variables. All configuration is through CLI flags.</p>
+    <p>Core myflames reads no environment variables — all configuration is through
+    CLI flags. The one exception is opt-in: <code>digest --cost --tokenizer claude</code>
+    reads <code>ANTHROPIC_API_KEY</code> from the environment and hands it straight to
+    the Anthropic SDK to call <code>count_tokens</code>. The key is never written to a
+    file, the sidecar, or the output; if it is unset, the command falls back to the
+    offline estimate with a one-line note.</p>
 
     <h2>Exit codes</h2>
+    <p>The <code>check</code>, <code>digest</code>, and <code>advise</code>
+    subcommands follow a stable <code>0/1/2</code> contract for use in agent loops
+    and CI:</p>
     <table>
       <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
       <tbody>
-        <tr><td><code>0</code></td><td>Success</td></tr>
-        <tr><td><code>1</code></td><td>Runtime error (parse failure, connection error, file not found)</td></tr>
-        <tr><td><code>2</code></td><td>Invalid arguments (argparse)</td></tr>
+        <tr><td><code>0</code></td><td>Success (and, for <code>check</code>, the plan is clean — no trigger matched)</td></tr>
+        <tr><td><code>1</code></td><td><code>check</code> gate tripped: a <code>--fail-on</code> trigger matched</td></tr>
+        <tr><td><code>2</code></td><td>Bad input: parse failure, missing file, connection error, or invalid arguments</td></tr>
       </tbody>
     </table>
   </main>

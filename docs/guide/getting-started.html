@@ -141,6 +141,32 @@ myflames --type tree      explain.json > exec.svg   # collapsible tree</code></p
     <pre><code>myflames compare before.json after.json --output diff.html</code></pre>
     <p>Shows total time delta, per-operator changes, new/resolved warnings, and new/removed full table scans.</p>
 
+    <h2>Use it with an AI agent or CI</h2>
+    <p>myflames isn't only for human eyes. It projects a plan into forms an agent
+    or pipeline can consume directly — instead of pasting verbose
+    <code>EXPLAIN</code> JSON into a model and paying to have it parsed.</p>
+    <pre><code># Hand an LLM a compact, source-grounded digest instead of the raw plan
+myflames digest explain.json | pbcopy
+
+# See how many tokens (and dollars) that saves vs pasting the raw plan
+myflames digest explain.json --cost
+
+# Ranked warnings + fixes for an agent to act on (machine-readable)
+myflames advise explain.json --json
+
+# CI / pre-commit gate: exit 1 if the plan trips a trigger
+myflames check explain.json --fail-on full_scan,filesort</code></pre>
+    <p>Agents can also call myflames directly over MCP:</p>
+    <pre><code>pip install 'myflames[mcp]'
+claude mcp add myflames -- myflames-mcp</code></pre>
+    <div class="tip">
+      Exact token counts are optional: <code>pip install 'myflames[tokens]'</code> +
+      <code>--tokenizer claude</code> (uses your own <code>ANTHROPIC_API_KEY</code>), or
+      <code>pip install 'myflames[gpt]'</code> + <code>--tokenizer gpt</code> (keyless).
+      The default counter is an offline heuristic that needs no key and no network.
+      See the <a href="cli.html#agent-ci">Agent &amp; CI subcommands</a> reference.
+    </div>
+
     <h2>Learn the algorithms</h2>
     <p>myflames includes 9 interactive lessons that animate MySQL internals with correct cost models:</p>
     <pre><code>myflames teach btree -o btree.html && open btree.html</code></pre>
