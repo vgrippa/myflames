@@ -128,13 +128,22 @@ class BaseLiveServerTest(unittest.TestCase):
         cls.container = "myflames-it-" + uuid.uuid4().hex[:8]
         cls.port = _free_port()
         env_var = "MARIADB_ROOT_PASSWORD" if cls.IS_MARIADB else "MYSQL_ROOT_PASSWORD"
-        _docker(
-            "run", "-d", "--rm",
-            "--name", cls.container,
-            "-e", env_var + "=" + cls.ROOT_PASSWORD,
-            "-p", "{}:3306".format(cls.port),
-            cls.IMAGE, *cls.MYSQLD_ARGS,
-        )
+        try:
+            _docker(
+                "run", "-d", "--rm",
+                "--name", cls.container,
+                "-e", env_var + "=" + cls.ROOT_PASSWORD,
+                "-p", "{}:3306".format(cls.port),
+                cls.IMAGE, *cls.MYSQLD_ARGS,
+            )
+        except RuntimeError as exc:
+            # The image isn't cached and couldn't be pulled (e.g. a Docker Hub
+            # registry outage or network timeout in CI). That's an environment
+            # problem, not a myflames defect — skip rather than fail the build,
+            # consistent with how this module skips when Docker is absent.
+            raise unittest.SkipTest(
+                "could not start {} (image pull/run failed): {}".format(cls.IMAGE, exc)
+            )
         # Wait for the server to accept connections (use docker exec to bypass
         # the "first user created without TLS" issue on caching_sha2).
         ready_cmd = (
