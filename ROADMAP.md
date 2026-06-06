@@ -13,8 +13,8 @@ It stays a single project: pure-Python stdlib core, with heavy integrations behi
 - **Five views** — flame graph, bar chart, treemap, Visual-Explain diagram, tree — each with vetted Big O complexity chips.
 - **Source-verified advisor** — rules and `optimizer_switch` explanations checked line-by-line against MySQL/MariaDB source.
 - **JSON sidecar + JSON-LD** — every report has a machine-readable sibling; agents never OCR an SVG.
-- **Token-cheap digest + savings report** — `myflames tokens` (with `--digest`, `--exact`, `--show`); an "Agent-ready" panel in every HTML report.
-- **Agent/CI subcommands** — `diff` (plan comparison), `check` (CI gate with a `0/1/2` exit contract), `findings` (ranked warnings + suggestions with confidence).
+- **Token-cheap digest + savings report** — `myflames digest` (with `--cost`, `--tokenizer {heuristic,claude,gpt}`, `--show-prompts`); an "Agent-ready" panel in every HTML report.
+- **Agent/CI subcommands** — `diff` (plan comparison), `check` (CI gate with a `0/1/2` exit contract), `advise` (ranked warnings + suggestions with confidence).
 - **MCP server** — `myflames-mcp` (`pip install myflames[mcp]`) exposing `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`.
 
 ## Next
@@ -27,6 +27,6 @@ It stays a single project: pure-Python stdlib core, with heavy integrations behi
 
 ## Deferred / non-goals
 
-- **No LLM bundled into the package.** myflames is the deterministic, source-grounded tool an agent *calls* — it does not become the agent. (Exact token counting uses Anthropic's `count_tokens` only as an optional extra.)
+- **No LLM bundled into the package.** myflames is the deterministic, source-grounded tool an agent *calls* — it does not become the agent. (Exact token counting uses Anthropic's `count_tokens`, or tiktoken for GPT, only as optional extras.)
 - **No sixth visualization view.** The renderers are feature-complete; effort compounds in the corpus (advisor correctness) and the agent surface, not in more charts.
 - **No splitting into multiple packages/repos.** Optional extras are the dependency boundary.

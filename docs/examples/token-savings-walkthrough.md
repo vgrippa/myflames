@@ -38,7 +38,7 @@ You copy the entire JSON blob, paste it into ChatGPT/Claude, and ask *"why is th
 ## Step 2b — with myflames: paste the digest
 
 ```bash
-myflames tokens slow-query-plan.json --digest | pbcopy   # then paste
+myflames digest slow-query-plan.json | pbcopy   # then paste
 ```
 
 The digest is **521 tokens** (Claude) and already contains the diagnosis *and* the fix — real output:
@@ -79,19 +79,19 @@ We asked **Claude Opus 4.8 the question both ways** (raw plan vs digest). It gav
 |---|--:|--:|--:|
 | Claude Opus 4.8 (real API `count_tokens`) | 2,110 | 521 | **4.0× · 75% fewer** |
 | GPT-4o / 4.1 / 5 (tiktoken) | 1,420 | 320 | **4.4× · 78% fewer** |
-| Offline heuristic (`myflames tokens`) | 1,655 | 300 | 5.5× |
+| Offline heuristic (`myflames digest --cost`) | 1,655 | 300 | 5.5× |
 
 The whole live demo (two `count_tokens` calls + two `messages.create` calls on Opus 4.8) cost **about $0.05**. On Opus input pricing you save ~$0.008 per query (~$7.90 per 1,000); on Sonnet 4.6, ~$4.80 per 1,000 — plus output tokens and round-trips, since the answer is already in the digest.
 
-> The offline heuristic (`myflames tokens`) is the zero-dependency default (no key, no network) and slightly over-counts JSON (5.5× vs the measured ~4×). For exact Claude counts, add `--exact` with **your own** key:
+> The offline heuristic (`myflames digest --cost`) is the zero-dependency default (no key, no network) and slightly over-counts JSON (5.5× vs the measured ~4×). For exact Claude counts, add `--tokenizer claude` with **your own** key:
 >
 > ```bash
 > pip install 'myflames[tokens]'
 > export ANTHROPIC_API_KEY="sk-ant-api03-REPLACE-WITH-YOUR-OWN-KEY-0000000000000000000000000000"   # placeholder
-> myflames tokens slow-query-plan.json --exact
+> myflames digest slow-query-plan.json --cost --tokenizer claude
 > ```
 >
-> myflames reads `ANTHROPIC_API_KEY` from the environment and passes it to the Anthropic SDK; it never writes your key anywhere. Without it, `--exact` falls back to the estimate. `count_tokens` is free, so exact counts cost nothing.
+> myflames reads `ANTHROPIC_API_KEY` from the environment and passes it to the Anthropic SDK; it never writes your key anywhere. Without it, `--tokenizer claude` falls back to the estimate. `count_tokens` is free, so exact counts cost nothing. For exact **GPT** counts (keyless): `pip install 'myflames[gpt]'` then `--tokenizer gpt`.
 
 ## Even less effort: let the agent do it (MCP)
 

@@ -1,5 +1,5 @@
 """
-Unit tests for :mod:`myflames.tokens` — the token estimator, the compact
+Unit tests for :mod:`myflames.digest` — the token estimator, the compact
 digest builder, and the raw-plan-vs-digest savings comparison.
 
 The estimator is heuristic by design (myflames vendors no tokenizer), so the
@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(TEST_DIR))
 
 from myflames.parser import parse_explain, analyze_plan
 from myflames.output_sidecar import build_sidecar
-from myflames.tokens import (
+from myflames.digest import (
     estimate_tokens, build_digest, compare, format_report,
     build_raw_prompt, build_digest_prompt, make_counter, PRICING,
     build_compare_digest,
@@ -173,16 +173,16 @@ class TestCompare(unittest.TestCase):
         self.assertEqual(result["ratio"], 0.0)
 
     def test_make_counter_defaults_to_heuristic(self):
-        count_fn, method = make_counter(exact=False)
+        count_fn, method = make_counter(tokenizer="heuristic")
         self.assertEqual(count_fn("the quick brown fox"), estimate_tokens("the quick brown fox"))
         self.assertIn("heuristic", method)
 
-    def test_make_counter_exact_degrades_gracefully_without_key(self):
+    def test_make_counter_claude_degrades_gracefully_without_key(self):
         # The Anthropic SDK doesn't validate auth until request time, so a naive
-        # `--exact` could hand back a counter that throws mid-run. make_counter
-        # must instead probe up front and fall back to a WORKING heuristic
-        # counter (never one that raises) with a truthful label.
-        count_fn, method = make_counter(exact=True)
+        # `--tokenizer claude` could hand back a counter that throws mid-run.
+        # make_counter must instead probe up front and fall back to a WORKING
+        # heuristic counter (never one that raises) with a truthful label.
+        count_fn, method = make_counter(tokenizer="claude")
         result = count_fn("the quick brown fox")  # must not raise, ever
         self.assertIsInstance(result, int)
         self.assertGreater(result, 0)
@@ -192,6 +192,53 @@ class TestCompare(unittest.TestCase):
         else:
             # A key was available in this env — then it must be honestly labelled.
             self.assertTrue(method.startswith("exact"))
+
+    def test_make_counter_gpt_without_tiktoken_falls_back(self):
+        # When tiktoken isn't installed, the gpt path must hand back a WORKING
+        # heuristic counter (never one that raises) and say so in the label.
+        try:
+            import tiktoken  # noqa: F401
+            have_tiktoken = True
+        except Exception:
+            have_tiktoken = False
+        count_fn, method = make_counter(tokenizer="gpt", model="gpt-4o")
+        result = count_fn("the quick brown fox")  # must not raise, ever
+        self.assertIsInstance(result, int)
+        self.assertGreater(result, 0)
+        if have_tiktoken:
+            # tiktoken is exact and keyless — must be honestly labelled, and the
+            # encoding for a current GPT model is o200k_base.
+            self.assertTrue(method.startswith("exact (tiktoken"))
+            self.assertIn("o200k_base", method)
+        else:
+            self.assertTrue(method.startswith("heuristic"))
+            self.assertEqual(result, estimate_tokens("the quick brown fox"))
+
+    def test_make_counter_gpt_picks_encoding_by_model(self):
+        # Only meaningful with tiktoken installed; otherwise both fall back.
+        try:
+            import tiktoken  # noqa: F401
+        except Exception:
+            self.skipTest("tiktoken not installed")
+        _, legacy = make_counter(tokenizer="gpt", model="gpt-4")
+        _, current = make_counter(tokenizer="gpt", model="gpt-5")
+        self.assertIn("cl100k_base", legacy)   # GPT-4 / 3.5 family
+        self.assertIn("o200k_base", current)   # GPT-4o / 4.1 / 5 family
+
+    def test_format_report_gpt_shows_tokens_not_claude_cost(self):
+        # The GPT exact path counts tokens but myflames prices only Claude, so the
+        # report must not attach a Claude $ figure to a GPT token count.
+        try:
+            import tiktoken  # noqa: F401
+        except Exception:
+            self.skipTest("tiktoken not installed")
+        count_fn, method = make_counter(tokenizer="gpt", model="gpt-4o")
+        comparison = compare(
+            build_raw_prompt(self.raw), build_digest_prompt(self.digest),
+            count=count_fn, method=method,
+        )
+        report = format_report(comparison)
+        self.assertIn("tiktoken", report)
 
     def test_format_report_renders(self):
         report = format_report(self.result)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myflames"
-version = "2.0.2"
+version = "2.1.0"
 description = "MySQL and MariaDB EXPLAIN ANALYZE visualizer: flame graphs, bar charts, treemaps, and diagrams"
 readme = "README.md"
 requires-python = ">=3.7"
@@ -17,6 +17,9 @@ mcp = ["mcp>=1.2"]
 # Exact Claude token counts for `myflames tokens --exact` (Anthropic SDK).
 # Without it, token counts fall back to the offline heuristic.
 tokens = ["anthropic>=0.40"]
+# Exact GPT token counts for `myflames tokens --tokenizer gpt` (tiktoken).
+# Keyless and offline (after a one-time vocab download).
+gpt = ["tiktoken>=0.7"]
 
 [project.scripts]
 myflames = "myflames.cli:main"

@@ -16,7 +16,7 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
   <br><em>Every operator now carries a Big O chip: <code>O(log n + k)</code>, <code>O(n · log m)</code>, <code>O(n · m)</code>, …  with a color-coded severity ramp.</em>
 </p>
 
-> **New in 2.0** — myflames is now built for the **AI era**. The new `tokens` command shows how many tokens (and dollars) you save by handing an LLM a compact, source-grounded **digest** instead of raw `EXPLAIN` JSON; new `diff` / `check` / `findings` subcommands serve agents and CI; an **MCP server** (`myflames-mcp`) lets agents call myflames directly; and every HTML report gains an "Agent-ready" panel. The worked example below is the headline. See the [full CHANGELOG entry](CHANGELOG.md#200--2026-06-05).
+> **New in 2.0** — myflames is now built for the **AI era**. The `digest` command emits a compact, source-grounded plan **digest** to hand an LLM instead of raw `EXPLAIN` JSON (and `digest --cost` shows the tokens and dollars you save); new `diff` / `check` / `advise` subcommands serve agents and CI; an **MCP server** (`myflames-mcp`) lets agents call myflames directly; and every HTML report gains an "Agent-ready" panel. The worked example below is the headline. See the [full CHANGELOG entry](CHANGELOG.md#200--2026-06-05).
 
 ---
 
@@ -47,7 +47,7 @@ You run `EXPLAIN ANALYZE FORMAT=JSON …`, copy the **~5.5 KB of deeply nested J
 ### ✅ With myflames — paste the digest instead
 
 ```bash
-myflames tokens plan.json --digest | pbcopy    # then paste
+myflames digest plan.json | pbcopy    # then paste
 ```
 
 The digest is **521 tokens** and already names the diagnosis *and the fix* — this is real output:
@@ -87,17 +87,18 @@ On Opus 4.8 input pricing that's **~$0.008 saved per query (~$7.90 per 1,000)**;
 
 ### Exact token counts (optional — use your own key)
 
-By default `myflames tokens` uses the offline heuristic, so it needs **no key and no network**. To get *exact* Claude counts instead, add `--exact`. That calls Anthropic's `count_tokens` endpoint, which needs **your own** Anthropic API key — supply it through the `ANTHROPIC_API_KEY` environment variable:
+By default `myflames digest --cost` uses the offline heuristic, so it needs **no key and no network**. To get *exact* Claude counts instead, add `--tokenizer claude`. That calls Anthropic's `count_tokens` endpoint, which needs **your own** Anthropic API key — supply it through the `ANTHROPIC_API_KEY` environment variable:
 
 ```bash
 pip install 'myflames[tokens]'
 export ANTHROPIC_API_KEY="sk-ant-api03-REPLACE-WITH-YOUR-OWN-KEY-0000000000000000000000000000"   # example placeholder, not a real key
-myflames tokens explain.json --exact
+myflames digest explain.json --cost --tokenizer claude
 ```
 
 - **myflames never stores your key.** It reads `ANTHROPIC_API_KEY` from the environment at call time and hands it straight to the Anthropic SDK — it is never written to a file, the JSON sidecar, the output, or anywhere on disk.
-- If the variable isn't set, `--exact` prints a one-line note and falls back to the offline estimate (it does not fail).
+- If the variable isn't set, `--tokenizer claude` prints a one-line note and falls back to the offline estimate (it does not fail).
 - `count_tokens` is a free endpoint, so exact counts don't consume billable tokens.
+- For **exact GPT counts** (keyless, via tiktoken): `pip install 'myflames[gpt]'` then `myflames digest explain.json --cost --tokenizer gpt`.
 
 **Reproduce it** against a live MySQL 8.4 in the [step-by-step walkthrough](docs/examples/token-savings-walkthrough.md). Prefer to skip the copy/paste entirely? Register the [MCP server](#mcp-server-for-ai-agents) and your agent calls myflames itself.
 
@@ -386,9 +387,10 @@ Shows total time delta, per-operator self-time/rows/loops changes, new or remove
 myflames serves AI agents and pipelines, not just human eyes:
 
 ```bash
-myflames tokens   plan.json            # token + $ saving (raw plan vs digest); --digest, --exact, --json
-myflames findings plan.json --json     # ranked warnings + suggestions, each with a confidence
-myflames check    plan.json --fail-on full_scan,filesort   # CI gate: exit 1 if a trigger matches
+myflames digest plan.json              # compact LLM-ready digest (pipe to your model)
+myflames digest plan.json --cost       # tokens + $ saved vs the raw plan; --tokenizer claude|gpt, --json
+myflames advise plan.json --json       # ranked warnings + suggestions, each with a confidence
+myflames check  plan.json --fail-on full_scan,filesort   # CI gate: exit 1 if a trigger matches
 ```
 
 Exit-code contract: **0** success · **1** a gate/finding tripped · **2** bad input. That makes `check` a drop-in pre-commit/CI guard and an agent-loop primitive.

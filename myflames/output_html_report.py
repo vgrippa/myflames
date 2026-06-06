@@ -1035,11 +1035,11 @@ def _render_token_savings(sidecar, raw_plan_text):
     report rendering.
     """
     try:
-        from . import tokens as tk
-        digest = tk.build_digest(sidecar)
-        raw_prompt = tk.build_raw_prompt(raw_plan_text or "")
-        digest_prompt = tk.build_digest_prompt(digest)
-        c = tk.compare(raw_prompt, digest_prompt)
+        from . import digest as dg
+        digest = dg.build_digest(sidecar)
+        raw_prompt = dg.build_raw_prompt(raw_plan_text or "")
+        digest_prompt = dg.build_digest_prompt(digest)
+        c = dg.compare(raw_prompt, digest_prompt)
     except Exception:
         return ""
     if c["raw_tokens"] <= 0 or c["tokens_saved"] <= 0:
@@ -1064,7 +1064,7 @@ def _render_token_savings(sidecar, raw_plan_text):
     parts.append('  </dl>')
     parts.append(
         '  <p class="tok-note">Estimate ({}). Prices as of {} ({} input). '
-        'Generate the digest with <code>myflames tokens --digest</code>.</p>'.format(
+        'Generate the digest with <code>myflames digest</code>.</p>'.format(
             xml_escape(c["method"]), c["pricing_as_of"], sonnet.get("label", "Sonnet 4.6")))
     parts.append('</section>')
     return "\n".join(parts)

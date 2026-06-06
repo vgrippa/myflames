@@ -42,7 +42,7 @@ class TestExitCodes(unittest.TestCase):
         self.assertEqual(run_cli("check", FULL_SCAN, "--fail-on", "full_scan").returncode, 1)
 
     def test_missing_file_is_two(self):
-        for cmd in (["tokens"], ["findings"], ["check"]):
+        for cmd in (["digest"], ["advise"], ["check"]):
             proc = run_cli(*(cmd + [os.path.join(FIXTURE_DIR, "does-not-exist.json")]))
             self.assertEqual(proc.returncode, 2, "%s on missing file should exit 2" % cmd[0])
 
@@ -54,11 +54,11 @@ class TestExitCodes(unittest.TestCase):
 
 class TestOutputFlag(unittest.TestCase):
 
-    def test_tokens_output_writes_file(self):
+    def test_digest_output_writes_file(self):
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tf:
             path = tf.name
         try:
-            proc = run_cli("tokens", FULL_SCAN, "-o", path)
+            proc = run_cli("digest", FULL_SCAN, "-o", path)
             self.assertEqual(proc.returncode, 0)
             self.assertTrue(os.path.getsize(path) > 0)
             # Payload went to the file, not stdout.
@@ -68,11 +68,11 @@ class TestOutputFlag(unittest.TestCase):
         finally:
             os.remove(path)
 
-    def test_findings_json_output_writes_valid_json_file(self):
+    def test_advise_json_output_writes_valid_json_file(self):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
             path = tf.name
         try:
-            proc = run_cli("findings", FULL_SCAN, "--json", "-o", path)
+            proc = run_cli("advise", FULL_SCAN, "--json", "-o", path)
             self.assertEqual(proc.returncode, 0)
             with open(path) as f:
                 data = json.load(f)  # raises if invalid
@@ -83,13 +83,19 @@ class TestOutputFlag(unittest.TestCase):
 
 class TestStreamDiscipline(unittest.TestCase):
 
-    def test_findings_json_is_valid_on_stdout(self):
-        proc = run_cli("findings", FULL_SCAN, "--json")
+    def test_advise_json_is_valid_on_stdout(self):
+        proc = run_cli("advise", FULL_SCAN, "--json")
         self.assertEqual(proc.returncode, 0)
         json.loads(proc.stdout)  # stdout is pure JSON, no diagnostics mixed in
 
-    def test_tokens_json_is_valid_on_stdout(self):
-        proc = run_cli("tokens", FULL_SCAN, "--json")
+    def test_digest_default_emits_text_on_stdout(self):
+        # Bare `digest` now emits the digest text itself (not the savings report).
+        proc = run_cli("digest", FULL_SCAN)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("myflames digest", proc.stdout)
+
+    def test_digest_cost_json_is_valid_on_stdout(self):
+        proc = run_cli("digest", FULL_SCAN, "--json")
         self.assertEqual(proc.returncode, 0)
         payload = json.loads(proc.stdout)
         self.assertIn("tokens_saved", payload)
@@ -104,6 +110,34 @@ class TestStreamDiscipline(unittest.TestCase):
         proc = run_cli("check", FULL_SCAN, "--fail-on", "filesort", "-q")
         self.assertEqual(proc.stdout.strip(), "")
         self.assertEqual(proc.stderr.strip(), "")
+
+
+class TestDeprecatedAliases(unittest.TestCase):
+    """`tokens` and `findings` are kept as deprecated aliases: they must still
+    work, warn on stderr (never stdout), and keep stdout clean."""
+
+    def test_tokens_alias_warns_and_keeps_old_default(self):
+        # Old bare `tokens` defaulted to the savings report — the alias preserves
+        # that by injecting --cost, and warns on stderr only.
+        proc = run_cli("tokens", FULL_SCAN)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("deprecated", proc.stderr)
+        self.assertIn("digest", proc.stderr)
+        self.assertIn("Token cost", proc.stdout)
+        self.assertNotIn("deprecated", proc.stdout)
+
+    def test_tokens_alias_json_stdout_stays_pure(self):
+        proc = run_cli("tokens", FULL_SCAN, "--json")
+        self.assertEqual(proc.returncode, 0)
+        payload = json.loads(proc.stdout)  # warning must not leak into stdout
+        self.assertIn("tokens_saved", payload)
+
+    def test_findings_alias_warns_and_works(self):
+        proc = run_cli("findings", FULL_SCAN, "--json")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("deprecated", proc.stderr)
+        self.assertIn("advise", proc.stderr)
+        json.loads(proc.stdout)  # stdout stays pure JSON
 
 
 if __name__ == "__main__":

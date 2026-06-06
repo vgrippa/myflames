@@ -398,7 +398,7 @@ def _cmd_compare(argv):
             import json as _json
             _write_output(_json.dumps(sidecar, indent=2), args.output)
         else:
-            from .tokens import build_compare_digest
+            from .digest import build_compare_digest
             _write_output(build_compare_digest(sidecar), args.output)
         return
 
@@ -409,7 +409,7 @@ def _cmd_compare(argv):
 
 def _sidecar_from_input(input_path):
     """Read an EXPLAIN JSON file (or '-' for stdin), parse, analyze, and build
-    the sidecar. Shared by the tokens / check / findings subcommands.
+    the sidecar. Shared by the digest / check / advise subcommands.
     """
     if input_path == "-":
         raw_text = sys.stdin.read()
@@ -484,10 +484,10 @@ def _cmd_check(argv):
     sys.exit(1)
 
 
-def _cmd_findings(argv):
-    """Emit a ranked findings list (warnings + suggestions) with confidence."""
+def _cmd_advise(argv):
+    """Emit a ranked list of advisor findings (warnings + suggestions) with confidence."""
     parser = argparse.ArgumentParser(
-        prog="myflames findings",
+        prog="myflames advise",
         description="Ranked warnings + suggestions with confidence, for agents and triage.",
     )
     parser.add_argument("input", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
@@ -525,33 +525,34 @@ def _cmd_findings(argv):
     _write_output("\n".join(lines) + "\n", args.output)
 
 
-def _cmd_tokens(argv):
-    """Compare the token cost of pasting a raw plan into an AI vs the myflames digest.
+def _cmd_digest(argv):
+    """Emit the compact, LLM-ready digest of a query plan.
 
-    Quantifies the core AI-era value of myflames: a verbose
-    ``EXPLAIN ANALYZE FORMAT=JSON`` plan distilled into a compact, grounded
-    digest costs an order of magnitude fewer tokens to feed to an agent.
+    The digest distils a verbose ``EXPLAIN ANALYZE FORMAT=JSON`` plan into the
+    few facts a person or agent needs (summary, warnings, fixes, plan skeleton),
+    at a fraction of the tokens. ``--cost`` shows that token/$ saving vs the raw
+    plan instead of the digest itself.
     """
     parser = argparse.ArgumentParser(
-        prog="myflames tokens",
-        description="Compare token cost: raw EXPLAIN JSON vs the myflames digest.",
+        prog="myflames digest",
+        description="Emit the compact, LLM-ready digest of a query plan (--cost shows the token/$ saving vs the raw plan).",
     )
     parser.add_argument("input", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
     parser.add_argument(
-        "--digest", action="store_true",
-        help="Emit the compact digest text itself (pipe this to your LLM) instead of the comparison.",
+        "--cost", action="store_true",
+        help="Show the token + $ saving of the digest vs pasting the raw plan, instead of the digest text.",
     )
     parser.add_argument(
-        "--show", action="store_true",
-        help="Print both prompts (raw-plan vs digest) side by side so you can see exactly what's compared.",
+        "--show-prompts", action="store_true", dest="show_prompts",
+        help="Print both prompts (raw plan vs digest) side by side, so you can see exactly what's compared.",
     )
     parser.add_argument(
         "--json", action="store_true", dest="as_json",
-        help="Emit the comparison as machine-readable JSON.",
+        help="Emit the savings comparison as machine-readable JSON (implies --cost).",
     )
     parser.add_argument(
-        "--exact", action="store_true",
-        help="Count exact Claude tokens via Anthropic count_tokens, using YOUR key from the ANTHROPIC_API_KEY env var (needs `pip install 'myflames[tokens]'`). The key is read from the environment and never stored. Falls back to the offline estimate if it's unset.",
+        "--tokenizer", choices=["heuristic", "claude", "gpt"], default=None,
+        help="How to count tokens for --cost/--json: 'heuristic' (offline default, no key/network), 'claude' (Anthropic count_tokens; needs ANTHROPIC_API_KEY), or 'gpt' (tiktoken; exact for GPT, keyless; needs `pip install 'myflames[gpt]'`). Falls back to the heuristic if unavailable.",
     )
     parser.add_argument(
         "--model", default=None, metavar="MODEL_ID",
@@ -563,19 +564,21 @@ def _cmd_tokens(argv):
     )
     args = parser.parse_args(argv)
 
-    from . import tokens as tk
+    from . import digest as dg
     raw_text, payload = _sidecar_from_input(args.input)
-    digest_text = tk.build_digest(payload)
+    digest_text = dg.build_digest(payload)
 
-    if args.digest:
+    # Default mode: emit the digest text. --cost / --json / --show-prompts switch
+    # to the savings comparison or the prompt dump.
+    if not (args.cost or args.as_json or args.show_prompts):
         _write_output(digest_text, args.output)
         return
 
-    pricing_model = args.model or tk.DEFAULT_PRICING_MODEL
-    raw_prompt = tk.build_raw_prompt(raw_text)
-    digest_prompt = tk.build_digest_prompt(digest_text)
+    pricing_model = args.model or dg.DEFAULT_PRICING_MODEL
+    raw_prompt = dg.build_raw_prompt(raw_text)
+    digest_prompt = dg.build_digest_prompt(digest_text)
 
-    if args.show:
+    if args.show_prompts:
         both = (
             "===== BEFORE (raw plan + question) =====\n" + raw_prompt
             + "\n===== AFTER (myflames digest + question) =====\n" + digest_prompt + "\n"
@@ -583,23 +586,55 @@ def _cmd_tokens(argv):
         _write_output(both, args.output)
         return
 
-    count_fn, method = tk.make_counter(exact=args.exact, model=pricing_model)
-    if args.exact and method.startswith("heuristic"):
-        # --exact was asked for but couldn't be satisfied; say so on stderr (not
-        # stdout, which stays clean data) and explain how to enable it, then
-        # continue with the estimate. `method` carries the specific reason.
+    choice = args.tokenizer or "heuristic"
+    count_fn, method = dg.make_counter(model=pricing_model, tokenizer=choice)
+    if choice != "heuristic" and method.startswith("heuristic"):
+        # An exact tokenizer was requested but couldn't be satisfied; say so on
+        # stderr (stdout stays clean data) with the specific reason, then
+        # continue with the estimate.
         reason = method[len("heuristic estimate "):].strip("() ") or "unavailable"
         sys.stderr.write(
-            "Note: --exact unavailable ({}); showing the offline estimate.\n"
-            "      For exact Claude counts: pip install 'myflames[tokens]' and set ANTHROPIC_API_KEY.\n"
-            .format(reason)
+            "Note: exact counts unavailable ({}); showing the offline estimate.\n".format(reason)
         )
-    comparison = tk.compare(raw_prompt, digest_prompt, count=count_fn, method=method)
+    comparison = dg.compare(raw_prompt, digest_prompt, count=count_fn, method=method)
     if args.as_json:
         import json as _json
         _write_output(_json.dumps(comparison, indent=2) + "\n", args.output)
     else:
-        _write_output(tk.format_report(comparison, pricing_model=pricing_model), args.output)
+        _write_output(dg.format_report(comparison, pricing_model=pricing_model), args.output)
+
+
+def _cmd_tokens_deprecated(argv):
+    """Deprecated alias for `digest`. Translates the old flag set and preserves
+    the old default (the savings comparison) so existing invocations still work."""
+    sys.stderr.write(
+        "warning: 'tokens' is deprecated; use 'digest' (note: 'digest' emits the "
+        "digest by default — use --cost for the savings report). 'tokens' will be "
+        "removed in a future release.\n"
+    )
+    had_mode = any(a in ("--digest", "--json", "--show") for a in argv)
+    translated = []
+    for a in argv:
+        if a == "--show":
+            translated.append("--show-prompts")
+        elif a == "--exact":
+            translated += ["--tokenizer", "claude"]
+        elif a == "--digest":
+            continue  # digest is now the default mode
+        else:
+            translated.append(a)
+    if not had_mode:
+        translated.append("--cost")  # old bare `tokens` defaulted to the comparison
+    _cmd_digest(translated)
+
+
+def _cmd_findings_deprecated(argv):
+    """Deprecated alias for `advise`."""
+    sys.stderr.write(
+        "warning: 'findings' is deprecated; use 'advise'. 'findings' will be "
+        "removed in a future release.\n"
+    )
+    _cmd_advise(argv)
 
 
 def main():
@@ -615,14 +650,20 @@ def main():
             from .teach import cmd_teach
             cmd_teach(sys.argv[2:])
             return
-        if sys.argv[1] == "tokens":
-            _cmd_tokens(sys.argv[2:])
+        if sys.argv[1] == "digest":
+            _cmd_digest(sys.argv[2:])
+            return
+        if sys.argv[1] == "tokens":  # deprecated alias for digest
+            _cmd_tokens_deprecated(sys.argv[2:])
             return
         if sys.argv[1] == "check":
             _cmd_check(sys.argv[2:])
             return
-        if sys.argv[1] == "findings":
-            _cmd_findings(sys.argv[2:])
+        if sys.argv[1] == "advise":
+            _cmd_advise(sys.argv[2:])
+            return
+        if sys.argv[1] == "findings":  # deprecated alias for advise
+            _cmd_findings_deprecated(sys.argv[2:])
             return
 
     parser = argparse.ArgumentParser(
@@ -641,17 +682,18 @@ Examples:
            -e 'SELECT * FROM t WHERE id=1'              # connect + explain
   myflames compare before.json after.json               # before vs after (HTML)
   myflames diff before.json after.json --digest         # token-cheap text diff
-  myflames tokens explain.json                          # tokens saved vs raw plan
+  myflames digest explain.json                          # compact LLM-ready digest
+  myflames digest explain.json --cost                   # tokens + $ saved vs raw plan
   myflames check explain.json --fail-on full_scan       # CI gate (exit code)
-  myflames findings explain.json --json                 # ranked findings for agents
+  myflames advise explain.json --json                   # ranked findings for agents
   myflames guide                                        # which view?
   myflames teach btree -o btree.html                    # interactive lesson
 
 Subcommands:
   compare   Compare before/after EXPLAIN JSON files (alias: diff; --digest/--json for agents)
-  tokens    Compare token cost of the raw plan vs the myflames digest
+  digest    Emit the compact LLM-ready digest of a plan (--cost shows the token/$ saving)
   check     Exit nonzero if the plan trips --fail-on categories (CI gate)
-  findings  Ranked warnings + suggestions with confidence (text or --json)
+  advise    Ranked warnings + suggestions with confidence (text or --json)
   guide     Show which view to pick for your use case
   teach     Interactive algorithm lessons (btree, bnl, hash, join, lru)
 """,

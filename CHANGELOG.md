@@ -5,6 +5,31 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] — 2026-06-05
+
+### Changed
+
+- **Renamed the `tokens` subcommand to `digest`.** The command's product is the
+  digest — the compact, source-grounded projection of a plan you hand an LLM —
+  so the name now advertises that. Bare `myflames digest plan.json` emits the
+  digest text (previously `tokens --digest`); the token + $ savings report moved
+  to `myflames digest --cost` (previously the bare `tokens` default). `--show`
+  became `--show-prompts`. The old `--exact` flag was removed in favor of
+  `--tokenizer claude`. The internal module `myflames/tokens.py` is now
+  `myflames/digest.py`.
+- **Renamed the `findings` subcommand to `advise`** (a verb, consistent with
+  `compare` / `check` / `digest`, and with the advisor). Flags are unchanged.
+- Both old names remain as **deprecated aliases**: `tokens` and `findings` still
+  run, print a one-line deprecation notice to stderr (never stdout), and
+  preserve their previous behavior (`tokens` defaults to the savings report).
+  They will be removed in a future release.
+
+### Added
+
+- **Exact GPT token counts, keyless** — `myflames digest --cost --tokenizer gpt`
+  uses tiktoken (optional extra `pip install 'myflames[gpt]'`) to count tokens
+  exactly for GPT models. No API key or network needed.
+
 ## [2.0.2] — 2026-06-05
 
 ### Added / Verified

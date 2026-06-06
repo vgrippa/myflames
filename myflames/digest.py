@@ -65,8 +65,8 @@ def estimate_tokens(text):
     Method: split into letter / digit / punctuation / whitespace runs, then
     estimate sub-tokens per run from typical BPE behavior (words ~ 5 chars/token,
     digits ~ 3/token, punctuation runs ~ 2/token, whitespace ~ 4/token). This is
-    an *estimate* — exact counts depend on the model's tokenizer. Use ``--exact``
-    / an Anthropic-backed counter when you need the real number.
+    an *estimate* — exact counts depend on the model's tokenizer. Use
+    ``--tokenizer claude`` / ``--tokenizer gpt`` when you need the real number.
     """
     if not text:
         return 0
@@ -85,20 +85,55 @@ def estimate_tokens(text):
     return total
 
 
-def make_counter(exact=False, model=DEFAULT_PRICING_MODEL):
+def _make_gpt_counter(model):
+    """tiktoken-backed exact counter for GPT models. Keyless and offline
+    (after a one-time vocab download). Returns ``(count_fn, label)`` or
+    ``(None, fallback_label)`` if tiktoken/the encoding isn't available.
+
+    tiktoken is OpenAI's tokenizer and is *exact* for GPT models (unlike for
+    Claude, where it is wrong — that path uses Anthropic count_tokens).
+    """
+    try:
+        import tiktoken
+    except Exception:
+        return None, "heuristic estimate (tiktoken not installed; pip install 'myflames[gpt]')"
+    name = (model or "").lower()
+    # cl100k_base = GPT-4 / 3.5; o200k_base = GPT-4o / 4.1 / 5 family (current).
+    enc_name = "cl100k_base" if ("gpt-4-" in name or "gpt-3.5" in name or name in ("gpt-4", "gpt-3.5-turbo")) else "o200k_base"
+    try:
+        enc = tiktoken.get_encoding(enc_name)
+    except Exception as exc:
+        return None, "heuristic estimate (tiktoken encoding unavailable: {})".format(type(exc).__name__)
+
+    def _count(text):
+        return len(enc.encode(text or ""))
+
+    return _count, "exact (tiktoken {})".format(enc_name)
+
+
+def make_counter(model=DEFAULT_PRICING_MODEL, tokenizer="heuristic"):
     """Return ``(count_fn, method_label)``.
 
-    With ``exact=False`` (default), returns the offline heuristic.
+    ``tokenizer`` selects how tokens are counted:
+    - ``"heuristic"`` (default): the offline stdlib estimate. No key, no network.
+    - ``"claude"``: Anthropic ``messages.count_tokens`` (needs the ``anthropic``
+      package + ``ANTHROPIC_API_KEY``).
+    - ``"gpt"``: tiktoken, exact for GPT models, keyless (needs the ``tiktoken``
+      package; ``pip install 'myflames[gpt]'``).
 
-    With ``exact=True``, tries to build a counter backed by Anthropic's
-    ``messages.count_tokens`` endpoint (requires the optional ``anthropic``
-    package and ``ANTHROPIC_API_KEY``). If that isn't available, falls back to
-    the heuristic and says so in the method label — never silently pretends a
-    heuristic number is exact.
+    Any path that can't be satisfied falls back to the heuristic and says so in
+    the label — it never pretends a heuristic number is exact.
     """
-    if not exact:
+    choice = tokenizer or "heuristic"
+
+    if choice == "heuristic":
         return estimate_tokens, "heuristic estimate (offline)"
 
+    if choice == "gpt":
+        fn, label = _make_gpt_counter(model)
+        return (fn, label) if fn else (estimate_tokens, label)
+
+    # choice == "claude"
     try:
         import anthropic
     except Exception:
@@ -378,6 +413,26 @@ def compare(raw_prompt, digest_prompt, count=None, method="heuristic estimate (o
 def format_report(comparison, pricing_model=DEFAULT_PRICING_MODEL):
     """Render a :func:`compare` result as a human-readable terminal report."""
     c = comparison
+    # GPT/tiktoken counts must not be priced against the Claude tables (GPT
+    # tokens × Claude $/token is meaningless). Show a tokens-only report with a
+    # pointer to the user's own provider pricing. Only when the counts are
+    # ACTUALLY exact-GPT — a heuristic fallback whose label mentions tiktoken
+    # must take the normal (estimated-cost) path.
+    if c.get("method", "").startswith("exact (tiktoken"):
+        lines = [
+            "Token cost: pasting a raw EXPLAIN plan into an AI vs the myflames digest",
+            "=" * 72,
+            "  What you'd paste                          Tokens",
+            "  BEFORE  raw plan JSON + your question  {:>9}".format(_fmt_int(c["raw_tokens"])),
+            "  AFTER   myflames digest + your question{:>9}".format(_fmt_int(c["digest_tokens"])),
+            "  " + "-" * 52,
+            "  SAVED                                  {:>9}   ({}% fewer, {}x smaller)".format(
+                _fmt_int(c["tokens_saved"]), c["reduction_pct"], c["ratio"]),
+            "",
+            "  Token counts: {} (exact for GPT, keyless).".format(c["method"]),
+            "  Apply your provider's per-token pricing to the saving above.",
+        ]
+        return "\n".join(lines) + "\n"
     cbm = c["cost_by_model"]
     pm = cbm.get(pricing_model) or cbm[DEFAULT_PRICING_MODEL]
     lines = [
@@ -414,7 +469,8 @@ def format_report(comparison, pricing_model=DEFAULT_PRICING_MODEL):
         "",
         "  Token counts: {}.".format(c["method"]),
         "  Prices as of {}. Both sides include the question framing.".format(c["pricing_as_of"]),
-        "  For exact Claude counts: --exact (needs `pip install myflames[tokens]`",
-        "  and ANTHROPIC_API_KEY). tiktoken is NOT used (it is wrong for Claude).",
+        "  For exact Claude counts: --tokenizer claude (needs `pip install",
+        "  myflames[tokens]` and ANTHROPIC_API_KEY). tiktoken is wrong for Claude;",
+        "  use --tokenizer gpt only for GPT models.",
     ]
     return "\n".join(lines) + "\n"

@@ -24,7 +24,7 @@ import json
 from .parser import parse_explain, analyze_plan, OPTIMIZER_SWITCH_EXPLANATIONS
 from .output_sidecar import build_sidecar
 from .output_compare_sidecar import build_compare_sidecar
-from . import tokens as tk
+from . import digest as dg
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ def analyze_plan_tool(plan_json):
 
 def digest_plan_tool(plan_json):
     """Return a sub-500-token text digest of a query plan (for pasting into a prompt)."""
-    return tk.build_digest(analyze_plan_tool(plan_json))
+    return dg.build_digest(analyze_plan_tool(plan_json))
 
 
 def compare_plans_tool(before_json, after_json):
