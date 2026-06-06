@@ -117,6 +117,31 @@ function bigOLabelDPhyp() {
 }
 
 // =============================================================================
+// Tweened color transitions (animation-craft: never instant property swaps)
+// =============================================================================
+// Fires a short, independent rAF tween that interpolates a single color
+// attribute from its current value to `toColor`. Used in place of bare
+// setAttribute("fill"/"stroke", …) inside timeline steps so state changes
+// (costing → yellow, commit → green, prune → grey) ease in rather than
+// snapping. Honors reduced-motion by jumping straight to the end state.
+function animColor(el, attr, toColor, dur, ease) {
+  if (!el) return;
+  var fromColor = el.getAttribute(attr) || toColor;
+  if (fromColor === toColor) return;
+  if (anim.reducedMotion && anim.reducedMotion()) {
+    el.setAttribute(attr, toColor);
+    return;
+  }
+  anim.tween({
+    from: 0, to: 1, duration: dur || 220, ease: ease || anim.easeOutCubic,
+    onUpdate: function(t) {
+      el.setAttribute(attr, anim.lerpColor(fromColor, toColor, t));
+    },
+    onComplete: function() { el.setAttribute(attr, toColor); }
+  });
+}
+
+// =============================================================================
 // Stage rendering — shared chrome
 // =============================================================================
 
@@ -385,7 +410,7 @@ function buildGreedyTimeline(controls) {
     (function(idx) {
       tl.call(function() {
         var c = stageState.tableCards[idx];
-        c.rect.setAttribute("fill", "#dbeafe");
+        animColor(c.rect, "fill", "#dbeafe", 200);
         anim.pulse(c.rect, 3, 1, 200);
       });
       tl.delay(60);
@@ -402,8 +427,8 @@ function buildGreedyTimeline(controls) {
     (function(idx) {
       var nd = lvl0[idx];
       tl.call(function() {
-        nd.circle.setAttribute("fill", "#fef3c7");
-        nd.circle.setAttribute("stroke", "#d97706");
+        animColor(nd.circle, "fill", "#fef3c7", 200);
+        animColor(nd.circle, "stroke", "#d97706", 200);
         anim.pulse(nd.circle, 4, 1, 240);
         bumpCounter(Math.max(1, Math.round(finalPlanCount / (lvl0.length * (tree.levels.length + 1)))));
       });
@@ -417,10 +442,11 @@ function buildGreedyTimeline(controls) {
     phaseLabel.textContent = "Greedy commit — lowest-cost candidate becomes the outer loop";
     var winner = lvl0.find(function(n) { return n.onPath; });
     if (winner) {
-      winner.circle.setAttribute("fill", "#34d399");
-      winner.circle.setAttribute("stroke", "#047857");
+      animColor(winner.circle, "fill", "#34d399", 300, anim.easeOutBack);
+      animColor(winner.circle, "stroke", "#047857", 300);
       winner.circle.setAttribute("stroke-width", 2.5);
-      winner.labelEl.setAttribute("fill", "#064e3b");
+      animColor(winner.labelEl, "fill", "#064e3b", 300);
+      anim.arrival(winner.circle);
     }
   });
   tl.delay(280);
@@ -459,12 +485,12 @@ function buildGreedyTimeline(controls) {
         var nd = tree.allNodes[ai];
         if (nd.parentId === null) continue;
         if (!isReachable(nd)) {
-          nd.circle.setAttribute("fill", "#e2e8f0");
-          nd.circle.setAttribute("stroke", "#cbd5e1");
+          animColor(nd.circle, "fill", "#e2e8f0", 260, anim.easeInCubic);
+          animColor(nd.circle, "stroke", "#cbd5e1", 260, anim.easeInCubic);
           nd.circle.setAttribute("stroke-width", 1);
-          nd.labelEl.setAttribute("fill", "#94a3b8");
+          animColor(nd.labelEl, "fill", "#94a3b8", 260, anim.easeInCubic);
           if (nd.edge) {
-            nd.edge.setAttribute("stroke", "#e2e8f0");
+            animColor(nd.edge, "stroke", "#e2e8f0", 260, anim.easeInCubic);
             nd.edge.setAttribute("opacity", 0.25);
             nd.edge.setAttribute("stroke-dasharray", "3 3");
           }
@@ -497,10 +523,10 @@ function buildGreedyTimeline(controls) {
       for (var s = 0; s < visited.length; s++) {
         (function(nd) {
           tl.call(function() {
-            nd.circle.setAttribute("fill", "#fef3c7");
-            nd.circle.setAttribute("stroke", "#d97706");
+            animColor(nd.circle, "fill", "#fef3c7", 180);
+            animColor(nd.circle, "stroke", "#d97706", 180);
             if (nd.edge) {
-              nd.edge.setAttribute("stroke", "#fbbf24");
+              animColor(nd.edge, "stroke", "#fbbf24", 180);
               nd.edge.setAttribute("stroke-width", 1.5);
               nd.edge.setAttribute("opacity", 1);
             }
@@ -515,14 +541,15 @@ function buildGreedyTimeline(controls) {
       // Commit the winning extension at this level.
       tl.call(function() {
         for (var w = 0; w < onPath.length; w++) {
-          onPath[w].circle.setAttribute("fill", "#34d399");
-          onPath[w].circle.setAttribute("stroke", "#047857");
+          animColor(onPath[w].circle, "fill", "#34d399", 300, anim.easeOutBack);
+          animColor(onPath[w].circle, "stroke", "#047857", 300);
           onPath[w].circle.setAttribute("stroke-width", 2.5);
-          onPath[w].labelEl.setAttribute("fill", "#064e3b");
+          animColor(onPath[w].labelEl, "fill", "#064e3b", 300);
           if (onPath[w].edge) {
-            onPath[w].edge.setAttribute("stroke", "#10b981");
+            animColor(onPath[w].edge, "stroke", "#10b981", 300);
             onPath[w].edge.setAttribute("stroke-width", 2);
           }
+          anim.arrival(onPath[w].circle);
         }
       });
       tl.delay(220);
@@ -701,8 +728,8 @@ function resetHypergraphColors() {
 function highlightVertex(name, color, strokeColor) {
   var v = stageState.graph && stageState.graph.vertices[name];
   if (!v) return;
-  v.circle.setAttribute("fill", color);
-  v.circle.setAttribute("stroke", strokeColor);
+  animColor(v.circle, "fill", color, 240);
+  animColor(v.circle, "stroke", strokeColor, 240);
   v.circle.setAttribute("stroke-width", 2.5);
   anim.pulse(v.circle, 4, 1, 240);
 }
@@ -713,7 +740,7 @@ function highlightEdge(fromTo, color, width) {
     var e = stageState.graph.edges[i];
     if ((e.from === fromTo[0] && e.to === fromTo[1]) ||
         (e.from === fromTo[1] && e.to === fromTo[0])) {
-      e.line.setAttribute("stroke", color);
+      animColor(e.line, "stroke", color, 240);
       e.line.setAttribute("stroke-width", width);
       e.line.setAttribute("opacity", 1);
       return;

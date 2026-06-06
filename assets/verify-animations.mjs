@@ -143,18 +143,30 @@ async function verifyOne(browser, slug) {
     return { slug, ok: false, reason: "no #btn-play element" };
   }
 
-  // Let it animate.
-  await new Promise(r => setTimeout(r, 1500));
-
-  const after = await snapshotSvg(page);
+  // Poll for movement instead of betting on a single fixed wait. A fixed
+  // 1500ms snapshot is fragile: under load the requestAnimationFrame loop
+  // can be starved so the timeline hasn't advanced yet at that instant,
+  // producing a false "animation dead". Snapshot every `STEP_MS` and pass
+  // as soon as anything inside the lesson's SVG changes vs `before`; only
+  // declare it dead if nothing moved across the whole `MAX_MS` window.
+  const STEP_MS = 250;
+  const MAX_MS = 6000;
+  let changed = [];
+  const deadline = Date.now() + MAX_MS;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, STEP_MS));
+    if (errors.length) break;  // a JS error is terminal — report it below
+    const after = await snapshotSvg(page);
+    changed = diffSnapshots(before, after);
+    if (changed.length) break;
+  }
   await page.close();
 
   if (errors.length) {
     return { slug, ok: false, reason: "JS errors: " + errors.join("; ") };
   }
-  const changed = diffSnapshots(before, after);
   if (changed.length === 0) {
-    return { slug, ok: false, reason: "stage SVG did not change after Play (animation dead)" };
+    return { slug, ok: false, reason: `stage SVG did not change within ${MAX_MS}ms of Play (animation dead)` };
   }
   return { slug, ok: true, changedSvgs: changed };
 }
