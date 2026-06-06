@@ -20,7 +20,14 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 
 ---
 
-## Ask an AI to fix a slow query for **4× fewer tokens** (real, measured)
+**Contents** &nbsp;·&nbsp; [Why: 4x fewer tokens](#ask-an-ai-to-fix-a-slow-query-4x-fewer-tokens) · [Output preview](#what-does-the-output-look-like) · [Install](#install) · [Output types](#output-types) · [Live demos](#live-demos) · [Learn the algorithms](#learn-the-algorithms-myflames-teach)
+<br>**For humans:** [Quick start](#quick-start-file-mode) · [Live-connection mode](#live-connection-mode) · [HTML report](#html-report) · [Environment advisor](#environment-advisor)
+<br>**For agents & CI:** [JSON sidecar](#json-sidecar) · [Compare / diff](#compare-before-vs-after) · [digest / advise / check](#agent-and-ci-subcommands) · [MCP server](#mcp-server-for-ai-agents)
+<br>**Reference:** [Requirements](#requirements) · [CLI reference](#cli-reference) · [Troubleshooting](#troubleshooting) · [Documentation](#documentation)
+
+---
+
+## Ask an AI to fix a slow query (4x fewer tokens)
 
 **Why this works:** a raw `EXPLAIN ANALYZE FORMAT=JSON` plan is mostly *structure*, not information. The same field names (`cost_info`, `used_columns`, `actual_rows`, `actual_loops`, …) repeat for every operator, nested levels deep, and the LLM pays for all of it and must parse it before it can reason. myflames does that parsing once and hands the model only the facts that decide the answer — the summary, the warnings, and the fix. Same answer, a quarter of the tokens.
 
@@ -85,22 +92,18 @@ On Opus 4.8 input pricing that's **~$0.008 saved per query (~$7.90 per 1,000)**;
 
 > Numbers measured 2026-06-05 against Claude Opus 4.8 and the GPT tokenizer. The offline heuristic is the zero-dependency default and slightly over-counts JSON.
 
-### Exact token counts (optional — use your own key)
+### Exact token counts (optional)
 
-By default `myflames digest --cost` uses the offline heuristic, so it needs **no key and no network**. To get *exact* Claude counts instead, add `--tokenizer claude`. That calls Anthropic's `count_tokens` endpoint, which needs **your own** Anthropic API key — supply it through the `ANTHROPIC_API_KEY` environment variable:
+`digest --cost` uses an offline heuristic by default — **no key, no network**. For exact counts add a tokenizer:
 
 ```bash
-pip install 'myflames[tokens]'
-export ANTHROPIC_API_KEY="sk-ant-api03-REPLACE-WITH-YOUR-OWN-KEY-0000000000000000000000000000"   # example placeholder, not a real key
-myflames digest explain.json --cost --tokenizer claude
+myflames digest explain.json --cost --tokenizer claude   # Anthropic count_tokens; needs myflames[tokens] + your ANTHROPIC_API_KEY
+myflames digest explain.json --cost --tokenizer gpt      # tiktoken; exact for GPT, keyless; needs myflames[gpt]
 ```
 
-- **myflames never stores your key.** It reads `ANTHROPIC_API_KEY` from the environment at call time and hands it straight to the Anthropic SDK — it is never written to a file, the JSON sidecar, the output, or anywhere on disk.
-- If the variable isn't set, `--tokenizer claude` prints a one-line note and falls back to the offline estimate (it does not fail).
-- `count_tokens` is a free endpoint, so exact counts don't consume billable tokens.
-- For **exact GPT counts** (keyless, via tiktoken): `pip install 'myflames[gpt]'` then `myflames digest explain.json --cost --tokenizer gpt`.
+Your `ANTHROPIC_API_KEY` is read from the environment at call time and never stored; if it's unset, `--tokenizer claude` falls back to the estimate with a one-line note. `count_tokens` is free. Full setup is in the [walkthrough](docs/examples/token-savings-walkthrough.md).
 
-**Reproduce it** against a live MySQL 8.4 in the [step-by-step walkthrough](docs/examples/token-savings-walkthrough.md). Prefer to skip the copy/paste entirely? Register the [MCP server](#mcp-server-for-ai-agents) and your agent calls myflames itself.
+**Reproduce it** against a live MySQL 8.4 with the [step-by-step walkthrough](docs/examples/token-savings-walkthrough.md). Want to skip the copy/paste? Register the [MCP server](#mcp-server-for-ai-agents) and your agent calls myflames itself.
 
 ## What does the output look like?
 
@@ -182,62 +185,29 @@ Every view includes a **Query Analysis panel** with optimizer features detected,
 
 ---
 
-## Learn the algorithms — `myflames teach`
+## Learn the algorithms (`myflames teach`)
 
-Interactive, offline-first HTML lessons that animate MySQL 8.4 and MariaDB 11.x internals with correct cost models. Every lesson ships with in-page sliders — no CLI flags, no re-running:
-
-```bash
-myflames teach btree -o btree.html && open btree.html
-```
-
-**21 lessons** in four families. Browse them all from one place — the catalog hub — with `myflames teach --index -o teach/index.html`:
+Interactive, offline-first HTML lessons that animate MySQL 8.4 and MariaDB 11.x internals with correct cost models. Every lesson ships with in-page sliders — no CLI flags, no re-running. Each is a single self-contained HTML file (no external scripts/styles/fonts) you can drop in a Slack DM or attach to a ticket:
 
 ```bash
-myflames teach --index -o teach/index.html && open teach/index.html
+myflames teach btree -o btree.html && open btree.html   # one lesson
+myflames teach --index -o teach/index.html              # the catalog hub
 ```
 
-### Join family
+**21 lessons in four families** — browse them all at [vgrippa.github.io/myflames/teach/](https://vgrippa.github.io/myflames/teach/).
 
-| Lesson | What you learn |
-|--------|---------------|
-| [`teach nested_loop`](https://vgrippa.github.io/myflames/teach/join/nested_loop.html) | Nested Loop Join — the outer-driver/inner-probe loop shape from EXPLAIN. |
-| [`teach bnl`](https://vgrippa.github.io/myflames/teach/join/bnl.html) | Block Nested Loop join (MariaDB 11.x default). Warning banner: MySQL removed BNL in 8.0.20. |
-| [`teach hash`](https://vgrippa.github.io/myflames/teach/join/hash.html) | MySQL 8.4 hash join — build phase, probe phase, and grace-hash spill when the build side overflows `join_buffer_size`. |
-| [`teach join`](https://vgrippa.github.io/myflames/teach/join/join.html) | BNL vs hash join side-by-side with shared sliders. See the asymptotic difference at scale. |
-| [`teach bka_join`](https://vgrippa.github.io/myflames/teach/join/bka_join.html) | Batched Key Access join — batch outer keys, sort by rowid, and sweep the inner index sequentially via Multi-Range Read. |
-| [`teach semijoin_weedout`](https://vgrippa.github.io/myflames/teach/join/semijoin_weedout.html) | Semijoin Duplicate Weedout — IN/EXISTS rewritten as inner join; a temp table keyed on outer rowid removes duplicates. |
+<details>
+<summary><strong>Full lesson catalog</strong> (click to expand)</summary>
 
-### Index family
+**Join family** — [`nested_loop`](https://vgrippa.github.io/myflames/teach/join/nested_loop.html), [`bnl`](https://vgrippa.github.io/myflames/teach/join/bnl.html) (Block Nested Loop; MariaDB default), [`hash`](https://vgrippa.github.io/myflames/teach/join/hash.html) (build/probe/grace-hash spill), [`join`](https://vgrippa.github.io/myflames/teach/join/join.html) (BNL vs hash side-by-side), [`bka_join`](https://vgrippa.github.io/myflames/teach/join/bka_join.html) (Batched Key Access), [`semijoin_weedout`](https://vgrippa.github.io/myflames/teach/join/semijoin_weedout.html) (Duplicate Weedout).
 
-| Lesson | What you learn |
-|--------|---------------|
-| [`teach btree`](https://vgrippa.github.io/myflames/teach/index/btree.html) | InnoDB B+tree lookup — clustered PK, covering vs non-covering secondary, 16 KiB page fan-out. Move the row-count slider from 10 to 1 billion and watch the tree height update. |
-| [`teach unique_lookup`](https://vgrippa.github.io/myflames/teach/index/unique_lookup.html) | Unique Key Lookup — exact-key lookup path and covering vs non-covering single-row access. |
-| [`teach non_unique_lookup`](https://vgrippa.github.io/myflames/teach/index/non_unique_lookup.html) | Non-Unique Key Lookup — explains “Index lookup” / “Index range scan” and why non-covering lookups fetch base rows by row-id. |
-| [`teach icp`](https://vgrippa.github.io/myflames/teach/index/icp.html) | Index Condition Pushdown — see how ICP checks trailing index columns before fetching the row, saving unnecessary clustered-index lookups. |
-| [`teach index_merge`](https://vgrippa.github.io/myflames/teach/index/index_merge.html) | Index Merge — two separate indexes scanned and combined via union, intersection, or sort-union instead of a full table scan. |
-| [`teach skip_scan`](https://vgrippa.github.io/myflames/teach/index/skip_scan.html) | Skip Scan — low-NDV leading column lets MySQL do N small range scans instead of a full table scan. |
-| [`teach rowid_filter`](https://vgrippa.github.io/myflames/teach/index/rowid_filter.html) | Rowid Filter (MariaDB) — bitmap pre-filter before table access; scans a filtering index to build a rowid bitmap, skipping table fetches for non-matching rows. |
+**Index family** — [`btree`](https://vgrippa.github.io/myflames/teach/index/btree.html) (InnoDB B+tree, page fan-out), [`unique_lookup`](https://vgrippa.github.io/myflames/teach/index/unique_lookup.html), [`non_unique_lookup`](https://vgrippa.github.io/myflames/teach/index/non_unique_lookup.html), [`icp`](https://vgrippa.github.io/myflames/teach/index/icp.html) (Index Condition Pushdown), [`index_merge`](https://vgrippa.github.io/myflames/teach/index/index_merge.html) (union/intersection/sort-union), [`skip_scan`](https://vgrippa.github.io/myflames/teach/index/skip_scan.html), [`rowid_filter`](https://vgrippa.github.io/myflames/teach/index/rowid_filter.html) (MariaDB bitmap pre-filter).
 
-### Scan / sort / temp family
+**Scan / sort / temp family** — [`full_scan`](https://vgrippa.github.io/myflames/teach/scan/full_scan.html), [`filter`](https://vgrippa.github.io/myflames/teach/scan/filter.html), [`filesort`](https://vgrippa.github.io/myflames/teach/scan/filesort.html) (sort buffer, runs, k-way merge), [`tmp`](https://vgrippa.github.io/myflames/teach/scan/tmp.html) (MEMORY→on-disk conversion cliff), [`derived_table`](https://vgrippa.github.io/myflames/teach/scan/derived_table.html), [`covering_index`](https://vgrippa.github.io/myflames/teach/scan/covering_index.html) (incl. the InnoDB PK-append property).
 
-| Lesson | What you learn |
-|--------|---------------|
-| [`teach full_scan`](https://vgrippa.github.io/myflames/teach/scan/full_scan.html) | Full table scan — what it means when MySQL reads every row, then filters. Compare O(n) scan work against indexed access O(log n + k). |
-| [`teach filter`](https://vgrippa.github.io/myflames/teach/scan/filter.html) | Filter operator — row-by-row predicate evaluation and why filter cost scales with incoming rows. |
-| [`teach filesort`](https://vgrippa.github.io/myflames/teach/scan/filesort.html) | How MySQL sorts without an index: `sort_buffer_size` fills, sorted runs spill to tmpdir, k-way merge. Bigger buffer = fewer runs = less I/O. |
-| [`teach tmp`](https://vgrippa.github.io/myflames/teach/scan/tmp.html) | Temporary tables — watch GROUP BY fill a MEMORY temp table, hit the limit, and convert to on-disk InnoDB. That cliff is why your query suddenly slows down. |
-| [`teach derived_table`](https://vgrippa.github.io/myflames/teach/scan/derived_table.html) | Derived Table Materialization — FROM-clause subquery materialized into temp table, auto-indexed, then probed. |
-| [`teach covering_index`](https://vgrippa.github.io/myflames/teach/scan/covering_index.html) | Covering index — non-covering vs covering vs the InnoDB PK-append property that silently covers many queries. Verified against `storage/innobase/dict/dict0dict.cc:3149`. |
+**Cache family** — [`lru`](https://vgrippa.github.io/myflames/teach/cache/lru.html) (midpoint-insertion LRU), [`buffer_pool_warmup`](https://vgrippa.github.io/myflames/teach/cache/buffer_pool_warmup.html) (cold/warm/dump-load).
 
-### Cache family
-
-| Lesson | What you learn |
-|--------|---------------|
-| [`teach lru`](https://vgrippa.github.io/myflames/teach/cache/lru.html) | InnoDB's midpoint-insertion LRU — why MySQL's buffer pool survives full-scan pollution while a textbook LRU gets wiped. |
-| [`teach buffer_pool_warmup`](https://vgrippa.github.io/myflames/teach/cache/buffer_pool_warmup.html) | Cold start vs warm vs dump/load — `innodb_buffer_pool_dump_pct = 25` (verified in `storage/innobase/handler/ha_innodb.cc:22692`), `ib_buffer_pool` filename, `innodb_buffer_pool_load_now` async behavior. |
-
-Each lesson is a single self-contained HTML file: no external scripts, no external stylesheets, no external fonts. Drop one in a Slack DM or attach to a ticket and it just works. Hosted separately from the query-plan demos at [vgrippa.github.io/myflames/teach/](https://vgrippa.github.io/myflames/teach/).
+</details>
 
 ---
 
@@ -370,7 +340,7 @@ Every suggestion carries a `Why:` clause — enforced by a test so no rule ships
 
 ---
 
-## Compare before/after
+## Compare before vs after
 
 ```bash
 myflames compare before.json after.json --output diff.html   # HTML report
@@ -382,7 +352,7 @@ Shows total time delta, per-operator self-time/rows/loops changes, new or remove
 
 ---
 
-## Agent & CI subcommands
+## Agent and CI subcommands
 
 myflames serves AI agents and pipelines, not just human eyes:
 
@@ -454,12 +424,15 @@ myflames -h HOST [-P PORT] -u USER [-p[PASS]] -D DB -e 'SQL' -o OUT
 ### Subcommands
 
 ```bash
-myflames compare before.json after.json --output diff.html
-myflames teach btree -o btree.html   # interactive algorithm lesson
-myflames guide                        # which view should I use?
+myflames compare before.json after.json --output diff.html   # before/after (alias: diff)
+myflames digest explain.json [--cost]   # LLM-ready digest (--cost: token/$ saving)
+myflames advise explain.json [--json]   # ranked warnings + suggestions
+myflames check  explain.json --fail-on full_scan,filesort    # CI gate (exit code)
+myflames teach  btree -o btree.html     # interactive algorithm lesson
+myflames guide                          # which view should I use?
 ```
 
-Full help: `myflames --help`.
+Full help: `myflames --help`. See [Agent and CI subcommands](#agent-and-ci-subcommands) for the digest/advise/check details.
 
 ---
 
