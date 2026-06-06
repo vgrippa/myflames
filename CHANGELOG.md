@@ -5,7 +5,7 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.2] — 2026-06-05
 
 ### Added / Verified
 
@@ -42,9 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.1] — 2026-06-05
 
-Advisor correctness pass. Every claim was verified against **real MySQL 8.4
-plans** (optimizer switches toggled on/off live) and the checked-out
-**mysql-server source** — not the LLM's say-so, which more than once was wrong.
+Advisor correctness pass. Every claim was verified against real MySQL 8.4
+plans (with optimizer switches toggled on and off on a live server) and the
+MySQL server source, rather than against documentation or assumption.
 
 ### Fixed
 
@@ -80,12 +80,13 @@ plans** (optimizer switches toggled on/off live) and the checked-out
 
 ## [2.0.0] — 2026-06-05
 
-Major release: **myflames becomes an AI-era tool.** Raw `EXPLAIN ANALYZE
-FORMAT=JSON` is token-expensive to feed an LLM and invisible to agents; 2.0
-adds a token-cheap, source-grounded **digest** and the surface to use it — a
-token/cost comparison, agent + CI subcommands, and an MCP server — while
-keeping the core a zero-dependency stdlib package. One analysis, many
-projections (SVG for humans, digest/JSON for agents, exit code for CI).
+Major release. A full `EXPLAIN ANALYZE FORMAT=JSON` plan is large and
+repetitive, which makes it expensive to pass to an LLM and unusable from an
+SVG. 2.0 adds a compact, source-grounded text digest of a plan and the tooling
+around it: a token and cost comparison, agent and CI subcommands, and an MCP
+server, while keeping the core package dependency-free (Python stdlib only).
+The same analysis is produced once and rendered several ways: SVG for people,
+the digest or JSON for tools, an exit code for CI.
 
 ### Added
 
