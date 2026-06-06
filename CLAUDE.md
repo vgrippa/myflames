@@ -50,6 +50,7 @@ Standard pattern for a logic change: implement → in parallel run `mysql-correc
 - **SVG Rules**: Always update both `height` AND `viewBox` together. Use `_wrap()` for info panel text.
 - **Preserve Order**: Do not sort `inputs[]` in the JSON; order is semantically significant (outer vs inner table).
 - **Preserve Inspiration Credit**: Never remove the "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs" line from the README or anywhere else. This attribution is load-bearing for the project and must always remain.
+- **Commit & release-note conventions**: Do NOT add `Co-Authored-By` or any AI-attribution trailer to commit messages. Keep commit messages, CHANGELOG entries, and GitHub release notes professional: no emojis, no "generated with" footers, and no meta-commentary that an AI/LLM authored or verified the work. Legitimate product references (the tool targets LLMs/agents; `--exact` uses Anthropic's `count_tokens`) are fine.
 
 ## 📖 Commands Reference
 - **Run**: `python3 -m myflames --type [flamegraph|bargraph|treemap|diagram] explain.json > output.svg`
