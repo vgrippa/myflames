@@ -11,19 +11,23 @@ Visualize MySQL <code>EXPLAIN ANALYZE FORMAT=JSON</code> and MariaDB <code>ANALY
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
+---
+
+#### Contents
+
+**Start here:** [Why: 4x fewer tokens](#ask-an-ai-to-fix-a-slow-query-4x-fewer-tokens) · [Output preview](#what-does-the-output-look-like) · [Install](#install) · [Output types](#output-types) · [Live demos](#live-demos) · [Learn the algorithms](#learn-the-algorithms-myflames-teach)
+<br>**For humans:** [Quick start](#quick-start-file-mode) · [Live-connection mode](#live-connection-mode) · [HTML report](#html-report) · [Environment advisor](#environment-advisor)
+<br>**For agents & CI:** [JSON sidecar](#json-sidecar) · [Compare / diff](#compare-before-vs-after) · [digest / advise / check](#agent-and-ci-subcommands) · [MCP server](#mcp-server-for-ai-agents)
+<br>**Reference:** [Requirements](#requirements) · [CLI reference](#cli-reference) · [Troubleshooting](#troubleshooting) · [Documentation](#documentation)
+
+---
+
 <p align="center">
   <img src="docs/screenshots/hero-diagram.svg" alt="myflames diagram view with Big O complexity chips on every operator" width="920">
   <br><em>Every operator now carries a Big O chip: <code>O(log n + k)</code>, <code>O(n · log m)</code>, <code>O(n · m)</code>, …  with a color-coded severity ramp.</em>
 </p>
 
 > **New in 2.0** — myflames is now built for the **AI era**. The `digest` command emits a compact, source-grounded plan **digest** to hand an LLM instead of raw `EXPLAIN` JSON (and `digest --cost` shows the tokens and dollars you save); new `diff` / `check` / `advise` subcommands serve agents and CI; an **MCP server** (`myflames-mcp`) lets agents call myflames directly; and every HTML report gains an "Agent-ready" panel. The worked example below is the headline. See the [full CHANGELOG entry](CHANGELOG.md#200--2026-06-05).
-
----
-
-**Contents** &nbsp;·&nbsp; [Why: 4x fewer tokens](#ask-an-ai-to-fix-a-slow-query-4x-fewer-tokens) · [Output preview](#what-does-the-output-look-like) · [Install](#install) · [Output types](#output-types) · [Live demos](#live-demos) · [Learn the algorithms](#learn-the-algorithms-myflames-teach)
-<br>**For humans:** [Quick start](#quick-start-file-mode) · [Live-connection mode](#live-connection-mode) · [HTML report](#html-report) · [Environment advisor](#environment-advisor)
-<br>**For agents & CI:** [JSON sidecar](#json-sidecar) · [Compare / diff](#compare-before-vs-after) · [digest / advise / check](#agent-and-ci-subcommands) · [MCP server](#mcp-server-for-ai-agents)
-<br>**Reference:** [Requirements](#requirements) · [CLI reference](#cli-reference) · [Troubleshooting](#troubleshooting) · [Documentation](#documentation)
 
 ---
 
