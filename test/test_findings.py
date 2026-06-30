@@ -11,7 +11,13 @@ sys.path.insert(0, os.path.dirname(TEST_DIR))
 
 from myflames.parser import parse_explain, analyze_plan
 from myflames.output_sidecar import build_sidecar
-from myflames.findings import build_findings, evaluate_check, available_triggers
+from myflames.findings import (
+    build_findings,
+    evaluate_check,
+    available_triggers,
+    known_triggers,
+    unknown_triggers,
+)
 
 FIXTURE_DIR = os.path.join(TEST_DIR, "fixtures")
 FULL_SCAN_FIXTURE = os.path.join(FIXTURE_DIR, "explain-001-table-scan-users-no-filter.json")
@@ -84,6 +90,30 @@ class TestEvaluateCheck(unittest.TestCase):
     def test_available_triggers_includes_present_categories(self):
         trig = available_triggers(self.payload)
         self.assertIn("full_scan", trig)
+
+
+class TestKnownTriggers(unittest.TestCase):
+    """The --fail-on vocabulary validation: a misspelled trigger is rejected up
+    front so `--fail-on full_scan` (valid, just unmatched on a clean plan) does
+    not get silently treated the same as `--fail-on fullscan` (a typo)."""
+
+    def test_full_scan_warn_and_any_are_all_known(self):
+        known = known_triggers()
+        self.assertIn("full_scan", known)   # a warning category
+        self.assertIn("warn", known)        # a warning severity
+        self.assertIn("any", known)         # the special catch-all
+
+    def test_unknown_triggers_returns_only_typos_sorted(self):
+        self.assertEqual(
+            unknown_triggers(["full_scan", "fullscan", "filsort", "any"]),
+            ["filsort", "fullscan"],
+        )
+
+    def test_unknown_triggers_empty_when_all_valid(self):
+        self.assertEqual(
+            unknown_triggers(["full_scan", "warn", "any"]),
+            [],
+        )
 
 
 if __name__ == "__main__":

@@ -52,6 +52,7 @@ from myflames.parser import (
     parse_explain,
     flatten_nodes,
     build_flame_entries,
+    build_diagram_steps,
     analyze_plan,
     render_info_panel,
     format_sql,
@@ -156,6 +157,29 @@ class TestParser(unittest.TestCase):
         with self.assertRaises(Exception):
             parse_explain("not valid json {{{")
 
+    def test_non_dict_json_raises_value_error(self):
+        """Valid JSON that is not an object (scalar / array) must raise a clean
+        ValueError, not the opaque TypeError the membership tests would
+        otherwise produce. ValueError is the single documented failure type the
+        CLI and MCP layers rely on to map to exit code 2."""
+        for raw in ("42", "null", "[]", '"x"'):
+            with self.subTest(raw=raw):
+                with self.assertRaises(ValueError):
+                    parse_explain(raw)
+                # And specifically NOT a bare TypeError leaking through.
+                self.assertNotIsInstance(
+                    self._capture(raw), TypeError,
+                    "%r should raise ValueError, not TypeError" % raw,
+                )
+
+    @staticmethod
+    def _capture(raw):
+        try:
+            parse_explain(raw)
+        except BaseException as exc:  # noqa: BLE001 - we are inspecting the type
+            return exc
+        return None
+
     def test_explain_prefix_stripped(self):
         """EXPLAIN: prefix output by some MySQL clients should be handled."""
         raw = self.sample_text.strip()
@@ -171,6 +195,71 @@ class TestParser(unittest.TestCase):
         for node in flatten_nodes(root):
             with self.subTest(label=node.get("folded_label")):
                 self.assertTrue(required.issubset(node.keys()))
+
+
+# ---------------------------------------------------------------------------
+# TestBuildDiagramSteps — multi-branch (3+ children) coverage
+# ---------------------------------------------------------------------------
+
+class TestBuildDiagramSteps(unittest.TestCase):
+    """build_diagram_steps must emit a join step + access chain for EVERY
+    input, not just children[0]/children[1]. The old code hardcoded two
+    children and silently dropped children[2:]."""
+
+    @staticmethod
+    def _leaf(name):
+        return {"folded_label": name.upper(), "short_label": name,
+                "full_label": name, "children": []}
+
+    def test_three_children_emit_all_three_leaves(self):
+        t1, t2, t3 = self._leaf("t1"), self._leaf("t2"), self._leaf("t3")
+        append = {"folded_label": "APPEND", "short_label": "Append",
+                  "full_label": "Append", "children": [t1, t2, t3]}
+        steps = build_diagram_steps(append)
+
+        access_nodes = [s["node"] for s in steps if s["type"] == "access"]
+        join_steps = [s for s in steps if s["type"] == "join"]
+
+        # All three leaves are represented as access steps — t3 is NOT dropped.
+        self.assertIn(t1, access_nodes)
+        self.assertIn(t2, access_nodes)
+        self.assertIn(t3, access_nodes)
+        self.assertEqual(len(access_nodes), 3)
+        # N children => N-1 join steps.
+        self.assertEqual(len(join_steps), 2)
+
+    def test_three_children_preserve_input_order(self):
+        # Order is semantically significant (outer vs inner); the access steps
+        # must appear in inputs[] order: t1, t2, t3.
+        t1, t2, t3 = self._leaf("t1"), self._leaf("t2"), self._leaf("t3")
+        append = {"folded_label": "APPEND", "short_label": "Append",
+                  "full_label": "Append", "children": [t1, t2, t3]}
+        steps = build_diagram_steps(append)
+        access_order = [s["node"]["short_label"]
+                        for s in steps if s["type"] == "access"]
+        self.assertEqual(access_order, ["t1", "t2", "t3"])
+
+    def test_two_children_produce_one_join(self):
+        t1, t2 = self._leaf("t1"), self._leaf("t2")
+        join = {"folded_label": "JOIN", "short_label": "Nested loop",
+                "full_label": "Nested loop inner join", "children": [t1, t2]}
+        steps = build_diagram_steps(join)
+        join_steps = [s for s in steps if s["type"] == "join"]
+        access_nodes = [s["node"] for s in steps if s["type"] == "access"]
+        self.assertEqual(len(join_steps), 1)
+        self.assertEqual(access_nodes, [t1, t2])
+
+    def test_single_child_is_skipped(self):
+        leaf = self._leaf("t1")
+        filt = {"folded_label": "FILTER", "short_label": "Filter",
+                "full_label": "Filter", "children": [leaf]}
+        steps = build_diagram_steps(filt)
+        self.assertEqual(steps, [{"type": "access", "node": leaf}])
+
+    def test_leaf_node_is_single_access_step(self):
+        leaf = self._leaf("t1")
+        self.assertEqual(build_diagram_steps(leaf),
+                         [{"type": "access", "node": leaf}])
 
 
 # ---------------------------------------------------------------------------

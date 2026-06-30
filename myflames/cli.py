@@ -466,8 +466,17 @@ def _cmd_check(argv):
     args = parser.parse_args(argv)
 
     _raw, payload = _sidecar_from_input(args.input)
-    from .findings import evaluate_check
+    from .findings import evaluate_check, unknown_triggers, known_triggers
     triggers = args.fail_on.split(",")
+    # Reject a misspelled trigger up front: an unrecognized token would match
+    # nothing and silently exit 0 (clean), turning a typo into a green CI gate.
+    bad = unknown_triggers(triggers)
+    if bad:
+        sys.stderr.write(
+            "error: unknown --fail-on trigger(s): {}\n"
+            "valid triggers: {}\n".format(
+                ", ".join(bad), ", ".join(sorted(known_triggers()))))
+        sys.exit(2)
     matched = evaluate_check(payload, triggers)
 
     if not matched:
@@ -1006,8 +1015,10 @@ Subcommands:
             folded_lines.append(";".join(path) + " " + str(t))
         folded_text = "\n".join(folded_lines)
         if not folded_text.strip():
+            # Empty/degenerate input, not a tripped finding — exit 2 (bad input)
+            # per the 0/1/2 contract; 1 is reserved for a matched CI gate.
             sys.stderr.write("No flame graph data (all zero self-time).\n")
-            sys.exit(1)
+            sys.exit(2)
         from .parser import operator_family
         _complexity_by_folded = {}
         _family_by_folded = {}

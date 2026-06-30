@@ -193,7 +193,11 @@ def _rule_tmp_table_size_vs_materialize(analysis, schema, stats, variables):
         return (None, None)
     tmp = _to_int(variables.get("tmp_table_size"))
     heap = _to_int(variables.get("max_heap_table_size"))
-    smallest = min(tmp, heap) if tmp and heap else max(tmp, heap)
+    # MySQL caps an in-memory temp table at min(tmp_table_size,
+    # max_heap_table_size), so the effective limit is the smaller of the two
+    # *present* values. If only one was collected, that one is the limit.
+    present = [v for v in (tmp, heap) if v > 0]
+    smallest = min(present) if present else 0
     if smallest <= 0 or smallest >= 32 * 1024 * 1024:
         return (None, None)
     warn = (
@@ -229,7 +233,10 @@ def _rule_optimizer_switch_disables(analysis, schema, stats, variables):
         join at execution time, so the real fix is an index or more join
         buffer; do not recommend any optimizer_switch change.
       - MRR present on a secondary-index range scan with ``mrr=off`` → advise
-        ``mrr_cost_based=on`` (the cost-based gate), never force ``mrr=on``.
+        ``mrr=on``: with ``mrr=off`` MRR is globally disabled and
+        ``mrr_cost_based`` has no effect, so ``mrr=on`` is the only switch that
+        re-enables it. ``mrr_cost_based`` (on by default) then still gates it
+        per query, so this re-enables rather than forces MRR.
       - derived_condition_pushdown=off with a materialized temp table.
     """
     if not analysis or not variables:
@@ -251,14 +258,16 @@ def _rule_optimizer_switch_disables(analysis, schema, stats, variables):
                 "optimizer_switch has join_cache_hashed=off but the plan "
                 "uses Block Nested-Loop — enabling join_cache_hashed lets "
                 "MariaDB use a hashed join buffer (BNLH) for equi-joins.",
-                "SET SESSION optimizer_switch='join_cache_hashed=on'; "
-                "Why: with join_cache_hashed=on and "
-                "join_cache_level >= 3, MariaDB uses a hash table inside "
-                "the join buffer instead of a linear scan per batch. For "
-                "equi-joins on big inner tables this is typically much "
-                "cheaper than plain BNL because each outer batch probes "
-                "the hash table in O(1) instead of re-scanning the inner "
-                "side. Bigger win: add an index on the join column."
+                "SET SESSION optimizer_switch='join_cache_hashed=on'; and "
+                "ensure join_cache_level >= 3 (SET SESSION "
+                "join_cache_level=4;). Why: join_cache_hashed=on is "
+                "required, but it is already on by default — the switch "
+                "that actually selects a hashed buffer (BNLH) is "
+                "join_cache_level, which defaults to 2 (plain BNL); levels "
+                "3 and 4 enable the hash table. With both in place MariaDB "
+                "probes a hash table per outer batch in O(1) instead of "
+                "re-scanning the inner side. Bigger win: add an index on "
+                "the join column."
             ))
         elif not is_mariadb:
             # MySQL 8.0.20+: BNL is rewritten to hash join at execution
@@ -298,14 +307,16 @@ def _rule_optimizer_switch_disables(analysis, schema, stats, variables):
             "optimizer_switch has mrr=off and the plan has a range scan "
             "on a secondary index — fetching rows in secondary-index "
             "order hits the clustered index randomly.",
-            "Consider SET SESSION optimizer_switch='mrr_cost_based=on'; "
+            "Consider SET SESSION optimizer_switch='mrr=on'; "
             "Why: Multi-Range Read collects row IDs from a secondary-"
             "index range scan, sorts them by primary key, and fetches "
             "rows in (mostly) physical order. On rotational disks this "
-            "converts random I/O into sequential I/O. On SSDs the "
-            "improvement is usually small and the cost-based gate "
-            "(mrr_cost_based) will decide when MRR is worth it — do not "
-            "force mrr=on blindly; let the optimizer decide."
+            "converts random I/O into sequential I/O. With mrr=off MRR is "
+            "globally disabled and mrr_cost_based has no effect, so the "
+            "only switch that re-enables MRR is mrr=on. That is not the "
+            "same as forcing it: mrr_cost_based is on by default, so once "
+            "mrr=on the cost-based gate still decides per query whether "
+            "MRR is worth it. On SSDs the gate often decides it is not."
         ))
 
     if pairs.get("derived_condition_pushdown") == "off" and analysis.get("temp_tables"):

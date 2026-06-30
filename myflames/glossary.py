@@ -442,7 +442,7 @@ GLOSSARY = {
             "MariaDB-only optimization: builds a sorted row-id filter from "
             "a secondary index first, then applies it during the main index "
             "lookup to avoid dereferencing rows that would fail the filter. "
-            "Controlled by ``rowid_filter`` optimizer_switch (MariaDB 10.5+)."
+            "Controlled by ``rowid_filter`` optimizer_switch (MariaDB 10.4+)."
         ),
         "newcomer": (
             "MariaDB builds a small list of row locations that match a "
@@ -725,7 +725,8 @@ def _pick_primary_issue(analysis):
         first = nonsargable_joins[0]
         return (
             "nonsargable_join",
-            "join predicate wraps the column in {}() — no index can be used".format(
+            "join predicate wraps the column in {}() — no regular index can be "
+            "used (only a functional index on that exact expression)".format(
                 first.get("function", "a function")
             ),
         )

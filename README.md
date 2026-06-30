@@ -405,6 +405,8 @@ myflames -h HOST [-P PORT] -u USER [-p[PASS]] -D DB -e 'SQL' -o OUT
 | `--no-enhance` | off | Disable detailed tooltips (flamegraph only) |
 | `--query SQL` | — | Embed the original SQL text in the output |
 | `--query-file PATH` | — | Read the original SQL from a file to embed in the output |
+| `--no-teach-bundle` | off | Don't auto-emit the `teach/` lesson files next to an HTML `--output` (useful for tests/CI/disk-constrained shells) |
+| `--refresh-teach-bundle` | off | Force-regenerate the `teach/` bundle even if it already exists (use after upgrading myflames) |
 
 ### Live connection — same flags as the `mysql` CLI
 

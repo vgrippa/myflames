@@ -16,9 +16,15 @@ def format_number(n):
 
 
 def _attr_escape(s):
+    # For double-quoted XML/SVG attributes. Newlines are encoded (not left raw)
+    # so a multi-line SQL condition reads back as one line in the tooltip,
+    # matching the treemap/diagram renderers. ' is escaped to stay safe even if
+    # an attribute is ever single-quoted.
     if s is None:
         return ""
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#39;")
+            .replace("\n", "&#10;").replace("\r", ""))
 
 
 def _build_bar_info(op, st, pct, unit_display):

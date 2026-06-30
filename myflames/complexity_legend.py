@@ -26,8 +26,8 @@ from .complexity import SEVERITY_COLORS, SEVERITY_BORDERS
 # pedagogy artifact — the underlying complexities can evolve without
 # forcing a visual redesign here.
 LEGEND_ROWS = [
-    ("O(1)",              "good",   "constant — one step, regardless of size"),
-    ("O(log n)",          "good",   "logarithmic — B-tree / hash lookup"),
+    ("O(1)",              "good",   "constant — one step (e.g. hash lookup), regardless of size"),
+    ("O(log n)",          "good",   "logarithmic — single B-tree index descent"),
     ("O(log n + k)",      "good",   "indexed range — descent + k matches"),
     ("O(n)",              "medium", "linear — full table or index scan"),
     ("O(n log n)",        "medium", "sort / group by (filesort)"),

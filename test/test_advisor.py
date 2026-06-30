@@ -233,11 +233,13 @@ class TestOptimizerSwitchRule(unittest.TestCase):
         results = _rule_optimizer_switch_disables(analysis, None, None, variables)
         rule_ids = [r[0] for r in results]
         self.assertIn("MRR_OFF_WITH_RANGE_SCAN", rule_ids)
-        # Recommend mrr_cost_based only — never force mrr=on.
+        # With mrr=off, mrr_cost_based has no effect — mrr=on is the only switch
+        # that re-enables MRR, so the suggestion must recommend mrr=on (and not
+        # the old no-op mrr_cost_based=on wording).
         for rid, _, _, sug in results:
             if rid == "MRR_OFF_WITH_RANGE_SCAN":
-                self.assertIn("mrr_cost_based=on", sug)
-                self.assertNotIn("'mrr=on'", sug)
+                self.assertIn("mrr=on", sug)
+                self.assertNotIn("mrr_cost_based=on", sug)
 
     def test_mrr_silent_on_filesort_only_plan(self):
         """Counter-example: a plan with a filesort but no range scan must

@@ -15,6 +15,9 @@ TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TEST_DIR)
 FIXTURE_DIR = os.path.join(TEST_DIR, "fixtures")
 FULL_SCAN = os.path.join(FIXTURE_DIR, "explain-001-table-scan-users-no-filter.json")
+# A clean plan (primary-key lookup) — emits no full_scan warning, so a
+# `--fail-on full_scan` gate passes (exit 0) on it.
+CLEAN_PLAN = os.path.join(FIXTURE_DIR, "explain-004-pk-lookup-user.json")
 
 
 def run_cli(*args, **kwargs):
@@ -40,6 +43,25 @@ class TestExitCodes(unittest.TestCase):
     def test_gate_tripped_is_one(self):
         # check matches full_scan = a finding tripped = 1
         self.assertEqual(run_cli("check", FULL_SCAN, "--fail-on", "full_scan").returncode, 1)
+
+    def test_clean_plan_fail_on_full_scan_is_zero(self):
+        # A PK-lookup plan has no full_scan warning, so the gate passes.
+        self.assertEqual(
+            run_cli("check", CLEAN_PLAN, "--fail-on", "full_scan").returncode, 0)
+
+    def test_full_scan_plan_fail_on_full_scan_is_one(self):
+        # The full-scan plan trips the full_scan gate.
+        self.assertEqual(
+            run_cli("check", FULL_SCAN, "--fail-on", "full_scan").returncode, 1)
+
+    def test_unknown_fail_on_trigger_is_two(self):
+        # A misspelled / unknown trigger is bad input (exit 2), distinct from a
+        # valid-but-unmatched trigger (exit 0) and a tripped gate (exit 1).
+        proc = run_cli("check", FULL_SCAN, "--fail-on", "bogustrigger")
+        self.assertEqual(proc.returncode, 2)
+        # Diagnostic names the offending trigger on stderr, stdout stays clean.
+        self.assertIn("bogustrigger", proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "")
 
     def test_missing_file_is_two(self):
         for cmd in (["digest"], ["advise"], ["check"]):

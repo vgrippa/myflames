@@ -415,11 +415,15 @@ def render_diagram(
     info_gap = 8 if analysis is not None else 0
     height = diagram_height + info_gap + info_panel_h
 
-    # Escape for use in HTML attribute (tooltip / details bar)
+    # Escape for use in a double-quoted HTML/SVG attribute (tooltip / details
+    # bar). Newlines encoded as &#10; and ' escaped, matching the other
+    # renderers' attr_escape helpers.
     def attr_escape(s):
         if s is None:
             return ""
-        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("\n", " ")
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace('"', "&quot;").replace("'", "&#39;")
+                .replace("\n", "&#10;").replace("\r", ""))
 
     total_time_str = _format_time(total_time_ms)
 
@@ -566,7 +570,7 @@ def render_diagram(
         if analysis_msg:
             tooltip = tooltip + "  ·  ⚠ In Query Analysis: " + analysis_msg
         info_attr = attr_escape(tooltip)
-        analysis_attr = attr_escape(analysis_msg)[:400] if analysis_msg else ""
+        analysis_attr = attr_escape(analysis_msg[:400]) if analysis_msg else ""
         label, sublabel, _ = _access_diagram_label(node)
         fill = _time_to_fill(self_ms, max_self_ms)
         cid = clip_counter[0]
@@ -623,7 +627,7 @@ def render_diagram(
         if analysis_msg:
             tooltip = tooltip + "  ·  ⚠ In Query Analysis: " + analysis_msg
         info_attr = attr_escape(tooltip)
-        analysis_attr = attr_escape(analysis_msg)[:400] if analysis_msg else ""
+        analysis_attr = attr_escape(analysis_msg[:400]) if analysis_msg else ""
         fill = _time_to_fill(self_ms, max_self_ms)
         tc = _text_color(fill)
         pts = [

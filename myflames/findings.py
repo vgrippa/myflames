@@ -30,6 +30,10 @@ _MEDIUM_CONFIDENCE_CATEGORIES = frozenset({"other", "env"})
 
 
 def _confidence(category, severity):
+    # Two tiers are produced today: high (a concrete plan signal) and medium
+    # (catch-all / env-derived, which can be stale). "low" is defined in
+    # _CONFIDENCE_RANK for sort stability and forward compatibility, but the
+    # current rules never emit it.
     if severity in ("error", "high"):
         return "high"
     if category in _MEDIUM_CONFIDENCE_CATEGORIES:
@@ -89,6 +93,36 @@ def available_triggers(payload):
         cats.add(w.get("severity"))
     cats.discard(None)
     return cats
+
+
+def known_triggers():
+    """Every ``--fail-on`` token that *could* match some plan: the full warning
+    category and severity vocabulary plus the special ``any``.
+
+    Distinct from :func:`available_triggers` (what is present in one plan): this
+    is the universe used to reject a misspelled trigger, so ``--fail-on
+    full_scan`` on a clean plan validates as a real (just-unmatched) trigger
+    while ``--fail-on fullscan`` is rejected as a typo. Sourced from the same
+    enum sets the sidecar schema enforces — one source of truth."""
+    # Imported lazily to avoid a module-load cycle (output_sidecar imports
+    # nothing from findings, but keep findings importable standalone).
+    from . import output_sidecar
+    return (set(output_sidecar._WARNING_CATEGORIES)
+            | set(output_sidecar._WARNING_SEVERITIES)
+            | {"any"})
+
+
+def unknown_triggers(fail_on):
+    """Return the sorted list of *fail_on* tokens that are not valid triggers
+    (see :func:`known_triggers`). Empty == all triggers are recognized."""
+    known = known_triggers()
+    bad = set()
+    for t in fail_on:
+        if not t or not t.strip():
+            continue
+        if t.strip().lower() not in known:
+            bad.add(t.strip())
+    return sorted(bad)
 
 
 def evaluate_check(payload, fail_on):

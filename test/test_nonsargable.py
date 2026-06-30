@@ -205,7 +205,9 @@ class TestAnalyzePlanNonsargable(unittest.TestCase):
         root = parse_explain(_load(BNL_FIXTURE))
         a = analyze_plan(root)
         summary = generate_executive_summary(root, a)
-        self.assertIn("no index can be used", summary.lower())
+        # Wording sharpened: a functional index on the exact expression CAN be
+        # used, so the claim is now scoped to "no regular index".
+        self.assertIn("no regular index can be used", summary.lower())
 
     @unittest.skipUnless(os.path.exists(BNL_FIXTURE), "BNL fixture missing")
     def test_primary_issue_is_nonsargable(self):
