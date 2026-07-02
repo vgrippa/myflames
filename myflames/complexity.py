@@ -78,7 +78,7 @@ def _c(big_o, short, severity, rationale, confidence="exact", learn_more=None):
 # Helpers — inspect a child's access path
 # ---------------------------------------------------------------------------
 
-_INDEXED_INNER_KINDS = frozenset({"ref", "eq_ref", "range", "fulltext"})
+_INDEXED_INNER_KINDS = frozenset({"ref", "eq_ref", "const", "range", "fulltext"})
 _SCAN_INNER_KINDS = frozenset({"table", "index"})
 
 
@@ -130,7 +130,12 @@ def _normalize_kind(node):
         return "range"
     if access in ("ref", "ref_or_null"):
         return "ref"
-    if access in ("eq_ref", "const", "system"):
+    if access in ("const", "system"):
+        # const/system rows are resolved once during optimization (at most one
+        # matching row treated as a constant), not re-read per outer row, so
+        # they are O(1) — a distinct kind from the per-row eq_ref descent.
+        return "const"
+    if access == "eq_ref":
         return "eq_ref"
 
     # MySQL JSON "index" bucket — disambiguate via index_access_type or op text.
@@ -203,6 +208,19 @@ def _for_index_scan(node, _parent):
         "than a table scan because the index is smaller, but still O(n).",
         "exact",
         "index_scan",
+    )
+
+
+def _for_const(node, _parent):
+    return _c(
+        "O(1)",
+        "1",
+        "good",
+        "Constant lookup (const/system): the row is resolved once during "
+        "optimization and treated as a constant — read a single time, not "
+        "once per outer row.",
+        "exact",
+        "single_row_lookup",
     )
 
 
@@ -563,6 +581,7 @@ _DISPATCH = {
     "index":                    _for_index_scan,
     "ref":                      _for_ref_lookup,
     "eq_ref":                   _for_ref_lookup,
+    "const":                    _for_const,
     "range":                    _for_range,
     "fulltext":                 _for_fulltext,
     "sort":                     _for_sort,

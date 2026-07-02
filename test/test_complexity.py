@@ -115,12 +115,25 @@ class DecisionTableTests(unittest.TestCase):
         self.assertEqual(c["learn_more"], "single_row_lookup")
 
     def test_mariadb_eq_ref_is_log_n(self):
+        # Regression guard: const was split out from eq_ref. eq_ref must stay
+        # O(log n) (one B+tree descent), NOT collapse to O(1).
         c = compute_complexity(node(access_type="eq_ref"))
         self.assertEqual(c["big_o"], "O(log n)")
+        self.assertNotEqual(c["big_o"], "O(1)")
 
-    def test_mariadb_const_is_log_n(self):
+    def test_const_is_constant_time(self):
+        # const rows are resolved once during optimization and treated as a
+        # constant — O(1), not the per-row O(log n) descent of eq_ref.
         c = compute_complexity(node(access_type="const"))
-        self.assertEqual(c["big_o"], "O(log n)")
+        self.assertEqual(c["big_o"], "O(1)")
+        self.assertEqual(c["severity"], "good")
+        self.assertEqual(c["learn_more"], "single_row_lookup")
+
+    def test_system_is_constant_time(self):
+        c = compute_complexity(node(access_type="system"))
+        self.assertEqual(c["big_o"], "O(1)")
+        self.assertEqual(c["severity"], "good")
+        self.assertEqual(c["learn_more"], "single_row_lookup")
 
     def test_fulltext_is_k(self):
         c = compute_complexity(node(access_type="fulltext"))

@@ -157,9 +157,15 @@ def _layout_treemap(node, x, y, w, h, depth, results):
 
 
 def attr_escape(s):
+    # For double-quoted XML/SVG attributes. ' is escaped to stay safe even if
+    # an attribute is ever single-quoted; newlines encoded so multi-line text
+    # reads as one line. Truncate the RAW string before calling this, never the
+    # escaped result, or a multi-byte entity (&#10;, &amp;) can be cut mid-token.
     if s is None:
         return ""
-    s = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("\n", "&#10;").replace("\r", "")
+    s = (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+         .replace('"', "&quot;").replace("'", "&#39;")
+         .replace("\n", "&#10;").replace("\r", ""))
     return s
 
 
@@ -266,9 +272,9 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         analysis_msg = highlight_msg_by_label.get(short_lbl, "")
         if analysis_msg:
             info_text = info_text + "  ·  ⚠ In Query Analysis: " + analysis_msg
-        info_attr = attr_escape(info_text)[:500]
+        info_attr = attr_escape(info_text[:500])
         label_attr = attr_escape(short_label)
-        analysis_attr = attr_escape(analysis_msg)[:400] if analysis_msg else ""
+        analysis_attr = attr_escape(analysis_msg[:400]) if analysis_msg else ""
         cell_class = "treemap-cell in-query-analysis" if analysis_attr else "treemap-cell"
         folded = (n.get("folded_label") or "").strip()
         teach_attr = ""

@@ -672,7 +672,8 @@ def _normalize_mariadb_nested_loop(nested_loop):
 
     MariaDB stores the join as a flat array: [table1, table2, ...].
     MySQL stores it as nested: {operation: "Nested loop", inputs: [outer, inner]}.
-    We fold the flat list into a right-deep nested tree to match MySQL style.
+    We fold the flat list into a left-deep nested tree — ((t1 NL t2) NL t3) —
+    to match MySQL's outer-vs-inner ordering.
 
     Entries can be ``{"table": {...}}``, ``{"read_sorted_file": {...}}``, or
     other wrapper objects.
@@ -1017,6 +1018,16 @@ def _normalize_mariadb(data):
 def parse_explain(text):
     """Parse EXPLAIN JSON text into root tree node."""
     data = load_explain_json(text)
+    # The text parsed as JSON, but a plan is always a JSON object. A scalar or
+    # array (e.g. "42", "null", "[]") would make the membership tests below
+    # raise an opaque TypeError, so reject it here with a clear ValueError —
+    # the single documented failure type every caller (CLI, MCP) relies on.
+    if not isinstance(data, dict):
+        raise ValueError(
+            "Expected a JSON object (an EXPLAIN/ANALYZE FORMAT=JSON plan), "
+            "got {}. Make sure you are passing the FORMAT=JSON output of "
+            "EXPLAIN ANALYZE, not a scalar or array.".format(type(data).__name__)
+        )
     # MySQL 9.7+ wraps the plan in a "query_plan" key
     if "query_plan" in data and isinstance(data["query_plan"], dict):
         data = data["query_plan"]
@@ -1050,19 +1061,22 @@ def build_diagram_steps(node):
     """
     Build a left-to-right list of steps for a Visual Explain–style diagram.
     Returns list of {"type": "access"|"join", "node": node}.
-    Single-child nodes (e.g. Filter) are skipped; joins emit outer chain + join + inner.
+    Single-child nodes (e.g. Filter) are skipped; a multi-child node emits the
+    outer chain, then a join step + chain for each remaining input (so a
+    3+-way UNION ALL / Append contributes all of its branches, not just two).
     """
     children = node.get("children") or []
     if not children:
         return [{"type": "access", "node": node}]
     if len(children) == 1:
         return build_diagram_steps(children[0])
-    # Nested loop (or similar): outer, then join, then inner(s)
-    outer = children[0]
-    inner = children[1]
-    result = build_diagram_steps(outer)
-    result.append({"type": "join", "node": node})
-    result.extend(build_diagram_steps(inner))
+    # Nested loop / Append (or similar): outer chain, then for each remaining
+    # input a join step followed by that input's chain. Handles N>=2 children
+    # (e.g. a multi-branch UNION ALL Append) — do not assume exactly two.
+    result = build_diagram_steps(children[0])
+    for child in children[1:]:
+        result.append({"type": "join", "node": node})
+        result.extend(build_diagram_steps(child))
     return result
 
 

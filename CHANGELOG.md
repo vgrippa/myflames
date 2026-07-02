@@ -5,6 +5,38 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] — 2026-06-30
+
+### Fixed
+
+- **Advisor no longer recommends a no-op MRR setting.** When `optimizer_switch`
+  has `mrr=off`, MRR is globally disabled and `mrr_cost_based` has no effect, so
+  the advisor now suggests `mrr=on` (which re-enables MRR; `mrr_cost_based`, on
+  by default, still gates it per query) instead of the previous `mrr_cost_based=on`.
+- **Visual Explain diagram no longer drops branches of a 3+-way join/UNION.**
+  `build_diagram_steps` now emits every child of a multi-input node (e.g. a
+  multi-branch `UNION ALL` Append), not just the first two.
+- **`parse_explain` raises a clear `ValueError` for valid-but-non-object JSON**
+  (a scalar or array) instead of leaking an opaque `TypeError`. This also fixes
+  the MCP tools crashing on such input.
+- **`check` rejects an unrecognized `--fail-on` trigger** (exit code 2) instead
+  of silently matching nothing and exiting 0 — a misspelled trigger no longer
+  turns a CI gate green.
+- **`render` exits 2 (bad input), not 1, when a plan has no flame-graph data**
+  (all-zero self-time), keeping exit code 1 reserved for a tripped finding.
+- Corrected MariaDB BNLH advice (the lever is `join_cache_level >= 3`, since
+  `join_cache_hashed` is on by default), the `rowid_filter` version (MariaDB
+  10.4+, not 10.5+), the non-sargable-join wording (a functional index on the
+  exact expression *can* be used), and the `const`/`system` access-type
+  complexity (O(1), read once, not O(log n) per outer row).
+- Tooltip attribute escaping is now consistent across all renderers (newlines
+  encoded, `'` escaped); long tooltips are truncated before escaping so a
+  multi-byte entity can't be clipped mid-token.
+
+### Documentation
+
+- Documented the `--no-teach-bundle` and `--refresh-teach-bundle` render flags.
+
 ## [2.1.0] — 2026-06-05
 
 ### Changed

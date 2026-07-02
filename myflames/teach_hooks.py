@@ -45,7 +45,7 @@ def _as_int(value):
         if s.lower().endswith("gb"):
             return int(float(s[:-2].strip()) * 1024 * 1024 * 1024)
         return int(float(s))
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
 
@@ -213,7 +213,7 @@ def _controls_for_lesson(lesson, node, variables):
         try:
             if est is not None and float(est) > 0:
                 sel = (float(node.get("rows") or 0) / float(est)) * 100.0
-        except Exception:
+        except (ValueError, TypeError, ZeroDivisionError):
             sel = 100.0
         if details.get("condition") and sel > 95:
             sel = 10.0
@@ -226,7 +226,7 @@ def _controls_for_lesson(lesson, node, variables):
         try:
             if est is not None and float(est) > 0:
                 sel = (float(node.get("rows") or 0) / float(est)) * 100.0
-        except Exception:
+        except (ValueError, TypeError, ZeroDivisionError):
             sel = 5.0
         sel = max(0.1, min(40.0, sel))
         controls["selectivity"] = round(sel, 1)
@@ -241,7 +241,7 @@ def _controls_for_lesson(lesson, node, variables):
         try:
             if est is not None and float(est) > 0:
                 sel = (float(node.get("rows") or 0) / float(est)) * 100.0
-        except Exception:
+        except (ValueError, TypeError, ZeroDivisionError):
             sel = 50.0
         if details.get("condition") and sel > 95:
             sel = 10.0
