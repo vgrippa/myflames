@@ -58,6 +58,8 @@ from myflames.parser import (
     format_sql,
     _col_refs_for_table,
     _suggest_indexes,
+    _parse_sort_field,
+    _mariadb_sort_key_to_fields,
     _is_mariadb_format,
     _normalize_mariadb,
 )
@@ -2633,6 +2635,18 @@ class TestCompare(unittest.TestCase):
         self.assertIn("API Test", html)
         self.assertIn("<table>", html)
 
+    def test_compare_report_carries_attribution_and_credit(self):
+        """The shared compare report must link back to myflames and carry the
+        load-bearing Brendan Gregg / Tanel Poder inspiration credit, matching
+        the main HTML report footer."""
+        from myflames.output_compare import render_compare
+        with open(HASH_JOIN_FIXTURE) as f:
+            json_text = f.read()
+        html = render_compare(json_text, json_text)
+        self.assertIn("github.com/viniciusgrippa/myflames", html)
+        self.assertIn("Brendan Gregg", html)
+        self.assertIn("Tanel Poder", html)
+
 
 # ---------------------------------------------------------------------------
 # Big O complexity integration — every renderer must surface it, and the
@@ -2898,6 +2912,91 @@ class TestMariaDB118(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+
+
+class TestSortFieldThreading(unittest.TestCase):
+    """The parser threads a Sort node's ORDER BY columns into
+    details['sort_fields'] so the index advisor can read them.
+    MySQL supplies a JSON array ('sort_fields'); MariaDB supplies a
+    comma-separated 'sort_key' string that normalization converts into the
+    same list shape."""
+
+    def _find_sort(self, node):
+        det = node.get("details") or {}
+        if (det.get("access_type") or "").lower() == "sort":
+            return node
+        for c in node.get("children") or []:
+            found = self._find_sort(c)
+            if found:
+                return found
+        return None
+
+    def test_mysql_sort_fields_threaded_into_details(self):
+        path = os.path.join(TEST_DIR, "fixtures",
+                            "explain-024-sort-products-by-price-desc.json")
+        with open(path) as f:
+            root = parse_explain(f.read())
+        sort = self._find_sort(root)
+        self.assertIsNotNone(sort)
+        self.assertEqual(sort["details"]["sort_fields"], ["products.price DESC"])
+
+    def test_mariadb_sort_key_threaded_into_details(self):
+        path = os.path.join(TEST_DIR, "fixtures",
+                            "mariadb-11.4-011-sort-simple.json")
+        with open(path) as f:
+            root = parse_explain(f.read())
+        sort = self._find_sort(root)
+        self.assertIsNotNone(sort)
+        # MariaDB's "users.`name`" sort_key becomes a one-element list.
+        self.assertEqual(sort["details"]["sort_fields"], ["users.`name`"])
+
+    def test_non_sort_node_has_empty_sort_fields(self):
+        path = os.path.join(TEST_DIR, "fixtures",
+                            "explain-023-sort-users-by-name.json")
+        with open(path) as f:
+            root = parse_explain(f.read())
+        sort = self._find_sort(root)
+        # The base-table child under the sort carries no sort_fields.
+        child = (sort.get("children") or [None])[0]
+        self.assertIsNotNone(child)
+        self.assertEqual(child["details"]["sort_fields"], [])
+
+
+class TestSortFieldParsing(unittest.TestCase):
+    """_parse_sort_field accepts only plain (optionally qualified,
+    optionally directioned) columns; _mariadb_sort_key_to_fields splits and
+    normalizes MariaDB's sort_key string."""
+
+    def test_plain_column(self):
+        self.assertEqual(_parse_sort_field("users.`name`"), ("users", "name", False))
+
+    def test_desc_direction(self):
+        self.assertEqual(_parse_sort_field("products.price DESC"), ("products", "price", True))
+
+    def test_bare_column(self):
+        self.assertEqual(_parse_sort_field("revenue"), ("", "revenue", False))
+
+    def test_expression_rejected(self):
+        self.assertIsNone(_parse_sort_field("LOWER(name)"))
+        self.assertIsNone(_parse_sort_field("count(0)"))
+        self.assertIsNone(_parse_sort_field("price + 1"))
+
+    def test_empty_rejected(self):
+        self.assertIsNone(_parse_sort_field(""))
+        self.assertIsNone(_parse_sort_field(None))
+
+    def test_mariadb_sort_key_split_and_uppercase_desc(self):
+        self.assertEqual(
+            _mariadb_sort_key_to_fields("a, b desc"),
+            ["a", "b DESC"],
+        )
+
+    def test_mariadb_sort_key_strips_asc(self):
+        self.assertEqual(_mariadb_sort_key_to_fields("col asc"), ["col"])
+
+    def test_mariadb_sort_key_empty(self):
+        self.assertEqual(_mariadb_sort_key_to_fields(""), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

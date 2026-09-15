@@ -624,7 +624,7 @@ class TestTeachCLI(unittest.TestCase):
         """Lessons that teach an algorithm with O(…) scaling must include a
         live complexity chart. The LRU lesson uses a 3-act hit/miss story
         instead — its punchline is 8/8 vs 0/8 hits, not a log-log curve."""
-        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter", "join_order"]
+        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter", "join_order", "semijoin_firstmatch"]
         for name in chart_lessons:
             html = render_lesson(name)
             self.assertIn(
@@ -648,6 +648,7 @@ class TestTeachCLI(unittest.TestCase):
             "hash": ["departments", "employees"],
             "join": ["customers", "orders"],
             "nested_loop": ["customers", "orders"],
+            "semijoin_firstmatch": ["customers", "orders"],
             "lru": ["events"],
             "filesort": ["orders"],
             "tmp": ["employees"],
@@ -722,7 +723,7 @@ class TestTeachCLI(unittest.TestCase):
     def test_chart_lessons_are_interactive(self):
         """Lessons with a complexity chart must have hoverable charts with
         xSlider click-to-update binding."""
-        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter", "join_order"]
+        chart_lessons = ["btree", "bnl", "hash", "join", "nested_loop", "filesort", "icp", "index_merge", "full_scan", "non_unique_lookup", "unique_lookup", "filter", "join_order", "semijoin_firstmatch"]
         for name in chart_lessons:
             html = render_lesson(name)
             self.assertIn(
@@ -775,6 +776,22 @@ class TestTeachCLI(unittest.TestCase):
         self.assertIn("Filter operator", html)
         self.assertIn("WHERE", html)
         self.assertIn("incoming row", html)
+
+    def test_semijoin_firstmatch_lesson_teaches_early_out(self):
+        """FirstMatch flagship: the punchline is the short-circuit on the
+        first matching inner row. Lock down the one-concept framing."""
+        html = render_lesson("semijoin_firstmatch")
+        self.assertIn("FirstMatch", html)
+        self.assertIn("semijoin", html.lower())
+        # The IN (subquery) query and its existence framing.
+        self.assertIn("IN (", html)
+        self.assertIn("does-it-exist", html.lower())
+        # The early-out / short-circuit vocabulary is the punchline.
+        self.assertIn("short-circuit", html.lower())
+        # optimizer_switch flag that controls the strategy.
+        self.assertIn("firstmatch=on", html)
+        # Both the naive and the FirstMatch curves are named.
+        self.assertIn("Naive join", html)
 
 
 class TestJoinOrderLesson(unittest.TestCase):

@@ -67,13 +67,7 @@ def _human_bytes(n):
 # ---------------------------------------------------------------------------
 
 def _rule_buffer_pool_vs_data_size(analysis, schema, stats, variables):
-    """Warn when ``innodb_buffer_pool_size`` is much smaller than the
-    working set of the tables the query touches.
-
-    Why this matters: every page miss on a cold buffer pool becomes a disk
-    read. For queries that touch more data than fits in memory, tuning the
-    plan will only get you so far — you have to size the pool.
-    """
+    """Compare the buffer pool with table allocation, not measured hot pages."""
     if not variables or not stats:
         return (None, None)
     bp = _to_int(variables.get("innodb_buffer_pool_size"))
@@ -95,27 +89,22 @@ def _rule_buffer_pool_vs_data_size(analysis, schema, stats, variables):
     else:
         return (None, None)
     warn = (
-        "innodb_buffer_pool_size ({}) is {} the working set of the tables "
-        "referenced by this query ({}). Cold reads will hit disk."
+        "innodb_buffer_pool_size ({}) is {} the combined data and index "
+        "size of the referenced tables ({}). The query's working set may "
+        "be much smaller."
     ).format(_human_bytes(bp), severity, _human_bytes(total))
     sug = (
-        "Raise innodb_buffer_pool_size to at least {} (≈ working set). "
-        "Why: every page miss on a cold buffer pool is a physical read from "
-        "disk — once the hot pages fit in RAM, repeat queries stay entirely "
-        "in memory and typically run 10–100× faster. Size it to roughly the "
-        "combined data_length + index_length of the tables you actually hit."
-    ).format(_human_bytes(total))
+        "Measure buffer-pool reads and the workload's hot pages before "
+        "changing innodb_buffer_pool_size. Why: data_length + index_length "
+        "describes table allocation, while an indexed query may read only "
+        "a few pages. A larger pool can reduce reads when hot pages are "
+        "being evicted; size it within the server's available memory."
+    )
     return (warn, sug)
 
 
 def _rule_sort_buffer_vs_filesort(analysis, schema, stats, variables):
-    """Warn when the plan has a filesort but ``sort_buffer_size`` is tiny.
-
-    Tiny = the default 256 KB. Anything under 512 KB will often spill to
-    disk for realistic result sets. Above 8 MB the buffer is per-connection
-    and becomes wasteful — we deliberately do not advise raising it past
-    that blindly.
-    """
+    """Identify a small sort buffer as a tuning candidate, not a proven spill."""
     if not analysis or not variables:
         return (None, None)
     if not analysis.get("filesorts"):
@@ -124,19 +113,16 @@ def _rule_sort_buffer_vs_filesort(analysis, schema, stats, variables):
     if sb <= 0 or sb >= 2 * 1024 * 1024:
         return (None, None)
     warn = (
-        "Filesort detected but sort_buffer_size is only {} — the sort will "
-        "likely spill to disk."
+        "Filesort detected with sort_buffer_size={}. Whether it spills "
+        "depends on the sort's row count and record size."
     ).format(_human_bytes(sb))
     sug = (
-        "Raise sort_buffer_size to 2M–8M for this session "
-        "(SET SESSION sort_buffer_size = 8*1024*1024). "
-        "Why: when the sort set does not fit in sort_buffer_size, MySQL "
-        "writes multiple sorted runs to tmpdir and merges them back — that "
-        "is real disk I/O plus a k-way merge. A buffer big enough to hold "
-        "the result stays in memory and uses the faster in-RAM sort. "
-        "Caveat: sort_buffer_size is allocated per-connection, so set it "
-        "per-session rather than globally to avoid multiplying RAM cost "
-        "across all threads."
+        "Check sort merge passes and query timing before increasing "
+        "sort_buffer_size for this session. Why: when sort records exceed "
+        "the buffer, MySQL can write sorted runs and merge them. A larger "
+        "buffer may avoid that work; small sorts may already fit in memory. Test "
+        "session-level changes and account for concurrent sorting sessions "
+        "before changing the global default."
     )
     return (warn, sug)
 
@@ -184,37 +170,45 @@ def _rule_join_buffer_vs_hash_or_bnl(analysis, schema, stats, variables):
 
 
 def _rule_tmp_table_size_vs_materialize(analysis, schema, stats, variables):
-    """Materialized subqueries / derived tables use ``tmp_table_size`` /
-    ``max_heap_table_size``. If both are small, the temp table will spill
-    from MEMORY to InnoDB tmp."""
-    if not analysis or not variables:
-        return (None, None)
-    if not analysis.get("temp_tables"):
+    """Report a small configured limit without claiming an observed spill.
+
+    MySQL TempTable uses tmp_table_size, whereas MEMORY (and MariaDB's
+    in-memory internal tables) uses min(tmp_table_size, max_heap_table_size).
+    """
+    if not analysis or not variables or not analysis.get("temp_tables"):
         return (None, None)
     tmp = _to_int(variables.get("tmp_table_size"))
     heap = _to_int(variables.get("max_heap_table_size"))
-    # MySQL caps an in-memory temp table at min(tmp_table_size,
-    # max_heap_table_size), so the effective limit is the smaller of the two
-    # *present* values. If only one was collected, that one is the limit.
-    present = [v for v in (tmp, heap) if v > 0]
-    smallest = min(present) if present else 0
-    if smallest <= 0 or smallest >= 32 * 1024 * 1024:
+    engine = (variables.get("internal_tmp_mem_storage_engine") or "").upper()
+    is_mariadb = "mariadb" in (variables.get("version") or "").lower()
+    uses_memory = engine == "MEMORY" or is_mariadb
+    present = [v for v in (tmp, heap) if v > 0] if uses_memory else [tmp]
+    limit = min(present) if present else 0
+    if limit <= 0 or limit >= 32 * 1024 * 1024:
         return (None, None)
+    setting = "tmp_table_size/max_heap_table_size" if uses_memory else "tmp_table_size"
     warn = (
-        "Query materializes {} temp table(s) but tmp_table_size/"
-        "max_heap_table_size is capped at {} — temp tables will spill to "
-        "InnoDB disk tables."
-    ).format(len(analysis["temp_tables"]), _human_bytes(smallest))
-    sug = (
-        "Raise tmp_table_size AND max_heap_table_size together to the "
-        "same value (64M–256M). Why: once a materialized temp table "
-        "exceeds min(tmp_table_size, max_heap_table_size), MySQL converts "
-        "the in-memory MEMORY/TempTable engine to an on-disk InnoDB temp "
-        "table — scans over the disk version are typically 10–100× slower "
-        "and generate real I/O. Both variables must be raised together "
-        "because MySQL always picks the smaller of the two; raising only "
-        "one has no effect."
-    )
+        "Query materializes {} temp table(s); {} is {}. "
+        "This limit alone does not show whether a table spilled to disk."
+    ).format(len(analysis["temp_tables"]), setting, _human_bytes(limit))
+    if uses_memory:
+        sug = (
+            "Check temporary-table disk usage before increasing tmp_table_size "
+            "and max_heap_table_size to the same value for this session. "
+            "Why: MEMORY internal tables and MariaDB use the smaller of these "
+            "two limits; exceeding it can convert a table to on-disk storage. "
+            "Account for concurrent sessions before increasing the limits."
+        )
+    else:
+        sug = (
+            "Check the internal temporary-table engine and disk usage before "
+            "increasing tmp_table_size for this session. Why: MySQL 8.0.28+ "
+            "TempTable uses tmp_table_size as its per-table limit; "
+            "max_heap_table_size does not limit TempTable. Shared TempTable "
+            "RAM and mmap limits also affect disk usage. If the internal "
+            "engine is MEMORY, the smaller of tmp_table_size and "
+            "max_heap_table_size applies instead."
+        )
     return (warn, sug)
 
 

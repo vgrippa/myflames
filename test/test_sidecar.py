@@ -223,9 +223,20 @@ class TestPickPrimaryAction(unittest.TestCase):
         ]
         self.assertEqual(_pick_primary_action(suggestions), 1)
 
-    def test_falls_back_to_first(self):
+    def test_prefers_medium_over_low(self):
+        # Unified ranking (shared with build_findings / advise): medium outranks
+        # low, so the card no longer just takes the first suggestion. This is the
+        # #6 consolidation — the card and the ranked list agree on priority.
         suggestions = [
             {"severity": "low", "action": "x"},
+            {"severity": "medium", "action": "y"},
+        ]
+        self.assertEqual(_pick_primary_action(suggestions), 1)
+
+    def test_ties_keep_original_order(self):
+        # Equal severity → stable, first-declared wins.
+        suggestions = [
+            {"severity": "medium", "action": "x"},
             {"severity": "medium", "action": "y"},
         ]
         self.assertEqual(_pick_primary_action(suggestions), 0)
@@ -319,6 +330,77 @@ class TestBuildSidecarRealFixtures(unittest.TestCase):
         self.assertIn("collected", payload)
         self.assertIn("variables", payload["collected"])
         self.assertIn("innodb_buffer_pool_size", payload["collected"]["variables"])
+
+
+# ---------------------------------------------------------------------------
+# detail="core" vs "full" projection (the token-cheap agent default)
+# ---------------------------------------------------------------------------
+
+class TestBuildSidecarDetail(unittest.TestCase):
+    """The MCP ``analyze_plan`` tool defaults to detail="core"; a written
+    sidecar and the digest path stay detail="full". Core must be a strict,
+    still-valid subset of full with the heavy blocks removed."""
+
+    def _analysis_with_everything(self):
+        """A hash-join plan whose analysis carries collected env data (via
+        advise) so both the full and core payloads have all three heavy blocks
+        available to strip: collected, query, teach_hooks."""
+        root = parse_explain(_load_fixture(HASH_JOIN))
+        a = analyze_plan(root)
+        advise(a,
+               schema={"users": {"engine": "InnoDB", "indexes": []}},
+               stats={"users": {"table_rows": 100, "data_length": 4096,
+                                "index_length": 2048}},
+               variables={"innodb_buffer_pool_size": "134217728"})
+        return root, a
+
+    def test_full_is_the_default(self):
+        # Omitting detail must reproduce today's behavior exactly (back-compat).
+        root, a = self._analysis_with_everything()
+        default = build_sidecar(root, a, source_type="live", engine="mysql",
+                                query_raw="SELECT * FROM users")
+        explicit = build_sidecar(root, a, source_type="live", engine="mysql",
+                                 query_raw="SELECT * FROM users", detail="full")
+        # generated_at is a timestamp; compare the structural keys.
+        self.assertEqual(set(default), set(explicit))
+        self.assertIn("collected", default)
+        self.assertIn("query", default)
+        self.assertIn("teach_hooks", default)
+
+    def test_core_drops_heavy_blocks_but_stays_valid(self):
+        root, a = self._analysis_with_everything()
+        core = build_sidecar(root, a, source_type="live", engine="mysql",
+                             query_raw="SELECT * FROM users", detail="core")
+        # Heavy blocks gone...
+        self.assertNotIn("collected", core)
+        self.assertNotIn("query", core)
+        self.assertNotIn("teach_hooks", core)
+        # ...but the decision-grade payload is intact and valid.
+        self.assertTrue(validate_sidecar(core))
+        for key in ("plan_summary", "optimizer_switches", "warnings",
+                    "suggestions", "executive_summary"):
+            self.assertIn(key, core)
+
+    def test_core_is_a_strict_subset_of_full(self):
+        # Every key core keeps must be byte-for-byte what full had — core only
+        # subtracts, never rewrites, so a consumer can re-request full safely.
+        root, a = self._analysis_with_everything()
+        full = build_sidecar(root, a, source_type="live", engine="mysql",
+                             query_raw="SELECT * FROM users", detail="full")
+        core = build_sidecar(root, a, source_type="live", engine="mysql",
+                             query_raw="SELECT * FROM users", detail="core")
+        self.assertTrue(set(core).issubset(set(full)))
+        for key in core:
+            if key == "generated_at":
+                continue  # timestamp differs between the two calls
+            self.assertEqual(core[key], full[key],
+                             "core[{0}] diverged from full[{0}]".format(key))
+
+    def test_invalid_detail_raises(self):
+        root, a = self._analysis_with_everything()
+        with self.assertRaises(SidecarValidationError):
+            build_sidecar(root, a, source_type="file", engine="mysql",
+                          detail="verbose")
 
 
 # ---------------------------------------------------------------------------

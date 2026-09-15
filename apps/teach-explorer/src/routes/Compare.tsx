@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useLocation, useNavigate } from "react-router-dom";
 import { algorithms } from "../data/algorithms";
+import { readCompareSelection } from "../data/compare-search";
 import { ComplexityChart } from "../components/ComplexityChart";
 import { evaluateCurve, formatN } from "../data/complexity";
 import type { FamilyKey } from "../data/types";
@@ -27,20 +28,12 @@ function readSearch(search: string, key: string): string | null {
   return params.get(key);
 }
 
-function readSelectionFromSearch(search: string): string[] {
-  const v = readSearch(search, "compare");
-  if (!v) return DEFAULT_SELECTION;
-  return v
-    .split(",")
-    .map(decodeURIComponent)
-    .filter((n) => algorithms.some((a) => a.name === n));
-}
 
 export default function Compare() {
   const location = useLocation();
   const navigate = useNavigate();
   const [selected, setSelected] = useState<string[]>(() =>
-    readSelectionFromSearch(location.search)
+    readCompareSelection(location.search, algorithms.map((a) => a.name), DEFAULT_SELECTION)
   );
   const [currentN, setCurrentN] = useState<number>(() => {
     const fromUrl = readSearch(location.search, "n");
@@ -60,7 +53,7 @@ export default function Compare() {
 
   useEffect(() => {
     const params = new URLSearchParams();
-    params.set("compare", selected.map(encodeURIComponent).join(","));
+    params.set("compare", selected.join(","));
     params.set("n", String(currentN));
     params.set("max", String(maxN));
     navigate(`/compare?${params.toString()}`, { replace: true });

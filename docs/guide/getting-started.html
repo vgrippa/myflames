@@ -77,7 +77,7 @@ myflames guide    # shows which view to use</code></pre>
       <h3>Capture an EXPLAIN ANALYZE plan</h3>
       <pre><code># MySQL 8.4+
 mysql -u user -p mydb -s -N -r -e \
-  "EXPLAIN ANALYZE FORMAT=JSON SELECT * FROM orders WHERE user_id = 1" \
+  "SET explain_json_format_version=2; EXPLAIN ANALYZE FORMAT=JSON SELECT * FROM orders WHERE user_id = 1" \
   > explain.json
 
 # MariaDB 10.11+

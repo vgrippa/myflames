@@ -160,7 +160,8 @@ class TestTmpTableRule(unittest.TestCase):
 
     def test_fires_when_both_small(self):
         analysis = {"temp_tables": [{"rows": 10000, "short_label": "Materialize"}]}
-        variables = {"tmp_table_size": "16777216", "max_heap_table_size": "16777216"}
+        variables = {"tmp_table_size": "16777216", "max_heap_table_size": "16777216",
+                     "internal_tmp_mem_storage_engine": "MEMORY"}
         w, s = _rule_tmp_table_size_vs_materialize(analysis, None, None, variables)
         self.assertIsNotNone(w)
         self.assertIn("tmp_table_size", w)
@@ -520,6 +521,118 @@ class TestAdviseEndToEnd(unittest.TestCase):
         # Both must still include a Why: prefix.
         self.assertIn("Why:", s_hash)
         self.assertIn("Why:", s_bnl)
+
+
+# ---------------------------------------------------------------------------
+# Ordered-index-removes-filesort suggestion (ROADMAP "Next" #5)
+#
+# The suggestion is produced at parse time by parser._suggest_indexes /
+# _suggest_sort_indexes and lands in analysis["index_suggestions"]; the
+# advisor's _rule_missing_indexes then cross-checks it against the collected
+# schema. These tests exercise both the parse-time generation (via real
+# fixtures) and the advisor cross-check.
+# ---------------------------------------------------------------------------
+
+from myflames.parser import parse_explain, analyze_plan
+
+FIXTURE_DIR = os.path.join(TEST_DIR, "fixtures")
+
+
+def _load_analysis(fixture_name):
+    with open(os.path.join(FIXTURE_DIR, fixture_name)) as f:
+        root = parse_explain(f.read())
+    return analyze_plan(root)
+
+
+class TestSortIndexSuggestion(unittest.TestCase):
+
+    def _sort_hint(self, suggestions):
+        """Return the first index suggestion whose reason is the ORDER-BY /
+        filesort rule (as opposed to the filter-on-full-scan rule)."""
+        for s in suggestions:
+            if "ORDER BY" in (s.get("reason") or ""):
+                return s
+        return None
+
+    def test_single_table_asc_names_the_index(self):
+        analysis = _load_analysis("explain-023-sort-users-by-name.json")
+        hint = self._sort_hint(analysis.get("index_suggestions") or [])
+        self.assertIsNotNone(hint, "expected an ORDER-BY index suggestion")
+        self.assertEqual(hint["table"], "users")
+        self.assertEqual(hint["columns"], ["name"])
+        self.assertEqual(hint["ddl"], "CREATE INDEX idx_users_name ON users (name);")
+        self.assertIn("filesort", hint["reason"])
+
+    def test_single_table_desc_preserves_direction(self):
+        analysis = _load_analysis("explain-024-sort-products-by-price-desc.json")
+        hint = self._sort_hint(analysis.get("index_suggestions") or [])
+        self.assertIsNotNone(hint)
+        self.assertEqual(hint["table"], "products")
+        self.assertEqual(hint["columns"], ["price"])
+        # DESC must be preserved in the DDL so the index order matches the sort.
+        self.assertEqual(
+            hint["ddl"], "CREATE INDEX idx_products_price ON products (price DESC);"
+        )
+
+    def test_sort_over_join_and_aggregation_names_no_index(self):
+        # A filesort over a joined + grouped result: a naive single-table
+        # composite would NOT remove the sort, so the rule must stay silent
+        # (and fall back to the generic sort-buffer hint elsewhere).
+        analysis = _load_analysis("explain-065-complex-join-agg-sort.json")
+        hint = self._sort_hint(analysis.get("index_suggestions") or [])
+        self.assertIsNone(
+            hint,
+            "must not name a bogus composite index for a post-join/post-group sort",
+        )
+
+    def test_limit_over_single_table_still_names_index(self):
+        # ORDER BY ... LIMIT over one base table: LIMIT is order-preserving,
+        # so the ordered index still removes the filesort.
+        analysis = _load_analysis(
+            "explain-026-sort-limit-top10-expensive-products.json"
+        )
+        hint = self._sort_hint(analysis.get("index_suggestions") or [])
+        self.assertIsNotNone(hint)
+        self.assertEqual(hint["table"], "products")
+        self.assertIn("price", hint["columns"])
+
+    def test_mariadb_sort_key_names_index(self):
+        # MariaDB's sort_key string is threaded into the same sort_fields list.
+        analysis = _load_analysis("mariadb-11.4-011-sort-simple.json")
+        hint = self._sort_hint(analysis.get("index_suggestions") or [])
+        self.assertIsNotNone(hint)
+        self.assertEqual(hint["table"], "users")
+        self.assertEqual(hint["columns"], ["name"])
+
+    def test_advisor_surfaces_sort_index_when_absent(self):
+        # End-to-end: parse a single-table sort, then run the missing-index
+        # advisor rule against a schema that lacks the index. It should fire.
+        analysis = _load_analysis("explain-023-sort-users-by-name.json")
+        schema = {"users": {
+            "engine": "InnoDB",
+            "indexes": [{"name": "PRIMARY", "columns": ["id"]}],
+        }}
+        results = _rule_missing_indexes(analysis, schema, None, None)
+        self.assertTrue(
+            any("users" in warn and "name" in ddl for (warn, ddl) in results),
+            "advisor should surface the ORDER BY index when it is missing",
+        )
+
+    def test_advisor_silent_when_sort_index_exists(self):
+        analysis = _load_analysis("explain-023-sort-users-by-name.json")
+        schema = {"users": {
+            "engine": "InnoDB",
+            "indexes": [
+                {"name": "PRIMARY", "columns": ["id"]},
+                {"name": "idx_name", "columns": ["name"]},  # already covers ORDER BY
+            ],
+        }}
+        results = _rule_missing_indexes(analysis, schema, None, None)
+        # No result should reference the (name) index — it already exists.
+        self.assertFalse(
+            any("name" in ddl for (_w, ddl) in results),
+            "advisor must not nag about an ORDER BY index that already exists",
+        )
 
 
 if __name__ == "__main__":

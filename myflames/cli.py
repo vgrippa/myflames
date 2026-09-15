@@ -122,21 +122,44 @@ def _make_svg_responsive(svg_text):
     return _re_local.sub(r'<svg\b[^>]*>', _inject, svg_text, count=1)
 
 
-def _write_output(content, output_path):
+def _write_output(content, output_path, quiet=False):
     """Write content to file or stdout.
 
     SVG payloads are passed through :func:`_make_svg_responsive` first so
     standalone ``.svg`` files scale to the browser viewport instead of
     overflowing at the fixed renderer width.
+
+    ``quiet`` suppresses the incidental ``Written to <path>`` diagnostic on
+    stderr — the ``--quiet/-q`` contract shared across subcommands. It never
+    affects the stdout data path (there is no chatter to suppress there).
     """
     if content and content.lstrip().startswith(("<?xml", "<svg")):
         content = _make_svg_responsive(content)
     if output_path:
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        sys.stderr.write("Written to %s\n" % output_path)
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError as e:
+            sys.stderr.write("Cannot write %s: %s\n" % (output_path, e))
+            sys.exit(2)
+        if not quiet:
+            sys.stderr.write("Written to %s\n" % output_path)
     else:
         sys.stdout.write(content)
+
+
+def _add_quiet_flag(parser):
+    """Register the ``--quiet/-q`` flag with identical wording on every
+    subcommand that emits stderr diagnostics. Keeping one definition here is
+    what makes the flag mean the same thing across ``check``, ``digest``,
+    ``advise``, and ``compare``: suppress the stderr chatter, never the stdout
+    data (the result is the stdout payload and/or the exit code).
+    """
+    parser.add_argument(
+        "--quiet", "-q", action="store_true",
+        help="Suppress incidental stderr diagnostics; stdout data and the exit "
+             "code are unaffected.",
+    )
 
 
 def _maybe_write_teach_bundle(args, output_path):
@@ -384,49 +407,54 @@ def _cmd_compare(argv):
         "--output", "-o", default=None, metavar="PATH",
         help="Write output to file instead of stdout",
     )
+    _add_quiet_flag(parser)
     args = parser.parse_args(argv)
 
-    with open(args.before, "r", encoding="utf-8", errors="replace") as f:
-        json_before = f.read()
-    with open(args.after, "r", encoding="utf-8", errors="replace") as f:
-        json_after = f.read()
+    json_before = _read_explain_input(args.before)
+    json_after = _read_explain_input(args.after)
+    _parse_explain_input(json_before)
+    _parse_explain_input(json_after)
 
     if args.digest or args.as_json:
         from .output_compare_sidecar import build_compare_sidecar
         sidecar = build_compare_sidecar(json_before, json_after)
         if args.as_json:
             import json as _json
-            _write_output(_json.dumps(sidecar, indent=2), args.output)
+            _write_output(_json.dumps(sidecar, indent=2), args.output, quiet=args.quiet)
         else:
             from .digest import build_compare_digest
-            _write_output(build_compare_digest(sidecar), args.output)
+            _write_output(build_compare_digest(sidecar), args.output, quiet=args.quiet)
         return
 
     from .output_compare import render_compare
     html = render_compare(json_before, json_after, title=args.title)
-    _write_output(html, args.output)
+    _write_output(html, args.output, quiet=args.quiet)
 
 
-def _sidecar_from_input(input_path):
-    """Read an EXPLAIN JSON file (or '-' for stdin), parse, analyze, and build
-    the sidecar. Shared by the digest / check / advise subcommands.
-    """
+def _read_explain_input(input_path):
+    """Read a plan, reporting expected input failures without a traceback."""
     if input_path == "-":
-        raw_text = sys.stdin.read()
-    else:
-        try:
-            with open(input_path, "r", encoding="utf-8", errors="replace") as f:
-                raw_text = f.read()
-        except (IOError, OSError) as e:
-            # Exit 2 = bad input (missing/unreadable file), consistent with the
-            # parse-error path below.
-            sys.stderr.write("Cannot read %s: %s\n" % (input_path, e))
-            sys.exit(2)
+        return sys.stdin.read()
     try:
-        root = parse_explain(raw_text)
+        with open(input_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError as e:
+        sys.stderr.write("Cannot read %s: %s\n" % (input_path, e))
+        sys.exit(2)
+
+
+def _parse_explain_input(raw_text):
+    try:
+        return parse_explain(raw_text)
     except Exception as e:
         sys.stderr.write("Failed to parse EXPLAIN JSON: %s\n" % e)
         sys.exit(2)
+
+
+def _sidecar_from_input(input_path):
+    """Read, parse, analyze and serialize input for digest / check / advise."""
+    raw_text = _read_explain_input(input_path)
+    root = _parse_explain_input(raw_text)
     analysis = analyze_plan(root)
     engine = "unknown"
     try:
@@ -508,6 +536,7 @@ def _cmd_advise(argv):
         "--output", "-o", default=None, metavar="PATH",
         help="Write output to a file instead of stdout.",
     )
+    _add_quiet_flag(parser)
     args = parser.parse_args(argv)
 
     _raw, payload = _sidecar_from_input(args.input)
@@ -516,11 +545,11 @@ def _cmd_advise(argv):
 
     if args.as_json:
         import json as _json
-        _write_output(_json.dumps(findings, indent=2) + "\n", args.output)
+        _write_output(_json.dumps(findings, indent=2) + "\n", args.output, quiet=args.quiet)
         return
 
     if not findings:
-        _write_output("No findings: the plan looks clean.\n", args.output)
+        _write_output("No findings: the plan looks clean.\n", args.output, quiet=args.quiet)
         return
     lines = []
     for f in findings:
@@ -531,7 +560,7 @@ def _cmd_advise(argv):
         if f.get("node_labels"):
             line += "\n    @ " + ", ".join(f["node_labels"])
         lines.append(line)
-    _write_output("\n".join(lines) + "\n", args.output)
+    _write_output("\n".join(lines) + "\n", args.output, quiet=args.quiet)
 
 
 def _cmd_digest(argv):
@@ -571,6 +600,7 @@ def _cmd_digest(argv):
         "--output", "-o", default=None, metavar="PATH",
         help="Write output to a file instead of stdout.",
     )
+    _add_quiet_flag(parser)
     args = parser.parse_args(argv)
 
     from . import digest as dg
@@ -580,7 +610,7 @@ def _cmd_digest(argv):
     # Default mode: emit the digest text. --cost / --json / --show-prompts switch
     # to the savings comparison or the prompt dump.
     if not (args.cost or args.as_json or args.show_prompts):
-        _write_output(digest_text, args.output)
+        _write_output(digest_text, args.output, quiet=args.quiet)
         return
 
     pricing_model = args.model or dg.DEFAULT_PRICING_MODEL
@@ -592,15 +622,15 @@ def _cmd_digest(argv):
             "===== BEFORE (raw plan + question) =====\n" + raw_prompt
             + "\n===== AFTER (myflames digest + question) =====\n" + digest_prompt + "\n"
         )
-        _write_output(both, args.output)
+        _write_output(both, args.output, quiet=args.quiet)
         return
 
     choice = args.tokenizer or "heuristic"
     count_fn, method = dg.make_counter(model=pricing_model, tokenizer=choice)
-    if choice != "heuristic" and method.startswith("heuristic"):
+    if choice != "heuristic" and method.startswith("heuristic") and not args.quiet:
         # An exact tokenizer was requested but couldn't be satisfied; say so on
         # stderr (stdout stays clean data) with the specific reason, then
-        # continue with the estimate.
+        # continue with the estimate. --quiet suppresses this diagnostic.
         reason = method[len("heuristic estimate "):].strip("() ") or "unavailable"
         sys.stderr.write(
             "Note: exact counts unavailable ({}); showing the offline estimate.\n".format(reason)
@@ -608,9 +638,9 @@ def _cmd_digest(argv):
     comparison = dg.compare(raw_prompt, digest_prompt, count=count_fn, method=method)
     if args.as_json:
         import json as _json
-        _write_output(_json.dumps(comparison, indent=2) + "\n", args.output)
+        _write_output(_json.dumps(comparison, indent=2) + "\n", args.output, quiet=args.quiet)
     else:
-        _write_output(dg.format_report(comparison, pricing_model=pricing_model), args.output)
+        _write_output(dg.format_report(comparison, pricing_model=pricing_model), args.output, quiet=args.quiet)
 
 
 def _cmd_tokens_deprecated(argv):
@@ -890,11 +920,8 @@ Subcommands:
 
     # Read input (skipped in live mode — json_text is already set)
     if json_text is None:
-        if args.input == "-":
-            json_text = sys.stdin.read()
-        else:
-            with open(args.input, "r", encoding="utf-8", errors="replace") as f:
-                json_text = f.read()
+        json_text = _read_explain_input(args.input)
+    root = _parse_explain_input(json_text)
 
     # Detect output format from --output extension
     output_path = args.output
@@ -955,14 +982,6 @@ Subcommands:
                 "WARN: sidecar emission failed for HTML output: {}\n".format(e)
             )
         return
-
-    try:
-        root = parse_explain(json_text)
-    except Exception as e:
-        # Exit 2 = bad input (consistent with _sidecar_from_input). Exit 1 is
-        # reserved for "a gate/finding tripped" (the check subcommand).
-        sys.stderr.write("Failed to parse EXPLAIN JSON: %s\n" % e)
-        sys.exit(2)
 
     max_time = root["total_time"]
     use_microseconds = max_time > 0 and max_time < 1
@@ -1073,10 +1092,6 @@ Subcommands:
 
     if args.type == "bargraph":
         total_time = root["total_time"]
-        if use_microseconds:
-            for n in flatten_nodes(root):
-                n["self_time"] *= multiplier
-            total_time *= multiplier
         svg = render_bargraph(
             root,
             width=args.width,

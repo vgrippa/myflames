@@ -59,8 +59,25 @@ Standard pattern for a logic change: implement → in parallel run `mysql-correc
 - **Digest** (AI-era): `python3 -m myflames digest explain.json` — emits the compact, source-grounded digest of a plan (pipe to an LLM). `--cost` shows the token + $ saving vs pasting the raw plan; `--show-prompts` prints both prompts; `--tokenizer {heuristic,claude,gpt}` selects how tokens are counted (`claude` = Anthropic `count_tokens`, needs `myflames[tokens]` + `ANTHROPIC_API_KEY`; `gpt` = tiktoken, keyless, needs `myflames[gpt]`); `--json` for machine output. Lives in `myflames/digest.py`. (Deprecated alias `tokens` still works — it warns on stderr and defaults to `--cost`.)
 - **Plan diff**: `python3 -m myflames diff before.json after.json` (alias of `compare`). `--digest` = token-cheap text diff for an LLM; `--json` = structured `compare-1.0` delta.
 - **CI gate**: `python3 -m myflames check explain.json --fail-on full_scan,filesort` — exits 1 if a trigger matches (categories, severities, or `any`), 0 if clean, 2 on bad input. For pre-commit/CI/agent loops. Lives in `myflames/findings.py`.
-- **Advise**: `python3 -m myflames advise explain.json [--json]` — ranked warnings + suggestions with `confidence`. Also `myflames/findings.py`. (Deprecated alias `findings` still works — it warns on stderr.)
-- **MCP server** (agent tools): `myflames-mcp` (optional extra: `pip install myflames[mcp]`). Exposes `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`. Tool logic in `myflames/mcp_server.py` is stdlib + tested; only the transport needs the extra. Register: `claude mcp add myflames -- myflames-mcp`.
+- **Advise**: `python3 -m myflames advise explain.json [--json]` — ranked warnings + suggestions with `confidence`. Also `myflames/findings.py`. (Deprecated alias `findings` still works — it warns on stderr.) The single "Fix first" pick is `findings.primary_suggestion_index` / `build_findings` (one ranking policy, shared by the HTML card and the sidecar `primary_action`).
+- **`--quiet` / `-q`**: uniform across `check`, `digest`, `advise`, `compare` — suppresses incidental stderr diagnostics (the `Written to <path>` line, digest's tokenizer note); stdout data and the exit code are untouched. Registered via `_add_quiet_flag` and routed through `_write_output(..., quiet=...)` in `cli.py`.
+- **MCP server** (agent tools): `myflames-mcp` (optional extra: `pip install myflames[mcp]`). Exposes `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`. Tool logic in `myflames/mcp_server.py` is stdlib + tested; only the transport needs the extra. Register: `claude mcp add myflames -- myflames-mcp`. `analyze_plan` defaults to `detail="core"` (token-cheap decision-grade sidecar); `detail="full"` restores the complete record (adds `collected`/`query`/`teach_hooks`). The `detail` gate lives on `build_sidecar` in `output_sidecar.py` (single source of truth, shared with the CLI `--sidecar` path, which stays `full`); the digest path (`digest_plan_tool`) also stays `full`.
 - **Playground**: `docs/playground/index.html` — client-side Pyodide page (`python3 -m http.server -d docs/playground`).
 - **MySQL Fixtures**: `./scripts/generate-fixtures.sh` (requires Docker) to regenerate MySQL `test/fixtures/`.
 - **MariaDB Fixtures**: `./scripts/generate-mariadb-fixtures.sh` (requires Docker) to regenerate MariaDB `test/fixtures/`.
+
+## Review corrections (2026-09-15)
+
+- Treat parsed operator times as milliseconds. `render_bargraph` converts display
+  units internally; callers must not scale the shared tree.
+- Comparison pairs repeated labels by traversal occurrence. Preserve all
+  occurrences; this is not structural matching across reordered plans.
+- Render/compare input and output failures return 2 with a stderr diagnostic.
+- MySQL TempTable is limited per table by `tmp_table_size`; MEMORY also uses
+  `max_heap_table_size`. Collect `internal_tmp_mem_storage_engine` before making
+  engine-specific recommendations. Configuration size alone does not prove a spill.
+- Scalar/streaming aggregation is linear in input rows; sorting is a separate
+  operator, and DISTINCT or ordered aggregates require separate accounting.
+- Test current MySQL versions with the configurable fixture generator and
+  `MYFLAMES_MYSQL_FIXTURES`; see `test/README.md`. Keep fresh version corpora
+  separate from the committed fixture directory unless intentionally updating it.

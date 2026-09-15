@@ -134,6 +134,43 @@ class TestStreamDiscipline(unittest.TestCase):
         self.assertEqual(proc.stderr.strip(), "")
 
 
+class TestQuietFlagUniform(unittest.TestCase):
+    """--quiet/-q is the same contract on every subcommand that emits stderr
+    diagnostics: it silences the chatter (the "Written to <path>" line, digest's
+    tokenizer "Note:") and never touches the stdout data. It used to exist only
+    on `check`."""
+
+    def _write_and_assert_silent(self, *cli_args):
+        with tempfile.NamedTemporaryFile(suffix=".out", delete=False) as tf:
+            path = tf.name
+        try:
+            proc = run_cli(*(cli_args + ("-o", path, "-q")))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            # The file was still written...
+            self.assertTrue(os.path.getsize(path) > 0)
+            # ...but -q silenced the "Written to <path>" diagnostic on stderr.
+            self.assertEqual(proc.stderr.strip(), "")
+            self.assertEqual(proc.stdout.strip(), "")
+        finally:
+            os.remove(path)
+
+    def test_digest_quiet_suppresses_written_to(self):
+        self._write_and_assert_silent("digest", FULL_SCAN)
+
+    def test_advise_quiet_suppresses_written_to(self):
+        self._write_and_assert_silent("advise", FULL_SCAN)
+
+    def test_compare_quiet_suppresses_written_to(self):
+        self._write_and_assert_silent("compare", FULL_SCAN, CLEAN_PLAN, "--digest")
+
+    def test_quiet_does_not_swallow_stdout_data(self):
+        # -q only silences stderr; the digest text still flows to stdout.
+        proc = run_cli("digest", FULL_SCAN, "-q")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("myflames digest", proc.stdout)
+        self.assertEqual(proc.stderr.strip(), "")
+
+
 class TestDeprecatedAliases(unittest.TestCase):
     """`tokens` and `findings` are kept as deprecated aliases: they must still
     work, warn on stderr (never stdout), and keep stdout clean."""

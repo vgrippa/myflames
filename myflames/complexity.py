@@ -40,6 +40,8 @@ Severity → color (reuses the bargraph "hot palette" at
 """
 from __future__ import annotations
 
+import re
+
 
 # ---------------------------------------------------------------------------
 # Palette (re-exported so renderers don't hard-code hex values)
@@ -312,6 +314,34 @@ def _for_sort(node, _parent):
 
 def _for_group(node, _parent):
     extra = _extra_text(node)
+    details = node.get("details") or {}
+    if (details.get("access_type") or "").lower() == "aggregate":
+        # AGGREGATE uses AggregateIterator: it reads each child row and
+        # updates the accumulators. Sorting, when needed, is a child node.
+        # DISTINCT has an additional unique-value tree/table; ordered and
+        # multidimensional aggregates need a separate model.
+        if any(term in extra for term in ("group_concat", "json_arrayagg",
+                                          "json_objectagg", "st_collect",
+                                          "rollup", "cube", "grouping sets")):
+            return None
+        if re.search(r"\(\s*distinct\b", extra):
+            return _c(
+                "O(n log n)", "n log n", "medium",
+                "DISTINCT aggregation: deduplicates aggregate inputs using "
+                "a unique-value tree or temporary table. O(n log n) is a "
+                "worst-case bound for tree-based deduplication.",
+                "worst_case",
+            )
+        if (extra.startswith(("aggregate:", "group aggregate:"))
+                or extra == "group (no aggregates)"):
+            return _c(
+                "O(n)", "n", "good",
+                "Streaming aggregation: reads each input row once and updates "
+                "the aggregate values. Any input sorting is a separate child "
+                "operator with its own cost.",
+                "exact",
+            )
+        return None
     if "using index" in extra:
         return _c(
             "O(n)",

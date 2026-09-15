@@ -48,6 +48,15 @@ SCHEMA_URL = "https://myflames.dev/schemas/sidecar-v1.json"
 _ENGINES = frozenset({"mysql", "mariadb", "unknown"})
 _SOURCE_TYPES = frozenset({"file", "live", "stdin"})
 _WARNING_SEVERITIES = frozenset({"error", "warn", "info"})
+# Detail levels for build_sidecar. "full" is the complete record (default, what
+# a written .sidecar.json and the digest path need). "core" is the token-cheap
+# decision-grade projection an agent asks for by default: it drops the heavy
+# blocks (collected environment dumps, the raw query text, UI-only teach_hooks)
+# while keeping everything needed to reason about the plan. "core" is a strict
+# subset of "full", so a consumer can always re-request "full" to restore it.
+_SIDECAR_DETAIL_LEVELS = frozenset({"full", "core"})
+# Optional top-level keys stripped when detail="core".
+_SIDECAR_HEAVY_KEYS = ("collected", "query", "teach_hooks")
 _WARNING_CATEGORIES = frozenset({
     "full_scan", "filesort", "temp_table",
     "hash_join", "bnl", "semijoin", "index_merge",
@@ -272,18 +281,18 @@ def _executive_summary_fallback(plan_summary, warnings, suggestions):
 
 
 def _pick_primary_action(suggestions):
-    """Pick the first ``high``-severity suggestion, else the first overall.
+    """Index of the single most impactful suggestion, or ``None``.
 
-    Returns an index into ``suggestions``, or ``None`` if there are none.
-    The sidecar exposes this as ``{"ref": "suggestions[<idx>]"}`` so HTML
-    consumers can highlight the single most impactful action.
+    Delegates to :func:`myflames.findings.primary_suggestion_index` so the
+    sidecar's ``primary_action`` ref and the HTML "Fix first" card are ranked by
+    the *same* policy as the ``advise`` list — one ranker, every projection.
+    The sidecar exposes this as ``{"ref": "suggestions[<idx>]"}``.
+
+    (Imported lazily: ``findings`` imports this module for its trigger
+    vocabulary, so a top-level import here would create a cycle.)
     """
-    if not suggestions:
-        return None
-    for i, s in enumerate(suggestions):
-        if s.get("severity") == "high":
-            return i
-    return 0
+    from .findings import primary_suggestion_index
+    return primary_suggestion_index({"suggestions": suggestions})
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +310,7 @@ def build_sidecar(
     query_raw=None,
     query_beautified=None,
     teach_hooks=None,
+    detail="full",
 ):
     """Build a v1 sidecar dict from a parsed EXPLAIN tree + analysis dict.
 
@@ -315,6 +325,13 @@ def build_sidecar(
         How myflames obtained the plan. Drives the ``source`` block.
     engine, engine_version, fixture_path, query_raw, query_beautified : str
         Optional metadata. Keys are omitted from the payload when absent.
+    detail : {"full", "core"}
+        ``"full"`` (default) returns the complete record — what a written
+        ``.sidecar.json`` and :func:`myflames.digest.build_digest` need.
+        ``"core"`` returns the token-cheap decision-grade projection an agent
+        asks for by default: it drops the heavy ``collected``/``query``/
+        ``teach_hooks`` blocks and keeps everything needed to reason about the
+        plan. ``"core"`` is a strict subset of ``"full"``.
 
     Returns
     -------
@@ -322,6 +339,12 @@ def build_sidecar(
         The v1 sidecar payload, already validated. Safe to pass to
         :func:`write_sidecar` or ``json.dumps`` directly.
     """
+    if detail not in _SIDECAR_DETAIL_LEVELS:
+        raise SidecarValidationError(
+            "detail must be one of {}, got {!r}".format(
+                sorted(_SIDECAR_DETAIL_LEVELS), detail
+            )
+        )
     plan_summary = _compute_plan_summary(root)
 
     # optimizer_switches — shape-preserving copy with field-name normalization
@@ -485,6 +508,13 @@ def build_sidecar(
     op_complexities = _collect_operator_complexities(root)
     if op_complexities:
         payload["operator_complexities"] = op_complexities
+
+    # Decision-grade projection: strip the heavy, agent-rarely-needed blocks.
+    # All stripped keys are optional in the schema, so validation still passes
+    # and the result is a strict subset of the full payload.
+    if detail == "core":
+        for heavy_key in _SIDECAR_HEAVY_KEYS:
+            payload.pop(heavy_key, None)
 
     validate_sidecar(payload)
     return payload

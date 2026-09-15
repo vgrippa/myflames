@@ -72,6 +72,7 @@ CURRICULUM = [
     "hash",
     "bnl",
     "bka_join",
+    "semijoin_firstmatch",  # join_family — semijoin cluster flagship
     "semijoin_weedout",
     "derived_table",   # scan_family → materialization
     "join_order",      # planner_family: how the planner *chose* the order above

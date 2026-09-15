@@ -34,6 +34,7 @@ This rewrites `src/data/algorithms.json`. Re-run whenever you add a lesson to `m
 ## Build
 
 ```bash
+pnpm test          # comparison share-link regressions
 pnpm build
 ```
 

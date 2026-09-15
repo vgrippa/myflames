@@ -156,10 +156,10 @@ class DecisionTableTests(unittest.TestCase):
         self.assertEqual(c["big_o"], "O(n)")
         self.assertEqual(c["severity"], "good")
 
-    def test_aggregate_maps_to_group_n_log_n(self):
+    def test_streaming_aggregate_is_linear(self):
         c = compute_complexity(node(access_type="aggregate", op="Group aggregate: count(*)"))
-        self.assertEqual(c["big_o"], "O(n log n)")
-        self.assertEqual(c["severity"], "medium")
+        self.assertEqual(c["big_o"], "O(n)")
+        self.assertEqual(c["severity"], "good")
 
     def test_group_with_index_is_linear(self):
         c = compute_complexity(node(

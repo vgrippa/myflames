@@ -131,7 +131,11 @@ class MySQLConnection:
         if self.password is not None:
             # Quote the password so special chars (#, ;, spaces, equals)
             # do not confuse the CLI's INI parser.
-            lines.append('password="' + self.password.replace('"', '\\"') + '"')
+            escaped = self.password.replace("\\", "\\\\").replace('"', '\\"')
+            for char, escape in (("\n", "\\n"), ("\r", "\\r"),
+                                 ("\t", "\\t"), ("\b", "\\b")):
+                escaped = escaped.replace(char, escape)
+            lines.append('password="' + escaped + '"')
         if self.ssl_mode:
             lines.append("ssl-mode=" + self.ssl_mode)
         if self.ssl_ca:
@@ -356,4 +360,4 @@ class MySQLConnection:
             stmt = "ANALYZE FORMAT=JSON " + sql
         else:
             stmt = "SET explain_json_format_version=2; EXPLAIN ANALYZE FORMAT=JSON " + sql
-        return self.run(stmt)
+        return self.run(stmt, extra_flags=["--raw"])

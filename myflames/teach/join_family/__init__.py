@@ -1,7 +1,15 @@
 """Join-family teach lessons."""
 from __future__ import annotations
 
-from . import bka_join, bnl, hash, join_compare, nested_loop, semijoin_weedout
+from . import (
+    bka_join,
+    bnl,
+    hash,
+    join_compare,
+    nested_loop,
+    semijoin_firstmatch,
+    semijoin_weedout,
+)
 
 LESSONS = {
     "bka_join": {
@@ -28,6 +36,11 @@ LESSONS = {
         "title": "Nested Loop Join — dedicated operator view",
         "summary": "Single-operator view of the outer-driver/inner-probe loop shape from EXPLAIN.",
         "render": nested_loop.render,
+    },
+    "semijoin_firstmatch": {
+        "title": "Semijoin FirstMatch — stop looking after the first match",
+        "summary": "IN/EXISTS as a semijoin; the inner scan short-circuits the moment one matching row is found.",
+        "render": semijoin_firstmatch.render,
     },
     "semijoin_weedout": {
         "title": "Semijoin Duplicate Weedout — dedup via temp table",

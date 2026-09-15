@@ -255,8 +255,7 @@ def _sanitize_for_jsonld(payload):
     We also escape ``<!--`` and ``-->`` defensively.
     """
     s = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False)
-    s = s.replace("</", "<\\/")
-    s = s.replace("<!--", "<\\!--").replace("-->", "--\\>")
+    s = s.replace("<", "\\u003c").replace(">", "\\u003e")
     return s
 
 
@@ -386,16 +385,37 @@ def _why_fallback(suggestion):
     )
 
 
+def _render_all_clear_card():
+    """The reassuring counterpart to the "Fix first" card: shown when a plan
+    has no findings at all. A first-time reader needs "nothing to fix" stated
+    as a real, positive result — a blank space reads as a broken page, not as
+    good news. (Progressive-disclosure principle: if nothing is urgent, say so.)
+    """
+    return "\n".join([
+        '<section class="primary-action sev-info all-clear" aria-labelledby="primary-heading" role="region">',
+        '  <header class="primary-action-header">',
+        '    <span class="badge badge-info">All clear</span>',
+        '    <h2 id="primary-heading">No blocking issues found</h2>',
+        '  </header>',
+        '  <p class="action-text">myflames found nothing to fix in this plan — it looks healthy.</p>',
+        '</section>',
+    ])
+
+
 def _render_primary_action(sidecar):
     """The single "Fix first" card above the fold.
 
     Uses ``sidecar.primary_action.ref`` to dereference the picked suggestion.
-    Returns an empty string when there's no suggestion to promote so the
-    page doesn't show an empty card.
+    When there's no suggestion to promote, show the "All clear" card if the plan
+    is genuinely clean (no warnings either), otherwise render nothing — never a
+    false "all clear" while unaddressed warnings remain.
     """
     ref = (sidecar.get("primary_action") or {}).get("ref") or ""
     m = _re.match(r"suggestions\[(\d+)\]", ref)
     if not m:
+        from .findings import build_findings
+        if not build_findings(sidecar):
+            return _render_all_clear_card()
         return ""
     idx = int(m.group(1))
     suggestions = sidecar.get("suggestions") or []

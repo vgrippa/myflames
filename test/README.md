@@ -1,6 +1,6 @@
 # Test data
 
-Sample JSON files used to verify the [unified CLI](../../README.md#quick-start)
+Sample JSON files used to verify the [unified CLI](../README.md#quick-start-file-mode)
 and all output types (flame graph, bar chart, treemap, diagram, tree).
 
 ## MySQL EXPLAIN fixtures
@@ -27,5 +27,34 @@ Open the generated SVG in a browser to verify. No extra dependencies required.
 ```bash
 ./run-tests.sh
 # or
-python3 -m unittest discover -s test -p "test_myflames.py" -v
+python3 -m unittest discover -s test -p "test_*.py" -v
 ```
+
+## Test a current MySQL release
+
+Pull the desired image explicitly, generate a separate corpus, and run the
+opt-in checks. The default generator still uses `mysql:8.4` and `test/fixtures/`.
+
+```bash
+docker pull mysql:latest
+MYSQL_IMAGE=mysql:latest \
+  CONTAINER_NAME=myflames-latest-test \
+  OUTPUT_DIR=/tmp/myflames-latest-plans \
+  ./scripts/generate-fixtures.sh
+MYFLAMES_MYSQL_FIXTURES=/tmp/myflames-latest-plans \
+  python3 -m unittest discover -s test -p 'test_mysql_live_corpus.py' -v
+```
+
+The generator records `SELECT VERSION()` in `server-version.txt`. It refuses to
+remove an existing container with the same name and cleans up its own container
+and anonymous volumes on exit. Set `KEEP_CONTAINER=1` to retain it for live
+connection tests; remove it with `docker rm -fv <name>` when finished.
+
+The corpus checks parse each plan, render all five SVG views, validate the JSON
+sidecar, build a digest, and compare each plan with itself. They are skipped in
+the ordinary suite unless `MYFLAMES_MYSQL_FIXTURES` is set. These checks exercise
+captured server output; they do not open a live connection themselves.
+
+The September 2026 review used MySQL 26.7.0 from a freshly pulled `mysql:latest`
+image. See [review results](../docs/reviews/2026-09-15.md) for the tested scope and
+remaining limitations.

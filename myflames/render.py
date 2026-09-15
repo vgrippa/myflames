@@ -125,10 +125,6 @@ def render_explain(
 
     if output_type == "bargraph":
         total_time = root["total_time"]
-        if use_microseconds:
-            for n in flatten_nodes(root):
-                n["self_time"] *= multiplier
-            total_time *= multiplier
         return render_bargraph(
             root,
             width=width,

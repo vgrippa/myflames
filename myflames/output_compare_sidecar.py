@@ -49,7 +49,8 @@ import json
 import os
 
 from . import __version__
-from .parser import parse_explain, analyze_plan, flatten_nodes
+from .parser import parse_explain, flatten_nodes
+from .output_compare import _match_nodes
 
 
 COMPARE_SCHEMA_VERSION = "compare-1.0"
@@ -89,17 +90,6 @@ def _classify_delta(change_pct):
     return "unchanged"
 
 
-def _node_index(root):
-    """Return ``{short_label: node}`` for a parsed root (first-wins to
-    match the key choice used by output_compare.render_compare)."""
-    out = {}
-    for n in flatten_nodes(root):
-        lbl = n.get("short_label", "")
-        if lbl not in out:
-            out[lbl] = n
-    return out
-
-
 def build_compare_sidecar(json_before, json_after):
     """Produce the ``compare-1.0`` sidecar dict.
 
@@ -119,24 +109,13 @@ def build_compare_sidecar(json_before, json_after):
     total_b = float(root_b.get("total_time") or 0)
     total_a = float(root_a.get("total_time") or 0)
 
-    analysis_b = analyze_plan(root_b)
-    analysis_a = analyze_plan(root_a)
-
-    idx_b = _node_index(root_b)
-    idx_a = _node_index(root_a)
-
-    all_labels = list(idx_b.keys())
-    for lbl in idx_a:
-        if lbl not in idx_b:
-            all_labels.append(lbl)
+    matched = _match_nodes(flatten_nodes(root_b), flatten_nodes(root_a))
 
     deltas = []
     regressions = 0
     improvements = 0
     unchanged = 0
-    for lbl in all_labels:
-        nb = idx_b.get(lbl)
-        na = idx_a.get(lbl)
+    for lbl, nb, na in matched:
         self_b = float((nb or {}).get("self_time") or 0) if nb else None
         self_a = float((na or {}).get("self_time") or 0) if na else None
         rows_b = float((nb or {}).get("rows") or 0) if nb else None

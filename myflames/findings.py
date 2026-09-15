@@ -41,6 +41,46 @@ def _confidence(category, severity):
     return "high"
 
 
+def _rank_key(severity, category):
+    """The single ranking policy: ``(severity_rank, confidence_rank)``.
+
+    Shared by :func:`build_findings` (which ranks warnings + suggestions
+    together) and :func:`primary_suggestion_index` (which picks the one "Fix
+    first" action). Because both dereference this one key, the ranked ``advise``
+    list and the HTML "Fix first" card can never disagree about relative
+    priority — the divergence that used to be possible when the card had its own
+    ad-hoc "first high, else first" heuristic.
+    """
+    return (
+        _SEVERITY_RANK.get(severity, 3),
+        _CONFIDENCE_RANK.get(_confidence(category, severity), 3),
+    )
+
+
+def primary_suggestion_index(payload):
+    """Index into ``payload['suggestions']`` of the top-ranked actionable fix,
+    or ``None`` when there are no suggestions.
+
+    This is the one "Fix first" selector. The sidecar's ``primary_action.ref``
+    and the HTML card both resolve to it, ranked by the same :func:`_rank_key`
+    policy ``build_findings`` uses (severity, then confidence, then original
+    order via the stable sort). A warning can outrank every suggestion in the
+    unified list, but a warning is a *problem*, not an *action* — the card
+    promotes the highest-priority thing to actually do.
+    """
+    suggestions = payload.get("suggestions") or []
+    if not suggestions:
+        return None
+    order = sorted(
+        range(len(suggestions)),
+        key=lambda i: _rank_key(
+            suggestions[i].get("severity", "low"),
+            suggestions[i].get("category", "other"),
+        ) + (i,),
+    )
+    return order[0]
+
+
 def build_findings(payload):
     """Return a ranked list of findings from a sidecar *payload*.
 
@@ -75,12 +115,10 @@ def build_findings(payload):
             entry["target_variable"] = s["target_variable"]
         findings.append(entry)
 
-    # Stable sort: severity, then confidence. Python's sort is stable, so equal
-    # keys preserve the warnings-before-suggestions, original-order ordering.
-    findings.sort(key=lambda f: (
-        _SEVERITY_RANK.get(f["severity"], 3),
-        _CONFIDENCE_RANK.get(f["confidence"], 3),
-    ))
+    # Stable sort by the shared ranking policy: severity, then confidence.
+    # Python's sort is stable, so equal keys preserve the
+    # warnings-before-suggestions, original-order ordering.
+    findings.sort(key=lambda f: _rank_key(f["severity"], f["category"]))
     return findings
 
 

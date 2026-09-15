@@ -177,7 +177,155 @@ def _suggest_indexes(root):
             _walk(child, inherited_condition=child_cond)
 
     _walk(root)
+    suggestions.extend(_suggest_sort_indexes(root, seen_ddl))
     return suggestions
+
+
+# A sort field like ``users.`name` DESC`` or ``price desc``. We accept a plain
+# column reference (optionally qualified by table/alias, optionally
+# backtick-quoted) with an optional ASC/DESC direction. Anything else — a
+# function call, an arithmetic expression, an alias to a computed select-list
+# item — is NOT a plain column and must not go into a composite index, so the
+# match deliberately fails for those and we fall back to the generic hint.
+_SORT_FIELD_RE = re.compile(
+    r"^(?:`?(?P<tbl>\w+)`?\.)?`?(?P<col>\w+)`?(?:\s+(?P<dir>ASC|DESC))?$",
+    re.IGNORECASE,
+)
+
+
+def _parse_sort_field(field):
+    """Parse one sort_fields entry into ``(table, column, is_desc)``.
+
+    Returns ``None`` when the entry is not a plain (optionally qualified,
+    optionally directioned) column reference — e.g. ``count(0)`` or
+    ``revenue`` where ``revenue`` is a select-list alias over an expression.
+    Such sorts cannot be satisfied by an ordinary column index, so the caller
+    must not name one.
+    """
+    if not field or not isinstance(field, str):
+        return None
+    m = _SORT_FIELD_RE.match(field.strip())
+    if not m:
+        return None
+    is_desc = (m.group("dir") or "").upper() == "DESC"
+    return (m.group("tbl") or "", m.group("col"), is_desc)
+
+
+def _sole_base_table_under_sort(sort_node):
+    """Return the single base-table access node directly feeding *sort_node*.
+
+    Walks down from the Sort through only order-preserving pass-through
+    operators (Filter, Limit). Returns the base-table node if — and only if —
+    the subtree resolves to exactly ONE real base-table access with no join,
+    aggregation, grouping, materialization, or further sort in between.
+    Returns ``None`` otherwise, which tells the caller to fall back to the
+    generic sort-buffer hint rather than name a bogus composite index.
+
+    Rationale: an ordered index removes a filesort only when the rows the
+    index produces are exactly the rows being sorted, in a fixed order. A
+    join reorders/multiplies rows, an aggregate/group collapses them, and a
+    sort over a computed/materialized result is not a base-table column order
+    at all — a naive composite over one table would not eliminate those sorts
+    (and is worse than the honest generic hint).
+    """
+    # Pass-through families that do not change the row set's identity or the
+    # order in which the base table's rows arrive at the sort.
+    passthrough = ("filter", "limit")
+    node = sort_node
+    children = node.get("children") or []
+    while len(children) == 1:
+        child = children[0]
+        fam = operator_family(child.get("details") or {})
+        cdetails = child.get("details") or {}
+        ctable = cdetails.get("table_name") or ""
+        # A real base-table access node is our target. It must be a leaf
+        # (no children) with a plain, non-angle-bracket table name.
+        is_base_access = (
+            fam in ("table_scan", "index_scan", "index_lookup", "range")
+            and ctable
+            and not ctable.startswith("<")
+        )
+        if is_base_access and not (child.get("children") or []):
+            return child
+        if fam in passthrough:
+            node = child
+            children = node.get("children") or []
+            continue
+        # Anything else (join, aggregate, temp_table, another sort, a
+        # non-leaf table access = reading a materialized result) disqualifies.
+        return None
+    return None
+
+
+def _suggest_sort_indexes(root, seen_ddl):
+    """Suggest an ordered index that removes a filesort over a single table.
+
+    For each Sort node whose ORDER BY columns are known (threaded into
+    ``details['sort_fields']`` by :func:`parse_node`) and whose input is a
+    single base table (see :func:`_sole_base_table_under_sort`), emit a
+    ``{table, columns, ddl, reason}`` suggestion naming an index on the sort
+    columns in their exact order and direction. Reuses the same suggestion
+    shape as :func:`_suggest_indexes` so the sidecar / digest / HTML card
+    render it unchanged.
+    """
+    out = []
+
+    def _walk(node):
+        details = node.get("details") or {}
+        if operator_family(details) == "sort":
+            _consider(node, details)
+        for child in node.get("children") or []:
+            _walk(child)
+
+    def _consider(sort_node, details):
+        fields = details.get("sort_fields") or []
+        if not fields:
+            return
+        base = _sole_base_table_under_sort(sort_node)
+        if not base:
+            return
+        base_table = (base.get("details") or {}).get("table_name") or ""
+        if not base_table:
+            return
+        # Parse every sort field; all must be plain columns of the base table.
+        parsed = []
+        for f in fields:
+            pf = _parse_sort_field(f)
+            if pf is None:
+                return  # a non-column expression — do not name an index
+            tbl, col, is_desc = pf
+            # If the field is table-qualified, it must be the base table (or
+            # its alias). A qualifier for a different table means the sort is
+            # not purely over this one table's columns.
+            if tbl and tbl.lower() != base_table.lower() and tbl.lower() != base_table[0:1].lower():
+                return
+            parsed.append((col, is_desc))
+        if not parsed:
+            return
+        cols = [c for (c, _d) in parsed]
+        # Build "col" / "col DESC" segments preserving order + direction.
+        col_segments = []
+        for col, is_desc in parsed:
+            col_segments.append(col + " DESC" if is_desc else col)
+        cols_ddl = ", ".join(col_segments)
+        idx_name = "idx_{}_{}".format(base_table, "_".join(cols))
+        ddl = "CREATE INDEX {} ON {} ({});".format(idx_name, base_table, cols_ddl)
+        if ddl in seen_ddl:
+            return
+        seen_ddl.add(ddl)
+        out.append({
+            "table": base_table,
+            "columns": cols,
+            "ddl": ddl,
+            "reason": (
+                "ORDER BY on {} triggers a filesort; an index on the ORDER BY "
+                "columns ({}) lets the engine read rows already sorted, skipping "
+                "the O(n log n) filesort."
+            ).format(base_table, cols_ddl),
+        })
+
+    _walk(root)
+    return out
 
 
 def xml_escape(s):
@@ -438,6 +586,15 @@ def parse_node(node):
         "using_rowid_filter": bool(node.get("using_rowid_filter")),
         "mariadb_block_nl_join": node.get("mariadb_block_nl_join") or {},
         "mariadb_index_merge": node.get("mariadb_index_merge") or {},
+        # ORDER BY columns of a Sort/filesort node, threaded through so the
+        # index advisor can suggest an ordered index that removes the sort.
+        # MySQL 8.x EXPLAIN ANALYZE FORMAT=JSON emits these as a JSON array of
+        # strings under "sort_fields" (sql/join_optimizer/explain_access_path.cc);
+        # DESC columns are suffixed " DESC". MariaDB's normalization
+        # (_normalize_mariadb_filesort / _read_sorted_file) copies the parsed
+        # "sort_key" string into the same "sort_fields" list. Empty for
+        # non-sort nodes.
+        "sort_fields": list(node.get("sort_fields") or []),
     }
     result = {
         "short_label": short,
@@ -640,7 +797,7 @@ def _normalize_mariadb_table(tbl):
         "estimated_rows": float(est_rows) if est_rows is not None else None,
         "estimated_total_cost": float(cost) if cost is not None else None,
         "condition": condition,
-        "covering": using_index and access_type_raw == "INDEX",
+        "covering": using_index,
         "schema_name": "",
         "inputs": [],
         # Optimizer-switch evidence preserved for _detect_optimizer_switches.
@@ -813,6 +970,33 @@ def _normalize_mariadb_nested_loop(nested_loop):
     return result
 
 
+def _mariadb_sort_key_to_fields(sort_key):
+    """Split MariaDB's ``sort_key`` string into a MySQL-style sort_fields list.
+
+    MariaDB EXPLAIN FORMAT=JSON emits a single ``sort_key`` member: a
+    comma-separated string of the ORDER BY items with a lowercase " desc"
+    appended for descending columns, order preserved
+    (sql/sql_explain.cc, Explain_aggr_filesort::print_json_members). MySQL's
+    ``sort_fields`` is instead a JSON array with an uppercase " DESC" suffix.
+    Normalize MariaDB's form into the same list shape (uppercased DESC) so the
+    index advisor has one representation to read for both engines.
+    """
+    if not sort_key or not isinstance(sort_key, str):
+        return []
+    fields = []
+    for part in sort_key.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        # Normalize a trailing "desc"/"DESC" direction token to uppercase.
+        if re.search(r"\bdesc$", part, re.IGNORECASE):
+            part = re.sub(r"\s+desc$", " DESC", part, flags=re.IGNORECASE)
+        elif re.search(r"\basc$", part, re.IGNORECASE):
+            part = re.sub(r"\s+asc$", "", part, flags=re.IGNORECASE)
+        fields.append(part)
+    return fields
+
+
 def _normalize_mariadb_read_sorted_file(rsf):
     """Convert MariaDB read_sorted_file into a Sort node.
 
@@ -843,6 +1027,7 @@ def _normalize_mariadb_read_sorted_file(rsf):
         "actual_last_row_ms": float(r_time),
         "actual_loops": filesort.get("r_loops") or 1,
         "actual_rows": float(r_output_rows),
+        "sort_fields": _mariadb_sort_key_to_fields(sort_key),
         "inputs": [child] if child else [],
     }
 
@@ -868,6 +1053,7 @@ def _normalize_mariadb_filesort(filesort, query_block_time=0):
         "actual_last_row_ms": float(r_time),
         "actual_loops": filesort.get("r_loops") or 1,
         "actual_rows": float(r_output_rows),
+        "sort_fields": _mariadb_sort_key_to_fields(sort_key),
         "inputs": [child] if child else [],
     }
     return sort_node
@@ -1659,10 +1845,13 @@ def analyze_plan(root):
             access_type == "range"
             or idx_access_type == "index_range_scan"
         )
-        if is_range_access and not details.get("using_primary_key"):
+        index_name = details.get("index_name") or ""
+        if (is_range_access and index_name.upper() != "PRIMARY"
+                and not details.get("covering")
+                and not details.get("using_primary_key")):
             range_scans.append({
                 "table": details.get("table_name") or "",
-                "key": details.get("key") or details.get("used_key") or "",
+                "key": index_name,
                 "rows": rows,
                 "short_label": short_label,
             })

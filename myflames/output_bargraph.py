@@ -75,8 +75,18 @@ def render_bargraph(
     analysis=None,
     teach_index_by_folded=None,
 ):
-    """Generate bar chart SVG. root is parsed tree; total_time and unit_display from caller."""
-    all_nodes = sorted(flatten_nodes(root), key=lambda n: n["self_time"], reverse=True)
+    """Generate bar chart SVG from millisecond timings, converting for display."""
+    # Keep the parsed tree in milliseconds for the analysis and other views.
+    multiplier = 1000 if unit_display == "µs" else 1
+    all_nodes = []
+    for node in flatten_nodes(root):
+        display_node = dict(node)
+        display_node["self_time"] *= multiplier
+        display_node["total_time"] *= multiplier
+        all_nodes.append(display_node)
+    all_nodes.sort(key=lambda n: n["self_time"], reverse=True)
+    if total_time is not None:
+        total_time *= multiplier
     all_nodes = [n for n in all_nodes if n["self_time"] >= 0.001]
     total_time = total_time or max(0.001, sum(n["self_time"] for n in all_nodes))
 
@@ -186,7 +196,7 @@ def render_bargraph(
         info_attr = _attr_escape(info)
         short_lbl = (op.get("short_label") or "").strip()
         analysis_msg = highlight_msg_by_label.get(short_lbl, "")
-        analysis_attr = _attr_escape(analysis_msg)[:400] if analysis_msg else ""
+        analysis_attr = _attr_escape(analysis_msg[:400]) if analysis_msg else ""
         bar_class = "bar in-query-analysis" if analysis_attr else "bar"
         teach_attr = ""
         folded = (op.get("folded_label") or "").strip()

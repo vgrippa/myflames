@@ -39,18 +39,24 @@ _IDENT_RE = re.compile(
 
 
 def _strip_comments_and_literals(sql):
-    """Remove string literals and /* */ or -- comments from *sql* so the
-    table-name regex cannot match inside them (e.g. a literal 'FROM x')."""
-    # /* ... */
-    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
-    # -- ...
-    sql = re.sub(r"--[^\n]*", " ", sql)
-    # '...' and "..." (handle doubled-quote escape)
-    def _mask(m):
-        return '"' + " " * (len(m.group(0)) - 2) + '"'
-    sql = re.sub(r"'(?:''|\\'|[^'])*'", _mask, sql)
-    sql = re.sub(r'"(?:""|\\"|[^"])*"', _mask, sql)
-    return sql
+    """Mask comments and strings without treating their contents as SQL.
+
+    Match tokens in one pass: a comment marker inside a string is text, and
+    a quote inside a comment does not start a string. Backtick identifiers
+    are kept intact. MySQL requires whitespace after a -- comment marker.
+    """
+    tokens = re.compile(
+        r"/\*.*?\*/|--(?=\s|$)[^\r\n]*|\#[^\r\n]*|"
+        r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|"
+        r"`(?:``|[^`])*`",
+        re.DOTALL,
+    )
+
+    def _mask(match):
+        token = match.group(0)
+        return token if token.startswith("`") else " " * len(token)
+
+    return tokens.sub(_mask, sql)
 
 
 #: Single identifier (optionally backtick-quoted), optionally schema-qualified.
@@ -431,6 +437,7 @@ ADVISOR_VARIABLES = (
     "read_rnd_buffer_size",
     "tmp_table_size",
     "max_heap_table_size",
+    "internal_tmp_mem_storage_engine",
     "bulk_insert_buffer_size",
     # Optimizer
     "optimizer_switch",

@@ -226,7 +226,16 @@ claude mcp add myflames -- myflames-mcp</code></pre>
         <tr><td><code>2</code></td><td>Bad input: parse failure, missing file, connection error, or invalid arguments</td></tr>
       </tbody>
     </table>
-  </main>
+  <section id="review-corrections">
+      <h2>Errors and comparison matching</h2>
+      <p>Render and compare commands report unreadable or invalid inputs and
+      output-write failures on stderr with exit code 2. Exit code 1 is reserved
+      for a matching <code>check</code> finding.</p>
+      <p>Comparisons retain repeated operators with the same label, pairing
+      occurrences in traversal order. When a query rewrite reorders identical
+      operators, inspect the plans to confirm the pairing.</p>
+    </section>
+    </main>
   <footer>
     <p>myflames &mdash; <a href="https://github.com/vgrippa/myflames">GitHub</a></p>
   </footer>

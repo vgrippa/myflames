@@ -6,15 +6,19 @@
 #
 # Usage:
 #   ./scripts/generate-fixtures.sh
+#   MYSQL_IMAGE=mysql:latest OUTPUT_DIR=/tmp/mysql-latest-plans ./scripts/generate-fixtures.sh
 #
 # Requirements: Docker
 
 set -euo pipefail
 
-CONTAINER_NAME="myflames-fixture-mysql"
+CONTAINER_NAME="${CONTAINER_NAME:-myflames-fixture-mysql}"
+MYSQL_IMAGE="${MYSQL_IMAGE:-mysql:8.4}"
+KEEP_CONTAINER="${KEEP_CONTAINER:-0}"
+CONTAINER_STARTED=0
 MYSQL_ROOT_PASSWORD="fixturepass"
 MYSQL_DATABASE="testdb"
-OUTPUT_DIR="$(cd "$(dirname "$0")/.." && pwd)/test/fixtures"
+OUTPUT_DIR="${OUTPUT_DIR:-$(cd "$(dirname "$0")/.." && pwd)/test/fixtures}"
 FIXTURE_N=0
 
 # ---------------------------------------------------------------------------
@@ -22,6 +26,15 @@ FIXTURE_N=0
 # ---------------------------------------------------------------------------
 
 log() { echo "[generate-fixtures] $*"; }
+
+cleanup() {
+  if [ "$CONTAINER_STARTED" -eq 1 ] && [ "$KEEP_CONTAINER" != 1 ]; then
+    docker rm -fv "$CONTAINER_NAME" > /dev/null
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 mysql_exec() {
   docker exec -i "$CONTAINER_NAME" \
@@ -45,23 +58,24 @@ run_explain() {
 }
 
 # ---------------------------------------------------------------------------
-# Start MySQL 8.4 container
+# Start an isolated MySQL container
 # ---------------------------------------------------------------------------
 
 mkdir -p "$OUTPUT_DIR"
 
-if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-  log "Removing existing container $CONTAINER_NAME"
-  docker rm -f "$CONTAINER_NAME" > /dev/null
+if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
+  log "ERROR: Container $CONTAINER_NAME already exists; choose another CONTAINER_NAME."
+  exit 1
 fi
 
-log "Starting MySQL 8.4 container..."
+log "Starting $MYSQL_IMAGE container..."
 docker run -d \
   --name "$CONTAINER_NAME" \
   -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" \
   -e MYSQL_DATABASE="$MYSQL_DATABASE" \
-  mysql:8.4 \
+  "$MYSQL_IMAGE" \
   > /dev/null
+CONTAINER_STARTED=1
 
 log "Waiting for MySQL to be ready..."
 # Probe over TCP (-h 127.0.0.1 --protocol=TCP), NOT the local socket. The
@@ -81,7 +95,6 @@ for i in $(seq 1 90); do
   fi
   if [ "$i" -eq 90 ]; then
     log "ERROR: MySQL did not become ready in 90s"
-    docker rm -f "$CONTAINER_NAME" > /dev/null
     exit 1
   fi
   sleep 1
@@ -90,6 +103,10 @@ done
 # ---------------------------------------------------------------------------
 # Schema + data
 # ---------------------------------------------------------------------------
+
+docker exec "$CONTAINER_NAME" mysql -u root -p"$MYSQL_ROOT_PASSWORD" \
+  --batch --skip-column-names -e "SELECT VERSION()" > "$OUTPUT_DIR/server-version.txt"
+log "Server version: $(cat "$OUTPUT_DIR/server-version.txt")"
 
 log "Creating schema and seeding data..."
 mysql_exec << 'SQL'
@@ -469,9 +486,10 @@ run_explain "complex-5t-aggregate" \
 # Cleanup
 # ---------------------------------------------------------------------------
 
-log "Stopping and removing container..."
-docker rm -f "$CONTAINER_NAME" > /dev/null
+if [ "$KEEP_CONTAINER" = 1 ]; then
+  log "Keeping container $CONTAINER_NAME for further tests."
+fi
 
 echo ""
 log "Done! Generated $FIXTURE_N fixture files in $OUTPUT_DIR/"
-log "Run 'git add test/fixtures/' and commit the results."
+log "Inspect the generated plans before adding fixtures to version control."

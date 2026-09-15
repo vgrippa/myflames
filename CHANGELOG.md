@@ -5,6 +5,83 @@ All notable changes to myflames are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Review fixes (2026-09-15)
+
+- Preserve raw EXPLAIN JSON from the database client and escape passwords in
+  option files, including literal backslashes and control characters.
+- Preserve table references when SQL literals contain comment markers; handle
+  MySQL `#` comments and subtraction of negative numbers correctly.
+- Exclude primary-key and covering ranges from secondary-index MRR suggestions.
+- Apply the correct temporary-table limit for MySQL TempTable versus MEMORY and
+  MariaDB. Buffer-pool and sort suggestions now distinguish measured evidence
+  from configuration-based hints.
+- Classify scalar and streaming aggregates as O(n), accounting for DISTINCT
+  separately. Leave unmodeled ordered/multidimensional aggregates unclassified.
+- Keep embedded JSON-LD valid when SQL contains HTML comment markers, and avoid
+  splitting XML entities when truncating bar-chart annotations.
+- Convert bar-chart self and total times consistently to microseconds without
+  mutating the parsed plan.
+- Return exit code 2 and a diagnostic for render/compare input and output errors.
+- Preserve repeated operators in HTML and JSON comparisons instead of dropping
+  every occurrence after the first.
+- Freeze lesson delays when paused, apply speed changes during playback, and
+  resume the correct tween position after seeking.
+- Handle malformed comparison share links and preserve an explicitly empty
+  selection in the teaching explorer.
+- Make the MySQL fixture image, output directory, and container name configurable;
+  refuse to delete an existing container and clean up owned containers on failure.
+- Rewrite the README around installation and common workflows, correct MySQL's
+  JSON-format setup in the quick start, and add opt-in current-MySQL corpus tests.
+
+Validation details and remaining limitations: [September review](docs/reviews/2026-09-15.md).
+
+### Added
+
+- **Advisor names the index that removes a filesort.** When a plan has a
+  single-base-table `ORDER BY` filesort on plain columns, myflames now suggests
+  the ordered/covering index (`CREATE INDEX … (col1, col2 [DESC])`, preserving
+  each column's sort direction) that lets MySQL read rows already sorted and
+  skip the O(n log n) sort — not just "grow the sort buffer." The parser threads
+  the sort columns through (MySQL `sort_fields`, MariaDB `sort_key`); the rule
+  deliberately bails to the generic hint on joins, aggregates, or expression
+  sort keys, where a naive single-table index cannot satisfy the order. Every
+  claim was verified against MySQL/MariaDB server source.
+- **`semijoin_firstmatch` teach lesson** — the flagship of the semijoin cluster,
+  animating the FirstMatch early-out: a `WHERE col IN (subquery)` asks
+  *does-it-exist*, not *how-many*, so the inner scan stops at the first match.
+- **`--quiet/-q` on `digest`, `advise`, and `compare`** (previously only on
+  `check`). Uniform contract across subcommands: suppress incidental stderr
+  diagnostics (the `Written to <path>` line, digest's tokenizer `Note:`); stdout
+  data and the exit code are never affected.
+- **Zero-install browser playground linked from the README** — paste a plan and
+  render it client-side via Pyodide, installing the published PyPI wheel with
+  micropip.
+
+### Changed
+
+- **The MCP `analyze_plan` tool now returns the token-cheap decision-grade
+  analysis by default** (`detail="core"`): plan summary, warnings, suggestions,
+  index hints, optimizer-switch explanations, and the operator tree. This drops
+  the heavy `collected` (schema/stats/variables), `query`, and `teach_hooks`
+  blocks that an agent rarely needs, honoring myflames' token-efficiency thesis
+  on the surface agents call by default. Pass `detail="full"` to restore the
+  complete record. The `detail` gate lives on `build_sidecar` as the single
+  source of truth; a written `.sidecar.json` and the `digest` path are
+  unaffected (they stay `full`). `detail="full"` output is byte-identical to
+  prior releases, so consumers pinned to the full shape can opt back in.
+- **The "Fix first" primary action is ranked by one policy, shared with
+  `advise`.** The HTML card and the ranked findings list previously used
+  different heuristics and could disagree; both now dereference
+  `findings.primary_suggestion_index` / `build_findings`, so a medium-severity
+  suggestion correctly outranks a low one everywhere. When a plan has no
+  findings at all, the report shows an explicit "No blocking issues found" card
+  instead of a blank space.
+- **The before/after compare report now carries the "Made with myflames"
+  attribution and the Brendan Gregg / Tanel Poder inspiration credit**, matching
+  the main HTML report footer.
+
 ## [2.2.0] — 2026-06-30
 
 ### Fixed

@@ -1,490 +1,275 @@
 <p align="center">
-  <img src="myflames.jpeg" alt="myflames logo" width="200">
+  <img src="myflames.jpeg" alt="myflames logo" width="160">
 </p>
 
-<h1 align="center">myflames</h1>
-<p align="center"><strong>MySQL & MariaDB Query Plan Visualizer</strong></p>
+# myflames
 
-<p align="center">
-Visualize MySQL <code>EXPLAIN ANALYZE FORMAT=JSON</code> and MariaDB <code>ANALYZE FORMAT=JSON</code> output as interactive SVG charts. Five views, one parser, zero external dependencies.
-</p>
+myflames turns MySQL and MariaDB query plans into interactive charts. Use it to inspect where a query spends time, compare plans before and after a change, or export the analysis as JSON and plain text.
+
+The core package uses Python's standard library. Reports open in a browser and can be shared as HTML files.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
----
+![Query plan shown as a diagram](docs/screenshots/hero-diagram.svg)
 
-#### Contents
-
-**Start here:** [Why: 4x fewer tokens](#ask-an-ai-to-fix-a-slow-query-4x-fewer-tokens) · [Output preview](#what-does-the-output-look-like) · [Install](#install) · [Output types](#output-types) · [Live demos](#live-demos) · [Learn the algorithms](#learn-the-algorithms-myflames-teach)
-<br>**For humans:** [Quick start](#quick-start-file-mode) · [Live-connection mode](#live-connection-mode) · [HTML report](#html-report) · [Environment advisor](#environment-advisor)
-<br>**For agents & CI:** [JSON sidecar](#json-sidecar) · [Compare / diff](#compare-before-vs-after) · [digest / advise / check](#agent-and-ci-subcommands) · [MCP server](#mcp-server-for-ai-agents)
-<br>**Reference:** [Requirements](#requirements) · [CLI reference](#cli-reference) · [Troubleshooting](#troubleshooting) · [Documentation](#documentation)
-
----
-
-<p align="center">
-  <img src="docs/screenshots/hero-diagram.svg" alt="myflames diagram view with Big O complexity chips on every operator" width="920">
-  <br><em>Every operator now carries a Big O chip: <code>O(log n + k)</code>, <code>O(n · log m)</code>, <code>O(n · m)</code>, …  with a color-coded severity ramp.</em>
-</p>
-
-> **New in 2.0** — myflames is now built for the **AI era**. The `digest` command emits a compact, source-grounded plan **digest** to hand an LLM instead of raw `EXPLAIN` JSON (and `digest --cost` shows the tokens and dollars you save); new `diff` / `check` / `advise` subcommands serve agents and CI; an **MCP server** (`myflames-mcp`) lets agents call myflames directly; and every HTML report gains an "Agent-ready" panel. The worked example below is the headline. See the [full CHANGELOG entry](CHANGELOG.md#200--2026-06-05).
-
----
-
-## Ask an AI to fix a slow query (4x fewer tokens)
-
-**Why this works:** a raw `EXPLAIN ANALYZE FORMAT=JSON` plan is mostly *structure*, not information. The same field names (`cost_info`, `used_columns`, `actual_rows`, `actual_loops`, …) repeat for every operator, nested levels deep, and the LLM pays for all of it and must parse it before it can reason. myflames does that parsing once and hands the model only the facts that decide the answer — the summary, the warnings, and the fix. Same answer, a quarter of the tokens.
-
-<p align="center">
-  <img src="docs/screenshots/token-savings.svg" alt="Bar chart: raw EXPLAIN plan 2,110 tokens vs myflames digest 521 tokens — 4x fewer, ~$7.90 saved per 1,000 queries" width="720">
-</p>
-
-Every number here is **measured against a live MySQL 8.4**, not estimated (the [walkthrough](docs/examples/token-savings-walkthrough.md) reproduces it with one Docker script). The query scans every order because `orders.total` isn't indexed:
-
-```sql
-SELECT o.id, o.total, oi.quantity, p.name
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-JOIN products p     ON p.id = oi.product_id
-WHERE o.total > 450
-ORDER BY o.total DESC
-LIMIT 50;
-```
-
-### ❌ Without myflames — paste the raw plan into the AI
-
-You run `EXPLAIN ANALYZE FORMAT=JSON …`, copy the **~5.5 KB of deeply nested JSON**, paste it in, and ask *"why is this slow, and how do I make it faster?"* That prompt is **2,110 tokens** on Claude (1,420 on GPT-4o) — and the model parses all that structure before it can reason.
-
-### ✅ With myflames — paste the digest instead
-
-```bash
-myflames digest plan.json | pbcopy    # then paste
-```
-
-The digest is **521 tokens** and already names the diagnosis *and the fix* — this is real output:
-
-```text
-# Query plan analysis (myflames digest)
-engine mysql | 9 ops | depth 6 | 1.819 ms | rows 50 sent / 12,004 examined
-
-SUMMARY: Query scans 1 table and sorts the result; examines ~12,004 rows to
-return 50 in 1.8 ms. Main finding: no index covers (total) on orders.
-
-WARNINGS (2):
-- [warn/full_scan] Full table scan: orders (12000 rows) (@ Table scan [orders])
-- [warn/filesort] 1 sort operation(s) — 15 rows; may use disk-based filesort (@ Sort)
-
-INDEXES:
-- CREATE INDEX idx_orders_total ON orders (total);
-```
-
-### Same answer, 4× cheaper
-
-We actually asked Claude (Opus 4.8) the question **both ways**. It reached the **same diagnosis and the same fix** either way. From the digest:
-
-> The bottleneck is the first access path on `orders`: a **full table scan** — MySQL reads all ~12,000 rows because there's no index on `total`. You return 50 rows but examine 12,004, a ~240:1 read-to-return ratio. The surviving rows are then **filesorted**… The joins are fine. Fix: `CREATE INDEX idx_orders_total ON orders (total);`
-
-Same quality answer — for a quarter of the input tokens:
-
-| Measured with | Raw plan + question | myflames digest + question | Saving |
-|---|--:|--:|--:|
-| **Claude Opus 4.8** (real API `count_tokens`) | 2,110 | 521 | **4.0× · 75% fewer** |
-| **GPT-4o / 4.1 / 5** (tiktoken) | 1,420 | 320 | **4.4× · 78% fewer** |
-| Offline heuristic (myflames default) | 1,655 | 300 | 5.5× |
-
-On Opus 4.8 input pricing that's **~$0.008 saved per query (~$7.90 per 1,000)**; on Sonnet 4.6, ~$4.80 per 1,000 — and you save output tokens and round-trips too, because the answer is already in the digest. On bigger, messier plans the saving climbs higher.
-
-> Numbers measured 2026-06-05 against Claude Opus 4.8 and the GPT tokenizer. The offline heuristic is the zero-dependency default and slightly over-counts JSON.
-
-### Exact token counts (optional)
-
-`digest --cost` uses an offline heuristic by default — **no key, no network**. For exact counts add a tokenizer:
-
-```bash
-myflames digest explain.json --cost --tokenizer claude   # Anthropic count_tokens; needs myflames[tokens] + your ANTHROPIC_API_KEY
-myflames digest explain.json --cost --tokenizer gpt      # tiktoken; exact for GPT, keyless; needs myflames[gpt]
-```
-
-Your `ANTHROPIC_API_KEY` is read from the environment at call time and never stored; if it's unset, `--tokenizer claude` falls back to the estimate with a one-line note. `count_tokens` is free. Full setup is in the [walkthrough](docs/examples/token-savings-walkthrough.md).
-
-**Reproduce it** against a live MySQL 8.4 with the [step-by-step walkthrough](docs/examples/token-savings-walkthrough.md). Want to skip the copy/paste? Register the [MCP server](#mcp-server-for-ai-agents) and your agent calls myflames itself.
-
-## What does the output look like?
-
-Four views of the same query, each annotated with Big O complexity:
-
-<table>
-<tr>
-<td align="center"><strong>Flame graph</strong> — time hierarchy + severity dots<br><img src="docs/screenshots/complex-flamegraph.svg" alt="flame graph with severity dots" width="420"></td>
-<td align="center"><strong>Bar chart</strong> — slowest ops with a complexity column<br><img src="docs/screenshots/complex-bargraph.svg" alt="bar chart with complexity column" width="420"></td>
-</tr>
-<tr>
-<td align="center"><strong>Treemap</strong> — corner chips on larger tiles<br><img src="docs/screenshots/complex-treemap.svg" alt="treemap with complexity chips" width="420"></td>
-<td align="center"><strong>Diagram</strong> — Visual Explain style, Big O per node<br><img src="docs/screenshots/complex-diagram.svg" alt="visual explain diagram with complexity chips" width="420"></td>
-</tr>
-</table>
-
-> **New in 1.4.0** — every operator carries a vetted Big O complexity chip (see the [shared complexity legend](myflames/complexity_legend.py) that renders at the bottom of every view). Open any HTML demo below to hover and inspect: `O(log n + k)` for index lookups, `O(n log n)` for filesort, `O(n · m)` when a nested loop has no inner index, and so on.
-
----
+[Install](#install) · [Quick start](#quick-start-file-mode) · [Views and demos](#output-types) · [Live connection](#live-connection-mode) · [CLI reference](#cli-reference) · [Documentation](#documentation)
 
 ## Install
 
 ```bash
-pip install myflames          # or: pipx install myflames  (Homebrew / PEP 668)
+pip install myflames
+# Or install into an isolated environment:
+pipx install myflames
 ```
 
-Pure Python 3.7+ stdlib. No external dependencies.
+### Requirements
 
-## Try it in 30 seconds
+- Python 3.7 or later for the core package.
+- MySQL 8.4 or later, using JSON format version 2, or MariaDB 10.11 or later.
+- A `mysql` or `mariadb` command-line client for live connections. Reading a saved plan does not require a running database.
+
+The [September 2026 review](docs/reviews/2026-09-15.md) tested a fresh MySQL 26.7.0 plan corpus and live connections.
+
+Optional integrations have their own dependencies:
 
 ```bash
-myflames sample.json > query.svg                  # SVG flame graph
-myflames --output report.html sample.json         # self-contained HTML report
+pip install 'myflames[mcp]'     # MCP server
+pip install 'myflames[tokens]'  # Anthropic token counting
+pip install 'myflames[gpt]'     # GPT token counting with tiktoken
 ```
-
-Or connect straight to a live MySQL / MariaDB server — same flags as the `mysql` CLI:
-
-```bash
-myflames -h db.example.com -u admin -p -D mydb \
-  -e 'SELECT * FROM orders WHERE user_id = 1' \
-  --output report.html
-# → report.html  — progressive-UX HTML with advisor warnings
-# → report.json  — v1 schema sidecar for AI agents / CI / jq
-```
-
----
-
-## Output types
-
-| Preview | Type | Best for | Command |
-|---|------|----------|---------|
-| <img src="docs/screenshots/complex-flamegraph.svg" alt="flame graph preview" width="160"> | **Flame graph** | Full execution hierarchy, time distribution | `myflames explain.json` |
-| <img src="docs/screenshots/complex-bargraph.svg" alt="bar chart preview" width="160"> | **Bar chart** | Finding the slowest individual operations | `myflames --type bargraph explain.json` |
-| <img src="docs/screenshots/complex-treemap.svg" alt="treemap preview" width="160"> | **Treemap** | Comparing relative cost at a glance | `myflames --type treemap explain.json` |
-| <img src="docs/screenshots/complex-diagram.svg" alt="diagram preview" width="160"> | **Diagram** | Join order & access paths (Visual Explain style) | `myflames --type diagram explain.json` |
-| — | **Execution tree** | Collapsible per-subtree with self/total time | `myflames --type tree explain.json` |
-
-Not sure which view? Run `myflames guide`.
-
-Every view includes a **Query Analysis panel** with optimizer features detected, warnings (full table scans, hash joins, BNL buffers, temp tables, filesorts) and concrete tuning suggestions.
-
----
-
-## Live demos
-
-| View | Interactive demo |
-|------|-----------------|
-| Flame graph | [mysql-query-complex-flamegraph.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-flamegraph.html) |
-| Bar chart | [mysql-query-complex-bargraph.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-bargraph.html) |
-| Treemap | [mysql-query-complex-treemap.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-treemap.html) |
-| Diagram | [mysql-query-complex-diagram.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-diagram.html) |
-| Execution tree | [mysql-query-complex-tree.html](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-tree.html) |
-| HTML report | [mysql-query-report.html](https://vgrippa.github.io/myflames/demos/mysql-basic/mysql-query-report.html) |
-| Before vs After | [mysql-query-compare.html](https://vgrippa.github.io/myflames/demos/mysql-basic/mysql-query-compare.html) |
-
-[All demos →](https://vgrippa.github.io/myflames/)
-
-> Interactive features (zoom, search, tooltips) need the HTML wrapper or GitHub Pages — raw GitHub URLs block inline scripts.
-
----
-
-## Learn the algorithms (`myflames teach`)
-
-Interactive, offline-first HTML lessons that animate MySQL 8.4 and MariaDB 11.x internals with correct cost models. Every lesson ships with in-page sliders — no CLI flags, no re-running. Each is a single self-contained HTML file (no external scripts/styles/fonts) you can drop in a Slack DM or attach to a ticket:
-
-```bash
-myflames teach btree -o btree.html && open btree.html   # one lesson
-myflames teach --index -o teach/index.html              # the catalog hub
-```
-
-**21 lessons in four families** — browse them all at [vgrippa.github.io/myflames/teach/](https://vgrippa.github.io/myflames/teach/).
-
-<details>
-<summary><strong>Full lesson catalog</strong> (click to expand)</summary>
-
-**Join family** — [`nested_loop`](https://vgrippa.github.io/myflames/teach/join/nested_loop.html), [`bnl`](https://vgrippa.github.io/myflames/teach/join/bnl.html) (Block Nested Loop; MariaDB default), [`hash`](https://vgrippa.github.io/myflames/teach/join/hash.html) (build/probe/grace-hash spill), [`join`](https://vgrippa.github.io/myflames/teach/join/join.html) (BNL vs hash side-by-side), [`bka_join`](https://vgrippa.github.io/myflames/teach/join/bka_join.html) (Batched Key Access), [`semijoin_weedout`](https://vgrippa.github.io/myflames/teach/join/semijoin_weedout.html) (Duplicate Weedout).
-
-**Index family** — [`btree`](https://vgrippa.github.io/myflames/teach/index/btree.html) (InnoDB B+tree, page fan-out), [`unique_lookup`](https://vgrippa.github.io/myflames/teach/index/unique_lookup.html), [`non_unique_lookup`](https://vgrippa.github.io/myflames/teach/index/non_unique_lookup.html), [`icp`](https://vgrippa.github.io/myflames/teach/index/icp.html) (Index Condition Pushdown), [`index_merge`](https://vgrippa.github.io/myflames/teach/index/index_merge.html) (union/intersection/sort-union), [`skip_scan`](https://vgrippa.github.io/myflames/teach/index/skip_scan.html), [`rowid_filter`](https://vgrippa.github.io/myflames/teach/index/rowid_filter.html) (MariaDB bitmap pre-filter).
-
-**Scan / sort / temp family** — [`full_scan`](https://vgrippa.github.io/myflames/teach/scan/full_scan.html), [`filter`](https://vgrippa.github.io/myflames/teach/scan/filter.html), [`filesort`](https://vgrippa.github.io/myflames/teach/scan/filesort.html) (sort buffer, runs, k-way merge), [`tmp`](https://vgrippa.github.io/myflames/teach/scan/tmp.html) (MEMORY→on-disk conversion cliff), [`derived_table`](https://vgrippa.github.io/myflames/teach/scan/derived_table.html), [`covering_index`](https://vgrippa.github.io/myflames/teach/scan/covering_index.html) (incl. the InnoDB PK-append property).
-
-**Cache family** — [`lru`](https://vgrippa.github.io/myflames/teach/cache/lru.html) (midpoint-insertion LRU), [`buffer_pool_warmup`](https://vgrippa.github.io/myflames/teach/cache/buffer_pool_warmup.html) (cold/warm/dump-load).
-
-</details>
-
----
-
-## Requirements
-
-- **Python 3.7+** (no extra packages)
-- **MySQL 8.4 through 9.7+** with `SET explain_json_format_version = 2` — including the **hypergraph optimizer** and the 9.x `query_plan` envelope (verified against real 9.7), **or**
-- **MariaDB 10.11+** / **11.4** / **11.8+** (supports `ANALYZE FORMAT=JSON` and `SHOW ANALYZE FORMAT=JSON FOR <conn_id>` out of the box)
-
----
 
 ## Quick start (file mode)
 
-```sql
--- MySQL
-EXPLAIN ANALYZE FORMAT=JSON SELECT ... ;
--- MariaDB
-ANALYZE FORMAT=JSON SELECT ... ;
-```
+Capture a plan from MySQL:
 
 ```bash
-# Save to a file and render
-mysql -u user -p mydb -s -N -r -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." > explain.json
-myflames explain.json > query.svg
-
-# Or pipe directly
-mysql -u user -p mydb -N -e "EXPLAIN ANALYZE FORMAT=JSON SELECT ..." | myflames > query.svg
-
-# Self-contained HTML report
-myflames --output report.html explain.json
+mysql -u user -p mydb --batch --skip-column-names --raw -e \
+  "SET explain_json_format_version=2; EXPLAIN ANALYZE FORMAT=JSON SELECT * FROM orders WHERE user_id = 1" \
+  > explain.json
 ```
 
-myflames auto-strips MySQL CLI quirks (table borders, `EXPLAIN` headers, escaped newlines, BOM), so plain `-e` also works.
+For MariaDB, use `ANALYZE FORMAT=JSON`:
 
----
+```bash
+mariadb -u user -p mydb --batch --skip-column-names --raw -e \
+  "ANALYZE FORMAT=JSON SELECT * FROM orders WHERE user_id = 1" \
+  > explain.json
+```
+
+Both commands execute the query to measure it. Choose a query and database where that execution is appropriate.
+
+Render the saved plan:
+
+```bash
+myflames explain.json --output report.html
+```
+
+This writes `report.html` and a JSON analysis file, `report.json`. Open the HTML file in a browser. The report also links to algorithm lessons; by default, myflames writes a `teach/` directory beside it.
+
+For an SVG or a pipeline:
+
+```bash
+myflames explain.json > query.svg
+cat explain.json | myflames --type diagram > query-diagram.svg
+```
+
+To try the tool from a source checkout without a database:
+
+```bash
+python3 -m myflames test/mysql-explain-json-sample.json --output report.html
+```
+
+You can also paste a plan into the [browser playground](https://vgrippa.github.io/myflames/playground/). It loads the published package through Pyodide and processes the plan in your browser.
+
+## Output types
+
+| View | What it shows | Select with |
+|---|---|---|
+| Flame graph | Time across the execution hierarchy | `--type flamegraph` (default) |
+| Bar chart | Individual operators ranked by self-time | `--type bargraph` |
+| Treemap | Relative time across the plan | `--type treemap` |
+| Diagram | Join order and access paths | `--type diagram` |
+| Execution tree | Expandable branches with self-time and total time | `--type tree` |
+
+```bash
+myflames --type diagram explain.json --output diagram.html
+myflames guide
+```
+
+Views include plan warnings and complexity annotations. These help identify work worth investigating; a scan or a sort alone does not establish that a query needs changing.
+
+### Live demos
+
+[Flame graph](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-flamegraph.html) · [Bar chart](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-bargraph.html) · [Treemap](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-treemap.html) · [Diagram](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-diagram.html) · [Execution tree](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-tree.html)
+
+[HTML report](https://vgrippa.github.io/myflames/demos/mysql-basic/mysql-query-report.html) · [Before/after comparison](https://vgrippa.github.io/myflames/demos/mysql-basic/mysql-query-compare.html)
+
+Use the HTML reports for interactive features. SVGs embedded as images may not run their scripts.
 
 ## Live-connection mode
 
-Skip the two-step workflow — connect directly. Same flags for MySQL 8.4 and MariaDB:
+myflames can capture the plan through your installed database client:
 
 ```bash
-# Local
-myflames -h 127.0.0.1 -u root -p'password' -D mydb -e 'SELECT ...' --output report.html
-
-# AWS RDS with full TLS verification
-myflames -h my-db.rds.amazonaws.com -u admin -p \
-  --ssl-mode=VERIFY_IDENTITY --ssl-ca=/path/to/global-bundle.pem \
-  -D prod -e 'SELECT ...' --output report.html
+myflames -h 127.0.0.1 -u app_user -p -D mydb \
+  -e 'SELECT * FROM orders WHERE user_id = 1' \
+  --output report.html
 ```
 
-In live mode myflames (1) connects through the real `mysql` / `mariadb` client binary (every auth plugin the server supports — no PyMySQL), (2) runs `EXPLAIN ANALYZE FORMAT=JSON`, (3) collects `SHOW CREATE TABLE`, row/byte counts, and a filtered `SHOW SESSION VARIABLES` snapshot, (4) feeds everything through the **environment advisor**, and (5) emits the HTML report + JSON sidecar.
+A bare `-p` prompts for the password. myflames passes credentials to the client through a temporary file with owner-only permissions. Avoid putting passwords directly in the command, where shell history can retain them.
 
-**Password handling:** the password is written to a mode-0600 `--defaults-extra-file` and never appears on argv or in env vars. Skip any collection step with `--no-collect-schema`, `--no-collect-stats`, `--no-collect-variables`.
+For a remote MySQL server with certificate verification:
 
----
+```bash
+myflames -h my-db.rds.amazonaws.com -u admin -p -D mydb \
+  --ssl-mode=VERIFY_IDENTITY --ssl-ca=/path/to/global-bundle.pem \
+  -e 'SELECT * FROM orders WHERE user_id = 1' --output report.html
+```
+
+Live mode collects table definitions, table statistics, and selected session variables to supplement the plan. Use `--no-collect-schema`, `--no-collect-stats`, or `--no-collect-variables` to skip a collection step.
+
+### Environment advisor
+
+The advisor uses the plan and collected metadata to suggest changes to indexes, query expressions, and server settings. Suggestions include their reasoning. For example, a single-table sort on plain columns can produce a candidate ordered index.
+
+Treat these suggestions as candidates to test. Index maintenance costs, available memory, concurrent queries, and the server's chosen execution plan still matter.
 
 ## HTML report
 
-```bash
-myflames --output report.html explain.json
-myflames --type diagram --output report.html explain.json
-```
+Reports include the selected chart, a summary, warnings, suggested actions, and a glossary. Live reports also show collected schema and server settings. Labels link to relevant teaching lessons.
 
-A self-contained file you can attach to a ticket or paste into Confluence. Built for three audiences at once:
-
-- **Newcomers** — plain-English executive summary, a single "Fix first" primary action card above the fold (always carries a `Why:` clause, even when the advisor doesn't supply one), glossary chips on every jargon term (`filesort`, `hash join`, `BNL`, `MRR`, `ICP`, …) that anchor-link to a glossary aside and to the matching `myflames teach` lesson via a sibling `Learn →` button. Below the glossary, a centralized **myteach hub** section links to the catalog of all 21 algorithm lessons and surfaces the lessons relevant to *this* plan as quick chips.
-- **Senior DBAs** — every metric, warning and `SET` / `CREATE INDEX` / `ALTER TABLE` recommendation in copy-paste-able `<pre><code>` blocks. The **Collected environment** panel renders byte-sized variables in human form (`innodb_buffer_pool_size: 128 MB`) with raw bytes in the tooltip, collapses `optimizer_switch` into a 27-flag chip list color-coded by `=on` / `=off`, and turns each touched table into a click-to-expand accordion that reveals columns (with types + NULL badges) and indexes (with PK / UNIQUE / INDEX badges + column tuples) inline. A two-row sticky header carries engine / version / operator-count / total-time / generated-at metadata pulled from the same source the JSON sidecar emits.
-- **AI agents / tools** — a `<script type="application/ld+json">` block in `<head>` wrapping the v1 sidecar payload as `{ "@context": "https://myflames.dev/ns/v1", "@type": "QueryPlanAnalysis", "@id": ... }`, a `<link rel="alternate" type="application/json">` pointing at the sibling JSON sidecar, and stable `node_id` references across warnings / `operator_complexities` / `plan_tree` so external consumers can correlate without OCR'ing SVG text.
-
----
+The report itself contains its scripts and styles. To share its linked lessons too, include the adjacent `teach/` directory. Use `--no-teach-bundle` to omit that directory, or `--refresh-teach-bundle` to regenerate it after an upgrade.
 
 ## JSON sidecar
 
-Every `--output` writes a **stable, versioned, machine-readable sidecar** next to the main file:
+A named render output gets a JSON analysis file beside it:
 
 ```bash
-myflames --output report.html explain.json
-# → report.html  report.json
+myflames explain.json --output report.html
+jq '.plan_summary' report.json
+jq '.suggestions[] | {action, why}' report.json
 ```
 
-```jsonc
-{
-  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
-  "schema_version": "1.3",
-  "source": {"type": "live", "engine": "mysql", "engine_version": "8.4.8"},
-  "plan_summary": { "total_time_ms": 12.4, "operator_count": 12, ... },
-  "plan_tree":   { "node_id": "n:a676d93c9d98", "short_label": "Limit",
-                   "children": [ ... ] },
-  "warnings":    [ {"severity": "error", "category": "nonsargable_join", ...} ],
-  "suggestions": [ {"severity": "high", "category": "rewrite", "action": "...", "why": "..."} ],
-  "primary_action": {"ref": "suggestions[0]"},
-  "operator_complexities": [ {"node_id": "n:5416613cb59f", "big_o": "O(n · m)", ...} ],
-  "environment_findings":  [ {"rule_id": "FLUSH_LOG_COMMIT_2", "severity": "high", ...} ],
-  "collected": { "variables": {...}, "stats": {...}, "schema": {...} }
-}
-```
+The JSON includes the plan tree, warnings, suggestions, complexity annotations, and available environment metadata. Stable node IDs connect findings to operators. See the [sidecar schema](docs/schemas/sidecar-v1.json) for the field definitions.
 
-The HTML report wraps this same payload in a JSON-LD envelope (`@context: https://myflames.dev/ns/v1`, `@type: QueryPlanAnalysis`) so search crawlers and LLM retrieval pipelines parse it correctly, and links to the sibling sidecar via `<link rel="alternate" type="application/json">`. The published JSON Schema lives at [docs/schemas/sidecar-v1.json](docs/schemas/sidecar-v1.json).
-
-For before/after diffs, `myflames compare before.json after.json --output diff.html` emits a separate sidecar at [docs/schemas/compare-v1.json](docs/schemas/compare-v1.json) (`schema_version: "compare-1.0"`) carrying `summary{regressions, improvements, unchanged}` and per-operator deltas keyed by the same `node_id`. CI can gate on `summary.regressions == 0` without scraping HTML.
-
-Read it with `jq` — no HTML parsing needed:
-
-```bash
-jq '.suggestions[0] | .action + " — Why: " + .why' report.json
-jq '.warnings[] | select(.category == "env")'      report.json
-```
-
-Suppress with `--no-sidecar`, or point at an explicit path with `--sidecar /tmp/plan.json`. See [myflames/output_sidecar.py](myflames/output_sidecar.py) for the full schema.
-
----
-
-## Environment advisor
-
-With access to server state (live mode, or any caller populating `analysis`), myflames runs rules matching plan signals against collected server state and emits tuning suggestions grounded in the MySQL cost model:
-
-| Rule | Fires when… |
-|------|-------------|
-| **Non-sargable join predicate** | Join uses `CONCAT(col)`, `CAST(col)`, `LOWER(col)`, `DATE(col)`, … on a column |
-| **Buffer pool vs working set** | `innodb_buffer_pool_size` < 25–50% of referenced tables' data+index length |
-| **Sort buffer vs filesort** | Filesort detected and `sort_buffer_size` < 2 MB |
-| **Join buffer vs hash-join / BNL** | Hash join or BNL detected and `join_buffer_size` < 2 MB |
-| **Tmp table size** | Temp table materialized and `min(tmp_table_size, max_heap_table_size)` < 32 MB |
-| **`optimizer_switch` overrides** | `hash_join=off` + BNL, `mrr=off` + filesort, `derived_condition_pushdown=off` + materialize |
-| **Missing indexes** | Parser heuristic flags a missing index AND collected schema confirms no covering index |
-| **Engine ≠ InnoDB/Aria** | Referenced table is MyISAM/other |
-| **`innodb_flush_log_at_trx_commit` ≠ 1** | On a mutating query |
-
-Every suggestion carries a `Why:` clause — enforced by a test so no rule ships without a cost-model justification.
-
----
+Use `--no-sidecar` to suppress it or `--sidecar /path/to/analysis.json` to choose its location. Comparison reports use a separate [comparison schema](docs/schemas/compare-v1.json). HTML reports also embed analysis as JSON-LD.
 
 ## Compare before vs after
 
+Capture plans before and after an index, query, or configuration change:
+
 ```bash
-myflames compare before.json after.json --output diff.html   # HTML report
-myflames diff    before.json after.json --digest             # token-cheap text diff for an LLM
-myflames diff    before.json after.json --json               # structured delta (compare-1.0)
+myflames compare before.json after.json --output diff.html
+myflames diff before.json after.json --json
+myflames diff before.json after.json --digest
 ```
 
-Shows total time delta, per-operator self-time/rows/loops changes, new or removed full table scans, and new/resolved warnings. (`diff` is an alias of `compare`.)
-
----
+`diff` is an alias for `compare`. Results include timing changes, per-operator differences, and changes in warnings. Repeated labels are paired in traversal order, so inspect the pairing when a rewrite reorders identical operators. Compare measurements under similar conditions; cache state and concurrent work can affect timings.
 
 ## Agent and CI subcommands
 
-myflames serves AI agents and pipelines, not just human eyes:
-
 ```bash
-myflames digest plan.json              # compact LLM-ready digest (pipe to your model)
-myflames digest plan.json --cost       # tokens + $ saved vs the raw plan; --tokenizer claude|gpt, --json
-myflames advise plan.json --json       # ranked warnings + suggestions, each with a confidence
-myflames check  plan.json --fail-on full_scan,filesort   # CI gate: exit 1 if a trigger matches
+myflames digest explain.json
+myflames advise explain.json --json
+myflames check explain.json --fail-on full_scan,filesort
 ```
 
-Exit-code contract: **0** success · **1** a gate/finding tripped · **2** bad input. That makes `check` a drop-in pre-commit/CI guard and an agent-loop primitive.
+`digest` produces a compact text summary. `advise` returns ranked findings. `check` returns exit code **1** when a selected finding occurs, **0** when none matches, and **2** for bad input. Unknown trigger names are errors. Use `--quiet` or `-q` to suppress incidental diagnostics on `check`, `digest`, `advise`, and `compare` without changing their output data.
 
----
+### Token counts
+
+The digest can be useful when sending a plan to an LLM. Its size and the information needed for an answer depend on the query. The [token-count walkthrough](docs/examples/token-savings-walkthrough.md) contains a measured example and reproduction steps.
+
+```bash
+myflames digest explain.json --cost
+myflames digest explain.json --cost --tokenizer gpt
+myflames digest explain.json --cost --tokenizer claude
+```
+
+The default count is an offline estimate. GPT counting uses the optional `tiktoken` package; its first use may download encoding data. Claude counting uses the optional Anthropic SDK and `ANTHROPIC_API_KEY`, and sends text to Anthropic's counting API. Cost figures depend on the selected model and the tool's price assumptions.
+
+The old `tokens` and `findings` commands remain as deprecated aliases for `digest` and `advise`. `tokens` retains its default cost-report behavior.
 
 ## MCP server (for AI agents)
-
-Let Claude Code, Cursor, or any MCP client call myflames directly — no copy/paste, no OCR'ing an SVG:
 
 ```bash
 pip install 'myflames[mcp]'
 claude mcp add myflames -- myflames-mcp
 ```
 
-Exposed tools: `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch` (source-verified), and `explain_query` (connect + `EXPLAIN ANALYZE` live). The agent reasons over the 335-token digest instead of the 2,000+-token raw plan. The MCP transport is an optional extra; the core package stays stdlib-only.
+The server exposes `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, and `explain_query`. The last tool connects to a database and executes the query through `EXPLAIN ANALYZE`.
 
----
+`analyze_plan` defaults to `detail="core"`, which includes the summary, findings, and plan tree. Request `detail="full"` for collected metadata, query text, and teaching links when available. File sidecars and the digest use the full analysis.
+
+## Learn the algorithms (`myflames teach`)
+
+Generate an interactive HTML lesson or a lesson catalog:
+
+```bash
+myflames teach btree -o btree.html
+myflames teach --index -o teach/index.html
+myflames teach --help
+```
+
+Lessons cover indexes, scans, sorting, joins, and buffer-pool behavior. They use adjustable examples to explain the algorithms. Browse the [lesson catalog](https://vgrippa.github.io/myflames/teach/) or use `--help` to see the lessons in your installed version.
 
 ## CLI reference
 
-```
-myflames [options] [explain.json]
-myflames -h HOST [-P PORT] -u USER [-p[PASS]] -D DB -e 'SQL' -o OUT
-```
+Run `myflames --help` or `myflames <subcommand> --help` for the complete option list.
 
-### Rendering
+| Render option | Purpose |
+|---|---|
+| `--type TYPE` | `flamegraph`, `bargraph`, `treemap`, `diagram`, or `tree` |
+| `--output PATH`, `-o PATH` | Write HTML or SVG instead of stdout |
+| `--width N`, `--height N` | Set width; height sets flame-graph frame height |
+| `--colors NAME` | Flame-graph palette: `hot`, `mem`, `io`, `red`, `green`, `blue` |
+| `--title TEXT` | Set the chart title |
+| `--inverted` | Render an icicle-style flame graph |
+| `--no-enhance` | Omit enhanced flame-graph tooltips |
+| `--query SQL`, `--query-file PATH` | Include the original SQL in the output |
+| `--sidecar PATH`, `--no-sidecar` | Choose or suppress the JSON analysis file |
+| `--no-teach-bundle`, `--refresh-teach-bundle` | Control the linked lesson files |
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--type` | `flamegraph` | `flamegraph`, `bargraph`, `treemap`, `diagram`, `tree` |
-| `--output` / `-o` | stdout | `.html` → self-contained report; `.svg` → responsive SVG. JSON sidecar auto-written. |
-| `--width N` | 1800 / 1200 | SVG width in pixels |
-| `--height N` | 32 | Frame height (flamegraph only) |
-| `--colors` | `hot` | `hot`, `mem`, `io`, `red`, `green`, `blue` (flamegraph only) |
-| `--title TEXT` | `MySQL Query Plan` | Chart title |
-| `--inverted` | off | Icicle graph (flamegraph only) |
-| `--no-enhance` | off | Disable detailed tooltips (flamegraph only) |
-| `--query SQL` | — | Embed the original SQL text in the output |
-| `--query-file PATH` | — | Read the original SQL from a file to embed in the output |
-| `--no-teach-bundle` | off | Don't auto-emit the `teach/` lesson files next to an HTML `--output` (useful for tests/CI/disk-constrained shells) |
-| `--refresh-teach-bundle` | off | Force-regenerate the `teach/` bundle even if it already exists (use after upgrading myflames) |
-
-### Live connection — same flags as the `mysql` CLI
-
-| Option | Description |
-|--------|-------------|
-| `-h HOST` / `--host` | Connect to this host (enables live mode) |
-| `-P PORT`, `-u USER`, `-p[PASS]`, `-D DB` | Standard `mysql` flags |
-| `--ssl-mode MODE` | `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`, `VERIFY_IDENTITY` |
-| `--ssl-ca`, `--ssl-cert`, `--ssl-key` | TLS paths |
-| `--mysql-binary PATH` | Override `mysql`/`mariadb` autodetection |
-| `-e SQL` / `--execute` | Query to `EXPLAIN ANALYZE` (required in live mode) |
-| `--no-collect-schema` / `--no-collect-stats` / `--no-collect-variables` | Skip collection steps |
-
-### Sidecar
-
-| Option | Description |
-|--------|-------------|
-| *(default)* | Auto-write `<output>.json` |
-| `--sidecar PATH` / `--no-sidecar` | Explicit path or opt-out |
-
-### Subcommands
-
-```bash
-myflames compare before.json after.json --output diff.html   # before/after (alias: diff)
-myflames digest explain.json [--cost]   # LLM-ready digest (--cost: token/$ saving)
-myflames advise explain.json [--json]   # ranked warnings + suggestions
-myflames check  explain.json --fail-on full_scan,filesort    # CI gate (exit code)
-myflames teach  btree -o btree.html     # interactive algorithm lesson
-myflames guide                          # which view should I use?
-```
-
-Full help: `myflames --help`. See [Agent and CI subcommands](#agent-and-ci-subcommands) for the digest/advise/check details.
-
----
-
-## Interactive features
-
-All views support **Ctrl+F** regex search. The bar chart, treemap, diagram, and execution tree use click-to-pin details strips (text is always selectable). The diagram has +/− zoom buttons, drag-to-pan, and double-click to reset. Execution tree has Expand/Collapse All. See each demo for the full interaction set.
-
----
+| Connection option | Purpose |
+|---|---|
+| `-h HOST`, `-P PORT`, `-u USER`, `-p`, `-D DB` | Host, port, user, password prompt, and database |
+| `-e SQL`, `--execute SQL` | Query to measure |
+| `--ssl-mode MODE` | MySQL TLS mode |
+| `--ssl-ca PATH`, `--ssl-cert PATH`, `--ssl-key PATH` | TLS certificate files |
+| `--mysql-binary PATH` | Select the database client executable |
+| `--no-collect-schema`, `--no-collect-stats`, `--no-collect-variables` | Skip environment collection |
 
 ## Troubleshooting
 
-**"Failed to parse EXPLAIN JSON"** — use `EXPLAIN ANALYZE FORMAT=JSON`, not just `EXPLAIN FORMAT=JSON`. The `ANALYZE` keyword is required for timing data.
-
-**Interactive features not working** — open the `.html` wrapper, not the raw `.svg`. Browsers block inline scripts in SVGs loaded from `raw.githubusercontent.com`.
-
-**macOS PEP 668** — use `pipx install myflames` instead of `pip install`.
-
----
+- If MySQL rejects `EXPLAIN ANALYZE FORMAT=JSON`, check the server version and set `explain_json_format_version=2` in the same session. Live mode sets it for you.
+- If a saved plan cannot be parsed, check that it contains the plan output rather than an SQL error. myflames accepts common client headers and escaped newlines.
+- If interactions do not work in an SVG preview, generate an HTML report and open it in a browser.
+- If macOS refuses a system-wide `pip install`, use `pipx` or a virtual environment.
 
 ## Contributing
 
-End users never need anything beyond `pip install myflames` + Python 3.7. If you want to **edit the project's source** — write a new lesson, add an advisor rule, modify the Tier-1 animation runtime, or run the headless animation harness — see [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, renderer conventions, and lesson authoring. Run the full Python suite with:
 
----
+```bash
+./run-tests.sh
+```
+
+[Test instructions](test/README.md) cover fixture generation and testing against another MySQL version.
 
 ## Documentation
 
-| Page | Contents |
-|------|----------|
-| [Getting Started](https://vgrippa.github.io/myflames/guide/getting-started.html) | Installation, first flame graph, live connection mode |
-| [View Types](https://vgrippa.github.io/myflames/guide/views.html) | When to use each of the 5 visualization types |
-| [CLI Reference](https://vgrippa.github.io/myflames/guide/cli.html) | Every command, flag, and option |
-| [Architecture](https://vgrippa.github.io/myflames/guide/architecture.html) | Parser, renderers, advisor, teach module internals |
-| [Teach Lessons](https://vgrippa.github.io/myflames/teach/index.html) | All 21 interactive algorithm lessons with descriptions |
-| [Roadmap](ROADMAP.md) | Vision, what's shipped, what's next, non-goals |
-| [Contributing](CONTRIBUTING.md) | Development setup, testing, adding lessons/rules |
-| [Visual Explain Reference](docs/VISUAL_EXPLAIN_REFERENCE.md) | Diagram layout conventions |
-| [test/README.md](test/README.md) | Running tests and fixture generation |
-
----
+- [Getting started](https://vgrippa.github.io/myflames/guide/getting-started.html)
+- [View types](https://vgrippa.github.io/myflames/guide/views.html)
+- [CLI reference](https://vgrippa.github.io/myflames/guide/cli.html)
+- [Architecture](https://vgrippa.github.io/myflames/guide/architecture.html)
+- [Visual Explain reference](docs/VISUAL_EXPLAIN_REFERENCE.md)
+- [Changelog](CHANGELOG.md) and [roadmap](ROADMAP.md)
 
 ## Credits
 
-- [Brendan Gregg](https://github.com/brendangregg/FlameGraph) — FlameGraph implementation (pure-Python port in `myflames/flamegraph.py`)
-- [Tanel Poder](https://tanelpoder.com/) — SQL Plan FlameGraph concept and label format
+- [Brendan Gregg](https://github.com/brendangregg/FlameGraph): FlameGraph implementation, ported to Python in `myflames/flamegraph.py`.
+- [Tanel Poder](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/): SQL plan flame-graph concept and label format.
 
 ## License
 
-Extends Brendan Gregg's FlameGraph project. See [docs/cddl1.txt](docs/cddl1.txt) (CDDL 1.0).
+This project extends Brendan Gregg's FlameGraph work. See [CDDL 1.0](docs/cddl1.txt) and [LICENSE](LICENSE).

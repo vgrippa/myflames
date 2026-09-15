@@ -62,9 +62,9 @@
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js"></script>
   <script>
-    // NOTE: this loads myflames from PyPI via micropip. It works once the
-    // package is published (`pip install myflames`). To try it against a local
-    // build instead, set WHEEL_URL to a built wheel served from this directory
+    // NOTE: this loads myflames from PyPI via micropip (the package is
+    // published — `pip install myflames`). To try it against a local build
+    // instead, set WHEEL_URL to a built wheel served from this directory
     // (`python -m build` → copy the .whl here) and micropip will install that.
     const WHEEL_URL = null; // e.g. "./myflames-1.5.0-py3-none-any.whl"
     const SAMPLE = {

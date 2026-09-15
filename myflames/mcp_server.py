@@ -39,17 +39,24 @@ def _engine_of(plan_json):
         return "unknown"
 
 
-def analyze_plan_tool(plan_json):
+def analyze_plan_tool(plan_json, detail="full"):
     """Parse + analyze an EXPLAIN ANALYZE FORMAT=JSON plan; return the sidecar dict.
 
     The sidecar carries plan_summary, optimizer_switches, warnings, suggestions,
     index suggestions, the node-id'd plan tree, and the executive summary —
     everything an agent needs to reason about the plan, none of the SVG.
+
+    ``detail="full"`` (default) returns the complete record — required by the
+    digest path (:func:`digest_plan_tool`) and ``explain_query``. The MCP
+    ``analyze_plan`` tool passes ``detail="core"`` to drop the heavy
+    ``collected``/``query``/``teach_hooks`` blocks and hand the agent the
+    token-cheap decision-grade subset by default.
     """
     root = parse_explain(plan_json)
     analysis = analyze_plan(root)
     return build_sidecar(
         root, analysis, source_type="stdin", engine=_engine_of(plan_json),
+        detail=detail,
     )
 
 
@@ -119,13 +126,17 @@ def build_server():
     server = FastMCP("myflames")
 
     @server.tool()
-    def analyze_plan(plan_json: str) -> dict:
+    def analyze_plan(plan_json: str, detail: str = "core") -> dict:
         """Analyze a MySQL/MariaDB EXPLAIN ANALYZE FORMAT=JSON plan and return a
         compact, source-grounded analysis: summary, warnings, suggestions, index
         hints, optimizer-switch explanations, and the operator tree. Call this
         when you have a query plan and need to know why it's slow or how to fix
-        it — it avoids feeding raw plan JSON into the model."""
-        return analyze_plan_tool(plan_json)
+        it — it avoids feeding raw plan JSON into the model.
+
+        detail="core" (default) is the token-cheap decision-grade projection.
+        Pass detail="full" only when you need the collected environment data
+        (schema/stats/variables) and the raw query text as well."""
+        return analyze_plan_tool(plan_json, detail=detail)
 
     @server.tool()
     def digest_plan(plan_json: str) -> str:

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "regen-data": "cd ../.. && python3 scripts/export-teach-metadata.py"
+    "regen-data": "cd ../.. && python3 scripts/export-teach-metadata.py",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "framer-motion": "^11.11.0",

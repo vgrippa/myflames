@@ -35,6 +35,29 @@ class TestToolLogic(unittest.TestCase):
         self.assertIn("plan_summary", payload)
         self.assertEqual(payload["source"]["engine"], "mysql")
 
+    def test_analyze_plan_tool_default_is_full(self):
+        # The internal helper defaults to the complete record — the digest and
+        # explain_query paths depend on it. Only the MCP transport wrapper asks
+        # for detail="core".
+        full = mcp.analyze_plan_tool(_read(PLAN))
+        explicit = mcp.analyze_plan_tool(_read(PLAN), detail="full")
+        self.assertEqual(set(full), set(explicit))
+
+    def test_analyze_plan_tool_core_is_valid_subset(self):
+        from myflames.output_sidecar import validate_sidecar
+        full = mcp.analyze_plan_tool(_read(PLAN), detail="full")
+        core = mcp.analyze_plan_tool(_read(PLAN), detail="core")
+        self.assertTrue(validate_sidecar(core))
+        self.assertTrue(set(core).issubset(set(full)))
+        for heavy in ("collected", "query", "teach_hooks"):
+            self.assertNotIn(heavy, core)
+
+    def test_digest_still_reads_the_full_record(self):
+        # digest_plan_tool builds on analyze_plan_tool's full output; the core
+        # default on the MCP wrapper must not have starved it.
+        digest = mcp.digest_plan_tool(_read(PLAN))
+        self.assertIn("myflames digest", digest)
+
     def test_digest_plan_tool_is_compact_text(self):
         digest = mcp.digest_plan_tool(_read(PLAN))
         self.assertIsInstance(digest, str)

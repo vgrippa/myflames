@@ -13,6 +13,7 @@ from myflames.parser import parse_explain, analyze_plan
 from myflames.output_sidecar import build_sidecar
 from myflames.findings import (
     build_findings,
+    primary_suggestion_index,
     evaluate_check,
     available_triggers,
     known_triggers,
@@ -60,6 +61,45 @@ class TestBuildFindings(unittest.TestCase):
     def test_empty_payload_yields_no_findings(self):
         empty = {"warnings": [], "suggestions": []}
         self.assertEqual(build_findings(empty), [])
+
+
+class TestPrimarySuggestionIndex(unittest.TestCase):
+    """The one 'Fix first' selector — must rank suggestions by the same policy
+    build_findings uses, so the HTML card and the ranked advise list agree."""
+
+    def test_none_when_no_suggestions(self):
+        self.assertIsNone(primary_suggestion_index({"suggestions": []}))
+        self.assertIsNone(primary_suggestion_index({}))
+
+    def test_high_severity_wins(self):
+        payload = {"suggestions": [
+            {"severity": "low", "category": "index", "action": "x"},
+            {"severity": "high", "category": "index", "action": "y"},
+        ]}
+        self.assertEqual(primary_suggestion_index(payload), 1)
+
+    def test_medium_outranks_low(self):
+        # The behavior change #6 introduces: the card used to just take the
+        # first suggestion; now medium outranks low, matching the ranked list.
+        payload = {"suggestions": [
+            {"severity": "low", "category": "index", "action": "x"},
+            {"severity": "medium", "category": "index", "action": "y"},
+        ]}
+        self.assertEqual(primary_suggestion_index(payload), 1)
+
+    def test_agrees_with_build_findings_on_real_plan(self):
+        # On a real plan, the promoted suggestion must be the highest-ranked
+        # *suggestion* in the unified build_findings order — never a suggestion
+        # that build_findings ranks below another suggestion.
+        payload = _payload(FULL_SCAN_FIXTURE)
+        idx = primary_suggestion_index(payload)
+        if idx is None:
+            self.skipTest("plan has no suggestions to promote")
+        picked_action = payload["suggestions"][idx].get("action", "")
+        suggestion_findings = [f for f in build_findings(payload)
+                               if f["kind"] == "suggestion"]
+        self.assertTrue(suggestion_findings)
+        self.assertEqual(suggestion_findings[0]["text"], picked_action)
 
 
 class TestEvaluateCheck(unittest.TestCase):
