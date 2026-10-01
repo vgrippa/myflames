@@ -12,7 +12,7 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 
 ![Query plan shown as a diagram](docs/screenshots/hero-diagram.svg)
 
-[Install](#install) · [Quick start](#quick-start-file-mode) · [Views and demos](#output-types) · [Live connection](#live-connection-mode) · [CLI reference](#cli-reference) · [Documentation](#documentation)
+[Install](#install) · [Quick start](#quick-start-file-mode) · [Local UI](#local-ui) · [Views and demos](#output-types) · [Join samples](#query-samples-inner-join-and-left-join) · [Live connection](#live-connection-mode) · [CLI reference](#cli-reference) · [Documentation](#documentation)
 
 ## Install
 
@@ -81,6 +81,44 @@ python3 -m myflames test/mysql-explain-json-sample.json --output report.html
 
 You can also paste a plan into the [browser playground](https://vgrippa.github.io/myflames/playground/). It loads the published package through Pyodide and processes the plan in your browser.
 
+## Local UI
+
+```bash
+myflames ui
+```
+
+This starts a local workspace in your browser. Import a saved plan, or capture
+one from a live server, then switch between charts, focus or collapse branches,
+and compare row estimates against measured rows. Operators link to the
+Teach lesson that explains it. You can compare a plan against a saved baseline
+after changing an index or the query.
+
+Live captures run either as an estimate (`EXPLAIN`) or a measured execution
+(`EXPLAIN ANALYZE`). You can bind named parameters, set a timeout, cancel a
+run, repeat it up to 10 times, and collect the optimizer trace. Plans and SQL
+drafts stay in the browser tab until you choose **Save investigation**, which
+stores plans, notes, tags, and a baseline in `~/.myflames/workspace.sqlite3`.
+Export a bundle to move an investigation to another machine. Passwords are
+never saved.
+
+The Python package ships the built UI, so you don't need Node.js. Use
+`--no-browser` to print the URL instead of opening it, or `--port 8765` to pick
+a port. Stop the server with Ctrl+C. The [query workspace guide](docs/QUERY_WORKSPACE.md)
+covers workflows and limits.
+
+The same capture and exploration features are available from the command line:
+
+```bash
+myflames capture -h localhost -u analyst -p -D app \
+  -e 'SELECT * FROM orders' --mode analyze --repeat 3 --trace -o capture.json
+myflames explore explain.json --type workbench --metric estimate_error -o explore.html
+```
+
+`capture` writes the plan, run statistics, and server context as JSON.
+`explore` writes an interactive HTML page where you can select operators,
+focus or collapse branches, and rank them by a metric. See
+[CLI equivalents](docs/QUERY_WORKSPACE.md#cli-equivalents) for the full mapping.
+
 ## Output types
 
 | View | What it shows | Select with |
@@ -88,15 +126,69 @@ You can also paste a plan into the [browser playground](https://vgrippa.github.i
 | Flame graph | Time across the execution hierarchy | `--type flamegraph` (default) |
 | Bar chart | Individual operators ranked by self-time | `--type bargraph` |
 | Treemap | Relative time across the plan | `--type treemap` |
-| Diagram | Join order and access paths | `--type diagram` |
+| Visual Explain | Join semantics, operator flow, access types, and estimated row volumes | `--type workbench` (`diagram` alias) |
 | Execution tree | Expandable branches with self-time and total time | `--type tree` |
 
 ```bash
 myflames --type diagram explain.json --output diagram.html
+myflames --type workbench explain.json --output workbench.html
 myflames guide
 ```
 
+Visual Explain replaces the separate Diagram and Workbench views, and
+`--type diagram` now renders it. Each join shows a Venn symbol for its reported
+type: a left join fills the left circle, an inner join fills the overlap. See
+the [Visual Explain guide](docs/WORKBENCH_VIEW.md) for the full legend.
+
 Views include plan warnings and complexity annotations. These help identify work worth investigating; a scan or a sort alone does not establish that a query needs changing.
+
+### Query samples: inner join and left join
+
+These two plans come from the same `users` and `orders` tables in
+`test/fixtures/`, so you can render them without a database:
+
+```bash
+myflames --type workbench test/fixtures/explain-035-join-2t-users-orders.json -o inner-join.html
+myflames --type workbench test/fixtures/explain-039-left-join-users-orders.json -o left-join.html
+```
+
+**Inner join.** Only users with at least one order appear in the result.
+
+```sql
+SELECT u.name, o.total
+FROM users u JOIN orders o ON o.user_id = u.id
+WHERE u.country = 'US'
+LIMIT 100;
+```
+
+![Visual Explain of an inner join between users and orders](docs/screenshots/visual-explain-inner-join.svg)
+
+The Venn symbol fills only the overlap. MySQL reads US users through
+`idx_country`, then looks up each user's orders through `idx_user`, and stops
+at 100 rows. The users card shows 25 actual rows against 600 estimated;
+`myflames explore --metric estimate_error` reports that as a 24× overestimate.
+
+**Left join.** Every user appears, with `order_count = 0` when they have no
+orders.
+
+```sql
+SELECT u.id, u.name, COUNT(o.id) AS order_count
+FROM users u LEFT JOIN orders o ON o.user_id = u.id
+GROUP BY u.id, u.name
+LIMIT 100;
+```
+
+![Visual Explain of a left join between users and orders](docs/screenshots/visual-explain-left-join.svg)
+
+The Venn symbol fills the whole left circle because `users` is the preserved
+side. With no filter on `users`, MySQL scans all 3,000 rows, probes
+`orders.idx_user` for each one, and groups the 12,000 joined rows in a
+temporary table. The red card marks the full table scan.
+
+Open the interactive versions to pan, zoom, and select operators:
+[inner join](https://vgrippa.github.io/myflames/demos/mysql-joins/mysql-query-inner-join-workbench.html) ·
+[left join](https://vgrippa.github.io/myflames/demos/mysql-joins/mysql-query-left-join-workbench.html) ·
+[three-table inner join](https://vgrippa.github.io/myflames/demos/mysql-joins/mysql-query-3t-inner-join-workbench.html)
 
 ### Live demos
 
@@ -169,6 +261,7 @@ myflames diff before.json after.json --digest
 ## Agent and CI subcommands
 
 ```bash
+myflames ui                           # optional local browser workspace
 myflames digest explain.json
 myflames advise explain.json --json
 myflames check explain.json --fail-on full_scan,filesort
@@ -217,9 +310,15 @@ Lessons cover indexes, scans, sorting, joins, and buffer-pool behavior. They use
 
 Run `myflames --help` or `myflames <subcommand> --help` for the complete option list.
 
+| UI option | Purpose |
+|---|---|
+| `myflames ui` | Launch the local browser workspace |
+| `--port PORT` | Use a specific local port (default: choose an available port) |
+| `--no-browser` | Print the URL without opening a browser |
+
 | Render option | Purpose |
 |---|---|
-| `--type TYPE` | `flamegraph`, `bargraph`, `treemap`, `diagram`, or `tree` |
+| `--type TYPE` | `flamegraph`, `bargraph`, `treemap`, `diagram`, `tree`, or `workbench` |
 | `--output PATH`, `-o PATH` | Write HTML or SVG instead of stdout |
 | `--width N`, `--height N` | Set width; height sets flame-graph frame height |
 | `--colors NAME` | Flame-graph palette: `hot`, `mem`, `io`, `red`, `green`, `blue` |
@@ -258,6 +357,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, renderer conventio
 
 ## Documentation
 
+- [Local browser workspace](docs/LOCAL_UI.md)
 - [Getting started](https://vgrippa.github.io/myflames/guide/getting-started.html)
 - [View types](https://vgrippa.github.io/myflames/guide/views.html)
 - [CLI reference](https://vgrippa.github.io/myflames/guide/cli.html)

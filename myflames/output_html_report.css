@@ -225,7 +225,7 @@ main.report h2 .count {
   overflow-x: auto; padding: 4px; background: #fff;
   border-radius: 6px; border: 1px solid var(--border);
 }
-.viz-card svg { display: block; max-width: 100%; height: auto; }
+.viz-card .chart-panel > svg { display: block; max-width: 100%; height: auto; }
 .teach-cta-row {
   display: flex; align-items: center; justify-content: space-between;
   gap: 10px; margin: 4px 0 10px 0;

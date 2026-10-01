@@ -76,6 +76,25 @@ class TestExitCodes(unittest.TestCase):
 
 class TestOutputFlag(unittest.TestCase):
 
+    def test_workbench_svg_and_html_exports(self):
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ('svg', 'html'):
+                output = Path(directory) / ('plan.' + extension)
+                result = run_cli('--type', 'workbench', FULL_SCAN, '-o', str(output))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, '')
+                content = output.read_text()
+                self.assertIn('class="wb-plan"', content)
+                self.assertIn('data-node-id=', content)
+                if extension == 'svg':
+                    ET.fromstring(content)
+                else:
+                    self.assertIn('application/ld+json', content)
+                    sidecar = json.loads(output.with_suffix('.json').read_text())
+                    self.assertIn('plan_tree', sidecar)
+
     def test_digest_output_writes_file(self):
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tf:
             path = tf.name
@@ -197,6 +216,33 @@ class TestDeprecatedAliases(unittest.TestCase):
         self.assertIn("deprecated", proc.stderr)
         self.assertIn("advise", proc.stderr)
         json.loads(proc.stdout)  # stdout stays pure JSON
+
+
+class TestWorkspaceCommand(unittest.TestCase):
+    def test_ui_is_discoverable_and_has_own_help(self):
+        self.assertIn('myflames ui', run_cli('--help').stdout)
+        result = run_cli('ui', '--help')
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('--no-browser', result.stdout)
+        self.assertIn('--port', result.stdout)
+        self.assertEqual(result.stderr, '')
+
+    def test_invalid_ui_port_is_usage_error(self):
+        for port in ('-1', '65536', 'not-a-number'):
+            result = run_cli('ui', '--port', port, '--no-browser')
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, '')
+            self.assertNotIn('Traceback', result.stderr)
+
+    def test_occupied_port_is_actionable_error(self):
+        import socket
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            result = run_cli('ui', '--port', str(listener.getsockname()[1]), '--no-browser')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('Try --port 0', result.stderr)
+            self.assertEqual(result.stdout, '')
 
 
 if __name__ == "__main__":

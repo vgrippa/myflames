@@ -6,11 +6,19 @@
 
 **myflames is the token-efficient, source-grounded interface between a query plan and an AI agent — and a clear set of pictures for a human.** Raw `EXPLAIN ANALYZE FORMAT=JSON` is verbose and noisy; an LLM burns tokens parsing it before it can reason, and SVGs are invisible to agents. myflames parses and analyzes a plan once, then projects it many ways: flame graph / bar chart / treemap / diagram (for humans), a compact source-verified digest and JSON sidecar (for agents), and an exit code (for CI). One analysis, many projections.
 
-It stays a single project: pure-Python stdlib core, with heavy integrations behind optional extras (`myflames[mcp]`, `myflames[tokens]`). The only separate codebase is the `releem_flames` React UI.
+It stays a single project: pure-Python stdlib core, with heavy integrations behind optional extras (`myflames[mcp]`, `myflames[tokens]`). The optional local workspace in `apps/workspace/` uses React and TypeScript; its built assets ship in the Python package. The Python engine remains shared by the CLI, UI, and agent tools.
 
 ## Shipped
 
-- **Five views** — flame graph, bar chart, treemap, Visual-Explain diagram, tree — each with vetted Big O complexity chips.
+- **Query investigation workflow** — linked operator selection, focus/collapse,
+  contextual Teach, local investigation bundles, structural comparisons, and a
+  query laboratory with repeated live captures, cancellation, schema/index
+  inspection, statement statistics, and optimizer traces. Shared `capture` and
+  `explore` CLI commands. The UI uses a simplified mark derived from the project logo, stable logo URLs across rebuilds, and a neutral/blue design.
+
+- **Local browser workspace** — `myflames ui` imports saved plans, displays five chart views and operator details, compares plans, and exports HTML/JSON. The Teach section opens the existing interactive lessons with search, family filters, curriculum navigation, and downloads. React/TypeScript assets ship with the standard-library Python server.
+
+- **Five views** — flame graph, bar chart, treemap, execution tree, and unified Visual Explain. Diagram and Workbench share one renderer with larger Venn join symbols, operation colors, row-volume arrows, and smooth mouse/trackpad navigation. Existing `diagram` commands remain compatible.
 - **Source-verified advisor** — rules and `optimizer_switch` explanations checked line-by-line against MySQL/MariaDB source.
 - **JSON sidecar + JSON-LD** — every report has a machine-readable sibling; agents never OCR an SVG.
 - **Token-cheap digest + savings report** — `myflames digest` (with `--cost`, `--tokenizer {heuristic,claude,gpt}`, `--show-prompts`); an "Agent-ready" panel in every HTML report.
@@ -26,6 +34,14 @@ It stays a single project: pure-Python stdlib core, with heavy integrations behi
 
 ## Next
 
+- **Workspace follow-ups** — broader SQL editing conveniences, richer optimizer-trace summaries, and optional desktop packaging. Query capture, saved investigations, structural comparison, and contextual Teach are implemented.
+  Import-dialog layout coverage includes open/error states and short windows;
+  continue expanding interaction coverage as the workspace grows.
+  Visual Explain zoom includes a live percentage, press feedback, and visible limits.
+  The workspace audit covers every primary screen, all Teach lesson players,
+  live Sakila capture, export/import, search states, and responsive breakpoints;
+  see `docs/UI_TESTING.md` for remaining platform checks.
+
 Distribution multiplies whatever is inside, and the inside is now honest (decision-grade agent default) and consistent (one ranker). So the remaining work is reach and depth.
 
 1. **Wider distribution** — the "made with myflames" footer now ships on the reports (main + compare); what remains is external reach: MCP registries and awesome-lists, so agents and humans discover the tool.
@@ -36,13 +52,11 @@ Distribution multiplies whatever is inside, and the inside is now honest (decisi
 ## Deferred / non-goals
 
 - **No LLM bundled into the package.** myflames is the deterministic, source-grounded tool an agent *calls* — it does not become the agent. (Exact token counting uses Anthropic's `count_tokens`, or tiktoken for GPT, only as optional extras.)
-- **No sixth visualization view.** The renderers are feature-complete; effort compounds in the corpus (advisor correctness) and the agent surface, not in more charts.
 - **No splitting into multiple packages/repos.** Optional extras are the dependency boundary.
 
 ## September 2026 review
 
 The [project review](docs/reviews/2026-09-15.md) adds current-MySQL corpus checks
 and fixes connection escaping, advisor evidence, renderer output, comparison
-matching, and teaching controls. Follow-up work remains for structural comparison
-matching when identical operators move, broader SQL metadata recognition, and
+matching, and teaching controls. Follow-up work remains for broader SQL metadata recognition and
 complexity models for ordered/multidimensional aggregates.

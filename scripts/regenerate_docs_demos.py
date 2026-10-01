@@ -38,6 +38,7 @@ _SUFFIX_TYPES = (
     ("-treemap", "treemap"),
     ("-diagram", "diagram"),
     ("-tree", "tree"),
+    ("-workbench", "workbench"),
 )
 
 # Short SVG names that duplicate the *-flamegraph.svg chart for the same plan.
@@ -80,6 +81,8 @@ def _infer_subdir(name: str) -> str:
         return "mysql-analysis"
     if name.startswith("mysql-query-complex-"):
         return "mysql-complex"
+    if name.endswith("-workbench") and "-join-" in name:
+        return "mysql-joins"
     return "mysql-basic"
 
 
@@ -112,7 +115,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     # Create subdirectories for organized output
     for sub in ("mysql-basic", "mysql-analysis", "mysql-optsw",
-                "mysql-complex", "mariadb-optsw", "live-mysql", "live-mariadb"):
+                "mysql-complex", "mysql-joins", "mariadb-optsw", "live-mysql", "live-mariadb"):
         (out_dir / sub).mkdir(parents=True, exist_ok=True)
 
     for jpath in sorted(bak.glob("**/*.json")):

@@ -546,6 +546,12 @@ def parse_node(node):
     # Preserve execution order (inputs[0]=outer, inputs[1]=inner for joins). Do not sort;
     # reordering breaks the diagram's left-to-right join order per VISUAL_EXPLAIN_PLAN_CONTEXT.md.
     children_refs = list(inputs) if isinstance(inputs, list) else []
+    # SELECT-list subqueries are separate relationships in MySQL's JSON v2
+    # output (explain_access_path.cc::GetAccessPathsFromSelectList). Preserve
+    # them after the ordered regular inputs, without treating their execution
+    # time as nested input time of the enclosing iterator.
+    select_inputs = node.get("inputs_from_select_list")
+    extra_refs = list(select_inputs) if isinstance(select_inputs, list) else []
     children = []
     children_time = 0
     for c in children_refs:
@@ -553,6 +559,11 @@ def parse_node(node):
         if child:
             children.append(child)
             children_time += child["total_time"]
+    for c in extra_refs:
+        child = parse_node(c)
+        if child:
+            child["details"]["input_kind"] = "select_list"
+            children.append(child)
     self_time = max(0.0, total_time - children_time)
     short = build_short_label(
         op,
@@ -577,6 +588,7 @@ def parse_node(node):
         "covering": node.get("covering"),
         "schema_name": node.get("schema_name") or "",
         "join_algorithm": node.get("join_algorithm") or "",
+        "join_type": node.get("join_type") or "",
         "pushed_index_condition": bool(node.get("pushed_index_condition")),
         "using_join_buffer": (node.get("using_join_buffer") or "").strip(),
         # Fields used by optimizer_switch detection (see _detect_optimizer_switches).
@@ -960,6 +972,9 @@ def _normalize_mariadb_nested_loop(nested_loop):
             "operation": "Nested loop inner join",
             "access_type": "join",
             "join_algorithm": "nested_loop",
+            # The flat MariaDB array does not identify logical join semantics.
+            # Do not use the synthetic operation label as evidence.
+            "join_type": "unknown",
             "actual_last_row_ms": 0.0,  # will be set from query_block r_total_time_ms
             "actual_loops": 1,
             "actual_rows": float(inner.get("actual_rows", 0)),
@@ -2073,11 +2088,11 @@ def _how_to_read_lines(view_type):
             "Cell area = total time (including children). Click a cell to zoom.",
             "Where a warning applies: hover the cell — the details bar shows \u201cIn Query Analysis\u201d and the label that appears in the panel below.",
         ]
-    if view_type == "diagram":
+    if view_type in ("diagram", "workbench"):
         return "How to read", [
-            "Left\u2192right = execution order. Heat scale (yellow = fast \u2192 purple = slow) encodes self-time.",
-            "The red SLOWEST badge + red border mark the contention point — the single operator to optimize first.",
-            "Click any node to pin its details. Ctrl+F to search. Dbl-click the background to reset zoom.",
+            "Data flows downward. Colors identify operators; arrow width represents estimated rows on a log scale.",
+            "Join circles show the reported join type: left joins include the whole left circle; inner joins highlight the overlap.",
+            "Select a node for details. Drag to pan, scroll gently to zoom, or use Fit plan and the zoom buttons.",
         ]
     if view_type == "flamegraph":
         return "How to read", [

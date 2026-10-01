@@ -2,6 +2,7 @@
 Before vs After comparison: produces a self-contained HTML diff report.
 """
 from .parser import parse_explain, flatten_nodes, analyze_plan, format_sql, xml_escape
+from .plan_matching import match_plan_nodes, timing_available, self_time_available
 
 
 def _format_time(ms):
@@ -43,27 +44,9 @@ def _delta_str(before, after, unit="ms", lower_is_better=True):
 
 
 def _match_nodes(nodes_before, nodes_after):
-    """Match each occurrence of a label in traversal order without losing nodes.
-
-    Labels are not unique: repeated subqueries and self joins can contain
-    several identical operators. The nth occurrence is paired with the nth
-    occurrence in the other plan; any surplus remains new or removed.
-    """
-    def index_nodes(nodes):
-        counts = {}
-        index = {}
-        for node in nodes:
-            label = node.get("short_label", "")
-            occurrence = counts.get(label, 0)
-            counts[label] = occurrence + 1
-            index[(label, occurrence)] = node
-        return index
-
-    before = index_nodes(nodes_before)
-    after = index_nodes(nodes_after)
-    keys = list(before)
-    keys.extend(key for key in after if key not in before)
-    return [(key[0], before.get(key), after.get(key)) for key in keys]
+    """Compatibility triples; use match_plan_nodes for confidence metadata."""
+    return [(item["label"], item["before"], item["after"])
+            for item in match_plan_nodes(nodes_before, nodes_after)]
 
 
 def render_compare(json_before, json_after, title="Query Plan Comparison"):
@@ -76,41 +59,58 @@ def render_compare(json_before, json_after, title="Query Plan Comparison"):
     nodes_b = list(flatten_nodes(root_b))
     nodes_a = list(flatten_nodes(root_a))
 
-    total_b = root_b["total_time"]
-    total_a = root_a["total_time"]
+    total_b = root_b["total_time"] if timing_available(root_b) else None
+    total_a = root_a["total_time"] if timing_available(root_a) else None
     time_delta, time_cls = _delta_str(total_b, total_a)
+    if total_b is None or total_a is None:
+        time_delta = "n/a"
 
     # Matched operator rows
-    matched = _match_nodes(nodes_b, nodes_a)
+    matched = match_plan_nodes(nodes_b, nodes_a)
     rows_html = []
-    for label, nb, na in matched:
-        st_b = nb["self_time"] if nb else None
-        st_a = na["self_time"] if na else None
-        rows_b = nb["rows"] if nb else None
-        rows_a = na["rows"] if na else None
-        loops_b = nb["loops"] if nb else None
-        loops_a = na["loops"] if na else None
+    for match in matched:
+        label, nb, na = match["label"], match["before"], match["after"]
+        metadata = match["matching"]
+        st_b = nb["self_time"] if self_time_available(nb) else None
+        st_a = na["self_time"] if self_time_available(na) else None
+        rows_b = ((nb or {}).get("details") or {}).get("actual_rows")
+        rows_a = ((na or {}).get("details") or {}).get("actual_rows")
+        loops_b = nb["loops"] if nb and (timing_available(nb) or rows_b is not None) else None
+        loops_a = na["loops"] if na and (timing_available(na) or rows_a is not None) else None
 
         delta_time, delta_cls = _delta_str(st_b, st_a)
+        if nb and na and (st_b is None or st_a is None):
+            delta_time = "Not measured"
+
+        if metadata["confidence"] == "uncertain":
+            delta_time, delta_cls = "Uncertain match", "neutral"
 
         status = ""
         if nb is None:
             status = '<span class="badge new">NEW</span>'
         elif na is None:
             status = '<span class="badge removed">REMOVED</span>'
+        elif metadata["status"] == "uncertain":
+            status = '<span class="badge uncertain">UNCERTAIN MATCH</span>'
+        elif metadata["status"] == "changed":
+            status = '<span class="badge changed">CHANGED</span>'
+        display_label = xml_escape(label)
+        if nb and na and nb.get("short_label") != na.get("short_label"):
+            display_label += " → " + xml_escape(na.get("short_label", ""))
 
         rows_html.append(
-            '<tr class="%s">'
+            '<tr class="%s" data-before-node-id="%s" data-after-node-id="%s" data-match-method="%s" data-match-confidence="%s">'
             "<td>%s %s</td>"
             "<td>%s</td><td>%s</td>"
             "<td>%s</td><td>%s</td>"
             "<td>%s</td><td>%s</td>"
             '<td class="%s">%s</td>'
             "</tr>" % (
-                delta_cls,
-                xml_escape(label), status,
-                _format_time(st_b) if st_b is not None else "-",
-                _format_time(st_a) if st_a is not None else "-",
+                delta_cls, xml_escape((nb or {}).get("node_id", "")),
+                xml_escape((na or {}).get("node_id", "")), metadata["method"], metadata["confidence"],
+                display_label, status,
+                _format_time(st_b) if st_b is not None else "n/a",
+                _format_time(st_a) if st_a is not None else "n/a",
                 _format_rows(rows_b) if rows_b is not None else "-",
                 _format_rows(rows_a) if rows_a is not None else "-",
                 str(loops_b) if loops_b is not None else "-",
@@ -118,6 +118,8 @@ def render_compare(json_before, json_after, title="Query Plan Comparison"):
                 delta_cls, delta_time,
             )
         )
+
+    uncertain = sum(item["matching"]["confidence"] == "uncertain" for item in matched)
 
     # Full scans comparison
     scans_b = set(fs["table"] for fs in analysis_b.get("full_scans", []))
@@ -133,7 +135,11 @@ def render_compare(json_before, json_after, title="Query Plan Comparison"):
 
     # Summary items
     summary_items = []
-    if total_a < total_b:
+    if uncertain:
+        summary_items.append('<span class="neutral">%d operator matches are uncertain because their structure is indistinguishable. Their timings do not establish individual regressions.</span>' % uncertain)
+    if total_a is None or total_b is None:
+        summary_items.append('<span class="neutral">Timing comparison unavailable: both plans need measured execution time.</span>')
+    elif total_a < total_b:
         summary_items.append(('<span class="better">\u2713 Query got faster: %s \u2192 %s (%s)</span>' %
                               (xml_escape(_format_time(total_b)), xml_escape(_format_time(total_a)), time_delta)))
     elif total_a > total_b:
@@ -159,8 +165,8 @@ def render_compare(json_before, json_after, title="Query Plan Comparison"):
 
     html = _COMPARE_TEMPLATE
     html = html.replace("{{TITLE}}", xml_escape(title))
-    html = html.replace("{{TOTAL_BEFORE}}", xml_escape(_format_time(total_b)))
-    html = html.replace("{{TOTAL_AFTER}}", xml_escape(_format_time(total_a)))
+    html = html.replace("{{TOTAL_BEFORE}}", xml_escape(_format_time(total_b)) if total_b is not None else "n/a")
+    html = html.replace("{{TOTAL_AFTER}}", xml_escape(_format_time(total_a)) if total_a is not None else "n/a")
     html = html.replace("{{TIME_DELTA}}", time_delta)
     html = html.replace("{{TIME_CLS}}", time_cls)
     html = html.replace("{{OPS_BEFORE}}", str(len(nodes_b)))
@@ -209,6 +215,7 @@ _COMPARE_TEMPLATE = r"""<!DOCTYPE html>
     font-weight: 600; margin-left: 6px; vertical-align: middle;
   }
   .badge.new { background: #e3f2fd; color: #1565c0; }
+  .badge.uncertain, .badge.changed { background: #f1f0ed; color: #645b47; }
   .badge.removed { background: #fce4ec; color: #c62828; }
   ul { list-style: none; }
   ul li { padding: 4px 0; }
@@ -248,6 +255,7 @@ _COMPARE_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="section">
   <h2>Operator comparison</h2>
+  <p class="subtitle">Matches use operator and tree structure. Changed labels show before → after. Single-run timings are observations, not proof of a sustained improvement.</p>
   <table>
     <thead>
       <tr>

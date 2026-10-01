@@ -1244,7 +1244,13 @@ def explainer(title: str, bullets: list) -> str:
     press Play. Every lesson should have one — the animation-expert
     skill flags 'silent phase transitions' as a top ugliness signal.
     """
-    items = "".join(f"<li>{esc(b)}</li>" for b in bullets)
+    # Lesson authors use code spans for SQL terms. Escape everything first,
+    # then allow only these two exact tags; other markup stays inert text.
+    items = "".join(
+        "<li>" + esc(b).replace("&lt;code&gt;", "<code>")
+        .replace("&lt;/code&gt;", "</code>") + "</li>"
+        for b in bullets
+    )
     return f"""
 <div class="explainer-card">
   <p class="explainer-title">{esc(title)}</p>

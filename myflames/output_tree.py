@@ -214,7 +214,7 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         if teach_index_by_folded and folded in teach_index_by_folded:
             teach_attr = f' data-teach-index="{teach_index_by_folded[folded]}"'
         lines.append(
-            f'<g class="tree-row" data-idx="{idx}" data-depth="{depth}"'
+            f'<g class="tree-row" data-node-id="{_attr_escape(node.get("node_id", ""))}" data-idx="{idx}" data-depth="{depth}"'
             f' data-has-children="{1 if has_children else 0}"{teach_attr}>'
         )
         # Hover/click background (full-width hit area)

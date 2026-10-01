@@ -283,7 +283,7 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
         title_text = info_text.replace("  ·  ", "\n")
         lines.append(
             f'<rect id="cell-{cell_id}" class="{cell_class}" x="{x}" y="{y}" width="{w}" height="{h}" fill="{color}" '
-            f'data-x="{x}" data-y="{y}" data-w="{w}" data-h="{h}" data-label="{label_attr}" data-info="{info_attr}"'
+            f'data-node-id="{attr_escape(n.get("node_id", ""))}" data-x="{x}" data-y="{y}" data-w="{w}" data-h="{h}" data-label="{label_attr}" data-info="{info_attr}"'
             + (f' data-analysis-msg="{analysis_attr}"' if analysis_attr else "")
             + teach_attr
             + f'>'
@@ -418,7 +418,7 @@ def render_treemap(root, width=1200, title="MySQL Query Plan", unit_display="ms"
   function _focusMatch(idx) {{
     if (!_searchMatches.length) return;
     var n = _searchMatches.length;
-    _searchIdx = ((idx %% n) + n) %% n;
+    _searchIdx = ((idx % n) + n) % n;
     for (var i = 0; i < n; i++) {{
       _searchMatches[i].classList.toggle("highlight-active", i === _searchIdx);
     }}

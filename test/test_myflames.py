@@ -1668,164 +1668,144 @@ class TestDocumentation(unittest.TestCase):
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_has_zoom_buttons(self):
-        """Diagram supports +/- button zoom instead of scroll-wheel zoom."""
+        """The compatibility view exposes all shared viewport controls."""
+        import xml.etree.ElementTree as ET
         root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root)
-        self.assertIn('id="zoom-in"', svg, "Zoom-in button missing from diagram")
-        self.assertIn('id="zoom-out"', svg, "Zoom-out button missing from diagram")
-        self.assertIn('id="zoom-reset"', svg, "Zoom-reset button missing from diagram")
-        self.assertIn("zoomBy", svg, "zoomBy function missing from diagram JS")
-        # Must NOT have scroll-wheel zoom
-        self.assertNotIn("wheel", svg, "Scroll-wheel zoom should be removed from diagram")
+        svg = ET.fromstring(render_diagram(root))
+        actions = {node.get("data-action") for node in svg.iter()
+                   if node.get("data-action")}
+        self.assertEqual(actions, {"fit", "in", "out", "reset"})
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_content_has_clip_path(self):
-        """Diagram content must be clipped to the diagram area so zoom cannot overflow into the info panel."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root)
-        self.assertIn('id="diagram-clip"', svg, "diagram-clip clipPath definition missing")
-        self.assertIn('clip-path="url(#diagram-clip)"', svg, "diagram-content must use the diagram-clip clipPath")
+    def test_diagram_content_is_inside_clipped_viewport(self):
+        """A nested SVG clips the graph independently from controls and details."""
+        import xml.etree.ElementTree as ET
+        svg = ET.fromstring(render_diagram(parse_explain(_load(self.HASH_JOIN))))
+        viewport = next(node for node in svg.iter() if node.get("class") == "wb-viewport")
+        self.assertEqual(viewport.tag, "{http://www.w3.org/2000/svg}svg")
+        self.assertTrue(viewport.get("viewBox"))
+        self.assertIn("overflow:hidden", viewport.get("style", "").replace(" ", ""))
+        inside = list(viewport.iter())
+        self.assertTrue(any(node.get("class") == "wb-graph" for node in inside))
+        details = next(node for node in svg.iter() if node.get("class") == "wb-details")
+        self.assertNotIn(details, inside)
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_has_drag_to_pan(self):
-        """README: Diagram supports drag-to-pan."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root)
-        self.assertIn("mousedown", svg, "Drag-to-pan JS missing from diagram")
-        self.assertIn("mousemove", svg)
+        """Pointer-based drag supports mouse and touch input."""
+        svg = render_diagram(parse_explain(_load(self.HASH_JOIN)))
+        self.assertIn("pointerdown", svg)
+        self.assertIn("pointermove", svg)
+        self.assertIn("setPointerCapture", svg)
+        self.assertIn("pointercancel", svg)
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_has_dblclick_reset(self):
-        """README: Double-click background resets zoom/pan in diagram."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root)
-        self.assertIn("dblclick", svg, "Double-click reset JS missing from diagram")
+        """Double-click refits the entire plan after pan or zoom."""
+        svg = render_diagram(parse_explain(_load(self.HASH_JOIN)))
+        self.assertIn("addEventListener('dblclick', fit)", svg)
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_has_click_to_pin(self):
-        """README: Click node pins details in diagram."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root)
-        self.assertIn("pinned", svg, "Click-to-pin JS missing from diagram")
-        # Details panel is now a foreignObject HTML div (id=details-html)
-        # — replaced the pre-allocated <text> lines that previously
-        # clipped long descriptions (2026-04-25 user feedback).
-        self.assertIn('id="details-html"', svg, "Details panel container missing from diagram")
-        self.assertIn('foreignObject', svg, "Details panel must use foreignObject for HTML scrolling/resize")
+    def test_diagram_has_persistent_selection_details(self):
+        """Click or keyboard selection populates the scrollable details panel."""
+        import xml.etree.ElementTree as ET
+        rendered = render_diagram(parse_explain(_load(self.HASH_JOIN)))
+        svg = ET.fromstring(rendered)
+        details = next(node for node in svg.iter() if node.get("class") == "wb-details")
+        self.assertEqual(details.get("tabindex"), "0")
+        self.assertTrue(any(details in list(node) for node in svg.iter()
+                            if node.tag.endswith("}foreignObject")))
+        self.assertIn("function choose(node, notify)", rendered)
+        self.assertIn("detail.textContent = node.dataset.details", rendered)
+        self.assertIn("node.classList.add('selected')", rendered)
+        self.assertIn("event.key === 'Enter'", rendered)
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_details_text_is_selectable(self):
-        """README: Text in details strip is always selectable."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root)
-        self.assertIn("user-select: text", svg, "Details strip is not selectable in diagram")
-
-    # ---- Hotspot / modern visual style (added with the viridis palette refresh) ----
+        svg = render_diagram(parse_explain(_load(self.HASH_JOIN)))
+        self.assertRegex(svg, r"user-select:\s*text")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_hotspot_class_applied(self):
-        """Exactly one node in a non-trivial plan must carry the 'hotspot' class."""
+    def test_diagram_alias_preserves_shared_options(self):
+        """Old Python callers get the canonical view with their options intact."""
+        from myflames.output_workbench import render_workbench
         root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root, analysis=analyze_plan(root))
-        # class="diagram-node hotspot" appears exactly once
-        count = svg.count('class="diagram-node hotspot"')
-        self.assertEqual(
-            count, 1,
-            f"Expected exactly 1 hotspot node in the diagram, got {count}",
-        )
+        options = dict(width=1450, title="Compatibility <plan>", unit_display="us",
+                       analysis=analyze_plan(root),
+                       teach_index_by_folded={root["folded_label"]: 4})
+        self.assertEqual(render_diagram(root, **options), render_workbench(root, **options))
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_hotspot_badge_present(self):
-        """A hotspot node must render a SLOWEST badge."""
+    def test_diagram_preserves_every_operator_and_edge(self):
+        """Unary Hash/Filter nodes retain identities and traversal relationships."""
+        import xml.etree.ElementTree as ET
         root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root, analysis=analyze_plan(root))
-        self.assertIn('class="hotspot-badge"', svg, "hotspot-badge group missing from SVG")
-        self.assertIn(">SLOWEST<", svg, "SLOWEST badge text missing from SVG")
+        svg = ET.fromstring(render_diagram(root))
+        expected = list(flatten_nodes(root))
+        nodes = [node for node in svg.iter() if node.get("class") == "wb-node"]
+        self.assertCountEqual([node.get("data-node-id") for node in nodes],
+                              [node["node_id"] for node in expected])
+        self.assertEqual(len(nodes), len(expected))
+        actual_edges = {(node.get("data-from"), node.get("data-to"))
+                        for node in svg.iter() if node.get("class") == "wb-edge"}
+        expected_edges = {(child["node_id"], node["node_id"])
+                          for node in expected for child in node["children"]}
+        self.assertEqual(actual_edges, expected_edges)
+
+    def test_diagram_operator_colors_do_not_change_with_timing(self):
+        """Color identifies access/join type even when timing orders reverse."""
+        import xml.etree.ElementTree as ET
+        from myflames.output_workbench import COLORS
+        plan = {"operation": "Nested loop inner join", "access_type": "join",
+                "actual_last_row_ms": 100, "inputs": [
+                    {"operation": "Table scan on t", "access_type": "table",
+                     "actual_last_row_ms": 2},
+                    {"operation": "Index lookup on u", "access_type": "index",
+                     "index_access_type": "lookup", "actual_last_row_ms": 70}]}
+
+        def colors(raw):
+            svg = ET.fromstring(render_diagram(parse_explain(json.dumps(raw))))
+            return {node.get("data-kind"): tuple(child.get("fill") for child in node.iter()
+                                                if child.get("fill"))
+                    for node in svg.iter() if node.get("class") == "wb-node"}
+
+        before = colors(plan)
+        plan["inputs"][0]["actual_last_row_ms"] = 80
+        plan["inputs"][1]["actual_last_row_ms"] = 1
+        self.assertEqual(before, colors(plan))
+        for kind in ("table", "lookup"):
+            self.assertIn(COLORS[kind], before[kind])
+        self.assertIn("nested_loop", before)
+        self.assertNotEqual(COLORS["table"], COLORS["lookup"])
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_has_legend(self):
-        """Diagram must ship a compact heat-scale legend with Fast / Slow labels."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root, analysis=analyze_plan(root))
-        self.assertIn('id="diagram-legend"', svg, "diagram-legend group missing")
-        self.assertIn(">Fast<", svg, "Fast label missing from legend")
-        self.assertIn(">Slow<", svg, "Slow label missing from legend")
-
-    def test_diagram_palette_is_viridis_like(self):
-        """Heat palette must be a 7-stop perceptually-uniform scale with deep purple at the hot end.
-        Guards against regression to the old single-hue blue ramp."""
-        import re
-        from myflames.output_diagram import _HEAT_PALETTE
-        self.assertEqual(len(_HEAT_PALETTE), 7, "palette must have 7 stops")
-        for h in _HEAT_PALETTE:
-            self.assertRegex(h, r"^#[0-9a-f]{6}$")
-        self.assertIn("#440154", _HEAT_PALETTE, "viridis deep purple missing — blue-ramp regression?")
-        self.assertIn("#fde725", _HEAT_PALETTE, "viridis yellow missing")
+    def test_diagram_legend_explains_operator_and_row_encodings(self):
+        svg = render_diagram(parse_explain(_load(self.HASH_JOIN)))
+        self.assertIn("Colors identify operators", svg)
+        self.assertIn("Arrow width = estimated rows", svg)
+        for label in ("Table scan", "Index lookup", "Index range", "Materialize"):
+            self.assertIn(">" + label + "</text>", svg)
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_uses_system_font_stack(self):
-        """Typography refresh: must use native system font stack, not Arial."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root)
-        self.assertIn("-apple-system", svg, "system font stack missing from diagram SVG")
-        self.assertIn("BlinkMacSystemFont", svg)
-        self.assertNotIn("font-family: Arial, sans-serif;", svg, "old Arial-only font stack must be gone")
+        svg = render_diagram(parse_explain(_load(self.HASH_JOIN)))
+        self.assertRegex(svg, r"font-family:[^;}]*system-ui")
 
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_hotspot_uses_border_only(self):
-        """Hotspot highlight must be a red border — no glow filter, no dimming of other nodes.
-        All nodes stay fully visible; only the hotspot's stroke changes."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root, analysis=analyze_plan(root))
-        # Red stroke CSS rule must be present
-        self.assertIn("stroke: #ff3d3d", svg, "hotspot red stroke CSS missing")
-        # No glow filter (user: borders only)
-        self.assertNotIn('id="hotspot-glow"', svg, "hotspot-glow filter must be removed")
-        self.assertNotIn("filter: url(#hotspot-glow)", svg, "hotspot filter reference must be removed")
-        # No focus-mode dimming
-        self.assertNotIn('classList.add("dim")', svg, "focus-mode dimming must be removed")
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_diagram_how_to_read_mentions_hotspot(self):
-        """The info panel's 'How to read' block must explain the SLOWEST badge."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_diagram(root, analysis=analyze_plan(root))
-        self.assertIn("SLOWEST badge", svg, "How to read must describe the SLOWEST badge")
-
-    def test_diagram_hotspot_absent_when_no_time_data(self):
-        """Graceful degrade: if a plan has no usable timing data and no warnings,
-        the hotspot layer must be skipped entirely (no class, no badge)."""
-        from myflames.parser import build_short_label
-        # Synthetic minimal plan: two nodes, all timings None/0, no warnings.
-        inner = {
-            "full_label": "Table scan on t",
-            "short_label": build_short_label("Table scan", table="t"),
-            "table_name": "t",
-            "details": {"operation": "Table scan", "table_name": "t"},
-            "total_time": 0,
-            "self_time": None,
-            "actual_rows": 0,
-            "rows": 0,
-            "loops": 1,
-            "inputs": [],
-            "children": [],
-        }
-        root = {
-            "full_label": "query_block",
-            "short_label": "query_block #1",
-            "details": {"operation": "query_block"},
-            "total_time": 0,
-            "self_time": None,
-            "actual_rows": 0,
-            "rows": 0,
-            "inputs": [inner],
-            "children": [inner],
-        }
-        svg = render_diagram(root)
-        self.assertNotIn('class="diagram-node hotspot"', svg,
-                         "hotspot must be omitted when there's no time data")
-        self.assertNotIn('class="hotspot-badge"', svg,
-                         "SLOWEST badge must be omitted when there's no time data")
+    def test_diagram_missing_timing_is_not_reported_as_zero(self):
+        import xml.etree.ElementTree as ET
+        raw = {"operation": "Table scan on t", "access_type": "table",
+               "estimated_rows": 12, "estimated_total_cost": 7}
+        root = parse_explain(json.dumps(raw))
+        svg = ET.fromstring(render_diagram(root))
+        node = next(node for node in svg.iter() if node.get("class") == "wb-node")
+        self.assertIn("Self n/a · total n/a", "".join(node.itertext()))
+        self.assertIn("Est. cost 7", "".join(node.itertext()))
+        self.assertNotIn("Total across loops (ms)", node.get("data-details"))
+        raw["actual_last_row_ms"] = 0
+        svg = ET.fromstring(render_diagram(parse_explain(json.dumps(raw))))
+        node = next(node for node in svg.iter() if node.get("class") == "wb-node")
+        self.assertIn("Self 0.00 ms · total 0.00 ms", "".join(node.itertext()))
+        self.assertIn("Actual last row (ms / loop): 0", node.get("data-details"))
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_flamegraph_height_equals_viewbox(self):

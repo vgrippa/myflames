@@ -136,6 +136,8 @@ def folded_to_svg(
     teach_index_by_folded=None,
     complexity_by_folded=None,
     family_by_folded=None,
+    frame_labels=None,
+    frame_ids=None,
 ):
     """
     Convert folded stack input (string) to SVG.
@@ -241,6 +243,9 @@ def folded_to_svg(
         else:
             y1 = imageheight - ypad2 - (depth + 1) * frameheight + framepad
             y2 = imageheight - ypad2 - depth * frameheight
+        frame_token = func
+        if frame_labels:
+            func = frame_labels.get(frame_token, func)
         samples = int((etime - stime) + 0.5)
         samples_txt = f"{samples:,}"
         if func == "" and depth == 0:
@@ -262,7 +267,10 @@ def folded_to_svg(
         teach_attr = ""
         if teach_index_by_folded and func in teach_index_by_folded:
             teach_attr = f' data-teach-index="{teach_index_by_folded[func]}"'
-        out.append(f'<g{teach_attr}><title>{info}</title>')
+        identity_attr = ''
+        if frame_ids and frame_token in frame_ids:
+            identity_attr = ' data-node-id="{}"'.format(_escape_svg(frame_ids[frame_token]))
+        out.append(f'<g{teach_attr}{identity_attr}><title>{info}</title>')
         out.append(f'<rect x="{x1:.1f}" y="{y1:.1f}" width="{x2 - x1:.1f}" height="{y2 - y1:.1f}" fill="{color}" rx="2" ry="2"/>')
         chars = int((x2 - x1) / (fontsize * fontwidth))
         text = ""
@@ -293,6 +301,12 @@ def _error_svg(width, message):
 _FLAMEGRAPH_SCRIPT = r'''
 	"use strict";
 	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn, pinnedDetails = null;
+	function update_history(params) {
+        // Sandboxed srcdoc reports have an opaque origin and cannot edit
+        // history. Zoom/search still work without a URL bookmark there.
+        try { history.replaceState(null, null, parse_params(params)); }
+        catch (error) { if (error.name !== "SecurityError") throw error; }
+    }
 	function init(evt) {
 		details = document.getElementById("details").firstChild;
 		searchbtn = document.getElementById("search");
@@ -323,7 +337,7 @@ _FLAMEGRAPH_SCRIPT = r'''
 				var params = get_params();
 				if (params.x) delete params.x;
 				if (params.y) delete params.y;
-				history.replaceState(null, null, parse_params(params));
+				update_history(params);
 				unzoombtn.classList.add("hide");
 				return;
 			}
@@ -332,7 +346,7 @@ _FLAMEGRAPH_SCRIPT = r'''
 				var params = get_params();
 				params.x = el.attributes._orig_x.value;
 				params.y = el.attributes.y.value;
-				history.replaceState(null, null, parse_params(params));
+				update_history(params);
 			}
 		}
 		else if (e.target.id == "unzoom") clearzoom();
@@ -491,7 +505,7 @@ _FLAMEGRAPH_SCRIPT = r'''
 		var params = get_params();
 		if (params.x) delete params.x;
 		if (params.y) delete params.y;
-		history.replaceState(null, null, parse_params(params));
+		update_history(params);
 	}
 	function toggle_ignorecase() {
 		ignorecase = !ignorecase;
@@ -504,7 +518,7 @@ _FLAMEGRAPH_SCRIPT = r'''
 		for (var i = 0; i < el.length; i++) orig_load(el[i], "fill");
 		var params = get_params();
 		delete params.s;
-		history.replaceState(null, null, parse_params(params));
+		update_history(params);
 	}
 	function search_prompt() {
 		if (!searching) {
@@ -545,7 +559,7 @@ _FLAMEGRAPH_SCRIPT = r'''
 		if (!searching) return;
 		var params = get_params();
 		params.s = currentSearchTerm;
-		history.replaceState(null, null, parse_params(params));
+		update_history(params);
 		searchbtn.classList.add("show");
 		searchbtn.firstChild.nodeValue = "Reset Search";
 		var count = 0, lastx = -1, lastw = 0, keys = [];
