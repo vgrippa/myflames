@@ -2,7 +2,7 @@
 
 Launch `myflames ui` to work with imported plans or capture plans from a database.
 The workspace uses the same Python parser, analysis, renderers, and comparison
-engine as the CLI. Its interface uses the project logo from `myflames.jpeg`,
+engine as the CLI. Its interface uses the [stacked-flame app mark](brand/README.md),
 neutral surfaces, system typography, and a blue accent for selected items and
 primary actions. Layout and hierarchy follow [Apple's layout guidance](https://developer.apple.com/design/human-interface-guidelines/layout).
 

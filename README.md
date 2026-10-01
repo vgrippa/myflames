@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="myflames.jpeg" alt="myflames logo" width="160">
+  <img src="docs/brand/myflames-icon-v2.png" alt="myflames logo" width="160">
 </p>
 
 # myflames

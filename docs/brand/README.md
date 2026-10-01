@@ -1,9 +1,9 @@
 # myflames app mark
 
 `myflames-icon-v2.png` simplifies the original stacked flame into five segments
-for the local UI's sidebar, welcome screen, and favicon. The app renders its
-name as live text beside the icon. The original `myflames.jpeg` remains available
-as the full project logo.
+for the project README and the local UI's sidebar, welcome screen, and favicon.
+The app renders its name as live text beside the icon. The original
+`myflames.jpeg` stays in the repository root.
 
 Created with the built-in image-generation tool, using `myflames.jpeg` as the
 reference. The generated PNG is preserved unchanged, including its alpha channel.
