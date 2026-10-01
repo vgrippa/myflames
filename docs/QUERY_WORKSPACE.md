@@ -74,9 +74,11 @@ A local `mysql` or `mariadb` client executable is required, as with the existing
 CLI connection workflow.
 
 For a practice server, run `./scripts/demo-db.sh` (requires Docker). It starts
-MySQL 8.4 on `127.0.0.1:3406` with the `testdb` tables (users, orders,
-order_items, products, categories, reviews) and prints credentials for a
-read-only `demo` user.
+MySQL 8.4 on `127.0.0.1:3406` and prints credentials for a read-only `demo`
+user. It loads `testdb` (users, orders, order_items, products, categories,
+reviews; about 9M rows with skewed values, from `scripts/demo-db-seed.sql`),
+MySQL's `sakila` sample, and the `employees` sample. Set `DEMO_DATASETS` to
+load fewer, for example `DEMO_DATASETS=testdb`.
 
 Use query tabs to keep drafts and name an experiment. Parameters are typed
 values in a JSON object, referenced as `:name` outside SQL literals/comments:

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `scripts/demo-db.sh` loads a larger, skewed `testdb` (200,000 users, 2M
+  orders, 6M order lines, 1M reviews) from `scripts/demo-db-seed.sql`, plus the
+  `sakila` and `employees` sample databases, so demo queries take measurable
+  time and plans change with the values queried. `DEMO_DATASETS` selects which
+  databases to load.
+
 ## [2.3.0] — 2026-09-30
 
 ### Added

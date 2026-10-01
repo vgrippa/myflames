@@ -219,9 +219,11 @@ myflames -h my-db.rds.amazonaws.com -u admin -p -D mydb \
 ```
 
 To try live mode without your own server, `./scripts/demo-db.sh` starts a
-local MySQL 8.4 container in Docker on `127.0.0.1:3406`. It loads the same
-`testdb` tables as the join samples and prints the password for a read-only
-`demo` user. Run `./scripts/demo-db.sh stop` to remove it.
+local MySQL 8.4 container in Docker on `127.0.0.1:3406` and prints the password
+for a read-only `demo` user. It loads three databases: `testdb` (the join
+samples' tables, filled with about 9M skewed rows), MySQL's `sakila`, and the
+`employees` sample. The first start downloads the samples and takes a few
+minutes. Run `./scripts/demo-db.sh stop` to remove it.
 
 Live mode collects table definitions, table statistics, and selected session variables to supplement the plan. Use `--no-collect-schema`, `--no-collect-stats`, or `--no-collect-variables` to skip a collection step.
 
