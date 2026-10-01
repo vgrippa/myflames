@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-09-30
+
+### Added
+
+- `scripts/demo-db.sh` starts a local MySQL demo container with the fixture
+  schema and a read-only `demo` user for trying live capture and the UI.
+- README query samples for an inner join and a left join on the same tables,
+  with Visual Explain screenshots and interactive demos in
+  `docs/demos/mysql-joins/`. `scripts/regenerate_docs_demos.py` rebuilds them.
+- Query investigation workspace with neutral colors, system typography, a
+  persistent inspector, and responsive layouts.
+- Linked selection across all five charts; branch focus/collapse, metric bars,
+  bottleneck shortcuts, and contextual Teach navigation.
+- Explicit local investigations, notes, tags, named experiments, baselines,
+  portable bundles, and connection profiles without stored passwords.
+- Live query laboratory and `capture` CLI with typed parameters, estimated or
+  analyzed plans, repeated measurements, cancellation, and time limits.
+- Captured schema/index details, statement statistics, session status deltas,
+  and searchable optimizer traces with availability notices.
+- `explore` CLI for interactive selection, focus/collapse, and metric inspection.
+- Structural plan matching with confidence and added/removed/changed/uncertain
+  states. Missing timings remain distinct from measured zero.
+- Canonical preservation of MySQL SELECT-list subquery branches.
+- Workbench view in the UI and `--type workbench`: operator colors, join glyphs,
+  estimated-row arrows, full parsed tree, pan/zoom/search, node inspection, and
+  portable SVG/HTML exports. Independently implemented from Workbench 26.7
+  visual conventions with the existing Python parser and analysis.
+- Teach in the local workspace: searchable lesson catalog, family filters,
+  embedded interactive lessons, curriculum navigation, and offline HTML downloads.
+  Lesson metadata and content come from the existing Python registry.
+- `myflames ui`: local React/TypeScript workspace for saved MySQL and MariaDB
+  plans. Import files or paste JSON, inspect six chart views and operator
+  details, compare plans, and download HTML reports or JSON analysis.
+- Bundled frontend assets ship with Python, with no Node.js runtime requirement.
+  The stdlib server binds to loopback and supports `--port` and `--no-browser`.
+  Plans remain in memory for the page session.
+- **Advisor names the index that removes a filesort.** When a plan has a
+  single-base-table `ORDER BY` filesort on plain columns, myflames now suggests
+  the ordered/covering index (`CREATE INDEX … (col1, col2 [DESC])`, preserving
+  each column's sort direction) that lets MySQL read rows already sorted and
+  skip the O(n log n) sort — not just "grow the sort buffer." The parser threads
+  the sort columns through (MySQL `sort_fields`, MariaDB `sort_key`); the rule
+  deliberately bails to the generic hint on joins, aggregates, or expression
+  sort keys, where a naive single-table index cannot satisfy the order. Every
+  claim was verified against MySQL/MariaDB server source.
+- **`semijoin_firstmatch` teach lesson** — the flagship of the semijoin cluster,
+  animating the FirstMatch early-out: a `WHERE col IN (subquery)` asks
+  *does-it-exist*, not *how-many*, so the inner scan stops at the first match.
+- **`--quiet/-q` on `digest`, `advise`, and `compare`** (previously only on
+  `check`). Uniform contract across subcommands: suppress incidental stderr
+  diagnostics (the `Written to <path>` line, digest's tokenizer `Note:`); stdout
+  data and the exit code are never affected.
+- **Zero-install browser playground linked from the README** — paste a plan and
+  render it client-side via Pyodide, installing the published PyPI wheel with
+  micropip.
+
+### Changed
+
+- Simplified stacked-flame app mark for the README, sidebar, welcome screen, and
+  favicon. The original `myflames.jpeg` stays in the repository.
+- Merged Diagram and Workbench into one Visual Explain view; existing `diagram`
+  commands and Python calls remain compatible aliases.
+- Enlarged join symbols with Venn regions for reported join semantics, including
+  the whole left circle for left joins. Unknown join types remain unshaded.
+- Smoothed mouse and trackpad zoom with proportional deltas and bounded momentum.
+- **The MCP `analyze_plan` tool now returns the token-cheap decision-grade
+  analysis by default** (`detail="core"`): plan summary, warnings, suggestions,
+  index hints, optimizer-switch explanations, and the operator tree. This drops
+  the heavy `collected` (schema/stats/variables), `query`, and `teach_hooks`
+  blocks that an agent rarely needs, honoring myflames' token-efficiency thesis
+  on the surface agents call by default. Pass `detail="full"` to restore the
+  complete record. The `detail` gate lives on `build_sidecar` as the single
+  source of truth; a written `.sidecar.json` and the `digest` path are
+  unaffected (they stay `full`). `detail="full"` output is byte-identical to
+  prior releases, so consumers pinned to the full shape can opt back in.
+- **The "Fix first" primary action is ranked by one policy, shared with
+  `advise`.** The HTML card and the ranked findings list previously used
+  different heuristics and could disagree; both now dereference
+  `findings.primary_suggestion_index` / `build_findings`, so a medium-severity
+  suggestion correctly outranks a low one everywhere. When a plan has no
+  findings at all, the report shows an explicit "No blocking issues found" card
+  instead of a blank space.
+- **The before/after compare report now carries the "Made with myflames"
+  attribution and the Brendan Gregg / Tanel Poder inspiration credit**, matching
+  the main HTML report footer.
+
 ### Fixed
 
 - Align the saved-investigations heading, show loading and empty search states,
@@ -24,63 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   short windows; empty drops and canceled file selections no longer reopen the picker.
 - Logo requests from older open UI tabs continue to work after a rebuild; new
   builds use one stable logo URL for the sidebar, welcome screen, and favicon.
-
-### Changed
-
-- Simplified stacked-flame app mark for the sidebar, welcome screen, and favicon;
-  retained the original full project logo.
-
-- Merged Diagram and Workbench into one Visual Explain view; existing `diagram`
-  commands and Python calls remain compatible aliases.
-- Enlarged join symbols with Venn regions for reported join semantics, including
-  the whole left circle for left joins. Unknown join types remain unshaded.
-- Smoothed mouse and trackpad zoom with proportional deltas and bounded momentum.
-
-### Added
-
-- `scripts/demo-db.sh` starts a local MySQL demo container with the fixture
-  schema and a read-only `demo` user for trying live capture and the UI.
-- README query samples for an inner join and a left join on the same tables,
-  with Visual Explain screenshots and interactive demos in
-  `docs/demos/mysql-joins/`. `scripts/regenerate_docs_demos.py` rebuilds them.
-- Query investigation workspace with the GitHub logo, neutral colors, system
-  typography, a persistent inspector, and responsive layouts.
-- Linked selection across all five charts; branch focus/collapse, metric bars,
-  bottleneck shortcuts, and contextual Teach navigation.
-- Explicit local investigations, notes, tags, named experiments, baselines,
-  portable bundles, and connection profiles without stored passwords.
-- Live query laboratory and `capture` CLI with typed parameters, estimated or
-  analyzed plans, repeated measurements, cancellation, and time limits.
-- Captured schema/index details, statement statistics, session status deltas,
-  and searchable optimizer traces with availability notices.
-- `explore` CLI for interactive selection, focus/collapse, and metric inspection.
-- Structural plan matching with confidence and added/removed/changed/uncertain
-  states. Missing timings remain distinct from measured zero.
-- Canonical preservation of MySQL SELECT-list subquery branches.
-
-- Workbench view in the UI and `--type workbench`: operator colors, join glyphs,
-  estimated-row arrows, full parsed tree, pan/zoom/search, node inspection, and
-  portable SVG/HTML exports. Independently implemented from Workbench 26.7
-  visual conventions with the existing Python parser and analysis.
-
-- Teach in the local workspace: searchable lesson catalog, family filters,
-  embedded interactive lessons, curriculum navigation, and offline HTML downloads.
-  Lesson metadata and content come from the existing Python registry.
-
-- `myflames ui`: local React/TypeScript workspace for saved MySQL and MariaDB
-  plans. Import files or paste JSON, inspect six chart views and operator
-  details, compare plans, and download HTML reports or JSON analysis.
-- Bundled frontend assets ship with Python, with no Node.js runtime requirement.
-  The stdlib server binds to loopback and supports `--port` and `--no-browser`.
-  Plans remain in memory for the page session.
-
-
-### Fixed
-
 - Restore bar-chart and treemap search controls by emitting valid JavaScript
   modulo operators.
-
-## [2.3.0] — 2026-09-15
 
 ### Review fixes (2026-09-15)
 
@@ -111,51 +142,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON-format setup in the quick start, and add opt-in current-MySQL corpus tests.
 
 Validation details and remaining limitations: [September review](docs/reviews/2026-09-15.md).
-
-### Added
-
-- **Advisor names the index that removes a filesort.** When a plan has a
-  single-base-table `ORDER BY` filesort on plain columns, myflames now suggests
-  the ordered/covering index (`CREATE INDEX … (col1, col2 [DESC])`, preserving
-  each column's sort direction) that lets MySQL read rows already sorted and
-  skip the O(n log n) sort — not just "grow the sort buffer." The parser threads
-  the sort columns through (MySQL `sort_fields`, MariaDB `sort_key`); the rule
-  deliberately bails to the generic hint on joins, aggregates, or expression
-  sort keys, where a naive single-table index cannot satisfy the order. Every
-  claim was verified against MySQL/MariaDB server source.
-- **`semijoin_firstmatch` teach lesson** — the flagship of the semijoin cluster,
-  animating the FirstMatch early-out: a `WHERE col IN (subquery)` asks
-  *does-it-exist*, not *how-many*, so the inner scan stops at the first match.
-- **`--quiet/-q` on `digest`, `advise`, and `compare`** (previously only on
-  `check`). Uniform contract across subcommands: suppress incidental stderr
-  diagnostics (the `Written to <path>` line, digest's tokenizer `Note:`); stdout
-  data and the exit code are never affected.
-- **Zero-install browser playground linked from the README** — paste a plan and
-  render it client-side via Pyodide, installing the published PyPI wheel with
-  micropip.
-
-### Changed
-
-- **The MCP `analyze_plan` tool now returns the token-cheap decision-grade
-  analysis by default** (`detail="core"`): plan summary, warnings, suggestions,
-  index hints, optimizer-switch explanations, and the operator tree. This drops
-  the heavy `collected` (schema/stats/variables), `query`, and `teach_hooks`
-  blocks that an agent rarely needs, honoring myflames' token-efficiency thesis
-  on the surface agents call by default. Pass `detail="full"` to restore the
-  complete record. The `detail` gate lives on `build_sidecar` as the single
-  source of truth; a written `.sidecar.json` and the `digest` path are
-  unaffected (they stay `full`). `detail="full"` output is byte-identical to
-  prior releases, so consumers pinned to the full shape can opt back in.
-- **The "Fix first" primary action is ranked by one policy, shared with
-  `advise`.** The HTML card and the ranked findings list previously used
-  different heuristics and could disagree; both now dereference
-  `findings.primary_suggestion_index` / `build_findings`, so a medium-severity
-  suggestion correctly outranks a low one everywhere. When a plan has no
-  findings at all, the report shows an explicit "No blocking issues found" card
-  instead of a blank space.
-- **The before/after compare report now carries the "Made with myflames"
-  attribution and the Brendan Gregg / Tanel Poder inspiration credit**, matching
-  the main HTML report footer.
 
 ## [2.2.0] — 2026-06-30
 
