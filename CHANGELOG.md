@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/demo-db.sh` starts a local MySQL demo container with the fixture
+  schema and a read-only `demo` user for trying live capture and the UI.
 - README query samples for an inner join and a left join on the same tables,
   with Visual Explain screenshots and interactive demos in
   `docs/demos/mysql-joins/`. `scripts/regenerate_docs_demos.py` rebuilds them.
