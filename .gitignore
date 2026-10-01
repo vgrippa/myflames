@@ -31,3 +31,6 @@ build/
 
 # Claude Code agent memory — private, machine-local, never committed
 .claude/projects/
+
+# Local database labs and credentials (never distribute)
+/local/

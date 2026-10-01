@@ -269,6 +269,46 @@ class TestCompareDigest(unittest.TestCase):
         combined = estimate_tokens(self.b) + estimate_tokens(self.a)
         self.assertLess(estimate_tokens(self.digest), combined)
 
+    def test_estimate_vs_analyze_uses_availability_not_placeholder_zero(self):
+        estimated = {"operation": "Table scan on users", "table_name": "users", "estimated_rows": 100}
+        measured = dict(estimated, actual_last_row_ms=2, actual_rows=100, actual_loops=1)
+        for before, after in ((estimated, measured), (measured, estimated)):
+            with self.subTest(before_measured="actual_last_row_ms" in before):
+                result = build_compare_sidecar(json.dumps(before), json.dumps(after))
+                digest = build_compare_digest(result)
+                self.assertIn("not measured", digest)
+                self.assertIn("2.0 ms", digest)
+                self.assertNotIn("0 ms", digest.replace("2.0 ms", ""))
+                self.assertIn("1 unmeasured", digest)
+                self.assertIn("UNMEASURED:", digest)
+                self.assertNotIn("REGRESSED:", digest)
+                self.assertNotIn("IMPROVED:", digest)
+                self.assertNotIn("%", digest)
+
+    def test_measured_zero_is_available_in_digest(self):
+        raw = json.dumps({"operation": "Table scan on users", "table_name": "users",
+                          "actual_last_row_ms": 0, "actual_rows": 0, "actual_loops": 1})
+        digest = build_compare_digest(build_compare_sidecar(raw, raw))
+        self.assertIn("total time 0.0 ms -> 0.0 ms", digest)
+        self.assertIn("1 unchanged", digest)
+        self.assertNotIn("not measured", digest)
+        self.assertNotIn("UNMEASURED:", digest)
+
+    def test_partial_self_time_is_unmeasured_while_total_is_available(self):
+        child = {"operation": "Table scan on users", "table_name": "users"}
+        before = {"operation": "Filter: id=1", "actual_last_row_ms": 5, "actual_loops": 1, "inputs": [child]}
+        after = dict(before, inputs=[dict(child, actual_last_row_ms=2, actual_loops=1)])
+        digest = build_compare_digest(build_compare_sidecar(json.dumps(before), json.dumps(after)))
+        self.assertIn("total time 5.0 ms -> 5.0 ms", digest)
+        self.assertIn("UNMEASURED:", digest)
+        self.assertIn("not measured -> 3.0 ms", digest)
+
+    def test_legacy_compare_sidecar_without_availability_fields_still_renders(self):
+        digest = build_compare_digest({"before": {"total_time_ms": 10},
+                                       "after": {"total_time_ms": 5},
+                                       "summary": {"time_delta_pct": -50}})
+        self.assertIn("total time 10 ms -> 5 ms (-50%)", digest)
+
 
 if __name__ == "__main__":
     unittest.main()

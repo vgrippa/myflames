@@ -206,7 +206,7 @@ def render_bargraph(
         lines.append(f'<text x="{col_loops_x + loops_width/2}" y="{text_y}" text-anchor="middle" class="loops">{loops_t}</text>')
         lines.append(
             f'<rect class="{bar_class}" x="{col_bar_x}" y="{y}" width="{bar_width}" height="{bar_height}" fill="{color}" rx="3" ry="3" '
-            f'data-info="{info_attr}" data-label="{bar_label_attr}"'
+            f'data-node-id="{_attr_escape(op.get("node_id", ""))}" data-info="{info_attr}" data-label="{bar_label_attr}"'
             + (f' data-analysis-msg="{analysis_attr}"' if analysis_attr else "")
             + teach_attr
             + "/>"
@@ -314,7 +314,7 @@ def render_bargraph(
   function _focusMatch(idx) {
     if (!_searchMatches.length) return;
     var n = _searchMatches.length;
-    _searchIdx = ((idx %% n) + n) %% n;
+    _searchIdx = ((idx % n) + n) % n;
     for (var i = 0; i < n; i++) {
       var active = (i === _searchIdx);
       _searchMatches[i].style.stroke = active ? "rgb(230,0,230)" : "rgb(210,140,210)";

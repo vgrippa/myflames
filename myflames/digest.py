@@ -304,13 +304,23 @@ def build_compare_digest(compare_sidecar):
     tb = before.get("total_time_ms")
     ta = after.get("total_time_ms")
     pct = summary.get("time_delta_pct")
-    head = "total time {} ms -> {} ms".format(tb, ta)
-    if pct is not None:
+    def timing_text(value, available=True):
+        return "not measured" if available is False or value is None else "{} ms".format(value)
+
+    available_b = before.get("timing_available", tb is not None)
+    available_a = after.get("timing_available", ta is not None)
+    head = "total time {} -> {}".format(
+        timing_text(tb, available_b), timing_text(ta, available_a))
+    if pct is not None and available_b and available_a:
         head += " ({:+.0f}%)".format(pct)
     head += " | {} improved, {} regressed, {} unchanged".format(
         summary.get("improvements", 0), summary.get("regressions", 0),
         summary.get("unchanged", 0),
     )
+    if summary.get("unmeasured"):
+        head += ", {} unmeasured".format(summary["unmeasured"])
+    if summary.get("uncertain"):
+        head += ", {} uncertain".format(summary["uncertain"])
     out.append(head)
     out.append("")
 
@@ -327,13 +337,18 @@ def build_compare_digest(compare_sidecar):
         for d in rows:
             st = d.get("self_time_ms") or {}
             cp = st.get("change_pct")
-            cp_str = " ({:+.0f}%)".format(cp) if cp is not None else ""
-            out.append("- {}: {} -> {} ms{}".format(
-                d.get("short_label", "(op)"), st.get("before"), st.get("after"), cp_str,
+            measured = d.get("measured", True)
+            cp_str = " ({:+.0f}%)".format(cp) if cp is not None and measured and classification != "uncertain" else ""
+            out.append("- {}: {} -> {}{}".format(
+                d.get("short_label", "(op)"),
+                timing_text(st.get("before"), st.get("before_measured", True)),
+                timing_text(st.get("after"), st.get("after_measured", True)), cp_str,
             ))
 
     _emit("REGRESSED", "regressed")
     _emit("IMPROVED", "improved")
+    _emit("UNMEASURED", "unmeasured")
+    _emit("UNCERTAIN MATCHES", "uncertain")
     return "\n".join(out).rstrip() + "\n"
 
 

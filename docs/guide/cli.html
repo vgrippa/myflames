@@ -44,6 +44,14 @@
     <h1>CLI Reference</h1>
     <p class="subtitle">Every command, flag, and option.</p>
 
+    <h2>Local browser workspace</h2>
+    <p>Run <code>myflames ui</code> to import saved plans, inspect charts and
+    operators, compare plans, and export reports. The built interface ships with
+    Python; Node.js is not needed. Plans stay in memory until the page closes or
+    reloads. Live database capture remains available through the CLI.</p>
+    <p><code>--port PORT</code> chooses a local port; the default selects an
+    available port. <code>--no-browser</code> prints the URL without opening a
+    browser. Press Ctrl+C to stop the server.</p>
     <h2>Synopsis</h2>
     <pre><code>myflames [options] [explain.json]
 myflames -h HOST -u USER -p -D DB -e 'SQL' -o report.html
@@ -52,7 +60,8 @@ myflames digest explain.json [--cost] [--tokenizer claude|gpt]
 myflames advise explain.json [--json]
 myflames check  explain.json --fail-on full_scan,filesort
 myflames teach &lt;lesson&gt; [-o file.html]
-myflames guide</code></pre>
+myflames guide
+myflames ui [--port PORT] [--no-browser]</code></pre>
 
     <div class="tip">
       <strong>Built for the AI era.</strong> Beyond the visual renderers, myflames
@@ -66,7 +75,9 @@ myflames guide</code></pre>
     <table>
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td><code>--type TYPE</code></td><td><code>flamegraph</code></td><td><code>flamegraph</code>, <code>bargraph</code>, <code>treemap</code>, <code>diagram</code>, <code>tree</code></td></tr>
+        <tr><td><code>capture</code></td><td>Estimated plan</td><td>Capture live plans, run statistics and optional trace; use <code>--mode analyze</code> to execute. See <a href="../QUERY_WORKSPACE.md">query workspace</a>.</td></tr>
+        <tr><td><code>explore</code></td><td>Visual Explain</td><td>Interactive HTML with <code>--metric</code>, <code>--focus</code>, <code>--collapse</code>, and <code>--selected</code>.</td></tr>
+        <tr><td><code>--type TYPE</code></td><td><code>flamegraph</code></td><td><code>flamegraph</code>, <code>bargraph</code>, <code>treemap</code>, <code>diagram</code>, <code>tree</code>, <code>workbench</code></td></tr>
         <tr><td><code>--output FILE</code>, <code>-o</code></td><td>stdout</td><td><code>.html</code> = self-contained report; <code>.svg</code> = responsive SVG. JSON sidecar auto-written alongside.</td></tr>
         <tr><td><code>--width N</code></td><td>1800 / 1200</td><td>SVG width in pixels</td></tr>
         <tr><td><code>--height N</code></td><td>32</td><td>Frame height (flamegraph only)</td></tr>

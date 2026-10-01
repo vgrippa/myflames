@@ -41,6 +41,21 @@ primitive from Slice 2 so it cross-references plan_tree entries.
       ]
     }
 
+Additive matching fields expose the method, confidence and structural status;
+``classification="uncertain"`` excludes tentative matches from regressions and
+improvements. ``matching.status="unchanged"`` refers to equal semantic subtrees,
+while ``classification="unchanged"`` refers to timing. Measurements are never
+used to establish operator identity. Before/after node IDs identify the original
+canonical nodes for synchronized chart selection.
+
+``before/after.timing_available`` and ``summary.timing_available`` must be
+checked before consuming total timings. For backwards-compatible numeric types,
+unavailable total_time_ms and time_delta_ms are zero placeholders; unavailable
+percentage changes are null. Delta ``measured`` requires both self times;
+``self_time_ms.before_measured/after_measured`` disambiguate each side. Missing
+self times and actual rows are null. ``classification="unmeasured"`` is excluded
+from timing verdict counts. True measured zero is never marked unavailable.
+
 External tools can gate CI on ``summary.regressions == 0`` or on any
 specific delta's ``change_pct`` without parsing prose.
 """
@@ -50,7 +65,7 @@ import os
 
 from . import __version__
 from .parser import parse_explain, flatten_nodes
-from .output_compare import _match_nodes
+from .plan_matching import match_plan_nodes, timing_available, self_time_available
 
 
 COMPARE_SCHEMA_VERSION = "compare-1.0"
@@ -106,22 +121,39 @@ def build_compare_sidecar(json_before, json_after):
     root_b = parse_explain(json_before)
     root_a = parse_explain(json_after)
 
-    total_b = float(root_b.get("total_time") or 0)
-    total_a = float(root_a.get("total_time") or 0)
+    measured_b, measured_a = timing_available(root_b), timing_available(root_a)
+    total_b = float(root_b.get("total_time") or 0) if measured_b else 0
+    total_a = float(root_a.get("total_time") or 0) if measured_a else 0
+    measured_total = measured_b and measured_a
 
-    matched = _match_nodes(flatten_nodes(root_b), flatten_nodes(root_a))
+    matched = match_plan_nodes(flatten_nodes(root_b), flatten_nodes(root_a))
 
     deltas = []
     regressions = 0
     improvements = 0
     unchanged = 0
-    for lbl, nb, na in matched:
-        self_b = float((nb or {}).get("self_time") or 0) if nb else None
-        self_a = float((na or {}).get("self_time") or 0) if na else None
-        rows_b = float((nb or {}).get("rows") or 0) if nb else None
-        rows_a = float((na or {}).get("rows") or 0) if na else None
+    for match in matched:
+        lbl, nb, na = match["label"], match["before"], match["after"]
+        metadata = match["matching"]
+        self_measured_b, self_measured_a = self_time_available(nb), self_time_available(na)
+        self_b = float(nb.get("self_time") or 0) if self_measured_b else None
+        self_a = float(na.get("self_time") or 0) if self_measured_a else None
+        rows_b = ((nb or {}).get("details") or {}).get("actual_rows")
+        rows_a = ((na or {}).get("details") or {}).get("actual_rows")
         change_pct = _pct(self_b, self_a)
-        classification = _classify_delta(change_pct)
+        measured = self_measured_b and self_measured_a
+        if metadata["confidence"] == "uncertain":
+            classification = "uncertain"
+        elif nb is None or na is None:
+            classification = "new_or_removed"
+        elif not measured:
+            classification = "unmeasured"
+        elif change_pct is None:
+            # Percentage-of-zero is undefined, but measured zero is real data.
+            classification = ("unchanged" if self_b == self_a else
+                              "regressed" if self_a > self_b else "improved")
+        else:
+            classification = _classify_delta(change_pct)
         if classification == "regressed":
             regressions += 1
         elif classification == "improved":
@@ -130,9 +162,15 @@ def build_compare_sidecar(json_before, json_after):
             unchanged += 1
         deltas.append({
             "short_label":     lbl,
+            "before_label":    (nb or {}).get("short_label", ""),
+            "after_label":     (na or {}).get("short_label", ""),
+            "matching":        metadata,
             "before_node_id":  (nb or {}).get("node_id") or "",
             "after_node_id":   (na or {}).get("node_id") or "",
+            "measured":       measured,
             "self_time_ms": {
+                "before_measured": self_measured_b,
+                "after_measured": self_measured_a,
                 "before":     self_b,
                 "after":      self_a,
                 "change_pct": change_pct,
@@ -152,20 +190,28 @@ def build_compare_sidecar(json_before, json_after):
         "myflames_version": __version__,
         "before": {
             "total_time_ms":   round(total_b, 3),
+            "timing_available": measured_b,
             "operator_count":  len(list(flatten_nodes(root_b))),
             "root_node_id":    root_b.get("node_id", ""),
         },
         "after": {
             "total_time_ms":   round(total_a, 3),
+            "timing_available": measured_a,
             "operator_count":  len(list(flatten_nodes(root_a))),
             "root_node_id":    root_a.get("node_id", ""),
         },
         "summary": {
-            "time_delta_ms":   round(total_a - total_b, 3),
-            "time_delta_pct":  _pct(total_b, total_a),
+            "timing_available": measured_total,
+            "time_delta_ms":   round(total_a - total_b, 3) if measured_total else 0,
+            "time_delta_pct":  _pct(total_b, total_a) if measured_total else None,
             "regressions":     regressions,
             "improvements":    improvements,
             "unchanged":       unchanged,
+            "unmeasured":      sum(item["classification"] == "unmeasured" for item in deltas),
+            "added":           sum(item["matching"]["status"] == "added" for item in matched),
+            "removed":         sum(item["matching"]["status"] == "removed" for item in matched),
+            "changed":         sum(item["matching"]["status"] == "changed" for item in matched),
+            "uncertain":       sum(item["matching"]["status"] == "uncertain" for item in matched),
         },
         "deltas": deltas,
     }

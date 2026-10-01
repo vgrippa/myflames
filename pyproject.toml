@@ -33,6 +33,8 @@ include = ["myflames*"]
 # Include CSS + all JS files (including the per-lesson .js files in
 # teach/ that Tier-0 migrated out of raw-string literals).
 myflames = [
+    "ui_assets/*.html",
+    "ui_assets/assets/*",
     "*.css",
     "*.js",
     "assets/*.js",

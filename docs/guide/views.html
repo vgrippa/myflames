@@ -56,7 +56,7 @@
         <tr><td>Flame graph</td><td>Full execution hierarchy, time distribution</td><td><code>myflames explain.json</code></td></tr>
         <tr><td>Bar chart</td><td>Finding the slowest individual operations</td><td><code>--type bargraph</code></td></tr>
         <tr><td>Treemap</td><td>Comparing relative cost at a glance</td><td><code>--type treemap</code></td></tr>
-        <tr><td>Diagram</td><td>Join order &amp; access paths (Visual Explain)</td><td><code>--type diagram</code></td></tr>
+        <tr><td>Visual Explain</td><td>Join semantics, operator colors, row-volume arrows, and smooth pan/zoom</td><td><code>--type workbench</code> (<code>diagram</code> alias)</td></tr>
         <tr><td>Execution tree</td><td>Collapsible per-subtree with self/total time</td><td><code>--type tree</code></td></tr>
       </tbody>
     </table>
@@ -90,12 +90,12 @@
     </div>
 
     <div class="view-card">
-      <h3>Diagram (Visual Explain)</h3>
+      <h3>Visual Explain</h3>
       <div class="meta"><code>myflames --type diagram explain.json</code> &bull; <a href="../demos/mysql-query-complex-diagram.html">Live demo</a></div>
       <span class="best-for">Join order</span><span class="best-for">Access paths</span><span class="best-for">MySQL Workbench style</span>
-      <p>A flow diagram inspired by MySQL Workbench's Visual Explain. Tables are shown as nodes with their access type (ALL, ref, range, etc.), and join operations are shown as connectors. Each node shows actual rows, loops, and cost.</p>
+      <p>A downward-flow plan inspired by MySQL Workbench, merging the former Diagram and Workbench views. Large Venn symbols highlight the reported join type: left joins shade the whole left circle, inner joins shade the overlap. Operator colors and row-volume arrows remain distinct from measured time.</p>
       <p><strong>When to use:</strong> You want to understand the join order (which table is the driving table?), which access paths are used (full scan vs. index lookup), and how data flows between operations. Best for multi-table joins.</p>
-      <p><strong>Interactions:</strong> +/&minus; zoom, drag-to-pan, double-click to reset. Click a node to pin its details strip.</p>
+      <p><strong>Interactions:</strong> Smooth proportional wheel zoom, +/&minus; buttons, drag-to-pan, and double-click to fit. Click a node to inspect details.</p>
     </div>
 
     <div class="view-card">

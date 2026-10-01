@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Align the saved-investigations heading, show loading and empty search states,
+  and add a clear-search action. Trace search also reports no matches.
+- Restore the correct contextual Teach lesson when reopening an operator link.
+- Render code spans in Teach explanation cards without exposing literal tags.
+- Label operator search for assistive technology and describe estimated
+  comparisons without implying measured runs.
+- Visual Explain reports the current zoom percentage, shows button press
+  feedback, and disables zoom directions at their limits. Click the percentage
+  to reset to 100%.
+- Version the favicon URL so Chrome refreshes its cached tab icon after the
+  app-mark update.
+- Import dialog file-picker overlap, narrow-screen wrapping, and scrolling on
+  short windows; empty drops and canceled file selections no longer reopen the picker.
+- Logo requests from older open UI tabs continue to work after a rebuild; new
+  builds use one stable logo URL for the sidebar, welcome screen, and favicon.
+
+### Changed
+
+- Simplified stacked-flame app mark for the sidebar, welcome screen, and favicon;
+  retained the original full project logo.
+
+- Merged Diagram and Workbench into one Visual Explain view; existing `diagram`
+  commands and Python calls remain compatible aliases.
+- Enlarged join symbols with Venn regions for reported join semantics, including
+  the whole left circle for left joins. Unknown join types remain unshaded.
+- Smoothed mouse and trackpad zoom with proportional deltas and bounded momentum.
+
+### Added
+
+- `scripts/demo-db.sh` starts a local MySQL demo container with the fixture
+  schema and a read-only `demo` user for trying live capture and the UI.
+- README query samples for an inner join and a left join on the same tables,
+  with Visual Explain screenshots and interactive demos in
+  `docs/demos/mysql-joins/`. `scripts/regenerate_docs_demos.py` rebuilds them.
+- Query investigation workspace with the GitHub logo, neutral colors, system
+  typography, a persistent inspector, and responsive layouts.
+- Linked selection across all five charts; branch focus/collapse, metric bars,
+  bottleneck shortcuts, and contextual Teach navigation.
+- Explicit local investigations, notes, tags, named experiments, baselines,
+  portable bundles, and connection profiles without stored passwords.
+- Live query laboratory and `capture` CLI with typed parameters, estimated or
+  analyzed plans, repeated measurements, cancellation, and time limits.
+- Captured schema/index details, statement statistics, session status deltas,
+  and searchable optimizer traces with availability notices.
+- `explore` CLI for interactive selection, focus/collapse, and metric inspection.
+- Structural plan matching with confidence and added/removed/changed/uncertain
+  states. Missing timings remain distinct from measured zero.
+- Canonical preservation of MySQL SELECT-list subquery branches.
+
+- Workbench view in the UI and `--type workbench`: operator colors, join glyphs,
+  estimated-row arrows, full parsed tree, pan/zoom/search, node inspection, and
+  portable SVG/HTML exports. Independently implemented from Workbench 26.7
+  visual conventions with the existing Python parser and analysis.
+
+- Teach in the local workspace: searchable lesson catalog, family filters,
+  embedded interactive lessons, curriculum navigation, and offline HTML downloads.
+  Lesson metadata and content come from the existing Python registry.
+
+- `myflames ui`: local React/TypeScript workspace for saved MySQL and MariaDB
+  plans. Import files or paste JSON, inspect six chart views and operator
+  details, compare plans, and download HTML reports or JSON analysis.
+- Bundled frontend assets ship with Python, with no Node.js runtime requirement.
+  The stdlib server binds to loopback and supports `--port` and `--no-browser`.
+  Plans remain in memory for the page session.
+
+
+### Fixed
+
+- Restore bar-chart and treemap search controls by emitting valid JavaScript
+  modulo operators.
+
 ## [2.3.0] — 2026-09-15
 
 ### Review fixes (2026-09-15)

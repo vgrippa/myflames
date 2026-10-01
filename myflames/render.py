@@ -37,7 +37,7 @@ def render_explain(
     Render EXPLAIN ANALYZE JSON to SVG.
 
     :param json_text: Raw JSON string (EXPLAIN ANALYZE FORMAT=JSON output).
-    :param output_type: One of "flamegraph", "bargraph", "treemap", "diagram", "tree".
+    :param output_type: One of "flamegraph", "bargraph", "treemap", "diagram", "workbench", "tree".
     :param title: Chart title.
     :param width: SVG width (default 1800 for flamegraph, 1200 for others).
     :param height: Frame height for flamegraph only (default 32).
@@ -47,7 +47,7 @@ def render_explain(
     :return: SVG string.
     """
     if width is None:
-        width = 1200 if output_type in ("bargraph", "treemap", "diagram", "tree") else 1800
+        width = 1200 if output_type in ("bargraph", "treemap", "diagram", "workbench", "tree") else 1800
 
     root = parse_explain(json_text)
     max_time = root["total_time"]
@@ -138,7 +138,7 @@ def render_explain(
     if output_type == "treemap":
         return render_treemap(root, width=width, title=title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
 
-    if output_type == "diagram":
+    if output_type in ("diagram", "workbench"):
         return render_diagram(
             root,
             width=width,
@@ -151,4 +151,4 @@ def render_explain(
     if output_type == "tree":
         return render_tree(root, width=width, title=title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
 
-    raise ValueError("output_type must be one of: flamegraph, bargraph, treemap, diagram, tree")
+    raise ValueError("output_type must be one of: flamegraph, bargraph, treemap, diagram, workbench, tree")

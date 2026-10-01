@@ -55,7 +55,23 @@ Standard pattern for a logic change: implement → in parallel run `mysql-correc
 - **Documentation is mandatory, not optional**: Any change to a user-facing parameter, subcommand, flag, or core feature — adding, renaming, changing behavior, or removing — MUST update the docs in the same change: `README.md` (the relevant section + the Agent/CI subcommands block + any CLI reference), `CLAUDE.md` (this Commands Reference), the `CHANGELOG.md` `[Unreleased]` section, and any affected file under `docs/` (walkthroughs, examples) and `ROADMAP.md`. A PR/commit that ships a CLI surface change without the matching doc edits is incomplete. When renaming, keep a deprecated alias and document it.
 
 ## 📖 Commands Reference
-- **Run**: `python3 -m myflames --type [flamegraph|bargraph|treemap|diagram] explain.json > output.svg`
+
+- **Local UI**: `python3 -m myflames ui [--port PORT] [--no-browser]` launches the
+  saved-plan workspace on IPv4 loopback. React/TypeScript source is in
+  `apps/workspace/`; the app mark is `docs/brand/myflames-icon-v2.png`, shared
+  by the sidebar, welcome screen, and favicon. Vite emits the stable
+  `/assets/myflames-logo.png` URL; retain earlier logo URL aliases in `ui.py`. `npm ci && npm run build` there regenerates committed
+  `myflames/ui_assets/` files shipped in the wheel. Python users need no Node.js.
+  The UI API reuses the parser, sidecars, and renderers; plans stay in browser
+  memory until explicitly saved. Investigations and credential-free connection
+  profiles use `~/.myflames/workspace.sqlite3`. Live capture jobs reuse `live.py`.
+  Its Teach catalog and lesson player use the existing `LESSONS` registry
+  and `CURRICULUM` order. See `docs/LOCAL_UI.md` and `docs/QUERY_WORKSPACE.md`. Test with `test/test_ui.py` and the CLI suite.
+  Keep the import dialog's native file control visually clipped but keyboard
+  accessible; verify open/error states at desktop and narrow, short viewports.
+  Use `docs/UI_TESTING.md` for the interaction matrix. Check contextual Teach
+  links after navigating to a different lesson and returning to the plan.
+- **Run**: `python3 -m myflames --type [flamegraph|bargraph|treemap|diagram|tree|workbench] explain.json > output.svg`
 - **Digest** (AI-era): `python3 -m myflames digest explain.json` — emits the compact, source-grounded digest of a plan (pipe to an LLM). `--cost` shows the token + $ saving vs pasting the raw plan; `--show-prompts` prints both prompts; `--tokenizer {heuristic,claude,gpt}` selects how tokens are counted (`claude` = Anthropic `count_tokens`, needs `myflames[tokens]` + `ANTHROPIC_API_KEY`; `gpt` = tiktoken, keyless, needs `myflames[gpt]`); `--json` for machine output. Lives in `myflames/digest.py`. (Deprecated alias `tokens` still works — it warns on stderr and defaults to `--cost`.)
 - **Plan diff**: `python3 -m myflames diff before.json after.json` (alias of `compare`). `--digest` = token-cheap text diff for an LLM; `--json` = structured `compare-1.0` delta.
 - **CI gate**: `python3 -m myflames check explain.json --fail-on full_scan,filesort` — exits 1 if a trigger matches (categories, severities, or `any`), 0 if clean, 2 on bad input. For pre-commit/CI/agent loops. Lives in `myflames/findings.py`.
@@ -81,3 +97,33 @@ Standard pattern for a logic change: implement → in parallel run `mysql-correc
 - Test current MySQL versions with the configurable fixture generator and
   `MYFLAMES_MYSQL_FIXTURES`; see `test/README.md`. Keep fresh version corpora
   separate from the committed fixture directory unless intentionally updating it.
+
+## Visual Explain (merged Diagram / Workbench)
+
+`output_workbench.py` renders the canonical tree using Workbench 26.7 visual
+conventions; `workbench.js` supplies scoped pan/zoom/search/selection. Preserve
+every parsed node and edge. Colors encode operation type; arrow widths use
+estimated rows. Keep estimated cost separate from measured milliseconds.
+The UI and CLI share this renderer. `output_diagram.render_diagram` is a
+compatibility wrapper; the UI exposes one Visual Explain tab. Preserve reported
+`join_type` for Venn shading, and keep MariaDB synthetic joins explicitly unknown.
+Join cards have their own height; edges must attach to the actual card bounds.
+Wheel input uses normalized deltas with bounded animation in `workbench.js`. See `docs/WORKBENCH_VIEW.md`.
+Update the zoom percentage and directional button limits in the shared paint
+path so button, wheel, fit, and reset actions stay synchronized.
+
+## Investigation engine
+
+- `myflames capture`: shared `LiveJob` engine; estimated/analyzed JSON capture,
+  typed parameters, timeout, repeat, trace, and cancellation. Capture1.0 artifacts
+  include run statistics and context, never connection credentials.
+- `myflames explore`: five interactive charts (`diagram` remains a `workbench` alias) with `--metric`, `--focus`, repeatable
+  `--collapse`, and `--selected` canonical node IDs.
+- `exploration.py`: copy projections only; never mutate canonical measurements.
+  Selection is linked with `myflames-node` / `myflames-select` messages.
+- `plan_matching.py`: shared structural comparison. Uncertain matches and absent
+  timing must not count as measured regressions. Honor `timing_available`.
+- `workspace_store.py`: explicit opt-in SQLite persistence and versioned bundles.
+- `live.py`: preserve client SQL comments for statement tags; disable optimizer
+  trace immediately after the target statement, before any marker SELECT.
+  Status/P_S scope is the capture statement, not bare SELECT result delivery.

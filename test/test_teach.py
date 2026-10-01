@@ -48,6 +48,18 @@ from myflames.teach._cost_model import (
 from myflames.teach import LESSONS, render_lesson
 
 
+class TestExplainerFormatting(unittest.TestCase):
+    def test_code_spans_render_without_allowing_arbitrary_markup(self):
+        from myflames.teach._html import explainer
+        rendered = explainer('Example', [
+            'Read <code>ib_buffer_pool</code> and <script>alert(1)</script>',
+            '<code onclick="alert(1)">unsafe</code>',
+        ])
+        self.assertIn('<code>ib_buffer_pool</code>', rendered)
+        self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', rendered)
+        self.assertNotIn('<code onclick=', rendered)
+
+
 # ---------------------------------------------------------------------------
 # Ring 1 — cost-model invariants
 # ---------------------------------------------------------------------------

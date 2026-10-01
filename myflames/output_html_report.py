@@ -87,6 +87,10 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
             root, width=width, title=title, unit_display=unit, analysis=None,
             teach_index_by_folded=teach_index_by_folded,
         )
+    if view_type == "workbench":
+        from .output_workbench import render_workbench
+        return render_workbench(root, width=width, title=title,
+                                teach_index_by_folded=teach_index_by_folded)
     if view_type == "tree":
         return render_tree(
             root, width=width, title=title, unit_display=unit, analysis=None,
@@ -97,12 +101,25 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
     max_time = root["total_time"]
     use_microseconds = max_time > 0 and max_time < 1
     multiplier = 1000 if use_microseconds else 1
-    entries = list(build_flame_entries(root))
+    frame_labels = {}
+    frame_ids = {}
+    if kwargs.get("node_identity"):
+        def identity_entries(node, path=None):
+            token = "operator:" + node["node_id"]
+            frame_labels[token] = node["folded_label"]
+            frame_ids[token] = node["node_id"]
+            path = list(path or []) + [token]
+            yield path, node["self_time"]
+            for child in node.get("children", []):
+                yield from identity_entries(child, path)
+        entries = list(identity_entries(root))
+    else:
+        entries = list(build_flame_entries(root))
     folded_lines = []
     for path, time in entries:
         t = time * multiplier
         t = int(t + 0.5)
-        t = 1 if t == 0 and len(path) == 1 else t
+        t = 1 if t == 0 and len(path) == 1 and not kwargs.get("node_identity") else t
         if t <= 0:
             continue
         folded_lines.append(";".join(path) + " " + str(t))
@@ -124,12 +141,14 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
     svg = folded_to_svg(
         folded_text, title=title, width=width,
         height=kwargs.get("frame_height", 32),
-        countname=unit,
+        countname="µs" if use_microseconds else unit,
         inverted=kwargs.get("inverted", False),
         colors=kwargs.get("colors", "hot"),
         teach_index_by_folded=teach_index_by_folded,
         complexity_by_folded=_complexity_by_folded or None,
         family_by_folded=_family_by_folded or None,
+        frame_labels=frame_labels or None,
+        frame_ids=frame_ids or None,
     )
     # Enhance tooltips with parser details (still useful on hover).
     op_details = {n["folded_label"]: n["details"] for n in _flat(root)}

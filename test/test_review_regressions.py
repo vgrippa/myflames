@@ -125,7 +125,9 @@ class TestCompareRegressions(unittest.TestCase):
         before_json, after_json = json.dumps(plan), json.dumps(after)
         sidecar = build_compare_sidecar(before_json, after_json)
         self.assertEqual(len(sidecar['deltas']), 3)
-        self.assertEqual(sidecar['summary']['regressions'], 1)
+        # Repeated indistinguishable scans cannot establish node identity.
+        self.assertEqual(sidecar['summary']['regressions'], 0)
+        self.assertEqual(sidecar['summary']['uncertain'], 2)
         repeated = [d for d in sidecar['deltas'] if d['short_label'] == 'Table scan [t]']
         self.assertEqual(len(repeated), 2)
         self.assertEqual([d['self_time_ms']['after'] for d in repeated], [1, 2])

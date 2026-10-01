@@ -36,9 +36,11 @@ myflames — Which view should I use?
                Sorted by self-time.  Quickly spots the single most
                expensive step (scan, sort, join) in the plan.
 
-  diagram      Start here to understand join order and access paths.
-               Left-to-right flow like MySQL Workbench Visual Explain.
-               Best for understanding how tables are joined.
+  workbench    Visual Explain: join semantics, operator flow, and access paths.
+               Large Venn join symbols; pan, smooth zoom, and search.
+               Colors = operator types; arrow width = estimated rows.
+
+  diagram      Compatibility alias for workbench (same Visual Explain view).
 
   treemap      Start here to compare relative cost at a glance.
                Area = total time.  Good for large plans where you want
@@ -53,6 +55,7 @@ Quick start:
   myflames --type bargraph explain.json         # bar chart
   myflames --output report.html explain.json    # self-contained HTML report
   myflames compare before.json after.json       # before vs after diff
+  myflames explore explain.json -o explore.html # interactive branch exploration
 """
 
 
@@ -679,6 +682,15 @@ def _cmd_findings_deprecated(argv):
 def main():
     # Handle subcommands before argparse to avoid conflicts with positional args
     if len(sys.argv) > 1:
+        if sys.argv[1] in ("capture", "explore"):
+            from .workspace_cli import cmd_capture, cmd_explore
+            command = cmd_capture if sys.argv[1] == "capture" else cmd_explore
+            command(sys.argv[2:])
+            return
+        if sys.argv[1] == "ui":
+            from .ui import cmd_ui
+            cmd_ui(sys.argv[2:])
+            return
         if sys.argv[1] == "guide":
             sys.stdout.write(_GUIDE_TEXT)
             return
@@ -707,13 +719,17 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="myflames",
-        description="MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, treemaps, diagrams, and execution trees.",
+        description="MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, treemaps, diagrams, execution trees, and Workbench-style plans.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         # add_help=False so the short flag ``-h`` is free for ``--host`` — we
         # add our own ``--help`` below. ``mysql -h host`` users expect this.
         add_help=False,
         epilog="""\
 Examples:
+  myflames ui                                           # local browser workspace
+  myflames explore explain.json -o explore.html         # interactive branch exploration
+  myflames capture -h localhost -u admin -p -e 'SELECT 1' # capture estimates as JSON
+  myflames --type workbench explain.json -o plan.html   # Workbench-style Visual Explain
   myflames explain.json                                 # flame graph from file
   myflames --type bargraph explain.json > bar.svg       # bar chart
   myflames --output report.html explain.json            # HTML report
@@ -729,6 +745,9 @@ Examples:
   myflames teach btree -o btree.html                    # interactive lesson
 
 Subcommands:
+  ui        Open the local browser workspace for saved plans
+  capture   Capture a live plan and server evidence as JSON (--mode analyze executes)
+  explore   Export interactive HTML with branch focus and operator metrics
   compare   Compare before/after EXPLAIN JSON files (alias: diff; --digest/--json for agents)
   digest    Emit the compact LLM-ready digest of a plan (--cost shows the token/$ saving)
   check     Exit nonzero if the plan trips --fail-on categories (CI gate)
@@ -829,7 +848,7 @@ Subcommands:
     )
     parser.add_argument(
         "--type",
-        choices=["flamegraph", "bargraph", "treemap", "diagram", "tree"],
+        choices=["flamegraph", "bargraph", "treemap", "diagram", "tree", "workbench"],
         default="flamegraph",
         help="Output type (default: flamegraph)",
     )
@@ -916,7 +935,7 @@ Subcommands:
 
     # Type-specific width default
     if args.width is None:
-        args.width = 1200 if args.type in ("bargraph", "treemap", "diagram", "tree") else 1800
+        args.width = 1200 if args.type in ("bargraph", "treemap", "diagram", "tree", "workbench") else 1800
 
     # Read input (skipped in live mode — json_text is already set)
     if json_text is None:
@@ -1118,6 +1137,13 @@ Subcommands:
             analysis=analysis,
             teach_index_by_folded=teach_maps["by_folded_label"],
         )
+        _write_output(svg, output_path)
+        return
+
+    if args.type == "workbench":
+        from .output_workbench import render_workbench
+        svg = render_workbench(root, width=args.width, title=args.title,
+                               analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
         _write_output(svg, output_path)
         return
 
