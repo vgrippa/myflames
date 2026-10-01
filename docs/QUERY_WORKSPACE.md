@@ -76,7 +76,7 @@ CLI connection workflow.
 For a practice server, run `./scripts/demo-db.sh` (requires Docker). It starts
 MySQL 8.4 on `127.0.0.1:3406` with the `testdb` tables (users, orders,
 order_items, products, categories, reviews) and prints credentials for a
-read-only `demo` user. Choose TLS mode `DISABLED` for this container.
+read-only `demo` user.
 
 Use query tabs to keep drafts and name an experiment. Parameters are typed
 values in a JSON object, referenced as `:name` outside SQL literals/comments:
