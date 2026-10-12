@@ -31,7 +31,7 @@ myflames ui --port 8765            # choose a fixed local port
 1. Choose **Import plan**, drop a JSON file, or paste a saved plan. Each plan can
    be up to 5 MiB. **Explore sample plan** loads a bundled example.
 2. Review execution time, estimated rows examined, findings, and suggestions.
-3. Switch between Visual Explain, flame graph, execution tree, bar chart, and treemap.
+3. Switch between Visual Explain, flame graph, execution tree, and bar chart.
 4. Search the operator list and select an operator to inspect its measurements
    and raw fields. Findings with a matching operator include an inspection link.
 5. Use **Export HTML** for a portable report or **Export JSON** for the existing

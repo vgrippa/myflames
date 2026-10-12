@@ -46,7 +46,7 @@
 
     <h2>Design principles</h2>
     <ul>
-      <li><strong>One analysis, many projections</strong> &mdash; a plan is parsed and analyzed once, then projected for whoever is asking: flame graph / bar chart / treemap / diagram / tree (for humans), a compact source-grounded digest and JSON sidecar (for AI agents), and an exit code (for CI).</li>
+      <li><strong>One analysis, many projections</strong> &mdash; a plan is parsed and analyzed once, then projected for whoever is asking: flame graph / bar chart / diagram / tree (for humans), a compact source-grounded digest and JSON sidecar (for AI agents), and an exit code (for CI).</li>
       <li><strong>Zero external dependencies</strong> &mdash; Python 3.7+ stdlib only. No pip install of MySQL drivers, templating engines, or JS frameworks. The AI-era integrations (MCP transport, exact token counting) live behind optional extras (<code>myflames[mcp]</code>, <code>myflames[tokens]</code>, <code>myflames[gpt]</code>); the core stays stdlib-only.</li>
       <li><strong>Single parser, multiple renderers</strong> &mdash; JSON is parsed once into a unified tree. Renderers never re-parse JSON.</li>
       <li><strong>Offline-first output</strong> &mdash; every HTML file is self-contained. No external scripts, stylesheets, or fonts. Works in Slack DMs, email attachments, and air-gapped environments.</li>
@@ -58,9 +58,9 @@
     <div class="diagram">Input JSON             Parser               Projection            Output / consumer
 (MySQL or MariaDB) &rarr;  parser.py          &rarr;  flamegraph.py     &rarr;  .svg / .html   (human)
                        &bull; auto-detect engine   output_bargraph.py
-                       &bull; normalize MariaDB    output_treemap.py
-                       &bull; build unified tree   output_diagram.py
-                       &bull; analyze_plan()       output_tree.py
+                       &bull; normalize MariaDB    output_tree.py
+                       &bull; build unified tree   output_workbench.py
+                       &bull; analyze_plan()
                                              &darr;
                                           advisor.py         &rarr;  warnings + suggestions
                                           output_sidecar.py  &rarr;  .json sidecar    (agent / tooling)
@@ -77,7 +77,6 @@
         <tr><td><code>parser.py</code></td><td>Single entry point. Builds unified tree from MySQL or MariaDB JSON. <code>analyze_plan(root)</code> scans for full scans, hash joins, temp tables, filesorts, non-sargable joins, etc. Also owns <code>OPTIMIZER_SWITCH_EXPLANATIONS</code> (source-verified).</td></tr>
         <tr><td><code>flamegraph.py</code></td><td>SVG flame graph renderer (pure-Python port of Brendan Gregg's FlameGraph).</td></tr>
         <tr><td><code>output_bargraph.py</code></td><td>SVG bar chart renderer, sorted by self-time.</td></tr>
-        <tr><td><code>output_treemap.py</code></td><td>SVG treemap renderer with squarified layout.</td></tr>
         <tr><td><code>output_diagram.py</code></td><td>SVG Visual Explain-style diagram with drag/zoom.</td></tr>
         <tr><td><code>output_tree.py</code></td><td>SVG collapsible execution tree.</td></tr>
         <tr><td><code>output_html.py</code></td><td>HTML wrapper with progressive-disclosure UI, glossary chips, an "Agent-ready" panel, and JSON-LD in &lt;head&gt;.</td></tr>

@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
-**myflames** visualizes MySQL and MariaDB `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG flame graphs, bar charts, treemaps, and Visual Explain–style diagrams. It requires MySQL 8.4+ or MariaDB 10.11+/11.4+ and Python 3.7+ with no external dependencies.
+**myflames** visualizes MySQL and MariaDB `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG flame graphs, bar charts, execution trees, and Visual Explain–style diagrams. It requires MySQL 8.4+ or MariaDB 10.11+/11.4+ and Python 3.7+ with no external dependencies.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/). **Never remove this inspiration / credit line** from the README (or anywhere else it appears). Brendan Gregg and Tanel Poder are the origin of this work and must always be acknowledged.
 
@@ -43,7 +43,7 @@ Standard pattern for a logic change: implement → in parallel run `mysql-correc
 ## 🏗 Architecture (Python package: `myflames/`)
 1. **`parser.py`**: Single entry point. Builds a unified tree. Auto-detects MySQL vs MariaDB format. MariaDB normalization (`_normalize_mariadb*` functions) converts MariaDB's `query_block/nested_loop/table` structure into MySQL's `operation/inputs` tree before `parse_node` processes it. `analyze_plan(root)` scans for full_scans, hash_joins, etc.
 2. **`cli.py`**: Argument parsing and SVG height patching for the analysis panel.
-3. **Renderers**: `flamegraph.py`, `output_bargraph.py`, `output_treemap.py`, `output_diagram.py`.
+3. **Renderers**: `flamegraph.py`, `output_bargraph.py`, `output_tree.py`, `output_diagram.py`, `output_workbench.py`. (The treemap view was removed; `--type treemap` is a deprecated alias that warns and renders the bar chart.)
 
 ## ⚠️ Key Constraints & Coding Standards
 - **No External Dependencies**: Stdlib only. Python 3.7+ compatible (no walrus operator, no `match` statements).
@@ -71,7 +71,7 @@ Standard pattern for a logic change: implement → in parallel run `mysql-correc
   accessible; verify open/error states at desktop and narrow, short viewports.
   Use `docs/UI_TESTING.md` for the interaction matrix. Check contextual Teach
   links after navigating to a different lesson and returning to the plan.
-- **Run**: `python3 -m myflames --type [flamegraph|bargraph|treemap|diagram|tree|workbench] explain.json > output.svg`
+- **Run**: `python3 -m myflames --type [flamegraph|bargraph|diagram|tree|workbench] explain.json > output.svg`
 - **Digest** (AI-era): `python3 -m myflames digest explain.json` — emits the compact, source-grounded digest of a plan (pipe to an LLM). `--cost` shows the token + $ saving vs pasting the raw plan; `--show-prompts` prints both prompts; `--tokenizer {heuristic,claude,gpt}` selects how tokens are counted (`claude` = Anthropic `count_tokens`, needs `myflames[tokens]` + `ANTHROPIC_API_KEY`; `gpt` = tiktoken, keyless, needs `myflames[gpt]`); `--json` for machine output. Lives in `myflames/digest.py`. (Deprecated alias `tokens` still works — it warns on stderr and defaults to `--cost`.)
 - **Plan diff**: `python3 -m myflames diff before.json after.json` (alias of `compare`). `--digest` = token-cheap text diff for an LLM; `--json` = structured `compare-1.0` delta.
 - **CI gate**: `python3 -m myflames check explain.json --fail-on full_scan,filesort` — exits 1 if a trigger matches (categories, severities, or `any`), 0 if clean, 2 on bad input. For pre-commit/CI/agent loops. Lives in `myflames/findings.py`.
@@ -117,7 +117,7 @@ path so button, wheel, fit, and reset actions stay synchronized.
 - `myflames capture`: shared `LiveJob` engine; estimated/analyzed JSON capture,
   typed parameters, timeout, repeat, trace, and cancellation. Capture1.0 artifacts
   include run statistics and context, never connection credentials.
-- `myflames explore`: five interactive charts (`diagram` remains a `workbench` alias) with `--metric`, `--focus`, repeatable
+- `myflames explore`: four interactive charts (`diagram` remains a `workbench` alias; `treemap` is a deprecated alias for `bargraph`) with `--metric`, `--focus`, repeatable
   `--collapse`, and `--selected` canonical node IDs.
 - `exploration.py`: copy projections only; never mutate canonical measurements.
   Selection is linked with `myflames-node` / `myflames-select` messages.

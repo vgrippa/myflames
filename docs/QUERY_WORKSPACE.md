@@ -8,7 +8,7 @@ primary actions. Layout and hierarchy follow [Apple's layout guidance](https://d
 
 ## Explore a plan
 
-Select an operator in any of the five charts, the operator table, or the metric
+Select an operator in any of the four charts, the operator table, or the metric
 list inside the chart. Selection stays linked to the inspector when you switch
 views. The inspector shows measured timings, actual and estimated rows,
 related findings, raw fields, and a lesson when the existing Teach registry has
@@ -142,7 +142,7 @@ myflames explore explain.json --type workbench \
 
 `explore` accepts `--focus NODE_ID`, repeatable `--collapse NODE_ID`, and
 `--selected NODE_ID`; IDs come from the canonical sidecar. `--type` accepts the
-five chart types plus `diagram`, a compatibility alias for `workbench`. Both commands accept `--help`, send payloads to stdout
+four chart types plus `diagram`, a compatibility alias for `workbench`. Both commands accept `--help`, send payloads to stdout
 when `-o` is omitted, and return exit code 2 for invalid input or failed capture.
 
 ## API additions

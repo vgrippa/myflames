@@ -60,7 +60,6 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
     """
     from .flamegraph import folded_to_svg
     from .output_bargraph import render_bargraph
-    from .output_treemap import render_treemap
     from .output_diagram import render_diagram
     from .output_tree import render_tree
     from .parser import (
@@ -75,11 +74,6 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
             root, width=width, title=title,
             unit_display=unit, total_time=root["total_time"],
             analysis=None,
-            teach_index_by_folded=teach_index_by_folded,
-        )
-    if view_type == "treemap":
-        return render_treemap(
-            root, width=width, title=title, unit_display=unit, analysis=None,
             teach_index_by_folded=teach_index_by_folded,
         )
     if view_type == "diagram":

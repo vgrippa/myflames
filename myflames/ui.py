@@ -19,7 +19,7 @@ from .output_html_report import render_html_report, _render_svg
 ASSET_DIR = Path(__file__).resolve().parent / "ui_assets"
 MAX_BODY = 12 * 1024 * 1024
 MAX_PLAN = 5 * 1024 * 1024
-VIEWS = ("flamegraph", "diagram", "tree", "bargraph", "treemap", "workbench")
+VIEWS = ("flamegraph", "diagram", "tree", "bargraph", "workbench")
 
 
 def _plan(payload, key="plan"):

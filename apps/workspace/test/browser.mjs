@@ -108,7 +108,6 @@ try {
     "Visual Explain",
     "Execution tree",
     "Bar chart",
-    "Treemap",
     "Flame graph",
   ]) {
     await button(label, ".view-tabs ");
@@ -188,7 +187,7 @@ try {
       await fs.unlink(path.join(directory, "sample-plan-report.html"));
     }
     // Exercise the shared renderers' initialization and search navigation.
-    if (label === "Bar chart" || label === "Treemap") {
+    if (label === "Bar chart") {
       page.once("dialog", (dialog) => dialog.accept("scan"));
       await frame.evaluate(() => {
         document.dispatchEvent(new KeyboardEvent("keydown", { key: "/" }));

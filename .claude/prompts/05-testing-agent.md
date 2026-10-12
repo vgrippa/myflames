@@ -23,7 +23,6 @@ Use the `/test` slash command to run this automatically.
 |-------|---------------------|
 | Flamegraph | Panel visible below flames; text wraps; "How to read" is MySQL-specific (not generic call stacks) |
 | Bargraph | Hover shows multi-line details; bars sorted slowest first; text selectable |
-| Treemap | Hover shows details; scroll works; click-to-zoom; double-click resets |
 | Diagram | Zoom scoped to graph area only; drag doesn't steal text clicks; pin-to-details works; Ctrl+F search |
 
 ## Canonical test fixtures
@@ -41,5 +40,5 @@ Use the `/test` slash command to run this automatically.
 
 - Flamegraph SVGs from `flamegraph.py` include a `viewBox` attribute that must be updated alongside `height` whenever the panel is injected (`cli.py`).
 - Info panel text uses word-wrap (`_wrap()` in `parser.py`) with ~6.2px/char for 11px Arial. Adjust `max_chars` calculation if font or size changes.
-- Pre-allocated `<text id="details-l{i}">` elements (bargraph × 8, treemap × 5, diagram × 6) are populated by JS on hover/click; never use `innerHTML` for SVG text.
+- Pre-allocated `<text id="details-l{i}">` elements (bargraph × 8, diagram × 6) are populated by JS on hover/click; never use `innerHTML` for SVG text.
 - Interactive events (zoom, drag) in diagram must be scoped via `svgYFromEvent()` to prevent capturing scroll events in the info panel.

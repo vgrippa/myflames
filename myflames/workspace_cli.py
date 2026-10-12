@@ -112,13 +112,16 @@ def cmd_explore(argv):
         description='Export an interactive plan with operator selection, branch focus, and a metric list.',
     )
     parser.add_argument('input', metavar='PLAN', help="Read EXPLAIN JSON from a file, or '-' for stdin.")
-    parser.add_argument('--type', choices=VIEWS, default='workbench', help='Choose the chart (default: workbench / Visual Explain; diagram is an alias).')
+    parser.add_argument('--type', choices=VIEWS + ('treemap',), default='workbench', help="Choose the chart (default: workbench / Visual Explain; diagram is an alias; 'treemap' is deprecated and renders the bar chart).")
     parser.add_argument('--metric', choices=tuple(METRICS), default='self_time', help='Choose the metric list; native chart encodings stay unchanged.')
     parser.add_argument('--focus', default='', metavar='NODE_ID', help='Show only this operator and its descendants.')
     parser.add_argument('--collapse', action='append', default=[], metavar='NODE_ID', help='Hide descendants of this operator; repeat for multiple branches.')
     parser.add_argument('--selected', default='', metavar='NODE_ID', help='Select this canonical operator ID when the report opens.')
     parser.add_argument('-o', '--output', metavar='PATH', help='Write interactive HTML to this file instead of stdout.')
     args = parser.parse_args(argv)
+    if args.type == 'treemap':
+        sys.stderr.write("warning: '--type treemap' is deprecated; the treemap view was removed. Rendering the bar chart instead (--type bargraph).\n")
+        args.type = 'bargraph'
     root = _parse_explain_input(_read_explain_input(args.input))
     try:
         if args.selected and args.selected not in {node['node_id'] for node in flatten_nodes(root)}:

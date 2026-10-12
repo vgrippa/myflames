@@ -23,7 +23,7 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(String(error)));
-  for (const view of ['diagram', 'workbench', 'tree', 'bargraph', 'treemap', 'flamegraph']) {
+  for (const view of ['diagram', 'workbench', 'tree', 'bargraph', 'flamegraph']) {
     const html = await fs.readFile(path.join(directory, view + '.html'), 'utf8');
     await page.setContent('<script>window.selection=[];window.addEventListener("message",e=>window.selection.push(e.data))</script><iframe sandbox="allow-scripts" style="width:1200px;height:1500px"></iframe>');
     await page.$eval('iframe', (element, html) => element.srcdoc = html, html);

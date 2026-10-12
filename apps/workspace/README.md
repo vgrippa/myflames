@@ -35,7 +35,7 @@ to choose an interpreter. Puppeteer is a development dependency only.
 
 For a manual pass with the Python UI running:
 
-- Load the sample and switch through all five charts.
+- Load the sample and switch through all four charts.
 - Select and search operators; inspect a finding's linked operator.
 - Import a second plan through the file picker, drag-and-drop, and paste dialog.
 - Submit invalid JSON and check that it can be corrected without losing plans.

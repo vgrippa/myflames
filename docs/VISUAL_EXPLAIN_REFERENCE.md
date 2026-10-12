@@ -54,7 +54,6 @@ For `access_type == "materialize"` (two-phase operator) the dict also carries `b
 |---|---|
 | `flamegraph.py` | Colored severity dot at the right edge of every bar; compact `O(...)` appended to the bar label when there is ≥ 120 px of width available; tooltip gains a `Complexity: O(...)` line. |
 | `output_bargraph.py` | Dedicated **COMPLEXITY** column with a color-coded pill between the operation label and the loops count (hidden at canvas widths below 900 px). |
-| `output_treemap.py` | `data-complexity="O(...)"` attribute on every tile; colored corner chip on tiles larger than `80 × 40 px`. |
 | `output_workbench.py` / `output_diagram.py` | No complexity chip in the chart; the report and workspace inspector provide complexity details. |
 
 All three non-flamegraph renderers embed the same legend block (rendered by `myflames/complexity_legend.py`) at the bottom of the canvas so a newcomer can decode the chips without leaving the page.

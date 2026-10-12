@@ -55,7 +55,6 @@
       <tbody>
         <tr><td>Flame graph</td><td>Full execution hierarchy, time distribution</td><td><code>myflames explain.json</code></td></tr>
         <tr><td>Bar chart</td><td>Finding the slowest individual operations</td><td><code>--type bargraph</code></td></tr>
-        <tr><td>Treemap</td><td>Comparing relative cost at a glance</td><td><code>--type treemap</code></td></tr>
         <tr><td>Visual Explain</td><td>Join semantics, operator colors, row-volume arrows, and smooth pan/zoom</td><td><code>--type workbench</code> (<code>diagram</code> alias)</td></tr>
         <tr><td>Execution tree</td><td>Collapsible per-subtree with self/total time</td><td><code>--type tree</code></td></tr>
       </tbody>
@@ -81,9 +80,6 @@
       <p><strong>When to use:</strong> You already know the query is slow and want to jump straight to the bottleneck. Best for quick triage before diving into the flame graph for context.</p>
     </div>
 
-    <div class="view-card">
-      <h3>Treemap</h3>
-      <div class="meta"><code>myflames --type treemap explain.json</code> &bull; <a href="../demos/mysql-query-complex-treemap.html">Live demo</a></div>
       <span class="best-for">Visual weight</span><span class="best-for">Proportional cost</span><span class="best-for">Presentations</span>
       <p>Nested rectangles where area is proportional to total execution time. Operations that cost more visually dominate. Click any rectangle to zoom in, click the breadcrumb to zoom out.</p>
       <p><strong>When to use:</strong> You want a spatial feel for "where did the time go?" at a glance. Good for presentations and reports where a non-DBA audience needs to understand the cost breakdown.</p>

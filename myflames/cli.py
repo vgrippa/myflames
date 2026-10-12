@@ -1,5 +1,5 @@
 """
-Unified CLI: flame graph, bar chart, or treemap from MySQL EXPLAIN ANALYZE JSON.
+Unified CLI: flame graph, bar chart, tree, or Visual Explain from MySQL EXPLAIN ANALYZE JSON.
 """
 import argparse
 import os
@@ -17,7 +17,6 @@ from .parser import (
 )
 from .flamegraph import folded_to_svg
 from .output_bargraph import render_bargraph
-from .output_treemap import render_treemap
 from .output_diagram import render_diagram
 from .output_tree import render_tree
 from .teach_hooks import build_teach_hooks, build_teach_index_maps
@@ -41,10 +40,6 @@ myflames — Which view should I use?
                Colors = operator types; arrow width = estimated rows.
 
   diagram      Compatibility alias for workbench (same Visual Explain view).
-
-  treemap      Start here to compare relative cost at a glance.
-               Area = total time.  Good for large plans where you want
-               a proportional overview of every operator.
 
   tree         Start here for big, complex plans.
                Collapsible rows with self/total time.  Navigate deep
@@ -82,7 +77,7 @@ def _resolve_query_text(args, json_text):
 def _make_svg_responsive(svg_text):
     """Add responsive styling + a ``viewBox`` to the root ``<svg>`` element.
 
-    The flame graph / bar / treemap / diagram / tree renderers all emit
+    The flame graph / bar / diagram / tree renderers all emit
     SVGs with a fixed ``width="1800"`` (or similar). When those files are
     opened directly in a browser, they overflow the viewport horizontally
     and don't rescale on resize.
@@ -719,7 +714,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="myflames",
-        description="MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, treemaps, diagrams, execution trees, and Workbench-style plans.",
+        description="MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, diagrams, execution trees, and Workbench-style plans.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         # add_help=False so the short flag ``-h`` is free for ``--host`` — we
         # add our own ``--help`` below. ``mysql -h host`` users expect this.
@@ -848,9 +843,10 @@ Subcommands:
     )
     parser.add_argument(
         "--type",
-        choices=["flamegraph", "bargraph", "treemap", "diagram", "tree", "workbench"],
+        choices=["flamegraph", "bargraph", "diagram", "tree", "workbench", "treemap"],
         default="flamegraph",
-        help="Output type (default: flamegraph)",
+        help="Output type (default: flamegraph). 'treemap' is deprecated "
+             "and renders the bar chart.",
     )
     parser.add_argument(
         "--output", "-o", default=None, metavar="PATH",
@@ -909,6 +905,12 @@ Subcommands:
         help="Input JSON file or - for stdin (default: -)",
     )
     args = parser.parse_args()
+    if args.type == "treemap":
+        sys.stderr.write(
+            "warning: '--type treemap' is deprecated; the treemap view was "
+            "removed. Rendering the bar chart instead (--type bargraph).\n"
+        )
+        args.type = "bargraph"
 
     # ── Live-connection mode ────────────────────────────────────────────
     # When --host is given, myflames connects to the server, runs EXPLAIN
@@ -935,7 +937,7 @@ Subcommands:
 
     # Type-specific width default
     if args.width is None:
-        args.width = 1200 if args.type in ("bargraph", "treemap", "diagram", "tree", "workbench") else 1800
+        args.width = 1200 if args.type in ("bargraph", "diagram", "tree", "workbench") else 1800
 
     # Read input (skipped in live mode — json_text is already set)
     if json_text is None:
@@ -1120,11 +1122,6 @@ Subcommands:
             analysis=analysis,
             teach_index_by_folded=teach_maps["by_folded_label"],
         )
-        _write_output(svg, output_path)
-        return
-
-    if args.type == "treemap":
-        svg = render_treemap(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
         _write_output(svg, output_path)
         return
 

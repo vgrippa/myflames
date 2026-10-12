@@ -38,7 +38,7 @@ def _row_color(self_time, root_total):
 def _attr_escape(s):
     # For double-quoted XML/SVG attributes. Newlines are encoded (not left raw)
     # so a multi-line SQL condition reads back as one line in the tooltip,
-    # matching the treemap/diagram renderers. ' is escaped to stay safe even if
+    # matching the diagram renderer. ' is escaped to stay safe even if
     # an attribute is ever single-quoted.
     if s is None:
         return ""

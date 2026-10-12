@@ -1,6 +1,6 @@
 """
 Unified parser for MySQL and MariaDB EXPLAIN ANALYZE FORMAT=JSON.
-Builds a single tree structure used by flamegraph, bargraph, and treemap.
+Builds a single tree structure used by every renderer (flame graph, bar chart, tree, Visual Explain).
 
 Supports:
   - MySQL 8.0+ EXPLAIN ANALYZE FORMAT=JSON
@@ -620,7 +620,7 @@ def parse_node(node):
         "children": children,
     }
     # Attach Big O complexity once so every downstream consumer (flamegraph,
-    # bargraph, treemap, diagram, JSON sidecar) reads the same field. Returns
+    # bargraph, tree, diagram, JSON sidecar) reads the same field. Returns
     # None for unknowns; we only insert the key when we have a real answer.
     complexity = compute_complexity(result)
     if complexity is not None:
@@ -2082,11 +2082,6 @@ def _how_to_read_lines(view_type):
         return "How to read", [
             "Bar width = self-time (time in this operation only). Darker bars = slower.",
             "Where a warning applies: hover the bar — it will show \u201cIn Query Analysis\u201d and the info panel lists the bar label.",
-        ]
-    if view_type == "treemap":
-        return "How to read", [
-            "Cell area = total time (including children). Click a cell to zoom.",
-            "Where a warning applies: hover the cell — the details bar shows \u201cIn Query Analysis\u201d and the label that appears in the panel below.",
         ]
     if view_type in ("diagram", "workbench"):
         return "How to read", [

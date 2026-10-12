@@ -26,7 +26,6 @@ const views: [View, string][] = [
   ["flamegraph", "Flame graph"],
   ["tree", "Execution tree"],
   ["bargraph", "Bar chart"],
-  ["treemap", "Treemap"],
 ];
 const metrics = [
   ["self_time", "Self time"],
@@ -671,7 +670,7 @@ function App() {
                   <Icon name="chart" size={24} />
                   <h2>Explore a sample</h2>
                   <p>
-                    Follow the joins, inspect the measurements, and try all five
+                    Follow the joins, inspect the measurements, and try all four
                     views.
                   </p>
                   <span>Explore sample plan →</span>

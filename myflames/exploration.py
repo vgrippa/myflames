@@ -12,7 +12,7 @@ from pathlib import Path
 from .output_html_report import _render_svg
 from .parser import flatten_nodes
 
-VIEWS = ('diagram', 'workbench', 'tree', 'bargraph', 'treemap', 'flamegraph')
+VIEWS = ('diagram', 'workbench', 'tree', 'bargraph', 'flamegraph')
 METRICS = {
     'self_time': ('Self time', 'ms across loops'),
     'total_time': ('Total time', 'ms across loops; includes inputs'),

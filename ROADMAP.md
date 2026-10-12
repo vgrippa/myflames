@@ -4,7 +4,7 @@
 
 ## Vision
 
-**myflames is the token-efficient, source-grounded interface between a query plan and an AI agent — and a clear set of pictures for a human.** Raw `EXPLAIN ANALYZE FORMAT=JSON` is verbose and noisy; an LLM burns tokens parsing it before it can reason, and SVGs are invisible to agents. myflames parses and analyzes a plan once, then projects it many ways: flame graph / bar chart / treemap / diagram (for humans), a compact source-verified digest and JSON sidecar (for agents), and an exit code (for CI). One analysis, many projections.
+**myflames is the token-efficient, source-grounded interface between a query plan and an AI agent — and a clear set of pictures for a human.** Raw `EXPLAIN ANALYZE FORMAT=JSON` is verbose and noisy; an LLM burns tokens parsing it before it can reason, and SVGs are invisible to agents. myflames parses and analyzes a plan once, then projects it many ways: flame graph / bar chart / tree / Visual Explain (for humans), a compact source-verified digest and JSON sidecar (for agents), and an exit code (for CI). One analysis, many projections.
 
 It stays a single project: pure-Python stdlib core, with heavy integrations behind optional extras (`myflames[mcp]`, `myflames[tokens]`). The optional local workspace in `apps/workspace/` uses React and TypeScript; its built assets ship in the Python package. The Python engine remains shared by the CLI, UI, and agent tools.
 
@@ -16,9 +16,9 @@ It stays a single project: pure-Python stdlib core, with heavy integrations behi
   inspection, statement statistics, and optimizer traces. Shared `capture` and
   `explore` CLI commands. The UI uses a simplified mark derived from the project logo, stable logo URLs across rebuilds, and a neutral/blue design.
 
-- **Local browser workspace** — `myflames ui` imports saved plans, displays five chart views and operator details, compares plans, and exports HTML/JSON. The Teach section opens the existing interactive lessons with search, family filters, curriculum navigation, and downloads. React/TypeScript assets ship with the standard-library Python server.
+- **Local browser workspace** — `myflames ui` imports saved plans, displays four chart views and operator details, compares plans, and exports HTML/JSON. The Teach section opens the existing interactive lessons with search, family filters, curriculum navigation, and downloads. React/TypeScript assets ship with the standard-library Python server.
 
-- **Five views** — flame graph, bar chart, treemap, execution tree, and unified Visual Explain. Diagram and Workbench share one renderer with larger Venn join symbols, operation colors, row-volume arrows, and smooth mouse/trackpad navigation. Existing `diagram` commands remain compatible.
+- **Four views** — flame graph, bar chart, execution tree, and unified Visual Explain. (The treemap was removed: area made relative cost hard to compare, and the bar chart answers the same question more precisely.) Diagram and Workbench share one renderer with larger Venn join symbols, operation colors, row-volume arrows, and smooth mouse/trackpad navigation. Existing `diagram` commands remain compatible.
 - **Source-verified advisor** — rules and `optimizer_switch` explanations checked line-by-line against MySQL/MariaDB source.
 - **JSON sidecar + JSON-LD** — every report has a machine-readable sibling; agents never OCR an SVG.
 - **Token-cheap digest + savings report** — `myflames digest` (with `--cost`, `--tokenizer {heuristic,claude,gpt}`, `--show-prompts`); an "Agent-ready" panel in every HTML report.

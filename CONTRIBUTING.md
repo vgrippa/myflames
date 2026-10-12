@@ -42,7 +42,6 @@ myflames/
   parser.py           # Single parser for MySQL + MariaDB EXPLAIN JSON
   flamegraph.py       # Flame graph SVG renderer
   output_bargraph.py  # Bar chart SVG renderer
-  output_treemap.py   # Treemap SVG renderer
   output_diagram.py   # Visual Explain diagram renderer
   output_tree.py      # Collapsible execution tree renderer
   output_html_report.py # HTML wrapper with progressive-disclosure UI

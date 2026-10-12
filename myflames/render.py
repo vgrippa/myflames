@@ -3,6 +3,7 @@ Programmatic API: render EXPLAIN ANALYZE JSON to SVG by type.
 Used by HTTP APIs (e.g. releem_flames) without subprocess.
 """
 import re
+import warnings
 
 from .parser import (
     parse_explain,
@@ -17,7 +18,6 @@ from .parser import (
 )
 from .flamegraph import folded_to_svg
 from .output_bargraph import render_bargraph
-from .output_treemap import render_treemap
 from .output_diagram import render_diagram
 from .output_tree import render_tree
 from .teach_hooks import build_teach_hooks, build_teach_index_maps
@@ -37,7 +37,8 @@ def render_explain(
     Render EXPLAIN ANALYZE JSON to SVG.
 
     :param json_text: Raw JSON string (EXPLAIN ANALYZE FORMAT=JSON output).
-    :param output_type: One of "flamegraph", "bargraph", "treemap", "diagram", "workbench", "tree".
+    :param output_type: One of "flamegraph", "bargraph", "diagram", "workbench", "tree".
+        "treemap" is a deprecated alias for "bargraph".
     :param title: Chart title.
     :param width: SVG width (default 1800 for flamegraph, 1200 for others).
     :param height: Frame height for flamegraph only (default 32).
@@ -46,8 +47,15 @@ def render_explain(
     :param no_enhance: Flamegraph only: disable detailed tooltips.
     :return: SVG string.
     """
+    if output_type == "treemap":
+        warnings.warn(
+            "output_type='treemap' is deprecated; the treemap view was removed. "
+            "Rendering the bar chart instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        output_type = "bargraph"
     if width is None:
-        width = 1200 if output_type in ("bargraph", "treemap", "diagram", "workbench", "tree") else 1800
+        width = 1200 if output_type in ("bargraph", "diagram", "workbench", "tree") else 1800
 
     root = parse_explain(json_text)
     max_time = root["total_time"]
@@ -135,8 +143,6 @@ def render_explain(
             teach_index_by_folded=teach_maps["by_folded_label"],
         )
 
-    if output_type == "treemap":
-        return render_treemap(root, width=width, title=title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
 
     if output_type in ("diagram", "workbench"):
         return render_diagram(
@@ -151,4 +157,4 @@ def render_explain(
     if output_type == "tree":
         return render_tree(root, width=width, title=title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
 
-    raise ValueError("output_type must be one of: flamegraph, bargraph, treemap, diagram, workbench, tree")
+    raise ValueError("output_type must be one of: flamegraph, bargraph, diagram, workbench, tree")

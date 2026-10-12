@@ -2,7 +2,6 @@ export type View =
   | "flamegraph"
   | "tree"
   | "bargraph"
-  | "treemap"
   | "workbench";
 export type Finding = {
   text: string;

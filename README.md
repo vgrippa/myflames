@@ -125,7 +125,6 @@ focus or collapse branches, and rank them by a metric. See
 |---|---|---|
 | Flame graph | Time across the execution hierarchy | `--type flamegraph` (default) |
 | Bar chart | Individual operators ranked by self-time | `--type bargraph` |
-| Treemap | Relative time across the plan | `--type treemap` |
 | Visual Explain | Join semantics, operator flow, access types, and estimated row volumes | `--type workbench` (`diagram` alias) |
 | Execution tree | Expandable branches with self-time and total time | `--type tree` |
 
@@ -192,7 +191,7 @@ Open the interactive versions to pan, zoom, and select operators:
 
 ### Live demos
 
-[Flame graph](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-flamegraph.html) · [Bar chart](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-bargraph.html) · [Treemap](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-treemap.html) · [Diagram](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-diagram.html) · [Execution tree](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-tree.html)
+[Flame graph](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-flamegraph.html) · [Bar chart](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-bargraph.html) · [Diagram](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-diagram.html) · [Execution tree](https://vgrippa.github.io/myflames/demos/mysql-complex/mysql-query-complex-tree.html)
 
 [HTML report](https://vgrippa.github.io/myflames/demos/mysql-basic/mysql-query-report.html) · [Before/after comparison](https://vgrippa.github.io/myflames/demos/mysql-basic/mysql-query-compare.html)
 
@@ -323,7 +322,7 @@ Run `myflames --help` or `myflames <subcommand> --help` for the complete option 
 
 | Render option | Purpose |
 |---|---|
-| `--type TYPE` | `flamegraph`, `bargraph`, `treemap`, `diagram`, `tree`, or `workbench` |
+| `--type TYPE` | `flamegraph`, `bargraph`, `diagram`, `tree`, or `workbench` (`treemap` is deprecated and renders the bar chart) |
 | `--output PATH`, `-o PATH` | Write HTML or SVG instead of stdout |
 | `--width N`, `--height N` | Set width; height sets flame-graph frame height |
 | `--colors NAME` | Flame-graph palette: `hot`, `mem`, `io`, `red`, `green`, `blue` |

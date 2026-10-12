@@ -1,7 +1,7 @@
 # Test data
 
 Sample JSON files used to verify the [unified CLI](../README.md#quick-start-file-mode)
-and all output types (flame graph, bar chart, treemap, diagram, tree).
+and all output types (flame graph, bar chart, diagram, tree).
 
 ## MySQL EXPLAIN fixtures
 
@@ -15,7 +15,6 @@ From the project root:
 ```bash
 python3 -m myflames                  test/mysql-explain-json-sample.json   > out.svg
 python3 -m myflames --type bargraph  test/mysql-explain-json-join.json     > out.svg
-python3 -m myflames --type treemap   test/mysql-explain-complex-join.json  > out.svg
 python3 -m myflames --type diagram   test/mysql-explain-json-sample.json   > out.svg
 python3 -m myflames --type tree      test/mysql-explain-json-sample.json   > out.svg
 ```
@@ -50,7 +49,7 @@ remove an existing container with the same name and cleans up its own container
 and anonymous volumes on exit. Set `KEEP_CONTAINER=1` to retain it for live
 connection tests; remove it with `docker rm -fv <name>` when finished.
 
-The corpus checks parse each plan, render all five SVG views, validate the JSON
+The corpus checks parse each plan, render all four SVG views, validate the JSON
 sidecar, build a digest, and compare each plan with itself. They are skipped in
 the ordinary suite unless `MYFLAMES_MYSQL_FIXTURES` is set. These checks exercise
 captured server output; they do not open a live connection themselves.

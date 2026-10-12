@@ -20,7 +20,6 @@ from _svg_contract import assert_svg_contract
 from myflames.parser import parse_explain
 from myflames.flamegraph import folded_to_svg
 from myflames.output_bargraph import render_bargraph
-from myflames.output_treemap import render_treemap
 
 
 def _load_text(path):
@@ -90,10 +89,6 @@ class TestRenderersMeetContract(unittest.TestCase):
 
     def test_bargraph_contract(self):
         svg = render_bargraph(self.root, total_time=self.root["total_time"])
-        assert_svg_contract(svg, self, forbid_triple_dot=True)
-
-    def test_treemap_contract(self):
-        svg = render_treemap(self.root)
         assert_svg_contract(svg, self, forbid_triple_dot=True)
 
 

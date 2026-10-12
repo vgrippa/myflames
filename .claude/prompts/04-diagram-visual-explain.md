@@ -6,7 +6,7 @@ Add a **diagram** output that resembles **MySQL Workbench Visual Explain**: left
 
 ## Context
 
-- **Repo state:** Parser and other output types (flamegraph, bargraph, treemap) in place; tree structure with parent/child and timing.
+- **Repo state:** Parser and other output types (flamegraph, bargraph) in place; tree structure with parent/child and timing.
 - **Key files:** `myflames/parser.py`, `myflames/output_diagram.py`, `myflames/output_diagram_graphviz.py`; `docs/VISUAL_EXPLAIN_REFERENCE.md` for Workbench conventions.
 - **Constraints:** Reuse same parser; built-in SVG layout and/or Graphviz (`dot`) as optional engine; match Visual Explain semantics (access type, nested loops, row counts).
 

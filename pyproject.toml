@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "myflames"
 version = "2.3.0"
-description = "MySQL and MariaDB EXPLAIN ANALYZE visualizer: flame graphs, bar charts, treemaps, and diagrams"
+description = "MySQL and MariaDB EXPLAIN ANALYZE visualizer: flame graphs, bar charts, execution trees, and Visual Explain diagrams"
 readme = "README.md"
 requires-python = ">=3.7"
 license = { text = "CDDL-1.0" }

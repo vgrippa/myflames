@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The treemap view. Area made relative cost hard to compare and labels were
+  often unreadable; the bar chart answers the same question more precisely.
+  `myflames --type treemap` and `myflames explore --type treemap` still work as
+  deprecated aliases: they print a warning on stderr and render the bar chart.
+  `render_explain(output_type="treemap")` raises a `DeprecationWarning` and
+  returns the bar chart. The local workspace drops its Treemap tab, and the
+  treemap demos are removed from `docs/demos/`.
+
 ## [2.3.0] — 2026-09-30
 
 ### Added

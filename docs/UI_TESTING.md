@@ -11,7 +11,7 @@ the ignored `local/` directory.
 | --- | --- |
 | Welcome | Logo/favicon, sample, import, query laboratory, Teach, keyboard focus |
 | Import | Empty form, malformed JSON, wrong plan shape, file upload, same-file retry, size rejection, Escape, narrow/short windows, successful recovery |
-| Plan explorer | All five views, operator search/no results, linked selection, all metrics, focus/collapse/expand, breadcrumbs, bottleneck shortcuts, raw fields, SQL copy |
+| Plan explorer | All four views, operator search/no results, linked selection, all metrics, focus/collapse/expand, breadcrumbs, bottleneck shortcuts, raw fields, SQL copy |
 | Visual Explain | Zoom percentage, plus/minus, reset, fit, limits, press feedback, keyboard operation, wheel and pan |
 | Query laboratory | Connection failure/recovery, profiles without passwords, query tabs, parameter errors, estimated/measured capture, repeated runs, trace, SQL errors, timeout, cancellation |
 | Execution context | Missing context, schema/index expansion, run statistics, trace search/no results/clear, server settings |
@@ -42,7 +42,7 @@ The Python suite checks server, parser, renderer, persistence, and capture
 behavior. Browser suites exercise the packaged frontend; the zoom suite uses
 real SVG geometry. The September 2026 audit also used direct browser interaction
 against MySQL 8.4 with Sakila, checked all 23 lesson players, and rendered all
-38 Sakila estimated/measured plans across all five chart types.
+38 Sakila estimated/measured plans across all four chart types.
 
 ## Platform checks
 

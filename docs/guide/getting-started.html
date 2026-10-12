@@ -132,7 +132,7 @@ xdg-open report.html  # Linux</code></pre>
 
     <h2>Try other view types</h2>
     <pre><code>myflames --type bargraph  explain.json > bar.svg    # slowest ops first
-myflames --type treemap   explain.json > tree.svg   # area = cost
+myflames --type tree      explain.json > tree.svg   # expandable self/total time
 myflames --type diagram   explain.json > diag.svg   # Visual Explain flow
 myflames --type tree      explain.json > exec.svg   # collapsible tree</code></pre>
     <p>See the <a href="views.html">View Types guide</a> for when to use each one.</p>

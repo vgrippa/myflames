@@ -64,7 +64,6 @@ from myflames.parser import (
     _normalize_mariadb,
 )
 from myflames.output_bargraph import render_bargraph
-from myflames.output_treemap import render_treemap
 from myflames.output_diagram import render_diagram
 from myflames.output_tree import render_tree
 
@@ -639,8 +638,6 @@ def _make_output_test(fixture_path, renderer_name):
             svg = folded_to_svg("\n".join(lines), title="Test")
         elif renderer_name == "bargraph":
             svg = render_bargraph(root)
-        elif renderer_name == "treemap":
-            svg = render_treemap(root)
         elif renderer_name == "diagram":
             svg = render_diagram(root)
         elif renderer_name == "tree":
@@ -668,7 +665,7 @@ class TestOutputsMeta(type):
 
     def __new__(mcs, name, bases, namespace):
         cls = super().__new__(mcs, name, bases, namespace)
-        renderers = ["flamegraph", "bargraph", "treemap", "diagram", "tree"]
+        renderers = ["flamegraph", "bargraph", "diagram", "tree"]
         for fixture in ALL_FIXTURES:
             for renderer in renderers:
                 method = _make_output_test(fixture, renderer)
@@ -732,10 +729,6 @@ class TestCLI(unittest.TestCase):
         r = self._run("--type", "bargraph", self.JOIN)
         self._assert_valid_svg_output(r, "bargraph")
 
-    def test_treemap_type(self):
-        r = self._run("--type", "treemap", self.COMPLEX)
-        self._assert_valid_svg_output(r, "treemap")
-
     def test_diagram_type(self):
         r = self._run("--type", "diagram", self.COMPLEX)
         self._assert_valid_svg_output(r, "diagram")
@@ -764,10 +757,6 @@ class TestCLI(unittest.TestCase):
         os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")),
         "complex 5-table fixture missing",
     )
-    def test_treemap_complex_5t(self):
-        r = self._run("--type", "treemap", self.COMPLEX5T)
-        self._assert_valid_svg_output(r, "treemap complex 5-table")
-
     @unittest.skipUnless(
         os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-068-complex-5t-aggregate.json")),
         "complex 5-table fixture missing",
@@ -998,14 +987,6 @@ class TestAnalysis(unittest.TestCase):
     # --- Renderer integration: analysis panel in SVG output ---
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-001-table-scan-users-no-filter.json")), "fixture missing")
-    def test_treemap_with_analysis_is_valid_svg(self):
-        root = parse_explain(_load(self.TABLE_SCAN))
-        a = analyze_plan(root)
-        svg = render_treemap(root, analysis=a)
-        self.assertTrue(_is_valid_svg(svg))
-        self.assertIn("Query Analysis", svg)
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-001-table-scan-users-no-filter.json")), "fixture missing")
     def test_bargraph_with_analysis_is_valid_svg(self):
         root = parse_explain(_load(self.TABLE_SCAN))
         a = analyze_plan(root)
@@ -1020,13 +1001,6 @@ class TestAnalysis(unittest.TestCase):
         svg = render_diagram(root, analysis=a)
         self.assertTrue(_is_valid_svg(svg))
         self.assertIn("Query Analysis", svg)
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_hash_join_treemap_shows_warning(self):
-        root = parse_explain(_load(self.HASH_JOIN))
-        a = analyze_plan(root)
-        svg = render_treemap(root, analysis=a)
-        self.assertIn("hash join", svg.lower())
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_hash_join_bargraph_shows_warning(self):
@@ -1131,18 +1105,6 @@ class TestAnalysis(unittest.TestCase):
         self.assertIn("Query Analysis", r.stdout)
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-001-table-scan-users-no-filter.json")), "fixture missing")
-    def test_cli_treemap_includes_query_analysis(self):
-        fixture = os.path.join(TEST_DIR, "fixtures", "explain-001-table-scan-users-no-filter.json")
-        r = subprocess.run(
-            [sys.executable, "-m", "myflames", "--type", "treemap", fixture],
-            capture_output=True,
-            text=True,
-            cwd=REPO_DIR,
-        )
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("Query Analysis", r.stdout)
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-001-table-scan-users-no-filter.json")), "fixture missing")
     def test_cli_diagram_includes_query_analysis(self):
         fixture = os.path.join(TEST_DIR, "fixtures", "explain-001-table-scan-users-no-filter.json")
         r = subprocess.run(
@@ -1234,13 +1196,6 @@ class TestAnalysis(unittest.TestCase):
         root = parse_explain(_load(self.BNL))
         a = analyze_plan(root)
         svg = render_bargraph(root, analysis=a)
-        self.assertIn("block nested", svg.lower())
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-bnl.json")), "fixture missing")
-    def test_bnl_treemap_includes_warning(self):
-        root = parse_explain(_load(self.BNL))
-        a = analyze_plan(root)
-        svg = render_treemap(root, analysis=a)
         self.assertIn("block nested", svg.lower())
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-bnl.json")), "fixture missing")
@@ -1611,8 +1566,8 @@ class TestDocumentation(unittest.TestCase):
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_readme_all_four_output_types_work(self):
-        """README documents 5 output types; all must succeed via CLI."""
-        for t in ("flamegraph", "bargraph", "treemap", "diagram", "tree"):
+        """README documents 4 output types; all must succeed via CLI."""
+        for t in ("flamegraph", "bargraph", "diagram", "tree"):
             result = subprocess.run(
                 [sys.executable, "-m", "myflames", "--type", t, self.HASH_JOIN],
                 cwd=REPO_DIR, capture_output=True, text=True,
@@ -1650,21 +1605,6 @@ class TestDocumentation(unittest.TestCase):
         svg = render_bargraph(root)
         self.assertIn("pinnedBar", svg, "Click-to-pin JS missing from bargraph")
         self.assertIn("details-l0", svg, "Pre-allocated details strip missing from bargraph")
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_treemap_has_ctrlf_search(self):
-        """README: Treemap supports Ctrl+F search."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_treemap(root)
-        self.assertIn("searchPrompt", svg, "Ctrl+F search JS missing from treemap")
-        self.assertIn('key === "f"', svg)
-
-    @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
-    def test_treemap_has_breadcrumb(self):
-        """Treemap must include a breadcrumb element that updates on zoom."""
-        root = parse_explain(_load(self.HASH_JOIN))
-        svg = render_treemap(root)
-        self.assertIn('id="breadcrumb"', svg, "Breadcrumb element missing from treemap")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_diagram_has_zoom_buttons(self):
@@ -1834,7 +1774,6 @@ class TestDocumentation(unittest.TestCase):
         a = analyze_plan(root)
         for label, svg in [
             ("bargraph", render_bargraph(root, analysis=a)),
-            ("treemap", render_treemap(root, analysis=a)),
             ("diagram", render_diagram(root, analysis=a)),
             ("tree", render_tree(root, analysis=a)),
         ]:
@@ -2168,17 +2107,6 @@ class TestHypergraphFixtures(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("<svg", result.stdout)
 
-    def test_all_hypergraph_fixtures_treemap(self):
-        """Every hypergraph fixture must produce a valid treemap."""
-        for path in self.HG_FIXTURES:
-            with self.subTest(fixture=os.path.basename(path)):
-                result = subprocess.run(
-                    [sys.executable, "-m", "myflames", "--type", "treemap", path],
-                    cwd=REPO_DIR, capture_output=True, text=True,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("<svg", result.stdout)
-
     def test_all_hypergraph_fixtures_diagram(self):
         """Every hypergraph fixture must produce a valid diagram."""
         for path in self.HG_FIXTURES:
@@ -2348,16 +2276,13 @@ class TestSampleJSON(unittest.TestCase):
             text = f.read()
         root = parse_explain(text)
         self.assertGreater(root["total_time"], 0)
-        for view in ["flamegraph", "bargraph", "treemap", "diagram", "tree"]:
+        for view in ["flamegraph", "bargraph", "diagram", "tree"]:
             if view == "flamegraph":
                 from myflames.parser import build_flame_entries
                 entries = list(build_flame_entries(root))
                 self.assertGreater(len(entries), 0, "No flame entries from sample.json")
             elif view == "bargraph":
                 svg = render_bargraph(root, title="test")
-                self.assertIn("<svg", svg)
-            elif view == "treemap":
-                svg = render_treemap(root, title="test")
                 self.assertIn("<svg", svg)
             elif view == "diagram":
                 svg = render_diagram(root, title="test")
@@ -2395,7 +2320,7 @@ class TestCLIGuide(unittest.TestCase):
         self.assertIn("flamegraph", result.stdout)
         self.assertIn("bargraph", result.stdout)
         self.assertIn("diagram", result.stdout)
-        self.assertIn("treemap", result.stdout)
+        self.assertNotIn("treemap", result.stdout)
         self.assertIn("tree", result.stdout)
         self.assertIn("Which view", result.stdout)
 
@@ -2468,9 +2393,9 @@ class TestHTMLReport(unittest.TestCase):
 
     @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
     def test_html_report_all_view_types(self):
-        """HTML report must work for all 5 view types."""
+        """HTML report must work for all 4 view types."""
         import tempfile
-        for view in ["flamegraph", "bargraph", "treemap", "diagram", "tree"]:
+        for view in ["flamegraph", "bargraph", "diagram", "tree"]:
             with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp:
                 tmp_path = tmp.name
             try:
@@ -2662,7 +2587,7 @@ class TestComplexityIntegration(unittest.TestCase):
                 found += 1
         self.assertGreaterEqual(found, 3)
 
-    # --- Invariant: Big O is NOT shown in any of the 5 view SVGs ----------
+    # --- Invariant: Big O is NOT shown in any of the 4 view SVGs ----------
     # Complexity lives in the sidecar and in the HTML report's teach dialog.
     # The five SVG views are intentionally chip-free so the visual noise
     # footprint stays as it was pre-1.4.0.
@@ -2685,10 +2610,6 @@ class TestComplexityIntegration(unittest.TestCase):
 
     def test_bargraph_svg_has_no_complexity_column(self):
         svg = render_bargraph(self.root, width=1400, analysis=self.analysis)
-        self._assert_no_complexity_in(svg)
-
-    def test_treemap_svg_has_no_chip_or_data_attr(self):
-        svg = render_treemap(self.root, width=1400, analysis=self.analysis)
         self._assert_no_complexity_in(svg)
 
     def test_diagram_svg_has_no_chip_or_legend(self):
@@ -2976,6 +2897,52 @@ class TestSortFieldParsing(unittest.TestCase):
 
     def test_mariadb_sort_key_empty(self):
         self.assertEqual(_mariadb_sort_key_to_fields(""), [])
+
+
+class TestTreemapRemoved(unittest.TestCase):
+    """The treemap view was removed; 'treemap' survives only as a deprecated
+    alias that warns and renders the bar chart."""
+
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "myflames"] + list(args),
+            cwd=REPO_DIR, capture_output=True, text=True,
+        )
+
+    @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
+    def test_cli_type_treemap_warns_and_renders_bargraph(self):
+        old = self._run("--type", "treemap", HASH_JOIN_FIXTURE)
+        new = self._run("--type", "bargraph", HASH_JOIN_FIXTURE)
+        self.assertEqual(old.returncode, 0, old.stderr)
+        self.assertIn("deprecated", old.stderr)
+        self.assertIn("--type bargraph", old.stderr)
+        self.assertEqual(old.stdout, new.stdout)
+
+    @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
+    def test_explore_type_treemap_warns_and_renders_bargraph(self):
+        old = self._run("explore", HASH_JOIN_FIXTURE, "--type", "treemap")
+        new = self._run("explore", HASH_JOIN_FIXTURE, "--type", "bargraph")
+        self.assertEqual(old.returncode, 0, old.stderr)
+        self.assertIn("deprecated", old.stderr)
+        self.assertEqual(old.stdout, new.stdout)
+
+    @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
+    def test_render_explain_treemap_is_deprecated_bargraph(self):
+        from myflames.render import render_explain
+        text = _load(HASH_JOIN_FIXTURE)
+        with self.assertWarns(DeprecationWarning):
+            old = render_explain(text, output_type="treemap")
+        self.assertEqual(old, render_explain(text, output_type="bargraph"))
+
+    @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")
+    def test_treemap_not_offered_by_ui_or_explore(self):
+        from myflames import exploration, ui
+        self.assertNotIn("treemap", ui.VIEWS)
+        self.assertNotIn("treemap", exploration.VIEWS)
+        with self.assertRaises(ValueError):
+            ui.api_response("/api/render", {"plan": _load(HASH_JOIN_FIXTURE), "view": "treemap"})
+        with self.assertRaises(ImportError):
+            __import__("myflames.output_treemap")
 
 
 if __name__ == "__main__":
