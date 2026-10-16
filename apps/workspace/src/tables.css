@@ -1,0 +1,37 @@
+/* Server > Tables. Layout comes from kit.css; status text always carries the
+   word, color only reinforces it. Tokens only. */
+.tables-why {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+}
+.tables-why dt {
+  font-weight: 600;
+  color: var(--ink);
+}
+.tables-why dd {
+  margin: 2px 0 0;
+  color: var(--ink);
+  max-width: 70ch;
+}
+.tables-statement-label {
+  margin: var(--space-2) 0 0;
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+.tables-why-button.is-selected {
+  text-decoration: underline;
+}
+.tables-gipk {
+  margin-top: var(--space-2);
+}
+.tables-gipk code,
+.tables-shared code {
+  font-family: var(--font-mono);
+}
+.tables-shared {
+  margin-top: var(--space-4);
+}
+.table-more {
+  margin-top: var(--space-2);
+}

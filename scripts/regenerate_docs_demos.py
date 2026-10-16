@@ -93,6 +93,9 @@ def _run_myflames(view: str, out: Path, fixture: Path) -> None:
         view,
         "--output",
         str(out),
+        # Published demos link to the hosted lessons; don't write a teach/
+        # bundle into every demo folder.
+        "--no-teach-bundle",
         str(fixture),
     ]
     r = subprocess.run(cmd, cwd=str(_REPO))

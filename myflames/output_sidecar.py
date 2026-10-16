@@ -60,13 +60,13 @@ _SIDECAR_HEAVY_KEYS = ("collected", "query", "teach_hooks")
 _WARNING_CATEGORIES = frozenset({
     "full_scan", "filesort", "temp_table",
     "hash_join", "bnl", "semijoin", "index_merge",
-    "nonsargable_join",
-    "env", "engine", "durability", "other",
+    "nonsargable_join", "misestimate",
+    "env", "engine", "durability", "redundant_index", "cold_cache", "other",
 })
 _SUGGESTION_SEVERITIES = frozenset({"high", "medium", "low"})
 _SUGGESTION_CATEGORIES = frozenset({
     "tuning_variable", "index", "optimizer_switch",
-    "engine", "durability", "rewrite", "other",
+    "engine", "durability", "rewrite", "statistics", "other",
 })
 _WARNING_SOURCES = frozenset({"plan", "environment"})
 _COMPLEXITY_SEVERITIES = frozenset({"good", "medium", "bad"})
@@ -108,6 +108,8 @@ def _classify_plan_warning(text):
     t = (text or "").lower()
     if "non-sargable" in t or "nonsargable" in t:
         return ("error", "nonsargable_join")
+    if t.startswith("row estimate off by"):
+        return ("warn", "misestimate")
     if "full table scan" in t or "full scan" in t:
         return ("warn", "full_scan")
     if "block nested" in t or "bnl" in t:
@@ -138,6 +140,8 @@ def _classify_suggestion(text):
     # possible wins, ranked above any variable / index tweak.
     if "rewrite the join" in t or "rewrite the query" in t or "non-sargable" in t:
         return ("high", "rewrite", None)
+    if t.startswith("refresh statistics with analyze table"):
+        return ("medium", "statistics", None)
 
     tuning_vars = (
         "innodb_buffer_pool_size", "sort_buffer_size", "join_buffer_size",
@@ -378,11 +382,24 @@ def build_sidecar(
         if linked:
             entry["node_labels"] = list(dict.fromkeys(linked))  # preserve order, dedupe
         warnings.append(entry)
-    for text in (analysis.get("environment_warnings") or []):
+    # Environment rules with their own catalog entry keep their category;
+    # every other environment rule is "env". environment_findings carries the
+    # rule_id in the same order as environment_warnings/suggestions.
+    from .advisor import RULE_CATEGORIES
+    env_findings = analysis.get("environment_findings")
+    if env_findings is None:
+        env_findings = [{"rule_id": "", "warning": w, "suggestion": ""}
+                        for w in analysis.get("environment_warnings") or []] + \
+                       [{"rule_id": "", "warning": "", "suggestion": s}
+                        for s in analysis.get("environment_suggestions") or []]
+    for f in env_findings:
+        if not f.get("warning"):
+            continue
+        category, severity, _ = RULE_CATEGORIES.get(f.get("rule_id"), ("env", "warn", None))
         warnings.append({
-            "severity": "warn",
-            "category": "env",
-            "text": text,
+            "severity": severity,
+            "category": category,
+            "text": f["warning"],
             "source": "environment",
         })
 
@@ -402,8 +419,13 @@ def build_sidecar(
         if target_var:
             entry["target_variable"] = target_var
         suggestions.append(entry)
-    for text in (analysis.get("environment_suggestions") or []):
+    for f in env_findings:
+        text = f.get("suggestion")
+        if not text:
+            continue
         severity, category, target_var = _classify_suggestion(text)
+        if f.get("rule_id") in RULE_CATEGORIES:
+            category = RULE_CATEGORIES[f["rule_id"]][2]
         action, why = _split_action_why(text)
         entry = {
             "severity": severity,

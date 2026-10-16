@@ -1,23 +1,67 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { PrivilegesProvider } from "./privileges";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import {
   api,
+  authenticate,
+  digestSource,
   download,
   number,
-  safePreview,
   time,
   type Bundle,
   type Capture,
   type Comparison,
   type Operator,
   type Plan,
+  type Profile,
+  type SecretStore,
+  type TopStatement,
   type View,
 } from "./api";
 import { Icon, ImportDialog } from "./components";
 import { Teach } from "./Teach";
-import { QueryLab } from "./QueryLab";
+import { QueryLab, type EditorState, type QueryLabHandle } from "./QueryLab";
 import { Library } from "./Library";
-import { ContextPanel } from "./ContextPanel";
+import { Home } from "./Home";
+import { Server, SERVER_VIEWS } from "./Server";
+import { connectionKey } from "./binding";
+import { WindowStatusBar, WindowStatusProvider } from "./kit";
+import { PLACES, Sidebar, type Place } from "./Sidebar";
+import {
+  ConnectionPicker,
+  Connections,
+  SafetyStrip,
+  WritePolicyContext,
+  connectionFields,
+  connectionSafety,
+  connectionTarget,
+  requestConnection,
+  recordConnectionUse,
+  type ActiveConnection,
+} from "./Connections";
+import { AuditLog } from "./Audit";
+import type { DigestAction } from "./SlowQueries";
+import { ContextPanel, ExecutionContext } from "./ContextPanel";
+import { closePopovers, Disclosure, NotesButton, Popover, Segmented, Select } from "./kit";
+import { PlanChart } from "./PlanChart";
+import {
+  defaultLab,
+  hasContent,
+  loadSession,
+  normalizeLab,
+  relativeTime,
+  sameLab,
+  serializePlans,
+  serializeSession,
+  sessionEdits,
+  SessionSaver,
+  text,
+  type LabState,
+  type SessionPlan,
+  type SaveStatus,
+  type SessionConnection,
+  type SlowState,
+} from "./session";
 import example from "./example.json";
 import logo from "../../../docs/brand/myflames-icon-v2.png";
 import "./style.css";
@@ -27,13 +71,83 @@ const views: [View, string][] = [
   ["tree", "Execution tree"],
   ["bargraph", "Bar chart"],
 ];
-const metrics = [
+const metrics: [string, string][] = [
   ["self_time", "Self time"],
   ["total_time", "Total time"],
   ["rows", "Actual rows / loop"],
   ["estimate_error", "Estimation mismatch"],
 ];
-type Mode = "inspect" | "compare" | "teach" | "library" | "query";
+// The screen in the saved session. Stored values keep the names earlier
+// versions wrote (inspect, compare, query, library, teach), so a session opens
+// in either direction; home and server are new. Each maps to one place, except
+// audit: the Audit log is local to this computer and opens from Settings, so
+// no place is "you are here" while it is on screen.
+type Mode = "home" | "inspect" | "compare" | "query" | "server" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "library", "teach", "audit"];
+function placeOf(mode: Mode): Place | null {
+  switch (mode) {
+    case "audit":
+      return null;
+    case "inspect":
+    case "compare":
+      return "plans";
+    case "library":
+      return "investigations";
+    case "teach":
+      return "learn";
+    default:
+      return mode;
+  }
+}
+const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
+  home: "home",
+  query: "query",
+  server: "server",
+  investigations: "library",
+  learn: "teach",
+};
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+/** The analysis request limit (ui.py MAX_BODY), less room for framing. */
+const ANALYZE_BUDGET = 12 * 1024 * 1024 - 64 * 1024;
+const utf8 = new TextEncoder();
+/** The editor text that unload protection compares (tab ids, names, SQL, parameters). */
+const tabsText = (tabs: LabState["tabs"]) =>
+  JSON.stringify(tabs.map((t) => [t.id, t.name, t.sql, t.parameters]));
+/**
+ * What restoring a captured plan sends to /api/analyze: the plan text once
+ * (capture.raw is the same plan), and no run plans or optimizer trace (the
+ * analysis does not read them). They are put back on the result, so the
+ * restored plan keeps all of its evidence.
+ */
+function slimCapture(raw: string, capture: Capture) {
+  return {
+    ...capture,
+    raw: capture.raw === raw ? "" : capture.raw,
+    runs: Array.isArray(capture.runs)
+      ? capture.runs.map((r) => (isRecord(r) ? { ...r, plan: "" } : r))
+      : capture.runs,
+    trace: null,
+  };
+}
+function restoreCapture(original: Capture, analyzed: Capture): Capture {
+  const runs = Array.isArray(original.runs) ? original.runs : [];
+  const trace = original.trace;
+  const traceOk =
+    isRecord(trace) &&
+    "data" in trace &&
+    typeof trace.missing_bytes === "number" &&
+    typeof trace.insufficient_privileges === "number";
+  return {
+    ...analyzed,
+    raw: typeof original.raw === "string" ? original.raw : analyzed.raw,
+    runs: analyzed.runs.map((r, i) => ({
+      ...r,
+      plan: typeof runs[i]?.plan === "string" ? runs[i].plan : r.plan,
+    })),
+    trace: traceOk ? trace : null,
+  };
+}
 const message = (e: unknown) =>
   e instanceof Error ? e.message : "Could not complete the operation.";
 function ratio(op: Operator) {
@@ -51,19 +165,33 @@ function ratio(op: Operator) {
   return Math.max(actual / estimate, estimate / actual);
 }
 function App() {
-  const [plans, setPlans] = useState<Plan[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 650);
+  useEffect(() => {
+    const narrow = window.matchMedia("(max-width: 650px)");
+    const changed = () => setSidebarOpen(!narrow.matches);
+    narrow.addEventListener("change", changed);
+    return () => narrow.removeEventListener("change", changed);
+  }, []);
+  const chrome = useRef<HTMLDivElement>(null);
+  const [placeActionsWidth, setPlaceActionsWidth] = useState(0);
+  const [plans, setPlans] = useState<(Plan & { origin?: "sample" })[]>([]);
   const [activeId, setActiveId] = useState("");
   const active = plans.find((p) => p.id === activeId);
-  const [mode, setMode] = useState<Mode>("inspect");
+  const activeSource = digestSource(active?.capture);
+  const [mode, setMode] = useState<Mode>("home");
+  // Plans remembers whether it was exploring or comparing.
+  const [plansView, setPlansView] = useState<"inspect" | "compare">("inspect");
+  useEffect(() => {
+    if (mode === "inspect" || mode === "compare") setPlansView(mode);
+  }, [mode]);
   const [view, setView] = useState<View>("workbench");
   const [metric, setMetric] = useState("self_time");
   const [selectedId, setSelectedId] = useState("");
   const selected = active?.operators.find((n) => n.node_id === selectedId);
+  const [metricsTarget, setMetricsTarget] = useState<HTMLDivElement | null>(null);
   const [focusId, setFocusId] = useState("");
   const [collapsed, setCollapsed] = useState<string[]>([]);
-  const [html, setHtml] = useState("");
   const [loading, setLoading] = useState(false);
-  const [previewError, setPreviewError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -74,25 +202,156 @@ function App() {
   const [afterId, setAfterId] = useState("");
   const before = plans.find((p) => p.id === beforeId),
     after = plans.find((p) => p.id === afterId);
-  const [comparison, setComparison] = useState<Comparison | null>(null);
+  // The comparison and the before/after plan ids it was computed for: a
+  // result is shown or exported only for the pair on screen.
+  const [compared, setCompared] = useState<{
+    before: string;
+    after: string;
+    result: Comparison;
+  } | null>(null);
+  const comparison =
+    compared && compared.before === beforeId && compared.after === afterId
+      ? compared.result
+      : null;
   const [pair, setPair] = useState<[string, string]>(["", ""]);
-  const [compareCharts, setCompareCharts] = useState<[string, string]>([
-    "",
-    "",
-  ]);
   const [name, setName] = useState("Untitled investigation");
   const [notes, setNotes] = useState("");
   const [tags, setTags] = useState("");
   const [savedId, setSavedId] = useState<string | undefined>();
   const [baseline, setBaseline] = useState("");
   const [dirty, setDirty] = useState(false);
+  // Reload protection is separate from investigation edits. Set immediately
+  // on a content change, before React or the debounced saver can catch up.
+  const unsavedWorkspaceContent = useRef(false);
+  // Plans of the saved workspace that could not be reopened: kept in the
+  // autosaved snapshot (so they are not lost) until downloaded or removed.
+  const [held, setHeld] = useState<SessionPlan[]>([]);
+  // The query tabs as last restored or reset: with autosave off, edits since
+  // then are unsaved work.
+  const tabsBaseline = useRef(tabsText(defaultLab().tabs));
   const [lesson, setLesson] = useState("");
   const [returnToPlan, setReturnToPlan] = useState(false);
-  const frame = useRef<HTMLIFrameElement>(null);
-  const beforeFrame = useRef<HTMLIFrameElement>(null),
-    afterFrame = useRef<HTMLIFrameElement>(null);
   const file = useRef<HTMLInputElement>(null);
   const importLock = useRef(false);
+  // Session restore (see session.ts). Nothing renders in <main> until the
+  // stored session has been read, so the Query editor, Server, and Learn mount restored.
+  const [ready, setReady] = useState(false);
+  const [resetKey, setResetKey] = useState(0);
+  const [labInitial, setLabInitial] = useState<LabState | undefined>();
+  const [labState, setLabState] = useState<LabState>(defaultLab);
+  const [teachLesson, setTeachLesson] = useState("");
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "loading" });
+  const [restoreEnabled, setRestoreEnabled] = useState(true);
+  const [skipRestore, setSkipRestore] = useState(false);
+  const [restored, setRestored] = useState<{
+    text: string;
+    fresh: boolean;
+  } | null>(null);
+  const [confirmFresh, setConfirmFresh] = useState(false);
+  const pendingView = useRef<{
+    planId: string;
+    selected: string;
+    focus: string;
+    collapsed: string[];
+  } | null>(null);
+  const conflictRef = useRef<() => void>(() => {});
+  const saverRef = useRef<SessionSaver | null>(null);
+  if (!saverRef.current)
+    saverRef.current = new SessionSaver(setSaveStatus, () =>
+      conflictRef.current(),
+    );
+  const saver = saverRef.current;
+  /** Merge part of the restorable lab state (editor, Server tabs, or the
+   * connection in use); unchanged state keeps its identity. */
+  const patchLab = useCallback((patch: Partial<LabState>) => {
+    setLabState((current) => {
+      const next = normalizeLab({ ...current, ...patch });
+      return sameLab(current, next) ? current : next;
+    });
+  }, []);
+  const reportEditor = useCallback(
+    (editor: EditorState) => patchLab(editor),
+    [patchLab],
+  );
+  const reportSlow = useCallback(
+    (slow: SlowState) => patchLab({ slow }),
+    [patchLab],
+  );
+  // Saved connections and the connection in use. Its non-secret settings
+  // live in the lab state (and so in the saved session); the password is
+  // typed for this page only.
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  // The type of a saved connection is known once the list has loaded, and
+  // not known again while the latest read of it failed.
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [profilesFailed, setProfilesFailed] = useState("");
+  const [secretStore, setSecretStore] = useState<SecretStore | null>(null);
+  const [activePassword, setActivePassword] = useState("");
+  const [connectionNote, setConnectionNote] = useState("");
+  const [connectRevision, setConnectRevision] = useState(0);
+  const [labBusy, setLabBusy] = useState(false);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const labRef = useRef<QueryLabHandle>(null);
+  const labStateRef = useRef(labState);
+  labStateRef.current = labState;
+  const refreshProfiles = useCallback(async () => {
+    try {
+      const r = await api<{ items: Profile[]; secret_store?: SecretStore }>(
+        "profiles/list",
+        {},
+      );
+      setProfiles(r.items);
+      setProfilesLoaded(true);
+      setProfilesFailed("");
+      if (r.secret_store) setSecretStore(r.secret_store);
+      return r.items;
+    } catch (e) {
+      setProfilesFailed(message(e));
+      throw e;
+    }
+  }, []);
+  // A connection's type or read-only setting can change in another tab or
+  // through the CLI: read them again whenever this window comes back.
+  useEffect(() => {
+    if (!ready) return;
+    let last = 0;
+    const again = () => {
+      if (document.visibilityState === "hidden" || Date.now() - last < 1000) return;
+      last = Date.now();
+      refreshProfiles().catch(() => {});
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+    };
+  }, [ready, refreshProfiles]);
+  useEffect(() => {
+    if (!ready) return;
+    refreshProfiles()
+      .then((items) => {
+        // A restored connection may have been deleted since the last session.
+        const id = labStateRef.current.profile_id;
+        if (id && !items.some((p) => p.id === id)) {
+          patchLab({ profile_id: "" });
+          setConnectionNote(
+            "The connection from your last session no longer exists. Its settings are kept as an unsaved connection.",
+          );
+        }
+      })
+      .catch((e) => setError(message(e)));
+  }, [ready, resetKey, refreshProfiles, patchLab]);
+  function applyConnection(id: string, fields: SessionConnection, password: string) {
+    recordConnectionUse(id);
+    patchLab({ profile_id: id, connection: fields });
+    setActivePassword(password);
+    setConnectionNote("");
+  }
+  function switchConnection(id: string) {
+    const p = profiles.find((item) => item.id === id);
+    if (p) applyConnection(p.id, connectionFields(p), "");
+  }
   function selectOperator(id: string) {
     const ancestors = new Set<string>();
     let node = active?.operators.find((op) => op.node_id === id);
@@ -107,78 +366,38 @@ function App() {
     });
     setSelectedId(id);
   }
-  const selectedRef = useRef(selectedId);
-  selectedRef.current = selectedId;
   useEffect(() => {
-    setSelectedId("");
-    setFocusId("");
-    setCollapsed([]);
+    // A restored selection applies once its plan is active; any other plan
+    // change starts with a clean selection.
+    const restoredView = pendingView.current;
+    pendingView.current = null;
+    const keep = restoredView?.planId === activeId;
+    setSelectedId(keep ? restoredView.selected : "");
+    setFocusId(keep ? restoredView.focus : "");
+    setCollapsed(keep ? restoredView.collapsed : []);
     setSearch("");
   }, [activeId]);
   useEffect(() => {
-    if (!active) return;
-    const controller = new AbortController();
-    setLoading(true);
-    setPreviewError("");
-    api<{ html: string }>(
-      "render",
-      {
-        plan: active.raw,
-        view,
-        metric,
-        focus_id: focusId,
-        collapsed_ids: collapsed,
-        selected_id: selectedRef.current,
-      },
-      controller.signal,
-    )
-      .then((r) => {
-        if (!controller.signal.aborted) setHtml(safePreview(r.html));
-      })
-      .catch((e) => {
-        if (!controller.signal.aborted) setPreviewError(e.message);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, [active?.raw, activeId, view, metric, focusId, collapsed]);
-  useEffect(() => {
-    frame.current?.contentWindow?.postMessage(
-      { type: "myflames-select", node_id: selectedId },
-      "*",
-    );
-  }, [selectedId]);
-  useEffect(() => {
     if (mode !== "compare" || !before || !after || before.id === after.id) {
-      setComparison(null);
-      setCompareCharts(["", ""]);
+      setCompared(null);
       return;
     }
     const controller = new AbortController();
+    const ids = { before: before.id, after: after.id };
+    // The previous pair's result is not shown while this one is computed or
+    // when it fails.
+    setCompared(null);
     setLoading(true);
     setError("");
     setPair(["", ""]);
-    Promise.all([
-      api<Comparison>(
-        "compare",
-        { before: before.raw, after: after.raw },
-        controller.signal,
-      ),
-      api<{ html: string }>(
-        "render",
-        { plan: before.raw, view: "workbench" },
-        controller.signal,
-      ),
-      api<{ html: string }>(
-        "render",
-        { plan: after.raw, view: "workbench" },
-        controller.signal,
-      ),
-    ])
-      .then(([diff, b, a]) => {
-        setComparison(diff);
-        setCompareCharts([safePreview(b.html), safePreview(a.html)]);
+    // Both charts are drawn in the page from each plan's chart data.
+    api<Comparison>(
+      "compare",
+      { before: before.raw, after: after.raw },
+      controller.signal,
+    )
+      .then((diff) => {
+        if (!controller.signal.aborted) setCompared({ ...ids, result: diff });
       })
       .catch((e) => {
         if (!controller.signal.aborted) setError(e.message);
@@ -188,85 +407,210 @@ function App() {
       });
     return () => controller.abort();
   }, [mode, before, after]);
-  useEffect(() => {
-    beforeFrame.current?.contentWindow?.postMessage(
-      { type: "myflames-select", node_id: pair[0] },
-      "*",
-    );
-    afterFrame.current?.contentWindow?.postMessage(
-      { type: "myflames-select", node_id: pair[1] },
-      "*",
-    );
-  }, [pair]);
-  useEffect(() => {
-    const receive = (event: MessageEvent) => {
-      if (
-        event.data?.type !== "myflames-node" ||
-        typeof event.data.node_id !== "string"
-      )
-        return;
-      const id = event.data.node_id;
-      if (
-        mode === "inspect" &&
-        event.source === frame.current?.contentWindow &&
-        active?.operators.some((n) => n.node_id === id)
-      ) {
-        setSelectedId(id);
-        setSearch("");
-      }
-      if (mode === "compare" && comparison) {
-        const side =
-          event.source === beforeFrame.current?.contentWindow
-            ? "before_node_id"
-            : event.source === afterFrame.current?.contentWindow
-              ? "after_node_id"
-              : null;
-        if (side) {
-          const match = comparison.analysis.deltas.find((d) => d[side] === id);
-          if (match)
-            setPair([match.before_node_id || "", match.after_node_id || ""]);
-        }
-      }
+  // A chart selection becomes the page selection (inspect) or the matched
+  // before/after pair (compare); both charts then follow the pair.
+  function chartSelect(id: string) {
+    if (active?.operators.some((n) => n.node_id === id)) {
+      setSelectedId(id);
+      setSearch("");
+    }
+  }
+  function compareSelect(side: "before_node_id" | "after_node_id") {
+    return (id: string) => {
+      const match = comparison?.analysis.deltas.find((d) => d[side] === id);
+      if (match) setPair([match.before_node_id || "", match.after_node_id || ""]);
     };
-    window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
-  }, [mode, active, comparison]);
+  }
+  const unsaved = useRef({ dirty, tabs: labState.tabs });
+  unsaved.current = { dirty, tabs: labState.tabs };
+  // The editor's tabs as of the latest keystroke (QueryLab hands them over
+  // in the same task as the edit); labState follows a task later.
+  const editorTabs = useRef<LabState["tabs"] | null>(null);
+  const tabsNow = useCallback((tabs: LabState["tabs"]) => {
+    editorTabs.current = tabs;
+  }, []);
   useEffect(() => {
+    // With autosave working, the workspace survives a reload or restart, so
+    // warn about imported/captured/closed plans until their save is confirmed,
+    // and, with autosave off, investigation changes or edited query tabs.
+    // Also warn when a save failed, or
+    // when changes are still unconfirmed and too large for the request a
+    // closing page may still send (keepalive).
     const guard = (event: BeforeUnloadEvent) => {
-      if (dirty) {
+      const { dirty: changed, tabs } = unsaved.current;
+      // Serialized only here, when the page is about to unload.
+      const edited = () => tabsText(editorTabs.current || tabs) !== tabsBaseline.current;
+      const offAndEdited = !saver.active && (changed || edited());
+      if (unsavedWorkspaceContent.current || offAndEdited || saver.failed || saver.atRisk()) {
         event.preventDefault();
         event.returnValue = "";
       }
     };
     window.addEventListener("beforeunload", guard);
     return () => window.removeEventListener("beforeunload", guard);
-  }, [dirty]);
+  }, [saver]);
+  // The restorable snapshot. Plans are serialized only when they change;
+  // plans that could not be reopened are kept as they were stored.
+  const plansJson = useMemo(
+    () => serializePlans([...plans, ...held]),
+    [plans, held],
+  );
+  const snapshot = useMemo(
+    () =>
+      serializeSession(
+        {
+          mode,
+          view,
+          metric,
+          active_plan_id: activeId,
+          selected_id: selectedId,
+          focus_id: focusId,
+          collapsed_ids: collapsed,
+          before_id: beforeId,
+          after_id: afterId,
+          investigation: {
+            id: savedId || "",
+            name,
+            notes,
+            tags,
+            baseline_id: baseline,
+            dirty,
+          },
+          teach: { lesson: teachLesson, return_to_plan: returnToPlan },
+          query_lab: labState,
+        },
+        plansJson,
+      ),
+    [
+      mode,
+      view,
+      metric,
+      activeId,
+      selectedId,
+      focusId,
+      collapsed,
+      beforeId,
+      afterId,
+      savedId,
+      name,
+      notes,
+      tags,
+      baseline,
+      dirty,
+      teachLesson,
+      returnToPlan,
+      labState,
+      plansJson,
+    ],
+  );
+  // View/selection changes still restore, but are not user-authored content.
+  // Keep this signature separate so navigation never flashes a saving warning.
+  const edits = useMemo(() => sessionEdits({
+    investigation: { id: savedId || "", name, notes, tags, baseline_id: baseline, dirty },
+    query_lab: labState,
+  }, plansJson), [plansJson, savedId, name, notes, tags, baseline, dirty, labState.tabs]);
+  useEffect(() => {
+    if (ready) saver.update(snapshot, edits);
+  }, [snapshot, edits, ready, saver]);
+  useEffect(() => {
+    // The status can say "saved" while a silent save is still pending. Only
+    // a confirmed copy of this snapshot makes its workspace content safe.
+    if (ready && saver.active && saver.isSaved(snapshot))
+      unsavedWorkspaceContent.current = false;
+  }, [snapshot, saveStatus, ready, saver]);
+  useEffect(() => {
+    // Save right away when the page is hidden or closed: keepalive lets a
+    // small request finish after the page is gone.
+    const hidden = () => {
+      if (document.visibilityState === "hidden") void saver.flush(true);
+    };
+    const leave = () => void saver.flush(true);
+    document.addEventListener("visibilitychange", hidden);
+    window.addEventListener("pagehide", leave);
+    return () => {
+      document.removeEventListener("visibilitychange", hidden);
+      window.removeEventListener("pagehide", leave);
+    };
+  }, [saver]);
+  useEffect(() => {
+    loadSession()
+      .then(async (session) => {
+        saver.revision = session.revision;
+        setRestoreEnabled(session.restore);
+        setSkipRestore(session.skip_restore);
+        if (session.skip_restore) {
+          saver.disable("Autosave is off for this launch");
+          return;
+        }
+        if (!session.restore) {
+          saver.disable("Autosave is off");
+          return;
+        }
+        const baseline = session.state
+          ? await applySession(session.state, session.saved_at, "startup")
+          : blankSnapshot();
+        saver.enable(baseline);
+      })
+      .catch((e) => {
+        // Without the stored revision, saving could overwrite newer work.
+        saver.disable("");
+        setSaveStatus({
+          kind: "error",
+          reason: `could not read the saved workspace (${message(e)})`,
+        });
+        saver.failed = true;
+      })
+      .finally(() => setReady(true));
+  }, []);
   const analyze = async (raw: string, capture?: Capture) =>
     api<
       Pick<Plan, "analysis" | "operators" | "query" | "teach_hooks" | "capture">
     >("analyze", { plan: raw, capture });
-  async function importPlan(raw: string, planName: string, capture?: Capture) {
-    if (importLock.current) return;
+  /**
+   * Analyze and add a plan. `open: false` adds it without leaving the
+   * current screen (Explain top N). `wait: true` queues behind an import in
+   * progress instead of ignoring the request (captures must not be lost).
+   */
+  async function importPlan(
+    raw: string,
+    planName: string,
+    capture?: Capture,
+    options: { open?: boolean; wait?: boolean; cancelled?: () => boolean; origin?: "sample" } = {},
+  ): Promise<Plan | undefined> {
+    if (importLock.current) {
+      if (!options.wait) return undefined;
+      while (importLock.current)
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+    // The caller gave up (Explain top N cancelled): add nothing.
+    if (options.cancelled?.()) return undefined;
+    const open = options.open !== false;
     importLock.current = true;
     setBusy(true);
     setError("");
     try {
       const result = await analyze(raw, capture);
-      const plan: Plan = {
+      if (options.cancelled?.()) return undefined;
+      const plan: Plan & { origin?: "sample" } = {
         ...result,
         raw,
         name: planName,
         id: crypto.randomUUID(),
+        origin: options.origin,
         capture: result.capture || undefined,
       };
       setPlans((ps) => [...ps, plan]);
-      setActiveId(plan.id);
       setBeforeId((id) => id || plan.id);
       setAfterId(plan.id);
       setBaseline((id) => id || plan.id);
-      setMode("inspect");
-      setImportOpen(false);
-      setDirty(true);
+      if (open) {
+        setActiveId(plan.id);
+        setMode("inspect");
+        setImportOpen(false);
+      } else setActiveId((id) => id || plan.id);
+      // Opening a read-only plan is workspace content, not an investigation edit.
+      if (options.origin !== "sample") unsavedWorkspaceContent.current = true;
+      return plan;
     } catch (e) {
       setError(message(e));
       throw e;
@@ -275,8 +619,14 @@ function App() {
       importLock.current = false;
     }
   }
-  const capture = useCallback(async (result: Capture, planName: string) => {
-    await importPlan(result.raw, planName, result);
+  const capture = useCallback(
+    (result: Capture, planName: string, options?: { open?: boolean; cancelled?: () => boolean }) =>
+      importPlan(result.raw, planName, result, { ...options, wait: true }),
+    [],
+  );
+  const openPlan = useCallback((id: string) => {
+    setActiveId(id);
+    setMode("inspect");
   }, []);
   async function openBundle(bundle: Bundle) {
     if (
@@ -292,12 +642,7 @@ function App() {
       })),
     );
     // Opening another saved investigation keeps unsaved work available as a bundle.
-    if (dirty && plans.length)
-      download(
-        JSON.stringify(makeBundle(), null, 2),
-        "unsaved-investigation.json",
-        "application/json",
-      );
+    if (dirty && plans.length) backupUnsaved();
     setPlans(parsed);
     setActiveId(parsed[0]?.id || "");
     setBaseline(bundle.baseline_id);
@@ -308,6 +653,7 @@ function App() {
     setTags(bundle.tags.join(", "));
     setSavedId(bundle.id);
     setDirty(false);
+    unsavedWorkspaceContent.current = false;
     setMode("inspect");
     setImportOpen(false);
   }
@@ -351,6 +697,360 @@ function App() {
       })),
     };
   }
+  function backupUnsaved() {
+    download(
+      JSON.stringify(makeBundle(), null, 2),
+      "unsaved-investigation.json",
+      "application/json",
+    );
+  }
+  /** The snapshot of an empty workspace, as App serializes it after a reset. */
+  function blankSnapshot() {
+    return serializeSession(
+      {
+        mode: "home",
+        view: "workbench",
+        metric: "self_time",
+        active_plan_id: "",
+        selected_id: "",
+        focus_id: "",
+        collapsed_ids: [],
+        before_id: "",
+        after_id: "",
+        investigation: {
+          id: "",
+          name: "Untitled investigation",
+          notes: "",
+          tags: "",
+          baseline_id: "",
+          dirty: false,
+        },
+        teach: { lesson: "", return_to_plan: false },
+        query_lab: defaultLab(),
+      },
+      "[]",
+    );
+  }
+  function resetWorkspace() {
+    pendingView.current = null;
+    setPlans([]);
+    setActiveId("");
+    setMode("home");
+    setPlansView("inspect");
+    setView("workbench");
+    setMetric("self_time");
+    setSelectedId("");
+    setFocusId("");
+    setCollapsed([]);
+    setSearch("");
+    setBeforeId("");
+    setAfterId("");
+    setCompared(null);
+    setName("Untitled investigation");
+    setNotes("");
+    setTags("");
+    setSavedId(undefined);
+    setBaseline("");
+    setDirty(false);
+    unsavedWorkspaceContent.current = false;
+    setHeld([]);
+    tabsBaseline.current = tabsText(defaultLab().tabs);
+    setLesson("");
+    setReturnToPlan(false);
+    setLabInitial(undefined);
+    setLabState(defaultLab());
+    setActivePassword("");
+    setConnectionNote("");
+    setTeachLesson("");
+    setResetKey((k) => k + 1);
+    setError("");
+    setNotice("");
+  }
+  /**
+   * Reopen a stored snapshot. Anything stale is left out with a note: plans
+   * that no longer parse, unknown screens or views, operators that are gone.
+   * Returns the serialized snapshot App will hold once the state settles.
+   */
+  async function applySession(
+    raw: unknown,
+    savedAt: string,
+    reason: "startup" | "conflict",
+  ) {
+    const state = isRecord(raw) ? raw : {};
+    const notes: string[] = [];
+    const ids = new Set<string>();
+    const entries = (Array.isArray(state.plans) ? state.plans : [])
+      .filter((p): p is Record<string, unknown> => isRecord(p))
+      .filter((p) => {
+        const ok =
+          typeof p.id === "string" &&
+          !!p.id &&
+          !ids.has(p.id) &&
+          typeof p.raw === "string";
+        if (ok) ids.add(p.id as string);
+        return ok;
+      });
+    let tooLarge = 0;
+    const results = await Promise.allSettled(
+      entries.map(async (p) => {
+        const raw = p.raw as string;
+        const capture = isRecord(p.capture)
+          ? (p.capture as unknown as Capture)
+          : undefined;
+        const sent = capture ? slimCapture(raw, capture) : undefined;
+        const size = utf8.encode(JSON.stringify({ plan: raw, capture: sent })).length;
+        if (size > ANALYZE_BUDGET) {
+          tooLarge++;
+          throw new Error("This plan is larger than an analysis request allows.");
+        }
+        const result = await analyze(raw, sent as Capture | undefined);
+        return {
+          ...result,
+          capture:
+            capture && result.capture
+              ? restoreCapture(capture, result.capture)
+              : result.capture,
+        };
+      }),
+    );
+    const restoredPlans: (Plan & { origin?: "sample" })[] = [];
+    const kept: SessionPlan[] = [];
+    results.forEach((result, i) => {
+      const entry = entries[i];
+      if (result.status !== "fulfilled") {
+        // Kept as stored, so autosave does not discard it.
+        kept.push({
+          id: entry.id as string,
+          name: text(entry.name, "Plan", 200) || "Plan",
+          raw: entry.raw as string,
+          capture: isRecord(entry.capture)
+            ? (entry.capture as unknown as Capture)
+            : undefined,
+          notes: text(entry.notes, "", 10000) || undefined,
+          origin: entry.origin === "sample" ? "sample" : undefined,
+        });
+        return;
+      }
+      restoredPlans.push({
+        ...result.value,
+        id: entry.id as string,
+        name: text(entry.name, "Plan", 200) || "Plan",
+        raw: entry.raw as string,
+        capture: result.value.capture || undefined,
+        notes: text(entry.notes, "", 10000) || undefined,
+        origin: entry.origin === "sample" ? "sample" : undefined,
+      });
+    });
+    const dropped =
+      (Array.isArray(state.plans) ? state.plans.length : 0) -
+      restoredPlans.length -
+      kept.length;
+    if (dropped > 0)
+      notes.push(
+        dropped === 1
+          ? "One unreadable plan entry was left out."
+          : `${dropped} unreadable plan entries were left out.`,
+      );
+    if (tooLarge > 0)
+      notes.push(
+        tooLarge === 1
+          ? "One plan is larger than the 12 MiB analysis request allows."
+          : `${tooLarge} plans are larger than the 12 MiB analysis request allows.`,
+      );
+    const has = (id: unknown) =>
+      typeof id === "string" && restoredPlans.some((p) => p.id === id);
+    const activePlan =
+      restoredPlans.find((p) => p.id === state.active_plan_id) ||
+      restoredPlans[0];
+    const activePlanId = activePlan?.id || "";
+    let nextMode: Mode = modes.includes(state.mode as Mode)
+      ? (state.mode as Mode)
+      : restoredPlans.length
+        ? "inspect"
+        : "home";
+    if (state.mode !== undefined && !modes.includes(state.mode as Mode))
+      notes.push(
+        restoredPlans.length
+          ? "The last screen is not available, so Plans is open."
+          : "The last screen is not available, so Home is open.",
+      );
+    // Plans with nothing open was the welcome screen, which is now Home.
+    if ((nextMode === "inspect" || nextMode === "compare") && !restoredPlans.length)
+      nextMode = "home";
+    const nextView = views.some(([id]) => id === state.view)
+      ? (state.view as View)
+      : "workbench";
+    if (state.view !== undefined && nextView !== state.view)
+      notes.push("The last chart view is not available, so Visual Explain is shown.");
+    const nextMetric = metrics.some(([id]) => id === state.metric)
+      ? (state.metric as string)
+      : "self_time";
+    const opIds = new Set(activePlan?.operators.map((o) => o.node_id) || []);
+    const pick = (id: unknown) =>
+      typeof id === "string" && opIds.has(id) ? id : "";
+    const selected = pick(state.selected_id);
+    const focus = pick(state.focus_id);
+    const collapsedIds = (
+      Array.isArray(state.collapsed_ids) ? state.collapsed_ids : []
+    ).filter((id): id is string => typeof id === "string" && opIds.has(id));
+    if (
+      (state.selected_id && !selected) ||
+      (state.focus_id && !focus)
+    )
+      notes.push("The selected operator is no longer in the plan.");
+    const inv = isRecord(state.investigation) ? state.investigation : {};
+    const beforeValue = has(state.before_id) ? (state.before_id as string) : "";
+    const afterValue = has(state.after_id) ? (state.after_id as string) : "";
+    const baselineValue = has(inv.baseline_id)
+      ? (inv.baseline_id as string)
+      : restoredPlans[0]?.id || "";
+    const teach = isRecord(state.teach) ? state.teach : {};
+    const returning = teach.return_to_plan === true && !!activePlanId;
+    const lessonKey = nextMode === "teach" ? text(teach.lesson, "", 200) : "";
+    const lab = normalizeLab(state.query_lab);
+    const investigation = {
+      id: text(inv.id, "", 200),
+      name: text(inv.name, "Untitled investigation", 200),
+      notes: text(inv.notes, "", 100000),
+      tags: text(inv.tags, "", 2400),
+      baseline_id: baselineValue,
+      dirty: inv.dirty === true,
+    };
+    pendingView.current = {
+      planId: activePlanId,
+      selected,
+      focus,
+      collapsed: collapsedIds,
+    };
+    setPlans(restoredPlans);
+    setHeld(kept);
+    tabsBaseline.current = tabsText(lab.tabs);
+    setActiveId(activePlanId);
+    setSelectedId(selected);
+    setFocusId(focus);
+    setCollapsed(collapsedIds);
+    setSearch("");
+    setMode(nextMode);
+    setView(nextView);
+    setMetric(nextMetric);
+    setBeforeId(beforeValue);
+    setAfterId(afterValue);
+    setName(investigation.name);
+    setNotes(investigation.notes);
+    setTags(investigation.tags);
+    setSavedId(investigation.id || undefined);
+    setBaseline(baselineValue);
+    setDirty(investigation.dirty);
+    unsavedWorkspaceContent.current = false;
+    setLesson(lessonKey);
+    setReturnToPlan(returning);
+    setTeachLesson(lessonKey);
+    setLabInitial(lab);
+    setLabState(lab);
+    setActivePassword("");
+    setConnectionNote("");
+    setResetKey((k) => k + 1);
+    const snapshotText = serializeSession(
+      {
+        mode: nextMode,
+        view: nextView,
+        metric: nextMetric,
+        active_plan_id: activePlanId,
+        selected_id: selected,
+        focus_id: focus,
+        collapsed_ids: collapsedIds,
+        before_id: beforeValue,
+        after_id: afterValue,
+        investigation,
+        teach: { lesson: lessonKey, return_to_plan: returning },
+        query_lab: lab,
+      },
+      serializePlans([...restoredPlans, ...kept]),
+    );
+    const restoredState = JSON.parse(snapshotText);
+    if (reason === "conflict")
+      setRestored({
+        text: [
+          "Your workspace changed in another browser tab. Showing its latest version.",
+          ...notes,
+        ].join(" "),
+        fresh: false,
+      });
+    else if (hasContent(restoredState) || notes.length)
+      setRestored({
+        text: [
+          `Restored your workspace from ${relativeTime(savedAt)}.`,
+          ...notes,
+        ].join(" "),
+        fresh: true,
+      });
+    return snapshotText;
+  }
+  async function startFresh(backup: boolean) {
+    setConfirmFresh(false);
+    if (backup) backupUnsaved();
+    saver.pause();
+    try {
+      const r = await api<{ revision: number }>("session/clear", {
+        client_id: saver.clientId,
+        seq: saver.nextSeq(),
+      });
+      saver.revision = r.revision;
+    } catch (e) {
+      setError(message(e));
+      if (restoreEnabled && !skipRestore) saver.enable("");
+      return;
+    }
+    resetWorkspace();
+    setRestored(null);
+    setNotice("Started a fresh workspace.");
+    if (restoreEnabled && !skipRestore) saver.enable(blankSnapshot());
+  }
+  conflictRef.current = () => {
+    loadSession()
+      .then(async (session) => {
+        saver.revision = session.revision;
+        setRestoreEnabled(session.restore);
+        if (!session.restore) {
+          saver.disable("Autosave is off");
+          return;
+        }
+        if (session.state)
+          saver.enable(
+            await applySession(session.state, session.saved_at, "conflict"),
+          );
+        else {
+          resetWorkspace();
+          setRestored({
+            text: "Your workspace was cleared in another browser tab.",
+            fresh: false,
+          });
+          saver.enable(blankSnapshot());
+        }
+      })
+      .catch((e) => {
+        saver.failed = true;
+        setSaveStatus({ kind: "error", reason: message(e) });
+      });
+  };
+  async function toggleRestore(on: boolean) {
+    try {
+      const r = await api<{ revision: number; restore: boolean }>(
+        "session/settings",
+        { restore: on, client_id: saver.clientId, seq: saver.nextSeq() },
+      );
+      saver.revision = r.revision;
+      setRestoreEnabled(r.restore);
+      if (!r.restore) {
+        setRestored(null);
+        saver.disable("Autosave is off");
+      } else if (skipRestore) saver.disable("Autosave is off for this launch");
+      // Nothing is stored yet: save the current workspace now.
+      else saver.enable("");
+    } catch (e) {
+      setError(message(e));
+    }
+  }
   async function save() {
     setBusy(true);
     setError("");
@@ -369,17 +1069,21 @@ function App() {
     }
   }
   function removePlan(id: string) {
+    const removed = plans.find((p) => p.id === id);
+    if (removed && (removed.origin !== "sample" || savedId || dirty))
+      unsavedWorkspaceContent.current = true;
     const rest = plans.filter((p) => p.id !== id);
     setPlans(rest);
     if (id === activeId) setActiveId(rest[0]?.id || "");
     if (id === beforeId) setBeforeId("");
     if (id === afterId) setAfterId("");
     if (id === baseline) setBaseline(rest[0]?.id || "");
-    setDirty(true);
+    if (savedId || dirty) setDirty(true);
   }
   async function exportHtml() {
-    if (mode === "compare" && comparison) {
-      download(comparison.html, "myflames-comparison.html", "text/html");
+    if (mode === "compare") {
+      if (comparison && !loading)
+        download(comparison.html, "myflames-comparison.html", "text/html");
       return;
     }
     if (!active) return;
@@ -401,7 +1105,12 @@ function App() {
     }
   }
   function exportJson() {
-    const data = mode === "compare" ? comparison?.analysis : active?.analysis;
+    const data =
+      mode === "compare"
+        ? loading
+          ? undefined
+          : comparison?.analysis
+        : active?.analysis;
     if (data)
       download(
         JSON.stringify(data, null, 2),
@@ -418,9 +1127,13 @@ function App() {
     active?.analysis.primary_action?.ref.match(/\[(\d+)\]/)?.[1] ?? -1,
   );
   const primary = active?.analysis.suggestions[primaryIndex];
-  const selectedHook = active?.teach_hooks?.find(
-    (h) => h.match.short_label === selected?.label,
-  );
+  /** The one line under the plan title: the first thing to investigate, or
+   * what the plan does. */
+  const planSummaryText = primary
+    ? primary.action
+    : !measured
+      ? "Estimated execution plan. Run analysis to collect actual rows and timings."
+      : active?.analysis.executive_summary || "";
   const breadcrumbs: Operator[] = [];
   let ancestor = active?.operators.find((n) => n.node_id === focusId);
   while (ancestor) {
@@ -452,132 +1165,240 @@ function App() {
         .toLowerCase()
         .includes(search.toLowerCase()),
     ) || [];
-  const modeName = {
-    inspect: "Plan explorer",
-    compare: "Compare plans",
-    teach: "Teach",
-    library: "Investigations",
-    query: "Query laboratory",
-  }[mode];
+  const place = placeOf(mode);
+  const placeLabel = place ? PLACES.find((item) => item.key === place)!.label : "Audit log";
+  const activeConnection: ActiveConnection = {
+    id: labState.profile_id,
+    fields: labState.connection,
+    password: activePassword,
+  };
+  // Production, Development or Read-only, as the server will judge the
+  // connection in use; part of its identity (binding.ts connectionKey).
+  const safety = connectionSafety(activeConnection, profilesLoaded && !profilesFailed ? profiles : null);
+  const activeRef = useRef(activeConnection);
+  activeRef.current = activeConnection;
+  // Write actions (Kill) stay off while the policy is unknown, and check it
+  // again right before sending (see WritePolicy in Connections.tsx).
+  const policyBlocked = safety.known
+    ? ""
+    : profilesFailed
+      ? `The settings of this connection could not be read (${profilesFailed}), so changes are off until they load.`
+      : "The settings of this connection are still loading.";
+  const checkPolicy = useCallback(async () => {
+    const items = await refreshProfiles();
+    const active = activeRef.current;
+    return requestConnection(active, connectionSafety(active, items));
+  }, [refreshProfiles]);
+  const writePolicy = useMemo(() => ({ blocked: policyBlocked, check: checkPolicy }), [policyBlocked, checkPolicy]);
+  const request = useMemo(
+    () =>
+      requestConnection(
+        {
+          id: labState.profile_id,
+          fields: labState.connection,
+          password: activePassword,
+        },
+        { type: safety.type, read_only: safety.read_only, endpointMatches: safety.endpointMatches, known: safety.known },
+      ),
+    [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known],
+  );
+  function go(next: Place) {
+    if (next === "learn") {
+      setLesson("");
+      setReturnToPlan(false);
+    }
+    setMode(next === "plans" ? plansView : PLACE_MODE[next]);
+    setError("");
+    setNotice("");
+    setRestored(null);
+    setConfirmFresh(false);
+  }
+  /** The Audit log (Settings menu): a screen of its own, not a place. */
+  function openAuditLog() {
+    setMode("audit");
+    setError("");
+    setNotice("");
+    setRestored(null);
+    setConfirmFresh(false);
+  }
+  // Production and Read-only connections are named across the Query editor
+  // and Server (the places that send to the connection in use).
+  // Unknown (not loaded, or the read failed) is shown as Production assumed.
+  const strip =
+    ready && (mode === "query" || mode === "server") && (!safety.known || safety.read_only || safety.type === "production") ? (
+      <SafetyStrip
+        safety={safety}
+        name={labState.connection.name || connectionTarget(labState.connection)}
+        unknown={profilesFailed || "loading"}
+        onRetry={() => void refreshProfiles().catch(() => {})}
+      />
+    ) : null;
+  function manageConnections() {
+    go("home");
+    window.setTimeout(() => {
+      const table = document.getElementById("connections-table");
+      table?.scrollIntoView({ block: "nearest" });
+      table?.focus({ preventScroll: true });
+    });
+  }
+  // The Query editor's schema browser opens Indexes or Tables on one table.
+  const [serverLink, setServerLink] = useState<{
+    view: "indexes" | "tables" | "health";
+    schema: string;
+    table: string;
+    from: string;
+    n: number;
+  } | null>(null);
+  const openServerTable = useCallback((view: "indexes" | "tables", schema: string, table: string, from: string) => {
+    setServerLink((l) => ({ view, schema, table, from, n: (l?.n || 0) + 1 }));
+    setMode("server");
+    setError("");
+    setNotice("");
+  }, []);
+  const openDigest = useCallback(
+    (row: TopStatement, rank: number, action: DigestAction, expect?: string) => {
+      labRef.current?.openDigest(row, rank, action, expect);
+      setMode("query");
+      setError("");
+      setNotice("");
+    },
+    [],
+  );
+  const showPlan = useCallback(
+    (c: Capture, planName: string) => capture(c, planName),
+    [capture],
+  );
+  const addPlan = useCallback(
+    (c: Capture, planName: string, cancelled?: () => boolean) =>
+      capture(c, planName, { open: false, cancelled }),
+    [capture],
+  );
+  const openImport = () => {
+    setError("");
+    setImportOpen(true);
+  };
+  const openSample = () =>
+    importPlan(JSON.stringify(example), "sample-plan.json", undefined, { origin: "sample" }).catch(() => {});
+  const picker = (
+    <ConnectionPicker
+      profiles={profiles}
+      active={activeConnection}
+      safety={safety}
+      onSwitch={switchConnection}
+      onPassword={setActivePassword}
+      onManage={manageConnections}
+      note={connectionNote}
+    />
+  );
+  // Server owns its Refresh all state. Measure its existing action strip so
+  // the shell reserves exactly that space in the shared toolbar, including
+  // the progress menu. This adapter leaves Server's operation lifecycle intact.
+  useLayoutEffect(() => {
+    const actions = chrome.current?.querySelector<HTMLElement>(".server-place > .place-toolbar");
+    if (!actions || mode !== "server") { setPlaceActionsWidth(0); return; }
+    const measure = () => setPlaceActionsWidth(actions.getBoundingClientRect().width);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(actions);
+    return () => observer.disconnect();
+  }, [ready, mode, resetKey]);
+  const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
+    : mode === "server" ? `server:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+  const plansStatus = mode === "inspect" || mode === "compare";
+  const connectedRequest = useRef(request);
+  connectedRequest.current = request;
   return (
-    <div className="app">
+    <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} connected={ready && safety.known && !!request.host}>
+    <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <a href="#main" className="skip">
-        Skip to workspace
+        Skip to content
       </a>
-      <aside className="sidebar" aria-label="Workspace navigation">
-        <button className="brand" onClick={() => setMode("inspect")}>
-          <img src={logo} alt="myflames project logo" />
-          <span>
-            myflames<small>Query workspace</small>
-          </span>
-        </button>
-        <nav className="main-nav" aria-label="Views">
-          {(
-            [
-              ["inspect", "chart", "Plan explorer"],
-              ["query", "file", "Query laboratory"],
-              ["compare", "compare", "Compare plans"],
-              ["library", "file", "Investigations"],
-              ["teach", "book", "Teach"],
-            ] as [Mode, string, string][]
-          ).map(([key, icon, label]) => (
-            <button
-              key={key}
-              className={mode === key ? "active" : ""}
-              aria-current={mode === key ? "page" : undefined}
-              onClick={() => {
-                if (key === "teach") {
-                  setLesson("");
-                  setReturnToPlan(false);
-                }
-                setMode(key);
-                setError("");
-                setNotice("");
-              }}
-            >
-              <Icon name={icon} />
-              {label}
-            </button>
-          ))}
-        </nav>
-        <div className="section-label">
-          EXPERIMENTS <span>{plans.length}</span>
-        </div>
-        <button
-          className="import-sidebar"
-          onClick={() => {
-            setError("");
-            setImportOpen(true);
-          }}
-        >
-          <Icon name="plus" /> Import a plan
-        </button>
-        <div className="plan-list">
-          {!plans.length && (
-            <p className="sidebar-empty">
-              Import or capture a plan to begin an investigation.
-            </p>
-          )}
-          {plans.map((p) => (
-            <div
-              className={`plan-item ${p.id === activeId ? "selected" : ""}`}
-              key={p.id}
-            >
-              <button
-                className="plan-select"
-                onClick={() => {
-                  setActiveId(p.id);
-                  setMode("inspect");
-                }}
-              >
-                <Icon name="file" />
-                <span>
-                  <strong>{p.name}</strong>
-                  <small>
-                    {p.capture?.mode === "explain"
-                      ? "Estimated plan"
-                      : time(p.analysis.plan_summary.total_time_ms)}
-                    {p.id === baseline ? " · Baseline" : ""}
-                  </small>
-                </span>
-              </button>
-              <button
-                className="icon-button remove"
-                aria-label={`Remove ${p.name}`}
-                onClick={() => removePlan(p.id)}
-              >
-                <Icon name="close" size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
-        <div className="sidebar-footer">
-          <span className="local-dot" /> Local workspace
-          <p>
-            {dirty ? "Unsaved changes" : "Your data stays on this computer."}
-          </p>
-          <span className="hint">Python engine · Browser interface</span>
-        </div>
-      </aside>
-      <div className="workspace">
-        <header className="topbar">
-          <div className="breadcrumb">
-            Workspace <Icon name="chevron" size={12} />
-            <strong>{modeName}</strong>
-          </div>
-          <div className="topbar-actions">
-            {plans.length > 0 && (
+      <Sidebar
+        logo={logo}
+        expanded={sidebarOpen}
+        onExpandedChange={setSidebarOpen}
+        place={ready ? place : null}
+        plans={plans}
+        activeId={mode === "inspect" ? activeId : ""}
+        baselineId={baseline}
+        saveStatus={saveStatus}
+        ready={ready}
+        restoreEnabled={restoreEnabled}
+        skipRestore={skipRestore}
+        onGo={go}
+        onOpenPlan={openPlan}
+        onRemovePlan={removePlan}
+        onToggleRestore={toggleRestore}
+        onAuditLog={openAuditLog}
+      />
+      <div ref={chrome} data-place={place || "audit"} className={`workspace${strip ? " has-safety-strip" : ""}`} style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
+        <div className="topbar-stack">
+        <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
+          <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebarOpen((open) => !open)}><Icon name="browser" /></button>
+          <div className="topbar-title">
+            <strong>{placeLabel}</strong>
+            {mode === "server" && <><Icon name="chevron" size={12} /><span>{SERVER_VIEWS.find((v) => v.id === labState.slow.kind)?.label || "Health"}</span></>}
+            {mode === "inspect" && active && (
               <>
-                <span className="save-state">{dirty ? "Edited" : "Saved"}</span>
-                <button className="button" disabled={busy} onClick={save}>
-                  Save investigation
+                <Icon name="chevron" size={12} />
+                <span>{active.name}</span>
+              </>
+            )}
+            {mode === "compare" && (
+              <>
+                <Icon name="chevron" size={12} />
+                <span>Compare</span>
+              </>
+            )}
+          </div>
+          {ready && (mode === "query" || mode === "server") && picker}
+          <div className="topbar-actions">
+            {/* ui-architecture: actions stay with the object they act on;
+                workspace autosave and investigation edits have distinct names. */}
+            {plans.length > 0 && (mode === "inspect" || mode === "compare") && (
+              <>
+                {(dirty || savedId) && <span className={`save-state${dirty ? " unsaved" : ""}`}>
+                  {dirty ? "Unsaved changes" : "Investigation saved"}
+                </span>}
+                <button className="button small window-save" disabled={busy} onClick={save} aria-label="Save investigation" title="Save investigation">
+                  <Icon name="investigation" /><span>Save investigation</span>
                 </button>
               </>
             )}
-            <span className="local-badge">LOCAL</span>
+            {ready && (mode === "home" || mode === "inspect" || mode === "compare") && (
+              <button
+                className={`button small${mode === "home" && !plans.length ? " primary" : ""}`}
+                aria-label="Import plan"
+                title="Import plan"
+                onClick={openImport}
+              >
+                <Icon name="import" size={14} />
+                <span className="topbar-label">Import plan</span>
+              </button>
+            )}
+            <span
+              className="local-badge"
+              title="Runs on this computer. Nothing is sent to an external service."
+            >
+              Local
+            </span>
           </div>
         </header>
-        <main id="main">
+        {strip}
+        </div>
+        <main
+          id="main"
+          className={
+            mode === "inspect" ||
+            mode === "compare" ||
+            mode === "server" ||
+            mode === "query" ||
+            mode === "audit" ||
+            mode === "home"
+              ? "is-flush"
+              : undefined
+          }
+        >
           {error && !importOpen && (
             <div role="alert" className="error">
               {error}
@@ -598,12 +1419,200 @@ function App() {
               </button>
             </div>
           )}
-          <div hidden={mode !== "query"}>
-            <QueryLab onCapture={capture} />
-          </div>
-          {mode === "library" && <Library onOpen={openBundle} />}
+          {restored && (
+            <div className="notice session-notice" role="status">
+              {confirmFresh ? (
+                <>
+                  <span>
+                    {plans.length === 1
+                      ? "One plan is not in a saved investigation."
+                      : `${plans.length} plans are not in a saved investigation.`}{" "}
+                    Download a backup before starting fresh?
+                  </span>
+                  <span className="button-row">
+                    <button
+                      className="text-button"
+                      onClick={() => startFresh(true)}
+                    >
+                      Download backup and start fresh
+                    </button>
+                    <button
+                      className="text-button"
+                      onClick={() => startFresh(false)}
+                    >
+                      Start fresh without a backup
+                    </button>
+                    <button
+                      className="text-button"
+                      onClick={() => setConfirmFresh(false)}
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>{restored.text}</span>
+                  <span className="button-row">
+                    {restored.fresh && (
+                      <button
+                        className="text-button"
+                        onClick={() =>
+                          plans.length && (!savedId || dirty)
+                            ? setConfirmFresh(true)
+                            : startFresh(false)
+                        }
+                      >
+                        Start fresh
+                      </button>
+                    )}
+                    <button
+                      className="text-button"
+                      onClick={() => setRestored(null)}
+                    >
+                      Dismiss
+                    </button>
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+          {held.length > 0 && (
+            <div className="notice held-notice" role="status">
+              <span>
+                {held.length === 1
+                  ? "One plan from your saved workspace could not be reopened. It stays in the saved workspace."
+                  : `${held.length} plans from your saved workspace could not be reopened. They stay in the saved workspace.`}
+              </span>
+              <span className="button-row">
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    download(
+                      JSON.stringify(
+                        {
+                          schema_version: "investigation-1.0",
+                          name: "Plans that could not be reopened",
+                          notes: "",
+                          tags: [],
+                          baseline_id: "",
+                          plans: held,
+                        },
+                        null,
+                        2,
+                      ),
+                      "unopened-plans.json",
+                      "application/json",
+                    )
+                  }
+                >
+                  Download {held.length === 1 ? "it" : "them"}
+                </button>
+                <button className="text-button" onClick={() => setHeld([])}>
+                  Remove {held.length === 1 ? "it" : "them"}
+                </button>
+              </span>
+            </div>
+          )}
+          {!ready && (
+            <div className="preview-state" role="status">
+              <span className="spinner" />
+              Opening your workspace…
+            </div>
+          )}
+          {ready && mode === "home" && (
+            <Home
+              logo={logo}
+              busy={busy}
+              plans={plans}
+              connections={
+                <Connections
+                  profiles={profiles}
+                  secretStore={secretStore}
+                  refresh={refreshProfiles}
+                  active={activeConnection}
+                  busy={labBusy || batchRunning}
+                  onUse={applyConnection}
+                  loading={!profilesLoaded && !profilesFailed}
+                  loadError={profilesFailed}
+                  onActiveDeleted={() => applyConnection("", { ...defaultLab().connection, name: "", host: "", user: "", database: "", ssl_ca: "" }, "")}
+                />
+              }
+              onImport={openImport}
+              onDropFile={importFile}
+              onSample={openSample}
+              onOpenPlan={openPlan}
+              onOpenBundle={openBundle}
+              onInvestigations={() => go("investigations")}
+              queryTabs={labState.tabs}
+              onOpenQuery={(id) => {
+                labRef.current?.openTab(id);
+                go("query");
+              }}
+            />
+          )}
+          {/* Its own key: Teach, a sibling, is keyed by resetKey too, and two
+              equal keys among siblings leave stale QueryLab/Server copies. */}
+          {ready && (
+            <div hidden={mode !== "query"}>
+              <WritePolicyContext.Provider value={writePolicy}>
+              <QueryLab
+                ref={labRef}
+                key={resetKey}
+                initial={labInitial}
+                connection={request}
+                picker={null}
+                batchRunning={batchRunning}
+                onStateChange={reportEditor}
+                onTabsNow={tabsNow}
+                onBusyChange={setLabBusy}
+                onConnected={(via) => { if (connectionKey(via) === connectionKey(connectedRequest.current)) setConnectRevision(n => n + 1); }}
+                onCapture={capture}
+                onOpenTable={openServerTable}
+              />
+              </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && (
+            <div hidden={mode !== "server"}>
+              <WritePolicyContext.Provider value={writePolicy}>
+              <Server
+                key={resetKey}
+                picker={null}
+                connection={request}
+                disabled={labBusy}
+                settings={{
+                  timeout: labState.timeout,
+                  repeat: labState.repeat,
+                  server: `${labState.connection.host}:${labState.connection.port}`,
+                }}
+                initial={labInitial?.slow}
+                onStateChange={reportSlow}
+                onDigest={openDigest}
+                onShowPlan={showPlan}
+                onAddPlan={addPlan}
+                onOpenPlan={openPlan}
+                onBatchChange={setBatchRunning}
+                link={serverLink}
+                onOpenLesson={(key) => {
+                  go("learn");
+                  setLesson(key);
+                }}
+                onOpenSql={(sql) => {
+                  go("query");
+                  // After the editor is on screen, so it can take focus and the selection.
+                  window.setTimeout(() => labRef.current?.openSql(sql));
+                }}
+              />
+              </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mode === "library" && <Library onOpen={openBundle} />}
+          {ready && mode === "audit" && <AuditLog profiles={profiles} />}
           <Teach
-            active={mode === "teach"}
+            key={resetKey}
+            active={ready && mode === "teach"}
+            onLessonChange={setTeachLesson}
             initialLesson={lesson}
             onReturn={
               returnToPlan
@@ -614,172 +1623,145 @@ function App() {
                 : undefined
             }
           />
-          {mode === "inspect" && !active && (
-            <section className="welcome">
-              <div className="welcome-brand">
-                <img src={logo} alt="myflames" />
+          {ready && (mode === "inspect" || mode === "compare") && (
+            <div className={`plans-bar${mode === "inspect" && active ? " has-active-plan" : ""}`}>
+              <div className="segmented" role="group" aria-label="Plans view">
+                <button
+                  aria-pressed={mode === "inspect"}
+                  onClick={() => setMode("inspect")}
+                >
+                  Explore
+                </button>
+                <button
+                  aria-pressed={mode === "compare"}
+                  title="Compare two open plans side by side"
+                  onClick={() => setMode("compare")}
+                >
+                  Compare
+                </button>
               </div>
-              <div className="eyebrow">A CLEARER VIEW OF YOUR QUERIES</div>
-              <h1>
-                Understand the work
-                <br />
-                behind every query.
-              </h1>
+              <button className="button primary plans-import" onClick={openImport}>
+                <Icon name="plus" />
+                Import plan
+              </button>
+              {mode === "inspect" && active && <div className="plans-phone-toolbar">
+                <Select label="Open plan" value={active.id} onChange={openPlan}
+                  options={plans.map((plan): [string, string] => [plan.id, plan.name])} />
+                <Popover label="Plan actions" trigger="More" buttonClassName="button">
+                  <div className="plan-menu">
+                    <span className="hint">{engineName(active.analysis.source.engine)} · {active.operators.length} operators</span>
+                    <button className="text-button" onClick={() => { openImport(); closePopovers(); }}>Import plan</button>
+                    <button className="text-button" onClick={() => { setMode("compare"); closePopovers(); }}>Compare plans</button>
+                    <button className="text-button" onClick={() => { exportJson(); closePopovers(); }}>Export JSON</button>
+                    <button className="text-button" disabled={exporting} onClick={() => { exportHtml(); closePopovers(); }}>Export HTML</button>
+                    <dl className="plan-menu-facts" aria-label="Plan measurements">
+                      <Stat hint="Total plan iterator time" label="Execution time" value={!measured ? "Not executed" : time(summary!.total_time_ms)} />
+                      <Stat hint="Estimate across leaf operators" label="Rows examined ≈" value={number(summary!.rows_examined_estimate)} />
+                      <Stat hint="Rows at the root operator" label="Rows returned" value={!measured ? "—" : number(summary!.rows_sent)} />
+                      <Stat hint="Warnings in this plan" label="Findings" value={String(active.analysis.warnings.length)} />
+                    </dl>
+                  </div>
+                </Popover>
+              </div>}
+            </div>
+          )}
+          {ready && mode === "inspect" && !active && (
+            <section
+              className="plans-empty"
+              aria-labelledby="plans-empty-title"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                importFile(e.dataTransfer.files[0]);
+              }}
+            >
+              <Icon name="plan" size={22} />
+              <h1 id="plans-empty-title">No plan is open</h1>
               <p>
-                Explore execution plans, investigate bottlenecks, and compare
-                your next experiment. All in one local workspace.
+                Import a plan, drop an EXPLAIN JSON file here, or capture one
+                in the Query editor.
               </p>
-              <div className="button-row">
-                <button
-                  className="button primary"
-                  onClick={() => setMode("query")}
-                >
-                  Open query laboratory <Icon name="chevron" size={15} />
-                </button>
-                <button className="button" onClick={() => setImportOpen(true)}>
-                  Import plan
-                </button>
-              </div>
-              <div className="welcome-cards">
-                <button
-                  className="import-card"
-                  onClick={() => setImportOpen(true)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    importFile(e.dataTransfer.files[0]);
-                  }}
-                >
-                  <Icon name="upload" size={24} />
-                  <h2>Bring your own plan</h2>
-                  <p>
-                    Drop an EXPLAIN JSON file or paste a plan from MySQL or
-                    MariaDB.
-                  </p>
-                  <span>Choose a file or paste JSON →</span>
-                </button>
-                <button
-                  className="sample-card"
-                  onClick={() =>
-                    importPlan(
-                      JSON.stringify(example),
-                      "sample-plan.json",
-                    ).catch(() => {})
-                  }
-                >
-                  <Icon name="chart" size={24} />
-                  <h2>Explore a sample</h2>
-                  <p>
-                    Follow the joins, inspect the measurements, and try all four
-                    views.
-                  </p>
-                  <span>Explore sample plan →</span>
-                </button>
-                <button
-                  className="sample-card"
-                  onClick={() => setMode("teach")}
-                >
-                  <Icon name="book" size={24} />
-                  <h2>Learn as you explore</h2>
-                  <p>
-                    Interactive lessons explain the algorithms behind the plan.
-                  </p>
-                  <span>Open Teach →</span>
-                </button>
-              </div>
+              <button className="button" disabled={busy} onClick={openSample}>
+                Explore sample plan
+              </button>
             </section>
           )}
           {mode === "inspect" && active && (
             <>
-              <div className="page-heading plan-heading">
-                <div>
-                  <div className="eyebrow">
-                    {active.analysis.source.engine || "SQL"} INVESTIGATION
-                  </div>
-                  <h1>{active.name}</h1>
-                  <p>
-                    {active.operators.length} operators
-                    {active.capture?.captured_at
-                      ? ` · Captured ${new Date(active.capture.captured_at).toLocaleString()}`
-                      : " · Imported plan"}
-                  </p>
+              <div className="plan-screen">
+              <header className="page-heading plan-heading">
+                <div className="plan-title">
+                  <h1 title={active.name}>{active.name}</h1>
+                  <span className="plan-meta" title={active.capture?.captured_at
+                    ? `Captured ${new Date(active.capture.captured_at).toLocaleString()}` : "Imported plan"}>
+                    {engineName(active.analysis.source.engine)} · {active.operators.length} operators
+                  </span>
+
                 </div>
-                <div className="heading-actions">
-                  <button className="button" onClick={exportJson}>
-                    Export JSON
-                  </button>
-                  <button
-                    className="button"
-                    disabled={exporting}
-                    onClick={exportHtml}
-                  >
-                    Export HTML <Icon name="upload" size={14} />
-                  </button>
-                  <button
-                    className="button primary"
-                    onClick={() => setImportOpen(true)}
-                  >
-                    <Icon name="plus" />
-                    Import plan
-                  </button>
-                </div>
-              </div>
-              <div className="metrics">
-                <Metric
-                  label="Execution time"
-                  value={
-                    !measured ? "Not executed" : time(summary!.total_time_ms)
-                  }
-                  hint="Total plan iterator time"
-                />
-                <Metric
-                  label="Rows examined ≈"
-                  value={number(summary!.rows_examined_estimate)}
-                  hint="Estimate across leaf operators"
-                />
-                <Metric
-                  label="Rows returned"
-                  value={!measured ? "—" : number(summary!.rows_sent)}
-                  hint="Rows at the root operator"
-                />
-                <Metric
-                  label="Findings"
-                  value={String(active.analysis.warnings.length)}
-                  hint={`${active.analysis.suggestions.length} suggestions to review`}
-                />
-              </div>
-              <div className={`primary-finding ${primary ? "attention" : ""}`}>
-                <Icon name={primary ? "search" : "check"} />
-                <div>
+                <dl className="plan-stats" aria-label="Plan measurements">
+                  <Stat
+                    label="Execution time"
+                    value={
+                      !measured ? "Not executed" : time(summary!.total_time_ms)
+                    }
+                    hint="Total plan iterator time"
+                  />
+                  <Stat
+                    label="Rows examined ≈"
+                    value={number(summary!.rows_examined_estimate)}
+                    hint="Estimate across leaf operators"
+                  />
+                  <Stat
+                    label="Rows returned"
+                    value={!measured ? "—" : number(summary!.rows_sent)}
+                    hint="Rows at the root operator"
+                  />
+                  <Stat
+                    label="Findings"
+                    value={String(active.analysis.warnings.length)}
+                    hint={`${active.analysis.suggestions.length} suggestions to review`}
+                  />
+                </dl>
+                <PlanExports onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
+              </header>
+              <details
+                className={`plan-strip primary-finding${primary ? " attention" : ""}`}
+              >
+                <summary>
+                  <Icon name={primary ? "search" : "check"} size={14} />
                   <strong>
                     {primary ? "Investigate first" : "Plan summary"}
                   </strong>
-                  <p>
-                    {primary
-                      ? primary.action
-                      : !measured
-                        ? "Estimated execution plan. Run analysis to collect actual rows and timings."
-                        : active.analysis.executive_summary}
-                  </p>
+                  <span className="strip-text">{planSummaryText}</span>
+                </summary>
+                <div className="strip-body">
+                  <p>{planSummaryText}</p>
+                  {activeSource && <p>From Top statements: <code>{activeSource.digest}</code>{activeSource.schema ? ` in schema ${activeSource.schema}` : ""}</p>}
                   {primary?.why && (
-                    <details>
-                      <summary>Why this matters</summary>
-                      <p>{primary.why}</p>
-                    </details>
+                    <p>
+                      <strong>Why this matters: </strong>
+                      {primary.why}
+                    </p>
                   )}
                 </div>
-              </div>
+              </details>
               {active.query && (
-                <details className="sql-card card" open>
-                  <summary>
-                    SQL query{" "}
-                    <span>
-                      {active.capture?.mode === "explain"
-                        ? "Estimated plan"
-                        : "Captured statement"}
-                    </span>
-                  </summary>
-                  <pre>{active.query}</pre>
+                <div className="plan-strip sql-row">
+                  <details className="sql-card">
+                    <summary>
+                      <Icon name="disclosure" size={14} />
+                      <strong>SQL</strong>
+                      <span className="strip-meta">
+                        {active.capture?.mode === "explain"
+                          ? "Estimated plan"
+                          : "Captured statement"}
+                      </span>
+                      <code className="strip-text" aria-hidden="true">
+                        {active.query}
+                      </code>
+                    </summary>
+                    <pre>{active.query}</pre>
+                  </details>
                   <button
                     className="text-button"
                     onClick={() => {
@@ -793,310 +1775,65 @@ function App() {
                   >
                     Copy SQL
                   </button>
-                </details>
-              )}
-              <div className="exploration-layout">
-                <div className="canvas-column">
-                  <section className="card plan-canvas">
-                    <div className="card-heading">
-                      <h2>Execution plan</h2>
-                      <div className="button-row">
-                        <button
-                          className="text-button"
-                          onClick={() => jump("self_time")}
-                        >
-                          Largest self time
-                        </button>
-                        <button
-                          className="text-button"
-                          onClick={() => jump("estimate_error")}
-                        >
-                          Largest estimate mismatch
-                        </button>
-                      </div>
-                    </div>
-                    <div className="view-tabs">
-                      {views.map(([id, label]) => (
-                        <button
-                          key={id}
-                          aria-pressed={view === id}
-                          className={view === id ? "active" : ""}
-                          onClick={() => setView(id)}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="chart-toolbar">
-                      <label>
-                        Metric{" "}
-                        <select
-                          aria-label="Operator metric"
-                          value={metric}
-                          onChange={(e) => setMetric(e.target.value)}
-                        >
-                          {metrics.map(([k, label]) => (
-                            <option key={k} value={k}>
-                              {label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="focus-path">
-                        <button onClick={() => setFocusId("")}>
-                          Entire plan
-                        </button>
-                        {breadcrumbs.map((n) => (
-                          <span key={n.node_id}>
-                            {" "}
-                            ›{" "}
-                            <button onClick={() => setFocusId(n.node_id)}>
-                              {n.label}
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                      {collapsed.length > 0 && (
-                        <button
-                          className="text-button"
-                          onClick={() => setCollapsed([])}
-                        >
-                          Expand all
-                        </button>
-                      )}
-                    </div>
-                    {loading ? (
-                      <div className="preview-state" role="status">
-                        <span className="spinner" />
-                        Rendering plan…
-                      </div>
-                    ) : previewError ? (
-                      <div className="error">{previewError}</div>
-                    ) : (
-                      <iframe
-                        ref={frame}
-                        className="chart-frame"
-                        title="Interactive execution plan"
-                        sandbox="allow-scripts allow-downloads allow-modals"
-                        srcDoc={html}
-                        onLoad={() =>
-                          frame.current?.contentWindow?.postMessage(
-                            { type: "myflames-select", node_id: selectedId },
-                            "*",
-                          )
-                        }
-                      />
-                    )}
-                  </section>
-                  <section className="operators card">
-                    <div className="card-heading">
-                      <h2>
-                        Operators{" "}
-                        <span className="count">{active.operators.length}</span>
-                      </h2>
-                      <label className="search">
-                        <Icon name="search" size={15} />
-                        <input
-                          type="search"
-                          placeholder="Search operators or tables"
-                          aria-label="Search operators or tables"
-                          value={search}
-                          onChange={(e) => setSearch(e.target.value)}
-                        />
-                      </label>
-                    </div>
-                    <div className="operator-table-head">
-                      <span>Operation</span>
-                      <span>Self time</span>
-                      <span>Rows / loop</span>
-                    </div>
-                    <div className="operator-list">
-                      {visibleOps.map((op) => (
-                        <button
-                          key={op.node_id}
-                          className={`operator-row ${selectedId === op.node_id ? "selected" : ""}`}
-                          aria-pressed={selectedId === op.node_id}
-                          onClick={() => selectOperator(op.node_id)}
-                        >
-                          <span
-                            style={{ paddingLeft: Math.min(op.depth, 8) * 13 }}
-                          >
-                            <i />
-                            {op.label}
-                          </span>
-                          <span>
-                            {typeof op.details.actual_last_row_ms === "number"
-                              ? time(op.self_time_ms)
-                              : "—"}
-                          </span>
-                          <span>
-                            {typeof op.details.actual_rows === "number"
-                              ? number(op.details.actual_rows)
-                              : "—"}
-                          </span>
-                        </button>
-                      ))}
-                      {!visibleOps.length && (
-                        <p className="empty-small">No matching operators.</p>
-                      )}
-                    </div>
-                  </section>
                 </div>
-                <aside
-                  className="inspector card"
-                  aria-label="Operator inspector"
-                >
-                  <div className="card-heading">
-                    <h2>Inspector</h2>
-                    {selected && <span className="selection-dot" />}
-                  </div>
-                  {selected ? (
-                    <div className="operator-detail">
-                      <div className="eyebrow">SELECTED OPERATOR</div>
-                      <h3>{selected.label}</h3>
-                      <div className="inspector-actions">
-                        <button
-                          className="button"
-                          onClick={() => setFocusId(selected.node_id)}
-                        >
-                          Focus branch
-                        </button>
-                        {!!selected.children?.length && (
-                          <button
-                            className="button"
-                            onClick={() =>
-                              setCollapsed((ids) =>
-                                ids.includes(selected.node_id)
-                                  ? ids.filter((id) => id !== selected.node_id)
-                                  : [...ids, selected.node_id],
-                              )
-                            }
-                          >
-                            {collapsed.includes(selected.node_id)
-                              ? "Expand branch"
-                              : "Collapse branch"}
-                          </button>
-                        )}
+              )}
+              <div className="exploration-layout plan-fold">
+                <section className="plan-canvas" aria-label="Execution plan">
+                  <PlanChart
+                    plan={active}
+                    view={view}
+                    label="Interactive execution plan"
+                    variant="inspect"
+                    metric={metric}
+                    focusId={focusId}
+                    collapsed={collapsed}
+                    selectedId={selectedId}
+                    onSelect={chartSelect}
+                    metricsTarget={metricsTarget}
+                    visibleOperatorIds={visibleOps.map((op) => op.node_id)}
+                    toolbar={<>
+                      <Segmented label="Chart view" className="chart-views" value={view}
+                        options={views.map(([value, label]) => ({ value, label }))} onChange={setView} />
+                      <div className="chart-phone-options">
+                        <Select label="Chart view" value={view} options={views} onChange={(value) => setView(value as View)} />
+                        <Popover label="Chart options" trigger="Options" buttonClassName="button">
+                          <div className="plan-menu">
+                            <label>Metric <Select label="Phone operator metric" value={metric} options={metrics} onChange={setMetric} /></label>
+                            <label>Branch <Select label="Phone focused branch" value={focusId} onChange={setFocusId}
+                              options={[["", "Entire plan"], ...breadcrumbs.map((n): [string, string] => [n.node_id, n.label])]} /></label>
+                            <button className="text-button" onClick={() => { jump("self_time"); closePopovers(); }}>Largest self time</button>
+                            <button className="text-button" onClick={() => { jump("estimate_error"); closePopovers(); }}>Largest estimate mismatch</button>
+                            {collapsed.length > 0 && <button className="text-button" onClick={() => { setCollapsed([]); closePopovers(); }}>Expand all</button>}
+                          </div>
+                        </Popover>
                       </div>
-                      <h4>In this plan</h4>
-                      <dl className="details-grid">
-                        <dt>Self time</dt>
-                        <dd>
-                          {typeof selected.details.actual_last_row_ms ===
-                          "number"
-                            ? time(selected.self_time_ms)
-                            : "—"}
-                        </dd>
-                        <dt>Total time</dt>
-                        <dd>
-                          {typeof selected.details.actual_last_row_ms ===
-                          "number"
-                            ? time(selected.total_time_ms)
-                            : "—"}
-                        </dd>
-                        <dt>Actual rows / loop</dt>
-                        <dd>
-                          {typeof selected.details.actual_rows === "number"
-                            ? number(selected.details.actual_rows)
-                            : "—"}
-                        </dd>
-                        <dt>Estimated rows / loop</dt>
-                        <dd>
-                          {typeof selected.details.estimated_rows === "number"
-                            ? number(selected.details.estimated_rows)
-                            : "—"}
-                        </dd>
-                        <dt>Loops</dt>
-                        <dd>{number(selected.loops)}</dd>
-                        <dt>Estimate mismatch</dt>
-                        <dd>
-                          {ratio(selected) === null
-                            ? "—"
-                            : ratio(selected) === Infinity
-                              ? "Zero vs nonzero"
-                              : `${ratio(selected)!.toFixed(1)}×`}
-                        </dd>
-                      </dl>
-                      <p className="hint">
-                        Times include all loops. Row counts are per loop.
-                      </p>
-                      {!!selected.details.complexity && (
-                        <section className="inspector-section">
-                          <h4>What this does</h4>
-                          <p>
-                            {String(
-                              (
-                                selected.details.complexity as {
-                                  rationale?: string;
-                                }
-                              ).rationale || selected.details.operation,
-                            )}
-                          </p>
-                        </section>
-                      )}
-                      <section className="inspector-section">
-                        <h4>Related findings</h4>
-                        {active.analysis.warnings
-                          .filter(
-                            (w) =>
-                              w.node_ids?.includes(selectedId) ||
-                              w.node_labels?.includes(selected.label),
-                          )
-                          .map((w, i) => (
-                            <p key={i}>{w.text}</p>
-                          ))}
-                        {!active.analysis.warnings.some(
-                          (w) =>
-                            w.node_ids?.includes(selectedId) ||
-                            w.node_labels?.includes(selected.label),
-                        ) && (
-                          <p className="hint">
-                            No findings are linked to this operator. Review its
-                            measurements and inputs in context.
-                          </p>
-                        )}
-                      </section>
-                      {selectedHook && (
-                        <section className="inspector-section learn-card">
-                          <Icon name="book" />
-                          <h4>Understand the algorithm</h4>
-                          <p>
-                            Explore this operation with an interactive lesson.
-                          </p>
-                          <button
-                            className="button"
-                            onClick={() => {
-                              setLesson(selectedHook.lesson);
-                              setReturnToPlan(true);
-                              setMode("teach");
-                            }}
-                          >
-                            Learn this operator
-                          </button>
-                        </section>
-                      )}
-                      <details className="raw-fields">
-                        <summary>All operator fields</summary>
-                        <pre>{JSON.stringify(selected.details, null, 2)}</pre>
-                      </details>
-                    </div>
-                  ) : (
-                    <div className="inspector-empty">
-                      <Icon name="search" size={26} />
-                      <h3>Explore an operator</h3>
-                      <p>
-                        Select a node in the chart or operator list. Its
-                        measurements, findings, and lessons appear here.
-                      </p>
-                    </div>
-                  )}
-                </aside>
+                      <label className="chart-desktop-option">Metric <Select label="Operator metric" value={metric} options={metrics} onChange={setMetric} /></label>
+                      <span className="chart-desktop-option"><Select label="Focused branch" value={focusId} onChange={setFocusId}
+                        options={[["", "Entire plan"], ...breadcrumbs.map((n): [string, string] => [n.node_id, n.label])]} /></span>
+                      <Popover className="chart-desktop-option" label="Find an operator" trigger="Go to" buttonTitle="Find an operator" buttonClassName="button">
+                        <div className="plan-menu">
+                          <button className="text-button" onClick={() => { jump("self_time"); closePopovers(); }}>Largest self time</button>
+                          <button className="text-button" onClick={() => { jump("estimate_error"); closePopovers(); }}>Largest estimate mismatch</button>
+                          {collapsed.length > 0 && <button className="text-button" onClick={() => { setCollapsed([]); closePopovers(); }}>Expand all</button>}
+                        </div>
+                      </Popover>
+                    </>}
+                  />
+                </section>
+                <ContextPanel key={active.id} plan={active} selected={selected}
+                  mismatch={selected ? ratio(selected) : null}
+                  onFocus={selected ? () => setFocusId(selected.node_id) : undefined}
+                  onCollapse={selected ? () => setCollapsed((ids) => ids.includes(selected.node_id)
+                    ? ids.filter((id) => id !== selected.node_id) : [...ids, selected.node_id]) : undefined}
+                  collapsed={!!selected && collapsed.includes(selected.node_id)}
+                  onLesson={(lesson) => { setLesson(lesson); setReturnToPlan(true); setMode("teach"); }}
+                  onMetricsTarget={setMetricsTarget} search={search} onSearch={setSearch}
+                  visibleOperators={visibleOps} onSelect={selectOperator} />
               </div>
+              </div>
+              <div className="plan-below">
               {active.analysis.warnings.length > 0 && (
-                <section className="card findings">
-                  <div className="card-heading">
-                    <h2>Findings</h2>
-                  </div>
+                <Disclosure title="Plan findings" count={active.analysis.warnings.length} className="findings">
                   {active.analysis.warnings.map((w, i) => (
                     <div className="finding" key={i}>
                       <span className={`severity ${w.severity}`}>
@@ -1121,9 +1858,9 @@ function App() {
                       )}
                     </div>
                   ))}
-                </section>
+                </Disclosure>
               )}
-              <ContextPanel key={active.id} plan={active} />
+              <Disclosure title="Execution context"><ExecutionContext key={active.id} plan={active} /></Disclosure>
               <section className="card investigation-notes">
                 <div className="card-heading">
                   <h2>Investigation notebook</h2>
@@ -1152,7 +1889,7 @@ function App() {
                     />
                   </label>
                   <label className="field">
-                    Experiment name
+                    Plan name
                     <input
                       value={active.name}
                       onChange={(e) => {
@@ -1207,49 +1944,25 @@ function App() {
                     }}
                   />
                 </label>
-                <div className="button-row">
-                  <button
-                    className="button primary"
-                    disabled={busy}
-                    onClick={save}
-                  >
-                    Save investigation
-                  </button>
-                  <span className="hint">
-                    Saves queries and plans on this computer. Credentials are
-                    excluded.
-                  </span>
-                </div>
+                <p className="hint">
+                  Save investigation, in the top bar, keeps these plans, notes,
+                  and tags on this computer. Credentials are excluded.
+                </p>
               </section>
+              </div>
             </>
           )}
           {mode === "compare" && (
-            <section>
-              <div className="page-heading">
-                <div>
-                  <div className="eyebrow">MEASURE THE CHANGE</div>
-                  <h1>Compare experiments</h1>
-                  <p>
-                    Review structural changes and measured differences together.
-                  </p>
-                </div>
-                {comparison && (
-                  <div className="heading-actions">
-                    <button className="button" onClick={exportJson}>
-                      Export JSON
-                    </button>
-                    <button className="button" onClick={exportHtml}>
-                      Export HTML
-                    </button>
-                  </div>
-                )}
-                <button className="button" onClick={() => setImportOpen(true)}>
-                  Import plan
-                </button>
-              </div>
-              <div className="compare-selectors card">
-                <label className="field">
-                  Before
+            <section className="compare-screen">
+              {/* One header row: the title, the two plans, and the exports;
+                  then flush panes divided by hairlines (no cards). */}
+              <header className="page-heading compare-heading">
+                <h1 title="Review structural changes and measured differences together.">
+                  Compare plans
+                </h1>
+                <div className="compare-selectors">
+                <label className="toolbar-field">
+                  <span>Before</span>
                   <select
                     value={beforeId}
                     onChange={(e) => setBeforeId(e.target.value)}
@@ -1263,8 +1976,8 @@ function App() {
                   </select>
                 </label>
                 <Icon name="compare" />
-                <label className="field">
-                  After
+                <label className="toolbar-field">
+                  <span>After</span>
                   <select
                     value={afterId}
                     onChange={(e) => setAfterId(e.target.value)}
@@ -1277,13 +1990,19 @@ function App() {
                     ))}
                   </select>
                 </label>
-              </div>
+                </div>
+                {comparison && !loading && (
+                  <PlanExports onJson={exportJson} onHtml={exportHtml} />
+                )}
+              </header>
               {!before || !after || before.id === after.id ? (
-                <div className="compare-empty card empty-small">
-                  <h2>Choose two different experiments</h2>
+                <div className="compare-empty empty-compact">
+                  <Icon name="compare" size={22} />
+                  <h2>Choose two different plans</h2>
                   <p>
-                    Import or capture a second plan to compare it with your
-                    baseline.
+                    {plans.length < 2
+                      ? "Import or capture a second plan to compare it with your baseline."
+                      : "Pick a before and an after plan above."}
                   </p>
                 </div>
               ) : loading ? (
@@ -1291,89 +2010,63 @@ function App() {
               ) : (
                 comparison && (
                   <>
-                    <div className="metrics">
-                      <Metric
-                        label="Before"
-                        value={
-                          comparison.analysis.before.timing_available === false
-                            ? "Not executed"
-                            : time(comparison.analysis.before.total_time_ms)
-                        }
-                        hint={before.name}
-                      />
-                      <Metric
-                        label="After"
-                        value={
-                          comparison.analysis.after.timing_available === false
-                            ? "Not executed"
-                            : time(comparison.analysis.after.total_time_ms)
-                        }
-                        hint={after.name}
-                      />
-                      <Metric
-                        label="Change"
-                        value={
-                          comparison.analysis.summary.time_delta_pct === null
-                            ? "—"
-                            : `${comparison.analysis.summary.time_delta_pct}%`
-                        }
-                        hint="Total measured plan time"
-                      />
-                      <Metric
-                        label="Regressions"
-                        value={String(comparison.analysis.summary.regressions)}
-                        hint="Confident matches only"
-                      />
+                    <div className="compare-bar">
+                      <dl className="plan-stats compare-stats" aria-label="Comparison measurements">
+                        <Stat
+                          label="Before"
+                          value={
+                            comparison.analysis.before.timing_available === false
+                              ? "Not executed"
+                              : time(comparison.analysis.before.total_time_ms)
+                          }
+                          hint={before.name}
+                        />
+                        <Stat
+                          label="After"
+                          value={
+                            comparison.analysis.after.timing_available === false
+                              ? "Not executed"
+                              : time(comparison.analysis.after.total_time_ms)
+                          }
+                          hint={after.name}
+                        />
+                        <Stat
+                          label="Change"
+                          value={
+                            comparison.analysis.summary.time_delta_pct === null
+                              ? "—"
+                              : `${comparison.analysis.summary.time_delta_pct}%`
+                          }
+                          hint="Total measured plan time"
+                        />
+                        <Stat
+                          label="Regressions"
+                          value={String(comparison.analysis.summary.regressions)}
+                          hint="Confident matches only"
+                        />
+                      </dl>
+                      <div className="compare-tools">
+                        <Segmented label="Comparison chart view" value={view}
+                          options={views.map(([value, label]) => ({ value, label }))} onChange={setView} />
+                        {/* Phones: the four views as one select, like Explore. */}
+                        <span className="compare-phone-view"><Select label="Comparison chart view on phones" value={view} options={views} onChange={(value) => setView(value as View)} /></span>
+                        <label>Metric <Select label="Comparison operator metric" value={metric} options={metrics} onChange={setMetric} /></label>
+                        <NotesButton label="About operator matches" notes={["Select a node or comparison row to highlight its counterpart. Uncertain matches are tentative and excluded from regression counts."]} />
+                      </div>
                     </div>
-                    <p className="hint">
-                      Select a node or comparison row to highlight its
-                      counterpart. Uncertain matches are tentative and excluded
-                      from regression counts.
-                    </p>
                     <div className="comparison-canvases">
-                      <div className="card">
-                        <h3>{before.name}</h3>
-                        {before.capture && (
-                          <p className="comparison-samples">
-                            {before.capture.measurements.median_ms === null
-                              ? "Estimated plan · no measured runs."
-                              : `${before.capture.measurements.count} measured runs · median ${time(before.capture.measurements.median_ms)}. Chart shows the last captured plan.`}
-                          </p>
-                        )}
-                        <iframe
-                          ref={beforeFrame}
-                          className="comparison-frame"
-                          title="Before execution plan"
-                          sandbox="allow-scripts"
-                          srcDoc={compareCharts[0]}
-                        />
-                      </div>
-                      <div className="card">
-                        <h3>{after.name}</h3>
-                        {after.capture && (
-                          <p className="comparison-samples">
-                            {after.capture.measurements.median_ms === null
-                              ? "Estimated plan · no measured runs."
-                              : `${after.capture.measurements.count} measured runs · median ${time(after.capture.measurements.median_ms)}. Chart shows the last captured plan.`}
-                          </p>
-                        )}
-                        <iframe
-                          ref={afterFrame}
-                          className="comparison-frame"
-                          title="After execution plan"
-                          sandbox="allow-scripts"
-                          srcDoc={compareCharts[1]}
-                        />
-                      </div>
+                      <ComparisonPane plan={before} side="Before" view={view} metric={metric} selectedId={pair[0]} onSelect={compareSelect("before_node_id")} />
+                      <ComparisonPane plan={after} side="After" view={view} metric={metric} selectedId={pair[1]} onSelect={compareSelect("after_node_id")} />
                     </div>
-                    <div className="card comparison-list">
-                      <div className="card-heading">
+                    <div className="comparison-list">
+                      <div className="pane-head">
                         <h2>Operator changes</h2>
                       </div>
                       {comparison.analysis.deltas.map((d, i) => (
                         <button
                           key={i}
                           className={`comparison-row ${pair[0] === d.before_node_id && pair[1] === d.after_node_id ? "selected" : ""}`}
+                          aria-pressed={pair[0] === (d.before_node_id || "") && pair[1] === (d.after_node_id || "")}
                           onClick={() =>
                             setPair([
                               d.before_node_id || "",
@@ -1411,26 +2104,13 @@ function App() {
               )}
             </section>
           )}
-          <footer className="app-footer">
-            myflames · Inspired by{" "}
-            <a
-              href="https://www.brendangregg.com/flamegraphs.html"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Brendan Gregg’s FlameGraph
-            </a>{" "}
-            and{" "}
-            <a
-              href="https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Tanel Poder’s SQL Plan FlameGraphs
-            </a>
-            .
-          </footer>
         </main>
+        {ready && (plansStatus || mode === "query" || mode === "server") && <WindowStatusBar scope={statusScope}
+          fallback={plansStatus ? {
+            engineVersion: mode === "inspect" && active?.capture?.server_version ? `${engineName(active.capture.engine)} ${active.capture.server_version}` : undefined,
+            connectionState: mode === "compare" ? "Compared plans" : active?.capture ? "Captured plan" : active?.origin === "sample" ? "Sample plan" : active ? "Imported plan" : "No plan selected",
+            transaction: "No live session",
+          } : { connectionState: `${labState.connection.name || connectionTarget(labState.connection)} selected` }} />}
       </div>
       <input
         ref={file}
@@ -1460,9 +2140,50 @@ function App() {
         />
       )}
     </div>
+    </PrivilegesProvider>
   );
 }
-function Metric({
+/** A single export home for both Plans modes. */
+function PlanExports({ onJson, onHtml, exporting = false }: { onJson: () => void; onHtml: () => void; exporting?: boolean }) {
+  return <Popover label="Export plan" trigger={<>Export <Icon name="disclosure" size={12} /></>}
+    buttonClassName="button" className="plan-exports">
+    <div className="plan-menu">
+      <button className="text-button" onClick={() => { onJson(); closePopovers(); }}>Export JSON</button>
+      <button className="text-button" disabled={exporting} onClick={() => { onHtml(); closePopovers(); }}>Export HTML</button>
+    </div>
+  </Popover>;
+}
+
+/** A comparison keeps each chart's controls and metric rows instance-scoped. */
+function ComparisonPane({ plan, side, view, metric, selectedId, onSelect }: {
+  plan: Plan; side: string; view: string; metric: string; selectedId: string; onSelect: (id: string) => void;
+}) {
+  const [target, setTarget] = useState<HTMLDivElement | null>(null);
+  const selected = plan.operators.find((op) => op.node_id === selectedId);
+  return <div className="compare-pane">
+    <div className="compare-pane-heading">
+      <h3 title={plan.name}>{side}: {plan.name}</h3>
+      {plan.capture && <NotesButton label={`${side} capture measurements`} notes={[
+        plan.capture.measurements.median_ms === null ? "Estimated plan. No measured runs." :
+          `${plan.capture.measurements.count} measured runs, median ${time(plan.capture.measurements.median_ms)}. Chart shows the last captured plan.`,
+      ]} />}
+    </div>
+    <PlanChart plan={plan} view={view} label={`${side} execution plan`} variant="compare"
+      metric={metric} selectedId={selectedId} onSelect={onSelect} metricsTarget={target} />
+    <ContextPanel key={plan.id} plan={plan} selected={selected} mismatch={selected ? ratio(selected) : null}
+      onMetricsTarget={setTarget} onSelect={onSelect} />
+  </div>;
+}
+
+/** "MySQL", "MariaDB", or the engine as reported. */
+function engineName(engine?: string) {
+  if (engine === "mysql") return "MySQL";
+  if (engine === "mariadb") return "MariaDB";
+  return engine || "SQL";
+}
+/** One measurement in the plan's stats strip: a label beside the value, the
+ * longer explanation on hover. */
+function Stat({
   label,
   value,
   hint,
@@ -1472,11 +2193,21 @@ function Metric({
   hint: string;
 }) {
   return (
-    <div className="metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{hint}</small>
+    <div title={hint}>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+const root = createRoot(document.getElementById("root")!);
+let launchGeneration = 0;
+function openWorkspace() {
+  const generation = ++launchGeneration;
+  authenticate().then(() => {
+    if (generation === launchGeneration) root.render(<WindowStatusProvider><App /></WindowStatusProvider>);
+  }).catch(error => {
+    if (generation === launchGeneration) root.render(<main className="launch-refusal" role="alert"><div className="launch-brand"><img src="/assets/myflames-logo.png" alt="" width="48" height="48" /><strong>myflames</strong></div><h1>Open your workspace</h1><p>{error instanceof Error ? error.message : "Open the launch URL printed by myflames ui."}</p></main>);
+  });
+}
+window.addEventListener("hashchange", openWorkspace);
+openWorkspace();

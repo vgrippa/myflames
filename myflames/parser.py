@@ -9,6 +9,7 @@ Supports:
   - MariaDB SHOW ANALYZE FORMAT=JSON FOR <connection_id>
 """
 import hashlib
+import math
 import re
 import json
 
@@ -380,7 +381,9 @@ def build_short_label(op, table=None, index=None, condition=None):
     if re.match(r"^Limit", op, re.I):
         m = re.search(r"(\d+) row", op, re.I)
         return f"Limit: {m.group(1)} rows" if m else "Limit"
-    if re.match(r"^Intersect", op, re.I):
+    # Index merge intersection only; INTERSECT set operations ("Intersect",
+    # "Intersect materialize ...") keep their own text.
+    if re.match(r"^Intersect rows sorted by row ID", op, re.I):
         return "Intersect (row ID)"
     if re.match(r"^Union", op, re.I):
         return "Union"
@@ -519,7 +522,7 @@ def build_folded_label(node):
         label = "STREAM"
     elif re.match(r"^Limit", op, re.I):
         label = "LIMIT"
-    elif re.match(r"^Intersect", op, re.I):
+    elif re.match(r"^Intersect rows sorted by row ID", op, re.I):
         label = "Intersect rows sorted by row ID"
     elif re.match(r"^Union", op, re.I):
         label = "UNION"
@@ -552,6 +555,14 @@ def parse_node(node):
     # time as nested input time of the enclosing iterator.
     select_inputs = node.get("inputs_from_select_list")
     extra_refs = list(select_inputs) if isinstance(select_inputs, list) else []
+    # Subqueries attached to a MariaDB query block or a MySQL format-1 table
+    # (normalized below) are kept the same way, after the regular inputs.
+    # Their time counts as input time only when the normalizer says the
+    # node's total includes it ("subqueries_in_total": a MariaDB select runs
+    # its subqueries inside its own elapsed time).
+    subquery_inputs = node.get("inputs_from_subqueries")
+    subquery_refs = list(subquery_inputs) if isinstance(subquery_inputs, list) else []
+    subqueries_in_total = bool(node.get("subqueries_in_total"))
     children = []
     children_time = 0
     for c in children_refs:
@@ -564,6 +575,13 @@ def parse_node(node):
         if child:
             child["details"]["input_kind"] = "select_list"
             children.append(child)
+    for c in subquery_refs:
+        child = parse_node(c)
+        if child:
+            child["details"]["input_kind"] = "subquery"
+            children.append(child)
+            if subqueries_in_total:
+                children_time += child["total_time"]
     self_time = max(0.0, total_time - children_time)
     short = build_short_label(
         op,
@@ -578,6 +596,7 @@ def parse_node(node):
         "index_name": node.get("index_name") or "",
         "access_type": node.get("access_type") or "",
         "actual_rows": node.get("actual_rows"),
+        "rows_measured": node.get("rows_measured", node.get("actual_rows") is not None),
         "actual_loops": node.get("actual_loops", 1),
         "estimated_rows": node.get("estimated_rows"),
         "actual_last_row_ms": node.get("actual_last_row_ms"),
@@ -642,8 +661,17 @@ def load_explain_json(text):
     text = text.lstrip("\ufeff")
     text = text.strip()
 
-    # Strip EXPLAIN: prefix (e.g. from MySQL shell output)
-    text = re.sub(r"^.*?EXPLAIN:\s*", "", text, flags=re.DOTALL)
+    # A clean JSON document needs no clean-up. Decorations are stripped only
+    # when the text does not parse as is, so a query or condition inside the
+    # plan that contains "EXPLAIN:" or a "|" is never touched.
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Strip a leading "EXPLAIN:" label (mysql \G output), only when it comes
+    # before the JSON starts.
+    text = re.sub(r"^[^{\[]*?EXPLAIN:\s*", "", text, flags=re.DOTALL)
 
     # Strip MySQL table borders:  +----...----+
     text = re.sub(r"^\+[-+]+\+\s*", "", text, flags=re.MULTILINE)
@@ -697,7 +725,8 @@ def load_explain_json(text):
 
 
 def _is_mariadb_format(data):
-    """Detect MariaDB ANALYZE FORMAT=JSON by its distinctive structure."""
+    """Detect a ``query_block`` plan: MariaDB ANALYZE/EXPLAIN FORMAT=JSON, or
+    MySQL explain_json_format_version=1 (see :func:`_has_mysql_v1_keys`)."""
     return isinstance(data, dict) and "query_block" in data
 
 
@@ -740,9 +769,271 @@ def _mariadb_access_type_to_operation(access_type, table_name, key, using_index=
     return access_type or "unknown"
 
 
-def _normalize_mariadb_table(tbl):
-    """Convert a MariaDB ``table`` object into a MySQL-compatible node dict."""
+# ---------------------------------------------------------------------------
+# query_block normalization (MariaDB, MySQL explain_json_format_version=1)
+# ---------------------------------------------------------------------------
+#
+# Both writers emit a tree of named JSON objects instead of MySQL v2's
+# operation/inputs tree. The structures walked below are, per writer:
+#
+# MariaDB (sql/sql_explain.cc)
+#   query_block      Explain_select::print_explain_json: an aggregation chain
+#                    of nested objects (temporary_table, filesort,
+#                    duplicate_removal, window_functions_computation), each
+#                    holding the next; the innermost holds "nested_loop" and
+#                    the select's child "subqueries". A select with a message
+#                    ("Impossible WHERE", "No tables used") prints
+#                    {"table": {"message": ...}} instead.
+#   union_result /   Explain_union::print_explain_json_regular, for UNION,
+#   recursive_union  INTERSECT and EXCEPT; members carry "operation".
+#   nested_loop[]    Explain_table_access::print_explain_json: "table",
+#                    optionally wrapped by read_sorted_file.filesort,
+#                    block-nl-join, range-checked-for-each-record or
+#                    full-scan-on-null_key; derived tables under
+#                    "materialized"; DuplicateWeedout ranges under
+#                    "duplicates_removal".
+#   subqueries[]     {"query_block"}, optionally inside subquery_cache and/or
+#                    materialization (expression_cache before 10.6).
+#
+# MySQL format version 1 (sql/opt_explain_json.cc)
+#   query_block      join_ctx: "table" (single table), "nested_loop", a sort
+#                    context (ordering_operation, grouping_operation,
+#                    duplicates_removal, buffer_result), "windowing", or a
+#                    bare "message"; subquery lists (list_names[]).
+#   *_result         union_result, intersect_result, except_result,
+#                    unary_result (setop_result_ctx).
+#   table            materialized_from_subquery, attached_subqueries.
+#
+# Plans in these formats carry measurements only when MariaDB ANALYZE (or
+# SHOW ANALYZE) produced them; see _NormContext.
+#
+# MariaDB ANALYZE times (sql_analyze_stmt.h trackers, sql_explain.cc) and how
+# they become inclusive node totals (parse_node: self = total - inputs):
+#   query_block r_total_time_ms   inclusive: JOIN::exec of the select over all
+#                                 r_loops, with its derived-table fills and the
+#                                 subqueries it runs. It becomes the total of
+#                                 the select's top node, whatever it is.
+#   table r_table_time_ms +       self only: handler calls plus the untimed
+#     r_other_time_ms             work after them (one gap timer at a time),
+#                                 never a subquery or a materialization, which
+#                                 run under their own JOIN::exec. Tables in a
+#                                 nested_loop are disjoint, so a synthetic join
+#                                 is the sum of its inputs.
+#   materialized query_block      a table over it is its own time plus the
+#                                 child select's r_total_time_ms (the fill runs
+#                                 before the table is read).
+#   filesort r_total_time_ms      the sort, the reading of its input, and its
+#                                 condition (HAVING, or the WHERE of a table
+#                                 sorted before the join, with any subquery in
+#                                 it). Over a temporary table (aggregation
+#                                 chain) the input is untimed, so the sort adds
+#                                 to its input; over a table (read_sorted_file)
+#                                 it overlaps that table's own time by an
+#                                 unknown amount.
+#   subqueries                    inside the enclosing select's time (when run
+#                                 during execution), not inside any table's.
+#   temporary_table, expression_cache / subquery_cache: no time.
+# Composite totals that may count an overlap twice (a sort over a table or
+# holding a subquery, a materialization) are clamped to the select's
+# r_total_time_ms minus its subqueries'; see _fit_overlaps.
+
+# Subquery list members. MariaDB: "subqueries"
+# (Explain_node::print_explain_json_for_children). MySQL format version 1:
+# list_names[] in opt_explain_json.cc, plus K_ATTACHED_SUBQUERIES for WHERE
+# subqueries of a table or message.
+_SUBQUERY_LIST_KEYS = (
+    "subqueries",
+    "attached_subqueries",
+    "select_list_subqueries", "update_value_subqueries",
+    "insert_values_subqueries", "insert_update_subqueries",
+    "having_subqueries", "optimized_away_subqueries",
+    "order_by_subqueries", "group_by_subqueries",
+)
+
+# Set operations: (key, operation when nothing more specific is known).
+_SETOP_KEYS = (
+    ("recursive_union", "Recursive union"),     # MariaDB recursive CTE
+    ("union_result", "Union"),                  # both
+    ("intersect_result", "Intersect"),          # MySQL format version 1
+    ("except_result", "Except"),
+    ("unary_result", "Query expression"),
+)
+
+# Objects inside one select that wrap the select's join (and, in MariaDB, its
+# "subqueries"). Subquery lists found inside them belong to the select.
+_SELECT_WRAPPER_KEYS = (
+    "filesort", "temporary_table", "duplicate_removal",
+    "window_functions_computation",
+    "ordering_operation", "grouping_operation", "duplicates_removal",
+    "buffer_result", "windowing",
+) + tuple(key for key, _label in _SETOP_KEYS)
+
+# Keys that exist only in MySQL format version 1 output: none of them is
+# written by MariaDB's sql_explain.cc, which uses "cost", "rows",
+# "materialized", "subqueries" and the aggregation-chain names instead.
+_MYSQL_V1_ONLY_KEYS = frozenset((
+    "cost_info", "rows_examined_per_scan", "rows_produced_per_join",
+    "ordering_operation", "grouping_operation", "windowing", "buffer_result",
+    "materialized_from_subquery", "sharing_temporary_table_with",
+    "attached_subqueries", "select_list_subqueries", "having_subqueries",
+    "optimized_away_subqueries", "order_by_subqueries", "group_by_subqueries",
+    "update_value_subqueries", "insert_values_subqueries",
+    "insert_update_subqueries", "intersect_result", "except_result",
+    "unary_result", "using_temporary_table",
+))
+
+_MAX_WRAPPER_DEPTH = 16
+
+
+class _NormContext(object):
+    """Plan-wide facts for the query_block normalizer.
+
+    ``timed``: the plan carries elapsed times. MariaDB ANALYZE writes
+    ``r_table_time_ms`` per table and ``r_total_time_ms`` per query block or
+    filesort only when timing was collected; EXPLAIN, SHOW EXPLAIN, SHOW
+    ANALYZE (counters only) and MySQL format version 1 carry none.
+    ``rows``: the plan carries row counters (``r_rows`` / ``r_loops``).
+    ``v1``: MySQL explain_json_format_version=1.
+    ``select_ms``: what the operators of the select being normalized may
+    take: its r_total_time_ms minus its subqueries' (0 when not reported);
+    the ceiling for :func:`_fit_overlaps`.
+    ``subquery_ms``: the subqueries' total time in that select, which a
+    filesort may also contain (HAVING, or the WHERE of a table sorted before
+    the join, is evaluated inside filesort()).
+    """
+
+    def __init__(self, timed=True, rows=True, v1=False):
+        self.timed = timed
+        self.rows = rows
+        self.v1 = v1
+        self.select_ms = 0.0
+        self.subquery_ms = 0.0
+
+
+def _contains_key(data, keys, _depth=0):
+    """True when any dict in *data* has one of *keys* (ignores
+    ``query_optimization``, MariaDB's optimizer-time summary)."""
+    if _depth > 400:
+        return False
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "query_optimization":
+                continue
+            if key in keys:
+                return True
+            if isinstance(value, (dict, list)) and _contains_key(value, keys, _depth + 1):
+                return True
+        return False
+    if isinstance(data, list):
+        return any(_contains_key(v, keys, _depth + 1) for v in data if isinstance(v, (dict, list)))
+    return False
+
+
+def _ms_total(node):
+    """Total elapsed ms of a normalized node (0 when not measured)."""
+    if not node:
+        return 0.0
+    return float(node.get("actual_last_row_ms") or 0) * (node.get("actual_loops") or 1)
+
+
+def _add_ms(node, ms):
+    """Add *ms* (total across loops, may be negative) to a normalized node's
+    elapsed time, which is stored per loop."""
+    if not node or not ms:
+        return
+    loops = node.get("actual_loops") or 1
+    node["actual_last_row_ms"] = float(node.get("actual_last_row_ms") or 0) + float(ms) / loops
+
+
+def _fit_overlaps(nodes, ceiling_ms, extra_ms=0.0):
+    """Clamp sibling totals that may count an overlap twice.
+
+    A sort (filesort time + its input's time) and a materialized table (its
+    own time + the fill) are sums whose parts may overlap: the filesort span
+    holds the reads of the table it sorts and any subquery in its condition,
+    and the fill writes through the table's timed handler. Each keeps that
+    removable amount in ``_overlap_ms``. When the siblings add up to more
+    than the select's operators may take (``_NormContext.select_ms``), the
+    excess is removed from those nodes, in input order, never more than
+    their ``_overlap_ms``. This clamps; it does not scale, so measured table
+    times are never changed. *extra_ms* is sibling time held outside the
+    nodes (join-buffer work of the joins over them).
+    """
+    if not ceiling_ms:
+        return
+    excess = sum(_ms_total(n) for n in nodes) + extra_ms - ceiling_ms
+    for node in nodes:
+        if excess <= 0:
+            break
+        cut = min(float(node.get("_overlap_ms") or 0), excess)
+        if cut > 0:
+            _add_ms(node, -cut)
+            node["_overlap_ms"] -= cut
+            excess -= cut
+
+
+def _message_node(message):
+    """A select that reads no table: MariaDB {"table": {"message"}} and MySQL
+    format-1 message_ctx ("No tables used", "Impossible WHERE", "Select tables
+    optimized away", ...). It carries the message and no measurements."""
+    return {
+        "operation": str(message),
+        "access_type": "message",
+        "actual_last_row_ms": None,
+        "actual_loops": 1,
+        "actual_rows": None,
+        "rows_measured": False,
+        "estimated_rows": None,
+        "inputs": [],
+    }
+
+
+def _attach_materialized(node, holder, ctx):
+    """Turn *node* into a Materialize node over the derived/semijoin query
+    block stored on *holder* (MariaDB "materialized", MySQL format-1
+    "materialized_from_subquery")."""
+    if not isinstance(holder, dict) or node.get("inputs"):
+        return node
+    mat = holder.get("materialized") or holder.get("materialized_from_subquery")
+    if isinstance(mat, dict) and isinstance(mat.get("query_block"), dict):
+        _materialize_over(node, mat["query_block"], ctx)
+    return node
+
+
+def _materialize_over(node, qb, ctx):
+    """Make table *node* a Materialize node over select *qb*.
+
+    The table's own time excludes the fill, which runs before the table is
+    read (JOIN_TAB::preread_init), so the node's total is its own time plus
+    the child select's elapsed time. The fill's row writes may also hit the
+    table's timed handler, so up to the table's own time can be counted
+    twice; that is the node's ``_overlap_ms`` (see :func:`_fit_overlaps`).
+    """
+    child = _normalize_mariadb_query_block(qb, ctx)
+    if not child:
+        return node
+    own_ms = _ms_total(node)
+    node["operation"] = "Materialize"
+    node["access_type"] = "materialize"
+    node["inputs"] = [child]
+    node["_table_ms"] = own_ms
+    node["_overlap_ms"] = own_ms
+    # The child select's top carries its r_total_time_ms when reported.
+    _add_ms(node, _ms_total(child))
+    return node
+
+
+def _normalize_mariadb_table(tbl, ctx=None):
+    """Convert a MariaDB / MySQL format-1 ``table`` object into a
+    MySQL-compatible node dict."""
+    ctx = ctx or _NormContext()
     table_name = tbl.get("table_name") or ""
+    if not table_name and isinstance(tbl.get("message"), str):
+        node = _message_node(tbl["message"])
+        attached = _subquery_blocks(tbl.get("attached_subqueries"), ctx)
+        if attached:
+            node["inputs_from_subqueries"] = attached
+        return _attach_materialized(node, tbl, ctx)
     access_type_raw = (tbl.get("access_type") or "").upper()
     key = tbl.get("key") or ""
     using_index = bool(tbl.get("using_index"))
@@ -765,6 +1056,8 @@ def _normalize_mariadb_table(tbl):
     # multiplies actual_last_row_ms * actual_loops, so store per-loop time.
     per_loop_ms = total_ms / r_loops if r_loops > 0 else total_ms
     est_rows = tbl.get("rows")
+    if est_rows is None:
+        est_rows = tbl.get("rows_examined_per_scan")  # MySQL format version 1
     cost = tbl.get("cost")
 
     operation = _mariadb_access_type_to_operation(access_type_raw, table_name, key, using_index)
@@ -804,6 +1097,7 @@ def _normalize_mariadb_table(tbl):
         "index_name": key,
         "access_type": mysql_access_type,
         "actual_rows": float(r_rows) if r_rows is not None else 0.0,
+        "rows_measured": r_rows is not None,
         "actual_loops": int(r_loops),
         "actual_last_row_ms": per_loop_ms,
         "estimated_rows": float(est_rows) if est_rows is not None else None,
@@ -822,21 +1116,144 @@ def _normalize_mariadb_table(tbl):
         "pushed_index_condition": has_pushed_index_cond,
     }
 
-    # Handle materialized subqueries/derived tables
-    mat = tbl.get("materialized")
-    if mat and isinstance(mat, dict):
-        qb = mat.get("query_block")
-        if qb:
-            child = _normalize_mariadb_query_block(qb)
-            if child:
-                node["operation"] = "Materialize"
-                node["access_type"] = "materialize"
-                node["inputs"] = [child]
-
-    return node
+    # WHERE subqueries attached to a MySQL format-1 table; derived tables and
+    # materialized semijoins (MariaDB "materialized", MySQL format-1
+    # "materialized_from_subquery").
+    attached = _subquery_blocks(tbl.get("attached_subqueries"), ctx)
+    if attached:
+        node["inputs_from_subqueries"] = attached
+    return _attach_materialized(node, tbl, ctx)
 
 
-def _normalize_mariadb_nested_loop(nested_loop):
+def _normalize_join_entry(entry, ctx, _depth=0):
+    """Normalize one ``nested_loop`` element (or a wrapper's content)."""
+    if not isinstance(entry, dict) or _depth > _MAX_WRAPPER_DEPTH:
+        return None
+    if isinstance(entry.get("table"), dict):
+        return _normalize_mariadb_table(entry["table"], ctx)
+    if "read_sorted_file" in entry:
+        return _normalize_mariadb_read_sorted_file(entry["read_sorted_file"], ctx)
+    if isinstance(entry.get("block-nl-join"), dict):
+        # MariaDB wraps the inner side of a join-buffer join here. The inner
+        # "table" can be reached via a classic BNL, BNLH (hash), BKA or BKAH
+        # depending on optimizer_switch (join_cache_* / outer_join_with_cache).
+        bnl_wrapper = entry["block-nl-join"]
+        node = _normalize_join_entry(bnl_wrapper, ctx, _depth + 1)
+        if not node:
+            return None
+        join_type = (bnl_wrapper.get("join_type") or "").upper()
+        buffer_type = bnl_wrapper.get("buffer_type") or ""
+        # Map MariaDB join_type in {BNL, BNLH, BKA, BKAH} to the MySQL
+        # semantics that _detect_optimizer_switches already understands.
+        if "BNLH" in join_type or "hash" in (buffer_type or "").lower():
+            node["join_algorithm"] = "hash"
+            node["using_join_buffer"] = "Block Nested Loop (hash)"
+        elif join_type.startswith("BKA"):
+            node["join_algorithm"] = "batch_key_access"
+            node["using_join_buffer"] = "Batched Key Access"
+        else:
+            node["using_join_buffer"] = "Block Nested Loop"
+        node["mariadb_block_nl_join"] = {
+            "join_type": join_type,
+            "buffer_type": buffer_type,
+            "buffer_size": bnl_wrapper.get("buffer_size") or "",
+        }
+        # Preserve the BNL wrapper's attached_condition (the real ON
+        # predicate) so the advisor's non-sargable detection rule can
+        # see it. Without this, the condition is lost in the
+        # normalized tree and any CONCAT/CAST/LOWER join key goes
+        # undetected on MariaDB.
+        wrapper_cond = bnl_wrapper.get("attached_condition") or ""
+        if wrapper_cond and not node.get("condition"):
+            node["condition"] = wrapper_cond
+        # Join-buffer work (JOIN_CACHE::join_matching_records, shared by BNL,
+        # BNLH, BKA and BKAH): unpacking buffered outer rows plus the untimed
+        # work after each unpack, such as the join condition. It is disjoint
+        # from the table's own times, cumulative over loops, and belongs to
+        # the join this table is the inner side of
+        # (_normalize_mariadb_nested_loop). Caveats: the block's
+        # r_other_time_ms also holds untimed downstream work on matches
+        # (later tables, sending rows), and for BNLH/BKAH the hash lookup is
+        # split between the inner table and the block.
+        jbuf_ms = (float(bnl_wrapper.get("r_unpack_time_ms") or 0)
+                   + float(bnl_wrapper.get("r_other_time_ms") or 0))
+        if jbuf_ms:
+            node["_jbuf_ms"] = float(node.get("_jbuf_ms") or 0) + jbuf_ms
+        # Explain_table_access closes "table" before the join-buffer members,
+        # so a derived table's "materialized" lands on this wrapper.
+        return _attach_materialized(node, bnl_wrapper, ctx)
+    if isinstance(entry.get("range-checked-for-each-record"), dict):
+        # MariaDB emits this when the optimizer decided at plan time that
+        # a single access method wasn't stable across outer rows — so it
+        # re-picks per outer row between a full scan, an index_merge, or
+        # one of several named ranges. Verified in
+        # sql/sql_explain.cc:3111 (Explain_range_checked_fer::print_json).
+        # The wrapper contains the candidate "keys" and an optional
+        # "table" child with the default access; surface it so advisor /
+        # UI can flag the "re-decide per outer row" cost.
+        rcf = entry["range-checked-for-each-record"]
+        node = _normalize_join_entry(rcf, ctx, _depth + 1)
+        if not node:
+            return None
+        node["mariadb_range_checked"] = {
+            "keys": list(rcf.get("keys") or []),
+            "r_keys": rcf.get("r_keys") or {},
+        }
+        # Force the access_type signal so advisor rules that key on
+        # "this plan re-decides per row" can match it.
+        node["range_checked_per_record"] = True
+        return _attach_materialized(node, rcf, ctx)
+    if isinstance(entry.get("full-scan-on-null_key"), dict):
+        wrapper = entry["full-scan-on-null_key"]
+        node = _normalize_join_entry(wrapper, ctx, _depth + 1)
+        return _attach_materialized(node, wrapper, ctx) if node else None
+    if "duplicates_removal" in entry:
+        # DuplicateWeedout semijoin range: a list in MariaDB
+        # (Explain_basic_join::print_explain_json_interns), an object in
+        # MySQL format 1 (duplication_weedout_ctx).
+        removal = entry["duplicates_removal"]
+        if isinstance(removal, list):
+            inner = _normalize_mariadb_nested_loop(removal, ctx)
+        else:
+            inner = _normalize_block(removal, ctx)
+        return _weedout_node(inner) if inner else None
+    for key, operation in (("firstmatch", "FirstMatch semijoin"),
+                           ("loosescan", "LooseScan semijoin")):
+        if isinstance(entry.get(key), list):
+            inner = _normalize_mariadb_nested_loop(entry[key], ctx)
+            if not inner:
+                return None
+            return {
+                "operation": operation,
+                "access_type": "semijoin",
+                "actual_last_row_ms": inner.get("actual_last_row_ms") or 0,
+                "actual_loops": inner.get("actual_loops", 1),
+                "actual_rows": inner.get("actual_rows") or 0,
+                "inputs": [inner],
+            }
+    if isinstance(entry.get("nested_loop"), list):
+        return _normalize_mariadb_nested_loop(entry["nested_loop"], ctx)
+    # An unknown wrapper: keep whatever table it holds rather than drop it.
+    for value in entry.values():
+        if isinstance(value, dict):
+            node = _normalize_join_entry(value, ctx, _depth + 1)
+            if node:
+                return node
+    return None
+
+
+def _weedout_node(inner):
+    return {
+        "operation": "Remove duplicates using temporary table (weedout)",
+        "access_type": "weedout",
+        "actual_last_row_ms": inner.get("actual_last_row_ms") or 0,
+        "actual_loops": inner.get("actual_loops", 1),
+        "actual_rows": inner.get("actual_rows") or 0,
+        "inputs": [inner],
+    }
+
+
+def _normalize_mariadb_nested_loop(nested_loop, ctx=None):
     """Convert MariaDB nested_loop array into a MySQL-compatible tree.
 
     MariaDB stores the join as a flat array: [table1, table2, ...].
@@ -845,129 +1262,34 @@ def _normalize_mariadb_nested_loop(nested_loop):
     to match MySQL's outer-vs-inner ordering.
 
     Entries can be ``{"table": {...}}``, ``{"read_sorted_file": {...}}``, or
-    other wrapper objects.
+    other wrapper objects (see :func:`_normalize_join_entry`).
     """
-    if not nested_loop:
+    if not nested_loop or not isinstance(nested_loop, list):
         return None
-
-    # Normalize each entry — can be table, read_sorted_file, block-nl-join, etc.
+    ctx = ctx or _NormContext()
     table_nodes = []
     for entry in nested_loop:
-        if not isinstance(entry, dict):
-            continue
-        if "table" in entry:
-            table_nodes.append(_normalize_mariadb_table(entry["table"]))
-        elif "read_sorted_file" in entry:
-            node = _normalize_mariadb_read_sorted_file(entry["read_sorted_file"])
-            if node:
-                table_nodes.append(node)
-        elif "block-nl-join" in entry:
-            # MariaDB wraps the inner side of a join-buffer join here. The inner
-            # "table" can be reached via a classic BNL, BNLH (hash), BKA or BKAH
-            # depending on optimizer_switch (join_cache_* / outer_join_with_cache).
-            bnl_wrapper = entry["block-nl-join"] or {}
-            inner_tbl = bnl_wrapper.get("table")
-            if isinstance(inner_tbl, dict):
-                node = _normalize_mariadb_table(inner_tbl)
-                join_type = (bnl_wrapper.get("join_type") or "").upper()
-                buffer_type = bnl_wrapper.get("buffer_type") or ""
-                # Map MariaDB join_type ∈ {BNL, BNLH, BKA, BKAH} to the MySQL
-                # semantics that _detect_optimizer_switches already understands.
-                if "BNLH" in join_type or "hash" in (buffer_type or "").lower():
-                    node["join_algorithm"] = "hash"
-                    node["using_join_buffer"] = "Block Nested Loop (hash)"
-                elif join_type.startswith("BKA"):
-                    node["join_algorithm"] = "batch_key_access"
-                    node["using_join_buffer"] = "Batched Key Access"
-                else:
-                    node["using_join_buffer"] = "Block Nested Loop"
-                node["mariadb_block_nl_join"] = {
-                    "join_type": join_type,
-                    "buffer_type": buffer_type,
-                    "buffer_size": bnl_wrapper.get("buffer_size") or "",
-                }
-                # Preserve the BNL wrapper's attached_condition (the real ON
-                # predicate) so the advisor's non-sargable detection rule can
-                # see it. Without this, the condition is lost in the
-                # normalized tree and any CONCAT/CAST/LOWER join key goes
-                # undetected on MariaDB.
-                wrapper_cond = bnl_wrapper.get("attached_condition") or ""
-                if wrapper_cond and not node.get("condition"):
-                    node["condition"] = wrapper_cond
-                table_nodes.append(node)
-        elif "duplicates_removal" in entry:
-            # MariaDB's DuplicateWeedout semijoin strategy.
-            inner = _normalize_mariadb_nested_loop(entry["duplicates_removal"])
-            if inner:
-                weedout = {
-                    "operation": "Remove duplicates using temporary table (weedout)",
-                    "access_type": "weedout",
-                    "actual_last_row_ms": inner.get("actual_last_row_ms", 0),
-                    "actual_loops": inner.get("actual_loops", 1),
-                    "actual_rows": inner.get("actual_rows", 0),
-                    "inputs": [inner],
-                }
-                table_nodes.append(weedout)
-        elif "firstmatch" in entry:
-            inner = _normalize_mariadb_nested_loop(entry["firstmatch"])
-            if inner:
-                fm = {
-                    "operation": "FirstMatch semijoin",
-                    "access_type": "semijoin",
-                    "actual_last_row_ms": inner.get("actual_last_row_ms", 0),
-                    "actual_loops": inner.get("actual_loops", 1),
-                    "actual_rows": inner.get("actual_rows", 0),
-                    "inputs": [inner],
-                }
-                table_nodes.append(fm)
-        elif "loosescan" in entry:
-            inner = _normalize_mariadb_nested_loop(entry["loosescan"])
-            if inner:
-                ls = {
-                    "operation": "LooseScan semijoin",
-                    "access_type": "semijoin",
-                    "actual_last_row_ms": inner.get("actual_last_row_ms", 0),
-                    "actual_loops": inner.get("actual_loops", 1),
-                    "actual_rows": inner.get("actual_rows", 0),
-                    "inputs": [inner],
-                }
-                table_nodes.append(ls)
-        elif "range-checked-for-each-record" in entry:
-            # MariaDB emits this when the optimizer decided at plan time that
-            # a single access method wasn't stable across outer rows — so it
-            # re-picks per outer row between a full scan, an index_merge, or
-            # one of several named ranges. Verified in
-            # sql/sql_explain.cc:3111 (Explain_range_checked_fer::print_json).
-            # The wrapper contains the candidate "keys" and an optional
-            # "table" child with the default access; surface it so advisor /
-            # UI can flag the "re-decide per outer row" cost.
-            rcf = entry["range-checked-for-each-record"] or {}
-            inner_tbl = rcf.get("table")
-            if isinstance(inner_tbl, dict):
-                node = _normalize_mariadb_table(inner_tbl)
-                node["mariadb_range_checked"] = {
-                    "keys": list(rcf.get("keys") or []),
-                    "r_keys": rcf.get("r_keys") or {},
-                }
-                # Force the access_type signal so advisor rules that key on
-                # "this plan re-decides per row" can match it.
-                node["range_checked_per_record"] = True
-                table_nodes.append(node)
+        node = _normalize_join_entry(entry, ctx)
+        if node:
+            table_nodes.append(node)
 
     if not table_nodes:
         return None
+    # Join-buffer time goes to the join whose inner side the buffered table
+    # is. A buffered first entry joins tables outside this list (a semi-join
+    # range); it keeps the time itself, inside that outer join's input.
+    jbuf = [float(n.pop("_jbuf_ms", 0) or 0) for n in table_nodes]
+    if jbuf[0]:
+        _add_ms(table_nodes[0], jbuf[0])
+        jbuf[0] = 0.0
+    _fit_overlaps(table_nodes, ctx.select_ms, sum(jbuf))
     if len(table_nodes) == 1:
         return table_nodes[0]
 
-    # Fold into a right-deep tree: ((t1 NL t2) NL t3) NL t4...
+    # Fold into a left-deep tree: ((t1 NL t2) NL t3) NL t4...
     result = table_nodes[0]
     for i in range(1, len(table_nodes)):
         inner = table_nodes[i]
-        # Estimate total time from the query_block level (will be overridden later)
-        nl_time = max(
-            result.get("actual_last_row_ms", 0) * (result.get("actual_loops", 1) or 1),
-            inner.get("actual_last_row_ms", 0) * (inner.get("actual_loops", 1) or 1),
-        )
         join_node = {
             "operation": "Nested loop inner join",
             "access_type": "join",
@@ -975,9 +1297,12 @@ def _normalize_mariadb_nested_loop(nested_loop):
             # The flat MariaDB array does not identify logical join semantics.
             # Do not use the synthetic operation label as evidence.
             "join_type": "unknown",
-            "actual_last_row_ms": 0.0,  # will be set from query_block r_total_time_ms
+            # Table times are disjoint, so a join prefix spans its inputs plus
+            # its join-buffer work. The select's top node takes
+            # r_total_time_ms instead (_normalize_mariadb_query_block).
+            "actual_last_row_ms": _ms_total(result) + _ms_total(inner) + jbuf[i],
             "actual_loops": 1,
-            "actual_rows": float(inner.get("actual_rows", 0)),
+            "actual_rows": float(inner.get("actual_rows") or 0),
             "inputs": [result, inner],
         }
         result = join_node
@@ -1012,169 +1337,388 @@ def _mariadb_sort_key_to_fields(sort_key):
     return fields
 
 
-def _normalize_mariadb_read_sorted_file(rsf):
+def _normalize_mariadb_read_sorted_file(rsf, ctx=None):
     """Convert MariaDB read_sorted_file into a Sort node.
 
     Structure: ``read_sorted_file: { r_rows, filesort: { table: {...} } }``
     Used when MariaDB reads a sorted temp file (e.g. ORDER BY ... LIMIT).
+    The filesort may also wrap block-nl-join / range-checked wrappers around
+    the table (Explain_table_access::print_json opens them inside it).
     """
     if not isinstance(rsf, dict):
         return None
     filesort = rsf.get("filesort")
     if not filesort or not isinstance(filesort, dict):
         return None
+    ctx = ctx or _NormContext()
 
-    # The table is directly inside the filesort (not in nested_loop)
-    child = None
-    tbl = filesort.get("table")
-    if tbl and isinstance(tbl, dict):
-        child = _normalize_mariadb_table(tbl)
-    elif filesort.get("nested_loop"):
-        child = _normalize_mariadb_nested_loop(filesort["nested_loop"])
+    if isinstance(filesort.get("nested_loop"), list):
+        child = _normalize_mariadb_nested_loop(filesort["nested_loop"], ctx)
+    else:
+        child = _normalize_join_entry(filesort, ctx)
 
     sort_key = filesort.get("sort_key") or ""
-    r_time = filesort.get("r_total_time_ms") or 0
+    r_time = float(filesort.get("r_total_time_ms") or 0)
     r_output_rows = filesort.get("r_output_rows") or rsf.get("r_rows") or 0
 
-    return {
+    # The filesort time covers reading the table and sorting, with the
+    # table's WHERE (and any subquery in it); the table's own time covers
+    # those reads plus reading the sorted rows back. The overlap is unknown:
+    # the true total lies between max(filesort, table) and filesort + table
+    # (plus any materialization under the table). Take the sum, and let
+    # _fit_overlaps give back up to min(filesort, table + subqueries) when
+    # the select's r_total_time_ms says it counts twice.
+    child_ms = _ms_total(child)
+    table_ms = float(child.get("_table_ms", child_ms)) if child else 0.0
+    node = {
         "operation": "Sort: {}".format(sort_key) if sort_key else "Sort",
         "access_type": "sort",
-        "actual_last_row_ms": float(r_time),
+        "actual_last_row_ms": 0.0,
         "actual_loops": filesort.get("r_loops") or 1,
         "actual_rows": float(r_output_rows),
         "sort_fields": _mariadb_sort_key_to_fields(sort_key),
         "inputs": [child] if child else [],
+        "_overlap_ms": min(r_time, table_ms + ctx.subquery_ms),
     }
+    _add_ms(node, r_time + child_ms)
+    return node
 
 
-def _normalize_mariadb_filesort(filesort, query_block_time=0):
-    """Convert MariaDB filesort structure into MySQL-compatible Sort node."""
-    child = None
-    temp = filesort.get("temporary_table")
-    if temp and isinstance(temp, dict):
-        nl = temp.get("nested_loop")
-        if nl:
-            child = _normalize_mariadb_nested_loop(nl)
-    elif filesort.get("nested_loop"):
-        child = _normalize_mariadb_nested_loop(filesort["nested_loop"])
+def _normalize_mariadb_filesort(filesort, ctx=None):
+    """Convert a MariaDB aggregation-chain ``filesort`` into a Sort node.
+
+    Its content is the rest of the chain: usually a ``temporary_table``
+    (Using temporary; Using filesort), which the Sort represents, holding a
+    ``nested_loop`` or another ``filesort`` (ORDER BY over GROUP BY).
+    """
+    ctx = ctx or _NormContext()
+    child = _normalize_block(filesort, ctx)
 
     sort_key = filesort.get("sort_key") or ""
     r_time = filesort.get("r_total_time_ms") or 0
     r_output_rows = filesort.get("r_output_rows") or 0
 
-    sort_node = {
+    node = {
         "operation": "Sort: {}".format(sort_key) if sort_key else "Sort",
         "access_type": "sort",
-        "actual_last_row_ms": float(r_time),
+        "actual_last_row_ms": 0.0,
         "actual_loops": filesort.get("r_loops") or 1,
         "actual_rows": float(r_output_rows),
         "sort_fields": _mariadb_sort_key_to_fields(sort_key),
         "inputs": [child] if child else [],
+        # HAVING over the grouped rows is the filesort's condition, so a
+        # subquery in it runs inside the sort's time.
+        "_overlap_ms": min(float(r_time), ctx.subquery_ms),
     }
-    return sort_node
+    # The sort reads an untimed temporary table filled by its input before
+    # it starts, so the two add up. At the top of a select the node takes
+    # the select's r_total_time_ms instead (_normalize_mariadb_query_block).
+    _add_ms(node, float(r_time) + _ms_total(child))
+    _fit_overlaps([node], ctx.select_ms)
+    return node
 
 
-def _normalize_mariadb_query_block(qb):
-    """Convert a MariaDB query_block into a MySQL-compatible tree node."""
-    if not isinstance(qb, dict):
+def _subquery_entry(entry, ctx, _depth=0):
+    """Normalize one subquery list item.
+
+    MariaDB: ``{"query_block"}``, optionally inside ``subquery_cache`` and/or
+    ``materialization`` (the cache object opens first) or the pre-10.6
+    ``expression_cache``. MySQL format 1 (subquery_ctx::format_body):
+    ``{dependent, cacheable, query_block}``; a materialized subquery as
+    ``{"table": {..., "materialized_from_subquery": {"query_block"}}}``; or a
+    temporary table followed by its ``query_block``.
+    """
+    if not isinstance(entry, dict) or _depth > _MAX_WRAPPER_DEPTH:
+        return None
+    tbl, qb = entry.get("table"), entry.get("query_block")
+    if isinstance(tbl, dict):
+        node = _normalize_mariadb_table(tbl, ctx)
+        if isinstance(qb, dict) and not node.get("inputs"):
+            _materialize_over(node, qb, ctx)
+        return node
+    if isinstance(qb, dict):
+        return _normalize_mariadb_query_block(qb, ctx)
+    for value in entry.values():
+        if isinstance(value, dict):
+            node = _subquery_entry(value, ctx, _depth + 1)
+            if node:
+                return node
+    return None
+
+
+def _subquery_blocks(entries, ctx=None):
+    """Normalize a subquery list (see :func:`_subquery_entry`)."""
+    ctx = ctx or _NormContext()
+    out = []
+    for entry in entries if isinstance(entries, list) else []:
+        node = _subquery_entry(entry, ctx)
+        if node:
+            out.append(node)
+    return out
+
+
+def _gather_subqueries(obj, ctx, _depth=0):
+    """Subqueries of one select: the lists on its query_block and on the
+    wrappers between the query_block and its join (MariaDB prints a select's
+    "subqueries" next to its innermost "nested_loop"; MySQL format 1 prints
+    HAVING/ORDER BY/GROUP BY lists inside the sort context)."""
+    if not isinstance(obj, dict) or _depth > _MAX_WRAPPER_DEPTH:
+        return []
+    out = []
+    for key in _SUBQUERY_LIST_KEYS:
+        out.extend(_subquery_blocks(obj.get(key), ctx))
+    for key in _SELECT_WRAPPER_KEYS:
+        inner = obj.get(key)
+        if isinstance(inner, dict):
+            out.extend(_gather_subqueries(inner, ctx, _depth + 1))
+    return out
+
+
+def _setop_operation(key, default, result, blocks):
+    """Name a set operation from what the writer reports.
+
+    MariaDB writes UNION, INTERSECT and EXCEPT as "union_result"; members
+    after the first carry "operation" (Explain_select::add_linkage) and the
+    temporary table is "<union..>", "<intersect..>", "<except..>" or, when
+    mixed, "<unit..>" (Explain_union::make_union_table_name). MySQL format 1
+    marks the recursive member of a recursive CTE with "recursive": true.
+    """
+    if key != "union_result":
+        return default
+    if any(b.get("recursive") is True for b in blocks):
+        return "Recursive union"
+    name = str(result.get("table_name") or "")
+    if name.startswith("<intersect"):
+        return "Intersect"
+    if name.startswith("<except"):
+        return "Except"
+    ops = sorted(set(str(b.get("operation") or "").upper() for b in blocks[1:]) - {""})
+    if ops == ["INTERSECT"]:
+        return "Intersect"
+    if ops == ["EXCEPT"]:
+        return "Except"
+    if len(ops) > 1 or name.startswith("<unit"):
+        return "Set operation ({})".format(", ".join(ops)) if ops else "Set operation"
+    return default
+
+
+def _normalize_setop(result, key, default, ctx, qb_time, qb_loops):
+    specs = result.get("query_specifications")
+    blocks, children = [], []
+    for spec in specs if isinstance(specs, list) else []:
+        qb = spec.get("query_block") if isinstance(spec, dict) else None
+        if isinstance(qb, dict):
+            blocks.append(qb)
+            child = _normalize_mariadb_query_block(qb, ctx)
+            if child:
+                children.append(child)
+    table_name = result.get("table_name") or ""
+    if not children:
+        if isinstance(result.get("message"), str):
+            # MariaDB prints only a message for a unit pushed to an engine.
+            node = _message_node(result["message"])
+            node["table_name"] = table_name
+            return node
+        return None
+    # The union query_block often lacks r_total_time_ms; use the members'.
+    union_time = qb_time or sum(_ms_total(c) for c in children)
+    node = {
+        "operation": _setop_operation(key, default, result, blocks),
+        "access_type": "union",
+        # The set operation's result table (<union1,2>, <intersect1,2>, ...).
+        "table_name": table_name,
+        "actual_last_row_ms": 0.0,
+        "actual_loops": qb_loops,
+        "actual_rows": float(sum((c.get("actual_rows") or 0) for c in children)),
+        "inputs": children,
+    }
+    # qb_time and the members' times are totals across loops.
+    _add_ms(node, union_time)
+    return node
+
+
+def _wrapper_node(operation, access_type, child, top, qb_time, **extra):
+    """A node for an aggregation-chain wrapper. At the top of a query block it
+    takes the block's elapsed time, like the join it wraps would; nested, it
+    spans its input."""
+    spans = bool(top and qb_time)
+    node = {
+        "operation": operation,
+        "access_type": access_type,
+        "actual_last_row_ms": float(qb_time) if spans else _ms_total(child),
+        "actual_loops": 1,
+        "actual_rows": None,
+        "rows_measured": False,
+        "inputs": [child] if child else [],
+    }
+    node.update(extra)
+    return node
+
+
+def _normalize_block(obj, ctx, top=False, qb_time=0, qb_loops=1):
+    """Normalize a query_block body, or one wrapper inside it, into a node.
+
+    *top* is True for the query_block itself; MariaDB's elapsed time is
+    reported there (r_total_time_ms) and assigned to the node that spans the
+    whole select. Subqueries are attached by the caller.
+    """
+    if not isinstance(obj, dict):
         return None
 
-    qb_time = qb.get("r_total_time_ms") or 0
-    qb_loops = qb.get("r_loops") or 1
+    for key, default in _SETOP_KEYS:
+        if isinstance(obj.get(key), dict):
+            return _normalize_setop(obj[key], key, default, ctx, qb_time if top else 0, qb_loops)
 
-    # UNION handling
-    union_result = qb.get("union_result")
-    if union_result and isinstance(union_result, dict):
-        specs = union_result.get("query_specifications") or []
-        children = []
-        for spec in specs:
-            inner_qb = spec.get("query_block") if isinstance(spec, dict) else None
-            if inner_qb:
-                child = _normalize_mariadb_query_block(inner_qb)
-                if child:
-                    children.append(child)
-        if children:
-            # Union query_block often lacks r_total_time_ms; use sum of children
-            union_time = qb_time
-            if union_time == 0:
-                union_time = sum(
-                    c.get("actual_last_row_ms", 0) * (c.get("actual_loops", 1) or 1)
-                    for c in children
-                )
-            return {
-                "operation": "Union",
-                "access_type": "union",
-                "actual_last_row_ms": float(union_time),
-                "actual_loops": qb_loops,
-                "actual_rows": float(sum(c.get("actual_rows", 0) for c in children)),
-                "inputs": children,
-            }
-        return None
-
-    # Window functions: sorts[] + temporary_table with nested_loop
-    wfc = qb.get("window_functions_computation")
-    if wfc and isinstance(wfc, dict):
-        child = None
-        temp = wfc.get("temporary_table")
-        if temp and isinstance(temp, dict):
-            nl = temp.get("nested_loop")
-            if nl:
-                child = _normalize_mariadb_nested_loop(nl)
-
-        # Window sorts are overhead; sum their times
-        sorts = wfc.get("sorts") or []
+    # MariaDB aggregation chain (Explain_select::print_explain_json).
+    if isinstance(obj.get("filesort"), dict):
+        node = _normalize_mariadb_filesort(obj["filesort"], ctx)
+        # The sort node's own time is only the sort; at the top it spans the
+        # whole query block.
+        if top and node.get("inputs"):
+            _propagate_mariadb_time(node, qb_time, qb_loops)
+        return node
+    wfc = obj.get("window_functions_computation")
+    if isinstance(wfc, dict):
+        child = _normalize_block(wfc, ctx)
+        # Window sorts are overhead inside this node. They sort the untimed
+        # temporary table their input filled first, so the two add up.
         sort_time = 0.0
-        for s in sorts:
+        for s in wfc.get("sorts") or []:
             fs = s.get("filesort") if isinstance(s, dict) else None
-            if fs:
+            if isinstance(fs, dict):
                 sort_time += fs.get("r_total_time_ms") or 0
-
-        wf_node = {
+        node = {
             "operation": "Window functions",
             "access_type": "sort",
-            "actual_last_row_ms": float(qb_time),
-            "actual_loops": qb_loops,
-            "actual_rows": float(child.get("actual_rows", 0) if child else 0),
+            "actual_last_row_ms": 0.0,
+            "actual_loops": qb_loops if top else 1,
+            "actual_rows": float((child or {}).get("actual_rows") or 0),
             "inputs": [child] if child else [],
         }
-        return wf_node
+        if top and qb_time:
+            _add_ms(node, qb_time)
+        else:
+            _add_ms(node, sort_time + _ms_total(child))
+        return node
+    temp = obj.get("temporary_table")
+    if isinstance(temp, dict):
+        child = _normalize_block(temp, ctx)
+        if not top:
+            # Inside a filesort / window computation the enclosing node
+            # already stands for "Using temporary".
+            return child
+        # "Using temporary" without a sort (DISTINCT, GROUP BY ... ORDER BY
+        # NULL): MySQL v2 shows the same step as a materialize node.
+        return _wrapper_node("Temporary table", "materialize", child, top, qb_time)
+    dup = obj.get("duplicate_removal")
+    if isinstance(dup, dict):
+        child = _normalize_block(dup, ctx)
+        return _wrapper_node("Remove duplicates", "remove_duplicates", child, top, qb_time)
 
-    # Filesort wrapping
-    filesort = qb.get("filesort")
-    if filesort and isinstance(filesort, dict):
-        sort_node = _normalize_mariadb_filesort(filesort, qb_time)
-        # The sort node's time is just the sort overhead; propagate qb total time
-        if sort_node.get("inputs"):
-            # Set nested loop total time from qb level
-            _propagate_mariadb_time(sort_node, qb_time, qb_loops)
-        return sort_node
+    # MySQL format 1 sort contexts (sort_ctx / window_ctx).
+    for key in ("ordering_operation", "grouping_operation", "duplicates_removal",
+                "buffer_result", "windowing"):
+        inner = obj.get(key)
+        if not isinstance(inner, dict):
+            continue
+        child = _normalize_block(inner, ctx)
+        if key == "grouping_operation":
+            return {
+                "operation": "Group",
+                "access_type": "group",
+                "actual_last_row_ms": float(inner.get("r_total_time_ms") or 0),
+                "actual_loops": inner.get("r_loops") or 1,
+                "actual_rows": 0.0,
+                "inputs": [child] if child else [],
+            }
+        if not child:
+            return None
+        if key == "windowing":
+            # window_ctx writes using_filesort while a window's object is
+            # open, so it lands on windows[] entries.
+            windows = inner.get("windows") if isinstance(inner.get("windows"), list) else []
+            sorted_input = inner.get("using_filesort") or any(
+                isinstance(w, dict) and w.get("using_filesort") for w in windows)
+            return _wrapper_node("Window functions", "sort" if sorted_input else "window",
+                                 child, False, 0)
+        if inner.get("using_filesort"):
+            return {"operation": "Sort", "access_type": "sort",
+                    "actual_last_row_ms": 0.0, "actual_loops": 1,
+                    "actual_rows": child.get("actual_rows") or 0.0,
+                    "estimated_rows": child.get("estimated_rows"),
+                    "inputs": [child]}
+        if key == "duplicates_removal":
+            if "using_filesort" not in inner:
+                # duplication_weedout_ctx (semijoin DuplicateWeedout); DISTINCT
+                # is a sort_ctx and always writes using_filesort.
+                return _weedout_node(child)
+            if inner.get("using_temporary_table"):
+                return _wrapper_node("Temporary table with deduplication",
+                                     "materialize", child, False, 0)
+        return child
 
-    # Grouping (GROUP BY without filesort via temporary table)
-    group_by = qb.get("grouping_operation")
-    if group_by and isinstance(group_by, dict):
-        child = None
-        nl = group_by.get("nested_loop")
-        if nl:
-            child = _normalize_mariadb_nested_loop(nl)
-        group_node = {
-            "operation": "Group",
-            "access_type": "group",
-            "actual_last_row_ms": float(group_by.get("r_total_time_ms") or 0),
-            "actual_loops": group_by.get("r_loops") or 1,
-            "actual_rows": 0.0,
-            "inputs": [child] if child else [],
-        }
-        return group_node
+    nested_loop = obj.get("nested_loop")
+    if isinstance(nested_loop, list) and nested_loop:
+        body = _normalize_mariadb_nested_loop(nested_loop, ctx)
+        if body and top:
+            _propagate_mariadb_time(body, qb_time, qb_loops)
+    elif isinstance(obj.get("table"), dict):
+        body = _normalize_mariadb_table(obj["table"], ctx)
+    else:
+        body = None
 
-    # Plain nested_loop
-    nl = qb.get("nested_loop")
-    if nl:
-        result = _normalize_mariadb_nested_loop(nl)
-        if result:
-            _propagate_mariadb_time(result, qb_time, qb_loops)
-        return result
+    # MySQL format 1 message_ctx: the message sits on the query_block itself,
+    # optionally with the derived table it refers to.
+    message = obj.get("message")
+    if isinstance(message, str) and message:
+        node = _message_node(message)
+        if body:
+            node["inputs"] = [body]
+        return node
+    return body
 
-    return None
+
+def _normalize_mariadb_query_block(qb, ctx=None):
+    """Convert one select (a ``query_block``) into a MySQL-compatible node,
+    keeping its subqueries as ``inputs_from_subqueries``."""
+    if not isinstance(qb, dict):
+        return None
+    ctx = ctx or _NormContext()
+    qb_time = float(qb.get("r_total_time_ms") or 0)
+    qb_loops = qb.get("r_loops") or 1
+    outer = (ctx.select_ms, ctx.subquery_ms)
+    try:
+        # Subqueries first: their time bounds what this select's own
+        # operators may take (_fit_overlaps). Input order is unaffected;
+        # they are attached after the regular inputs below.
+        subs = _gather_subqueries(qb, ctx)
+        sub_ms = sum(_ms_total(s) for s in subs)
+        if qb_time:
+            # A block without a time (materialized semi-join) runs inside
+            # the enclosing select and keeps its ceiling.
+            ctx.select_ms = max(qb_time - sub_ms, 0.0)
+            ctx.subquery_ms = sub_ms
+        result = _normalize_block(qb, ctx, True, qb_time, qb_loops)
+    finally:
+        ctx.select_ms, ctx.subquery_ms = outer
+    if subs:
+        if not result:
+            result = _message_node("Select #{}".format(qb.get("select_id", "?")))
+        result.setdefault("inputs_from_subqueries", []).extend(subs)
+        # A select runs its subqueries inside its own elapsed time, but not
+        # inside any table's (each subquery has its own JOIN::exec).
+        result["subqueries_in_total"] = True
+    if result and qb_time:
+        # The select's top node stands for the whole select: whatever it is
+        # (join, sort, wrapper, table, Materialize), its total is the
+        # block's measured r_total_time_ms, so the select's untimed work
+        # (JOIN::exec setup, sending rows after the last timed call) is its
+        # self time rather than lost.
+        loops = result.get("actual_loops") or 1
+        result["actual_last_row_ms"] = qb_time / loops
+    elif subs:
+        _add_ms(result, sub_ms)
+    return result
 
 
 def _propagate_mariadb_time(node, qb_time, qb_loops):
@@ -1182,9 +1726,10 @@ def _propagate_mariadb_time(node, qb_time, qb_loops):
 
     MariaDB provides per-table r_table_time_ms but the join node itself has no
     inherent timing; we use the query_block's r_total_time_ms.  parse_node()
-    will multiply by actual_loops, so store per-loop time.
+    will multiply by actual_loops, so store per-loop time. Without a reported
+    time (materialized semi-join) the node keeps the sum of its inputs.
     """
-    if not node:
+    if not node or not qb_time:
         return
     if node.get("access_type") in ("join", "sort", "group", "union"):
         loops = node.get("actual_loops") or qb_loops or 1
@@ -1192,8 +1737,33 @@ def _propagate_mariadb_time(node, qb_time, qb_loops):
         node["actual_last_row_ms"] = qb_time / loops if loops > 0 else qb_time
 
 
+def _clear_unmeasured(root, timed, rows):
+    """Replace placeholder measurements with None in an estimate-only plan.
+
+    The normalizer computes with numeric zeros; a plan that carries no
+    elapsed times (EXPLAIN, SHOW ANALYZE counters, MySQL format 1) must not
+    report ``actual_last_row_ms = 0.0``, or it looks measured
+    (plan_matching.timing_available) and compares as a false regression.
+    """
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        if not timed:
+            node["actual_last_row_ms"] = None
+        if not rows:
+            node["actual_rows"] = None
+            node["rows_measured"] = False
+        for key in ("inputs", "inputs_from_subqueries", "inputs_from_select_list"):
+            children = node.get(key)
+            if isinstance(children, list):
+                stack.extend(children)
+
+
 def _normalize_mariadb(data):
-    """Convert MariaDB ANALYZE FORMAT=JSON into MySQL-compatible tree.
+    """Convert a ``query_block`` plan (MariaDB ANALYZE/EXPLAIN FORMAT=JSON,
+    or MySQL explain_json_format_version=1) into a MySQL-compatible tree.
 
     MariaDB uses a radically different JSON schema:
       - query_block.nested_loop[].table instead of operation/inputs tree
@@ -1204,20 +1774,142 @@ def _normalize_mariadb(data):
       - materialized/query_block for subqueries and derived tables
       - union_result/query_specifications for UNION
 
-    This function translates MariaDB's format into MySQL's tree format so the
-    rest of the parser works unchanged.
+    This function translates that format into MySQL's tree format so the
+    rest of the parser works unchanged. See the section comment above for
+    the structures walked.
     """
+    v1 = _has_mysql_v1_keys(data)
+    fmt = ("MySQL EXPLAIN FORMAT=JSON (explain_json_format_version=1)" if v1
+           else "MariaDB ANALYZE/EXPLAIN FORMAT=JSON")
     qb = data.get("query_block")
     if not isinstance(qb, dict):
-        raise ValueError("MariaDB ANALYZE JSON missing query_block")
-    result = _normalize_mariadb_query_block(qb)
+        raise ValueError("{} plan is missing its query_block object".format(fmt))
+    ctx = _NormContext(
+        timed=_contains_key(qb, ("r_table_time_ms", "r_total_time_ms")),
+        rows=_contains_key(qb, ("r_rows", "r_loops")),
+        v1=v1,
+    )
+    result = _normalize_mariadb_query_block(qb, ctx)
     if not result:
-        raise ValueError("Failed to normalize MariaDB ANALYZE JSON")
+        raise ValueError(
+            "Failed to normalize {} plan: its query_block has no table, join, "
+            "set operation, or message".format(fmt))
+    _clear_unmeasured(result, ctx.timed, ctx.rows)
     return result
 
 
+def _has_mysql_v1_keys(data, _depth=0):
+    """True when a query_block-style plan is MySQL explain_json_format_version=1.
+
+    It looks for keys only opt_explain_json.cc writes (see
+    _MYSQL_V1_ONLY_KEYS), or a "message" directly on a query_block (MySQL
+    message_ctx; MariaDB nests messages under "table").
+    """
+    if _depth > 400:
+        return False
+    if isinstance(data, dict):
+        if _MYSQL_V1_ONLY_KEYS.intersection(data):
+            return True
+        qb = data.get("query_block")
+        if isinstance(qb, dict) and isinstance(qb.get("message"), str):
+            return True
+        return any(_has_mysql_v1_keys(v, _depth + 1)
+                   for v in data.values() if isinstance(v, (dict, list)))
+    if isinstance(data, list):
+        return any(_has_mysql_v1_keys(v, _depth + 1)
+                   for v in data if isinstance(v, (dict, list)))
+    return False
+
+
+# Plan fields the parser and the renderers do arithmetic on, with the largest
+# magnitude accepted. Measured counters are 64-bit integers on both servers
+# (MySQL ha_rows and loop counters; MariaDB add_ll/add_ull in sql_explain.cc);
+# measured times are milliseconds, and 1e15 ms is over 31,000 years.
+# Estimates and costs are doubles, so any finite value is accepted.
+_PLAN_COUNT_MAX = float(2 ** 64)
+_PLAN_TIME_MAX_MS = 1e15
+_PLAN_ESTIMATE_MAX = float("inf")
+_PLAN_NUMBER_FIELDS = {
+    # MySQL explain_json_format_version=2
+    "actual_rows": _PLAN_COUNT_MAX,
+    "actual_loops": _PLAN_COUNT_MAX,
+    "actual_last_row_ms": _PLAN_TIME_MAX_MS,
+    "actual_first_row_ms": _PLAN_TIME_MAX_MS,
+    "estimated_rows": _PLAN_ESTIMATE_MAX,
+    "estimated_total_cost": _PLAN_ESTIMATE_MAX,
+    # MariaDB ANALYZE / EXPLAIN FORMAT=JSON
+    "r_loops": _PLAN_COUNT_MAX,
+    "r_rows": _PLAN_COUNT_MAX,
+    "r_output_rows": _PLAN_COUNT_MAX,
+    "r_total_time_ms": _PLAN_TIME_MAX_MS,
+    "r_table_time_ms": _PLAN_TIME_MAX_MS,
+    "r_other_time_ms": _PLAN_TIME_MAX_MS,
+    "r_unpack_time_ms": _PLAN_TIME_MAX_MS,
+    "rows": _PLAN_ESTIMATE_MAX,
+    "loops": _PLAN_ESTIMATE_MAX,
+    "cost": _PLAN_ESTIMATE_MAX,
+    # MySQL explain_json_format_version=1
+    "rows_examined_per_scan": _PLAN_ESTIMATE_MAX,
+}
+
+
+def _plan_value_text(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return "text"
+    if isinstance(value, list):
+        return "a list"
+    if isinstance(value, dict):
+        return "an object"
+    if isinstance(value, int) and value.bit_length() > 100:
+        return "an integer of %d bits" % value.bit_length()
+    return repr(value)
+
+
+def _check_plan_numbers(data):
+    """Raise ValueError when a numeric plan field (``_PLAN_NUMBER_FIELDS``)
+    holds anything but a finite number within its range, or null.
+
+    Runs before any arithmetic: a value such as ``"actual_last_row_ms": "x"``
+    with ``"actual_loops": 1000000000000`` would otherwise be repeated as a
+    string a trillion times by ``ms * loops``. A malformed plan is rejected
+    rather than shown with guessed values. Iterative, so a deeply nested
+    document cannot exhaust the stack here.
+    """
+    stack = [data]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            for key, value in item.items():
+                limit = _PLAN_NUMBER_FIELDS.get(key)
+                if limit is not None and value is not None:
+                    ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+                    if ok:
+                        try:
+                            number = float(value)
+                            ok = math.isfinite(number) and abs(number) <= limit
+                        except OverflowError:
+                            ok = False
+                    if not ok:
+                        bound = ("a finite number" if limit == _PLAN_ESTIMATE_MAX
+                                 else "a finite number up to %g" % limit)
+                        raise ValueError(
+                            "Plan field \"{}\" must be {} or null, got {}. The plan "
+                            "is not EXPLAIN FORMAT=JSON output as the server wrote "
+                            "it.".format(key, bound, _plan_value_text(value)))
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(item, list):
+            stack.extend(v for v in item if isinstance(v, (dict, list)))
+
+
 def parse_explain(text):
-    """Parse EXPLAIN JSON text into root tree node."""
+    """Parse EXPLAIN JSON text into root tree node.
+
+    Raises ValueError for text that is not a plan, and for a plan whose
+    numeric fields are not finite numbers in range (``_check_plan_numbers``).
+    """
     data = load_explain_json(text)
     # The text parsed as JSON, but a plan is always a JSON object. A scalar or
     # array (e.g. "42", "null", "[]") would make the membership tests below
@@ -1229,15 +1921,27 @@ def parse_explain(text):
             "got {}. Make sure you are passing the FORMAT=JSON output of "
             "EXPLAIN ANALYZE, not a scalar or array.".format(type(data).__name__)
         )
+    _check_plan_numbers(data)
     # MySQL 9.7+ wraps the plan in a "query_plan" key
     if "query_plan" in data and isinstance(data["query_plan"], dict):
         data = data["query_plan"]
-    # MariaDB 10.5+ / 11.x uses a completely different JSON schema
+    engine = "mysql"
     if _is_mariadb_format(data):
+        # MySQL format version 1 shares the query_block layout but carries
+        # MySQL-only keys (cost_info, rows_examined_per_scan, ...); MariaDB
+        # writes "cost" (11.0+) and "rows" instead (sql_explain.cc).
+        if not _has_mysql_v1_keys(data):
+            engine = "mariadb"
         data = _normalize_mariadb(data)
+    elif "operation" not in data:
+        raise ValueError(
+            "Not an EXPLAIN FORMAT=JSON plan: expected an \"operation\" tree "
+            "(MySQL explain_json_format_version=2), a \"query_block\" object "
+            "(MariaDB, or MySQL format version 1), or a \"query_plan\" envelope.")
     root = parse_node(data)
     if not root:
         raise ValueError("Failed to parse EXPLAIN JSON")
+    root["engine"] = engine
     _assign_node_ids(root)
     return root
 
@@ -1412,8 +2116,9 @@ OPTIMIZER_SWITCH_EXPLANATIONS = {
     ),
     "materialization": (
         "A subquery or derived table is executed once and its result stored "
-        "in a temporary table for reuse. Watch tmp_table_size / "
-        "max_heap_table_size — it may spill to disk."
+        "in a temporary table for reuse. It may spill to disk past "
+        "tmp_table_size (MySQL's TempTable engine) or the smaller of "
+        "tmp_table_size and max_heap_table_size (MEMORY engine, MariaDB)."
     ),
     "semijoin": (
         "IN / EXISTS subqueries are rewritten into a semi-join with the outer "
@@ -1768,6 +2473,130 @@ def _detect_nonsargable_joins(root):
 # rows × loops (not rows) keeps small inner tables of large joins flagged.
 _TRIVIAL_SCAN_ROWS = 100
 
+# Row-estimate rule: flag a base-table access (or the filter directly above
+# it) whose estimated rows per loop differ from the measured rows per loop by
+# at least this factor, when the larger side times loops reaches at least
+# _MISESTIMATE_MIN_ROWS rows (smaller misses do not change plan choices).
+_MISESTIMATE_RATIO = 10.0
+_MISESTIMATE_MIN_ROWS = 1000
+
+
+# MySQL v2 names the CTE it materializes ("Materialize CTE x", "Materialize
+# recursive CTE x", "Materialize union CTE x"; explain_access_path.cc).
+_CTE_MATERIALIZE_RE = re.compile(r"^Materialize (?:recursive |union )?CTE `?([^`\s]+)`?", re.I)
+
+
+def _cte_names(root):
+    names = set()
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        m = _CTE_MATERIALIZE_RE.match((node.get("details") or {}).get("operation") or "")
+        if m:
+            names.add(m.group(1).lower())
+        stack.extend(node.get("children") or [])
+    return frozenset(names)
+
+
+def _collect_misestimates(root):
+    """Walk the plan with early-stop context; see :func:`_row_misestimate`."""
+    engine = root.get("engine") or "mysql"
+    cte_names = _cte_names(root)
+    found = []
+
+    def walk(node, early_stop):
+        miss = _row_misestimate(node, engine, early_stop, cte_names)
+        if miss:
+            found.append(miss)
+        details = node.get("details") or {}
+        op = (details.get("operation") or "").lower()
+        stops = early_stop or (details.get("access_type") or "").lower() == "limit" \
+            or op.startswith("limit")
+        semi = "semijoin" in op or "antijoin" in op or "semi join" in op or "anti join" in op
+        for index, child in enumerate(node.get("children") or []):
+            walk(child, stops or (semi and index > 0))
+
+    walk(root, False)
+    return found
+
+
+def _row_misestimate(node, engine="mysql", early_stop=False, cte_names=frozenset()):
+    """Return ``{table, kind, estimated, actual, loops, ratio, under}`` when
+    *node* is a measured base-table access, or a filter directly above one,
+    whose row estimate is off by ``_MISESTIMATE_RATIO`` or more; else None.
+
+    *early_stop* means an ancestor can stop reading early (a Limit, or the
+    inner side of a semijoin/antijoin), so fewer actual rows than estimated
+    is expected and only underestimates are reported. On MariaDB, full
+    scans, index scans, and ranges without a quick select take the LIMIT value
+    as their estimate (JOIN_TAB::get_examined_rows), so only index lookups
+    (ref, eq_ref), whose estimate comes from index statistics, are compared.
+    MariaDB plans never show the LIMIT itself, so a LIMIT can still cut the
+    actual rows there; only underestimates are reported on MariaDB.
+
+    Both engines are compared like for like. MySQL writes ``estimated_rows``
+    and ``actual_rows`` per loop (explain_access_path.cc). MariaDB's ``rows``
+    and ``r_rows`` (normalized to the same keys) both count rows examined per
+    scan before the attached WHERE (sql_select.cc, sql_analyze_stmt.h).
+    Materialized inputs are skipped: MySQL reports the subquery's rows there.
+    Recursive-CTE work tables ("Scan new records on c", access_type
+    scan_new_records) and CTE references (*cte_names*) are skipped too:
+    ANALYZE TABLE cannot refresh statistics for them.
+    """
+    details = node.get("details") or {}
+    children = [c for c in node.get("children") or []
+                if (c.get("details") or {}).get("input_kind") not in ("select_list", "subquery")]
+    access_type = (details.get("access_type") or "").lower()
+    kind = "access"
+    target = details
+    if access_type == "filter" and len(children) == 1:
+        target = children[0].get("details") or {}
+        if children[0].get("children"):
+            return None
+        # Report the access itself when it is already misestimated; the
+        # filter above it only inherits that error.
+        if _row_misestimate(children[0], engine, early_stop, cte_names):
+            return None
+        kind = "filter"
+    elif children:
+        return None
+    table = target.get("table_name") or ""
+    if not table or table.startswith("<") or access_type == "materialize":
+        return None
+    # Derived tables and CTEs read through an automatic index
+    # (<auto_key0>, <auto_distinct_key>) have no statistics to refresh.
+    if (target.get("index_name") or "").startswith("<auto"):
+        return None
+    if ((target.get("access_type") or "").lower() == "scan_new_records"
+            or (target.get("operation") or "").lower().startswith("scan new records")
+            or table.lower() in cte_names):
+        return None
+    if engine == "mariadb" and (target.get("access_type") or "").lower() not in ("ref", "eq_ref"):
+        return None
+    if not details.get("rows_measured") or details.get("actual_rows") is None:
+        return None
+    estimated = details.get("estimated_rows")
+    if estimated is None:
+        return None
+    try:
+        estimated = float(estimated)
+        actual = float(details.get("actual_rows"))
+        loops = int(details.get("actual_loops") or 0)
+    except (TypeError, ValueError):
+        return None
+    if loops < 1:
+        return None
+    high, low = max(estimated, actual), max(min(estimated, actual), 1.0)
+    ratio = high / low
+    if ratio < _MISESTIMATE_RATIO or high * loops < _MISESTIMATE_MIN_ROWS:
+        return None
+    if (early_stop or engine == "mariadb") and actual < estimated:
+        return None
+    return {"table": table, "kind": kind, "estimated": estimated,
+            "actual": actual, "loops": loops, "ratio": ratio,
+            "under": actual > estimated,
+            "short_label": (node.get("short_label") or "").strip()}
+
 
 def analyze_plan(root):
     """Scan parsed EXPLAIN tree and return analysis dict.
@@ -1794,6 +2623,7 @@ def analyze_plan(root):
     has_nested_loop = False
     has_bnl = False  # Block Nested Loop: join buffer in use (Extra: "Using join buffer (Block Nested Loop)", type ALL/index/range)
     bnl_nodes = []   # list of {short_label, rows} for BNL-affected nodes
+    misestimates = []  # see _row_misestimate
     has_covering = False
 
     def _scan(node):
@@ -1816,7 +2646,9 @@ def analyze_plan(root):
         # and, for named derived/CTE aliases (agg, sub, prod_stats, …), the
         # presence of children. Real base scans (leaf node, plain name) count.
         if access_type == "table" and table_name:
-            is_materialized = bool(node.get("children")) or table_name.startswith("<")
+            is_materialized = any(
+                (c.get("details") or {}).get("input_kind") not in ("select_list", "subquery")
+                for c in node.get("children") or []) or table_name.startswith("<")
             scan_rows = float(details.get("actual_rows") or 0)
             scan_loops = int(details.get("actual_loops") or 1)
             # Skip trivial scans. An index can only beat a full scan when the
@@ -1960,6 +2792,62 @@ def analyze_plan(root):
             "mid-sized tables."
         )
 
+    misestimates.extend(_collect_misestimates(root))
+    misestimate_msg = None
+    if misestimates:
+        misestimates.sort(key=lambda m: -m["ratio"])
+        parts = []
+        for m in misestimates[:3]:
+            parts.append("{}{} (estimated {:,.0f}, actual {:,.0f} rows per loop, {:,.0f}\u00d7 {})".format(
+                m["table"], " filter" if m["kind"] == "filter" else "",
+                m["estimated"], m["actual"], m["ratio"],
+                "under" if m["under"] else "over"))
+        if len(misestimates) > 3:
+            parts.append("{} more".format(len(misestimates) - 3))
+        misestimate_msg = "Row estimate off by {:.0f}\u00d7 or more: {}".format(
+            _MISESTIMATE_RATIO, "; ".join(parts))
+        if root.get("engine") == "mariadb":
+            misestimate_msg += (" (MariaDB counts rows examined before the WHERE "
+                                "filter and does not show LIMIT, so only "
+                                "underestimates are reported)")
+        warnings.append(misestimate_msg)
+        tables = list(dict.fromkeys(m["table"] for m in misestimates))
+        first = tables[0]
+        if root.get("engine") == "mariadb":
+            # MariaDB writes the table's alias as table_name
+            # (sql_select.cc: eta->table_name from real_table->alias), so the
+            # name may not be a table ANALYZE TABLE can open.
+            suggestions.append(
+                "Refresh statistics with ANALYZE TABLE on the base {} behind "
+                "{} {} (MariaDB plans show the alias used in the query, not the "
+                "table name). If a filter on a non-indexed column stays "
+                "misestimated, add a histogram with ANALYZE TABLE <table> "
+                "PERSISTENT FOR COLUMNS (<column>) INDEXES (). Why: the "
+                "optimizer picks join order and access methods from these "
+                "estimates. InnoDB recalculates persistent statistics on its "
+                "own only after about 10% of a table's rows change, and under "
+                "the default use_stat_tables=PREFERABLY_FOR_QUERIES, ANALYZE "
+                "TABLE collects column statistics and histograms only when you "
+                "add PERSISTENT FOR.".format(
+                    "tables" if len(tables) > 1 else "table",
+                    "aliases" if len(tables) > 1 else "alias",
+                    ", ".join(tables))
+            )
+        else:
+            suggestions.append(
+                "Refresh statistics with ANALYZE TABLE {}. If a filter on a "
+                "non-indexed column stays misestimated, add a histogram: on MySQL "
+                "8.0+, ANALYZE TABLE {} UPDATE HISTOGRAM ON <column> WITH 100 "
+                "BUCKETS; on MariaDB, ANALYZE TABLE {} PERSISTENT FOR COLUMNS "
+                "(<column>) INDEXES (). Why: the optimizer picks join order and "
+                "access methods from these estimates. InnoDB recalculates "
+                "persistent statistics on its own only after about 10% of a "
+                "table's rows change, and on MariaDB, under the default "
+                "use_stat_tables=PREFERABLY_FOR_QUERIES, ANALYZE TABLE collects "
+                "column statistics and histograms only when you add PERSISTENT "
+                "FOR.".format(", ".join(tables), first, first)
+            )
+
     if full_scans:
         parts = [f"{s['table']} ({int(s['rows'])} rows)" for s in full_scans]
         warnings.append("Full table scan: " + ", ".join(parts))
@@ -1979,7 +2867,30 @@ def analyze_plan(root):
             f"{len(temp_tables)} temp table(s) (Materialize)"
             + (f" — up to {int(max_rows)} rows; may spill to disk" if max_rows > 0 else " — may spill to disk")
         )
-        suggestions.append("Increase tmp_table_size / max_heap_table_size to keep temp tables in memory")
+        if root.get("engine") == "mariadb":
+            # sql_select.cc: an in-memory (heap) internal temporary table holds
+            # MY_MIN(tmp_memory_table_size, max_heap_table_size); tmp_table_size
+            # is an alias of tmp_memory_table_size (sys_vars.cc).
+            suggestions.append(
+                "Check temporary-table disk usage before raising tmp_table_size "
+                "together with max_heap_table_size. Why: MariaDB keeps an internal "
+                "temporary table in memory only up to the smaller of the two, then "
+                "converts it to an on-disk Aria or MyISAM table. A temporary table "
+                "in the plan does not by itself show that it spilled to disk."
+            )
+        else:
+            # sql_tmp_table.cc: min(tmp_table_size, max_heap_table_size) applies
+            # only to MEMORY (heap) tables; TempTable takes tmp_table_size as its
+            # per-table limit (storage/temptable/src/handler.cc).
+            suggestions.append(
+                "Check internal_tmp_mem_storage_engine and temporary-table disk "
+                "usage before raising tmp_table_size. Why: the default TempTable "
+                "engine limits each in-memory internal temporary table by "
+                "tmp_table_size, and max_heap_table_size does not apply to it; only "
+                "the MEMORY engine also uses max_heap_table_size, taking the smaller "
+                "of the two. A temporary table in the plan does not by itself show "
+                "that it spilled to disk."
+            )
 
     if filesorts:
         max_rows = max(f["rows"] for f in filesorts)
@@ -2036,6 +2947,11 @@ def analyze_plan(root):
             lbl = f.get("short_label") or "Sort"
             node_highlights.append({"short_label": lbl, "message": msg})
 
+    if misestimate_msg:
+        for m in misestimates:
+            node_highlights.append({"short_label": m["short_label"] or m["table"],
+                                    "message": misestimate_msg})
+
     if bnl_nodes:
         bnl_msg = warnings[-1] if has_bnl and warnings else "Block Nested-Loop join buffer"
         # Find the actual BNL warning string
@@ -2066,6 +2982,7 @@ def analyze_plan(root):
         "range_scans": range_scans,
         "bnl_nodes": bnl_nodes,
         "nonsargable_joins": nonsargable_joins,
+        "misestimates": misestimates,
         "optimizer_features": features,
         "optimizer_switches": optimizer_switches,
         "warnings": warnings,

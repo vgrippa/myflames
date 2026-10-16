@@ -1,0 +1,178 @@
+{
+ "client": "mysql  Ver 8.4.11 for Linux on aarch64 (MySQL Community Server - GPL)",
+ "server": "mysql",
+ "note": "captured from a throwaway container",
+ "stdin": "DELIMITER __mfcafe0123_\n/*myflames:editor*/ SELECT 'f00d' AS myflames_editor, CONNECTION_ID() AS connection_id, VERSION() AS version, @@autocommit AS autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates\n__mfcafe0123_\ndelimiter\n/*myflames:editor*/ SET SESSION sql_safe_updates = 1\n__mfcafe0123_\ndelimiter\nSELECT 1 AS a, NULL AS n, '' AS e, 'NULL' AS s, UNHEX('00FF41') AS b, 18446744073709551615 AS big, CAST('2024-01-02 03:04:05' AS DATETIME) AS dt, 'x<y&\"z\">' AS esc, 'multi\nline' AS ml, 'tab\there' AS tb, '' AS `dup`, 'second' AS `dup`, UNHEX('') AS emptybin, 'café 😀' AS uni\n__mfcafe0123_\ndelimiter\nSET @x = 5\n__mfcafe0123_\ndelimiter\nSELECT @x AS x\n__mfcafe0123_\ndelimiter\nCREATE DATABASE IF NOT EXISTS edfx\n__mfcafe0123_\ndelimiter\nCREATE TEMPORARY TABLE edfx.tt (id INT PRIMARY KEY, v VARCHAR(10))\n__mfcafe0123_\ndelimiter\nINSERT INTO edfx.tt VALUES (1, 'a'), (2, NULL)\n__mfcafe0123_\ndelimiter\nUPDATE edfx.tt SET v = 'b' WHERE id >= 1\n__mfcafe0123_\ndelimiter\nSELECT ROW_COUNT() AS rc\n__mfcafe0123_\ndelimiter\nSELECT * FROM edfx.tt WHERE 1 = 0\n__mfcafe0123_\ndelimiter\nSELECT 1/0 AS d\n__mfcafe0123_\ndelimiter\nSHOW WARNINGS\n__mfcafe0123_\ndelimiter\nSELECT * FROM edfx.no_such_table\n__mfcafe0123_\ndelimiter\nSELECT x FROM\n  edfx.tt WHERE\n__mfcafe0123_\ndelimiter\nDROP PROCEDURE IF EXISTS edfx.two\n__mfcafe0123_\ndelimiter\nCREATE PROCEDURE edfx.two() BEGIN SELECT 1 AS one; SELECT 2 AS two; END\n__mfcafe0123_\ndelimiter\nCALL edfx.two()\n__mfcafe0123_\ndelimiter\nSELECT -- a comment\n 3 AS c /* block */\n__mfcafe0123_\ndelimiter\n/*myflames:editor*/ SELECT (SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME = 'events_transactions_current') AS consumer, (SELECT ENABLED FROM performance_schema.setup_instruments WHERE NAME = 'transaction') AS instrument, (SELECT INSTRUMENTED FROM performance_schema.threads WHERE THREAD_ID = PS_CURRENT_THREAD_ID()) AS instrumented, (SELECT STATE FROM performance_schema.events_transactions_current WHERE THREAD_ID = PS_CURRENT_THREAD_ID()) AS state\n__mfcafe0123_\ndelimiter\n/*myflames:editor*/ SELECT 'a1b2c3' AS myflames_editor, CONNECTION_ID() AS connection_id, @@autocommit AS autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates\n__mfcafe0123_\ndelimiter\n",
+ "steps": [
+  {
+   "kind": "helper",
+   "send": "/*myflames:editor*/ SELECT 'f00d' AS myflames_editor, CONNECTION_ID() AS connection_id, VERSION() AS version, @@autocommit AS autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates",
+   "first_line": 2,
+   "marker_line": 4,
+   "limit": null,
+   "results": 1
+  },
+  {
+   "kind": "helper",
+   "send": "/*myflames:editor*/ SET SESSION sql_safe_updates = 1",
+   "first_line": 5,
+   "marker_line": 7,
+   "limit": null,
+   "results": 0
+  },
+  {
+   "kind": "user",
+   "send": "SELECT 1 AS a, NULL AS n, '' AS e, 'NULL' AS s, UNHEX('00FF41') AS b, 18446744073709551615 AS big, CAST('2024-01-02 03:04:05' AS DATETIME) AS dt, 'x<y&\"z\">' AS esc, 'multi\nline' AS ml, 'tab\there' AS tb, '' AS `dup`, 'second' AS `dup`, UNHEX('') AS emptybin, 'café 😀' AS uni",
+   "first_line": 8,
+   "marker_line": 11,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SET @x = 5",
+   "first_line": 12,
+   "marker_line": 14,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SELECT @x AS x",
+   "first_line": 15,
+   "marker_line": 17,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "CREATE DATABASE IF NOT EXISTS edfx",
+   "first_line": 18,
+   "marker_line": 20,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "CREATE TEMPORARY TABLE edfx.tt (id INT PRIMARY KEY, v VARCHAR(10))",
+   "first_line": 21,
+   "marker_line": 23,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "INSERT INTO edfx.tt VALUES (1, 'a'), (2, NULL)",
+   "first_line": 24,
+   "marker_line": 26,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "UPDATE edfx.tt SET v = 'b' WHERE id >= 1",
+   "first_line": 27,
+   "marker_line": 29,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SELECT ROW_COUNT() AS rc",
+   "first_line": 30,
+   "marker_line": 32,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SELECT * FROM edfx.tt WHERE 1 = 0",
+   "first_line": 33,
+   "marker_line": 35,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SELECT 1/0 AS d",
+   "first_line": 36,
+   "marker_line": 38,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SHOW WARNINGS",
+   "first_line": 39,
+   "marker_line": 41,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SELECT * FROM edfx.no_such_table",
+   "first_line": 42,
+   "marker_line": 44,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SELECT x FROM\n  edfx.tt WHERE",
+   "first_line": 45,
+   "marker_line": 48,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "DROP PROCEDURE IF EXISTS edfx.two",
+   "first_line": 49,
+   "marker_line": 51,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "CREATE PROCEDURE edfx.two() BEGIN SELECT 1 AS one; SELECT 2 AS two; END",
+   "first_line": 52,
+   "marker_line": 54,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "CALL edfx.two()",
+   "first_line": 55,
+   "marker_line": 57,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "user",
+   "send": "SELECT -- a comment\n 3 AS c /* block */",
+   "first_line": 58,
+   "marker_line": 61,
+   "limit": null,
+   "results": null
+  },
+  {
+   "kind": "helper",
+   "send": "/*myflames:editor*/ SELECT (SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME = 'events_transactions_current') AS consumer, (SELECT ENABLED FROM performance_schema.setup_instruments WHERE NAME = 'transaction') AS instrument, (SELECT INSTRUMENTED FROM performance_schema.threads WHERE THREAD_ID = PS_CURRENT_THREAD_ID()) AS instrumented, (SELECT STATE FROM performance_schema.events_transactions_current WHERE THREAD_ID = PS_CURRENT_THREAD_ID()) AS state",
+   "first_line": 62,
+   "marker_line": 64,
+   "limit": null,
+   "results": 1
+  },
+  {
+   "kind": "helper",
+   "send": "/*myflames:editor*/ SELECT 'a1b2c3' AS myflames_editor, CONNECTION_ID() AS connection_id, @@autocommit AS autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates",
+   "first_line": 65,
+   "marker_line": 67,
+   "limit": null,
+   "results": 1
+  }
+ ],
+ "stdout": "--------------\n/*myflames:editor*/ SELECT 'f00d' AS myflames_editor, CONNECTION_ID() AS connection_id, VERSION() AS version, @@autocommit AS autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:editor*/ SELECT 'f00d' AS myflames_editor, CONNECTION_ID() AS connection_id, VERSION() AS version, @@autocommit AS autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"myflames_editor\">f00d</field>\n\t<field name=\"connection_id\">37</field>\n\t<field name=\"version\">8.4.11</field>\n\t<field name=\"autocommit\">1</field>\n\t<field name=\"sql_mode\">ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION</field>\n\t<field name=\"sql_safe_updates\">0</field>\n  </row>\n</resultset>\n1 row in set\n\n--------------\n/*myflames:editor*/ SET SESSION sql_safe_updates = 1\n--------------\n\nQuery OK, 0 rows affected\n\n--------------\nSELECT 1 AS a, NULL AS n, '' AS e, 'NULL' AS s, UNHEX('00FF41') AS b, 18446744073709551615 AS big, CAST('2024-01-02 03:04:05' AS DATETIME) AS dt, 'x<y&\"z\">' AS esc, 'multi\nline' AS ml, 'tab\there' AS tb, '' AS `dup`, 'second' AS `dup`, UNHEX('') AS emptybin, 'café 😀' AS uni\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"SELECT 1 AS a, NULL AS n, '' AS e, 'NULL' AS s, UNHEX('00FF41') AS b, 18446744073709551615 AS big, CAST('2024-01-02 03:04:05' AS DATETIME) AS dt, 'x&lt;y&amp;&quot;z&quot;&gt;' AS esc, 'multi\nline' AS ml, 'tab\there' AS tb, '' AS `dup`, 'second' AS `dup`, UNHEX('') AS emptybin, 'café 😀' AS uni\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"a\">1</field>\n\t<field name=\"n\" xsi:nil=\"true\" />\n\t<field name=\"e\"></field>\n\t<field name=\"s\">NULL</field>\n\t<field name=\"b\">0x00FF41</field>\n\t<field name=\"big\">18446744073709551615</field>\n\t<field name=\"dt\">2024-01-02 03:04:05</field>\n\t<field name=\"esc\">x&lt;y&amp;&quot;z&quot;&gt;</field>\n\t<field name=\"ml\">multi\nline</field>\n\t<field name=\"tb\">tab\there</field>\n\t<field name=\"dup\"></field>\n\t<field name=\"dup\">second</field>\n\t<field name=\"emptybin\">0x</field>\n\t<field name=\"uni\">café 😀</field>\n  </row>\n</resultset>\n1 row in set\n\n--------------\nSET @x = 5\n--------------\n\nQuery OK, 0 rows affected\n\n--------------\nSELECT @x AS x\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"SELECT @x AS x\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"x\">5</field>\n  </row>\n</resultset>\n1 row in set\n\n--------------\nCREATE DATABASE IF NOT EXISTS edfx\n--------------\n\nQuery OK, 1 row affected, 1 warning\n\n--------------\nCREATE TEMPORARY TABLE edfx.tt (id INT PRIMARY KEY, v VARCHAR(10))\n--------------\n\nQuery OK, 0 rows affected\n\n--------------\nINSERT INTO edfx.tt VALUES (1, 'a'), (2, NULL)\n--------------\n\nQuery OK, 2 rows affected\nRecords: 2  Duplicates: 0  Warnings: 0\n\n--------------\nUPDATE edfx.tt SET v = 'b' WHERE id >= 1\n--------------\n\nQuery OK, 2 rows affected\nRows matched: 2  Changed: 2  Warnings: 0\n\n--------------\nSELECT ROW_COUNT() AS rc\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"SELECT ROW_COUNT() AS rc\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"rc\">2</field>\n  </row>\n</resultset>\n1 row in set\n\n--------------\nSELECT * FROM edfx.tt WHERE 1 = 0\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"SELECT * FROM edfx.tt WHERE 1 = 0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"></resultset>\n0 rows in set\n\n--------------\nSELECT 1/0 AS d\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"SELECT 1/0 AS d\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"d\" xsi:nil=\"true\" />\n  </row>\n</resultset>\n1 row in set, 1 warning\n\n--------------\nSHOW WARNINGS\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"SHOW WARNINGS\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"Level\">Warning</field>\n\t<field name=\"Code\">1365</field>\n\t<field name=\"Message\">Division by 0</field>\n  </row>\n</resultset>\n1 row in set\n\n--------------\nSELECT * FROM edfx.no_such_table\n--------------\n\n--------------\nSELECT x FROM\n  edfx.tt WHERE\n--------------\n\n--------------\nDROP PROCEDURE IF EXISTS edfx.two\n--------------\n\nQuery OK, 0 rows affected\n\n--------------\nCREATE PROCEDURE edfx.two() BEGIN SELECT 1 AS one; SELECT 2 AS two; END\n--------------\n\nQuery OK, 0 rows affected\n\n--------------\nCALL edfx.two()\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"CALL edfx.two()\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"one\">1</field>\n  </row>\n</resultset>\n1 row in set\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"CALL edfx.two()\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"two\">2</field>\n  </row>\n</resultset>\n1 row in set\n\nQuery OK, 0 rows affected\n\n--------------\nSELECT -- a comment\n 3 AS c /* block */\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"SELECT -- a comment\n 3 AS c /* block */\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"c\">3</field>\n  </row>\n</resultset>\n1 row in set\n\n--------------\n/*myflames:editor*/ SELECT (SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME = 'events_transactions_current') AS consumer, (SELECT ENABLED FROM performance_schema.setup_instruments WHERE NAME = 'transaction') AS instrument, (SELECT INSTRUMENTED FROM performance_schema.threads WHERE THREAD_ID = PS_CURRENT_THREAD_ID()) AS instrumented, (SELECT STATE FROM performance_schema.events_transactions_current WHERE THREAD_ID = PS_CURRENT_THREAD_ID()) AS state\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:editor*/ SELECT (SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME = 'events_transactions_current') AS consumer, (SELECT ENABLED FROM performance_schema.setup_instruments WHERE NAME = 'transaction') AS instrument, (SELECT INSTRUMENTED FROM performance_schema.threads WHERE THREAD_ID = PS_CURRENT_THREAD_ID()) AS instrumented, (SELECT STATE FROM performance_schema.events_transactions_current WHERE THREAD_ID = PS_CURRENT_THREAD_ID()) AS state\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"consumer\">YES</field>\n\t<field name=\"instrument\">YES</field>\n\t<field name=\"instrumented\">YES</field>\n\t<field name=\"state\">COMMITTED</field>\n  </row>\n</resultset>\n1 row in set\n\n--------------\n/*myflames:editor*/ SELECT 'a1b2c3' AS myflames_editor, CONNECTION_ID() AS connection_id, @@autocommit AS autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates\n--------------\n\n<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:editor*/ SELECT 'a1b2c3' AS myflames_editor, CONNECTION_ID() AS connection_id, @@autocommit AS autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"myflames_editor\">a1b2c3</field>\n\t<field name=\"connection_id\">37</field>\n\t<field name=\"autocommit\">1</field>\n\t<field name=\"sql_mode\">ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION</field>\n\t<field name=\"sql_safe_updates\">1</field>\n  </row>\n</resultset>\n1 row in set\n\nBye\n",
+ "stderr": "ERROR at line 4: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 7: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 11: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 14: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 17: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 20: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 23: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 26: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 29: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 32: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 35: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 38: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 41: DELIMITER must be followed by a 'delimiter' character or string\nERROR 1146 (42S02) at line 42: Table 'edfx.no_such_table' doesn't exist\nERROR at line 44: DELIMITER must be followed by a 'delimiter' character or string\nERROR 1064 (42000) at line 45: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '' at line 2\nERROR at line 48: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 51: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 54: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 57: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 61: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 64: DELIMITER must be followed by a 'delimiter' character or string\nERROR at line 67: DELIMITER must be followed by a 'delimiter' character or string\n"
+}

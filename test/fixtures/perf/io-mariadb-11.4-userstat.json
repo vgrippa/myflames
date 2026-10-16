@@ -1,0 +1,231 @@
+{
+ "args": {
+  "interval": 5,
+  "limit": 20,
+  "schema": "mfshop"
+ },
+ "calls": [
+  [
+   "/*myflames:io*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('datadir', 'performance_schema', 'userstat', 'version', 'version_comment')",
+   "datadir\t/var/lib/mysql/\nperformance_schema\tOFF\nuserstat\tON\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:io*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t2452\n"
+  ],
+  [
+   "/*myflames:io*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Innodb_data_read', 'Innodb_data_written', 'Innodb_data_reads', 'Innodb_data_writes', 'Innodb_data_fsyncs', 'Innodb_os_log_written', 'Innodb_buffer_pool_reads', 'Innodb_buffer_pool_read_ahead', 'Innodb_buffer_pool_read_requests')",
+   "Innodb_buffer_pool_read_ahead\t27\nInnodb_buffer_pool_read_requests\t1708445\nInnodb_buffer_pool_reads\t1264\nInnodb_data_fsyncs\t281\nInnodb_data_read\t20709376\nInnodb_data_reads\t1282\nInnodb_data_writes\t0\nInnodb_data_written\t0\nInnodb_os_log_written\t25329914\nUptime\t2452\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ, ROWS_CHANGED FROM information_schema.TABLE_STATISTICS WHERE TABLE_SCHEMA = CONVERT(X'6d6673686f70' USING utf8mb4)",
+   "mfshop\torders\t33108248\t310000\nmfshop\tcustomers\t496002\t0\nmfshop\todd$name\t124\t0\n"
+  ],
+  [
+   "/*myflames:io*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Innodb_data_read', 'Innodb_data_written', 'Innodb_data_reads', 'Innodb_data_writes', 'Innodb_data_fsyncs', 'Innodb_os_log_written', 'Innodb_buffer_pool_reads', 'Innodb_buffer_pool_read_ahead', 'Innodb_buffer_pool_read_requests')",
+   "Innodb_buffer_pool_read_ahead\t27\nInnodb_buffer_pool_read_requests\t2215522\nInnodb_buffer_pool_reads\t1264\nInnodb_data_fsyncs\t360\nInnodb_data_read\t20709376\nInnodb_data_reads\t1282\nInnodb_data_writes\t0\nInnodb_data_written\t0\nInnodb_os_log_written\t32863401\nUptime\t2457\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ, ROWS_CHANGED FROM information_schema.TABLE_STATISTICS WHERE TABLE_SCHEMA = CONVERT(X'6d6673686f70' USING utf8mb4)",
+   "mfshop\torders\t46147822\t402500\nmfshop\tcustomers\t648003\t0\nmfshop\todd$name\t161\t0\n"
+  ]
+ ],
+ "report": {
+  "elapsed_s": 5.05,
+  "engine": "mariadb",
+  "global": [
+   {
+    "delta": 0,
+    "explain": "Bytes InnoDB read from its data files (Innodb_data_read).",
+    "key": "data_read",
+    "label": "Data read",
+    "rate": 0,
+    "sources": [
+     "Innodb_data_read"
+    ],
+    "unit": "B/s"
+   },
+   {
+    "delta": 0,
+    "explain": "Bytes InnoDB wrote (Innodb_data_written). On MariaDB redo log writes are not included; see Redo written.",
+    "key": "data_written",
+    "label": "Data written",
+    "rate": 0,
+    "sources": [
+     "Innodb_data_written"
+    ],
+    "unit": "B/s"
+   },
+   {
+    "delta": 0,
+    "explain": "Read operations on InnoDB data files (Innodb_data_reads); one can read several pages.",
+    "key": "data_reads",
+    "label": "Read operations",
+    "rate": 0,
+    "sources": [
+     "Innodb_data_reads"
+    ],
+    "unit": "/s"
+   },
+   {
+    "delta": 0,
+    "explain": "Write operations InnoDB issued (Innodb_data_writes).",
+    "key": "data_writes",
+    "label": "Write operations",
+    "rate": 0,
+    "sources": [
+     "Innodb_data_writes"
+    ],
+    "unit": "/s"
+   },
+   {
+    "delta": 79,
+    "explain": "fsync() calls InnoDB made (Innodb_data_fsyncs).",
+    "key": "data_fsyncs",
+    "label": "Fsyncs",
+    "rate": 15.64,
+    "sources": [
+     "Innodb_data_fsyncs"
+    ],
+    "unit": "/s"
+   },
+   {
+    "delta": 7533487,
+    "explain": "Redo log bytes (Innodb_os_log_written).",
+    "key": "redo_written",
+    "label": "Redo written",
+    "rate": 1491842.18,
+    "sources": [
+     "Innodb_os_log_written"
+    ],
+    "unit": "B/s"
+   },
+   {
+    "delta": 0,
+    "explain": "Buffer pool pages read from disk (Innodb_buffer_pool_reads, read-ahead included on MariaDB).",
+    "key": "pages_read",
+    "label": "Pages read from disk",
+    "rate": 0,
+    "sources": [
+     "Innodb_buffer_pool_reads"
+    ],
+    "unit": "pages/s"
+   }
+  ],
+  "interval": 5,
+  "notes": [
+   "Performance Schema is off, so tables come from MariaDB user statistics (userstat=ON): rows read and changed, with no times and no per-file view.",
+   "Since server start covers 40 min 52 s of uptime."
+  ],
+  "performance_schema": false,
+  "restarted": false,
+  "schema_version": "io-1.0",
+  "scope": {
+   "schema": "mfshop"
+  },
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "since_start": {
+   "file_classes": [],
+   "files": [],
+   "more": {
+    "tables": 0
+   },
+   "tables": [
+    {
+     "deletes": null,
+     "inserts": null,
+     "ops": null,
+     "read_ms": null,
+     "read_rows": 46147822,
+     "schema": "mfshop",
+     "table": "orders",
+     "total_ms": null,
+     "updates": null,
+     "write_ms": null,
+     "write_rows": 402500
+    },
+    {
+     "deletes": null,
+     "inserts": null,
+     "ops": null,
+     "read_ms": null,
+     "read_rows": 648003,
+     "schema": "mfshop",
+     "table": "customers",
+     "total_ms": null,
+     "updates": null,
+     "write_ms": null,
+     "write_rows": 0
+    },
+    {
+     "deletes": null,
+     "inserts": null,
+     "ops": null,
+     "read_ms": null,
+     "read_rows": 161,
+     "schema": "mfshop",
+     "table": "odd$name",
+     "total_ms": null,
+     "updates": null,
+     "write_ms": null,
+     "write_rows": 0
+    }
+   ],
+   "uptime_s": 2457
+  },
+  "source": "userstat",
+  "started_at": "2026-10-13T17:41:35.513911+00:00",
+  "taken_at": "2026-10-13T17:41:40.563684+00:00",
+  "uptime_s": 2452,
+  "window": {
+   "file_classes": [],
+   "files": [],
+   "more": {
+    "tables": 0
+   },
+   "status": "ok",
+   "tables": [
+    {
+     "deletes": null,
+     "inserts": null,
+     "ops": null,
+     "read_ms": null,
+     "read_rows": 13039574,
+     "schema": "mfshop",
+     "table": "orders",
+     "total_ms": null,
+     "updates": null,
+     "write_ms": null,
+     "write_rows": 92500
+    },
+    {
+     "deletes": null,
+     "inserts": null,
+     "ops": null,
+     "read_ms": null,
+     "read_rows": 152001,
+     "schema": "mfshop",
+     "table": "customers",
+     "total_ms": null,
+     "updates": null,
+     "write_ms": null,
+     "write_rows": 0
+    },
+    {
+     "deletes": null,
+     "inserts": null,
+     "ops": null,
+     "read_ms": null,
+     "read_rows": 37,
+     "schema": "mfshop",
+     "table": "odd$name",
+     "total_ms": null,
+     "updates": null,
+     "write_ms": null,
+     "write_rows": 0
+    }
+   ]
+  }
+ },
+ "server": "mariadb-11.4-userstat"
+}

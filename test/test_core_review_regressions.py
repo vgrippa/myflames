@@ -91,7 +91,8 @@ class TestLiveExplainEscaping(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, stdout.encode(), b'')
         with MySQLConnection(host='localhost', binary='/bin/mysql') as conn:
             conn._is_mariadb_cache = False
-            with mock.patch('myflames.connector.subprocess.run', side_effect=fake_run):
+            # The connector runs the client through _run_bounded (Popen with output caps).
+            with mock.patch('myflames.connector._run_bounded', side_effect=fake_run):
                 result = parse_explain(conn.explain_analyze('SELECT * FROM t'))
         self.assertEqual(result['details']['condition'], plan['condition'])
 

@@ -1,0 +1,70 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:innodb*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('innodb_adaptive_hash_index', 'innodb_buffer_pool_instances', 'innodb_change_buffering', 'innodb_log_file_size', 'innodb_log_files_in_group', 'innodb_max_dirty_pages_pct', 'innodb_native_foreign_keys', 'innodb_page_size', 'innodb_redo_log_capacity', 'innodb_thread_concurrency', 'performance_schema', 'version', 'version_comment')",
+   "innodb_adaptive_hash_index\tOFF\ninnodb_log_file_size\t100663296\ninnodb_max_dirty_pages_pct\t90.000000\ninnodb_page_size\t16384\nperformance_schema\tOFF\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:innodb*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Innodb_redo_log_capacity_resized', 'Innodb_checkpoint_age', 'Innodb_checkpoint_max_age', 'Innodb_deadlocks', 'Innodb_truncated_status_writes')",
+   "Innodb_checkpoint_age\t2612\nInnodb_checkpoint_max_age\t80819529\nInnodb_deadlocks\t1\nInnodb_truncated_status_writes\t0\nUptime\t2619\n"
+  ],
+  [
+   "/*myflames:innodb*/ SHOW ENGINE INNODB STATUS",
+   null,
+   "mysql client exited 1: ERROR 1227 (42000) at line 1: Access denied; you need (at least one of) the PROCESS privilege(s) for this operation"
+  ]
+ ],
+ "report": {
+  "available": false,
+  "engine": "mariadb",
+  "error": {
+   "code": "no_process",
+   "message": "SHOW ENGINE INNODB STATUS needs the PROCESS privilege, which this account does not have. Grant it with: GRANT PROCESS ON *.* TO <user>; (it also lets the account see every session in the process list and information_schema.INNODB_TRX)."
+  },
+  "header": {
+   "printed_at": null,
+   "window_s": null
+  },
+  "notes": [
+   "SHOW ENGINE INNODB STATUS needs the PROCESS privilege, which this account does not have. Grant it with: GRANT PROCESS ON *.* TO <user>; (it also lets the account see every session in the process list and information_schema.INNODB_TRX)."
+  ],
+  "parse": {
+   "complete": false,
+   "sections_found": [],
+   "truncated_by_server": false,
+   "unknown_sections": []
+  },
+  "performance_schema": false,
+  "raw": null,
+  "rules": {
+   "dirty": "watch at innodb_max_dirty_pages_pct (90 by default); a high share alone is not a stall, waits for a free page and a nearly full redo log are",
+   "history_list": "a rule of thumb without a trend: watch at 100,000 committed transactions whose undo logs purge has not processed yet, problem at 1,000,000. The size alone says little; a list that keeps growing across refreshes means purge is falling behind, most often because an old read view (a REPEATABLE READ transaction or a long statement) is still open",
+   "hit_rate": "watch below 99%, problem below 95% with at least 10 pages read from disk per second; judged only with about 10,000 page requests or more in the window",
+   "lock_wait": "watch when any transaction is waiting for a lock",
+   "pending_io": "watch when reads or fsyncs are pending in this snapshot (pending writes are shown but not judged: the page cleaner always has some in flight). One snapshot cannot tell a burst from a backlog: pending reads on every refresh mean queries wait for the storage",
+   "purge_state": "watch when purge is not running (stopped or disabled)",
+   "queue": "watch when statements wait in the InnoDB queue, which happens only when innodb_thread_concurrency is above 0 and that many threads are already inside InnoDB",
+   "redo_mariadb": "watch when the checkpoint age reaches 7/8 of Innodb_checkpoint_max_age (InnoDB flushes ahead, about 71% of innodb_log_file_size), problem at Innodb_checkpoint_max_age (writes wait, about 81%)",
+   "redo_mysql": "watch when the checkpoint age reaches about 73% of the redo capacity (adaptive flushing at its age limit), problem at about 79% (forced flushing); user writes wait near 84%",
+   "semaphore": "watch when a thread has waited 10 s for an InnoDB latch, problem at 240 s, where InnoDB logs a long semaphore wait (MySQL stops the server once a wait passes 600 s; that limit is fixed in release builds)",
+   "trx_age": "the oldest active transaction is watched at 10 s and a problem at 60 s (as in Sessions)"
+  },
+  "schema_version": "innodb-1.0",
+  "sections": [],
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "status": "unknown",
+  "summary": {
+   "info": 0,
+   "ok": 0,
+   "problem": 0,
+   "status": "unknown",
+   "text": "SHOW ENGINE INNODB STATUS needs the PROCESS privilege, which this account does not have. Grant it with: GRANT PROCESS ON *.* TO <user>; (it also lets the account see every session in the process list and information_schema.INNODB_TRX).",
+   "unknown": 0,
+   "watch": 0
+  },
+  "taken_at": "2026-10-14T18:21:46.351652+00:00",
+  "uptime_s": 2619
+ },
+ "server": "mariadb-11.4-noproc"
+}

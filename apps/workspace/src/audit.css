@@ -1,0 +1,130 @@
+/* The Audit log (Settings menu): one data view, table and inspector, built
+   from the kit's ViewLayout. Tokens only. */
+.audit-place {
+  min-width: 0;
+}
+.audit-filter-fields {
+  display: grid;
+  gap: var(--space-3);
+}
+.audit-filter-fields .toolbar-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.audit-filter-fields .toolbar-field select {
+  width: 100%;
+  min-width: 0;
+}
+.audit-retention-summary {
+  margin-bottom: var(--space-3);
+}
+/* Filters stay together and yield to a single popover before the toolbar
+   becomes cramped. Export and retention form the trailing action group. */
+.audit-inline-filters,
+.audit-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.audit-inline-filters {
+  flex: 1 1 auto;
+}
+.audit-inline-filters .toolbar-field {
+  min-width: 0;
+}
+.audit-inline-filters .select {
+  min-width: 0;
+  max-width: 180px;
+}
+.audit-actions {
+  flex: none;
+  margin-left: auto;
+}
+.audit-view .toolbar-controls {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+}
+.audit-actions > .popover-anchor > .button {
+  white-space: nowrap;
+}
+/* One compact row; filters and retention details open on demand. */
+.audit-view.is-compact-controls .view-toolbar {
+  gap: var(--space-2);
+}
+.audit-view.is-compact-controls .toolbar-controls {
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  order: 0;
+  justify-content: flex-start;
+  gap: var(--space-1);
+}
+.audit-view.is-compact-controls .toolbar-controls .popover-anchor > .button,
+.audit-view.is-compact-controls .toolbar-refresh {
+  padding-inline: var(--space-2);
+}
+.audit-view.is-compact-controls .toolbar-refresh-label {
+  display: none;
+}
+.audit-status-list {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.audit-export-formats {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.audit-export-formats .spinner {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+}
+.audit-retention-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.audit-retention-form .number-field input {
+  width: 88px;
+}
+.audit-view .inspector-sql + .inspector-sql {
+  margin-top: var(--space-2);
+}
+.audit-view .inspector-sql + .hint {
+  margin-top: var(--space-1);
+}
+.audit-json {
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.audit-subhead {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+.audit-list {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.audit-more {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-3);
+}
+.audit-more .spinner {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+}

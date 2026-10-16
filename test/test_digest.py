@@ -310,5 +310,15 @@ class TestCompareDigest(unittest.TestCase):
         self.assertIn("total time 10 ms -> 5 ms (-50%)", digest)
 
 
+class TestCompareDigestRounding(unittest.TestCase):
+    def test_float_noise_is_rounded(self):
+        from myflames.digest import build_compare_digest
+        sidecar = {"before": {"total_time_ms": 0.20727341500000002, "timing_available": True},
+                   "after": {"total_time_ms": 0.6328760000000013, "timing_available": True},
+                   "summary": {}, "operator_deltas": []}
+        digest = build_compare_digest(sidecar)
+        self.assertIn("total time 0.2073 ms -> 0.6329 ms", digest)
+
+
 if __name__ == "__main__":
     unittest.main()

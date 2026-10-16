@@ -1,0 +1,50 @@
+{
+ "server": "mysql-8.4",
+ "version": "8.4.11",
+ "scenario": "denied",
+ "user": "lowpriv",
+ "args": {
+  "name": "max_connections",
+  "value": "260",
+  "mode": "global",
+  "apply": true,
+  "between": null
+ },
+ "calls": [
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'max_connections', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'max_connections'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nserver_uuid\t11111111-2222-3333-4444-555555555555\nmax_connections\t222\npersisted_globals_load\tON\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\nmyflames:session\nmax_connections\t222\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT 'myflames:info'; /*myflames:variable*/ SELECT VARIABLE_SOURCE, VARIABLE_PATH, MIN_VALUE, MAX_VALUE, SET_TIME, SET_USER, SET_HOST FROM performance_schema.variables_info WHERE VARIABLE_NAME = 'max_connections'; /*myflames:variable*/ SELECT 'myflames:persisted'; /*myflames:variable*/ SELECT VARIABLE_VALUE IS NULL, HEX(VARIABLE_VALUE) FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'max_connections'",
+   "myflames:info\nDYNAMIC\t\t1\t100000\t2026-10-15 16:41:37.053317\troot\tNULL\nmyflames:persisted\n0\t343030\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GRANTS",
+   "GRANT SELECT ON *.* TO `lowpriv`@`%`\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'max_connections', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'max_connections'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nserver_uuid\t11111111-2222-3333-4444-555555555555\nmax_connections\t222\npersisted_globals_load\tON\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\nmyflames:session\nmax_connections\t222\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT 'myflames:info'; /*myflames:variable*/ SELECT VARIABLE_SOURCE, VARIABLE_PATH, MIN_VALUE, MAX_VALUE, SET_TIME, SET_USER, SET_HOST FROM performance_schema.variables_info WHERE VARIABLE_NAME = 'max_connections'; /*myflames:variable*/ SELECT 'myflames:persisted'; /*myflames:variable*/ SELECT VARIABLE_VALUE IS NULL, HEX(VARIABLE_VALUE) FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'max_connections'",
+   "myflames:info\nDYNAMIC\t\t1\t100000\t2026-10-15 16:41:37.053317\troot\tNULL\nmyflames:persisted\n0\t343030\n"
+  ],
+  [
+   "/*myflames:variable*/ SET GLOBAL max_connections = 260",
+   null,
+   "mysql client exited 1: ERROR 1227 (42000) at line 1: Access denied; you need (at least one of) the SUPER or SYSTEM_VARIABLES_ADMIN privilege(s) for this operation"
+  ]
+ ],
+ "recorded": {
+  "plan_status": "ready",
+  "statement": "SET GLOBAL max_connections = 260",
+  "result_status": "denied",
+  "after": null
+ },
+ "synthetic_extensions": [
+  "Original variable values and write results were recorded live. Server identity (fixture-db, server_id 1, fixed MySQL UUID) and Linux platform rows are synthetic additions for identity/platform regression coverage.",
+  "The persisted-value read was adapted to IS NULL and HEX; encoded answers are derived from the recorded values, not a new live capture."
+ ]
+}

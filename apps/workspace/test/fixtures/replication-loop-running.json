@@ -1,0 +1,46 @@
+{
+ "schema_version": "replication-skip-loop-1.0",
+ "job_id": "2ef65af2bf8746fd8e0bb3040ac9f7a7",
+ "state": "running",
+ "stop_reason": null,
+ "needs_attention": null,
+ "channel": "",
+ "codes": [
+  1062
+ ],
+ "max_skips": 2,
+ "max_duration_s": null,
+ "poll_s": 1.0,
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "started_at": "2026-10-15T18:16:14.821831+00:00",
+ "stopped_at": null,
+ "elapsed_s": 1.0,
+ "remaining_s": null,
+ "checks": 1,
+ "skips_done": 1,
+ "skips": [
+  {
+   "at": "2026-10-15T18:16:14.822460+00:00",
+   "gtid": "7256d98a-c8b1-11f1-be59-aa9276ea306a:16",
+   "exec_file": "binlog.000003",
+   "exec_pos": 2863,
+   "end_log_pos": 3141,
+   "errno": 1062,
+   "message": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '7256d98a-c8b1-11f1-be59-aa9276ea306a:16' at source log binlog.000003, end_log_pos 3110. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+   "table": "shop.t",
+   "passed": true,
+   "audit_id": null
+  }
+ ],
+ "last_error": {
+  "errno": 1062,
+  "message": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '7256d98a-c8b1-11f1-be59-aa9276ea306a:16' at source log binlog.000003, end_log_pos 3110. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+  "timestamp": "261015 16:12:41",
+  "table": "shop.t",
+  "end_log_pos": 3110
+ },
+ "error": null,
+ "message": "Skipping 1062 on channel '': 1 skipped since 18:16 UTC.",
+ "drift_warning": "A skipped transaction is missing on the replica. Rows it touched now differ from the source, and later transactions on those rows may fail or change different data silently."
+}

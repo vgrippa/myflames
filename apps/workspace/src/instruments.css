@@ -1,0 +1,113 @@
+/* Server > Instruments. Layout comes from kit.css; long SQL wraps inside its
+   own block in the inspector, so the page never scrolls sideways. Tokens only. */
+.instr-link {
+  font-size: var(--text-sm);
+  padding-left: 0;
+  margin-left: var(--space-2);
+}
+.gate .instr-link {
+  margin-left: 0;
+}
+.instr-server {
+  margin-top: 0;
+}
+.instr-features {
+  margin-top: var(--space-4);
+}
+.instr-presets {
+  min-width: 0;
+}
+.instr-presets .select {
+  min-width: 0;
+  max-width: 240px;
+}
+.instr-show-statements {
+  white-space: nowrap;
+}
+/* The selected preset is a preview of copyable SQL, never a queued write. */
+.instr-preset-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.instr-preset-status.is-pending {
+  background: var(--info-soft);
+}
+.instr-preset-status > :is(.status-pill, .instr-cost) {
+  flex: none;
+}
+.instr-preset-summary {
+  flex: 1 1 auto;
+  min-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.instr-advanced .view-section-head .hint {
+  font-size: var(--text-sm);
+}
+.instr-setup {
+  margin-top: var(--space-4);
+}
+.instr-rules-button {
+  margin-top: var(--space-3);
+}
+.instr-used-by {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+.instr-gls {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+.instr-gls dt {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+.instr-gls dd {
+  margin: 0;
+}
+.instr-missing {
+  font-weight: 500;
+}
+.instr-rules {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.instr-never {
+  margin-top: var(--space-4);
+  font-weight: 600;
+}
+.instruments-panel .is-target > td,
+.instruments-panel .is-target .grouped-row {
+  animation: instr-target 1.6s ease-out;
+}
+@keyframes instr-target {
+  from {
+    background: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  to {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .instruments-panel .is-target > td,
+  .instruments-panel .is-target .grouped-row {
+    animation: none;
+  }
+}

@@ -276,10 +276,9 @@ class BaseLiveServerTest(unittest.TestCase):
             user=user,
             password=password,
             database="testdb",
-            # Disable TLS so we don't need to generate certs for these
-            # throwaway containers. Real-world users pass --ssl-mode=REQUIRED
-            # (or VERIFY_IDENTITY) and the same code path handles it.
-            ssl_mode="DISABLED",
+            # MySQL's throwaway image supplies TLS certificates. Full SHA-2
+            # authentication must use TLS rather than fetch an untrusted key.
+            ssl_mode="DISABLED" if self.IS_MARIADB else "REQUIRED",
         )
 
     def _assert_pipeline(self, user, password):
@@ -371,6 +370,19 @@ class TestLiveMySQL84(BaseLiveServerTest):
     # mysql_native_password is NOT loaded by default on MySQL 8.4 — enable
     # it via mysqld startup args so we can test a native-password user.
     MYSQLD_ARGS = ("--mysql-native-password=ON",)
+
+    def test_fresh_sha2_auth_without_tls_does_not_fetch_a_server_key(self):
+        # A distinct account has no cached successful authentication that
+        # could hide the full-authentication requirement.
+        self._exec_root_sql("CREATE USER 'fresh_sha2'@'%' IDENTIFIED BY 'throwaway-sha2';")
+        try:
+            with MySQLConnection(host="127.0.0.1", port=self.port,
+                                 user="fresh_sha2", password="throwaway-sha2",
+                                 ssl_mode="DISABLED") as conn:
+                with self.assertRaisesRegex(ConnectorError, "[Ss]ecure connection"):
+                    conn.run("SELECT 1")
+        finally:
+            self._exec_root_sql("DROP USER 'fresh_sha2'@'%';")
 
 
 @unittest.skipUnless(_HAVE_DOCKER, "Docker not available")

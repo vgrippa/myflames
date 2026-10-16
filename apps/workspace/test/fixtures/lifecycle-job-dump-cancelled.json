@@ -1,0 +1,33 @@
+{
+ "schema_version": "lifecycle-job-1.0",
+ "id": "06c09bfc804a49a1845e8b14f3d24974",
+ "operation": "dump",
+ "state": "cancelled",
+ "progress": 25.0,
+ "detail": null,
+ "events": [
+  {
+   "at": "2026-10-15T18:16:15.456847+00:00",
+   "stream": "stderr",
+   "text": "25% waiting"
+  },
+  {
+   "at": "2026-10-15T18:16:17.472849+00:00",
+   "stream": "status",
+   "text": "Partial dump retained at /Users/dba/maintenance/backup"
+  }
+ ],
+ "result": {
+  "status": "cancelled",
+  "verification": [
+   {
+    "check": "operation",
+    "status": "not_checked",
+    "reason": "Cancelled; partial files or server changes may remain. Check the target before retrying."
+   }
+  ],
+  "partial_state": "An incomplete dump may remain in /Users/dba/maintenance/backup; its manifest marks it incomplete and restore refuses it. Remove the directory before dumping there again.",
+  "cancel_error": ""
+ },
+ "error": "Cancelled; partial files or server changes may remain. Check the target before retrying."
+}

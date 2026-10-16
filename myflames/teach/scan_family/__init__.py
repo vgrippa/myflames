@@ -10,8 +10,8 @@ LESSONS = {
         "render": filesort.render,
     },
     "tmp": {
-        "title": "Temporary tables — MEMORY to on-disk conversion",
-        "summary": "Watch GROUP BY hit the tmp_table_size limit and convert to on-disk InnoDB.",
+        "title": "Temporary tables — in-memory to on-disk conversion",
+        "summary": "Watch GROUP BY hit the in-memory temp table limit and convert to on-disk InnoDB (Aria on MariaDB).",
         "render": tmp.render,
     },
     "full_scan": {

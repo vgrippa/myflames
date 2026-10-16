@@ -125,7 +125,7 @@
   <h2>Scan / Sort / Temp Family</h2>
   <ul class="lesson-list">
     <li><a href="./scan/filesort.html"><span class="lesson-title">Filesort — how MySQL sorts without an index</span><span class="lesson-summary">sort_buffer_size, sorted runs, k-way merge. Why ORDER BY is slow without an index.</span></a></li>
-    <li><a href="./scan/tmp.html"><span class="lesson-title">Temporary tables — MEMORY to on-disk conversion</span><span class="lesson-summary">Watch GROUP BY hit the tmp_table_size limit and convert to on-disk InnoDB.</span></a></li>
+    <li><a href="./scan/tmp.html"><span class="lesson-title">Temporary tables — in-memory to on-disk conversion</span><span class="lesson-summary">Watch GROUP BY hit the in-memory temp table limit and convert to on-disk InnoDB (Aria on MariaDB).</span></a></li>
     <li><a href="./scan/full_scan.html"><span class="lesson-title">Full table scan — why every row gets read</span><span class="lesson-summary">See O(n) row reads in action and compare against indexed access O(log n + k).</span></a></li>
     <li><a href="./scan/filter.html"><span class="lesson-title">Filter operator — WHERE predicate row-by-row</span><span class="lesson-summary">Rows entering filter are all evaluated; only matching rows continue.</span></a></li>
     <li><a href="./scan/derived_table.html"><span class="lesson-title">Derived Table Materialization</span><span class="lesson-summary">FROM-clause subquery materialized into temp table, auto-indexed, then probed.</span></a></li>

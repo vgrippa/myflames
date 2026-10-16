@@ -1,0 +1,37 @@
+{
+ "args": {
+  "interval": 5,
+  "limit": 20
+ },
+ "calls": [
+  [
+   "/*myflames:waits*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment')",
+   "performance_schema\tOFF\nuserstat\tON\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:waits*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t848\n"
+  ]
+ ],
+ "report": {
+  "available": false,
+  "coverage": null,
+  "elapsed_s": null,
+  "engine": "mariadb",
+  "interval": 5,
+  "notes": [
+   "Performance Schema is off, so wait events cannot be read. MariaDB ships with it off. To turn it on, add performance_schema=ON under [mysqld] in my.cnf and restart the server (it cannot be changed at runtime). It then uses some memory and a little CPU."
+  ],
+  "performance_schema": false,
+  "restarted": false,
+  "schema_version": "waits-1.0",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "since_start": null,
+  "started_at": null,
+  "taken_at": "2026-10-13T17:14:51.382205+00:00",
+  "unavailable": "performance_schema_off",
+  "uptime_s": 848,
+  "window": null
+ },
+ "server": "mariadb-11.4-userstat"
+}

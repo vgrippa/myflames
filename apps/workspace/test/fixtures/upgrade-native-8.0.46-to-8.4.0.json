@@ -1,0 +1,108 @@
+{
+ "schema_version": "upgrade-check-1.0",
+ "server": {
+  "engine": "mysql",
+  "version": "8.0.46",
+  "identity": {
+   "server_uuid": "0d4b10d2-c8b0-11f1-9894-226e4f3f0f09",
+   "server_id": "1",
+   "hostname": "3a04dd6f47d7",
+   "port": "3306",
+   "version": "8.0.46",
+   "datadir": "/var/lib/mysql/",
+   "socket": "/var/run/mysqld/mysqld.sock"
+  }
+ },
+ "target_version": "8.4.0",
+ "checks": [
+  {
+   "id": "removed_variables",
+   "title": "Removed variables set in an option file or on the command line",
+   "severity": "error",
+   "status": "findings",
+   "affected_objects": [
+    "default_authentication_plugin (COMMAND_LINE)"
+   ],
+   "description": "The target does not have these variables. An unknown option in an option file or on the command line stops mysqld from starting (unless written with the loose- prefix): remove them first.",
+   "doc_link": "https://dev.mysql.com/doc/refman/8.4/en/added-deprecated-removed.html"
+  },
+  {
+   "id": "removed_persisted_variables",
+   "title": "Removed variables persisted with SET PERSIST",
+   "severity": "warning",
+   "status": "passed",
+   "affected_objects": [],
+   "description": "The target logs a warning and ignores them at startup; RESET PERSIST removes them.",
+   "doc_link": "https://dev.mysql.com/doc/refman/8.4/en/persisted-system-variables.html"
+  },
+  {
+   "id": "reserved_identifiers",
+   "title": "Names that are reserved words in the target",
+   "severity": "warning",
+   "status": "findings",
+   "affected_objects": [
+    "app.parallel.qualify (column)"
+   ],
+   "description": "Reserved in the target (checked: QUALIFY, TABLESAMPLE). Statements must quote these names with backticks; names in routine, view and trigger bodies are not parsed here.",
+   "doc_link": "https://dev.mysql.com/doc/refman/8.4/en/keywords.html"
+  },
+  {
+   "id": "utf8mb3",
+   "title": "utf8 / utf8mb3 columns",
+   "severity": "notice",
+   "status": "findings",
+   "affected_objects": [
+    "app.t3.c"
+   ],
+   "description": "utf8mb3 is deprecated and still supported in the target; plan a conversion to utf8mb4.",
+   "doc_link": "https://dev.mysql.com/doc/refman/8.4/en/charset-unicode-utf8mb3.html"
+  },
+  {
+   "id": "zero_date_defaults",
+   "title": "Zero date defaults",
+   "severity": "notice",
+   "status": "findings",
+   "affected_objects": [
+    "app.z.d"
+   ],
+   "description": "CREATE TABLE or ALTER TABLE with these defaults fails under the default sql_mode (strict, with NO_ZERO_DATE and NO_ZERO_IN_DATE). Stored row data is not scanned.",
+   "doc_link": "https://dev.mysql.com/doc/refman/8.4/en/sql-mode.html"
+  },
+  {
+   "id": "native_password_users",
+   "title": "mysql_native_password accounts",
+   "severity": "warning",
+   "status": "findings",
+   "affected_objects": [
+    "'legacy'@'%'",
+    "'root'@'%'",
+    "'root'@'localhost'"
+   ],
+   "description": "MySQL 8.4 disables mysql_native_password by default (mysql_native_password=ON enables it) and 9.0 removes it. Needs SELECT on mysql.user.",
+   "doc_link": "https://dev.mysql.com/doc/refman/8.4/en/native-pluggable-authentication.html"
+  },
+  {
+   "id": "old_temporal",
+   "title": "Old binary temporal formats",
+   "severity": "notice",
+   "status": "not_checked",
+   "affected_objects": [],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "Not reliably detectable from cheap column metadata. Use the full Shell checker; no CHECK TABLE or table scan was run."
+  }
+ ],
+ "counts": {
+  "error": 1,
+  "warning": 4,
+  "notice": 2
+ },
+ "manual_checks": [],
+ "method": "native_subset",
+ "partial": true,
+ "status": "issues_found",
+ "limitations": [
+  "Subset; install MySQL Shell for the full check. This does not establish that an upgrade is safe.",
+  "Not checked: option file contents (only where MySQL 8.0+ says a removed variable came from), routine, view and trigger bodies, row data, old temporal storage, foreign keys, removed functions, and variables or keywords outside the short lists in myflames/lifecycle.py.",
+  "Global sql_mode: ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+ ]
+}

@@ -189,6 +189,21 @@ class TestParser(unittest.TestCase):
         self.assertIsInstance(root, dict)
         self.assertGreater(root["total_time"], 0)
 
+    def test_explain_label_inside_a_valid_plan_is_kept(self):
+        """A plan whose query text contains "EXPLAIN:" parses as is: the label
+        is stripped only before the JSON, never from inside it."""
+        plan = {"operation": "Filter: (t.note = 'EXPLAIN: x')", "condition": "(t.note = 'EXPLAIN: x')",
+                "actual_rows": 1.0, "actual_loops": 1, "actual_last_row_ms": 0.1,
+                "inputs": [{"operation": "Table scan on t", "table_name": "t", "actual_rows": 1.0,
+                            "actual_loops": 1, "actual_last_row_ms": 0.05}]}
+        root = parse_explain(json.dumps(plan))
+        self.assertEqual(root["details"]["condition"], "(t.note = 'EXPLAIN: x')")
+        self.assertEqual(root["children"][0]["details"]["table_name"], "t")
+        # mysql \G output: the row separator and the label come before the JSON.
+        vertical = ("*************************** 1. row ***************************\nEXPLAIN: "
+                    + json.dumps(plan, indent=2))
+        self.assertEqual(parse_explain(vertical)["details"]["condition"], "(t.note = 'EXPLAIN: x')")
+
     def test_node_has_required_keys(self):
         root = parse_explain(self.sample_text)
         required = {"folded_label", "short_label", "full_label",
@@ -196,6 +211,73 @@ class TestParser(unittest.TestCase):
         for node in flatten_nodes(root):
             with self.subTest(label=node.get("folded_label")):
                 self.assertTrue(required.issubset(node.keys()))
+
+
+class TestPlanNumbers(unittest.TestCase):
+    """Numeric plan fields are checked before any arithmetic, on both engines."""
+
+    MYSQL = {"operation": "Table scan on t", "table_name": "t", "actual_rows": 10.0,
+             "actual_loops": 1, "actual_last_row_ms": 0.5, "estimated_rows": 10.0,
+             "estimated_total_cost": 1.25}
+    MARIADB = {"query_block": {"select_id": 1, "r_loops": 1, "r_total_time_ms": 0.5,
+                               "nested_loop": [{"table": {
+                                   "table_name": "t", "access_type": "ALL", "loops": 1, "r_loops": 1,
+                                   "rows": 10, "r_rows": 10, "cost": 0.01, "r_table_time_ms": 0.3,
+                                   "r_other_time_ms": 0.1, "filtered": 100, "r_filtered": 100}}]}}
+
+    def _variant(self, base, path, key, value):
+        plan = json.loads(json.dumps(base))
+        target = plan
+        for step in path:
+            target = target[step]
+        target[key] = value
+        return plan
+
+    def test_hostile_value_is_rejected_without_a_large_allocation(self):
+        """"x" * 10**12 would be built by ms * loops before the type error."""
+        import tracemalloc
+        cases = (
+            dict(self.MYSQL, actual_last_row_ms="x", actual_loops=10 ** 12),
+            self._variant(self._variant(self.MARIADB, ("query_block",), "r_loops", 10 ** 12),
+                          ("query_block",), "r_total_time_ms", "x"),
+            self._variant(self.MARIADB, ("query_block", "nested_loop", 0, "table"), "r_loops", "1" * 50),
+        )
+        for plan in cases:
+            text = json.dumps(plan)
+            with self.subTest(plan=text[:80]):
+                tracemalloc.start()
+                try:
+                    with self.assertRaisesRegex(ValueError, "must be a finite number"):
+                        parse_explain(text)
+                    peak = tracemalloc.get_traced_memory()[1]
+                finally:
+                    tracemalloc.stop()
+                self.assertLess(peak, 1024 * 1024)
+
+    def test_each_wrong_type_or_range_is_a_clear_value_error(self):
+        bad = ("12", True, [1], {"v": 1}, float("nan"), float("inf"), 10 ** 400)
+        fields = (("actual_loops", (self.MYSQL, ())), ("actual_rows", (self.MYSQL, ())),
+                  ("estimated_total_cost", (self.MYSQL, ())),
+                  ("r_total_time_ms", (self.MARIADB, ("query_block",))),
+                  ("rows", (self.MARIADB, ("query_block", "nested_loop", 0, "table"))),
+                  ("cost", (self.MARIADB, ("query_block", "nested_loop", 0, "table"))))
+        for key, (base, path) in fields:
+            for value in bad:
+                with self.subTest(key=key, value=value):
+                    with self.assertRaisesRegex(ValueError, 'Plan field "%s"' % key):
+                        parse_explain(json.dumps(self._variant(base, path, key, value)))
+        # Measured values have hard limits: 64-bit counters, 1e15 ms.
+        for key, value in (("actual_loops", 2.0 ** 65), ("actual_last_row_ms", 1e16)):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                parse_explain(json.dumps(dict(self.MYSQL, **{key: value})))
+
+    def test_valid_numbers_and_nulls_still_parse(self):
+        root = parse_explain(json.dumps(dict(self.MYSQL, actual_rows=None, estimated_rows=1e40)))
+        self.assertIsNone(root["details"]["actual_rows"])
+        self.assertEqual(root["details"]["estimated_rows"], 1e40)
+        maria = parse_explain(json.dumps(self._variant(
+            self.MARIADB, ("query_block", "nested_loop", 0, "table"), "r_rows", None)))
+        self.assertEqual(maria["engine"], "mariadb")
 
 
 # ---------------------------------------------------------------------------
@@ -1537,7 +1619,6 @@ class TestDocumentation(unittest.TestCase):
             "docs/VISUAL_EXPLAIN_REFERENCE.md",
             ".claude/prompts/",
             "test/README.md",
-            "docs/cddl1.txt",
         ]
         for ref in refs:
             self.assertTrue(
@@ -1790,14 +1871,14 @@ class TestDocumentation(unittest.TestCase):
         )
 
     def test_docs_index_html_references_exist(self):
-        """Every href/data in docs/index.html that points to demos/ must exist locally."""
+        """Every href/data in docs/index.html that points to demos/ or teach/ must exist locally."""
         import re
         index_path = os.path.join(REPO_DIR, "docs", "index.html")
         if not os.path.exists(index_path):
             self.skipTest("docs/index.html does not exist")
         with open(index_path, encoding="utf-8") as f:
             content = f.read()
-        refs = re.findall(r'(?:data|href)="(demos/[^"]+)"', content)
+        refs = re.findall(r'(?:data|href)="((?:demos|teach)/[^"#?]+)"', content)
         self.assertGreater(len(refs), 0, "No demos/ references found in docs/index.html")
         for ref in refs:
             local = os.path.join(REPO_DIR, "docs", ref)
@@ -2379,7 +2460,11 @@ class TestHTMLReport(unittest.TestCase):
             with open(tmp_path) as f:
                 html = f.read()
             self.assertIn("<!DOCTYPE html>", html, "Missing HTML doctype")
-            self.assertIn("<svg", html, "Missing embedded SVG")
+            # The chart is drawn in the browser by the inlined
+            # myflames-charts.js bundle from its chart-data payload.
+            self.assertIn('class="mfc-mount"', html, "Missing chart mount")
+            self.assertIn('class="mfc-data"', html, "Missing chart data")
+            self.assertIn("MyflamesCharts.mountAll(document)", html, "Missing chart runtime")
             self.assertIn("Export SVG", html, "Missing SVG export button")
             self.assertIn("Export Analysis JSON", html, "Missing JSON export button")
             self.assertIn("Print", html, "Missing print button")
@@ -2408,8 +2493,9 @@ class TestHTMLReport(unittest.TestCase):
                                  "HTML report failed for %s: %s" % (view, result.stderr))
                 with open(tmp_path) as f:
                     html = f.read()
-                self.assertIn("<svg", html,
-                              "SVG missing from HTML report for %s" % view)
+                self.assertIn('data-mfc-view="%s"' % ("workbench" if view == "diagram" else view), html,
+                              "Chart mount missing from HTML report for %s" % view)
+                self.assertIn('class="mfc-data"', html)
                 self.assertIn("<!DOCTYPE html>", html)
             finally:
                 os.unlink(tmp_path)
@@ -2422,7 +2508,8 @@ class TestHTMLReport(unittest.TestCase):
             json_text = f.read()
         html = render_html_report(json_text, view_type="diagram", title="Test Report")
         self.assertIn("<!DOCTYPE html>", html)
-        self.assertIn("<svg", html)
+        self.assertIn('data-mfc-view="workbench"', html)
+        self.assertIn('class="mfc-data"', html)
         self.assertIn("Test Report", html)
         self.assertIn("teach_hooks", html)
 

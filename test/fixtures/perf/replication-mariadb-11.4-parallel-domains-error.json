@@ -1,0 +1,217 @@
+{
+ "server": "MariaDB 11.4.13 replica, slave_parallel_threads=4, domains 0 and 1 (live, 2026-10-15)",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:replication*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('enforce_gtid_consistency', 'gtid_current_pos', 'gtid_domain_id', 'gtid_mode', 'gtid_slave_pos', 'gtid_strict_mode', 'performance_schema', 'read_only', 'replica_parallel_workers', 'replica_preserve_commit_order', 'slave_parallel_threads', 'slave_parallel_workers', 'slave_preserve_commit_order', 'super_read_only', 'userstat', 'version', 'version_comment')",
+   "gtid_current_pos\t0-12-13,1-11-1\ngtid_domain_id\t0\ngtid_slave_pos\t0-11-11,1-11-1\ngtid_strict_mode\tOFF\nperformance_schema\tOFF\nread_only\tOFF\nslave_parallel_threads\t4\nslave_parallel_workers\t4\nuserstat\tOFF\nversion\t11.4.13-MariaDB-ubu2404-log\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t878\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW ALL SLAVES STATUS",
+   "<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:replication*/ SHOW ALL SLAVES STATUS\n\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"Connection_name\"></field>\n\t<field name=\"Slave_SQL_State\"></field>\n\t<field name=\"Slave_IO_State\">Waiting for master to send event</field>\n\t<field name=\"Master_Host\">mf-repl-m-src</field>\n\t<field name=\"Master_User\">repl</field>\n\t<field name=\"Master_Port\">3306</field>\n\t<field name=\"Connect_Retry\">60</field>\n\t<field name=\"Master_Log_File\">mariadb-bin.000002</field>\n\t<field name=\"Read_Master_Log_Pos\">3030</field>\n\t<field name=\"Relay_Log_File\">mysqld-relay-bin.000001</field>\n\t<field name=\"Relay_Log_Pos\">4</field>\n\t<field name=\"Relay_Master_Log_File\">mariadb-bin.000002</field>\n\t<field name=\"Slave_IO_Running\">Yes</field>\n\t<field name=\"Slave_SQL_Running\">No</field>\n\t<field name=\"Replicate_Do_DB\"></field>\n\t<field name=\"Replicate_Ignore_DB\"></field>\n\t<field name=\"Replicate_Do_Table\"></field>\n\t<field name=\"Replicate_Ignore_Table\"></field>\n\t<field name=\"Replicate_Wild_Do_Table\"></field>\n\t<field name=\"Replicate_Wild_Ignore_Table\"></field>\n\t<field name=\"Last_Errno\">1062</field>\n\t<field name=\"Last_Error\">Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '91' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0</field>\n\t<field name=\"Skip_Counter\">0</field>\n\t<field name=\"Exec_Master_Log_Pos\">2793</field>\n\t<field name=\"Relay_Log_Space\">1291</field>\n\t<field name=\"Until_Condition\">None</field>\n\t<field name=\"Until_Log_File\"></field>\n\t<field name=\"Until_Log_Pos\">0</field>\n\t<field name=\"Master_SSL_Allowed\">Yes</field>\n\t<field name=\"Master_SSL_CA_File\"></field>\n\t<field name=\"Master_SSL_CA_Path\"></field>\n\t<field name=\"Master_SSL_Cert\"></field>\n\t<field name=\"Master_SSL_Cipher\"></field>\n\t<field name=\"Master_SSL_Key\"></field>\n\t<field name=\"Seconds_Behind_Master\" xsi:nil=\"true\" />\n\t<field name=\"Master_SSL_Verify_Server_Cert\">Yes</field>\n\t<field name=\"Last_IO_Errno\">0</field>\n\t<field name=\"Last_IO_Error\"></field>\n\t<field name=\"Last_SQL_Errno\">1062</field>\n\t<field name=\"Last_SQL_Error\">Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '91' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0</field>\n\t<field name=\"Replicate_Ignore_Server_Ids\"></field>\n\t<field name=\"Master_Server_Id\">11</field>\n\t<field name=\"Master_SSL_Crl\"></field>\n\t<field name=\"Master_SSL_Crlpath\"></field>\n\t<field name=\"Using_Gtid\">Slave_Pos</field>\n\t<field name=\"Gtid_IO_Pos\">1-11-1,0-11-12</field>\n\t<field name=\"Replicate_Do_Domain_Ids\"></field>\n\t<field name=\"Replicate_Ignore_Domain_Ids\"></field>\n\t<field name=\"Parallel_Mode\">optimistic</field>\n\t<field name=\"SQL_Delay\">0</field>\n\t<field name=\"SQL_Remaining_Delay\" xsi:nil=\"true\" />\n\t<field name=\"Slave_SQL_Running_State\"></field>\n\t<field name=\"Slave_DDL_Groups\">0</field>\n\t<field name=\"Slave_Non_Transactional_Groups\">0</field>\n\t<field name=\"Slave_Transactional_Groups\">6</field>\n\t<field name=\"Replicate_Rewrite_DB\"></field>\n\t<field name=\"Retried_transactions\">0</field>\n\t<field name=\"Max_relay_log_size\">1073741824</field>\n\t<field name=\"Executed_log_entries\">55</field>\n\t<field name=\"Slave_received_heartbeats\">3</field>\n\t<field name=\"Slave_heartbeat_period\">30.000</field>\n\t<field name=\"Gtid_Slave_Pos\">0-12-13,1-11-1</field>\n  </row>\n</resultset>\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW RELAYLOG '' EVENTS IN 'mysqld-relay-bin.000001' FROM 4 LIMIT 100",
+   "<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:replication*/ SHOW RELAYLOG '' EVENTS IN 'mysqld-relay-bin.000001' FROM 4 LIMIT 100\n\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"Log_name\">mysqld-relay-bin.000001</field>\n\t<field name=\"Pos\">4</field>\n\t<field name=\"Event_type\">Format_desc</field>\n\t<field name=\"Server_id\">12</field>\n\t<field name=\"End_log_pos\">256</field>\n\t<field name=\"Info\">Server ver: 11.4.13-MariaDB-ubu2404-log, Binlog ver: 4</field>\n  </row>\n\n  <row>\n\t<field name=\"Log_name\">mysqld-relay-bin.000001</field>\n\t<field name=\"Pos\">256</field>\n\t<field name=\"Event_type\">Rotate</field>\n\t<field name=\"Server_id\">12</field>\n\t<field name=\"End_log_pos\">310</field>\n\t<field name=\"Info\">mysqld-relay-bin.000002;pos=4</field>\n  </row>\n</resultset>\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "replication-1.0",
+  "engine": "mariadb",
+  "server_version": "11.4.13-MariaDB-ubu2404-log",
+  "captured_at": "2026-10-15T16:34:49.293107+00:00",
+  "uptime_s": 878,
+  "available": true,
+  "message": null,
+  "replica": true,
+  "statement": "SHOW ALL SLAVES STATUS",
+  "gtid": {
+   "slave_pos": "0-11-11,1-11-1",
+   "current_pos": "0-12-13,1-11-1",
+   "slave_pos_domains": [
+    {
+     "domain": 0,
+     "server": 11,
+     "seq": 11
+    },
+    {
+     "domain": 1,
+     "server": 11,
+     "seq": 1
+    }
+   ],
+   "current_pos_domains": [
+    {
+     "domain": 0,
+     "server": 12,
+     "seq": 13
+    },
+    {
+     "domain": 1,
+     "server": 11,
+     "seq": 1
+    }
+   ],
+   "domain_id": 0,
+   "strict_mode": "OFF"
+  },
+  "settings": {
+   "read_only": "OFF",
+   "parallel_threads": 4
+  },
+  "channels": [
+   {
+    "name": "",
+    "kind": "replication",
+    "judged": true,
+    "source": {
+     "host": "mf-repl-m-src",
+     "port": 3306,
+     "uuid": null,
+     "server_id": 11
+    },
+    "io": {
+     "running": "Yes",
+     "state": "Waiting for master to send event",
+     "error": {
+      "errno": 0,
+      "message": null,
+      "timestamp": null
+     }
+    },
+    "sql": {
+     "running": "No",
+     "state": null,
+     "error": {
+      "errno": 1062,
+      "message": "Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '91' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0",
+      "timestamp": null,
+      "table": "shop.t",
+      "end_log_pos": null
+     },
+     "delay_s": 0,
+     "remaining_delay_s": null
+    },
+    "lag_s": null,
+    "lag_notes": [
+     "Seconds_Behind_Master is NULL unless the IO thread is connected and reading and the SQL thread runs.",
+     "Slave_received_heartbeats grows between two reads on a healthy, idle link; read the view again after the heartbeat period to tell an idle source from a broken link."
+    ],
+    "lag_signals": {
+     "heartbeat_period_s": 30.0,
+     "heartbeats_received": 3
+    },
+    "position": {
+     "using_gtid": "Slave_Pos",
+     "gtid_io_pos": "1-11-1,0-11-12",
+     "gtid_io_domains": [
+      {
+       "domain": 1,
+       "server": 11,
+       "seq": 1
+      },
+      {
+       "domain": 0,
+       "server": 11,
+       "seq": 12
+      }
+     ],
+     "gtid_current_pos": "0-12-13,1-11-1",
+     "source_log_file": "mariadb-bin.000002",
+     "read_source_log_pos": 3030,
+     "exec_file": "mariadb-bin.000002",
+     "exec_pos": 2793,
+     "relay_log_file": "mysqld-relay-bin.000001",
+     "relay_log_pos": 4,
+     "skip_counter": 0,
+     "parallel_mode": "optimistic"
+    },
+    "worker": {},
+    "agat": null,
+    "failing_gtid": null,
+    "relay": null,
+    "status": "problem",
+    "status_why": [
+     "The applier (SQL thread) stopped with error 1062: Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '91' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0"
+    ],
+    "skip_plan": {
+     "channel": "",
+     "engine": "mariadb",
+     "server_version": "11.4.13-MariaDB-ubu2404-log",
+     "available": false,
+     "message": "This connection uses GTID with parallel replication, and gtid_slave_pos has 2 domains, so MariaDB refuses the skip counter (error 1966). The fix is to set gtid_slave_pos past the failed transaction in its domain while keeping every other domain's position (now 0-11-11,1-11-1). That needs exact positions, and the same variable holds every connection's position, so myflames shows it and does not automate it.",
+     "method": null,
+     "statements": [],
+     "identity": {
+      "channel": "",
+      "method": null,
+      "last_sql_errno": 1062,
+      "last_sql_error": "Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '91' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0",
+      "last_sql_error_timestamp": null,
+      "gtid": null,
+      "position": {
+       "relay_log_file": "mysqld-relay-bin.000001",
+       "relay_log_pos": 4,
+       "exec_file": "mariadb-bin.000002",
+       "exec_pos": 2793
+      },
+      "source": {
+       "host": "mf-repl-m-src",
+       "port": 3306,
+       "uuid": null
+      }
+     },
+     "skip": {
+      "gtid": null,
+      "exec_file": "mariadb-bin.000002",
+      "exec_pos": 2793,
+      "end_log_pos": null,
+      "error_end_log_pos": null,
+      "table": "shop.t",
+      "tables": [
+       "shop.t"
+      ],
+      "relay_checked": false
+     },
+     "error": {
+      "errno": 1062,
+      "message": "Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '91' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0",
+      "timestamp": null
+     },
+     "drift_warning": "A skipped transaction is missing on the replica. Rows it touched now differ from the source, and later transactions on those rows may fail or change different data silently.",
+     "after": [
+      "Find the cause: writes run directly on the replica (check read_only and super_read_only), non-deterministic statements, or a replica restored from an inconsistent backup.",
+      "Verify the affected tables with checksums computed on both sides over the same data (CHECKSUM TABLE on a quiet table, or a chunked checksum tool in the style of pt-table-checksum). myflames recommends this and never runs it for you.",
+      "Resync those tables or rebuild the replica (clone or backup restore)."
+     ],
+     "privileges": "",
+     "notes": []
+    }
+   }
+  ],
+  "capabilities": {
+   "status": true,
+   "performance_schema": false,
+   "worker_timestamps": false,
+   "agat": false
+  },
+  "notes": [
+   "The relay log at the applier's position of '' does not start with the failed transaction, so myflames cannot show which transaction a skip counter passes.",
+   "Seconds_Behind_Master compares the original timestamp of the event being applied with the replica's clock, adjusted by the clock difference measured when the receiver connected. A clock change on either server after that skews it, and one long transaction shows as a jump, so it is never the only lag signal."
+  ],
+  "summary": {
+   "channels": 1,
+   "judged": 1,
+   "ok": 0,
+   "watch": 0,
+   "problem": 1,
+   "unknown": 0,
+   "failed": 1,
+   "lag_max_s": null
+  }
+ }
+}

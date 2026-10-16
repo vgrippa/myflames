@@ -4,37 +4,92 @@
 
 ## Vision
 
-**myflames is the token-efficient, source-grounded interface between a query plan and an AI agent — and a clear set of pictures for a human.** Raw `EXPLAIN ANALYZE FORMAT=JSON` is verbose and noisy; an LLM burns tokens parsing it before it can reason, and SVGs are invisible to agents. myflames parses and analyzes a plan once, then projects it many ways: flame graph / bar chart / tree / Visual Explain (for humans), a compact source-verified digest and JSON sidecar (for agents), and an exit code (for CI). One analysis, many projections.
+**myflames is the token-efficient, source-grounded interface between a query plan and an AI agent; and a clear set of pictures for a human.** Raw `EXPLAIN ANALYZE FORMAT=JSON` is verbose and noisy; an LLM burns tokens parsing it before it can reason, and SVGs are invisible to agents. myflames parses and analyzes a plan once, then projects it many ways: flame graph / bar chart / tree / Visual Explain (for humans), a compact source-verified digest and JSON sidecar (for agents), and an exit code (for CI). One analysis, many projections.
+
+**Scope: a MySQL and MariaDB performance workspace.** Query plans are where myflames started and remain its center, but a slow query is usually explained by its surroundings: what else runs on the server, what it waits on, which locks block it, and whether statistics and indexes match the data. myflames covers that path in one place: find the expensive work (top statements, sessions), explain it (plans, captures, advisor), see what blocks it (locks, deadlocks), and compare the fix. Every new view follows the same rules as the plan tools: read-only by default, source-verified claims, one analysis shared by the UI, CLI, and agent tools, and honest notes where MySQL and MariaDB differ.
 
 It stays a single project: pure-Python stdlib core, with heavy integrations behind optional extras (`myflames[mcp]`, `myflames[tokens]`). The optional local workspace in `apps/workspace/` uses React and TypeScript; its built assets ship in the Python package. The Python engine remains shared by the CLI, UI, and agent tools.
 
+## Current workstation capabilities
+
+The workspace includes the Query editor's persistent sessions, light and dark
+appearance, Configuration Session handoff to the editor, Users and roles with
+new grant scopes and batch review, and Database diagram with live metadata,
+SQL/Mermaid imports and exports, editable JSON and SVG. Diagram imports do not
+execute SQL; save JSON to retain a layout.
+
+Security boundaries now include launch bootstrap with cookie and origin proof,
+isolated database clients, recipient TLS checks for saved clone credentials,
+owner checks for ended editor sessions, one-use action reviews, bounded requests
+and plans, and protected local storage. The CLI shares exact confirmation and
+an unsent exit-2 contract. See [the developer contracts](docs/DEVELOPER_REFERENCE.md)
+for limits and [the verification checklist](docs/UI_TESTING.md) for release gates.
+
+
 ## Shipped
 
-- **Query investigation workflow** — linked operator selection, focus/collapse,
+- **Ideas from MySQL Shell and DBeaver**: find the query first (`top` from
+  Performance Schema digests, `running` with the plan of a running statement),
+  then explain or analyze a top statement in one step (`capture --digest`,
+  the workspace's row actions and Explain top N),
+  import MySQL Shell diagnostics bundles, a MySQL Shell plugin, upgrade-checker
+  style rule controls (`--ignore`, `--list-rules`, docs links), and new
+  evidence rules for row misestimates and statistics freshness, redundant
+  indexes, and cold buffer pools. Saved connections can remember their
+  password in the OS credential store or an encrypted local file
+  (`--profile`, `myflames profiles`).
+- **Write safety foundation** (`myflames/dbops.py`): every saved connection
+  is Production (the default, asks before every write) or Development (asks
+  only before risky writes), optionally read-only (refuses every write); one
+  statement classifier (read, write, risky) for every write path and the
+  SQL editor; a privilege hint helper over SHOW GRANTS for both
+  engines; and a local audit trail of every write sent, refused or declined
+  (`myflames audit`, `/api/audit/*`). Kill uses all of it. The workspace exposes connection types, read-only policy, and the Audit log in Settings.
+- **Sessions and InnoDB status**: `myflames sessions` (`sessions-1.0`) lists
+  every connection with its open InnoDB transaction, flags long-running
+  statements, sessions idle in a transaction, and lock waits, and summarizes
+  connections, states, users, hosts, databases, the oldest transaction and the
+  history list length; it replaces `running`, now a deprecated alias.
+  `myflames innodb` (`innodb-1.0`) parses SHOW ENGINE INNODB STATUS into
+  sections with summaries, rule-of-thumb statuses and links, never raw unless
+  asked. Both are workspace views since the Server redesign (Sessions under
+  Workload, replacing Running queries; InnoDB under Overview).
+- **Locks**: `myflames locks` and the workspace Locks tab, a server-wide
+  blocking tree over row and metadata lock waits with root blockers and
+  idle-in-transaction blockers, who blocks a waiting DDL statement (exact, or
+  likely blockers on MariaDB without the metadata lock instrument) and what
+  queues behind it, row locks with plain-language modes, and the parsed latest
+  deadlock, on MySQL and MariaDB with each engine's limits stated. It only
+  reads, except **Kill** / `--kill ID`: one session, shown and
+  confirmed first, re-checked before the KILL, and offered only when the
+  account's grants allow it.
+
+- **Query investigation workflow**: linked operator selection, focus/collapse,
   contextual Teach, local investigation bundles, structural comparisons, and a
   query laboratory with repeated live captures, cancellation, schema/index
   inspection, statement statistics, and optimizer traces. Shared `capture` and
   `explore` CLI commands. The UI uses a simplified mark derived from the project logo, stable logo URLs across rebuilds, and a neutral/blue design.
 
-- **Local browser workspace** — `myflames ui` imports saved plans, displays four chart views and operator details, compares plans, and exports HTML/JSON. The Teach section opens the existing interactive lessons with search, family filters, curriculum navigation, and downloads. React/TypeScript assets ship with the standard-library Python server.
+- **3D lesson views**: the B+tree lesson has an extra 3D view (Learn, **2D | 3D**) that draws the index at its real size and walks four chapters: shape, primary key lookup, secondary index, range scan. Built from `apps/teach-3d` with three.js into one offline page; inspired by PGSimCity. Candidates next, if the B+tree view earns it: the buffer pool's LRU with its young and old sublists, and a hash join's build and probe.
+- **Local browser workspace**: `myflames ui` imports saved plans, displays four chart views and operator details, compares plans, and exports HTML/JSON. Session restore autosaves the open workspace (never passwords) and reopens it on the next launch; `--no-restore` starts one launch clean. The Teach section opens the existing interactive lessons with search, family filters, curriculum navigation, and downloads. React/TypeScript assets ship with the standard-library Python server.
 
-- **Four views** — flame graph, bar chart, execution tree, and unified Visual Explain. (The treemap was removed: area made relative cost hard to compare, and the bar chart answers the same question more precisely.) Diagram and Workbench share one renderer with larger Venn join symbols, operation colors, row-volume arrows, and smooth mouse/trackpad navigation. Existing `diagram` commands remain compatible.
-- **Source-verified advisor** — rules and `optimizer_switch` explanations checked line-by-line against MySQL/MariaDB source.
-- **JSON sidecar + JSON-LD** — every report has a machine-readable sibling; agents never OCR an SVG.
-- **Token-cheap digest + savings report** — `myflames digest` (with `--cost`, `--tokenizer {heuristic,claude,gpt}`, `--show-prompts`); an "Agent-ready" panel in every HTML report.
-- **Agent/CI subcommands** — `diff` (plan comparison), `check` (CI gate with a `0/1/2` exit contract), `advise` (ranked warnings + suggestions with confidence).
-- **MCP server** — `myflames-mcp` (`pip install myflames[mcp]`) exposing `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`.
-- **Published to PyPI** — `pip install myflames` (and `myflames[mcp]` / `myflames[tokens]` / `myflames[gpt]`) resolves; a GitHub Release auto-publishes via a Trusted Publisher workflow.
-- **Honest agent default (the token thesis, kept)** — the MCP `analyze_plan` tool returns the token-cheap decision-grade sidecar by default (`detail="core"`: summary, warnings, suggestions, switches, plan tree), dropping the heavy `collected`/`query`/`teach_hooks` blocks; `detail="full"` restores the complete record. The `detail` gate lives on `build_sidecar` (single source of truth); the CLI `--sidecar` path and the `digest` path stay `full`. Removes the one place the agent surface contradicted the vision, prerequisite to broadcasting it.
-- **One ranker, every projection** — the "fix first" decision is computed once, by `findings.build_findings` / `findings.primary_suggestion_index`. The HTML "Fix first" card and the sidecar `primary_action` both dereference it, so the human card and the ranked `advise` list can no longer disagree (medium correctly outranks low everywhere). A genuinely clean plan shows an explicit "No blocking issues found" card instead of a blank.
-- **Advisor names the index that removes a filesort** — for a single-base-table `ORDER BY` on plain columns, myflames suggests `CREATE INDEX … (col1, col2 [DESC])` (direction-preserving) so MySQL reads rows already sorted, instead of only "grow the sort buffer." The parser threads the sort columns through (MySQL `sort_fields`, MariaDB `sort_key`); the rule bails to the generic hint on joins/aggregates/expression sort keys. Verified against MySQL/MariaDB source.
-- **Uniform `--quiet/-q`** — the flag now behaves identically on `check`, `digest`, `advise`, and `compare` (was `check`-only): suppress stderr diagnostics, leave stdout data and the exit code untouched.
-- **Attribution + credit on the compare report** — the before/after report now carries the "Made with myflames" link and the Brendan Gregg / Tanel Poder inspiration credit, matching the main HTML report.
-- **`semijoin_firstmatch` teach lesson** — the flagship of the semijoin cluster (the `IN (subquery)` early-out).
+- **Four views**: flame graph, bar chart, execution tree, and unified Visual Explain. (The treemap was removed: area made relative cost hard to compare, and the bar chart answers the same question more precisely.) Diagram and Workbench share one renderer with larger Venn join symbols, operation colors, row-volume arrows, and smooth mouse/trackpad navigation. Existing `diagram` commands remain compatible.
+- **Source-verified advisor**: rules and `optimizer_switch` explanations checked line-by-line against MySQL/MariaDB source.
+- **JSON sidecar + JSON-LD**: every report has a machine-readable sibling; agents never OCR an SVG.
+- **Token-cheap digest + savings report**: `myflames digest` (with `--cost`, `--tokenizer {heuristic,claude,gpt}`, `--show-prompts`); an "Agent-ready" panel in every HTML report.
+- **Agent/CI subcommands**: `diff` (plan comparison), `check` (CI gate with a `0/1/2` exit contract), `advise` (ranked warnings + suggestions with confidence).
+- **MCP server**: `myflames-mcp` (`pip install myflames[mcp]`) exposing `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`.
+- **Published to PyPI**: `pip install myflames` (and `myflames[mcp]` / `myflames[tokens]` / `myflames[gpt]`) resolves; a GitHub Release auto-publishes via a Trusted Publisher workflow.
+- **Honest agent default (the token thesis, kept)**: the MCP `analyze_plan` tool returns the token-cheap decision-grade sidecar by default (`detail="core"`: summary, warnings, suggestions, switches, plan tree), dropping the heavy `collected`/`query`/`teach_hooks` blocks; `detail="full"` restores the complete record. The `detail` gate lives on `build_sidecar` (single source of truth); the CLI `--sidecar` path and the `digest` path stay `full`. Removes the one place the agent surface contradicted the vision, prerequisite to broadcasting it.
+- **One ranker, every projection**: the "fix first" decision is computed once, by `findings.build_findings` / `findings.primary_suggestion_index`. The HTML "Fix first" card and the sidecar `primary_action` both dereference it, so the human card and the ranked `advise` list can no longer disagree (medium correctly outranks low everywhere). A genuinely clean plan shows an explicit "No blocking issues found" card instead of a blank.
+- **Advisor names the index that removes a filesort**: for a single-base-table `ORDER BY` on plain columns, myflames suggests `CREATE INDEX … (col1, col2 [DESC])` (direction-preserving) so MySQL reads rows already sorted, instead of only "grow the sort buffer." The parser threads the sort columns through (MySQL `sort_fields`, MariaDB `sort_key`); the rule bails to the generic hint on joins/aggregates/expression sort keys. Verified against MySQL/MariaDB source.
+- **Uniform `--quiet/-q`**: the flag now behaves identically on `check`, `digest`, `advise`, and `compare` (was `check`-only): suppress stderr diagnostics, leave stdout data and the exit code untouched.
+- **Attribution + credit on the compare report**: the before/after report now carries the "Made with myflames" link and the Brendan Gregg / Tanel Poder inspiration credit, matching the main HTML report.
+- **`semijoin_firstmatch` teach lesson**: the flagship of the semijoin cluster (the `IN (subquery)` early-out).
 
 ## Next
 
-- **Workspace follow-ups** — broader SQL editing conveniences, richer optimizer-trace summaries, and optional desktop packaging. Query capture, saved investigations, structural comparison, and contextual Teach are implemented.
+- **Workspace follow-ups**: broader SQL editing conveniences, richer optimizer-trace summaries, and optional desktop packaging. Query capture, saved investigations, structural comparison, and contextual Teach are implemented.
   Import-dialog layout coverage includes open/error states and short windows;
   continue expanding interaction coverage as the workspace grows.
   Visual Explain zoom includes a live percentage, press feedback, and visible limits.
@@ -44,14 +99,40 @@ It stays a single project: pure-Python stdlib core, with heavy integrations behi
 
 Distribution multiplies whatever is inside, and the inside is now honest (decision-grade agent default) and consistent (one ranker). So the remaining work is reach and depth.
 
-1. **Wider distribution** — the "made with myflames" footer now ships on the reports (main + compare); what remains is external reach: MCP registries and awesome-lists, so agents and humans discover the tool.
-2. **Browser playground** — linked from the README and installs the published wheel via micropip; still needs an end-to-end pass in a real browser and confirmation the GitHub Pages deploy serves [docs/playground/](docs/playground/).
-3. **CLI consistency (remainder)** — `--quiet/-q` is now uniform; the open work is auditing the rest of the flag vocabulary and exit-code / stdout-vs-stderr discipline across every subcommand. (owned by `cli-ux`)
-4. **Finish the semijoin cluster** — `semijoin_firstmatch` shipped as the flagship; `loosescan`, `materialization`, and a real `duplicate_weedout` (today a stub) remain, each taught as a contrast against the FirstMatch early-out. See [.claude/ALGORITHM_ROADMAP.md](.claude/ALGORITHM_ROADMAP.md). (owned by `teaching`)
+1. **Wider distribution**: the "made with myflames" footer now ships on the reports (main + compare); what remains is external reach: MCP registries and awesome-lists, so agents and humans discover the tool.
+2. **Browser playground**: linked from the README and installs the published wheel via micropip; still needs an end-to-end pass in a real browser and confirmation the GitHub Pages deploy serves [docs/playground/](docs/playground/).
+3. **CLI consistency**: shared server-write confirmation and the unsent exit-2 contract are implemented. Preserve them as commands grow. (owned by `cli-ux`)
+4. **Finish the semijoin cluster**: `semijoin_firstmatch` shipped as the flagship; `loosescan`, `materialization`, and a real `duplicate_weedout` (today a stub) remain, each taught as a contrast against the FirstMatch early-out. See [.claude/ALGORITHM_ROADMAP.md](.claude/ALGORITHM_ROADMAP.md). (owned by `teaching`)
+
+## Performance workspace: proposed next views
+
+Candidates for the workspace's **Server** place, in suggested order. Each is read-only, works on MySQL 8.4+/9.x and MariaDB 10.11+ (with engine notes), has a CLI equivalent with `--json`, and links back to plans where it can.
+
+**Shipped: Server health.** The **Health** tab (first on Server) and `myflames health` report deltas and rates over a sampling window from two `SHOW GLOBAL STATUS` samples, with rule-of-thumb statuses, `health-1.0` JSON, and `--fail-on` for CI and cron. No Performance Schema is required. Diagnostics come first: whether the buffer pool is full or warming (and the bytes read from disk per second), whether the redo log fits the write rate, the table, definition, thread, and binary log caches, open files, full scans, temporary tables, and sorts, each with its rule, verdict, why, and settings. Its claims passed a `mysql-correctness-reviewer` review and were checked live on MySQL 8.4, 9.7, and 26.7 and MariaDB 11.4 and 13.0.
+
+**Shipped: Wait events, Index health, I/O hot spots, and Configuration review.** The **Waits**, **Indexes**, **I/O**, and **Config** tabs (after Locks on Server) and `myflames waits`, `indexes`, `io`, and `config` (`waits-1.0`, `indexes-1.0`, `io-1.0`, `config-1.0`) read raw Performance Schema and information_schema tables, never the sys views, and never truncate or change instruments. Waits ranks wait events over a window without adding classes up and lists the classes that are off with the statements to turn them on. Indexes lists unused indexes (PRIMARY and UNIQUE excluded on both engines, foreign-key indexes kept), redundant indexes with the advisor's rules, and tables read mostly by full scans, with a MariaDB `userstat` fallback. I/O shows tables, files, and file kinds over a window and since start, linked to Index health and Top statements. Config checks a short list of settings with engine defaults, sources, statuses, and caveats, and `--fail-on` for CI. The cost of each read is documented: per-table and per-index reads run only on request, scoped to a schema, and `INNODB_BUFFER_PAGE` is never read. Their claims passed a `mysql-correctness-reviewer` review and were checked live on MySQL 8.4, 9.7, and 26.7 and MariaDB 11.4 and 13.0, with Performance Schema on and off.
+
+**Shipped: Table health (missing primary keys and fragmentation).** The **Tables** tab (after Indexes on Server) and `myflames tables` (`schema-1.0`) list tables without a primary key, telling apart a unique key on NOT NULL columns that InnoDB uses as the clustered index from the hidden 6-byte row ID, and counting MySQL's generated invisible primary key as a key. They show `DATA_FREE` against each InnoDB table's size, judged only in file-per-table tablespaces, with the system and general tablespaces listed apart. Every fix (`ALTER TABLE ... ADD PRIMARY KEY`, an invisible `AUTO_INCREMENT` column, `OPTIMIZE TABLE`) is text with checks and caveats, never run. `--fresh` reads MySQL statistics past the `information_schema_stats_expiry` cache for myflames' own connection only. A shared database picker (all user databases by default) replaces the single schema field in Indexes, which reads every user database by default only up to 2,000 tables. Claims were checked against the server source by the `mysql-correctness-reviewer` and live on MySQL 8.4 and 26.7 and MariaDB 11.4 and 13.0, including fresh versus cached statistics.
+
+Possible follow-ups: per-partition free space from `information_schema.PARTITIONS`, MyISAM and Aria free space (`DATA_FREE` there is deleted-row space in the data file), and a link from a plan's table to its Tables row.
+
+**Shipped: Performance Schema instruments guide.** The **Instruments** tab (last on Server) and `myflames instruments` (`instruments-1.0`) show which instruments and consumers are on, which myflames views they light up, what each costs (rule of thumb), and the runtime SQL and my.cnf lines to change them, with presets (Minimal for myflames, Lock troubleshooting, Wait analysis, Back to defaults). It only reads the setup tables; the statements are for the user to run. The other Server tabs link their "instrument is off" notes to its rows. Presets and restores were run live on MySQL 8.4, 9.7, and 26.7 and MariaDB 11.4 and 13.0, and its claims passed a `mysql-correctness-reviewer` review.
+
+**Shipped: Server place redesign.** The ten flat Server tabs became a grouped sub-navigation (Overview, Workload, Contention, Schema, Setup) with status dots and counts from data already loaded, and every view now has the same anatomy: a toolbar with Refresh, one summary line with an "N notes" button, a sortable table or one-line rows, and a resizable inspector for the selected row (a bottom sheet on phones). Explanations moved behind ⓘ popovers and into the inspector, readiness card grids became one-sentence prerequisite gates, and Instruments starts with Easy setup and a one-line checklist. Sessions replaced Running queries and InnoDB joined Overview. The patterns follow Apple's Activity Monitor, System Settings, and the Finder inspector, and the Workbench and DBeaver behaviors verified in their source. At 1440 by 900 the views show 0 to 2 explanatory paragraphs instead of 2 to 13, and no cards instead of up to 40.
+
+Possible follow-ups: per-table buffer pool usage as an explicit opt-in (MySQL `INNODB_CACHED_INDEXES` is cheap; `INNODB_BUFFER_PAGE` scans the whole pool), and links from a plan's table to its I/O and index rows.
+
+**Shipped (backend): Full analysis report and workload attribution.** `myflames report` and `POST /api/live/report` (`report-1.0`) run every Server view once on one connection (at most three at a time, windowed views first) and compose ranked findings with their numbers, rule, why, caveat and a suggestion that is never applied, one "look at first" pick, and sections from memory to Performance Schema coverage, exported as text, JSON, Markdown, static HTML or a token-cheap digest, with `--fail-on` for CI. New read-only checks cover replication status on a replica, accounts without a password, anonymous accounts, `root` from any host, the MariaDB query cache and binary log expiry. `myflames top --order full_join|scan|no_index` and `--table SCHEMA.TABLE` link Health's joins without an index and Indexes' full scans to the statement digests behind them, every table match labeled "text match, not proof". MySQLTuner served as a checklist only. Recorded live on MySQL 8.4 (a replica), MySQL 8.0 (as root and as a limited account) and MariaDB 11.4 (Performance Schema on and off). The workspace Full analysis screen, Refresh all, and statement links are implemented. Remaining families listed as not checked (Galera, the MyISAM key cache and Aria page cache, a total memory budget shown as an upper bound).
+
+**Shipped (CLI and API): Upgrade check, dump, restore and clone.** `myflames upgrade-check`, `dump`, `restore` and `clone` and `POST /api/lifecycle/*` run MySQL Shell, `mysqldump`, `mariadb-dump` and the `mysql` client from the machine running myflames (passwords in a removed 0600 option file, CLONE's on stdin), with a plan and exact commands shown before a confirmation (typed target for restore and clone), the connection's write policy, progress, cancel of the process group and the server session, verification (manifest checksums, exact row counts, `clone_status` tied to this clone, the GTID set) and an audit record per attempt. Without MySQL Shell the upgrade check is a labeled partial subset whose reserved-word list matches `information_schema.KEYWORDS` read live on MySQL 8.0, 8.4 and 9.7. Validated live on MySQL 8.0.46, 8.4.11 and 9.7.2 (dump and restore both ways, a DATA DIRECTORY clone, in-place clones through the restart, cancel mid-copy) and MariaDB 11.4 (guidance paths). The workspace screen shipped too: Server > Setup > Maintenance (Tools, Upgrade check, Dump, Restore, Clone) with read-only preflights, confirmation sheets with the exact commands, job progress and Cancel, and `POST /api/lifecycle/jobs` so a reload or a lost Start reply finds a job instead of starting it twice. Next: wiring MariaDB `mariadb-backup` (backend exists; it needs the server host's files), and a live MariaDB dump and restore run with MariaDB client tools installed.
+
+**Shipped (CLI and API): Replication.** `myflames replication` and `POST /api/live/replication` (`replication-1.0`) list every channel (MySQL) or connection (MariaDB) with thread states, errors, positions or GTIDs and lag with its caveats (NULL and 0 semantics, SQL_Delay, worker commit timestamps, heartbeat and last queued transaction), read by column name; Group Replication channels are listed, not judged. `myflames replication skip` and `POST /api/live/replication/skip` skip the one failed transaction (an empty GTID transaction on MySQL when it has a GTID, the skip counter for anonymous transactions, AGAT channels and MariaDB) after a confirmation, with a re-read right before sending, a check of the relay log that the counter passes the failed transaction, and a read after that shows whether it was passed. `myflames replication skip-loop` and `/api/live/replication/skip-loop/start|status|stop` skip chosen error codes until stopped, bounded by a cap and an optional duration, and stop on any other condition; loops are keyed by connection identity and never resume. Every attempt is audited. Validated live on MySQL 8.4 (GTID on, file and position, two channels), MySQL 8.0 and MariaDB 11.4 (named and default connections, parallel replication over two domains). The workspace view shipped too: Server > Workload > Replication with the channel table and inspector, the skip and skip-loop confirmation sheets, and the loop's line with Stop above every Server view; loops are matched by the connection's endpoint, so a change of type or read-only keeps their Stop. Next: replay fixtures from MySQL 9.x and MariaDB 10.11 replicas.
+
+**Shipped (backend, CLI and API): Privilege awareness and Users and roles.** `myflames privileges` and `POST /api/live/privileges` (`privileges-1.0`) answer, for every myflames action key, whether the connected account may run it: allowed, denied (only from a missing global or dynamic privilege) or not verified (object privileges, MariaDB SUPER after 10.11, role graphs), with the missing privileges named, so the UI can grey an action with its reason and leave unverifiable ones enabled. `myflames accounts` and `POST /api/accounts/list|read|plan|apply` list users and roles without password hashes and create, drop, rename, lock, unlock, expire, set passwords, grant and revoke at every level and manage roles and default roles, with the exact statements, a confirmation, a re-read that refuses when the account changed, statements on stdin, a before and after diff, the typed-name guards (protected accounts, self-lockout), and an audit record per statement. Verified live on MySQL 8.0, 8.4, 9.7 and MariaDB 10.11, 11.4 (including the MariaDB binary log on the three-step create and with simple_password_check). The Users and roles view, scope-aware grant matrix, batch review, and shared privilege gates are implemented. The matrix includes all source-defined scopes, anonymous proxy accounts, MariaDB packages/package bodies, and MySQL 9.2+ MLE libraries, with per-privilege dynamic grant options and role admin/default controls. Follow-ups include copying an account, resource-limit and password-policy editors, and folding `replication.py`'s and `variables.py`'s own privilege texts into `privileges.requirements`.
 
 ## Deferred / non-goals
 
-- **No LLM bundled into the package.** myflames is the deterministic, source-grounded tool an agent *calls* — it does not become the agent. (Exact token counting uses Anthropic's `count_tokens`, or tiktoken for GPT, only as optional extras.)
+- **No LLM bundled into the package.** myflames is the deterministic, source-grounded tool an agent *calls*; it does not become the agent. (Exact token counting uses Anthropic's `count_tokens`, or tiktoken for GPT, only as optional extras.)
 - **No splitting into multiple packages/repos.** Optional extras are the dependency boundary.
 
 ## September 2026 review

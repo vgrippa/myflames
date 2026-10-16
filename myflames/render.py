@@ -16,7 +16,7 @@ from .parser import (
     render_info_panel,
     xml_escape,
 )
-from .flamegraph import folded_to_svg
+from .flamegraph import folded_to_svg, plan_folded
 from .output_bargraph import render_bargraph
 from .output_diagram import render_diagram
 from .output_tree import render_tree
@@ -61,7 +61,6 @@ def render_explain(
     max_time = root["total_time"]
     use_microseconds = max_time > 0 and max_time < 1
     unit = "µs" if use_microseconds else "ms"
-    multiplier = 1000 if use_microseconds else 1
 
     analysis = analyze_plan(root)
     try:
@@ -74,16 +73,10 @@ def render_explain(
     teach_maps = build_teach_index_maps(build_teach_hooks(root, query_sql=query_text))
 
     if output_type == "flamegraph":
-        entries = list(build_flame_entries(root))
-        folded_lines = []
-        for path, time in entries:
-            t = time * multiplier
-            t = int(t + 0.5)
-            t = 1 if t == 0 and len(path) == 1 else t
-            if t <= 0:
-                continue
-            folded_lines.append(";".join(path) + " " + str(t))
-        folded_text = "\n".join(folded_lines)
+        # Whole microseconds per measured operator (flamegraph.flame_scale);
+        # tooltips print readable units (flamegraph.flame_value_text).
+        folded_text, flame_unit = plan_folded(build_flame_entries(root), root["total_time"],
+                                              keep_root=True)
         if not folded_text.strip():
             raise ValueError("No flame graph data (all zero self-time)")
         # Build a folded-label → complexity map so flamegraph bars can show
@@ -98,7 +91,7 @@ def render_explain(
             title=title,
             width=width,
             height=height,
-            countname=unit,
+            countname=flame_unit,
             inverted=inverted,
             colors=colors,
             teach_index_by_folded=teach_maps["by_folded_label"],

@@ -1,0 +1,201 @@
+{
+ "server": {
+  "engine": "mariadb",
+  "image": "mariadb:10.11",
+  "version": "10.11.19-MariaDB-ubu2204-log"
+ },
+ "captured": "2026-10-15",
+ "sessions": {
+  "acct_admin": {
+   "login": "acct_admin",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_admin@172.17.0.1\tacct_admin@%\tNULL\t10.11.19-MariaDB-ubu2204-log\nGRANT ALL PRIVILEGES ON *.* TO `acct_admin`@`%` IDENTIFIED BY PASSWORD '*23E9A4BD10446F5CF527D1698744205D2633D26E' WITH GRANT OPTION\nGRANT SLAVE MONITOR ON *.* TO PUBLIC\nGRANT SELECT ON `pubdb`.* TO PUBLIC\nhostname\t6eda09dde1a6\nport\t3306\nread_only\tOFF\nserver_id\t1\n"
+    }
+   ]
+  },
+  "acct_ops": {
+   "login": "acct_ops",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_ops@172.17.0.1\tacct_ops@%\tNULL\t10.11.19-MariaDB-ubu2204-log\nGRANT RELOAD, PROCESS, CREATE USER, CONNECTION ADMIN ON *.* TO `acct_ops`@`%` IDENTIFIED BY PASSWORD '*14BB418888D55F68E4AFADD04BB5BCAD49D5C789'\nGRANT SELECT ON `mysql`.* TO `acct_ops`@`%`\nGRANT SLAVE MONITOR ON *.* TO PUBLIC\nGRANT SELECT ON `pubdb`.* TO PUBLIC\nhostname\t6eda09dde1a6\nport\t3306\nread_only\tOFF\nserver_id\t1\n"
+    }
+   ]
+  },
+  "acct_app": {
+   "login": "acct_app",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_app@172.17.0.1\tacct_app@%\tr_read\t10.11.19-MariaDB-ubu2204-log\nGRANT `r_write` TO `acct_app`@`%` WITH ADMIN OPTION\nGRANT `r_read` TO `acct_app`@`%`\nGRANT USAGE ON *.* TO `acct_app`@`%` IDENTIFIED BY PASSWORD '*13C17A9ABF411E6300B51748CB04F59182323686'\nGRANT SELECT ON `db\\\\_x`.* TO `acct_app`@`%`\nGRANT INSERT ON `db_x`.* TO `acct_app`@`%`\nGRANT DELETE ON `shop%`.* TO `acct_app`@`%`\nGRANT SELECT (`a`, `b`), INSERT (`a`), UPDATE ON `shop`.`orders` TO `acct_app`@`%`\nGRANT EXECUTE ON PROCEDURE `shop`.`p` TO `acct_app`@`%`\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f` TO `acct_app`@`%`\nGRANT `r_nested` TO `r_read`\nGRANT USAGE ON *.* TO `r_read`\nGRANT SELECT ON `shop`.* TO `r_read`\nGRANT USAGE ON *.* TO `r_nested`\nGRANT SHOW VIEW ON `shop`.* TO `r_nested`\nGRANT SLAVE MONITOR ON *.* TO PUBLIC\nGRANT SELECT ON `pubdb`.* TO PUBLIC\nSET DEFAULT ROLE `r_read` FOR `acct_app`@`%`\nhostname\t6eda09dde1a6\nport\t3306\nread_only\tOFF\nserver_id\t1\n"
+    }
+   ]
+  },
+  "acct_super": {
+   "login": "acct_super",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_super@172.17.0.1\tacct_super@%\tNULL\t10.11.19-MariaDB-ubu2204-log\nGRANT SUPER, CREATE USER ON *.* TO `acct_super`@`%` IDENTIFIED BY PASSWORD '*73647D15A10375BEB6D94E6DA2536322D89AA8D5'\nGRANT SLAVE MONITOR ON *.* TO PUBLIC\nGRANT SELECT ON `pubdb`.* TO PUBLIC\nhostname\t6eda09dde1a6\nport\t3306\nread_only\tOFF\nserver_id\t1\n"
+    }
+   ]
+  }
+ },
+ "reads": {
+  "login": "root",
+  "calls": [
+   {
+    "sql": "SELECT @@version",
+    "flags": null,
+    "output": "10.11.19-MariaDB-ubu2204-log\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SELECT User, Host, JSON_VALUE(Priv, '$.plugin'), JSON_VALUE(Priv, '$.account_locked'), JSON_VALUE(Priv, '$.password_last_changed'), JSON_VALUE(Priv, '$.password_lifetime'), JSON_VALUE(Priv, '$.is_role'), JSON_VALUE(Priv, '$.default_role'), (JSON_VALUE(Priv, '$.authentication_string') = '' AND JSON_VALUE(Priv, '$.plugin') IN ('mysql_native_password','mysql_old_password')) FROM mysql.global_priv ORDER BY User, Host",
+    "flags": [
+     "--comments"
+    ],
+    "output": "PUBLIC\t\tNULL\tNULL\tNULL\tNULL\t1\tNULL\tNULL\nacct_admin\t%\tmysql_native_password\tNULL\t1792085914\tNULL\tNULL\tNULL\t0\nacct_app\t%\tmysql_native_password\tNULL\t1792085914\tNULL\tNULL\tr_read\t0\nacct_ed\t%\tunix_socket\tNULL\t1792085920\tNULL\tNULL\tNULL\t0\nacct_ops\t%\tmysql_native_password\tNULL\t1792085914\tNULL\tNULL\tNULL\t0\nacct_proxy\t%\tmysql_native_password\tNULL\t1792085914\tNULL\tNULL\tNULL\t0\nacct_super\t%\tmysql_native_password\t0\t1792085914\tNULL\tNULL\tNULL\t0\nhealthcheck\t127.0.0.1\tmysql_native_password\tNULL\t1792085841\tNULL\tNULL\tNULL\t0\nhealthcheck\t::1\tmysql_native_password\tNULL\t1792085841\tNULL\tNULL\tNULL\t0\nhealthcheck\tlocalhost\tmysql_native_password\tNULL\t1792085841\tNULL\tNULL\tNULL\t0\nmariadb.sys\tlocalhost\tmysql_native_password\t1\t0\tNULL\tNULL\tNULL\t1\nr_nested\t\tNULL\tNULL\tNULL\tNULL\t1\tNULL\tNULL\nr_read\t\tNULL\tNULL\tNULL\tNULL\t1\tNULL\tNULL\nr_write\t\tNULL\tNULL\tNULL\tNULL\t1\tNULL\tNULL\nroot\t%\tmysql_native_password\tNULL\t1792085841\tNULL\tNULL\tNULL\t0\nroot\tlocalhost\tmysql_native_password\tNULL\t1792085841\tNULL\tNULL\tNULL\t0\nt_vrole\t\tNULL\tNULL\tNULL\tNULL\t1\tNULL\tNULL\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SELECT Host, User, Role, Admin_option FROM mysql.roles_mapping ORDER BY Host, User, Role",
+    "flags": [
+     "--comments"
+    ],
+    "output": "\tr_read\tr_nested\tN\n%\tacct_app\tr_read\tN\n%\tacct_app\tr_write\tY\n%\troot\tr_nested\tY\n%\troot\tr_read\tY\n%\troot\tr_write\tY\n%\troot\tt_vrole\tY\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_app`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT `r_write` TO `acct_app`@`%` WITH ADMIN OPTION\nGRANT `r_read` TO `acct_app`@`%`\nGRANT USAGE ON *.* TO `acct_app`@`%` IDENTIFIED BY PASSWORD '*13C17A9ABF411E6300B51748CB04F59182323686'\nGRANT SELECT ON `db\\\\_x`.* TO `acct_app`@`%`\nGRANT INSERT ON `db_x`.* TO `acct_app`@`%`\nGRANT DELETE ON `shop%`.* TO `acct_app`@`%`\nGRANT SELECT (`a`, `b`), INSERT (`a`), UPDATE ON `shop`.`orders` TO `acct_app`@`%`\nGRANT EXECUTE ON PROCEDURE `shop`.`p` TO `acct_app`@`%`\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f` TO `acct_app`@`%`\nSET DEFAULT ROLE `r_read` FOR `acct_app`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_app`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_app`@`%` IDENTIFIED BY PASSWORD '*13C17A9ABF411E6300B51748CB04F59182323686'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_write`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `r_write`\nGRANT INSERT, UPDATE ON `shop`.* TO `r_write`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_read`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT `r_nested` TO `r_read`\nGRANT USAGE ON *.* TO `r_read`\nGRANT SELECT ON `shop`.* TO `r_read`\nGRANT USAGE ON *.* TO `r_nested`\nGRANT SHOW VIEW ON `shop`.* TO `r_nested`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_nested`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `r_nested`\nGRANT SHOW VIEW ON `shop`.* TO `r_nested`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_admin`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT ALL PRIVILEGES ON *.* TO `acct_admin`@`%` IDENTIFIED BY PASSWORD '*23E9A4BD10446F5CF527D1698744205D2633D26E' WITH GRANT OPTION\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_admin`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_admin`@`%` IDENTIFIED BY PASSWORD '*23E9A4BD10446F5CF527D1698744205D2633D26E'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_proxy`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `acct_proxy`@`%` IDENTIFIED BY PASSWORD '*27E2AD68CF846788CADA92A7C8289567D6524216'\nGRANT PROXY ON `acct_app`@`%` TO `acct_proxy`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_proxy`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_proxy`@`%` IDENTIFIED BY PASSWORD '*27E2AD68CF846788CADA92A7C8289567D6524216'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_read`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT `r_nested` TO `r_read`\nGRANT USAGE ON *.* TO `r_read`\nGRANT SELECT ON `shop`.* TO `r_read`\nGRANT USAGE ON *.* TO `r_nested`\nGRANT SHOW VIEW ON `shop`.* TO `r_nested`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_nested`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `r_nested`\nGRANT SHOW VIEW ON `shop`.* TO `r_nested`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `nobody`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "error": "mysql client exited 1: ERROR 1141 (42000) at line 1: There is no such grant defined for user 'nobody' on host '%'"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_ed`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `acct_ed`@`%` IDENTIFIED VIA ed25519 USING 'bikAd6IJrzxj/jBlkOkmEVqvCG+D7kdNRwTHYTKACD8' OR unix_socket\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_ed`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_ed`@`%` IDENTIFIED VIA ed25519 USING 'bikAd6IJrzxj/jBlkOkmEVqvCG+D7kdNRwTHYTKACD8' OR unix_socket\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR PUBLIC",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT SLAVE MONITOR ON *.* TO PUBLIC\nGRANT SELECT ON `pubdb`.* TO PUBLIC\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_super`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT SUPER, CREATE USER ON *.* TO `acct_super`@`%` IDENTIFIED BY PASSWORD '*73647D15A10375BEB6D94E6DA2536322D89AA8D5'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_super`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_super`@`%` IDENTIFIED BY PASSWORD '*73647D15A10375BEB6D94E6DA2536322D89AA8D5'\n"
+   }
+  ]
+ }
+}

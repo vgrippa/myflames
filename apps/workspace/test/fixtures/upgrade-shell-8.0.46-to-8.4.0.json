@@ -1,0 +1,662 @@
+{
+ "schema_version": "upgrade-check-1.0",
+ "server": {
+  "engine": "mysql",
+  "version": "8.0.46",
+  "identity": {
+   "server_uuid": "donor",
+   "server_id": "1",
+   "hostname": "donor",
+   "port": "3306",
+   "version": "8.0.46",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock"
+  }
+ },
+ "target_version": "8.4.0",
+ "checks": [
+  {
+   "id": "sysVars",
+   "title": "System variable check for deprecation, removal, changes in defaults values or invalid values.",
+   "status": "OK",
+   "severity": "error",
+   "affected_objects": [
+    "binlog_transaction_dependency_tracking",
+    "default_authentication_plugin",
+    "group_replication_consistency",
+    "group_replication_exit_state_action",
+    "innodb_adaptive_hash_index",
+    "innodb_buffer_pool_in_core_file",
+    "innodb_buffer_pool_instances",
+    "innodb_change_buffering",
+    "innodb_doublewrite_files",
+    "innodb_doublewrite_pages",
+    "innodb_flush_method",
+    "innodb_io_capacity",
+    "innodb_io_capacity_max",
+    "innodb_log_buffer_size",
+    "innodb_numa_interleave",
+    "innodb_page_cleaners",
+    "innodb_parallel_read_threads",
+    "innodb_purge_threads",
+    "innodb_read_io_threads",
+    "innodb_redo_log_capacity",
+    "innodb_use_fdatasync",
+    "performance_schema_max_memory_classes",
+    "temptable_max_mmap",
+    "temptable_max_ram",
+    "temptable_use_mmap"
+   ],
+   "problems": [
+    {
+     "level": "Warning",
+     "dbObject": "binlog_transaction_dependency_tracking",
+     "description": "default value changed from COMMIT_ORDER to WRITESET..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Error",
+     "dbObject": "default_authentication_plugin",
+     "description": "variable removed at version 8.4.0 is set to mysql_native_password (COMMAND_LINE)., consider using 'authentication_policy' instead.",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "group_replication_consistency",
+     "description": "default value changed from EVENTUAL to BEFORE_ON_PRIMARY_FAILOVER..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "group_replication_exit_state_action",
+     "description": "default value changed from READ_ONLY to OFFLINE_MODE..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_adaptive_hash_index",
+     "description": "default value changed from ON to OFF..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_buffer_pool_in_core_file",
+     "description": "default value changed from ON to OFF..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_buffer_pool_instances",
+     "description": "default value changed from 8 (or 1 if innodb_buffer_pool_size < 1GB) to 1 (or MIN(innodb_buffer_pool_size / (innodb_buffer_pool_chunk_size * 2), #vcpu/4) if innodb_buffer_pool_size > 1 GB)..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_change_buffering",
+     "description": "default value changed from all to none..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_doublewrite_files",
+     "description": "default value changed from innodb_buffer_pool_instances * 2 to 2..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_doublewrite_pages",
+     "description": "default value changed from innodb_write_io_threads value to 128..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_flush_method",
+     "description": "default value changed from fsync to O_DIRECT if supported, otherwise fsync..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_io_capacity",
+     "description": "default value changed from 200 to 10000..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_io_capacity_max",
+     "description": "default value changed from 2 * innodb_io_capacity, min of 2000 to 2 * innodb_io_capacity..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_log_buffer_size",
+     "description": "default value changed from 16777216 (16 MB) to 67108864 (64 MB)..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_numa_interleave",
+     "description": "default value changed from OFF to ON..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_page_cleaners",
+     "description": "default value changed from 4 to innodb_buffer_pool_instances..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_parallel_read_threads",
+     "description": "default value changed from 4 to (available logical processors / 8), min of 4..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_purge_threads",
+     "description": "default value changed from 4 to 1 if # of available logical processors is <= 16; otherwise 4..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_read_io_threads",
+     "description": "default value changed from 4 to (available logical processors / 2), min of 4..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_redo_log_capacity",
+     "description": "default value changed from 104857600 to MIN ( #vcpu/2, 16 )GB..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "innodb_use_fdatasync",
+     "description": "default value changed from OFF to ON..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "performance_schema_max_memory_classes",
+     "description": "default value changed from 450 to 470..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "temptable_max_mmap",
+     "description": "default value changed from 1073741824 (1 GB) to 0 (Bytes)..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "temptable_max_ram",
+     "description": "default value changed from 1073741824 (1 GB) to 3% of total memory: min 1 GB, max 4 GB (Bytes)..",
+     "dbObjectType": "SystemVariable"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "temptable_use_mmap",
+     "description": "default value changed from ON to OFF..",
+     "dbObjectType": "SystemVariable"
+    }
+   ],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "Following system variables that were detected as being used ware changed, deprecated or removed. Please update  your system accordingly before the upgrade.",
+   "details": {
+    "id": "sysVars",
+    "title": "System variable check for deprecation, removal, changes in defaults values or invalid values.",
+    "status": "OK",
+    "description": "Following system variables that were detected as being used ware changed, deprecated or removed. Please update  your system accordingly before the upgrade.",
+    "detectedProblems": [
+     {
+      "level": "Warning",
+      "dbObject": "binlog_transaction_dependency_tracking",
+      "description": "default value changed from COMMIT_ORDER to WRITESET..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Error",
+      "dbObject": "default_authentication_plugin",
+      "description": "variable removed at version 8.4.0 is set to mysql_native_password (COMMAND_LINE)., consider using 'authentication_policy' instead.",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "group_replication_consistency",
+      "description": "default value changed from EVENTUAL to BEFORE_ON_PRIMARY_FAILOVER..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "group_replication_exit_state_action",
+      "description": "default value changed from READ_ONLY to OFFLINE_MODE..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_adaptive_hash_index",
+      "description": "default value changed from ON to OFF..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_buffer_pool_in_core_file",
+      "description": "default value changed from ON to OFF..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_buffer_pool_instances",
+      "description": "default value changed from 8 (or 1 if innodb_buffer_pool_size < 1GB) to 1 (or MIN(innodb_buffer_pool_size / (innodb_buffer_pool_chunk_size * 2), #vcpu/4) if innodb_buffer_pool_size > 1 GB)..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_change_buffering",
+      "description": "default value changed from all to none..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_doublewrite_files",
+      "description": "default value changed from innodb_buffer_pool_instances * 2 to 2..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_doublewrite_pages",
+      "description": "default value changed from innodb_write_io_threads value to 128..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_flush_method",
+      "description": "default value changed from fsync to O_DIRECT if supported, otherwise fsync..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_io_capacity",
+      "description": "default value changed from 200 to 10000..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_io_capacity_max",
+      "description": "default value changed from 2 * innodb_io_capacity, min of 2000 to 2 * innodb_io_capacity..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_log_buffer_size",
+      "description": "default value changed from 16777216 (16 MB) to 67108864 (64 MB)..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_numa_interleave",
+      "description": "default value changed from OFF to ON..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_page_cleaners",
+      "description": "default value changed from 4 to innodb_buffer_pool_instances..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_parallel_read_threads",
+      "description": "default value changed from 4 to (available logical processors / 8), min of 4..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_purge_threads",
+      "description": "default value changed from 4 to 1 if # of available logical processors is <= 16; otherwise 4..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_read_io_threads",
+      "description": "default value changed from 4 to (available logical processors / 2), min of 4..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_redo_log_capacity",
+      "description": "default value changed from 104857600 to MIN ( #vcpu/2, 16 )GB..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "innodb_use_fdatasync",
+      "description": "default value changed from OFF to ON..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "performance_schema_max_memory_classes",
+      "description": "default value changed from 450 to 470..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "temptable_max_mmap",
+      "description": "default value changed from 1073741824 (1 GB) to 0 (Bytes)..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "temptable_max_ram",
+      "description": "default value changed from 1073741824 (1 GB) to 3% of total memory: min 1 GB, max 4 GB (Bytes)..",
+      "dbObjectType": "SystemVariable"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "temptable_use_mmap",
+      "description": "default value changed from ON to OFF..",
+      "dbObjectType": "SystemVariable"
+     }
+    ],
+    "solutions": []
+   }
+  },
+  {
+   "id": "checkTableCommand",
+   "title": "Issues reported by 'check table x for upgrade' command",
+   "status": "OK",
+   "severity": "notice",
+   "affected_objects": [],
+   "problems": [],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "",
+   "details": {
+    "id": "checkTableCommand",
+    "title": "Issues reported by 'check table x for upgrade' command",
+    "status": "OK",
+    "detectedProblems": [],
+    "solutions": []
+   }
+  },
+  {
+   "id": "syntax",
+   "title": "MySQL syntax check for routine-like objects",
+   "status": "OK",
+   "severity": "notice",
+   "affected_objects": [],
+   "problems": [],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "",
+   "details": {
+    "id": "syntax",
+    "title": "MySQL syntax check for routine-like objects",
+    "status": "OK",
+    "detectedProblems": [],
+    "solutions": []
+   }
+  },
+  {
+   "id": "foreignKeyReferences",
+   "title": "Checks for foreign keys not referencing a full unique index",
+   "status": "OK",
+   "severity": "notice",
+   "affected_objects": [],
+   "problems": [],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "",
+   "details": {
+    "id": "foreignKeyReferences",
+    "title": "Checks for foreign keys not referencing a full unique index",
+    "status": "OK",
+    "detectedProblems": [],
+    "solutions": [
+     "Convert non unique key to unique key if values do not have any duplicates. In case of foreign keys involving partial columns of key, create composite  unique key containing all the referencing columns if values do not have any  duplicates.",
+     "Remove foreign keys referring to non unique key/partial columns of key.",
+     "In case of multi level references which involves more than two tables change foreign key reference."
+    ]
+   }
+  },
+  {
+   "id": "authMethodUsage",
+   "title": "Check for deprecated or invalid user authentication methods.",
+   "status": "OK",
+   "severity": "warning",
+   "affected_objects": [
+    "legacy@%",
+    "root@%",
+    "root@localhost"
+   ],
+   "problems": [
+    {
+     "level": "Warning",
+     "dbObject": "legacy@%",
+     "description": "The following users are using the 'mysql_native_password' authentication method which is deprecated as of MySQL 8.0.34 and will be removed in a future release.\nConsider switching the users to a different authentication method (i.e. caching_sha2_password).\nThe 'mysql_native_password' authentication type is disabled by default in MySQL 8.4, but can still be enabled by setting loose_mysql_native_password=ON.",
+     "documentationLink": "https://dev.mysql.com/doc/refman/en/caching-sha2-pluggable-authentication.html",
+     "dbObjectType": "User"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "root@%",
+     "description": "The following users are using the 'mysql_native_password' authentication method which is deprecated as of MySQL 8.0.34 and will be removed in a future release.\nConsider switching the users to a different authentication method (i.e. caching_sha2_password).\nThe 'mysql_native_password' authentication type is disabled by default in MySQL 8.4, but can still be enabled by setting loose_mysql_native_password=ON.",
+     "documentationLink": "https://dev.mysql.com/doc/refman/en/caching-sha2-pluggable-authentication.html",
+     "dbObjectType": "User"
+    },
+    {
+     "level": "Warning",
+     "dbObject": "root@localhost",
+     "description": "The following users are using the 'mysql_native_password' authentication method which is deprecated as of MySQL 8.0.34 and will be removed in a future release.\nConsider switching the users to a different authentication method (i.e. caching_sha2_password).\nThe 'mysql_native_password' authentication type is disabled by default in MySQL 8.4, but can still be enabled by setting loose_mysql_native_password=ON.",
+     "documentationLink": "https://dev.mysql.com/doc/refman/en/caching-sha2-pluggable-authentication.html",
+     "dbObjectType": "User"
+    }
+   ],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "Some users are using authentication methods that may be deprecated or removed, please review the details below.",
+   "details": {
+    "id": "authMethodUsage",
+    "title": "Check for deprecated or invalid user authentication methods.",
+    "status": "OK",
+    "description": "Some users are using authentication methods that may be deprecated or removed, please review the details below.",
+    "detectedProblems": [
+     {
+      "level": "Warning",
+      "dbObject": "legacy@%",
+      "description": "The following users are using the 'mysql_native_password' authentication method which is deprecated as of MySQL 8.0.34 and will be removed in a future release.\nConsider switching the users to a different authentication method (i.e. caching_sha2_password).\nThe 'mysql_native_password' authentication type is disabled by default in MySQL 8.4, but can still be enabled by setting loose_mysql_native_password=ON.",
+      "documentationLink": "https://dev.mysql.com/doc/refman/en/caching-sha2-pluggable-authentication.html",
+      "dbObjectType": "User"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "root@%",
+      "description": "The following users are using the 'mysql_native_password' authentication method which is deprecated as of MySQL 8.0.34 and will be removed in a future release.\nConsider switching the users to a different authentication method (i.e. caching_sha2_password).\nThe 'mysql_native_password' authentication type is disabled by default in MySQL 8.4, but can still be enabled by setting loose_mysql_native_password=ON.",
+      "documentationLink": "https://dev.mysql.com/doc/refman/en/caching-sha2-pluggable-authentication.html",
+      "dbObjectType": "User"
+     },
+     {
+      "level": "Warning",
+      "dbObject": "root@localhost",
+      "description": "The following users are using the 'mysql_native_password' authentication method which is deprecated as of MySQL 8.0.34 and will be removed in a future release.\nConsider switching the users to a different authentication method (i.e. caching_sha2_password).\nThe 'mysql_native_password' authentication type is disabled by default in MySQL 8.4, but can still be enabled by setting loose_mysql_native_password=ON.",
+      "documentationLink": "https://dev.mysql.com/doc/refman/en/caching-sha2-pluggable-authentication.html",
+      "dbObjectType": "User"
+     }
+    ],
+    "solutions": []
+   }
+  },
+  {
+   "id": "pluginUsage",
+   "title": "Check for deprecated or removed plugin usage.",
+   "status": "OK",
+   "severity": "notice",
+   "affected_objects": [],
+   "problems": [],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "",
+   "details": {
+    "id": "pluginUsage",
+    "title": "Check for deprecated or removed plugin usage.",
+    "status": "OK",
+    "detectedProblems": [],
+    "solutions": []
+   }
+  },
+  {
+   "id": "deprecatedDefaultAuth",
+   "title": "Check for deprecated or invalid default authentication methods in system variables.",
+   "status": "OK",
+   "severity": "error",
+   "affected_objects": [
+    "default_authentication_plugin"
+   ],
+   "problems": [
+    {
+     "level": "Error",
+     "dbObject": "default_authentication_plugin",
+     "description": "mysql_native_password authentication method was removed and it must be corrected before upgrading to 8.4.0 release.",
+     "dbObjectType": "SystemVariable"
+    }
+   ],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "The following variables have problems with their set authentication method:",
+   "details": {
+    "id": "deprecatedDefaultAuth",
+    "title": "Check for deprecated or invalid default authentication methods in system variables.",
+    "status": "OK",
+    "description": "The following variables have problems with their set authentication method:",
+    "detectedProblems": [
+     {
+      "level": "Error",
+      "dbObject": "default_authentication_plugin",
+      "description": "mysql_native_password authentication method was removed and it must be corrected before upgrading to 8.4.0 release.",
+      "dbObjectType": "SystemVariable"
+     }
+    ],
+    "solutions": []
+   }
+  },
+  {
+   "id": "deprecatedRouterAuthMethod",
+   "title": "Check for deprecated or invalid authentication methods in use by MySQL Router internal accounts.",
+   "status": "OK",
+   "severity": "notice",
+   "affected_objects": [],
+   "problems": [],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "",
+   "details": {
+    "id": "deprecatedRouterAuthMethod",
+    "title": "Check for deprecated or invalid authentication methods in use by MySQL Router internal accounts.",
+    "status": "OK",
+    "detectedProblems": [],
+    "solutions": []
+   }
+  },
+  {
+   "id": "columnDefinition",
+   "title": "Checks for errors in column definitions",
+   "status": "OK",
+   "severity": "notice",
+   "affected_objects": [],
+   "problems": [],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "",
+   "details": {
+    "id": "columnDefinition",
+    "title": "Checks for errors in column definitions",
+    "status": "OK",
+    "detectedProblems": [],
+    "solutions": []
+   }
+  },
+  {
+   "id": "invalidPrivileges",
+   "title": "Checks for user privileges that will be removed",
+   "status": "OK",
+   "severity": "notice",
+   "affected_objects": [
+    "'root'@'%'",
+    "'root'@'localhost'"
+   ],
+   "problems": [
+    {
+     "level": "Notice",
+     "dbObject": "'root'@'%'",
+     "description": "The user 'root'@'%' has the following privileges that will be removed as part of the upgrade process: SET_USER_ID",
+     "dbObjectType": "User"
+    },
+    {
+     "level": "Notice",
+     "dbObject": "'root'@'localhost'",
+     "description": "The user 'root'@'localhost' has the following privileges that will be removed as part of the upgrade process: SET_USER_ID",
+     "dbObjectType": "User"
+    }
+   ],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "Verifies for users containing grants to be removed as part of the upgrade process.",
+   "details": {
+    "id": "invalidPrivileges",
+    "title": "Checks for user privileges that will be removed",
+    "status": "OK",
+    "description": "Verifies for users containing grants to be removed as part of the upgrade process.",
+    "detectedProblems": [
+     {
+      "level": "Notice",
+      "dbObject": "'root'@'%'",
+      "description": "The user 'root'@'%' has the following privileges that will be removed as part of the upgrade process: SET_USER_ID",
+      "dbObjectType": "User"
+     },
+     {
+      "level": "Notice",
+      "dbObject": "'root'@'localhost'",
+      "description": "The user 'root'@'localhost' has the following privileges that will be removed as part of the upgrade process: SET_USER_ID",
+      "dbObjectType": "User"
+     }
+    ],
+    "solutions": [
+     "If the privileges are not being used, no action is required, otherwise, ensure they stop being used before the upgrade as they will be lost."
+    ]
+   }
+  },
+  {
+   "id": "partitionsWithPrefixKeys",
+   "title": "Checks for partitions by key using columns with prefix key indexes",
+   "status": "OK",
+   "severity": "notice",
+   "affected_objects": [],
+   "problems": [],
+   "doc_link": "https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html",
+   "description": "",
+   "details": {
+    "id": "partitionsWithPrefixKeys",
+    "title": "Checks for partitions by key using columns with prefix key indexes",
+    "status": "OK",
+    "detectedProblems": [],
+    "solutions": []
+   }
+  }
+ ],
+ "counts": {
+  "error": 2,
+  "warning": 27,
+  "notice": 2
+ },
+ "manual_checks": [],
+ "status": "issues_found",
+ "method": "mysqlsh",
+ "partial": false,
+ "tool": {
+  "available": true,
+  "deprecated": false,
+  "path": "/Users/dba/maintenance/bin/mysqlsh",
+  "version": "mysqlsh Ver 9.6.0",
+  "version_tuple": [
+   9,
+   6,
+   0
+  ],
+  "engine": "mysql",
+  "name": "mysqlsh"
+ },
+ "limitations": [
+  "Manual checks require review; this report does not perform an upgrade."
+ ]
+}

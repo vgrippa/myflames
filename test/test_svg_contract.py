@@ -91,6 +91,18 @@ class TestRenderersMeetContract(unittest.TestCase):
         svg = render_bargraph(self.root, total_time=self.root["total_time"])
         assert_svg_contract(svg, self, forbid_triple_dot=True)
 
+    def test_flamegraph_contract(self):
+        from myflames.parser import build_flame_entries
+        lines = []
+        for path, t in build_flame_entries(self.root):
+            units = int(t * 1000 + 0.5)
+            if units > 0:
+                lines.append(";".join(path) + " " + str(units))
+        nodes = sum(1 for _ in build_flame_entries(self.root))
+        svg = folded_to_svg("\n".join(lines), title="Contract", countname="µs")
+        assert_svg_contract(svg, self, require_table_names=["users", "orders"],
+                            require_node_count_ge=nodes)
+
 
 if __name__ == "__main__":
     unittest.main()

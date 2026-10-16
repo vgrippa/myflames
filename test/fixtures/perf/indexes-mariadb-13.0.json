@@ -1,0 +1,235 @@
+{
+ "args": {
+  "schema": "mfshop"
+ },
+ "calls": [
+  [
+   "/*myflames:indexes*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment')",
+   "performance_schema\tON\nuserstat\tOFF\nversion\t13.0.2-MariaDB-ubu2604\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:indexes*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t865\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT NAME, ENABLED FROM performance_schema.setup_instruments WHERE NAME = 'wait/io/table/sql/handler'",
+   "wait/io/table/sql/handler\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN ('global_instrumentation', 'thread_instrumentation')",
+   "global_instrumentation\tYES\nthread_instrumentation\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT HOST, USER, ROLE, ENABLED FROM performance_schema.setup_actors",
+   "%\t%\t%\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, ENABLED FROM performance_schema.setup_objects WHERE OBJECT_TYPE = 'TABLE'",
+   "mysql\t%\tNO\nperformance_schema\t%\tNO\ninformation_schema\t%\tNO\n%\t%\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, INDEX_NAME, COUNT_STAR, COUNT_FETCH, SUM_TIMER_FETCH FROM performance_schema.table_io_waits_summary_by_index_usage WHERE OBJECT_TYPE = 'TABLE' AND OBJECT_SCHEMA = CONVERT(X'6d6673686f70' USING utf8mb4)",
+   "mfshop\torders\tPRIMARY\t310638\t172638\t30252583404\nmfshop\torders\tk_customer\t0\t0\t0\nmfshop\torders\tk_status\t0\t0\t0\nmfshop\torders\tk_status_dup\t0\t0\t0\nmfshop\torders\tk_note10\t0\t0\t0\nmfshop\torders\tNULL\t16180500\t16146000\t1496248104852\nmfshop\tcustomers\tPRIMARY\t0\t0\t0\nmfshop\tcustomers\tu_email\t0\t0\t0\nmfshop\tcustomers\tk_country\t276000\t276000\t25881034329\nmfshop\tcustomers\tk_created\t1\t1\t12421431\nmfshop\tcustomers\tk_country_created\t0\t0\t0\nmfshop\todd$name\tPRIMARY\t0\t0\t0\nmfshop\todd$name\tk_a\t0\t0\t0\nmfshop\todd$name\tk_ab\t69\t69\t226973421\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, COLLATION, INDEX_TYPE, IGNORED FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = CONVERT(X'6d6673686f70' USING utf8mb4)",
+   "mfshop\torders\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tNO\nmfshop\torders\tk_customer\t1\t1\tcustomer_id\tNULL\tA\tBTREE\tNO\nmfshop\torders\tk_status\t1\t1\tstatus\tNULL\tA\tBTREE\tNO\nmfshop\torders\tk_status_dup\t1\t1\tstatus\tNULL\tA\tBTREE\tNO\nmfshop\torders\tk_note10\t1\t1\tnote\t10\tA\tBTREE\tNO\nmfshop\todd$name\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tNO\nmfshop\todd$name\tk_a\t1\t1\ta\tNULL\tA\tBTREE\tNO\nmfshop\todd$name\tk_ab\t1\t1\ta\tNULL\tA\tBTREE\tNO\nmfshop\todd$name\tk_ab\t1\t2\tb\tNULL\tA\tBTREE\tNO\nmfshop\tcustomers\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tNO\nmfshop\tcustomers\tu_email\t0\t1\temail\tNULL\tA\tBTREE\tNO\nmfshop\tcustomers\tk_country\t1\t1\tcountry\tNULL\tA\tBTREE\tNO\nmfshop\tcustomers\tk_created\t1\t1\tcreated_at\tNULL\tA\tBTREE\tNO\nmfshop\tcustomers\tk_country_created\t1\t1\tcountry\tNULL\tA\tBTREE\tNO\nmfshop\tcustomers\tk_country_created\t1\t2\tcreated_at\tNULL\tA\tBTREE\tNO\nmfshop\tidle_table\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tNO\nmfshop\tidle_table\tk_v\t1\t1\tv\tNULL\tA\tBTREE\tNO\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_NAME IS NOT NULL AND TABLE_SCHEMA = CONVERT(X'6d6673686f70' USING utf8mb4)",
+   "mfshop\torders\tfk_orders_customer\tcustomer_id\t1\tmfshop\tcustomers\tid\n"
+  ]
+ ],
+ "report": {
+  "available": true,
+  "engine": "mariadb",
+  "foreign_keys": 1,
+  "full_scans": [
+   {
+    "fetch_ms_with_index": 30.253,
+    "fetch_ms_without_index": 1496.248,
+    "mostly": true,
+    "rows_with_index": 172638,
+    "rows_without_index": 16146000,
+    "schema": "mfshop",
+    "share_rows": 0.9894,
+    "share_time": 0.9802,
+    "table": "orders",
+    "why": "16,146,000 rows read without an index, 172,638 through indexes; 1.50 s of read time without an index (98% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   }
+  ],
+  "more": {
+   "full_scans": 0,
+   "no_data": 0,
+   "redundant": 0,
+   "unused": 0
+  },
+  "no_data": [
+   {
+    "indexes": 2,
+    "reason": "not_opened",
+    "schema": "mfshop",
+    "table": "idle_table"
+   }
+  ],
+  "notes": [
+   "Unused means no row read, written or looked up through the index since the server started (14 min 25 s ago) or since the last ALTER TABLE, CREATE INDEX or DROP INDEX on that table, which restarts its counts. An index used only by a weekly or monthly job looks unused until the job runs.",
+   "Tables with no row read or written since the counts started (never opened, or opened only to read their definition) are listed under No data, never as unused. A TRUNCATE of a Performance Schema summary table also resets the counts.",
+   "The server has been up only 14 min 25 s, so infrequent jobs may not have run yet.",
+   "PRIMARY and UNIQUE indexes are never listed as unused: they enforce constraints even when no query reads them. Indexes that back a foreign key are marked keep: InnoDB checks foreign keys without going through the usage counters.",
+   "Foreign keys declared in other schemas that reference mfshop are not checked; a non-unique parent index they use could look unused.",
+   "Counts are per server: reads on replicas are not included."
+  ],
+  "performance_schema": true,
+  "redundant": [
+   {
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+    "columns": "country",
+    "dominant": "k_country_created",
+    "dominant_columns": "country, created_at",
+    "drop_sql": "ALTER TABLE `mfshop`.`customers` DROP INDEX `k_country`;",
+    "foreign_keys": [],
+    "index": "k_country",
+    "reason": "is a leftmost prefix of",
+    "schema": "mfshop",
+    "table": "customers",
+    "test_sql": "ALTER TABLE `mfshop`.`customers` ALTER INDEX `k_country` IGNORED;",
+    "unique": false,
+    "visible": true,
+    "why": "k_country (country) is a leftmost prefix of k_country_created (country, created_at), so k_country_created serves every lookup k_country serves. Each extra index slows writes and uses buffer pool memory."
+   },
+   {
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+    "columns": "a",
+    "dominant": "k_ab",
+    "dominant_columns": "a, b",
+    "drop_sql": "ALTER TABLE `mfshop`.`odd$name` DROP INDEX `k_a`;",
+    "foreign_keys": [],
+    "index": "k_a",
+    "reason": "is a leftmost prefix of",
+    "schema": "mfshop",
+    "table": "odd$name",
+    "test_sql": "ALTER TABLE `mfshop`.`odd$name` ALTER INDEX `k_a` IGNORED;",
+    "unique": false,
+    "visible": true,
+    "why": "k_a (a) is a leftmost prefix of k_ab (a, b), so k_ab serves every lookup k_a serves. Each extra index slows writes and uses buffer pool memory."
+   },
+   {
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+    "columns": "status",
+    "dominant": "k_status",
+    "dominant_columns": "status",
+    "drop_sql": "ALTER TABLE `mfshop`.`orders` DROP INDEX `k_status_dup`;",
+    "foreign_keys": [],
+    "index": "k_status_dup",
+    "reason": "duplicates",
+    "schema": "mfshop",
+    "table": "orders",
+    "test_sql": "ALTER TABLE `mfshop`.`orders` ALTER INDEX `k_status_dup` IGNORED;",
+    "unique": false,
+    "visible": true,
+    "why": "k_status_dup (status) duplicates k_status (status), so k_status serves every lookup k_status_dup serves. Each extra index slows writes and uses buffer pool memory."
+   }
+  ],
+  "schema_version": "indexes-1.0",
+  "scope": {
+   "schema": "mfshop",
+   "server_wide": false
+  },
+  "server_version": "13.0.2-MariaDB-ubu2604",
+  "source": "performance_schema",
+  "summary": {
+   "full_scans": 1,
+   "indexes": 15,
+   "keep_foreign_key": 1,
+   "mostly_full_scans": 1,
+   "no_data": 1,
+   "redundant": 3,
+   "tables": 4,
+   "unused": 6,
+   "unused_candidates": 5
+  },
+  "taken_at": "2026-10-13T17:15:09.953086+00:00",
+  "unused": [
+   {
+    "caveat": "Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+    "columns": "country, created_at",
+    "drop_sql": "ALTER TABLE `mfshop`.`customers` DROP INDEX `k_country_created`;",
+    "foreign_keys": [],
+    "index": "k_country_created",
+    "schema": "mfshop",
+    "table": "customers",
+    "test_sql": "ALTER TABLE `mfshop`.`customers` ALTER INDEX `k_country_created` IGNORED;",
+    "verdict": "candidate",
+    "visible": true,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage)."
+   },
+   {
+    "caveat": "Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+    "columns": "a",
+    "drop_sql": "ALTER TABLE `mfshop`.`odd$name` DROP INDEX `k_a`;",
+    "foreign_keys": [],
+    "index": "k_a",
+    "schema": "mfshop",
+    "table": "odd$name",
+    "test_sql": "ALTER TABLE `mfshop`.`odd$name` ALTER INDEX `k_a` IGNORED;",
+    "verdict": "candidate",
+    "visible": true,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage)."
+   },
+   {
+    "caveat": "Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+    "columns": "note(10)",
+    "drop_sql": "ALTER TABLE `mfshop`.`orders` DROP INDEX `k_note10`;",
+    "foreign_keys": [],
+    "index": "k_note10",
+    "schema": "mfshop",
+    "table": "orders",
+    "test_sql": "ALTER TABLE `mfshop`.`orders` ALTER INDEX `k_note10` IGNORED;",
+    "verdict": "candidate",
+    "visible": true,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage)."
+   },
+   {
+    "caveat": "Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+    "columns": "status",
+    "drop_sql": "ALTER TABLE `mfshop`.`orders` DROP INDEX `k_status`;",
+    "foreign_keys": [],
+    "index": "k_status",
+    "schema": "mfshop",
+    "table": "orders",
+    "test_sql": "ALTER TABLE `mfshop`.`orders` ALTER INDEX `k_status` IGNORED;",
+    "verdict": "candidate",
+    "visible": true,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage)."
+   },
+   {
+    "caveat": "Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+    "columns": "status",
+    "drop_sql": "ALTER TABLE `mfshop`.`orders` DROP INDEX `k_status_dup`;",
+    "foreign_keys": [],
+    "index": "k_status_dup",
+    "schema": "mfshop",
+    "table": "orders",
+    "test_sql": "ALTER TABLE `mfshop`.`orders` ALTER INDEX `k_status_dup` IGNORED;",
+    "verdict": "candidate",
+    "visible": true,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage)."
+   },
+   {
+    "columns": "customer_id",
+    "foreign_keys": [
+     "child side of fk_orders_customer (references mfshop.customers)"
+    ],
+    "index": "k_customer",
+    "schema": "mfshop",
+    "table": "orders",
+    "verdict": "keep",
+    "visible": true,
+    "why": "Shows no use since server start or the last change to this table's indexes, but it backs a foreign key (child side of fk_orders_customer (references mfshop.customers)). InnoDB checks foreign keys without going through the counters, so keep it."
+   }
+  ],
+  "uptime_s": 865
+ },
+ "server": "mariadb-13.0"
+}

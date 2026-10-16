@@ -45,6 +45,7 @@ from .output_sidecar import build_sidecar, _compute_plan_summary
 from .teach import render_lesson
 from .teach_hooks import build_teach_hooks, build_teach_index_maps
 from .complexity_animation import render_complexity_animation_svg
+from .server_info import detect_flavor
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,7 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
     pure visualization — the HTML layer renders warnings / suggestions /
     environment as semantic HTML instead.
     """
-    from .flamegraph import folded_to_svg
+    from .flamegraph import folded_to_svg, plan_folded
     from .output_bargraph import render_bargraph
     from .output_diagram import render_diagram
     from .output_tree import render_tree
@@ -92,9 +93,6 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
         )
 
     # flamegraph (default)
-    max_time = root["total_time"]
-    use_microseconds = max_time > 0 and max_time < 1
-    multiplier = 1000 if use_microseconds else 1
     frame_labels = {}
     frame_ids = {}
     if kwargs.get("node_identity"):
@@ -109,15 +107,10 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
         entries = list(identity_entries(root))
     else:
         entries = list(build_flame_entries(root))
-    folded_lines = []
-    for path, time in entries:
-        t = time * multiplier
-        t = int(t + 0.5)
-        t = 1 if t == 0 and len(path) == 1 and not kwargs.get("node_identity") else t
-        if t <= 0:
-            continue
-        folded_lines.append(";".join(path) + " " + str(t))
-    folded_text = "\n".join(folded_lines)
+    # Whole microseconds per measured operator (flamegraph.flame_scale,
+    # mirrored by charts/flamegraph.ts).
+    folded_text, flame_unit = plan_folded(entries, root["total_time"],
+                                          keep_root=not kwargs.get("node_identity"))
     if not folded_text.strip():
         return ""
     _complexity_by_folded = {}
@@ -135,7 +128,7 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
     svg = folded_to_svg(
         folded_text, title=title, width=width,
         height=kwargs.get("frame_height", 32),
-        countname="µs" if use_microseconds else unit,
+        countname=flame_unit,
         inverted=kwargs.get("inverted", False),
         colors=kwargs.get("colors", "hot"),
         teach_index_by_folded=teach_index_by_folded,
@@ -337,7 +330,7 @@ def _render_exec_summary(sidecar):
 #: sees a bare imperative with no path to understand it.
 _WHY_BY_CATEGORY = {
     "index": (
-        "An index turns a full-table scan into a direct lookup — MySQL "
+        "An index turns a full-table scan into a direct lookup: MySQL "
         "jumps straight to the matching rows instead of reading every row "
         "and discarding the ones that don't match. For joins, the benefit "
         "compounds: a nested loop over N outer rows that had to scan the "
@@ -353,12 +346,12 @@ _WHY_BY_CATEGORY = {
     "optimizer_switch": (
         "optimizer_switch flags steer which execution strategies the "
         "planner is allowed to pick. Flipping one changes the *plan*, "
-        "not the data — so you can try the change in a session and roll "
+        "not the data, so you can try the change in a session and roll "
         "back instantly if it doesn't help."
     ),
     "engine": (
         "InnoDB is the storage engine every other piece of modern MySQL "
-        "tuning assumes — row-level locking, the buffer pool, MVCC, "
+        "tuning assumes: row-level locking, the buffer pool, MVCC, "
         "transactions, and crash recovery are all InnoDB-only. Non-InnoDB "
         "engines make most of the advice in this report inapplicable."
     ),
@@ -366,7 +359,7 @@ _WHY_BY_CATEGORY = {
         "Durability settings control what you lose on a crash. The "
         "default (=1) fsyncs on every commit so no committed "
         "transaction is ever lost. Relaxed values trade durability for "
-        "write throughput — only accept the trade if the data is "
+        "write throughput; only accept the trade if the data is "
         "genuinely reproducible."
     ),
     "rewrite": (
@@ -393,7 +386,7 @@ def _why_fallback(suggestion):
         return _WHY_BY_CATEGORY[cat]
     return (
         "This recommendation follows the pattern the advisor matched "
-        "in your plan — expand the full suggestion below to see the "
+        "in your plan. Expand the full suggestion below to see the "
         "detailed reasoning behind it."
     )
 
@@ -410,7 +403,7 @@ def _render_all_clear_card():
         '    <span class="badge badge-info">All clear</span>',
         '    <h2 id="primary-heading">No blocking issues found</h2>',
         '  </header>',
-        '  <p class="action-text">myflames found nothing to fix in this plan — it looks healthy.</p>',
+        '  <p class="action-text">myflames found nothing to fix in this plan. It looks healthy.</p>',
         '</section>',
     ])
 
@@ -499,6 +492,33 @@ def _render_query_card(sidecar):
         '  <pre class="sql-text"><code>{}</code></pre>\n'
         '</section>'
     ).format(xml_escape(beautified))
+
+
+#: Report views drawn by the myflames-charts.js bundle. ``diagram`` is the
+#: Visual Explain alias.
+REPORT_CHART_VIEWS = ("flamegraph", "bargraph", "tree", "workbench", "diagram")
+
+
+def _render_chart_embed(root, view_type, width, title, teach_index_by_folded,
+                        analysis, kwargs):
+    """Mount + chart data + inlined bundle for the report's chart panel.
+
+    The teach bridge in ``output_html_report.js`` keeps working because each
+    operator element carries ``data-teach-index``; ``exportSVG`` still reads
+    the first ``#chart-panel svg``, which is the chart's own self-styled SVG.
+    The mount's ``<noscript>`` note points at the static ``-o plan.svg``.
+    """
+    from .chart_assets import chart_embed
+    from .chart_data import build_chart_data
+    data = build_chart_data(root, title=title,
+                            teach_index_by_folded=teach_index_by_folded,
+                            analysis=analysis)
+    options = None
+    if view_type == "flamegraph":
+        options = {"frame_height": int(kwargs.get("frame_height") or 32),
+                   "inverted": bool(kwargs.get("inverted"))}
+    view = "workbench" if view_type == "diagram" else view_type
+    return chart_embed(data, view, width=width, options=options)
 
 
 def _render_viz_card(svg_embed, view_type):
@@ -1031,11 +1051,11 @@ def _render_myteach_section(sidecar):
 
     return (
         '<section class="myteach-hub" aria-labelledby="myteach-heading">\n'
-        '  <h2 id="myteach-heading">myteach — interactive algorithm catalog</h2>\n'
+        '  <h2 id="myteach-heading">myteach: interactive algorithm catalog</h2>\n'
         '  <p class="myteach-intro">\n'
         '    Every operator shown above has a hands-on lesson with a '
         'cost-model slider and an animated walk-through. The catalog is '
-        'the central index — bookmark it once, revisit per query:\n'
+        'the central index. Bookmark it once, revisit per query:\n'
         '  </p>\n'
         '  <p class="myteach-cta">\n'
         '    <a class="myteach-cta-link" href="./teach/index.html">\n'
@@ -1168,6 +1188,8 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
             schema=live_artifacts.get("schema"),
             stats=live_artifacts.get("stats"),
             variables=live_artifacts.get("variables"),
+            freshness=live_artifacts.get("freshness"),
+            capture=live_artifacts.get("capture"),
         )
     teach_hooks = build_teach_hooks(
         root,
@@ -1181,20 +1203,28 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     if view_type == "flamegraph" and "width" not in kwargs:
         svg_width = 1800
 
-    svg = _render_svg(
-        root,
-        view_type,
-        svg_width,
-        title,
-        unit,
-        teach_index_by_folded=teach_maps["by_folded_label"],
-        **kwargs
-    ) or ""
+    if view_type in REPORT_CHART_VIEWS:
+        # Drawn in the browser by the inlined myflames-charts.js bundle from
+        # chart-data-1.0. Python still decides every MySQL/MariaDB semantic
+        # (kind, join type, family, teach index, analysis highlights); the
+        # standalone ``-o plan.svg`` path keeps the Python renderers.
+        svg_embed = _render_chart_embed(root, view_type, svg_width or 1200, title,
+                                        teach_maps["by_folded_label"], analysis, kwargs)
+    else:
+        svg = _render_svg(
+            root,
+            view_type,
+            svg_width,
+            title,
+            unit,
+            teach_index_by_folded=teach_maps["by_folded_label"],
+            **kwargs
+        ) or ""
 
-    # Strip XML declaration / DOCTYPE from the SVG so it can be embedded
-    # directly in HTML. Do NOT strip the <svg> element itself.
-    svg_embed = _re.sub(r'^<\?xml[^?]*\?>\s*', '', svg)
-    svg_embed = _re.sub(r'<!DOCTYPE[^>]*>\s*', '', svg_embed)
+        # Strip XML declaration / DOCTYPE from the SVG so it can be embedded
+        # directly in HTML. Do NOT strip the <svg> element itself.
+        svg_embed = _re.sub(r'^<\?xml[^?]*\?>\s*', '', svg)
+        svg_embed = _re.sub(r'<!DOCTYPE[^>]*>\s*', '', svg_embed)
 
     beautified = "\n".join(format_sql(query_text)) if query_text else ""
 
@@ -1204,7 +1234,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     engine_version = None
     if live_artifacts:
         version_str = (live_artifacts.get("variables") or {}).get("version") or ""
-        if "mariadb" in version_str.lower():
+        if detect_flavor(version_str) == "mariadb":
             engine = "mariadb"
         elif version_str:
             engine = "mysql"
@@ -1318,7 +1348,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         '<head>\n'
         '  <meta charset="utf-8">\n'
         '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '  <title>{title_esc} — myflames report</title>\n'
+        '  <title>{report_title_esc}</title>\n'
         '  <meta name="description" content="{desc_esc}">\n'
         '{alternate_link}'
         '  <script type="application/ld+json">\n{jsonld}\n  </script>\n'
@@ -1353,6 +1383,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         '</html>\n'
     ).format(
         title_esc=xml_escape(title),
+        report_title_esc=xml_escape((title + ': ' if title else '') + 'myflames report'),
         desc_esc=xml_escape(description),
         alternate_link=alternate_link,
         header_meta=header_meta,

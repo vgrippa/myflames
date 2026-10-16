@@ -10,8 +10,15 @@ Three concentric rings:
 """
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
 import math
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +30,10 @@ from myflames.teach._cost_model import (
     INNODB_PAGE_SIZE_DEFAULT,
     INNODB_PAGE_OVERHEAD_BYTES,
     INNODB_CHILD_POINTER_BYTES,
+    INNODB_RECORD_HEADER_BYTES,
+    INNODB_CLUSTERED_SYSTEM_BYTES,
+    INNODB_CLUSTERED_LEAF_RESERVE_DIVISOR,
+    PK_BIGINT_BYTES,
     JOIN_BUFFER_SIZE_DEFAULT,
     MARIADB_JOIN_CACHE_LEVEL_DEFAULT,
     MYSQL_BNL_REMOVED_IN,
@@ -31,8 +42,16 @@ from myflames.teach._cost_model import (
     SORT_BUFFER_SIZE_DEFAULT,
     TMP_TABLE_SIZE_DEFAULT,
     MAX_HEAP_TABLE_SIZE_DEFAULT,
+    TMP_ENGINE_MARIADB,
+    TMP_ENGINE_MEMORY,
+    TMP_ENGINE_TEMPTABLE,
+    TMP_TABLE_ENGINES,
     innodb_fanout,
     innodb_tree_height,
+    innodb_leaf_capacity,
+    innodb_btree_shape,
+    innodb_index_shapes,
+    leaf_range_pages,
     btree_lookup_cost,
     bnl_blocks,
     bnl_cost,
@@ -45,7 +64,7 @@ from myflames.teach._cost_model import (
     icp_cost,
     index_merge_cost,
 )
-from myflames.teach import LESSONS, render_lesson
+from myflames.teach import LESSONS, LESSON_3D, lesson_views, render_lesson, render_lesson_3d
 
 
 class TestExplainerFormatting(unittest.TestCase):
@@ -136,6 +155,388 @@ class TestInnoDBBTree(unittest.TestCase):
         )
         self.assertEqual(cost.traversals, 1)
         self.assertEqual(cost.pages_touched, cost.height)
+
+
+def _ceil_div(numerator, denominator):
+    return (numerator + denominator - 1) // denominator
+
+
+class TestInnoDBBTreeShape(unittest.TestCase):
+    """Pages per level of the clustered and secondary index (the 3D B+tree view).
+
+    Hand-computed numbers use the 16 KiB default page: 16384 - 120 = 16264
+    usable bytes. ``users`` defaults: 100 B of column data, 24 B email.
+    """
+
+    ROW_GRID = [10 ** exp for exp in range(2, 10)]          # 100 .. 1e9
+    PAGE_GRID = [kib * 1024 for kib in (4, 8, 16, 32, 64)]  # 4 .. 64 KiB
+
+    def test_record_constants(self):
+        """REC_N_NEW_EXTRA_BYTES = 5; DB_TRX_ID 6 B + DB_ROLL_PTR 7 B = 13;
+        BIGINT = 8. The 9 B child pointer is the 5 B header + 4 B page number."""
+        self.assertEqual(INNODB_RECORD_HEADER_BYTES, 5)
+        self.assertEqual(INNODB_CLUSTERED_SYSTEM_BYTES, 13)
+        self.assertEqual(PK_BIGINT_BYTES, 8)
+        self.assertEqual(INNODB_CHILD_POINTER_BYTES, INNODB_RECORD_HEADER_BYTES + 4)
+        # dict_index_get_space_reserve() = page size / 16 for clustered leaves.
+        self.assertEqual(INNODB_CLUSTERED_LEAF_RESERVE_DIVISOR, 16)
+
+    def test_leaf_capacity_with_the_clustered_reserve(self):
+        """16 KiB page keeping 1024 B free: (16264 - 1024) // 118 = 129."""
+        self.assertEqual(innodb_leaf_capacity(118, 16 * 1024, 1024), 129)
+        self.assertEqual(innodb_leaf_capacity(118, 4 * 1024, 256), 31)
+        self.assertEqual(innodb_leaf_capacity(118, 16 * 1024, 0), innodb_leaf_capacity(118))
+        with self.assertRaises(ValueError):
+            innodb_leaf_capacity(118, 16 * 1024, -1)
+
+    # -- innodb_leaf_capacity ------------------------------------------------
+
+    def test_leaf_capacity_16kib_page(self):
+        """16264 // 118 = 137 (137 * 118 = 16166; 138 * 118 = 16284)."""
+        self.assertEqual(innodb_leaf_capacity(118), 137)
+        self.assertEqual(innodb_leaf_capacity(118, 16 * 1024), 137)
+        # Exactly two records fit at half the usable bytes, one byte more is one.
+        self.assertEqual(innodb_leaf_capacity(8132), 2)
+        self.assertEqual(innodb_leaf_capacity(8133), 1)
+
+    def test_leaf_capacity_floor_is_one_record(self):
+        """An entry bigger than the usable page still counts as one per page."""
+        usable = INNODB_PAGE_SIZE_DEFAULT - INNODB_PAGE_OVERHEAD_BYTES
+        self.assertEqual(innodb_leaf_capacity(usable), 1)
+        self.assertEqual(innodb_leaf_capacity(usable + 1), 1)
+        self.assertEqual(innodb_leaf_capacity(100_000), 1)
+        self.assertEqual(innodb_leaf_capacity(100_000, 4 * 1024), 1)
+
+    def test_leaf_capacity_rejects_non_positive_sizes(self):
+        for entry_bytes, page_size in ((0, 16384), (-1, 16384), (118, 0), (118, -16384)):
+            with self.subTest(entry_bytes=entry_bytes, page_size=page_size):
+                with self.assertRaises(ValueError):
+                    innodb_leaf_capacity(entry_bytes, page_size)
+
+    # -- innodb_btree_shape / innodb_index_shapes ----------------------------
+
+    def test_one_million_users_default_shape(self):
+        """Clustered: 100 + 5 + 13 = 118 B records; leaves keep 16384 / 16 =
+        1024 B free, so (16264 - 1024) // 118 = 129 per leaf;
+        ceil(1e6 / 129) = 7752 leaves, fan-out 16264 // 17 = 956, so 9 pages
+        above the leaves and one root. Secondary: 24 + 8 + 5 = 37 B records,
+        16264 // 37 = 439 per leaf; node pointers hold email + id (32 B), so
+        fan-out is 16264 // 41 = 396; ceil(1e6 / 439) = 2278 leaves, 6 above."""
+        shapes = innodb_index_shapes(1_000_000, 100, 24)
+        self.assertEqual(set(shapes), {"clustered", "secondary"})
+        clustered = shapes["clustered"]
+        self.assertEqual(clustered["levels"], [1, 9, 7752])
+        self.assertEqual(clustered["fan_out"], 956)
+        self.assertEqual(clustered["leaf_capacity"], 129)
+        self.assertEqual(clustered["leaf_entry_bytes"], 118)
+        self.assertEqual(clustered["leaf_reserve_bytes"], 1024)
+        self.assertEqual(clustered["pages"], 1 + 9 + 7752)
+        secondary = shapes["secondary"]
+        self.assertEqual(secondary["fan_out"], 396)
+        self.assertEqual(secondary["leaf_entry_bytes"], 37)
+        self.assertEqual(secondary["leaf_capacity"], 439)
+        self.assertEqual(secondary["leaf_reserve_bytes"], 0, "no update reserve on secondary leaves")
+        self.assertEqual(secondary["levels"], [1, 6, 2278])
+        self.assertEqual(secondary["pages"], 1 + 6 + 2278)
+
+    def test_small_table_is_one_page_that_is_root_and_leaf(self):
+        shapes = innodb_index_shapes(100, 100, 24)
+        self.assertEqual(shapes["clustered"]["levels"], [1])
+        self.assertEqual(shapes["secondary"]["levels"], [1])
+        self.assertEqual(shapes["clustered"]["pages"], 1)
+        self.assertEqual(innodb_btree_shape(0, 118, 8), [1])
+        self.assertEqual(innodb_btree_shape(1, 118, 8), [1])
+        self.assertEqual(innodb_btree_shape(137, 118, 8), [1])
+        # One row more than a page holds: a root above two leaves.
+        self.assertEqual(innodb_btree_shape(138, 118, 8), [1, 2])
+        # 4 KiB pages: 3976 // 118 = 33 per leaf, ceil(100 / 33) = 4 leaves.
+        self.assertEqual(innodb_btree_shape(100, 118, 8, 4 * 1024), [1, 4])
+
+    def test_negative_rows_rejected(self):
+        with self.assertRaises(ValueError):
+            innodb_btree_shape(-1, 118, 8)
+        with self.assertRaises(ValueError):
+            innodb_index_shapes(-1, 100, 24)
+
+    def _assert_shape(self, levels, rows, capacity, fan_out):
+        self.assertGreaterEqual(len(levels), 1)
+        self.assertEqual(levels[0], 1, "a B+tree has one root page")
+        leaves = levels[-1]
+        self.assertGreaterEqual(leaves * capacity, rows, "the leaves hold every row")
+        if rows > 0:
+            self.assertLess((leaves - 1) * capacity, rows, "no empty leaf page")
+        for upper, lower in zip(levels, levels[1:]):
+            self.assertEqual(upper, _ceil_div(lower, fan_out),
+                             "each level holds ceil(level below / fan-out) pages")
+            self.assertLess(upper, lower, "levels shrink strictly toward the root")
+
+    def test_shape_properties_over_rows_and_page_sizes(self):
+        for rows in self.ROW_GRID:
+            for page_size in self.PAGE_GRID:
+                for row_bytes in (50, 100, 1000):
+                    for email_bytes in (16, 24, 64):
+                        with self.subTest(rows=rows, page_size=page_size,
+                                          row_bytes=row_bytes, email_bytes=email_bytes):
+                            shapes = innodb_index_shapes(rows, row_bytes, email_bytes, page_size)
+                            reserve = page_size // INNODB_CLUSTERED_LEAF_RESERVE_DIVISOR
+                            expected = {
+                                "clustered": (row_bytes + INNODB_RECORD_HEADER_BYTES
+                                              + INNODB_CLUSTERED_SYSTEM_BYTES, PK_BIGINT_BYTES,
+                                              reserve),
+                                "secondary": (email_bytes + PK_BIGINT_BYTES
+                                              + INNODB_RECORD_HEADER_BYTES,
+                                              email_bytes + PK_BIGINT_BYTES, 0),
+                            }
+                            for name, (leaf_bytes, node_key, leaf_reserve) in expected.items():
+                                shape = shapes[name]
+                                self.assertEqual(shape["leaf_entry_bytes"], leaf_bytes, name)
+                                self.assertEqual(shape["leaf_reserve_bytes"], leaf_reserve, name)
+                                self.assertEqual(shape["leaf_capacity"], innodb_leaf_capacity(
+                                    leaf_bytes, page_size, leaf_reserve), name)
+                                self.assertEqual(shape["fan_out"],
+                                                 innodb_fanout(node_key, page_size), name)
+                                self.assertEqual(shape["levels"], innodb_btree_shape(
+                                    rows, leaf_bytes, node_key, page_size, leaf_reserve), name)
+                                self.assertEqual(shape["pages"], sum(shape["levels"]), name)
+                                self._assert_shape(shape["levels"], rows,
+                                                   shape["leaf_capacity"], shape["fan_out"])
+
+    def test_height_agrees_with_innodb_tree_height(self):
+        """The 2D lesson's height model and the 3D shape agree on the
+        published BIGINT-PK heights: 1M rows -> 3 levels, 1B rows -> 4."""
+        fan_out = innodb_fanout(PK_BIGINT_BYTES)
+        for rows, height in ((1_000_000, 3), (1_000_000_000, 4)):
+            with self.subTest(rows=rows):
+                levels = innodb_index_shapes(rows, 100, 24)["clustered"]["levels"]
+                self.assertEqual(len(levels), height)
+                self.assertEqual(len(levels), innodb_tree_height(rows, fan_out))
+
+    # -- leaf_range_pages ------------------------------------------------------
+
+    def test_leaf_range_pages_known_values(self):
+        """id BETWEEN 42 AND 4000 with 137 rows per leaf: leaves 0..29 = 30."""
+        self.assertEqual(leaf_range_pages(42, 4000, 137), 30)
+        self.assertEqual(leaf_range_pages(42, 42, 137), 1)
+        self.assertEqual(leaf_range_pages(1, 137, 137), 1)
+        self.assertEqual(leaf_range_pages(137, 138, 137), 2)
+        self.assertEqual(leaf_range_pages(1, 10, 1), 10)
+
+    def test_leaf_range_pages_counts_distinct_leaves(self):
+        """Leaf i holds ids i*capacity+1 .. (i+1)*capacity; count them directly."""
+        for capacity in (1, 2, 7, 137):
+            for first in range(1, 40, 3):
+                for last in range(first, first + 300, 11):
+                    with self.subTest(capacity=capacity, first=first, last=last):
+                        leaves = {(row_id - 1) // capacity for row_id in range(first, last + 1)}
+                        self.assertEqual(leaf_range_pages(first, last, capacity), len(leaves))
+
+    def test_leaf_range_pages_rejects_bad_ranges(self):
+        for args in ((0, 10, 137), (-5, 10, 137), (10, 9, 137), (1, 10, 0), (1, 10, -1)):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    leaf_range_pages(*args)
+
+
+EXPORT_BTREE_SHAPE = os.path.join(REPO_DIR, "scripts", "export-btree-shape.py")
+BTREE_SHAPE_FIXTURE = os.path.join(REPO_DIR, "apps", "teach-3d", "test", "fixtures", "btree-shape.json")
+
+
+def _load_export_btree_shape():
+    """Import scripts/export-btree-shape.py (its file name is not importable)."""
+    saved_path = list(sys.path)
+    try:
+        spec = importlib.util.spec_from_file_location("export_btree_shape", EXPORT_BTREE_SHAPE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = saved_path
+    return module
+
+
+class TestBTreeShapeFixture(unittest.TestCase):
+    """The 3D view's TypeScript is checked against this fixture; the fixture
+    must keep matching the Python model."""
+
+    @unittest.skipUnless(os.path.isfile(BTREE_SHAPE_FIXTURE), "the 3D view fixture is not in this checkout")
+    def test_committed_fixture_matches_the_python_model(self):
+        module = _load_export_btree_shape()
+        with open(BTREE_SHAPE_FIXTURE, encoding="utf-8") as handle:
+            committed = handle.read()
+        self.assertEqual(committed, module.render(module.build()),
+                         "apps/teach-3d/test/fixtures/btree-shape.json is stale: "
+                         "run python3 scripts/export-btree-shape.py")
+
+    @unittest.skipUnless(os.path.isfile(BTREE_SHAPE_FIXTURE), "the 3D view fixture is not in this checkout")
+    def test_fixture_covers_every_option_and_the_default_case(self):
+        with open(BTREE_SHAPE_FIXTURE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        options = data["options"]
+        self.assertEqual(len(data["cases"]), len(options["rows"]) * len(options["row_bytes"])
+                         * len(options["email_bytes"]) * len(options["page_kib"]))
+        self.assertEqual(data["constants"], {
+            "page_overhead_bytes": 120, "child_pointer_bytes": 9, "record_header_bytes": 5,
+            "clustered_system_bytes": 13, "pk_bytes": 8, "clustered_leaf_reserve_divisor": 16,
+        })
+        self.assertEqual(data["range"], [42, 4000])
+        default = [case for case in data["cases"]
+                   if (case["rows"], case["row_bytes"], case["email_bytes"], case["page_size"])
+                   == (1_000_000, 100, 24, 16 * 1024)]
+        self.assertEqual(len(default), 1)
+        self.assertEqual(default[0]["clustered"]["levels"], [1, 9, 7752])
+        self.assertEqual(default[0]["secondary"]["levels"], [1, 6, 2278])
+        # id BETWEEN 42 AND 4000 at 129 rows per leaf: leaves 0..31.
+        self.assertEqual(default[0]["range_leaves"], 32)
+        # The range is capped at the row count: 100 rows, 31 per 4 KiB leaf.
+        small = [case for case in data["cases"]
+                 if (case["rows"], case["row_bytes"], case["page_size"]) == (100, 100, 4 * 1024)]
+        self.assertTrue(small)
+        for case in small:
+            self.assertEqual(case["range_leaves"], leaf_range_pages(42, 100, 31))
+
+    def test_check_flag_fails_on_a_stale_fixture(self):
+        module = _load_export_btree_shape()
+        with tempfile.TemporaryDirectory() as tmp:
+            module.FIXTURE = os.path.join(tmp, "btree-shape.json")
+            with open(module.FIXTURE, "w", encoding="utf-8") as handle:
+                handle.write(module.render(module.build()))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(module.main(["--check"]), 0)
+            self.assertEqual(err.getvalue(), "")
+            with open(module.FIXTURE, "a", encoding="utf-8") as handle:
+                handle.write("\n")
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(module.main(["--check"]), 1)
+            self.assertIn("stale", err.getvalue())
+            self.assertIn("python3 scripts/export-btree-shape.py", err.getvalue())
+
+
+TEACH3D_APP = os.path.join(REPO_DIR, "apps", "teach-3d")
+TEACH3D_ASSET = os.path.join(REPO_DIR, "myflames", "assets", "teach3d-btree.html")
+#: three.js is most of the page (about 600 KiB of the first 615 KiB build).
+#: The budget leaves room for lesson code, not for a second library.
+TEACH3D_SIZE_BUDGET = 700 * 1024
+
+
+def teach3d_sources_sha():
+    """Same algorithm as apps/teach-3d/scripts/assemble.mjs:sourcesSha."""
+    paths = []
+    for directory, folders, files in os.walk(os.path.join(TEACH3D_APP, "src")):
+        folders[:] = [f for f in folders if not f.startswith(".")]
+        for name in files:
+            if not name.startswith("."):
+                rel = os.path.relpath(os.path.join(directory, name), TEACH3D_APP)
+                paths.append(rel.replace(os.sep, "/"))
+    paths.extend(["package.json", "vite.config.ts", "scripts/assemble.mjs"])
+    digest = hashlib.sha256()
+    for rel in sorted(paths):
+        with open(os.path.join(TEACH3D_APP, *rel.split("/")), encoding="utf-8", newline="") as handle:
+            text = handle.read().replace("\r\n", "\n")
+        digest.update(rel.encode("utf-8") + b"\0" + text.encode("utf-8") + b"\0")
+    return digest.hexdigest()
+
+
+class TestTeach3DView(unittest.TestCase):
+    """The prebuilt 3D B+tree page and how the teach package serves it."""
+
+    def _asset(self):
+        self.assertTrue(os.path.isfile(TEACH3D_ASSET),
+                        "myflames/assets/teach3d-btree.html is missing: run `npm run build` in apps/teach-3d")
+        with open(TEACH3D_ASSET, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_asset_is_a_complete_html_page(self):
+        text = self._asset()
+        self.assertTrue(text.lstrip().lower().startswith("<!doctype html>"))
+        self.assertTrue(text.rstrip().lower().endswith("</html>"))
+
+    def test_asset_loads_nothing_from_the_network(self):
+        """Works offline, from file://, and in the workspace's sandboxed
+        srcdoc frame (CSP default-src 'none')."""
+        lower = self._asset().lower()
+        self.assertNotIn("<link", lower)
+        self.assertIsNone(re.search(r"<script\b[^>]*\bsrc\s*=", lower), "no external <script src>")
+        self.assertNotIn('src="http', lower)
+        self.assertNotIn("src='http", lower)
+
+    def test_asset_respects_reduced_motion(self):
+        self.assertIn("prefers-reduced-motion", self._asset())
+
+    def test_inline_script_and_style_cannot_end_early(self):
+        text = self._asset()
+        lower = text.lower()
+        self.assertEqual(lower.count("</script"), 1, "only the real closing </script> tag")
+        self.assertEqual(lower.count("</style"), 1, "only the real closing </style> tag")
+        script = lower[lower.index("<script"):lower.index("</script")]
+        style = lower[lower.index("<style"):lower.index("</style")]
+        self.assertTrue(script)
+        self.assertTrue(style)
+        self.assertNotIn("<!--", script)
+        self.assertNotIn("<!--", style)
+
+    def test_asset_carries_three_js_license_and_credits(self):
+        text = self._asset()
+        self.assertIn("three.js", text)
+        self.assertIn("MIT License", text)
+        self.assertRegex(text, r"/\*! three\.js \d+\.\d+\.\d+ \| MIT License \| Copyright ")
+        self.assertIn("Inspired by Brendan Gregg&rsquo;s FlameGraph and "
+                      "Tanel Poder&rsquo;s SQL Plan FlameGraphs", text)
+        self.assertIn("PGSimCity", text)
+
+    def test_asset_size_budget(self):
+        self._asset()
+        size = os.path.getsize(TEACH3D_ASSET)
+        self.assertLess(size, TEACH3D_SIZE_BUDGET, "teach3d-btree.html is %d bytes" % size)
+
+    def test_asset_records_its_sources_sha(self):
+        self.assertRegex(self._asset(), r'<meta name="myflames-sources-sha256" content="[0-9a-f]{64}">')
+
+    @unittest.skipUnless(os.path.isdir(os.path.join(TEACH3D_APP, "src")),
+                         "the 3D view sources are not in this checkout")
+    def test_asset_matches_its_sources(self):
+        match = re.search(r'<meta name="myflames-sources-sha256" content="([0-9a-f]{64})">', self._asset())
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), teach3d_sources_sha(),
+                         "myflames/assets/teach3d-btree.html is stale: run `npm run build` in apps/teach-3d")
+
+    @unittest.skipUnless(os.path.isfile(os.path.join(TEACH3D_APP, "package.json")),
+                         "the 3D view sources are not in this checkout")
+    def test_license_banner_names_the_pinned_three_js(self):
+        with open(os.path.join(TEACH3D_APP, "package.json"), encoding="utf-8") as handle:
+            pinned = json.load(handle)["dependencies"]["three"].lstrip("^~")
+        match = re.search(r"/\*! three\.js (\S+) \| MIT License", self._asset())
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), pinned)
+
+    def test_render_lesson_3d_returns_the_packaged_page(self):
+        self.assertEqual(render_lesson_3d("btree"), self._asset())
+
+    def test_render_lesson_3d_rejects_lessons_without_a_3d_view(self):
+        for name in ("full_scan", "hash", "missing", ""):
+            with self.subTest(lesson=name):
+                with self.assertRaises(KeyError):
+                    render_lesson_3d(name)
+
+    def test_lesson_views(self):
+        self.assertEqual(lesson_views("btree"), ["2d", "3d"])
+        self.assertEqual(lesson_views("full_scan"), ["2d"])
+        for name in LESSONS:
+            with self.subTest(lesson=name):
+                views = lesson_views(name)
+                self.assertEqual(views[0], "2d", "2D stays the default view")
+                self.assertEqual("3d" in views, name in LESSON_3D)
+
+    def test_every_3d_view_belongs_to_a_registered_lesson(self):
+        self.assertTrue(LESSON_3D)
+        for name, filename in LESSON_3D.items():
+            with self.subTest(lesson=name):
+                self.assertIn(name, LESSONS)
+                self.assertTrue(os.path.isfile(os.path.join(REPO_DIR, "myflames", "assets", filename)))
+
+    def test_2d_btree_lesson_is_unchanged_by_the_3d_view(self):
+        two_d = render_lesson("btree")
+        self.assertNotEqual(two_d, render_lesson_3d("btree"))
+        self.assertNotIn("myflames-sources-sha256", two_d)
 
 
 class TestBNL(unittest.TestCase):
@@ -283,12 +684,140 @@ class TestTmpTable(unittest.TestCase):
         self.assertFalse(c.fits_in_memory)
         self.assertGreater(c.disk_rows, 0)
 
-    def test_effective_limit_is_min(self):
-        """Effective limit is min(tmp_table_size, max_heap_table_size)."""
+    MIB = 1024 * 1024
+
+    def test_temptable_default_uses_tmp_table_size_only(self):
+        """MySQL 8.4's default engine (TempTable) caps each table at
+        tmp_table_size; max_heap_table_size does not apply
+        (sql_tmp_table.cc:2226, temptable handler.cc:185 in mysql-8.4.9)."""
         c = tmp_table_cost(rows=100, row_size=200,
-                           tmp_table_size=8 * 1024 * 1024,
-                           max_heap_table_size=16 * 1024 * 1024)
-        self.assertEqual(c.effective_limit, 8 * 1024 * 1024)
+                           tmp_table_size=64 * self.MIB,
+                           max_heap_table_size=16 * self.MIB)
+        self.assertEqual(c.engine, "temptable")
+        self.assertEqual(c.effective_limit, 64 * self.MIB)
+        self.assertEqual(c.limit_source, "tmp_table_size")
+        self.assertEqual(c.disk_engine, "InnoDB")
+        small = tmp_table_cost(rows=100, row_size=200,
+                               tmp_table_size=8 * self.MIB,
+                               max_heap_table_size=16 * self.MIB)
+        self.assertEqual(small.effective_limit, 8 * self.MIB)
+
+    def test_two_size_call_keeps_working_with_temptable_semantics(self):
+        """Callers that pass only the two sizes (positionally or by keyword)
+        get MySQL's default TempTable rule."""
+        positional = tmp_table_cost(100, 200, 64 * self.MIB, 16 * self.MIB)
+        explicit = tmp_table_cost(100, 200, 64 * self.MIB, 16 * self.MIB,
+                                  engine=TMP_ENGINE_TEMPTABLE)
+        self.assertEqual(positional, explicit)
+        self.assertEqual(positional.effective_limit, 64 * self.MIB)
+
+    def test_memory_engine_uses_the_smaller_size(self):
+        """internal_tmp_mem_storage_engine=MEMORY (heap_hton) uses
+        min(tmp_table_size, max_heap_table_size)."""
+        heap_wins = tmp_table_cost(rows=100, row_size=200,
+                                   tmp_table_size=64 * self.MIB,
+                                   max_heap_table_size=16 * self.MIB,
+                                   engine=TMP_ENGINE_MEMORY)
+        self.assertEqual(heap_wins.effective_limit, 16 * self.MIB)
+        self.assertEqual(heap_wins.limit_source, "max_heap_table_size")
+        self.assertEqual(heap_wins.disk_engine, "InnoDB")
+        tmp_wins = tmp_table_cost(rows=100, row_size=200,
+                                  tmp_table_size=8 * self.MIB,
+                                  max_heap_table_size=16 * self.MIB,
+                                  engine=TMP_ENGINE_MEMORY)
+        self.assertEqual(tmp_wins.effective_limit, 8 * self.MIB)
+        self.assertEqual(tmp_wins.limit_source, "tmp_table_size")
+        equal = tmp_table_cost(rows=100, row_size=200, engine=TMP_ENGINE_MEMORY)
+        self.assertEqual(equal.limit_source, "both")
+
+    def test_mariadb_uses_the_smaller_size_and_spills_to_aria(self):
+        """MariaDB: MY_MIN(tmp_memory_table_size, max_heap_table_size), then
+        an on-disk Aria table (sql_select.cc:22453, 23438 in mariadb-11.4.9)."""
+        c = tmp_table_cost(rows=500_000, row_size=200,
+                           tmp_table_size=64 * self.MIB,
+                           max_heap_table_size=16 * self.MIB,
+                           engine=TMP_ENGINE_MARIADB)
+        self.assertEqual(c.effective_limit, 16 * self.MIB)
+        self.assertEqual(c.disk_engine, "Aria")
+        self.assertFalse(c.fits_in_memory)
+        self.assertIn("Aria", c.explanation)
+        self.assertNotIn("InnoDB", c.explanation)
+
+    def test_same_settings_fit_under_temptable_but_spill_under_memory(self):
+        """The case the old min() rule got wrong: a large tmp_table_size with
+        a default max_heap_table_size keeps TempTable in memory."""
+        kwargs = dict(rows=100_000, row_size=200,
+                      tmp_table_size=64 * self.MIB,
+                      max_heap_table_size=16 * self.MIB)
+        self.assertTrue(tmp_table_cost(**kwargs).fits_in_memory)
+        for engine in (TMP_ENGINE_MEMORY, TMP_ENGINE_MARIADB):
+            c = tmp_table_cost(engine=engine, **kwargs)
+            self.assertFalse(c.fits_in_memory, engine)
+            self.assertEqual(c.memory_rows + c.disk_rows, 100_000)
+
+    def test_explanations_name_the_right_knobs(self):
+        spill = dict(rows=500_000, row_size=200)
+        temptable = tmp_table_cost(**spill).explanation
+        self.assertIn("max_heap_table_size changes nothing", temptable)
+        fits = tmp_table_cost(rows=10, row_size=200).explanation
+        self.assertIn("temptable_max_ram", fits)
+        memory = tmp_table_cost(engine=TMP_ENGINE_MEMORY, **spill).explanation
+        self.assertIn("tmp_table_size and max_heap_table_size together", memory)
+        self.assertNotIn("temptable_max_ram", memory)
+
+    def test_engine_names_are_case_insensitive_and_validated(self):
+        self.assertEqual(tmp_table_cost(10, 200, engine="TempTable").engine, "temptable")
+        self.assertEqual(tmp_table_cost(10, 200, engine="MEMORY").engine, "memory")
+        self.assertEqual(TMP_TABLE_ENGINES, ("temptable", "memory", "mariadb"))
+        with self.assertRaises(ValueError):
+            tmp_table_cost(10, 200, engine="InnoDB")
+
+    def test_empty_input_reports_the_engine_limit(self):
+        c = tmp_table_cost(rows=0, row_size=200,
+                           tmp_table_size=64 * self.MIB,
+                           max_heap_table_size=16 * self.MIB)
+        self.assertEqual(c.effective_limit, 64 * self.MIB)
+        self.assertTrue(c.fits_in_memory)
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js is needed to execute lesson JavaScript")
+class TestTmpLessonJsMatchesCostModel(unittest.TestCase):
+    """tmp.js re-implements tmp_table_cost() for the browser; keep them equal."""
+
+    def test_js_mirror_matches_python_for_every_engine(self):
+        import json as _json
+        js_path = os.path.join(REPO_DIR, "myflames", "teach", "scan_family", "tmp.js")
+        with open(js_path, encoding="utf-8") as f:
+            src = f.read() % (TMP_TABLE_SIZE_DEFAULT, MAX_HEAP_TABLE_SIZE_DEFAULT)
+        start = src.index("var TMP_ENGINES = {")
+        end = src.index("\n}\n", src.index("function tmpTableCost(")) + 3
+        mib = 1024 * 1024
+        cases = []
+        for engine in TMP_TABLE_ENGINES:
+            for rows in (100, 83_886, 83_887, 1_000_000):
+                for tmp, heap in ((16 * mib, 16 * mib), (64 * mib, 16 * mib), (8 * mib, 16 * mib)):
+                    cases.append([rows, 200, tmp, heap, engine])
+        script = src[start:end] + (
+            "\nvar cases = " + _json.dumps(cases) + ";\n"
+            "console.log(JSON.stringify(cases.map(function(a) {"
+            " return tmpTableCost(a[0], a[1], a[2], a[3], a[4]); })));\n"
+        )
+        result = subprocess.run(
+            [shutil.which("node"), "-e", script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for args, js in zip(cases, _json.loads(result.stdout)):
+            py = tmp_table_cost(*args[:4], engine=args[4])
+            with self.subTest(args=args):
+                self.assertEqual(js["engine"], py.engine)
+                self.assertEqual(js["limit"], py.effective_limit)
+                self.assertEqual(js["source"], py.limit_source)
+                self.assertEqual(js["fits"], py.fits_in_memory)
+                self.assertEqual(js["memRows"], py.memory_rows)
+                self.assertEqual(js["diskRows"], py.disk_rows)
+                self.assertEqual(js["diskEngine"], py.disk_engine)
 
 
 class TestICP(unittest.TestCase):
@@ -414,6 +943,20 @@ class TestLessonHTMLContent(unittest.TestCase):
         html = render_lesson("tmp")
         self.assertIn("MEMORY", html)
         self.assertIn("on-disk", html)
+
+    def test_tmp_lesson_teaches_engine_specific_limit(self):
+        """The lesson must not claim MySQL always uses the smaller of the two
+        sizes: TempTable (the 8.4 default) uses tmp_table_size alone."""
+        html = render_lesson("tmp")
+        self.assertIn('<select id="engine" name="engine">', html)
+        self.assertIn('<option value="temptable" selected>', html)
+        for needle in ("internal_tmp_mem_storage_engine", "temptable_max_ram",
+                       "temptable_max_mmap", "Aria", "max_heap_table_size does not apply"):
+            self.assertIn(needle, html)
+        for stale in ("MySQL uses min(tmp_table_size, max_heap_table_size)",
+                      "Capacity is bounded by min(",
+                      "temptable_max_ram</code> (default 1 GiB)"):
+            self.assertNotIn(stale, html)
 
     def test_icp_lesson_mentions_index_condition(self):
         html = render_lesson("icp")

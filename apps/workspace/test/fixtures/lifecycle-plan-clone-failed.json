@@ -1,0 +1,195 @@
+{
+ "schema_version": "lifecycle-plan-1.0",
+ "operation": "clone",
+ "request": {
+  "data_directory": null,
+  "require_ssl": true,
+  "donor_key": "[\"\",\"127.0.0.1\",3306,\"operator\",\"\",\"\"]",
+  "donor_address": "127.0.0.1:3306"
+ },
+ "server": {
+  "engine": "mysql",
+  "version": "8.4.3",
+  "variables": {
+   "version": "8.4.3",
+   "version_comment": "mysql",
+   "hostname": "recipient",
+   "server_id": "2",
+   "server_uuid": "recipient",
+   "port": "3306",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock",
+   "local_infile": "ON",
+   "version_compile_os": "Linux",
+   "version_compile_machine": "x86_64",
+   "character_set_server": "utf8mb4",
+   "character_set_filesystem": "binary",
+   "collation_server": "utf8mb4_0900_ai_ci",
+   "innodb_page_size": "16384",
+   "max_allowed_packet": "4194304",
+   "clone_valid_donor_list": "",
+   "sql_mode": "STRICT_TRANS_TABLES,NO_ZERO_DATE",
+   "gtid_executed": "a:1-2"
+  },
+  "identity": {
+   "server_uuid": "recipient",
+   "server_id": "2",
+   "hostname": "recipient",
+   "port": "3306",
+   "version": "8.4.3",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock"
+  }
+ },
+ "connection_key": "[\"\",\"127.0.0.1\",3306,\"operator\",\"\",\"\"]",
+ "tool": {
+  "available": true,
+  "deprecated": false,
+  "path": "/Users/dba/maintenance/bin/mysql",
+  "version": "mysql Ver 8.4.3",
+  "version_tuple": [
+   8,
+   4,
+   3
+  ],
+  "engine": "mysql",
+  "name": "mysql"
+ },
+ "target": "127.0.0.1:3306",
+ "commands": [
+  "/*myflames:lifecycle*/ CLONE INSTANCE FROM 'operator'@'127.0.0.1':3306 IDENTIFIED BY '[redacted]' REQUIRE SSL"
+ ],
+ "checks": [
+  {
+   "check": "engine",
+   "status": "passed",
+   "reason": "MySQL only; MariaDB has no clone plugin. Use mariadb-backup on the source host."
+  },
+  {
+   "check": "version",
+   "status": "passed",
+   "reason": "Same major.minor required; 8.0 patches must match unless both are 8.0.37+. Cross-series clones are conservatively refused."
+  },
+  {
+   "check": "donor_plugin",
+   "status": "failed",
+   "reason": "Active clone plugin required on donor (INSTALL PLUGIN clone SONAME 'mysql_clone.so')."
+  },
+  {
+   "check": "donor_privilege",
+   "status": "passed",
+   "reason": "BACKUP_ADMIN required on the donor account; grants are a preflight hint."
+  },
+  {
+   "check": "recipient_plugin",
+   "status": "passed",
+   "reason": "Active clone plugin required on recipient (INSTALL PLUGIN clone SONAME 'mysql_clone.so')."
+  },
+  {
+   "check": "recipient_privilege",
+   "status": "passed",
+   "reason": "CLONE_ADMIN required on the recipient account; grants are a preflight hint."
+  },
+  {
+   "check": "version_compile_os",
+   "status": "passed",
+   "reason": "Donor and recipient must match version_compile_os."
+  },
+  {
+   "check": "version_compile_machine",
+   "status": "passed",
+   "reason": "Donor and recipient must match version_compile_machine."
+  },
+  {
+   "check": "character_set_server",
+   "status": "passed",
+   "reason": "Donor and recipient must match character_set_server."
+  },
+  {
+   "check": "character_set_filesystem",
+   "status": "passed",
+   "reason": "Donor and recipient must match character_set_filesystem."
+  },
+  {
+   "check": "collation_server",
+   "status": "passed",
+   "reason": "Donor and recipient must match collation_server."
+  },
+  {
+   "check": "innodb_page_size",
+   "status": "passed",
+   "reason": "Donor and recipient must match innodb_page_size."
+  },
+  {
+   "check": "collations",
+   "status": "passed",
+   "reason": "All donor collations must exist on recipient."
+  },
+  {
+   "check": "plugins",
+   "status": "passed",
+   "reason": "Donor dynamic plugins must already be active on recipient (conservative loadability check)."
+  },
+  {
+   "check": "donor_packet",
+   "status": "passed",
+   "reason": "max_allowed_packet must be at least 2 MiB."
+  },
+  {
+   "check": "recipient_packet",
+   "status": "passed",
+   "reason": "max_allowed_packet must be at least 2 MiB."
+  },
+  {
+   "check": "valid_donor",
+   "status": "failed",
+   "reason": "Recipient clone_valid_donor_list must contain 127.0.0.1:3306 (the donor as the recipient reaches it); myflames never sets it."
+  },
+  {
+   "check": "different_server",
+   "status": "passed",
+   "reason": "Donor and recipient must differ."
+  }
+ ],
+ "warnings": [
+  "CLONE transfers physical data. A recipient may need manual recovery after cancellation.",
+  "IN-PLACE CLONE DROPS ALL RECIPIENT USER DATA AND RESTARTS THE SERVER. Without a restart supervisor the recipient can shut down and require a manual start. This cannot be undone.",
+  "After it, the recipient has the donor's accounts and passwords (the mysql schema is cloned): connect to it with an account from the donor."
+ ],
+ "ready": false,
+ "binding": "92501dae9646706f5140958f480bb7c14e68a0b8885a91411b5be39dae3b2dd0",
+ "donor": {
+  "engine": "mysql",
+  "version": "8.4.3",
+  "variables": {
+   "version": "8.4.3",
+   "version_comment": "mysql",
+   "hostname": "donor",
+   "server_id": "1",
+   "server_uuid": "donor",
+   "port": "3306",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock",
+   "local_infile": "ON",
+   "version_compile_os": "Linux",
+   "version_compile_machine": "x86_64",
+   "character_set_server": "utf8mb4",
+   "character_set_filesystem": "binary",
+   "collation_server": "utf8mb4_0900_ai_ci",
+   "innodb_page_size": "16384",
+   "max_allowed_packet": "4194304",
+   "clone_valid_donor_list": "127.0.0.1:3306",
+   "sql_mode": "STRICT_TRANS_TABLES,NO_ZERO_DATE",
+   "gtid_executed": "a:1-2"
+  },
+  "identity": {
+   "server_uuid": "donor",
+   "server_id": "1",
+   "hostname": "donor",
+   "port": "3306",
+   "version": "8.4.3",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock"
+  }
+ }
+}

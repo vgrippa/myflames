@@ -18,4 +18,58 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Run Python tests
-        run: python3 -m unittest discover -s test -p "test_*.py" -v
+        run: ./run-tests.sh
+
+  # The package promises Python 3.7+; ubuntu-latest no longer ships 3.7.
+  python37:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.7"
+      - name: Run Python tests on 3.7
+        run: ./run-tests.sh
+
+  # Saved connection passwords use Windows Credential Manager through the
+  # Win32 API (ctypes). These tests save, read, and delete real credentials
+  # on the runner, which the Ubuntu matrix can only mock.
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Credential Manager and vault tests
+        run: python -m unittest discover -s test -p "test_secret_store.py" -v
+      # The client defaults file (password, TLS options) is built without
+      # os.fchmod, which Windows lacks; no server or mysql client is needed.
+      - name: Connector defaults file tests
+        run: python -m unittest discover -s test -p "test_connector.py" -v
+      # Server views, editor, report and workspace store run without a server
+      # (replay fixtures); POSIX-only process tests skip themselves on Windows.
+      - name: Platform-neutral server view tests
+        env:
+          MYFLAMES_SECRET_BACKEND: vault
+        run: |
+          export HOME="$(mktemp -d)"
+          export USERPROFILE="$HOME"
+          for t in test_health.py test_sessions.py test_innodb_status.py test_locks.py \
+                   test_waits.py test_io_stats.py test_indexes.py test_schema_health.py \
+                   test_config_review.py test_ps_instruments.py test_discover.py test_report.py \
+                   test_variables.py test_replication.py test_schema_browser.py test_live.py \
+                   test_mcp_server.py test_workspace_store.py test_editor_session.py; do
+            python -m unittest discover -s test -p "$t" -v || exit 1
+          done
+      - name: CLI smoke test
+        run: |
+          python -m myflames --version
+          python -m myflames check test/mysql-explain-hash-join.json --fail-on error
+          python -m myflames advise test/mysql-explain-hash-join.json --json > advise.json
+          python -m myflames --type tree test/mysql-explain-hash-join.json -o tree.svg --no-teach-bundle
+          python -m myflames test/mysql-explain-hash-join.json -o report.html --no-teach-bundle
+          python -m myflames profiles list --json

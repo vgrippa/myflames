@@ -1,0 +1,159 @@
+{
+ "schema_version": "sessions-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "taken_at": "2026-10-15T17:04:40.168211+00:00",
+ "uptime_s": 2616,
+ "performance_schema": true,
+ "source": "performance_schema.processlist",
+ "capabilities": {
+  "process_privilege": false,
+  "transactions": false,
+  "history_list_length": false
+ },
+ "filters": {
+  "active_only": false,
+  "user": null,
+  "host": null,
+  "db": null,
+  "min_seconds": 0
+ },
+ "limit": 1000,
+ "thresholds": {
+  "long_running_s": [
+   10,
+   60
+  ],
+  "trx_age_s": [
+   10,
+   60
+  ]
+ },
+ "rules": {
+  "long_running": "a statement running for 10 s or more is watched, 60 s or more is a problem (rules of thumb for OLTP; reports and batch jobs can run longer by design)",
+  "idle_in_trx": "a session idle (Sleep) inside an open InnoDB transaction keeps its row locks; under REPEATABLE READ it also keeps the read view from its first consistent read, which holds back purge; watched when the transaction is 10 s old, a problem at 60 s (rules of thumb)",
+  "lock_wait": "a session waiting for an InnoDB lock (INNODB_TRX trx_state LOCK WAIT: a row lock or an InnoDB table lock such as AUTO-INC), a metadata lock, or a table-level lock is watched; the long-running rule raises it to a problem",
+  "oldest_transaction": "the oldest open transaction is watched at 10 s and a problem at 60 s; under REPEATABLE READ (or while a statement runs) its read view also holds back purge, so the history list length grows behind it",
+  "connections": "watch at 75% of max_connections, problem at 90% (Threads_connected)"
+ },
+ "summary": {
+  "total": 1,
+  "active": 1,
+  "idle": 0,
+  "system": 0,
+  "running_statements": 1,
+  "long_running": {
+   "watch": 0,
+   "problem": 1
+  },
+  "idle_in_trx": 0,
+  "lock_wait": {
+   "innodb": 0,
+   "metadata": 0,
+   "table": 0,
+   "total": 0
+  },
+  "connections": {
+   "current": 12,
+   "max": 151,
+   "max_used": 12,
+   "running": 10,
+   "listed": 1,
+   "used_pct": 7.9,
+   "peak_pct": 7.9,
+   "status": "ok",
+   "rule": "watch at 75% of max_connections, problem at 90% (Threads_connected)"
+  },
+  "by_command": [
+   {
+    "key": "Query",
+    "count": 1
+   }
+  ],
+  "by_state": [
+   {
+    "key": "User sleep",
+    "count": 1
+   }
+  ],
+  "by_user": [
+   {
+    "key": "noproc",
+    "count": 1
+   }
+  ],
+  "by_host": [
+   {
+    "key": "172.17.0.1",
+    "count": 1
+   }
+  ],
+  "by_db": [
+   {
+    "key": "mf",
+    "count": 1
+   }
+  ],
+  "oldest_transaction": null,
+  "history_list_length": null,
+  "status": "problem",
+  "text": "12 connections of 151 \u00b7 1 active \u00b7 1 running 10 s or more"
+ },
+ "attention": {
+  "long_running": [
+   {
+    "id": 103,
+    "seconds": 1249,
+    "status": "problem"
+   }
+  ],
+  "idle_in_trx": [],
+  "lock_wait": []
+ },
+ "matched": 1,
+ "truncated": false,
+ "sessions": [
+  {
+   "id": 103,
+   "user": "noproc",
+   "host": "172.17.0.1:55150",
+   "client_host": "172.17.0.1",
+   "client_port": 55150,
+   "db": "mf",
+   "command": "Query",
+   "time_s": 1249,
+   "state": "User sleep",
+   "info": "SELECT SLEEP(3000)",
+   "info_short": "SELECT SLEEP(3000)",
+   "info_truncated": false,
+   "thread_kind": "client",
+   "trx": null,
+   "lock_wait": null,
+   "last_statement": null,
+   "progress": null,
+   "memory_used": null,
+   "rows_examined": null,
+   "explainable": true,
+   "flags": [
+    "long_running"
+   ],
+   "status": "problem",
+   "why": "Running a statement for 20 min 49 s.",
+   "active": true
+  }
+ ],
+ "notes": [
+  "Without the PROCESS privilege only your own user's sessions are listed, and open InnoDB transactions (information_schema.INNODB_TRX) cannot be read, so idle-in-transaction sessions, row lock waits and the oldest transaction are not detected. Grant it with: GRANT PROCESS ON *.* TO <user>;",
+  "Statuses are rules of thumb, not verdicts. The summary counts every session this account can see; the filters narrow only the list. This tool's own session is left out."
+ ],
+ "links": {
+  "locks": {
+   "view": "locks",
+   "label": "Open Locks"
+  },
+  "innodb": {
+   "view": "innodb",
+   "label": "Open InnoDB"
+  }
+ }
+}

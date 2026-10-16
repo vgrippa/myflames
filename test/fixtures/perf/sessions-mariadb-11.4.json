@@ -1,0 +1,627 @@
+{
+ "args": {
+  "active_only": false
+ },
+ "calls": [
+  [
+   "/*myflames:sessions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('max_connections', 'performance_schema', 'version', 'version_comment')",
+   "max_connections\t151\nperformance_schema\tOFF\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:sessions*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Threads_connected', 'Threads_running', 'Max_used_connections', 'Uptime', 'Innodb_history_list_length')",
+   "Innodb_history_list_length\t15447\nMax_used_connections\t12\nThreads_connected\t12\nThreads_running\t8\nUptime\t2618\n"
+  ],
+  [
+   "/*myflames:sessions*/ SELECT ID, USER, HOST, DB, COMMAND, TIME_MS / 1000, STATE, LEFT(INFO, 16384), LENGTH(INFO), STAGE, MAX_STAGE, PROGRESS, MEMORY_USED, EXAMINED_ROWS FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() ORDER BY TIME_MS DESC LIMIT 10001",
+   "79\troot\t172.17.0.1:60812\tmf\tSleep\t1251.5461970\t\tNULL\tNULL\t0\t0\t0.000\t86648\t0\n80\troot\t172.17.0.1:60814\tmf\tQuery\t1251.0219040\tUpdating\tUPDATE t SET v = 0 WHERE id = 10\t32\t0\t0\t0.000\t99208\t0\n81\troot\t172.17.0.1:60822\tmf\tQuery\t1251.0013250\tWaiting for table metadata lock\tALTER TABLE u ENGINE=InnoDB\t27\t0\t0\t0.000\t104280\t0\n82\troot\t172.17.0.1:60836\tmf\tSleep\t1250.9999290\t\tNULL\tNULL\t0\t0\t0.000\t94832\t0\n83\troot\t172.17.0.1:60850\tmf\tQuery\t1250.9817540\tUser sleep\tSELECT SLEEP(3600)\t18\t0\t0\t0.000\t86648\t0\n89\tnoproc\t172.17.0.1:57354\tmf\tQuery\t1248.5649410\tUser sleep\tSELECT SLEEP(3000)\t18\t0\t0\t0.000\t86648\t0\n86\troot\t172.17.0.1:60868\tmf\tQuery\t3.3591990\tUpdating\tUPDATE t SET v = v + 1 WHERE id BETWEEN 20000 AND 20500\t55\t0\t0\t0.000\t98920\t324\n87\troot\t172.17.0.1:60874\tmf\tQuery\t1.3088850\tSending data\tSELECT COUNT(*) FROM t WHERE pad LIKE '%%y%%'\t45\t0\t0\t0.000\t94832\t651262\n84\troot\t172.17.0.1:60852\tmf\tSleep\t0.0854980\t\tNULL\tNULL\t0\t0\t0.000\t86648\t0\n85\troot\t172.17.0.1:60866\tmf\tQuery\t0.0690450\tSending data\tSELECT SUM(v) FROM t WHERE id BETWEEN 100000 AND 400000\t55\t0\t0\t0.000\t90736\t105817\n88\troot\t172.17.0.1:60876\tmf\tSleep\t0.0057880\t\tNULL\tNULL\t0\t0\t0.000\t86648\t0\n"
+  ],
+  [
+   "/*myflames:sessions*/ SET SESSION time_zone = 'SYSTEM'; /*myflames:sessions*/ SELECT trx_mysql_thread_id, trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), trx_wait_started, TIMESTAMPDIFF(SECOND, trx_wait_started, NOW()), trx_rows_locked, trx_rows_modified, trx_lock_structs, trx_tables_locked, trx_isolation_level, trx_is_read_only, trx_operation_state FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id <> CONNECTION_ID() ORDER BY trx_started, trx_id LIMIT 10001",
+   "79\t60453\tRUNNING\t2026-10-14 18:00:53\t1252\tNULL\tNULL\t1\t1\t2\t1\tREPEATABLE READ\t0\t\n82\t0\tRUNNING\t2026-10-14 18:00:54\t1251\tNULL\tNULL\t0\t0\t0\t0\tREPEATABLE READ\t0\t\n80\t60454\tLOCK WAIT\t2026-10-14 18:00:54\t1251\t2026-10-14 18:00:54\t1251\t1\t0\t2\t1\tREPEATABLE READ\t0\tstarting index read\n86\t74121\tRUNNING\t2026-10-14 18:21:41\t4\tNULL\tNULL\t329\t323\t8\t1\tREPEATABLE READ\t0\tupdating or deleting\n87\t0\tRUNNING\t2026-10-14 18:21:43\t2\tNULL\tNULL\t0\t0\t0\t0\tREPEATABLE READ\t1\tfetching rows\n85\t0\tRUNNING\t2026-10-14 18:21:45\t0\tNULL\tNULL\t0\t0\t0\t0\tREPEATABLE READ\t1\tfetching rows\n"
+  ]
+ ],
+ "report": {
+  "attention": {
+   "idle_in_trx": [
+    {
+     "id": 79,
+     "seconds": 1252,
+     "status": "problem"
+    },
+    {
+     "id": 82,
+     "seconds": 1251,
+     "status": "problem"
+    }
+   ],
+   "lock_wait": [
+    {
+     "id": 80,
+     "kind": "innodb",
+     "seconds": 1251,
+     "status": "problem"
+    },
+    {
+     "id": 81,
+     "kind": "metadata",
+     "seconds": 1251,
+     "status": "problem"
+    }
+   ],
+   "long_running": [
+    {
+     "id": 80,
+     "seconds": 1251.022,
+     "status": "problem"
+    },
+    {
+     "id": 81,
+     "seconds": 1251.001,
+     "status": "problem"
+    },
+    {
+     "id": 83,
+     "seconds": 1250.982,
+     "status": "problem"
+    },
+    {
+     "id": 89,
+     "seconds": 1248.565,
+     "status": "problem"
+    }
+   ]
+  },
+  "capabilities": {
+   "history_list_length": true,
+   "process_privilege": true,
+   "transactions": true
+  },
+  "engine": "mariadb",
+  "filters": {
+   "active_only": false,
+   "db": null,
+   "host": null,
+   "min_seconds": 0,
+   "user": null
+  },
+  "limit": 1000,
+  "links": {
+   "innodb": {
+    "label": "Open InnoDB",
+    "view": "innodb"
+   },
+   "locks": {
+    "label": "Open Locks",
+    "view": "locks"
+   }
+  },
+  "matched": 11,
+  "notes": [
+   "The last statement of a session idle in a transaction needs Performance Schema (events_statements_current), which MariaDB ships off (and its events_statements_current consumer is off by default even with Performance Schema on).",
+   "The oldest open transaction (connection 79, 20 min 52 s) runs under REPEATABLE READ, so after its first consistent read it keeps a read view until it ends: InnoDB cannot purge the undo logs that view may still need, and the history list length grows.",
+   "Statuses are rules of thumb, not verdicts. The summary counts every session this account can see; the filters narrow only the list. This tool's own session is left out."
+  ],
+  "performance_schema": false,
+  "rules": {
+   "connections": "watch at 75% of max_connections, problem at 90% (Threads_connected)",
+   "idle_in_trx": "a session idle (Sleep) inside an open InnoDB transaction keeps its row locks; under REPEATABLE READ it also keeps the read view from its first consistent read, which holds back purge; watched when the transaction is 10 s old, a problem at 60 s (rules of thumb)",
+   "lock_wait": "a session waiting for an InnoDB lock (INNODB_TRX trx_state LOCK WAIT: a row lock or an InnoDB table lock such as AUTO-INC), a metadata lock, or a table-level lock is watched; the long-running rule raises it to a problem",
+   "long_running": "a statement running for 10 s or more is watched, 60 s or more is a problem (rules of thumb for OLTP; reports and batch jobs can run longer by design)",
+   "oldest_transaction": "the oldest open transaction is watched at 10 s and a problem at 60 s; under REPEATABLE READ (or while a statement runs) its read view also holds back purge, so the history list length grows behind it"
+  },
+  "schema_version": "sessions-1.0",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "sessions": [
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 60812,
+    "command": "Sleep",
+    "db": "mf",
+    "explainable": false,
+    "flags": [
+     "idle_in_trx"
+    ],
+    "host": "172.17.0.1:60812",
+    "id": 79,
+    "info": null,
+    "info_short": null,
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 86648,
+    "progress": null,
+    "rows_examined": 0,
+    "state": null,
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 1251.546,
+    "trx": {
+     "age_s": 1252,
+     "id": "60453",
+     "isolation_level": "REPEATABLE READ",
+     "lock_structs": 2,
+     "operation_state": "",
+     "read_only": false,
+     "rows_locked": 1,
+     "rows_modified": 1,
+     "started": "2026-10-14 18:00:53",
+     "state": "RUNNING",
+     "tables_locked": 1,
+     "wait_s": null,
+     "wait_started": null
+    },
+    "user": "root",
+    "why": "Idle for 20 min 51 s inside a transaction open for 20 min 52 s."
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 60814,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [
+     "long_running",
+     "lock_wait"
+    ],
+    "host": "172.17.0.1:60814",
+    "id": 80,
+    "info": "UPDATE t SET v = 0 WHERE id = 10",
+    "info_short": "UPDATE t SET v = 0 WHERE id = 10",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": {
+     "detail": "starting index read",
+     "kind": "innodb",
+     "wait_s": 1251
+    },
+    "memory_used": 99208,
+    "progress": null,
+    "rows_examined": 0,
+    "state": "Updating",
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 1251.022,
+    "trx": {
+     "age_s": 1251,
+     "id": "60454",
+     "isolation_level": "REPEATABLE READ",
+     "lock_structs": 2,
+     "operation_state": "starting index read",
+     "read_only": false,
+     "rows_locked": 1,
+     "rows_modified": 0,
+     "started": "2026-10-14 18:00:54",
+     "state": "LOCK WAIT",
+     "tables_locked": 1,
+     "wait_s": 1251,
+     "wait_started": "2026-10-14 18:00:54"
+    },
+    "user": "root",
+    "why": "Running a statement for 20 min 51 s; waiting for an InnoDB lock (row or table) for 20 min 51 s."
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 60822,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [
+     "long_running",
+     "lock_wait"
+    ],
+    "host": "172.17.0.1:60822",
+    "id": 81,
+    "info": "ALTER TABLE u ENGINE=InnoDB",
+    "info_short": "ALTER TABLE u ENGINE=InnoDB",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": {
+     "detail": "Waiting for table metadata lock",
+     "kind": "metadata",
+     "wait_s": 1251
+    },
+    "memory_used": 104280,
+    "progress": null,
+    "rows_examined": 0,
+    "state": "Waiting for table metadata lock",
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 1251.001,
+    "trx": null,
+    "user": "root",
+    "why": "Running a statement for 20 min 51 s; waiting for a metadata lock for 20 min 51 s."
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 60836,
+    "command": "Sleep",
+    "db": "mf",
+    "explainable": false,
+    "flags": [
+     "idle_in_trx"
+    ],
+    "host": "172.17.0.1:60836",
+    "id": 82,
+    "info": null,
+    "info_short": null,
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 94832,
+    "progress": null,
+    "rows_examined": 0,
+    "state": null,
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 1251,
+    "trx": {
+     "age_s": 1251,
+     "id": "0",
+     "isolation_level": "REPEATABLE READ",
+     "lock_structs": 0,
+     "operation_state": "",
+     "read_only": false,
+     "rows_locked": 0,
+     "rows_modified": 0,
+     "started": "2026-10-14 18:00:54",
+     "state": "RUNNING",
+     "tables_locked": 0,
+     "wait_s": null,
+     "wait_started": null
+    },
+    "user": "root",
+    "why": "Idle for 20 min 51 s inside a transaction open for 20 min 51 s."
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 60850,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [
+     "long_running"
+    ],
+    "host": "172.17.0.1:60850",
+    "id": 83,
+    "info": "SELECT SLEEP(3600)",
+    "info_short": "SELECT SLEEP(3600)",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 86648,
+    "progress": null,
+    "rows_examined": 0,
+    "state": "User sleep",
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 1250.982,
+    "trx": null,
+    "user": "root",
+    "why": "Running a statement for 20 min 50 s."
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 57354,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [
+     "long_running"
+    ],
+    "host": "172.17.0.1:57354",
+    "id": 89,
+    "info": "SELECT SLEEP(3000)",
+    "info_short": "SELECT SLEEP(3000)",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 86648,
+    "progress": null,
+    "rows_examined": 0,
+    "state": "User sleep",
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 1248.565,
+    "trx": null,
+    "user": "noproc",
+    "why": "Running a statement for 20 min 48 s."
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 60868,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [],
+    "host": "172.17.0.1:60868",
+    "id": 86,
+    "info": "UPDATE t SET v = v + 1 WHERE id BETWEEN 20000 AND 20500",
+    "info_short": "UPDATE t SET v = v + 1 WHERE id BETWEEN 20000 AND 20500",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 98920,
+    "progress": null,
+    "rows_examined": 324,
+    "state": "Updating",
+    "status": "ok",
+    "thread_kind": "client",
+    "time_s": 3.359,
+    "trx": {
+     "age_s": 4,
+     "id": "74121",
+     "isolation_level": "REPEATABLE READ",
+     "lock_structs": 8,
+     "operation_state": "updating or deleting",
+     "read_only": false,
+     "rows_locked": 329,
+     "rows_modified": 323,
+     "started": "2026-10-14 18:21:41",
+     "state": "RUNNING",
+     "tables_locked": 1,
+     "wait_s": null,
+     "wait_started": null
+    },
+    "user": "root",
+    "why": null
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 60874,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [],
+    "host": "172.17.0.1:60874",
+    "id": 87,
+    "info": "SELECT COUNT(*) FROM t WHERE pad LIKE '%%y%%'",
+    "info_short": "SELECT COUNT(*) FROM t WHERE pad LIKE '%%y%%'",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 94832,
+    "progress": null,
+    "rows_examined": 651262,
+    "state": "Sending data",
+    "status": "ok",
+    "thread_kind": "client",
+    "time_s": 1.309,
+    "trx": {
+     "age_s": 2,
+     "id": "0",
+     "isolation_level": "REPEATABLE READ",
+     "lock_structs": 0,
+     "operation_state": "fetching rows",
+     "read_only": true,
+     "rows_locked": 0,
+     "rows_modified": 0,
+     "started": "2026-10-14 18:21:43",
+     "state": "RUNNING",
+     "tables_locked": 0,
+     "wait_s": null,
+     "wait_started": null
+    },
+    "user": "root",
+    "why": null
+   },
+   {
+    "active": false,
+    "client_host": "172.17.0.1",
+    "client_port": 60852,
+    "command": "Sleep",
+    "db": "mf",
+    "explainable": false,
+    "flags": [],
+    "host": "172.17.0.1:60852",
+    "id": 84,
+    "info": null,
+    "info_short": null,
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 86648,
+    "progress": null,
+    "rows_examined": 0,
+    "state": null,
+    "status": "ok",
+    "thread_kind": "client",
+    "time_s": 0.085,
+    "trx": null,
+    "user": "root",
+    "why": null
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 60866,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [],
+    "host": "172.17.0.1:60866",
+    "id": 85,
+    "info": "SELECT SUM(v) FROM t WHERE id BETWEEN 100000 AND 400000",
+    "info_short": "SELECT SUM(v) FROM t WHERE id BETWEEN 100000 AND 400000",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 90736,
+    "progress": null,
+    "rows_examined": 105817,
+    "state": "Sending data",
+    "status": "ok",
+    "thread_kind": "client",
+    "time_s": 0.069,
+    "trx": {
+     "age_s": 0,
+     "id": "0",
+     "isolation_level": "REPEATABLE READ",
+     "lock_structs": 0,
+     "operation_state": "fetching rows",
+     "read_only": true,
+     "rows_locked": 0,
+     "rows_modified": 0,
+     "started": "2026-10-14 18:21:45",
+     "state": "RUNNING",
+     "tables_locked": 0,
+     "wait_s": null,
+     "wait_started": null
+    },
+    "user": "root",
+    "why": null
+   },
+   {
+    "active": false,
+    "client_host": "172.17.0.1",
+    "client_port": 60876,
+    "command": "Sleep",
+    "db": "mf",
+    "explainable": false,
+    "flags": [],
+    "host": "172.17.0.1:60876",
+    "id": 88,
+    "info": null,
+    "info_short": null,
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 86648,
+    "progress": null,
+    "rows_examined": 0,
+    "state": null,
+    "status": "ok",
+    "thread_kind": "client",
+    "time_s": 0.006,
+    "trx": null,
+    "user": "root",
+    "why": null
+   }
+  ],
+  "source": "information_schema.PROCESSLIST",
+  "summary": {
+   "active": 9,
+   "by_command": [
+    {
+     "count": 7,
+     "key": "Query"
+    },
+    {
+     "count": 4,
+     "key": "Sleep"
+    }
+   ],
+   "by_db": [
+    {
+     "count": 11,
+     "key": "mf"
+    }
+   ],
+   "by_host": [
+    {
+     "count": 11,
+     "key": "172.17.0.1"
+    }
+   ],
+   "by_state": [
+    {
+     "count": 2,
+     "key": "Sending data"
+    },
+    {
+     "count": 2,
+     "key": "Updating"
+    },
+    {
+     "count": 2,
+     "key": "User sleep"
+    },
+    {
+     "count": 1,
+     "key": "Waiting for table metadata lock"
+    }
+   ],
+   "by_user": [
+    {
+     "count": 10,
+     "key": "root"
+    },
+    {
+     "count": 1,
+     "key": "noproc"
+    }
+   ],
+   "connections": {
+    "current": 12,
+    "listed": 11,
+    "max": 151,
+    "max_used": 12,
+    "peak_pct": 7.9,
+    "rule": "watch at 75% of max_connections, problem at 90% (Threads_connected)",
+    "running": 8,
+    "status": "ok",
+    "used_pct": 7.9
+   },
+   "history_list_length": {
+    "rule": "a rule of thumb without a trend: watch at 100,000 committed transactions whose undo logs purge has not processed yet, problem at 1,000,000. The size alone says little; a list that keeps growing across refreshes means purge is falling behind, most often because an old read view (a REPEATABLE READ transaction or a long statement) is still open",
+    "source": "Innodb_history_list_length",
+    "status": "ok",
+    "value": 15447
+   },
+   "idle": 2,
+   "idle_in_trx": 2,
+   "lock_wait": {
+    "innodb": 1,
+    "metadata": 1,
+    "table": 0,
+    "total": 2
+   },
+   "long_running": {
+    "problem": 4,
+    "watch": 0
+   },
+   "oldest_transaction": {
+    "age_s": 1252,
+    "client_host": "172.17.0.1",
+    "connection_id": 79,
+    "idle": true,
+    "isolation_level": "REPEATABLE READ",
+    "read_only": false,
+    "rows_locked": 1,
+    "rows_modified": 1,
+    "rule": "the oldest open transaction is watched at 10 s and a problem at 60 s; under REPEATABLE READ (or while a statement runs) its read view also holds back purge, so the history list length grows behind it",
+    "session_command": "Sleep",
+    "state": "RUNNING",
+    "status": "problem",
+    "trx_id": "60453",
+    "user": "root"
+   },
+   "running_statements": 7,
+   "status": "problem",
+   "system": 0,
+   "text": "12 connections of 151 · 9 active · 2 idle in transaction · 2 waiting for a lock · 4 running 10 s or more · oldest transaction 20 min 52 s",
+   "total": 11
+  },
+  "taken_at": "2026-10-14T18:21:45.256475+00:00",
+  "thresholds": {
+   "long_running_s": [
+    10,
+    60
+   ],
+   "trx_age_s": [
+    10,
+    60
+   ]
+  },
+  "truncated": false,
+  "uptime_s": 2618
+ },
+ "server": "mariadb-11.4"
+}

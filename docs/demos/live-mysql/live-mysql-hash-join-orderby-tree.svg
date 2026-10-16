@@ -24,7 +24,7 @@
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
 <text x="600.0" y="26" text-anchor="middle" class="title">Live MySQL 8.4 — hash join + ORDER BY</text>
-<text x="10" y="44" text-anchor="start" class="subtitle">Execution tree  ·  Total: 9.76 ms  ·  Click row to pin  ·  Ctrl+F to search</text>
+<text x="10" y="44" text-anchor="start" class="subtitle">Execution tree  ·  Total: 6.47 ms  ·  Click row to pin  ·  Ctrl+F to search</text>
 <text id="expand-all" class="ctrl-link" x="1100" y="44" text-anchor="start">Expand All</text>
 <text id="collapse-all" class="ctrl-link" x="1190" y="44" text-anchor="end">Collapse All</text>
 <line x1="10" y1="52" x2="1190" y2="52" stroke="#ddd" stroke-width="1"/>
@@ -34,86 +34,84 @@
 <text x="705" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>
 <text id="search-btn" x="1190" y="65" text-anchor="end">Search</text>
 <line x1="10" y1="68" x2="1190" y2="68" stroke="#ddd" stroke-width="1"/>
-<g class="tree-row" data-idx="0" data-depth="0" data-has-children="1">
-<rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Sort: total DESC  ·  Self: 12.6 µs (0.1%)  ·  Total: 9.76 ms  ·  Rows: 5  ·  Access: sort"/>
+<g class="tree-row" data-node-id="n:6a06df7aace7" data-idx="0" data-depth="0" data-has-children="1" data-teach-index="0">
+<rect class="row-bg" x="10" y="72" width="1180" height="26" fill="transparent" data-info="Sort: total DESC  ·  Self: 6.7 µs (0.1%)  ·  Total: 6.47 ms  ·  Rows: 5  ·  Access: sort"/>
 <rect x="10" y="72" width="4" height="26" fill="#e65100" pointer-events="none"/>
 <text class="toggle" x="12" y="90" data-idx="0">▾</text>
 <text class="row-label warn" x="26" y="90" pointer-events="none">⚠ Sort</text>
-<text class="row-time" x="536" y="90" text-anchor="end" pointer-events="none">12.6 µs</text>
-<text class="row-time" x="626" y="90" text-anchor="end" pointer-events="none">9.76 ms</text>
+<text class="row-time" x="536" y="90" text-anchor="end" pointer-events="none">6.7 µs</text>
+<text class="row-time" x="626" y="90" text-anchor="end" pointer-events="none">6.47 ms</text>
 <text class="row-pct" x="681" y="90" text-anchor="end" pointer-events="none">0.1%</text>
 <rect x="705" y="77" width="475.0" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="77" width="0.6" height="16" fill="#ddeaf6" rx="2" pointer-events="none"/>
 <line x1="10" y1="98" x2="1190" y2="98" stroke="#eeeeee" stroke-width="1"/>
 </g>
-<g class="tree-row" data-idx="1" data-depth="1" data-has-children="1">
-<rect class="row-bg" x="10" y="98" width="1180" height="26" fill="transparent" data-info="Table scan on &lt;temporary&gt;  ·  Self: 1.9 µs (0.0%)  ·  Total: 9.75 ms  ·  Rows: 5  ·  Table: &lt;temporary&gt;  ·  Access: table"/>
-<rect x="10" y="98" width="4" height="26" fill="#e65100" pointer-events="none"/>
+<g class="tree-row" data-node-id="n:fe47e746b576" data-idx="1" data-depth="1" data-has-children="1" data-teach-index="1">
+<rect class="row-bg" x="10" y="98" width="1180" height="26" fill="transparent" data-info="Table scan on &lt;temporary&gt;  ·  Self: 1.0 µs (0.0%)  ·  Total: 6.46 ms  ·  Rows: 5  ·  Table: &lt;temporary&gt;  ·  Access: table"/>
 <rect x="10" y="98" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="30" y="116" data-idx="1">▾</text>
-<text class="row-label warn" x="44" y="116" pointer-events="none">⚠ Table scan [&lt;temporary&gt;]</text>
-<text class="row-time" x="536" y="116" text-anchor="end" pointer-events="none">1.9 µs</text>
-<text class="row-time" x="626" y="116" text-anchor="end" pointer-events="none">9.75 ms</text>
+<text class="row-label" x="44" y="116" pointer-events="none">Table scan [&lt;temporary&gt;]</text>
+<text class="row-time" x="536" y="116" text-anchor="end" pointer-events="none">1.0 µs</text>
+<text class="row-time" x="626" y="116" text-anchor="end" pointer-events="none">6.46 ms</text>
 <text class="row-pct" x="681" y="116" text-anchor="end" pointer-events="none">0.0%</text>
-<rect x="705" y="103" width="474.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="103" width="474.5" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
 <line x1="10" y1="124" x2="1190" y2="124" stroke="#eeeeee" stroke-width="1"/>
 </g>
-<g class="tree-row" data-idx="2" data-depth="2" data-has-children="1">
-<rect class="row-bg" x="10" y="124" width="1180" height="26" fill="transparent" data-info="Aggregate using temporary table  ·  Self: 3.22 ms (33.0%)  ·  Total: 9.74 ms  ·  Rows: 5  ·  Access: temp_table_aggregate"/>
+<g class="tree-row" data-node-id="n:288184b1ac9b" data-idx="2" data-depth="2" data-has-children="1" data-teach-index="2">
+<rect class="row-bg" x="10" y="124" width="1180" height="26" fill="transparent" data-info="Aggregate using temporary table  ·  Self: 1.89 ms (29.3%)  ·  Total: 6.46 ms  ·  Rows: 5  ·  Access: temp_table_aggregate"/>
 <text class="toggle" x="48" y="142" data-idx="2">▾</text>
 <text class="row-label" x="62" y="142" pointer-events="none">Aggregate</text>
-<text class="row-time" x="536" y="142" text-anchor="end" pointer-events="none">3.22 ms</text>
-<text class="row-time" x="626" y="142" text-anchor="end" pointer-events="none">9.74 ms</text>
-<text class="row-pct" x="681" y="142" text-anchor="end" pointer-events="none">33%</text>
-<rect x="705" y="129" width="474.3" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="129" width="156.8" height="16" fill="#6ba1ce" rx="2" pointer-events="none"/>
+<text class="row-time" x="536" y="142" text-anchor="end" pointer-events="none">1.89 ms</text>
+<text class="row-time" x="626" y="142" text-anchor="end" pointer-events="none">6.46 ms</text>
+<text class="row-pct" x="681" y="142" text-anchor="end" pointer-events="none">29%</text>
+<rect x="705" y="129" width="474.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="129" width="139.0" height="16" fill="#7aaad4" rx="2" pointer-events="none"/>
 <line x1="10" y1="150" x2="1190" y2="150" stroke="#eeeeee" stroke-width="1"/>
 </g>
-<g class="tree-row" data-idx="3" data-depth="3" data-has-children="1">
-<rect class="row-bg" x="10" y="150" width="1180" height="26" fill="transparent" data-info="Inner hash join (concat('u',o.user_id) = concat('u',u.id))  ·  Self: 3.33 ms (34.1%)  ·  Total: 6.52 ms  ·  Rows: 6859  ·  Access: join  ·  Est.rows: 2397900  ⚠ overestimate"/>
+<g class="tree-row" data-node-id="n:5a3c13968281" data-idx="3" data-depth="3" data-has-children="1" data-teach-index="3">
+<rect class="row-bg" x="10" y="150" width="1180" height="26" fill="transparent" data-info="Inner hash join (concat(&#39;u&#39;,o.user_id) = concat(&#39;u&#39;,u.id))  ·  Self: 2.33 ms (36.1%)  ·  Total: 4.57 ms  ·  Rows: 6859  ·  Access: join  ·  Est.rows: 2358600  ⚠ overestimate"/>
 <rect x="10" y="150" width="4" height="26" fill="#e65100" pointer-events="none"/>
 <rect x="10" y="150" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="66" y="168" data-idx="3">▾</text>
 <text class="row-label warn" x="80" y="168" pointer-events="none">⚠ Inner hash join (concat('u',o.user_id) = conc…</text>
-<text class="row-time" x="536" y="168" text-anchor="end" pointer-events="none">3.33 ms</text>
-<text class="row-time" x="626" y="168" text-anchor="end" pointer-events="none">6.52 ms</text>
-<text class="row-pct" x="681" y="168" text-anchor="end" pointer-events="none">34%</text>
-<rect x="705" y="155" width="317.5" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="155" width="162.2" height="16" fill="#699fce" rx="2" pointer-events="none"/>
+<text class="row-time" x="536" y="168" text-anchor="end" pointer-events="none">2.33 ms</text>
+<text class="row-time" x="626" y="168" text-anchor="end" pointer-events="none">4.57 ms</text>
+<text class="row-pct" x="681" y="168" text-anchor="end" pointer-events="none">36%</text>
+<rect x="705" y="155" width="335.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="155" width="171.4" height="16" fill="#6ca1cf" rx="2" pointer-events="none"/>
 <line x1="10" y1="176" x2="1190" y2="176" stroke="#eeeeee" stroke-width="1"/>
 </g>
-<g class="tree-row" data-idx="4" data-depth="4" data-has-children="0">
-<rect class="row-bg" x="10" y="176" width="1180" height="26" fill="transparent" data-info="Table scan on o  ·  Self: 1.86 ms (19.1%)  ·  Rows: 8000  ·  Table: orders  ·  Access: table  ·  Est.rows: 7993"/>
+<g class="tree-row" data-node-id="n:13f9abc9fc00" data-idx="4" data-depth="4" data-has-children="0" data-teach-index="4">
+<rect class="row-bg" x="10" y="176" width="1180" height="26" fill="transparent" data-info="Table scan on o  ·  Self: 1.02 ms (15.7%)  ·  Rows: 8000  ·  Table: orders  ·  Access: table  ·  Est.rows: 7862"/>
 <rect x="10" y="176" width="4" height="26" fill="#e65100" pointer-events="none"/>
 <text class="leaf-indicator" x="84" y="194" pointer-events="none">·</text>
 <text class="row-label warn" x="98" y="194" pointer-events="none">⚠ Table scan [orders]</text>
-<text class="row-time" x="536" y="194" text-anchor="end" pointer-events="none">1.86 ms</text>
-<text class="row-pct" x="681" y="194" text-anchor="end" pointer-events="none">19%</text>
-<rect x="705" y="181" width="90.8" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="181" width="90.8" height="16" fill="#8ab4d9" rx="2" pointer-events="none"/>
+<text class="row-time" x="536" y="194" text-anchor="end" pointer-events="none">1.02 ms</text>
+<text class="row-pct" x="681" y="194" text-anchor="end" pointer-events="none">16%</text>
+<rect x="705" y="181" width="74.7" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="181" width="74.7" height="16" fill="#9cc0df" rx="2" pointer-events="none"/>
 <line x1="10" y1="202" x2="1190" y2="202" stroke="#eeeeee" stroke-width="1"/>
 </g>
-<g class="tree-row" data-idx="5" data-depth="4" data-has-children="1">
-<rect class="row-bg" x="10" y="202" width="1180" height="26" fill="transparent" data-info="Filter: (u.status = 'active')  ·  Self: 458.0 µs (4.7%)  ·  Total: 1.33 ms  ·  Rows: 2572  ·  Access: filter  ·  Est.rows: 300  ⚠ underestimate (8.6×)  ·  Cond: (u.`status` = 'active')"/>
+<g class="tree-row" data-node-id="n:f52549d0242a" data-idx="5" data-depth="4" data-has-children="1" data-teach-index="5">
+<rect class="row-bg" x="10" y="202" width="1180" height="26" fill="transparent" data-info="Filter: (u.status = &#39;active&#39;)  ·  Self: 396.8 µs (6.1%)  ·  Total: 1.22 ms  ·  Rows: 2572  ·  Access: filter  ·  Est.rows: 300  ⚠ underestimate (8.6×)  ·  Cond: (u.`status` = &#39;active&#39;)"/>
 <rect x="10" y="202" width="1180" height="26" fill="rgba(0,0,0,0.018)" pointer-events="none"/>
 <text class="toggle" x="84" y="220" data-idx="5">▾</text>
 <text class="row-label" x="98" y="220" pointer-events="none">Filter: ((u.status = 'active'))</text>
-<text class="row-time" x="536" y="220" text-anchor="end" pointer-events="none">458.0 µs</text>
-<text class="row-time" x="626" y="220" text-anchor="end" pointer-events="none">1.33 ms</text>
-<text class="row-pct" x="681" y="220" text-anchor="end" pointer-events="none">5%</text>
-<rect x="705" y="207" width="64.5" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="207" width="22.3" height="16" fill="#c0d7ec" rx="2" pointer-events="none"/>
+<text class="row-time" x="536" y="220" text-anchor="end" pointer-events="none">396.8 µs</text>
+<text class="row-time" x="626" y="220" text-anchor="end" pointer-events="none">1.22 ms</text>
+<text class="row-pct" x="681" y="220" text-anchor="end" pointer-events="none">6%</text>
+<rect x="705" y="207" width="89.4" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="207" width="29.1" height="16" fill="#bed6ec" rx="2" pointer-events="none"/>
 <line x1="10" y1="228" x2="1190" y2="228" stroke="#eeeeee" stroke-width="1"/>
 </g>
-<g class="tree-row" data-idx="6" data-depth="5" data-has-children="0">
-<rect class="row-bg" x="10" y="228" width="1180" height="26" fill="transparent" data-info="Table scan on u  ·  Self: 867.9 µs (8.9%)  ·  Rows: 3000  ·  Table: users  ·  Access: table  ·  Est.rows: 3000"/>
+<g class="tree-row" data-node-id="n:3faf9eb683af" data-idx="6" data-depth="5" data-has-children="0" data-teach-index="6">
+<rect class="row-bg" x="10" y="228" width="1180" height="26" fill="transparent" data-info="Table scan on u  ·  Self: 820.4 µs (12.7%)  ·  Rows: 3000  ·  Table: users  ·  Access: table  ·  Est.rows: 3000"/>
 <rect x="10" y="228" width="4" height="26" fill="#e65100" pointer-events="none"/>
 <text class="leaf-indicator" x="102" y="246" pointer-events="none">·</text>
 <text class="row-label warn" x="116" y="246" pointer-events="none">⚠ Table scan [users]</text>
-<text class="row-time" x="536" y="246" text-anchor="end" pointer-events="none">867.9 µs</text>
-<text class="row-pct" x="681" y="246" text-anchor="end" pointer-events="none">9%</text>
-<rect x="705" y="233" width="42.2" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
-<rect x="705" y="233" width="42.2" height="16" fill="#accae5" rx="2" pointer-events="none"/>
+<text class="row-time" x="536" y="246" text-anchor="end" pointer-events="none">820.4 µs</text>
+<text class="row-pct" x="681" y="246" text-anchor="end" pointer-events="none">13%</text>
+<rect x="705" y="233" width="60.2" height="16" fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>
+<rect x="705" y="233" width="60.2" height="16" fill="#a5c6e3" rx="2" pointer-events="none"/>
 <line x1="10" y1="254" x2="1190" y2="254" stroke="#eeeeee" stroke-width="1"/>
 </g>
 <line x1="10" y1="270" x2="1190" y2="270" stroke="#e0e0e0" stroke-width="1"/>
@@ -149,8 +147,8 @@
 <text x="26" y="752" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
 <text x="36" y="776" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Non-sargable join predicate: CONCAT(...) in Inner hash join (concat('u',o.user_id) = concat('u',u.id)) — a function wrapped around the join column prevents index use.</text>
 <text x="36" y="793" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (concat('u',o.user_id) = concat('u...”</text>
-<text x="36" y="810" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)</text>
-<text x="36" y="827" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [orders]”, “Table scan [users]”</text>
+<text x="36" y="810" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: orders (8000 rows), users (3000 rows)</text>
+<text x="36" y="827" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [orders]”, “Table scan [users]”</text>
 <text x="36" y="844" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~6859 rows in build phase)</text>
 <text x="36" y="861" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (concat('u',o.user_id) = concat('u...”</text>
 <text x="36" y="878" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 5 rows; may use disk-based filesort</text>
@@ -169,21 +167,21 @@
 <text x="36" y="1095" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">    CREATE INDEX idx_users_status ON users (status);</text>
 <rect x="14" y="1105" width="1172" height="22" fill="#fff3f3" rx="4"/>
 <text x="26" y="1120" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">🔍  Environment warnings (from collected server state)</text>
-<text x="36" y="1144" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.</text>
+<text x="36" y="1144" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Filesort detected with sort_buffer_size=256.0 KB. Whether it spills depends on the sort's row count and record size.</text>
 <text x="36" y="1161" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Hash join detected but join_buffer_size is only 256.0 KB. Build/batch phase may spill to tmpdir.</text>
 <text x="36" y="1178" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Table users has no index covering (status).</text>
 <rect x="14" y="1188" width="1172" height="22" fill="#e8f5e9" rx="4"/>
 <text x="26" y="1203" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">⚙  Environment tuning suggestions</text>
-<text x="36" y="1227" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024). Why: when the sort set does not fit in sort_buffer_size, MySQL writes multiple</text>
-<text x="36" y="1244" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort.</text>
-<text x="36" y="1261" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.</text>
+<text x="36" y="1227" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Check sort merge passes and query timing before increasing sort_buffer_size for this session. Why: when sort records exceed the buffer, MySQL can write sorted runs and merge</text>
+<text x="36" y="1244" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">them. A larger buffer may avoid that work; small sorts may already fit in memory. Test session-level changes and account for concurrent sorting sessions before changing the global</text>
+<text x="36" y="1261" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">default.</text>
 <text x="36" y="1278" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise join_buffer_size per-session to 2M–8M (SET SESSION join_buffer_size = 8*1024*1024). Why: hash join builds an in-memory hash table on the smaller input and probes from the</text>
 <text x="36" y="1295" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">other side. If the build side does not fit in join_buffer_size, MySQL spills to tmpdir and does a multi-pass (Grace) hash join — each extra pass re-reads the probe side, so total</text>
 <text x="36" y="1312" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">I/O roughly multiplies. Bigger win: add an index on the join column — that removes the need for the join buffer entirely by turning the join into an indexed lookup.</text>
 <text x="36" y="1329" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  CREATE INDEX idx_users_status ON users (status);</text>
 <rect x="14" y="1339" width="1172" height="22" fill="#e3f2fd" rx="4"/>
 <text x="26" y="1354" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected session variables</text>
-<text x="36" y="1378" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 8.4.8</text>
+<text x="36" y="1378" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 8.4.11</text>
 <text x="36" y="1395" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_buffer_pool_size = 134217728</text>
 <text x="36" y="1412" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_log_file_size = 50331648</text>
 <text x="36" y="1429" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_flush_log_at_trx_commit = 1</text>
@@ -196,7 +194,7 @@
 <rect x="14" y="1541" width="1172" height="22" fill="#e3f2fd" rx="4"/>
 <text x="26" y="1556" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected table stats (information_schema.tables)</text>
 <text x="36" y="1580" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users: rows=3000, data=180224, idx=81920</text>
-<text x="36" y="1597" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders: rows=7993, data=425984, idx=180224</text>
+<text x="36" y="1597" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders: rows=7862, data=425984, idx=180224</text>
 <rect x="14" y="1607" width="1172" height="22" fill="#e3f2fd" rx="4"/>
 <text x="26" y="1622" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected schema (SHOW CREATE TABLE)</text>
 <text x="36" y="1646" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users — 5 cols, indexes: PRIMARY, idx_country</text>

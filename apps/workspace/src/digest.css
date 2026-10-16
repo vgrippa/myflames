@@ -1,0 +1,96 @@
+/* Top statements: row actions in the inspector, Explain top N, and
+   digest-sourced tabs and plans. Tokens only. */
+.top-actions {
+  display: grid;
+  gap: var(--space-2);
+  width: 100%;
+}
+.top-reason {
+  color: var(--ink-muted);
+}
+.run-confirm {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.run-confirm p {
+  line-height: var(--leading-sm);
+}
+.top-flags {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.batch-controls {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.batch-controls input {
+  width: 56px;
+}
+.batch-summary {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+.batch-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+.batch-heading h3 {
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+.batch-summary .capture-status {
+  margin: 0;
+}
+.batch-table-wrap {
+  max-height: none;
+}
+.batch-table td {
+  vertical-align: top;
+}
+.batch-table .batch-sql {
+  min-width: 220px;
+  max-width: 420px;
+}
+.batch-skipped {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.batch-error {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.batch-count {
+  white-space: nowrap;
+}
+.tab-source {
+  margin: 10px 20px 0;
+}
+.tab-source code,
+.plan-source code {
+  font-size: 0.95em;
+}
+@media (max-width: 650px) {
+  .batch-controls {
+    margin-left: 0;
+  }
+}

@@ -143,7 +143,7 @@
         <tr><td>Buffer pool vs working set</td><td><code>innodb_buffer_pool_size</code> &lt; 25-50% of referenced tables</td></tr>
         <tr><td>Sort buffer vs filesort</td><td>Filesort detected + <code>sort_buffer_size</code> &lt; 2 MB</td></tr>
         <tr><td>Join buffer vs hash/BNL</td><td>Hash join or BNL + <code>join_buffer_size</code> &lt; 2 MB</td></tr>
-        <tr><td>Tmp table size</td><td>Temp table + <code>min(tmp_table_size, max_heap_table_size)</code> &lt; 32 MB</td></tr>
+        <tr><td>Tmp table size</td><td>Temp table + in-memory limit &lt; 32 MB: <code>tmp_table_size</code> with MySQL's default TempTable engine; the smaller of <code>tmp_table_size</code> and <code>max_heap_table_size</code> with the MEMORY engine and on MariaDB</td></tr>
         <tr><td>Optimizer switch overrides</td><td><code>hash_join=off</code>, <code>mrr=off</code>, <code>derived_condition_pushdown=off</code></td></tr>
         <tr><td>Missing indexes</td><td>Parser heuristic + collected schema confirms no covering index</td></tr>
         <tr><td>Engine != InnoDB</td><td>Table uses MyISAM/MEMORY</td></tr>

@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Callable, Dict
+from pathlib import Path
+from typing import Callable, Dict, List
 
 from .cache_family import LESSONS as CACHE_FAMILY_LESSONS
 from .index_family import LESSONS as INDEX_FAMILY_LESSONS
@@ -302,6 +303,25 @@ def render_lesson(name: str) -> str:
     return render_fn()
 
 
+#: Lessons that also have a 3D view. Each is a prebuilt, self-contained page
+#: in myflames/assets/, built from apps/teach-3d (Python users need no Node.js).
+#: The 3D view is an extra option; the 2D lesson stays the default.
+LESSON_3D = {"btree": "teach3d-btree.html"}
+
+
+def lesson_views(name: str) -> List[str]:
+    """The views lesson *name* offers: always ``2d``, plus ``3d`` when it has one."""
+    return ["2d", "3d"] if name in LESSON_3D else ["2d"]
+
+
+def render_lesson_3d(name: str) -> str:
+    """Return the prebuilt 3D page for lesson *name*."""
+    if name not in LESSON_3D:
+        raise KeyError(f"lesson {name!r} has no 3D view")
+    path = Path(__file__).resolve().parent.parent / "assets" / LESSON_3D[name]
+    return path.read_text(encoding="utf-8")
+
+
 _FAMILY_LABELS = {
     "join_family": "Join Family",
     "index_family": "Index Access Family",
@@ -344,76 +364,40 @@ def _print_catalog(stream=sys.stdout) -> None:
 
 
 def cmd_teach(argv) -> None:
-    """Dispatch `myflames teach ...`. Called from cli.py."""
-    # --index (or --catalog) emits the HTML hub rather than a single
-    # lesson. Accept the flag without a positional lesson.
-    if argv and argv[0] in ("--index", "--catalog"):
-        # Emit the myteach catalog HTML — a centralized index of every
-        # lesson with links. Canonical save location is
-        # ``teach/index.html`` so the report's myteach section
-        # deep-links work.
-        idx_parser = argparse.ArgumentParser(
-            prog="myflames teach --index",
-            description="Emit the myteach catalog HTML.",
-        )
-        idx_parser.add_argument(
-            "--output", "-o", default=None, metavar="PATH",
-            help="Write the index HTML to PATH. If omitted, stdout.",
-        )
-        # Skip argv[0] (the --index flag itself).
-        args = idx_parser.parse_args(argv[1:])
-        html = render_catalog_html()
-        if args.output:
-            with open(args.output, "w", encoding="utf-8") as f:
-                f.write(html)
-        else:
-            sys.stdout.write(html)
-        sys.exit(0)
-
-    if not argv:
-        _print_catalog()
-        sys.exit(0)
-
+    """Dispatch `myflames teach ...` with the shared artifact-output contract."""
+    import io
+    from ..cli import _add_quiet_flag, _write_output
     parser = argparse.ArgumentParser(
         prog="myflames teach",
-        description="Render an interactive database algorithm lesson as "
-        "self-contained HTML.",
+        description="Render an interactive database algorithm lesson as self-contained HTML.",
     )
-    parser.add_argument(
-        "lesson",
-        choices=sorted(LESSONS.keys()),
-        help="Which lesson to render. Pass --index to emit the catalog hub instead.",
-    )
-    parser.add_argument(
-        "--output",
-        "-o",
-        default=None,
-        metavar="PATH",
-        help="Write HTML to PATH. If omitted, writes to stdout.",
-    )
-    parser.add_argument(
-        "--title",
-        default=None,
-        help="Override the lesson's title (optional).",
-    )
+    parser.add_argument("lesson", nargs="?", choices=sorted(LESSONS.keys()),
+                        help="Which lesson to render. Pass --index for the catalog hub.")
+    parser.add_argument("--index", "--catalog", action="store_true", help="Emit the myteach catalog HTML.")
+    parser.add_argument("--output", "-o", default=None, metavar="PATH",
+                        help="Write HTML to PATH. If omitted, writes to stdout.")
+    parser.add_argument("--title", default=None, help="Override the lesson's title (optional).")
+    _add_quiet_flag(parser)
     try:
         args = parser.parse_args(argv)
+        if args.index and args.lesson:
+            parser.error("choose a lesson or --index, not both")
     except SystemExit as e:
-        # argparse exits 2 on unknown choice — we want the catalog printed first
         if e.code == 2:
             _print_catalog(stream=sys.stderr)
         raise
-
+    if args.index:
+        _write_output(render_catalog_html(), args.output, quiet=args.quiet)
+        return
+    if args.lesson is None:
+        catalog = io.StringIO()
+        _print_catalog(stream=catalog)
+        _write_output(catalog.getvalue(), args.output, quiet=args.quiet)
+        return
     html = render_lesson(args.lesson)
     if args.title:
         html = html.replace(
             f"<title>{LESSONS[args.lesson]['title']}</title>",
-            f"<title>{args.title}</title>",
-            1,
+            f"<title>{args.title}</title>", 1,
         )
-
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(html)
-    else:
-        sys.stdout.write(html)
+    _write_output(html, args.output, quiet=args.quiet)

@@ -1,0 +1,171 @@
+{
+ "variable": {
+  "schema_version": "variable-1.0",
+  "engine": "mariadb",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "name": "max_connections",
+  "exists": true,
+  "scope": "global",
+  "scope_source": "information_schema.SYSTEM_VARIABLES",
+  "dynamic": true,
+  "type": "integer",
+  "values": null,
+  "min": 10,
+  "max": 100000,
+  "block_size": null,
+  "global_value": "300",
+  "session_value": null,
+  "default": "151",
+  "set_by": "SET GLOBAL",
+  "source": "SQL",
+  "source_path": null,
+  "set_time": null,
+  "set_user": null,
+  "set_host": null,
+  "persisted": {
+   "supported": false,
+   "value": null,
+   "present": false,
+   "load": null
+  },
+  "non_persistent": false,
+  "persist_as_read_only": false,
+  "session_read_only": false,
+  "description": "The number of simultaneous clients allowed",
+  "notes": [],
+  "modes": {
+   "global": {
+    "available": true,
+    "reason": null,
+    "recommended": false
+   },
+   "persist": {
+    "available": false,
+    "reason": "MariaDB has no SET PERSIST.",
+    "recommended": false
+   },
+   "persist_only": {
+    "available": false,
+    "reason": "MariaDB has no SET PERSIST_ONLY.",
+    "recommended": false
+   },
+   "reset_persist": {
+    "available": false,
+    "reason": "MariaDB has no RESET PERSIST.",
+    "recommended": false
+   },
+   "session": {
+    "available": false,
+    "reason": "max_connections has only a global value.",
+    "recommended": false
+   }
+  }
+ },
+ "plan": {
+  "schema_version": "variable-plan-1.0",
+  "engine": "mariadb",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "name": "max_connections",
+  "mode": "persist",
+  "mode_label": "Now and after restart",
+  "requested": "300",
+  "value": "300",
+  "display": "300",
+  "status": "refused",
+  "problems": [
+   {
+    "code": "mode_unavailable",
+    "message": "MariaDB has no SET PERSIST."
+   }
+  ],
+  "statement": null,
+  "config_line": "max_connections = 300",
+  "before": {
+   "global": "300",
+   "session": null,
+   "persisted": null
+  },
+  "undo": [],
+  "effect": null,
+  "caveats": [],
+  "privileges": null,
+  "classification": null,
+  "expect": null,
+  "variable": {
+   "schema_version": "variable-1.0",
+   "engine": "mariadb",
+   "server_version": "11.4.13-MariaDB-ubu2404",
+   "name": "max_connections",
+   "exists": true,
+   "scope": "global",
+   "scope_source": "information_schema.SYSTEM_VARIABLES",
+   "dynamic": true,
+   "type": "integer",
+   "values": null,
+   "min": 10,
+   "max": 100000,
+   "block_size": null,
+   "global_value": "300",
+   "session_value": null,
+   "default": "151",
+   "set_by": "SET GLOBAL",
+   "source": "SQL",
+   "source_path": null,
+   "set_time": null,
+   "set_user": null,
+   "set_host": null,
+   "persisted": {
+    "supported": false,
+    "value": null,
+    "present": false,
+    "load": null
+   },
+   "non_persistent": false,
+   "persist_as_read_only": false,
+   "session_read_only": false,
+   "description": "The number of simultaneous clients allowed",
+   "notes": [],
+   "modes": {
+    "global": {
+     "available": true,
+     "reason": null,
+     "recommended": false
+    },
+    "persist": {
+     "available": false,
+     "reason": "MariaDB has no SET PERSIST.",
+     "recommended": false
+    },
+    "persist_only": {
+     "available": false,
+     "reason": "MariaDB has no SET PERSIST_ONLY.",
+     "recommended": false
+    },
+    "reset_persist": {
+     "available": false,
+     "reason": "MariaDB has no RESET PERSIST.",
+     "recommended": false
+    },
+    "session": {
+     "available": false,
+     "reason": "max_connections has only a global value.",
+     "recommended": false
+    }
+   }
+  },
+  "alternative": {
+   "mode": "global",
+   "config_line": "max_connections = 300",
+   "text": "Change it now with Now only (SET GLOBAL). To keep it after a restart, add max_connections = 300 under [mysqld] (or [mariadb]) in an option file; myflames never edits option files."
+  },
+  "policy": {
+   "action": "confirm",
+   "tone": "danger",
+   "title": "Production connection",
+   "text": "This is a Production connection, so myflames asks before every write.",
+   "connection_type": "production",
+   "read_only": false
+  }
+ },
+ "change": null
+}

@@ -2,12 +2,14 @@
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, patch
 
-from myflames.connector import ConnectorError
-from myflames.live import (LiveJob, LiveJobs, bind_query, connection_options,
+from myflames.connector import ConnectorError, MySQLConnection
+from myflames import dbops
+from myflames.live import (LiveJob, LiveJobs, bind_query, capture_problem, connection_options,
                            measurement_summary, _sections, _status)
 from myflames.parser import parse_explain
 
@@ -83,6 +85,96 @@ class TestQueryValidation(unittest.TestCase):
             with self.subTest(query=query), self.assertRaises(ValueError):
                 bind_query(query)
 
+    def test_capture_rejects_function_side_effects_before_connecting(self):
+        from myflames.live import capture_problem
+        for query in (
+                'SELECT group_replication_switch_to_multi_primary_mode()',
+                'SELECT asynchronous_connection_failover_reset()',
+                'SELECT unknown_function()', 'SELECT app.COUNT(1)',
+                'SELECT `app`.`mutate_rows`()', 'SELECT "mutate_rows"()',
+                'SELECT COALESCE(mutate_rows(),0)',
+                'WITH c AS (SELECT mutate_rows()) SELECT * FROM c',
+                'SELECT NEXTVAL(s)', 'SELECT SETVAL(s,42)', 'SELECT NEXT VALUE FOR s',
+                'SELECT s.NEXTVAL', 'SELECT "s"."NEXTVAL"',
+                "SELECT GET_LOCK('n',0)", "SELECT RELEASE_LOCK('n')", 'SELECT RELEASE_ALL_LOCKS()',
+                'SELECT LAST_INSERT_ID(42)', 'SELECT COUNT /* comment */ (1)'):
+            with self.subTest(query=query):
+                self.assertIsNotNone(capture_problem(query))
+                with self.assertRaises(ValueError):
+                    bind_query(query)
+                with patch('myflames.live.MySQLConnection') as connection:
+                    with self.assertRaises(ValueError):
+                        LiveJob(payload(query=query))
+                    connection.assert_not_called()
+
+    def test_capture_common_native_readers_and_ctes(self):
+        from myflames.live import capture_problem
+        for query in (
+                'SELECT COUNT(*), COALESCE(SUM(x),0) FROM t',
+                "SELECT JSON_EXTRACT(doc,'$.n'), ABS(n), DATE_FORMAT(NOW(),'%Y') FROM t",
+                'WITH c(n) AS (SELECT 1) SELECT * FROM c WHERE n IN (1,2)',
+                'WITH `c`(`n`) AS (SELECT 1) SELECT * FROM `c`',
+                'SELECT ROW_NUMBER() OVER (ORDER BY id) FROM t',
+                'SELECT CAST(n AS DECIMAL(10,2)) FROM t',
+                "SELECT 'mutate_rows()', `mutate_rows` FROM t"):
+            with self.subTest(query=query):
+                self.assertIsNone(capture_problem(query))
+                self.assertEqual(bind_query(query), query)
+
+    def test_backslash_quote_cannot_split_statements_under_no_backslash_escapes(self):
+        """With sql_mode NO_BACKSLASH_ESCAPES the mysql client reads '\\' as a
+        whole string, so the text below is five statements to it; with
+        backslash escapes it is one. Text that the two readings split
+        differently is refused before anything runs."""
+        from myflames.live import capture_problem
+        for query in ("SELECT '\\'; COMMIT; SET SESSION TRANSACTION READ WRITE; DROP TABLE victim; SELECT 'x'",
+                      'SELECT "\\"; COMMIT; DROP TABLE victim; SELECT "x"',
+                      "SELECT 'it\\'s'", "SELECT 'a\\''"):
+            with self.subTest(query=query):
+                problem = capture_problem(query)
+                self.assertIn('NO_BACKSLASH_ESCAPES', problem)
+                self.assertIn("doubling it ('it''s')", problem)
+                with self.assertRaisesRegex(ValueError, 'NO_BACKSLASH_ESCAPES'):
+                    bind_query(query)
+
+    def test_escapes_that_mean_the_same_under_both_readings_are_accepted(self):
+        from myflames.live import capture_problem
+        for query in ("SELECT 'it''s'", 'SELECT "say ""hi"""', "SELECT 'a\\nb', 'C:\\\\dir'",
+                      "SELECT * FROM t WHERE a = '\\\\'", "SELECT `odd``name` FROM t"):
+            with self.subTest(query=query):
+                self.assertIsNone(capture_problem(query))
+                self.assertEqual(bind_query(query), query)
+
+    def test_dash_comments_need_client_white_space(self):
+        """The client reads "--" as a comment only before ASCII white space
+        (my_isspace); Python's \\s also matches \\x1c-\\x1f and \\xa0. Before
+        such a character the client sees code and splits at the ';', so the
+        DROP TABLE below would run as its own statement. Before a control
+        character the server sees a comment and the client code: refused."""
+        from myflames.live import TOKEN, TOKEN_NO_BACKSLASH, capture_problem
+        for dash in ('\x1c', '\x1d', '\x1e', '\x1f', '\x01', '\x7f'):
+            query = 'SELECT 1 --%s; DROP TABLE victim' % dash
+            with self.subTest(dash=repr(dash)):
+                self.assertIn('space after the dashes', capture_problem(query))
+                with self.assertRaises(ValueError):
+                    bind_query(query)
+                for token in (TOKEN, TOKEN_NO_BACKSLASH):
+                    self.assertFalse(any(m.group().startswith('--') for m in token.finditer(query)))
+        for query in ('SELECT 1 --\xa0; DROP TABLE victim', 'SELECT 1 --\u2028; DROP TABLE victim'):
+            with self.subTest(query=repr(query)):
+                self.assertIn('one SELECT', capture_problem(query))
+        for space in (' ', '\t', '\n', '\r', '\f', '\v'):
+            query = 'SELECT 1 --%sx\nFROM dual' % space
+            with self.subTest(space=repr(space)):
+                self.assertIsNone(capture_problem(query))
+        self.assertIsNone(capture_problem('SELECT 1 --'))
+        self.assertIsNone(capture_problem('SELECT 1--1'))
+
+    def test_unclosed_strings_and_comments_are_refused(self):
+        for query in ("SELECT 'abc", 'SELECT "abc', 'SELECT `abc', 'SELECT 1 /* open'):
+            with self.subTest(query=query), self.assertRaisesRegex(ValueError, 'Close every'):
+                bind_query(query)
+
     def test_query_and_job_limits(self):
         for query in (None, '', ' ', 'SELECT ' + 'x' * 200000):
             with self.subTest(query=str(query)[:30]), self.assertRaises(ValueError):
@@ -131,7 +223,7 @@ class TestCaptureProtocol(unittest.TestCase):
             self.assertIn('ROLLBACK;', script)
             self.assertNotIn('private-secret', script)
             statement = script.index('EXPLAIN ANALYZE FORMAT=JSON SELECT')
-            disabled = script.index("SET SESSION optimizer_trace='enabled=off';", statement)
+            disabled = script.index("/*myflames:capture*/ SET SESSION optimizer_trace='enabled=off';", statement)
             next_marker = script.index("SELECT '__myflames_", statement)
             self.assertLess(disabled, next_marker)
             self.assertEqual(script[statement:disabled].splitlines()[-1], ';')
@@ -144,6 +236,28 @@ class TestCaptureProtocol(unittest.TestCase):
         self.assertEqual(result['measurements']['stdev_ms'], 0)
         self.assertNotIn('private-secret', json.dumps(job.snapshot()))
         self.assertNotIn('password', job.options)
+
+    def test_safety_statements_precede_the_query_and_json_version_needs_8_3(self):
+        """Every statement before the query must succeed on a supported
+        server, because the client now stops at the first error: the
+        explain_json_format_version SET (added in MySQL 8.3.0) is sent only
+        where it exists."""
+        for version, expected in (('8.0.36', False), ('8.2.0', False), ('8.3.0', True),
+                                  ('8.4.6-log', True), ('9.7.0', True)):
+            self.conn.server_version.return_value = version
+            job = LiveJob(payload())
+            scripts = []
+            def run(conn, script, marker):
+                scripts.append(script)
+                return captured(marker), ''
+            with self.subTest(version=version), patch.object(job, '_run_script', side_effect=run):
+                job.run()
+                self.assertEqual(job.state, 'complete', job.error)
+                script = scripts[0]
+                self.assertEqual('explain_json_format_version' in script, expected)
+                query = script.index('EXPLAIN ANALYZE FORMAT=JSON SELECT')
+                self.assertLess(script.index('SET SESSION TRANSACTION READ ONLY;'), query)
+                self.assertLess(script.index('START TRANSACTION READ ONLY;'), query)
 
     def test_missing_optional_statistics_and_trace_are_warnings(self):
         job = LiveJob(payload(trace=True))
@@ -242,12 +356,102 @@ class TestCaptureProtocol(unittest.TestCase):
         self.assertIn('--binary-mode', popen.call_args[0][0])
         flags = self.conn._build_argv.call_args[0][1]
         self.assertIn('--comments', flags)
+        # Without --force the client stops at a failed SET SESSION TRANSACTION
+        # READ ONLY / START TRANSACTION READ ONLY instead of running the query.
+        self.assertNotIn('--force', flags)
+        self.assertNotIn('-f', flags)
         self.assertNotIn('private-secret', str(popen.call_args))
         proc.stdin.write.assert_called_once_with(b'SELECT 1;')
         timer.assert_called_once_with(job.timeout, job.cancel)
         timer.return_value.cancel.assert_called_once_with()
         self.assertIsNone(job.process)
         self.assertIsNone(job.connection_id)
+
+    def test_capture_isolates_client_environment_until_process_exits(self):
+        import os
+        job = LiveJob(payload())
+        self.conn._build_argv.return_value = ['mysql', '-e', '']
+        proc = MagicMock()
+        proc.stdout = io.BytesIO(captured('marker').encode())
+        proc.stderr = io.BytesIO()
+        proc.poll.return_value = proc.returncode = 0
+        homes = []
+        def launch(argv, **kwargs):
+            env = kwargs['env']
+            homes.append(env['HOME'])
+            self.assertTrue(os.path.isdir(env['HOME']))
+            self.assertEqual(env['USERPROFILE'], env['HOME'])
+            self.assertFalse(os.path.exists(env['MYSQL_TEST_LOGIN_FILE']))
+            for key in ('MYSQL_PWD', 'MYSQL_UNIX_PORT', 'LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN',
+                        'MYFLAMES_VAULT_PASSPHRASE'):
+                self.assertNotIn(key, env)
+            return proc
+        with patch.dict(os.environ, {'MYSQL_PWD': 'ambient', 'MYSQL_UNIX_PORT': '/other.sock',
+                                     'LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN': '1',
+                                     'MYFLAMES_VAULT_PASSPHRASE': 'vault-secret'}), \
+                patch('myflames.live.subprocess.Popen', side_effect=launch), \
+                patch('myflames.live.threading.Timer'):
+            job._run_script(self.conn, 'SELECT 1;', 'marker')
+        self.assertTrue(homes)
+        self.assertTrue(all(not os.path.exists(home) for home in homes))
+
+    def _interrupted_client(self, events, marker='marker'):
+        """A client that printed its connection ID and is still running when
+        Ctrl+C arrives (stderr.read raises KeyboardInterrupt)."""
+        self.conn._build_argv.return_value = ['mysql', '-e', '']
+        self.conn.run.side_effect = lambda sql, timeout=None: events.append(('server', sql))
+        proc = MagicMock()
+        proc.stdout = io.BytesIO((marker + ':connection\n42\n').encode())
+        proc.stderr.read.side_effect = KeyboardInterrupt
+        proc.poll.return_value = None
+        proc.terminate.side_effect = lambda: events.append('terminate')
+        proc.kill.side_effect = lambda: events.append('kill client')
+        return proc
+
+    class _InlineThread:
+        """Runs the stdout reader to completion on start(), so the
+        connection ID is known before the interrupt, without sleeping."""
+        def __init__(self, target, daemon=None):
+            self.target = target
+        def start(self):
+            self.target()
+        def join(self, timeout=None):
+            pass
+
+    def test_ctrl_c_sends_kill_query_before_the_client_is_ended(self):
+        job = LiveJob(payload())
+        events = []
+        proc = self._interrupted_client(events)
+        with patch('myflames.live.subprocess.Popen', return_value=proc), \
+                patch('myflames.live.threading.Thread', self._InlineThread), \
+                patch('myflames.live.threading.Timer'):
+            with self.assertRaises(KeyboardInterrupt):
+                job._run_script(self.conn, 'SELECT 1;', 'marker')
+        self.assertEqual(events[0], ('server', 'KILL QUERY 42'))
+        self.assertIn('terminate', events)
+        self.assertGreater(events.index('terminate'), 0)
+        # The control connection still had the password when KILL was sent.
+        self.assertEqual(self.connection_type.call_args[1].get('password'), 'private-secret')
+        self.assertTrue(job.cancelled.is_set())
+        self.assertIsNone(job.process)
+        self.assertIsNone(job.connection_id)
+
+    def test_capture_cli_ctrl_c_reaches_the_server(self):
+        from myflames import workspace_cli
+        events = []
+        proc = self._interrupted_client(events, '__myflames_fixed')
+        stderr = io.StringIO()
+        with patch('myflames.live.uuid.uuid4', return_value=MagicMock(hex='fixed')), \
+                patch('myflames.live.subprocess.Popen', return_value=proc), \
+                patch('myflames.live.threading.Thread', self._InlineThread), \
+                patch('myflames.live.threading.Timer'), patch('sys.stderr', stderr):
+            with self.assertRaises(SystemExit) as caught:
+                workspace_cli.cmd_capture(['-h', 'db.internal', '-u', 'app', '-pprivate-secret',
+                                           '-e', 'SELECT 1', '--mode', 'analyze'])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn('Capture cancelled.', stderr.getvalue())
+        self.assertEqual([e for e in events if isinstance(e, tuple)], [('server', 'KILL QUERY 42')])
+        self.assertNotIn('private-secret', stderr.getvalue())
 
     def test_timeout_cancellation_prevents_partial_success(self):
         job = LiveJob(payload())
@@ -294,11 +498,36 @@ class TestCaptureManager(unittest.TestCase):
             manager.start(payload())
             with self.assertRaisesRegex(ValueError, 'Two captures'):
                 manager.start(payload())
-        self.assertEqual(manager.get(first['id']).id, first['id'])
+        identity = dbops.identity_endpoint(dbops.connection_identity(payload()['connection']))
+        self.assertEqual(manager.get(first['id'], identity).id, first['id'])
         with self.assertRaisesRegex(ValueError, 'not found'):
-            manager.get('missing')
+            manager.get('missing', identity)
         manager.close()
         self.assertTrue(all(job.cancelled.is_set() for job in manager.jobs.values()))
+
+    def test_job_lookup_requires_the_starting_endpoint(self):
+        manager = LiveJobs()
+        request = payload(connection={'host': 'localhost', 'port': 3306, 'user': 'app', 'profile_id': 'saved',
+                                      'ssl_mode': 'REQUIRED', 'ssl_ca': 'ca.pem', 'password': 'private-secret'})
+        identity = dbops.identity_endpoint(dbops.connection_identity(request['connection']))
+        with patch('myflames.live.threading.Thread'):
+            started = manager.start(request)
+        job = manager.jobs[started['id']]
+        self.assertEqual(job.identity, identity)
+        self.assertNotIn('private-secret', job.identity)
+        with self.assertRaisesRegex(ValueError, 'not found') as unknown:
+            manager.get('missing', identity)
+        for other in (None, dbops.identity_endpoint(dbops.connection_identity({'host': 'other'}))):
+            with self.subTest(identity=other), self.assertRaises(ValueError) as caught:
+                manager.get(job.id, other)
+            self.assertEqual(str(caught.exception), str(unknown.exception))
+        with self.assertRaisesRegex(ValueError, 'not found'):
+            manager.get(job.id)
+        # The binding survives caller edits and the worker clearing its password.
+        request['connection']['host'] = 'edited'
+        job.options.pop('password', None)
+        self.assertIs(manager.get(job.id, identity), job)
+        self.assertNotIn('identity', job.snapshot())
 
 
 class TestCaptureNormalization(unittest.TestCase):

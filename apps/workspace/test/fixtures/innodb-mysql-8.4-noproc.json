@@ -1,0 +1,51 @@
+{
+ "schema_version": "innodb-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "taken_at": "2026-10-15T17:04:40.186421+00:00",
+ "uptime_s": 2617,
+ "performance_schema": true,
+ "available": false,
+ "error": {
+  "code": "no_process",
+  "message": "SHOW ENGINE INNODB STATUS needs the PROCESS privilege, which this account does not have. Grant it with: GRANT PROCESS ON *.* TO <user>; (it also lets the account see every session in the process list and information_schema.INNODB_TRX)."
+ },
+ "status": "unknown",
+ "header": {
+  "printed_at": null,
+  "window_s": null
+ },
+ "summary": {
+  "status": "unknown",
+  "problem": 0,
+  "watch": 0,
+  "ok": 0,
+  "info": 0,
+  "unknown": 0,
+  "text": "SHOW ENGINE INNODB STATUS needs the PROCESS privilege, which this account does not have. Grant it with: GRANT PROCESS ON *.* TO <user>; (it also lets the account see every session in the process list and information_schema.INNODB_TRX)."
+ },
+ "sections": [],
+ "parse": {
+  "complete": false,
+  "sections_found": [],
+  "unknown_sections": [],
+  "truncated_by_server": false
+ },
+ "rules": {
+  "history_list": "a rule of thumb without a trend: watch at 100,000 committed transactions whose undo logs purge has not processed yet, problem at 1,000,000. The size alone says little; a list that keeps growing across refreshes means purge is falling behind, most often because an old read view (a REPEATABLE READ transaction or a long statement) is still open",
+  "trx_age": "the oldest active transaction is watched at 10 s and a problem at 60 s (as in Sessions)",
+  "lock_wait": "watch when any transaction is waiting for a lock",
+  "purge_state": "watch when purge is not running (stopped or disabled)",
+  "semaphore": "watch when a thread has waited 10 s for an InnoDB latch, problem at 240 s, where InnoDB logs a long semaphore wait (MySQL stops the server once a wait passes 600 s; that limit is fixed in release builds)",
+  "pending_io": "watch when reads or fsyncs are pending in this snapshot (pending writes are shown but not judged: the page cleaner always has some in flight). One snapshot cannot tell a burst from a backlog: pending reads on every refresh mean queries wait for the storage",
+  "redo_mysql": "watch when the checkpoint age reaches about 73% of the redo capacity (adaptive flushing at its age limit), problem at about 79% (forced flushing); user writes wait near 84%",
+  "redo_mariadb": "watch when the checkpoint age reaches 7/8 of Innodb_checkpoint_max_age (InnoDB flushes ahead, about 71% of innodb_log_file_size), problem at Innodb_checkpoint_max_age (writes wait, about 81%)",
+  "hit_rate": "watch below 99%, problem below 95% with at least 10 pages read from disk per second; judged only with about 10,000 page requests or more in the window",
+  "dirty": "watch at innodb_max_dirty_pages_pct (90 by default); a high share alone is not a stall, waits for a free page and a nearly full redo log are",
+  "queue": "watch when statements wait in the InnoDB queue, which happens only when innodb_thread_concurrency is above 0 and that many threads are already inside InnoDB"
+ },
+ "notes": [
+  "SHOW ENGINE INNODB STATUS needs the PROCESS privilege, which this account does not have. Grant it with: GRANT PROCESS ON *.* TO <user>; (it also lets the account see every session in the process list and information_schema.INNODB_TRX)."
+ ],
+ "raw": null
+}

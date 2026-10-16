@@ -15,11 +15,12 @@ from .parser import (
     analyze_plan,
     render_info_panel,
 )
-from .flamegraph import folded_to_svg
+from .flamegraph import folded_to_svg, plan_folded
 from .output_bargraph import render_bargraph
 from .output_diagram import render_diagram
 from .output_tree import render_tree
 from .teach_hooks import build_teach_hooks, build_teach_index_maps
+from .server_info import detect_flavor
 
 
 # ── View recommendation guide ────────────────────────────────────────────
@@ -63,8 +64,9 @@ def _resolve_query_text(args, json_text):
         try:
             with open(args.query_file, "r", encoding="utf-8") as qf:
                 query_text = qf.read().strip()
-        except OSError as e:
+        except (OSError, UnicodeError) as e:
             sys.stderr.write("Cannot read --query-file: %s\n" % e)
+            sys.exit(2)
     if not query_text:
         try:
             raw_data = load_explain_json(json_text)
@@ -120,6 +122,21 @@ def _make_svg_responsive(svg_text):
     return _re_local.sub(r'<svg\b[^>]*>', _inject, svg_text, count=1)
 
 
+def _fail(message, password=None):
+    """Report an expected failure on stderr and exit 2, even under --json.
+
+    Failures do not produce a result payload or open the selected output file.
+    Keep this shared by plan commands and workspace server commands so quiet,
+    credential redaction and terminal escaping have the same error contract.
+    """
+    from .connector import terminal_text
+    text = str(message)
+    if password:
+        text = text.replace(password, '[redacted]')
+    sys.stderr.write('myflames: %s\n' % terminal_text(' '.join(text.splitlines())))
+    raise SystemExit(2)
+
+
 def _write_output(content, output_path, quiet=False):
     """Write content to file or stdout.
 
@@ -138,8 +155,7 @@ def _write_output(content, output_path, quiet=False):
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(content)
         except OSError as e:
-            sys.stderr.write("Cannot write %s: %s\n" % (output_path, e))
-            sys.exit(2)
+            _fail("Cannot write %s: %s" % (output_path, e))
         if not quiet:
             sys.stderr.write("Written to %s\n" % output_path)
     else:
@@ -212,13 +228,14 @@ def _maybe_write_teach_bundle(args, output_path):
             with open(lesson_path, "w", encoding="utf-8") as f:
                 f.write(render_lesson(slug))
             wrote += 1
-        # Quiet by default — single-line confirmation only.
-        sys.stderr.write(
-            "Teach bundle: {} files in {}{}\n".format(
-                wrote, teach_dir,
-                " (refreshed)" if refresh else "",
+        # Status is incidental; output failures remain visible under -q.
+        if not getattr(args, "quiet", False):
+            sys.stderr.write(
+                "Teach bundle: {} files in {}{}\n".format(
+                    wrote, teach_dir,
+                    " (refreshed)" if refresh else "",
+                )
             )
-        )
     except OSError as e:
         sys.stderr.write(
             "WARN: teach bundle emission failed: {} (report itself was "
@@ -231,8 +248,8 @@ def _maybe_write_sidecar(args, root, analysis, json_text, live_artifacts, query_
 
     Keeps the CLI entry point readable by isolating all of the precedence
     logic (explicit --sidecar path vs derived from --output vs suppressed)
-    in one place. Never raises on user-visible errors — we print to stderr
-    and return so the primary SVG/HTML still gets written.
+    in one place. Explicit output failures exit 2; automatically derived
+    auxiliary exports remain best-effort.
     """
     if args.no_sidecar:
         return
@@ -257,7 +274,7 @@ def _maybe_write_sidecar(args, root, analysis, json_text, live_artifacts, query_
         source_type = "live"
         variables = live_artifacts.get("variables") or {}
         version_str = variables.get("version") or ""
-        if "mariadb" in version_str.lower():
+        if detect_flavor(version_str) == "mariadb":
             engine = "mariadb"
         elif version_str:
             engine = "mysql"
@@ -295,9 +312,12 @@ def _maybe_write_sidecar(args, root, analysis, json_text, live_artifacts, query_
             query_beautified=query_beautified,
         )
         write_sidecar(sidecar_path, payload)
-        sys.stderr.write("Sidecar: {}\n".format(sidecar_path))
+        if not getattr(args, "quiet", False):
+            sys.stderr.write("Sidecar: {}\n".format(sidecar_path))
     except Exception as e:
         sys.stderr.write("WARN: sidecar emission failed: {}\n".format(e))
+        if args.sidecar:
+            sys.exit(2)
 
 
 def _run_live_explain(args):
@@ -315,7 +335,9 @@ def _run_live_explain(args):
       4. If enabled, collect the session variables the advisor inspects.
       5. Return everything so main() can hand it to analyze_plan + advise.
     """
-    from .connector import MySQLConnection, ConnectorError
+    from .connector import MySQLConnection, ConnectorError, terminal_text
+    from .live import bind_query
+    from .dbops import redact, WRITE_CLIENT_FLAGS
     from .collectors import (
         extract_table_names,
         collect_schema,
@@ -330,58 +352,76 @@ def _run_live_explain(args):
         )
         sys.exit(2)
 
-    password = args.password
-    if password == "__PROMPT__":
-        import getpass
-        try:
-            password = getpass.getpass("Enter password: ")
-        except (EOFError, KeyboardInterrupt):
-            sys.stderr.write("\nAborted.\n")
-            sys.exit(2)
+    # Validate before opening a connection or asking for credentials. This is
+    # the same SELECT-only, two-backslash-readings guard used by capture.
+    try:
+        query = bind_query(args.execute)
+    except ValueError as exc:
+        sys.stderr.write("EXPLAIN ANALYZE refused: {}\n".format(terminal_text(redact(exc, args.password))))
+        sys.exit(2)
 
-    conn = MySQLConnection(
-        host=args.host,
-        port=args.port or 3306,
-        user=args.user,
-        password=password,
-        database=args.database,
-        ssl_mode=getattr(args, "ssl_mode", None),
-        ssl_ca=getattr(args, "ssl_ca", None),
-        ssl_cert=getattr(args, "ssl_cert", None),
-        ssl_key=getattr(args, "ssl_key", None),
-        binary=getattr(args, "mysql_binary", None),
-    )
+    from .workspace_cli import _resolve_connection, _connection_options
+    password = None if args.password == "__PROMPT__" else args.password
+    try:
+        settings = _resolve_connection(args)
+        password = settings.get("password")
+        options = _connection_options(settings)
+        # Match the legacy renderer's client defaults rather than capture's
+        # shorter per-query deadline.
+        options.pop("query_timeout", None)
+        options["connect_timeout"] = 10
+        conn = MySQLConnection(**options)
+        args.database = settings.get("database")
+    except (EOFError, KeyboardInterrupt):
+        sys.stderr.write("\nAborted.\n")
+        sys.exit(2)
+    except (ConnectorError, ValueError, OSError) as exc:
+        sys.stderr.write("Connection failed: {}\n".format(terminal_text(redact(exc, password))))
+        sys.exit(2)
 
-    artifacts = {"schema": {}, "stats": {}, "variables": {}}
-    with conn:
-        try:
-            json_text = conn.explain_analyze(args.execute)
-        except ConnectorError as e:
-            sys.stderr.write("EXPLAIN ANALYZE failed: {}\n".format(e))
-            sys.exit(2)
+    artifacts = {"schema": {}, "stats": {}, "variables": {}, "freshness": {}}
+    try:
+        with conn:
+            maria = conn.is_mariadb()
+            prefix = "" if maria else "SET SESSION explain_json_format_version=2;\n"
+            # One client/session, stopping at the first error, without reconnect:
+            # a failed guard must never fall through to an unguarded ANALYZE.
+            script = (prefix + "SET SESSION TRANSACTION READ ONLY;\nSTART TRANSACTION READ ONLY;\n"
+                      + ("ANALYZE FORMAT=JSON " if maria else "EXPLAIN ANALYZE FORMAT=JSON ")
+                      + query + "\n;\nROLLBACK;\n")
+            json_text = conn.run_stdin(script, extra_flags=["--raw"] + list(WRITE_CLIENT_FLAGS))
 
-        tables = extract_table_names(args.execute, default_schema=args.database)
+            tables = extract_table_names(args.execute, default_schema=args.database)
 
-        if not args.no_collect_schema and tables:
-            try:
-                artifacts["schema"] = collect_schema(conn, tables)
-            except ConnectorError as e:
-                sys.stderr.write("Schema collection failed: {}\n".format(e))
-        if not args.no_collect_stats and tables:
-            try:
-                artifacts["stats"] = collect_stats(conn, tables)
-            except ConnectorError as e:
-                sys.stderr.write("Stats collection failed: {}\n".format(e))
-        if not args.no_collect_variables:
-            try:
-                artifacts["variables"] = collect_session_variables(conn)
-            except ConnectorError as e:
-                sys.stderr.write("Variables collection failed: {}\n".format(e))
+            if not args.no_collect_schema and tables:
+                try:
+                    artifacts["schema"] = collect_schema(conn, tables)
+                except ConnectorError as e:
+                    sys.stderr.write("Schema collection failed: {}\n".format(terminal_text(redact(e, password))))
+            if not args.no_collect_stats and tables:
+                try:
+                    artifacts["stats"] = collect_stats(conn, tables)
+                except ConnectorError as e:
+                    sys.stderr.write("Stats collection failed: {}\n".format(terminal_text(redact(e, password))))
+                try:
+                    from .collectors import collect_stats_freshness
+                    artifacts["freshness"] = collect_stats_freshness(
+                        conn, tables, mariadb=conn.is_mariadb())
+                except ConnectorError as e:
+                    sys.stderr.write("Statistics freshness collection failed: {}\n".format(terminal_text(redact(e, password))))
+            if not args.no_collect_variables:
+                try:
+                    artifacts["variables"] = collect_session_variables(conn)
+                except ConnectorError as e:
+                    sys.stderr.write("Variables collection failed: {}\n".format(terminal_text(redact(e, password))))
+    except (ConnectorError, ValueError, OSError) as exc:
+        sys.stderr.write("EXPLAIN ANALYZE failed: {}\n".format(terminal_text(redact(exc, password))))
+        sys.exit(2)
 
     return json_text, artifacts
 
 
-def _cmd_compare(argv):
+def _cmd_compare(argv, alias_warning=None):
     """Run before-vs-after comparison."""
     parser = argparse.ArgumentParser(
         prog="myflames compare",
@@ -393,11 +433,12 @@ def _cmd_compare(argv):
         "--title", default="Query Plan Comparison",
         help="Report title (default: Query Plan Comparison)",
     )
-    parser.add_argument(
+    form = parser.add_mutually_exclusive_group()
+    form.add_argument(
         "--digest", action="store_true",
         help="Emit a compact text diff (token-cheap; paste into an LLM) instead of the HTML report.",
     )
-    parser.add_argument(
+    form.add_argument(
         "--json", action="store_true", dest="as_json",
         help="Emit the structured compare-1.0 diff as JSON instead of the HTML report.",
     )
@@ -406,10 +447,10 @@ def _cmd_compare(argv):
         help="Write output to file instead of stdout",
     )
     _add_quiet_flag(parser)
-    args = parser.parse_args(argv)
+    args = _parse_alias_args(parser, argv, alias_warning)
 
-    json_before = _read_explain_input(args.before)
-    json_after = _read_explain_input(args.after)
+    json_before = _read_plan_source(args.before, quiet=args.quiet)[0]
+    json_after = _read_plan_source(args.after, quiet=args.quiet)[0]
     _parse_explain_input(json_before)
     _parse_explain_input(json_after)
 
@@ -429,31 +470,110 @@ def _cmd_compare(argv):
     _write_output(html, args.output, quiet=args.quiet)
 
 
+def _read_plan_source(input_path, quiet=False):
+    """Read a plan file, stdin, a ``capture-1.0`` file, or a MySQL Shell
+    diagnostics bundle.
+
+    Returns ``(plan_json_text, capture)``. *capture* is the ``capture-1.0``
+    dict (from ``myflames capture``, the workspace, or a
+    ``util.debug.collectSlowQueryDiagnostics()`` zip, first query), or
+    ``None`` for plain plan input. Import notices go to stderr unless
+    *quiet*; an unusable bundle or capture exits 2.
+    """
+    if input_path != "-":
+        from .shell_import import is_shell_diagnostics_zip, load_shell_diagnostics
+        if is_shell_diagnostics_zip(input_path):
+            try:
+                capture = load_shell_diagnostics(input_path)
+            except ValueError as e:
+                _fail("Cannot import %s: %s" % (input_path, e))
+            if not quiet:
+                for notice in capture.get("warnings") or []:
+                    sys.stderr.write("Note: %s\n" % notice)
+            return capture["raw"], capture
+    text = _read_explain_input(input_path)
+    capture = _capture_from_text(text, input_path)
+    if capture is not None:
+        return capture["raw"], capture
+    return text, None
+
+
+def _capture_from_text(text, input_path):
+    """Return the validated capture when *text* is a ``capture-1.0`` document."""
+    try:
+        data = load_explain_json(text)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("schema_version") != "capture-1.0":
+        return None
+    from .live import normalize_capture
+    try:
+        capture = normalize_capture(data)
+    except (ValueError, TypeError) as e:
+        _fail("Cannot read capture %s: %s" % (input_path, e))
+    if not capture.get("raw"):
+        _fail("Capture %s contains no plan." % input_path)
+    return capture
+
+
+def _capture_artifacts(capture):
+    """Advisor inputs (``live_artifacts`` shape) carried by an imported capture."""
+    return {
+        "schema": capture.get("schema") or {},
+        "stats": capture.get("table_stats") or {},
+        "variables": capture.get("variables") or {},
+        "freshness": capture.get("stats_freshness") or {},
+        "capture": capture,
+    }
+
+
 def _read_explain_input(input_path):
-    """Read a plan, reporting expected input failures without a traceback."""
+    """Read a plan, reporting expected input failures without a traceback.
+
+    A MySQL Shell diagnostics bundle is accepted too; its plan is returned.
+    """
     if input_path == "-":
         return sys.stdin.read()
+    from .shell_import import is_shell_diagnostics_zip
+    if is_shell_diagnostics_zip(input_path):
+        return _read_plan_source(input_path)[0]
     try:
         with open(input_path, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
     except OSError as e:
-        sys.stderr.write("Cannot read %s: %s\n" % (input_path, e))
-        sys.exit(2)
+        _fail("Cannot read %s: %s" % (input_path, e))
 
 
 def _parse_explain_input(raw_text):
     try:
+        data = load_explain_json(raw_text)
+        plan = data.get("query_plan", data) if isinstance(data, dict) else data
+        from .parser import _is_mariadb_format
+        if not isinstance(plan, dict) or not ("operation" in plan or _is_mariadb_format(plan)):
+            # Any JSON object would otherwise parse as one "unknown" node,
+            # turning a wrong file into a clean CI gate.
+            raise ValueError("this is not an EXPLAIN FORMAT=JSON or ANALYZE FORMAT=JSON plan "
+                             "(or a myflames capture file)")
         return parse_explain(raw_text)
     except Exception as e:
-        sys.stderr.write("Failed to parse EXPLAIN JSON: %s\n" % e)
-        sys.exit(2)
+        _fail("Failed to parse EXPLAIN JSON: %s" % e)
 
 
-def _sidecar_from_input(input_path):
-    """Read, parse, analyze and serialize input for digest / check / advise."""
-    raw_text = _read_explain_input(input_path)
+def _sidecar_from_input(input_path, quiet=False):
+    """Read, parse, analyze and serialize input for digest / check / advise.
+
+    A MySQL Shell bundle's DDL, statistics, and variables feed the advisor,
+    so these commands agree with the report rendered from the same zip.
+    """
+    raw_text, capture = _read_plan_source(input_path, quiet=quiet)
     root = _parse_explain_input(raw_text)
     analysis = analyze_plan(root)
+    if capture:
+        from .advisor import advise
+        artifacts = _capture_artifacts(capture)
+        advise(analysis, schema=artifacts["schema"], stats=artifacts["stats"],
+               variables=artifacts["variables"], freshness=artifacts["freshness"],
+               capture=artifacts["capture"])
     engine = "unknown"
     try:
         from .parser import load_explain_json, _is_mariadb_format
@@ -470,6 +590,96 @@ def _sidecar_from_input(input_path):
     return raw_text, payload
 
 
+def _add_rule_flags(parser):
+    """``--ignore`` and ``--list-rules``, shared by ``check`` and ``advise``."""
+    parser.add_argument(
+        "--ignore", default="", metavar="LIST",
+        help="Comma-separated categories to drop before evaluating "
+             "(see --list-rules), e.g. 'hash_join,env'.",
+    )
+    parser.add_argument(
+        "--list-rules", action="store_true",
+        help="Print every rule category with its documentation link and exit.",
+    )
+
+
+def _maybe_list_rules(args, parser):
+    """Handle ``--list-rules`` (exit 0) and require PLAN otherwise (exit 2)."""
+    if args.list_rules:
+        from .findings import format_rule_catalog, rule_catalog
+        if getattr(args, "as_json", False):
+            import json as _json
+            content = _json.dumps(rule_catalog(), indent=2) + "\n"
+        else:
+            content = format_rule_catalog()
+        _write_output(content, getattr(args, "output", None), quiet=args.quiet)
+        sys.exit(0)
+    if args.input is None:
+        parser.error("the following arguments are required: input")
+
+
+def _apply_ignore_or_exit(payload, ignore):
+    """Drop ``--ignore`` categories; exit 2 on a misspelled category so a typo
+    never silently disables a gate."""
+    from .findings import apply_ignore, unknown_ignores, known_ignores
+    tokens = ignore.split(",") if ignore else []
+    bad = unknown_ignores(tokens)
+    if bad:
+        _fail("error: unknown --ignore categor{}: {}; valid categories: {}".format(
+            "y" if len(bad) == 1 else "ies", ", ".join(bad),
+            ", ".join(sorted(known_ignores()))))
+    return apply_ignore(payload, tokens)
+
+
+def _cmd_import_shell(argv):
+    """Convert a MySQL Shell diagnostics bundle into ``capture-1.0`` JSON."""
+    parser = argparse.ArgumentParser(
+        prog="myflames import-shell",
+        description="Convert a MySQL Shell util.debug.collectSlowQueryDiagnostics() "
+                    "zip into capture JSON for the workspace and the other commands.",
+        epilog="Every plan-reading command also accepts the zip directly and uses "
+               "its first query.",
+    )
+    parser.add_argument("bundle", metavar="BUNDLE", help="Diagnostics .zip written by MySQL Shell.")
+    parser.add_argument("--query", type=int, default=None, metavar="N",
+                        help="Import query N when the zip holds several bundles (default: 0).")
+    parser.add_argument("--list", action="store_true",
+                        help="List the queries in the zip and exit.")
+    parser.add_argument("--output", "-o", default=None, metavar="PATH",
+                        help="Write capture JSON to a file instead of stdout.")
+    _add_quiet_flag(parser)
+    args = parser.parse_args(argv)
+    from .shell_import import (is_shell_diagnostics_zip, list_shell_diagnostics_queries,
+                               load_shell_diagnostics)
+    from .live import normalize_capture
+    import json as _json
+    try:
+        if not is_shell_diagnostics_zip(args.bundle):
+            raise ValueError("this is not a MySQL Shell diagnostics zip. Create one with "
+                             "util.debug.collectSlowQueryDiagnostics().")
+        if args.list:
+            content = "".join("{}\t{}\t{}\n".format(
+                q["index"], q["prefix"], " ".join((q.get("query") or "").split())[:160])
+                for q in list_shell_diagnostics_queries(args.bundle))
+            _write_output(content, args.output, quiet=args.quiet)
+            return
+        capture = load_shell_diagnostics(args.bundle, query_index=args.query)
+        result = normalize_capture(capture)
+        for key in ("source", "attachments", "stats_freshness"):
+            if capture.get(key):
+                result[key] = capture[key]
+        from . import __version__
+        result["myflames_version"] = __version__
+    except (ValueError, OSError) as e:
+        sys.stderr.write("Cannot import %s: %s\n" % (args.bundle, e))
+        sys.exit(2)
+    if not args.quiet:
+        for notice in result.get("warnings") or []:
+            sys.stderr.write("Note: %s\n" % notice)
+    _write_output(_json.dumps(result, indent=2, ensure_ascii=False) + "\n",
+                  args.output, quiet=args.quiet)
+
+
 def _cmd_check(argv):
     """CI gate: exit nonzero if the plan trips any --fail-on trigger.
 
@@ -479,20 +689,22 @@ def _cmd_check(argv):
         prog="myflames check",
         description="Exit nonzero if a plan trips --fail-on categories. For CI and agent loops.",
     )
-    parser.add_argument("input", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
+    parser.add_argument("input", nargs="?", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
     parser.add_argument(
         "--fail-on", default="any", metavar="LIST",
-        help="Comma-separated triggers: warning categories (full_scan, filesort, "
-             "temp_table, bnl, hash_join, index_merge, nonsargable_join, env), "
+        help="Comma-separated triggers: warning categories (see --list-rules), "
              "severities (error, warn, info), or 'any' (default).",
     )
+    _add_rule_flags(parser)
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="Suppress the per-match output; rely on the exit code.",
     )
     args = parser.parse_args(argv)
+    _maybe_list_rules(args, parser)
 
-    _raw, payload = _sidecar_from_input(args.input)
+    _raw, payload = _sidecar_from_input(args.input, quiet=args.quiet)
     from .findings import evaluate_check, unknown_triggers, known_triggers
+    payload = _apply_ignore_or_exit(payload, args.ignore)
     triggers = args.fail_on.split(",")
     # Reject a misspelled trigger up front: an unrecognized token would match
     # nothing and silently exit 0 (clean), turning a typo into a green CI gate.
@@ -519,13 +731,14 @@ def _cmd_check(argv):
     sys.exit(1)
 
 
-def _cmd_advise(argv):
+def _cmd_advise(argv, alias_warning=None):
     """Emit a ranked list of advisor findings (warnings + suggestions) with confidence."""
     parser = argparse.ArgumentParser(
         prog="myflames advise",
         description="Ranked warnings + suggestions with confidence, for agents and triage.",
     )
-    parser.add_argument("input", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
+    parser.add_argument("input", nargs="?", help="EXPLAIN ANALYZE FORMAT=JSON file (or '-' for stdin)")
+    _add_rule_flags(parser)
     parser.add_argument(
         "--json", action="store_true", dest="as_json",
         help="Emit findings as machine-readable JSON.",
@@ -535,11 +748,12 @@ def _cmd_advise(argv):
         help="Write output to a file instead of stdout.",
     )
     _add_quiet_flag(parser)
-    args = parser.parse_args(argv)
+    args = _parse_alias_args(parser, argv, alias_warning)
+    _maybe_list_rules(args, parser)
 
-    _raw, payload = _sidecar_from_input(args.input)
-    from .findings import build_findings
-    findings = build_findings(payload)
+    _raw, payload = _sidecar_from_input(args.input, quiet=args.quiet)
+    from .findings import build_findings, summarize
+    findings = build_findings(_apply_ignore_or_exit(payload, args.ignore))
 
     if args.as_json:
         import json as _json
@@ -557,11 +771,20 @@ def _cmd_advise(argv):
             line += "\n    Why: " + f["why"].strip()
         if f.get("node_labels"):
             line += "\n    @ " + ", ".join(f["node_labels"])
+        if f.get("docs"):
+            line += "\n    Docs: " + f["docs"]
         lines.append(line)
+    parts = []
+    for kind, counts in sorted(summarize(findings).items(), reverse=True):
+        total = sum(counts.values())
+        parts.append("{} {} ({})".format(
+            total, kind if total != 1 else kind[:-1],
+            ", ".join("{} {}".format(n, sev) for sev, n in sorted(counts.items()))))
+    lines.append("Summary: " + "; ".join(parts))
     _write_output("\n".join(lines) + "\n", args.output, quiet=args.quiet)
 
 
-def _cmd_digest(argv):
+def _cmd_digest(argv, alias_warning=None):
     """Emit the compact, LLM-ready digest of a query plan.
 
     The digest distils a verbose ``EXPLAIN ANALYZE FORMAT=JSON`` plan into the
@@ -578,11 +801,12 @@ def _cmd_digest(argv):
         "--cost", action="store_true",
         help="Show the token + $ saving of the digest vs pasting the raw plan, instead of the digest text.",
     )
-    parser.add_argument(
+    form = parser.add_mutually_exclusive_group()
+    form.add_argument(
         "--show-prompts", action="store_true", dest="show_prompts",
         help="Print both prompts (raw plan vs digest) side by side, so you can see exactly what's compared.",
     )
-    parser.add_argument(
+    form.add_argument(
         "--json", action="store_true", dest="as_json",
         help="Emit the savings comparison as machine-readable JSON (implies --cost).",
     )
@@ -599,10 +823,10 @@ def _cmd_digest(argv):
         help="Write output to a file instead of stdout.",
     )
     _add_quiet_flag(parser)
-    args = parser.parse_args(argv)
+    args = _parse_alias_args(parser, argv, alias_warning)
 
     from . import digest as dg
-    raw_text, payload = _sidecar_from_input(args.input)
+    raw_text, payload = _sidecar_from_input(args.input, quiet=args.quiet)
     digest_text = dg.build_digest(payload)
 
     # Default mode: emit the digest text. --cost / --json / --show-prompts switch
@@ -641,10 +865,35 @@ def _cmd_digest(argv):
         _write_output(dg.format_report(comparison, pricing_model=pricing_model), args.output, quiet=args.quiet)
 
 
+def _warn_alias(args, message):
+    """Use the command's parsed quiet flag, including argparse abbreviations."""
+    if not args.quiet:
+        sys.stderr.write(message)
+
+
+def _parse_alias_args(parser, argv, message=None):
+    # Pass the namespace explicitly so help still warns when argparse exits
+    # before returning. Successful runs use the complete, validated namespace.
+    args = argparse.Namespace(quiet=False)
+    try:
+        return parser.parse_args(argv, namespace=args)
+    finally:
+        if message:
+            _warn_alias(args, message)
+
+
+def _cmd_guide(argv):
+    parser = argparse.ArgumentParser(prog="myflames guide", description="Show which visualization to choose.")
+    parser.add_argument("-o", "--output", metavar="PATH", help="Write the guide to a file instead of stdout.")
+    _add_quiet_flag(parser)
+    args = parser.parse_args(argv)
+    _write_output(_GUIDE_TEXT, args.output, quiet=args.quiet)
+
+
 def _cmd_tokens_deprecated(argv):
     """Deprecated alias for `digest`. Translates the old flag set and preserves
     the old default (the savings comparison) so existing invocations still work."""
-    sys.stderr.write(
+    warning = (
         "warning: 'tokens' is deprecated; use 'digest' (note: 'digest' emits the "
         "digest by default — use --cost for the savings report). 'tokens' will be "
         "removed in a future release.\n"
@@ -662,35 +911,49 @@ def _cmd_tokens_deprecated(argv):
             translated.append(a)
     if not had_mode:
         translated.append("--cost")  # old bare `tokens` defaulted to the comparison
-    _cmd_digest(translated)
+    _cmd_digest(translated, alias_warning=warning)
 
 
 def _cmd_findings_deprecated(argv):
     """Deprecated alias for `advise`."""
-    sys.stderr.write(
+    _cmd_advise(argv, alias_warning=(
         "warning: 'findings' is deprecated; use 'advise'. 'findings' will be "
         "removed in a future release.\n"
-    )
-    _cmd_advise(argv)
+    ))
 
 
 def main():
     # Handle subcommands before argparse to avoid conflicts with positional args
     if len(sys.argv) > 1:
-        if sys.argv[1] in ("capture", "explore"):
-            from .workspace_cli import cmd_capture, cmd_explore
-            command = cmd_capture if sys.argv[1] == "capture" else cmd_explore
+        if sys.argv[1] == "sql":
+            from .sql_cli import cmd_sql
+            cmd_sql(sys.argv[2:])
+            return
+        if sys.argv[1] in ("capture", "explore", "top", "sessions", "running", "locks", "innodb", "health",
+                           "waits", "indexes", "tables", "io", "config", "instruments", "report", "profiles",
+                           "audit", "replication"):
+            from . import workspace_cli
+            command = getattr(workspace_cli, "cmd_" + sys.argv[1])
             command(sys.argv[2:])
+            return
+        if sys.argv[1] in ("privileges", "accounts"):
+            from . import accounts_cli
+            getattr(accounts_cli, "cmd_" + sys.argv[1])(sys.argv[2:])
+            return
+        if sys.argv[1] in ("upgrade-check", "dump", "restore", "clone"):
+            from . import lifecycle_cli
+            getattr(lifecycle_cli, "cmd_" + sys.argv[1].replace("-", "_"))(sys.argv[2:])
             return
         if sys.argv[1] == "ui":
             from .ui import cmd_ui
             cmd_ui(sys.argv[2:])
             return
         if sys.argv[1] == "guide":
-            sys.stdout.write(_GUIDE_TEXT)
+            _cmd_guide(sys.argv[2:])
             return
         if sys.argv[1] in ("compare", "diff"):
-            _cmd_compare(sys.argv[2:])
+            warning = "warning: 'diff' is deprecated; use 'compare'.\n" if sys.argv[1] == "diff" else None
+            _cmd_compare(sys.argv[2:], alias_warning=warning)
             return
         if sys.argv[1] == "teach":
             from .teach import cmd_teach
@@ -711,6 +974,9 @@ def main():
         if sys.argv[1] == "findings":  # deprecated alias for advise
             _cmd_findings_deprecated(sys.argv[2:])
             return
+        if sys.argv[1] == "import-shell":
+            _cmd_import_shell(sys.argv[2:])
+            return
 
     parser = argparse.ArgumentParser(
         prog="myflames",
@@ -724,6 +990,30 @@ Examples:
   myflames ui                                           # local browser workspace
   myflames explore explain.json -o explore.html         # interactive branch exploration
   myflames capture -h localhost -u admin -p -e 'SELECT 1' # capture estimates as JSON
+  myflames top -h localhost -u admin -p --order avg     # heaviest statements (P_S)
+  myflames sessions -h localhost -u admin -p            # connections, idle-in-trx, lock waits
+  myflames sessions -h localhost -u admin -p --explain 42 | myflames - > plan.svg
+  myflames innodb -h localhost -u admin -p --fail-on problem # SHOW ENGINE INNODB STATUS, parsed
+  myflames locks -h localhost -u admin -p --waits-only   # who blocks whom (read-only)
+  myflames locks -h localhost -u admin -p --kill 42      # end one blocker after you confirm
+  myflames health -h localhost -u admin -p --interval 10 # server rates + statuses (no P_S)
+  myflames waits -h localhost -u admin -p               # top wait events over 10 s (P_S)
+  myflames indexes -h localhost -u admin -p --schema shop # unused/redundant indexes
+  myflames tables -h localhost -u admin -p --fail-on problem # no primary key, free space
+  myflames io -h localhost -u admin -p --schema shop    # table and file I/O hot spots
+  myflames config -h localhost -u admin -p --fail-on problem # settings review (CI gate)
+  myflames instruments -h localhost -u admin -p --preset minimal # P_S setup SQL to run
+  myflames report -h localhost -u admin -p --html -o report.html # full analysis of the server
+  myflames replication --profile replica                # channels, lag caveats, skip plans
+  myflames upgrade-check -h localhost -u admin -p --target-version 8.4.0 # before an upgrade
+  myflames dump /backups/shop -h localhost -u admin -p --schema shop # dump with a verified manifest
+  myflames restore /backups/shop -h staging -u admin -p # restore after typing the target
+  myflames clone -h replica -u admin -p --donor-host primary --donor-user cloner --donor-password
+  myflames top -h localhost -u admin -p --order full_join # statements behind joins without an index
+  myflames capture --profile prod -e 'SELECT 1'       # reuse a saved profile + password
+  myflames profiles list                                # saved connection profiles
+  myflames profiles set prod --type production --read-only # guard writes on a connection
+  myflames audit --since 7                              # writes sent, refused or declined
   myflames --type workbench explain.json -o plan.html   # Workbench-style Visual Explain
   myflames explain.json                                 # flame graph from file
   myflames --type bargraph explain.json > bar.svg       # bar chart
@@ -731,22 +1021,52 @@ Examples:
   myflames -h db.example.com -u admin -p \\\
            -e 'SELECT * FROM t WHERE id=1'              # connect + explain
   myflames compare before.json after.json               # before vs after (HTML)
-  myflames diff before.json after.json --digest         # token-cheap text diff
+  myflames compare before.json after.json --digest      # token-cheap text diff
   myflames digest explain.json                          # compact LLM-ready digest
   myflames digest explain.json --cost                   # tokens + $ saved vs raw plan
   myflames check explain.json --fail-on full_scan       # CI gate (exit code)
   myflames advise explain.json --json                   # ranked findings for agents
+  myflames check --list-rules                           # rule categories + docs links
+  myflames import-shell diagnostics.zip -o capture.json # MySQL Shell bundle -> capture
   myflames guide                                        # which view?
   myflames teach btree -o btree.html                    # interactive lesson
 
 Subcommands:
-  ui        Open the local browser workspace for saved plans
+  ui        Open the local Performance workspace in your browser
   capture   Capture a live plan and server evidence as JSON (--mode analyze executes)
   explore   Export interactive HTML with branch focus and operator metrics
-  compare   Compare before/after EXPLAIN JSON files (alias: diff; --digest/--json for agents)
+  top       List the heaviest statements from Performance Schema digests
+  sessions  Every connection: summary, idle in transaction, lock waits; --explain ID prints a plan
+  running   Deprecated alias of sessions (statements running now; --explain ID)
+  locks     Blocking tree, waiting DDL, transactions, row/metadata locks, deadlock; --kill ID
+  innodb    SHOW ENGINE INNODB STATUS parsed: purge, redo, buffer pool, deadlock (--fail-on)
+  health    Sample global status twice: diagnostics and rates, ok/watch/problem (--fail-on)
+  waits     Top wait events over a window, by class, since start; uninstrumented classes
+  indexes   Unused and redundant indexes, tables read mostly by full scans (--schema)
+  tables    Tables without a primary key or usable unique key; InnoDB free space (--fresh)
+  io        Tables and files with the most I/O over a window, and since server start
+  config    Review key settings: engine default, source, ok/watch/problem (--fail-on);
+            config set / reset-persist change one variable after you confirm
+  instruments  Performance Schema instruments/consumers: gain, cost, SQL to run (--preset)
+  report    Full analysis: every Server view once, ranked findings, sections (--html, --fail-on)
+  replication  Replication channels and lag; skip one failed transaction; skip-loop until stopped
+  upgrade-check  Check a MySQL server before an upgrade (MySQL Shell, else a partial native subset)
+  dump      Dump databases into a new directory with a verified manifest (mysqlsh, mysqldump, mariadb-dump)
+  restore   Restore a myflames dump after typing the target; verify objects and row counts
+  clone     CLONE INSTANCE from a MySQL donor into the recipient (in place or --data-directory)
+  profiles  List saved connection profiles; set type/read-only; forget or delete one
+  privileges  The connection's effective privileges and, per action, allowed, denied or not verifiable
+  accounts  Users and roles: list, show, create, drop, rename, lock, unlock, expire, password,
+            grant, revoke, role grant/revoke/default (writes confirm, re-read and are audited)
+  audit     Local audit trail of server writes: list, export (JSON/CSV), purge
+  compare   Compare before/after EXPLAIN JSON files (--digest/--json for agents)
+  diff      Deprecated alias of compare
   digest    Emit the compact LLM-ready digest of a plan (--cost shows the token/$ saving)
+  tokens    Deprecated alias of digest (defaults to --cost)
+  findings  Deprecated alias of advise
   check     Exit nonzero if the plan trips --fail-on categories (CI gate)
   advise    Ranked warnings + suggestions with confidence (text or --json)
+  import-shell  Convert a MySQL Shell collectSlowQueryDiagnostics() zip to capture JSON
   guide     Show which view to pick for your use case
   teach     Interactive algorithm lessons (btree, bnl, hash, join, lru)
 """,
@@ -761,40 +1081,8 @@ Subcommands:
     )
     # ---- Connection flags (match the mysql CLI) ----
     conn = parser.add_argument_group("Connection (live MySQL / MariaDB)")
-    conn.add_argument(
-        "-h", "--host", default=None, metavar="HOST",
-        help="Server hostname (enables live connection mode).",
-    )
-    conn.add_argument(
-        "-P", "--port", type=int, default=None, metavar="PORT",
-        help="Server port (default: 3306).",
-    )
-    conn.add_argument(
-        "-u", "--user", default=None, metavar="USER",
-        help="Username.",
-    )
-    # Match ``mysql -ppassword`` exactly: ``nargs="?"`` + ``const`` sentinel
-    # lets us distinguish ``-p`` (prompt) from ``-psecret``.
-    conn.add_argument(
-        "-p", "--password", nargs="?", default=None, const="__PROMPT__",
-        metavar="PASSWORD",
-        help="Password. Use '-p' alone to be prompted, or '-psecret' inline.",
-    )
-    conn.add_argument(
-        "-D", "--database", default=None, metavar="DB",
-        help="Default database.",
-    )
-    conn.add_argument(
-        "--ssl-mode", default=None, metavar="MODE",
-        help="SSL mode (DISABLED, PREFERRED, REQUIRED, VERIFY_CA, VERIFY_IDENTITY).",
-    )
-    conn.add_argument("--ssl-ca",   default=None, metavar="PATH", help="Path to CA bundle.")
-    conn.add_argument("--ssl-cert", default=None, metavar="PATH", help="Client certificate.")
-    conn.add_argument("--ssl-key",  default=None, metavar="PATH", help="Client key.")
-    conn.add_argument(
-        "--mysql-binary", default=None, metavar="PATH",
-        help="Override the mysql/mariadb client binary path (default: search PATH).",
-    )
+    from .workspace_cli import _add_connection_args
+    _add_connection_args(conn, client_paths=True)
     conn.add_argument(
         "-e", "--execute", default=None, metavar="SQL", dest="execute",
         help="SQL to EXPLAIN ANALYZE against the live connection.",
@@ -904,23 +1192,28 @@ Subcommands:
         default="-",
         help="Input JSON file or - for stdin (default: -)",
     )
+    _add_quiet_flag(parser)
     args = parser.parse_args()
     if args.type == "treemap":
-        sys.stderr.write(
+        _warn_alias(args,
             "warning: '--type treemap' is deprecated; the treemap view was "
             "removed. Rendering the bar chart instead (--type bargraph).\n"
         )
         args.type = "bargraph"
 
     # ── Live-connection mode ────────────────────────────────────────────
-    # When --host is given, myflames connects to the server, runs EXPLAIN
+    # --execute or connection flags select live mode; never ignore them.
+    # myflames connects to the server, runs EXPLAIN
     # ANALYZE on --execute, collects schema/stats/session variables, and
     # feeds everything into the advisor. The fetched JSON is then treated
     # exactly like a fixture from disk so the rest of the pipeline is
     # unchanged.
     json_text = None
     live_artifacts = None
-    if args.host:
+    live_flags = (args.host, args.port, args.user, args.password, args.database,
+                  args.profile, args.ssl_mode, args.ssl_ca, args.ssl_cert, args.ssl_key,
+                  args.mysql_binary)
+    if args.execute is not None or any(value is not None for value in live_flags):
         json_text, live_artifacts = _run_live_explain(args)
         # Live mode synthesises the query text from --execute so the
         # renderer's query panel shows what was actually analyzed.
@@ -941,7 +1234,13 @@ Subcommands:
 
     # Read input (skipped in live mode — json_text is already set)
     if json_text is None:
-        json_text = _read_explain_input(args.input)
+        json_text, imported = _read_plan_source(args.input, quiet=args.quiet)
+        if imported:
+            # A MySQL Shell bundle carries DDL, table stats, and variables:
+            # feed them to the advisor exactly like live-mode collections.
+            live_artifacts = _capture_artifacts(imported)
+            if not args.query and not args.query_file and imported.get("query"):
+                args.query = imported["query"]
     root = _parse_explain_input(json_text)
 
     # Detect output format from --output extension
@@ -972,7 +1271,7 @@ Subcommands:
             inverted=args.inverted,
             alternate_json_href=alternate_href,
         )
-        _write_output(html, output_path)
+        _write_output(html, output_path, quiet=args.quiet)
         # Auto-emit the myteach bundle alongside so the in-report
         # links (./teach/index.html + ./teach/<lesson>.html) resolve.
         # Idempotent — skip if teach/index.html already exists.
@@ -993,6 +1292,8 @@ Subcommands:
                     schema=live_artifacts.get("schema"),
                     stats=live_artifacts.get("stats"),
                     variables=live_artifacts.get("variables"),
+                    freshness=live_artifacts.get("freshness"),
+                    capture=live_artifacts.get("capture"),
                 )
             _maybe_write_sidecar(
                 args, root_for_sc, analysis_for_sc, json_text,
@@ -1002,12 +1303,13 @@ Subcommands:
             sys.stderr.write(
                 "WARN: sidecar emission failed for HTML output: {}\n".format(e)
             )
+            if args.sidecar:
+                sys.exit(2)
         return
 
     max_time = root["total_time"]
     use_microseconds = max_time > 0 and max_time < 1
     unit = "\u00b5s" if use_microseconds else "ms"
-    multiplier = 1000 if use_microseconds else 1
 
     analysis = analyze_plan(root)
 
@@ -1023,6 +1325,8 @@ Subcommands:
             schema=live_artifacts.get("schema"),
             stats=live_artifacts.get("stats"),
             variables=live_artifacts.get("variables"),
+            freshness=live_artifacts.get("freshness"),
+            capture=live_artifacts.get("capture"),
         )
     teach_maps = build_teach_index_maps(
         build_teach_hooks(
@@ -1044,16 +1348,10 @@ Subcommands:
     _maybe_write_sidecar(args, root, analysis, json_text, live_artifacts, query_text)
 
     if args.type == "flamegraph":
-        entries = list(build_flame_entries(root))
-        folded_lines = []
-        for path, time in entries:
-            t = time * multiplier
-            t = int(t + 0.5)
-            t = 1 if t == 0 and len(path) == 1 else t
-            if t <= 0:
-                continue
-            folded_lines.append(";".join(path) + " " + str(t))
-        folded_text = "\n".join(folded_lines)
+        # Whole microseconds per measured operator (flamegraph.flame_scale);
+        # tooltips print readable units (flamegraph.flame_value_text).
+        folded_text, flame_unit = plan_folded(build_flame_entries(root), root["total_time"],
+                                              keep_root=True)
         if not folded_text.strip():
             # Empty/degenerate input, not a tripped finding — exit 2 (bad input)
             # per the 0/1/2 contract; 1 is reserved for a matched CI gate.
@@ -1075,7 +1373,7 @@ Subcommands:
             title=args.title,
             width=args.width,
             height=args.height,
-            countname=unit,
+            countname=flame_unit,
             inverted=args.inverted,
             colors=args.colors,
             teach_index_by_folded=teach_maps["by_folded_label"],
@@ -1108,7 +1406,7 @@ Subcommands:
                 svg, count=1
             )
             svg = svg.replace("</svg>", panel_svg + "\n</svg>", 1)
-        _write_output(svg, output_path)
+        _write_output(svg, output_path, quiet=args.quiet)
         return
 
     if args.type == "bargraph":
@@ -1122,7 +1420,7 @@ Subcommands:
             analysis=analysis,
             teach_index_by_folded=teach_maps["by_folded_label"],
         )
-        _write_output(svg, output_path)
+        _write_output(svg, output_path, quiet=args.quiet)
         return
 
     if args.type == "diagram":
@@ -1134,19 +1432,19 @@ Subcommands:
             analysis=analysis,
             teach_index_by_folded=teach_maps["by_folded_label"],
         )
-        _write_output(svg, output_path)
+        _write_output(svg, output_path, quiet=args.quiet)
         return
 
     if args.type == "workbench":
         from .output_workbench import render_workbench
         svg = render_workbench(root, width=args.width, title=args.title,
                                analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
-        _write_output(svg, output_path)
+        _write_output(svg, output_path, quiet=args.quiet)
         return
 
     if args.type == "tree":
         svg = render_tree(root, width=args.width, title=args.title, unit_display=unit, analysis=analysis, teach_index_by_folded=teach_maps["by_folded_label"])
-        _write_output(svg, output_path)
+        _write_output(svg, output_path, quiet=args.quiet)
         return
 
     sys.exit(1)

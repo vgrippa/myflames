@@ -1,0 +1,141 @@
+/* Flush operations panes. Shared controls, tables, sheets and status colors
+   remain owned by kit.css and the workspace design tokens. */
+.ops-view .ops-form,
+.ops-view .ops-actions,
+.ops-offered,
+.ops-result,
+.ops-job,
+.ops-details,
+.ops-note,
+.ops-loop,
+.ops-result-head {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+/* A form is a grid of fields that share a row when they fit; labels line up
+   at the top, and hints, disclosures, warnings and checkboxes take the row. */
+.ops-form > fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  align-items: start;
+  gap: var(--space-3);
+  min-width: 0;
+  max-width: 960px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.ops-form details,
+.ops-form .perf-picker-panel,
+.ops-form .ops-warning,
+.ops-form .ops-target,
+.ops-form > fieldset > .checkbox,
+.ops-form .ops-wide { grid-column: 1 / -1; }
+.ops-form details[open] > :not(summary) { margin-top: var(--space-2); }
+.ops-form details[open] { display: grid; gap: var(--space-2); }
+.ops-form details .ops-field { max-width: 320px; }
+.ops-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--text-sm);
+}
+.ops-field .toolbar-field { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-1); }
+.ops-actions .hint { color: var(--ink-muted); }
+.ops-field input { width: 100%; min-width: 0; height: var(--control-h); }
+.ops-field .hint { max-width: 70ch; }
+.ops-target { display: flex; flex-direction: column; gap: var(--space-1); }
+.ops-target > span { font-size: var(--text-sm); color: var(--ink-muted); }
+.ops-target > strong { font-size: var(--text-lg); overflow-wrap: anywhere; }
+.ops-warning { color: var(--danger); max-width: 70ch; }
+/* Notes, warnings and job details read as secondary text, like the rest of a view. */
+.ops-view .ops-note,
+.ops-view .ops-warning,
+.ops-view .ops-result,
+.ops-job p,
+.ops-job details > summary,
+.ops-verification,
+.ops-view .ops-details { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.ops-view > .ops-note,
+.ops-view .view-main > .ops-note { color: var(--ink-muted); }
+.ops-job .error { margin: var(--space-2) 0; }
+.ops-view > .ops-warning,
+.ops-view > .ops-note {
+  padding: var(--space-3) var(--space-4);
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+.ops-actions,
+.ops-job-head,
+.ops-loop,
+.ops-result-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.ops-job-head > strong,
+.ops-loop > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ops-job.is-other-connection { color: var(--ink-muted); background: var(--surface-pane); }
+.ops-job.is-other-connection > :not(.ops-job-head) { opacity: 0.65; }
+.ops-loop { background: var(--warn-soft); }
+.ops-loop.is-stopped { background: var(--surface-pane); }
+.ops-loop.is-stopped.needs-attention { background: var(--warn-soft); }
+.ops-last { display: block; color: var(--ink-muted); font-size: var(--text-sm); }
+.ops-loop .count-badge { margin-inline-start: var(--space-2); }
+.ops-progress { display: flex; align-items: center; gap: var(--space-2); margin-block: var(--space-2); font-variant-numeric: tabular-nums; }
+.ops-progress progress { flex: 1; min-width: 0; accent-color: var(--accent); }
+.ops-log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-sm); }
+.ops-pre {
+  max-width: 100%;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  padding: var(--space-2);
+  background: var(--surface-pane);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.ops-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ops-verification { list-style: none; margin: var(--space-2) 0; padding: 0; }
+.ops-verification li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); padding-block: var(--space-2); border-bottom: 1px solid var(--line); }
+.ops-verification li > span:last-child { flex-basis: 100%; color: var(--ink-muted); }
+.ops-loop-options { display: flex; flex-direction: column; gap: var(--space-2); border: 1px solid var(--line); margin-block: var(--space-3); padding: var(--space-3); }
+.ops-loop-options > label:not(.checkbox) { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
+.ops-confirm .ops-target { margin-block: var(--space-3); }
+/* Sheet text is secondary to the statements: small, and the drift warning in
+   the warning tone like the Kill sheet's. */
+.ops-confirm p,
+.ops-confirm li,
+.ops-confirm details > summary,
+.ops-confirm .ops-loop-options { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.ops-confirm .inspector-fields { margin-bottom: var(--space-3); }
+.ops-confirm ul,
+.ops-result ul { margin: var(--space-2) 0 0; padding-left: var(--space-4); }
+.ops-drift,
+.ops-confirm .ops-warning {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+}
+.ops-notice { color: var(--info); font-weight: 600; }
+.ops-confirm .ops-plan-note { margin: 0 0 var(--space-2); }
+.ops-commands { margin-bottom: var(--space-3); }
+.ops-loop-options legend { padding: 0 var(--space-1); font-weight: 600; }
+.ops-loop-options { border-radius: var(--radius-md); }
+.ops-raw { margin-top: var(--space-3); font-size: var(--text-sm); }
+.ops-result p { margin: var(--space-1) 0; }
+.ops-confirm .ops-field { margin-block: var(--space-3); }
+.ops-view details > summary,
+.ops-confirm details > summary { cursor: pointer; }
+.ops-view details > summary:focus-visible,
+.ops-confirm details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 650px) {
+  .ops-form > fieldset { grid-template-columns: minmax(0, 1fr); }
+  .ops-form details .ops-field { max-width: none; }
+  .ops-target > strong { font-size: var(--text-md); }
+}

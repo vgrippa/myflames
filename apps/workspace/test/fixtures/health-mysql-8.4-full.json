@@ -1,0 +1,1514 @@
+{
+  "schema_version": "health-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "interval": 5,
+  "elapsed_s": 5.032,
+  "started_at": "2026-10-14T16:25:46.180084+00:00",
+  "taken_at": "2026-10-14T16:25:51.211863+00:00",
+  "uptime_s": 11,
+  "restarted": false,
+  "server": {
+    "engine": "mysql",
+    "version": "8.4.11",
+    "uptime_s": 11,
+    "max_connections": 151,
+    "table_open_cache": 4000,
+    "buffer_pool_bytes": 67108864,
+    "page_size": 16384,
+    "redo_capacity_bytes": 104857600
+  },
+  "summary": {
+    "status": "problem",
+    "problem": 1,
+    "watch": 0,
+    "ok": 15,
+    "info": 14,
+    "unknown": 0,
+    "diagnostics": {
+      "ok": 8,
+      "watch": 0,
+      "problem": 1,
+      "info": 1,
+      "unknown": 0
+    }
+  },
+  "groups": [
+    {
+      "key": "throughput",
+      "label": "Throughput"
+    },
+    {
+      "key": "connections",
+      "label": "Connections"
+    },
+    {
+      "key": "buffer_pool",
+      "label": "InnoDB buffer pool"
+    },
+    {
+      "key": "row_locks",
+      "label": "Row locks"
+    },
+    {
+      "key": "temp_sorts",
+      "label": "Temporary tables and sorts"
+    },
+    {
+      "key": "table_cache",
+      "label": "Table cache"
+    },
+    {
+      "key": "redo_io",
+      "label": "Redo and I/O"
+    }
+  ],
+  "diagnostics": [
+    {
+      "key": "buffer_pool",
+      "title": "Buffer pool: full or warming",
+      "status": "problem",
+      "state": "full",
+      "headline": "265.6 MiB/s read from disk",
+      "value": 278501952.31,
+      "unit": "B/s",
+      "verdict": "The buffer pool is full and InnoDB read 16,998 pages per second from disk (265.6 MiB/s). Pages this workload needs are evicted and read again: the data it uses is larger than the buffer pool (innodb_buffer_pool_size 64.0 MiB), or some queries read much more data than they return. 21.4% of page requests missed the buffer pool.",
+      "why": "InnoDB keeps a small free list: while the server is busy, its page cleaner evicts the least recently used pages until each buffer pool instance has innodb_lru_scan_depth free pages, and an idle full pool can show 0 free pages (128 x 1 = 128 pages here). So \"full\" means free pages at or below that target, not zero. Once it is full, every page read from disk evicts another one. Bytes read from disk are the pages read from disk times innodb_page_size (16.0 KiB); MySQL adds Innodb_buffer_pool_read_ahead, because Innodb_buffer_pool_reads leaves out linear read-ahead. Innodb_data_read counts the bytes InnoDB read from its data files: it is lower for ROW_FORMAT=COMPRESSED tables, which read the smaller compressed page, and on MySQL it also counts redo log reads, but only during startup. In this window Innodb_data_read is 100% of pages x page size.",
+      "rule": "full when free pages are at or below innodb_lru_scan_depth x buffer pool instances (the free list InnoDB's page cleaner keeps). Full: ok below 10 pages read from disk per second, watch at 10 or more, problem when the hit ratio is also below 95%. Not full: no threshold",
+      "numbers": [
+        {
+          "key": "used_pct",
+          "label": "Buffer pool in use",
+          "value": 100,
+          "unit": "%",
+          "text": "100.0% (4,096 of 4,096 pages hold data or other structures)"
+        },
+        {
+          "key": "free_pages",
+          "label": "Free pages",
+          "value": 0,
+          "unit": "pages",
+          "text": "0 (the page cleaner's target is 128)"
+        },
+        {
+          "key": "data_pages",
+          "label": "Data pages",
+          "value": 4096,
+          "unit": "pages",
+          "text": "4,096, 0 in the window"
+        },
+        {
+          "key": "misc_pages",
+          "label": "Other pages (adaptive hash index, locks, compressed-page buffers)",
+          "value": 0,
+          "unit": "pages",
+          "text": "0 pages"
+        },
+        {
+          "key": "disk_reads",
+          "label": "Pages read from disk",
+          "value": 16998.41,
+          "unit": "/s",
+          "text": "16,998/s (85,536 in the window)"
+        },
+        {
+          "key": "read_bytes",
+          "label": "Bytes read from disk (pages x page size)",
+          "value": 278501952.31,
+          "unit": "B/s",
+          "text": "265.6 MiB/s (1.3 GiB in the window)"
+        },
+        {
+          "key": "data_read",
+          "label": "Innodb_data_read",
+          "value": 278501952.31,
+          "unit": "B/s",
+          "text": "265.6 MiB/s (1.3 GiB in the window)"
+        }
+      ],
+      "settings": [
+        {
+          "name": "innodb_buffer_pool_size",
+          "value": "67108864",
+          "display": "64.0 MiB",
+          "default": "128.0 MiB"
+        },
+        {
+          "name": "innodb_page_size",
+          "value": "16384",
+          "display": "16.0 KiB",
+          "default": "16.0 KiB"
+        },
+        {
+          "name": "innodb_lru_scan_depth",
+          "value": "128",
+          "display": "128",
+          "default": "1024"
+        },
+        {
+          "name": "innodb_buffer_pool_instances",
+          "value": "1",
+          "display": "1",
+          "default": "1 below 1 GiB of buffer pool, otherwise sized from it and the CPUs"
+        }
+      ],
+      "recommendation": {
+        "text": "Look for queries that scan large tables first (Top statements). If the reads are data the workload really needs, a larger innodb_buffer_pool_size keeps more of it in memory; the Config tab shows how this server can resize it.",
+        "caveat": "Leave memory for connections, the operating system and other processes: a buffer pool that makes the server swap is far worse than disk reads. One window can catch a one-off scan, so watch the trend over several refreshes before changing anything."
+      },
+      "sources": [
+        "Innodb_buffer_pool_pages_total",
+        "Innodb_buffer_pool_pages_free",
+        "Innodb_buffer_pool_pages_data",
+        "Innodb_buffer_pool_pages_misc",
+        "Innodb_buffer_pool_reads",
+        "Innodb_buffer_pool_read_ahead",
+        "Innodb_data_read",
+        "innodb_page_size",
+        "innodb_lru_scan_depth",
+        "innodb_buffer_pool_instances"
+      ],
+      "learn": "lru",
+      "link": null,
+      "trend": {
+        "key": "bp_read_bytes",
+        "label": "Read from disk",
+        "unit": "B/s",
+        "value": 278501952.31
+      }
+    },
+    {
+      "key": "redo",
+      "title": "Redo log size for the write rate",
+      "status": "ok",
+      "state": null,
+      "headline": "No redo in this window",
+      "value": null,
+      "unit": "s",
+      "verdict": "InnoDB wrote no redo in the window. The checkpoint age is 0 B (0% of the capacity).",
+      "why": "InnoDB writes every change to the redo log first. A checkpoint frees redo space once the matching dirty pages are flushed, so the capacity limits how far flushing can fall behind. The checkpoint age (Innodb_redo_log_current_lsn minus Innodb_redo_log_checkpoint_lsn) is how much of the capacity is in use. MySQL's redo-driven adaptive flushing starts early (about 8% of the capacity, innodb_adaptive_flushing_lwm) and grows with the age, reaches its age limit at about 73%, forces flushing from about 79% (innodb_flush_sync, on by default), and makes user writes wait from about 84%. These points compare the age of the oldest dirty page, which is at most the checkpoint age. A larger redo log smooths that out but makes crash recovery longer. Two counters measure redo. The log sequence number (Innodb_redo_log_current_lsn) grows by the redo generated, counted in 512-byte log blocks including their headers and trailers; it is what fills the capacity, so the times are computed from it. Innodb_os_log_written counts the bytes written to the redo files: the log writer rewrites the last, partly filled block on each write, so with many small commits it runs well above the redo generated. Innodb_log_waits counts waits for space in the in-memory log buffer (innodb_log_buffer_size), a different limit.",
+      "rule": "watch when the checkpoint age reaches about 73% of the capacity (where adaptive flushing reaches its age limit) in either sample, problem at about 79% (forced flushing); also watch when the capacity holds less than about 1 hour of redo at this window's rate (a common rule of thumb; this window may not be the peak) or when Innodb_log_waits grew",
+      "numbers": [
+        {
+          "key": "redo_rate",
+          "label": "Redo generated (LSN growth)",
+          "value": 0,
+          "unit": "B/s",
+          "text": "0 B/s (0 B in the window)"
+        },
+        {
+          "key": "redo_per_hour",
+          "label": "At this rate, per hour",
+          "value": 0,
+          "unit": "B",
+          "text": "0 B"
+        },
+        {
+          "key": "os_log_written",
+          "label": "Written to the redo files (Innodb_os_log_written)",
+          "value": 0,
+          "unit": "B/s",
+          "text": "0 B/s (0 B in the window)"
+        },
+        {
+          "key": "capacity",
+          "label": "Redo capacity",
+          "value": 104857600,
+          "unit": "B",
+          "text": "100.0 MiB (Innodb_redo_log_capacity_resized)"
+        },
+        {
+          "key": "checkpoint_age",
+          "label": "Checkpoint age now",
+          "value": 0,
+          "unit": "B",
+          "text": "0 B (0% of the capacity)"
+        },
+        {
+          "key": "log_waits",
+          "label": "Waits for the log buffer",
+          "value": 0,
+          "unit": "",
+          "text": "0 in the window"
+        }
+      ],
+      "settings": [
+        {
+          "name": "innodb_redo_log_capacity",
+          "value": "104857600",
+          "display": "100.0 MiB",
+          "default": "100.0 MiB"
+        }
+      ],
+      "recommendation": null,
+      "sources": [
+        "Innodb_redo_log_current_lsn",
+        "Innodb_os_log_written",
+        "Innodb_log_waits",
+        "Innodb_redo_log_current_lsn",
+        "Innodb_redo_log_checkpoint_lsn",
+        "Innodb_redo_log_capacity_resized"
+      ],
+      "learn": null,
+      "link": null,
+      "trend": {
+        "key": "redo_bytes",
+        "label": "Redo generated",
+        "unit": "B/s",
+        "value": 0
+      }
+    },
+    {
+      "key": "table_cache",
+      "title": "Table open cache",
+      "status": "ok",
+      "state": null,
+      "headline": "0.0% misses, no overflows",
+      "value": 0,
+      "unit": "/s",
+      "verdict": "No overflows in the window: the tables in use fit in the cache. 0.0% of 104,596 lookups missed. 111 of 4,000 cached instances are open.",
+      "why": "Each statement needs an open instance of every table it uses. A hit reuses a free instance from the cache. A miss opens a new one (Opened_tables): the first use of a table, or another session needing its own instance of a busy table, so misses alone are normal. An overflow means the cache was full and an unused instance was closed to make room: tables are being opened and closed over and over. MySQL divides table_open_cache across table_open_cache_instances.",
+      "rule": "watch at 1 overflow per second, problem at 10, with at least 5 in the window. Misses without overflows are not judged",
+      "numbers": [
+        {
+          "key": "opened",
+          "label": "Tables opened",
+          "value": 0.2,
+          "unit": "/s",
+          "text": "0.20/s (1 in the window)"
+        },
+        {
+          "key": "miss_pct",
+          "label": "Cache misses",
+          "value": 0,
+          "unit": "%",
+          "text": "0.0% (1 misses, 104,595 hits)"
+        },
+        {
+          "key": "overflows",
+          "label": "Overflows",
+          "value": 0,
+          "unit": "/s",
+          "text": "0/s (0 in the window)"
+        },
+        {
+          "key": "open_tables",
+          "label": "Open tables",
+          "value": 2.77,
+          "unit": "%",
+          "text": "111 of 4,000"
+        }
+      ],
+      "settings": [
+        {
+          "name": "table_open_cache",
+          "value": "4000",
+          "display": "4000",
+          "default": "4000"
+        },
+        {
+          "name": "table_open_cache_instances",
+          "value": "16",
+          "display": "16",
+          "default": "16"
+        },
+        {
+          "name": "open_files_limit",
+          "value": "1048576",
+          "display": "1048576",
+          "default": "sized at startup"
+        }
+      ],
+      "recommendation": null,
+      "sources": [
+        "Table_open_cache_hits",
+        "Table_open_cache_misses",
+        "Table_open_cache_overflows",
+        "Opened_tables",
+        "Open_tables",
+        "table_open_cache",
+        "table_open_cache_instances"
+      ],
+      "learn": null,
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "trend": null
+    },
+    {
+      "key": "table_definitions",
+      "title": "Table definition cache",
+      "status": "ok",
+      "state": null,
+      "headline": "0 opened per second",
+      "value": 0,
+      "unit": "/s",
+      "verdict": "0 table definitions were opened in the window (0 per second); 51 of 2,000 are cached.",
+      "why": "The definition cache keeps parsed table definitions (shares), separate from the open table instances. A definition is opened the first time a table is used, or again after it was evicted because the cache was full. Steady openings while the cache is full mean table_definition_cache is smaller than the number of tables in use.",
+      "rule": "watch when table definitions are opened at 1 per second or more (at least 5 in the window) while the definition cache is at least 95% full",
+      "numbers": [
+        {
+          "key": "opened",
+          "label": "Definitions opened",
+          "value": 0,
+          "unit": "/s",
+          "text": "0/s (0 in the window)"
+        },
+        {
+          "key": "open",
+          "label": "Cached definitions",
+          "value": 51,
+          "unit": "",
+          "text": "51 of table_definition_cache 2,000"
+        }
+      ],
+      "settings": [
+        {
+          "name": "table_definition_cache",
+          "value": "2000",
+          "display": "2000",
+          "default": "400 + table_open_cache / 2, at most 2000"
+        }
+      ],
+      "recommendation": null,
+      "sources": [
+        "Opened_table_definitions",
+        "Open_table_definitions",
+        "table_definition_cache"
+      ],
+      "learn": null,
+      "link": null,
+      "trend": null
+    },
+    {
+      "key": "thread_cache",
+      "title": "Thread cache",
+      "status": "ok",
+      "state": null,
+      "headline": "1 new connection",
+      "value": 100,
+      "unit": "%",
+      "verdict": "Only 1 new connection in the window, too few to judge the thread cache.",
+      "why": "With one thread per connection, the server keeps up to thread_cache_size idle threads to reuse for new connections; Threads_created counts the threads it had to create instead. Connections is the next thread id: every connection that got past the max_connections check (failed logins included), plus a few internal threads. Each window includes this tool's own connection.",
+      "rule": "watch when more than 10% of new connections needed a new thread, with threads created at 1 per second or more (at least 5 in the window); never a problem",
+      "numbers": [
+        {
+          "key": "connections",
+          "label": "New connections",
+          "value": 0.2,
+          "unit": "/s",
+          "text": "0.20/s (1 in the window)"
+        },
+        {
+          "key": "created",
+          "label": "Threads created",
+          "value": 0,
+          "unit": "/s",
+          "text": "0/s (0 in the window)"
+        },
+        {
+          "key": "hit_pct",
+          "label": "Connections that reused a cached thread",
+          "value": 100,
+          "unit": "%",
+          "text": "100.0%"
+        },
+        {
+          "key": "cached",
+          "label": "Idle threads in the cache now",
+          "value": 0,
+          "unit": "",
+          "text": "0 of thread_cache_size 9"
+        }
+      ],
+      "settings": [
+        {
+          "name": "thread_cache_size",
+          "value": "9",
+          "display": "9",
+          "default": "8 + max_connections / 100, at most 100"
+        },
+        {
+          "name": "thread_handling",
+          "value": "one-thread-per-connection",
+          "display": "one-thread-per-connection",
+          "default": "one-thread-per-connection"
+        }
+      ],
+      "recommendation": null,
+      "sources": [
+        "Connections",
+        "Threads_created",
+        "Threads_cached",
+        "thread_cache_size",
+        "thread_handling"
+      ],
+      "learn": null,
+      "link": null,
+      "trend": null
+    },
+    {
+      "key": "binlog_cache",
+      "title": "Binary log cache",
+      "status": "ok",
+      "state": null,
+      "headline": "No binary log writes",
+      "value": null,
+      "unit": "%",
+      "verdict": "No transaction wrote to the binary log in the window.",
+      "why": "With the binary log on, each session collects a transaction's events in memory (binlog_cache_size; binlog_stmt_cache_size for changes to non-transactional tables) and writes them to the binary log at commit. Events that do not fit spill to a temporary file on disk (Binlog_cache_disk_use, Binlog_stmt_cache_disk_use). The cache is per session, so a larger size is multiplied by the sessions that write.",
+      "rule": "watch when 10% or more of the transactions or statements that used a binary log cache spilled to a temporary file, with at least 5 spills in the window; never a problem",
+      "numbers": [
+        {
+          "key": "trx_disk_pct",
+          "label": "Transactions that spilled to disk",
+          "value": null,
+          "unit": "%",
+          "text": "0 of 0"
+        },
+        {
+          "key": "stmt_disk_pct",
+          "label": "Non-transactional statements that spilled to disk",
+          "value": null,
+          "unit": "%",
+          "text": "0 of 0"
+        }
+      ],
+      "settings": [
+        {
+          "name": "log_bin",
+          "value": "ON",
+          "display": "ON",
+          "default": "ON"
+        },
+        {
+          "name": "binlog_cache_size",
+          "value": "32768",
+          "display": "32.0 KiB",
+          "default": "32.0 KiB"
+        },
+        {
+          "name": "binlog_stmt_cache_size",
+          "value": "32768",
+          "display": "32.0 KiB",
+          "default": "32.0 KiB"
+        }
+      ],
+      "recommendation": null,
+      "sources": [
+        "Binlog_cache_use",
+        "Binlog_cache_disk_use",
+        "Binlog_stmt_cache_use",
+        "Binlog_stmt_cache_disk_use",
+        "binlog_cache_size",
+        "binlog_stmt_cache_size",
+        "log_bin"
+      ],
+      "learn": null,
+      "link": null,
+      "trend": null
+    },
+    {
+      "key": "open_files",
+      "title": "Open files",
+      "status": "ok",
+      "state": null,
+      "headline": "0.0% of open_files_limit",
+      "value": 0,
+      "unit": "%",
+      "verdict": "At least 20 file descriptors are in use: 2 through the server's file layer, 16 InnoDB files and 2 connections, 0.0% of open_files_limit 1,048,576.",
+      "why": "open_files_limit is the most file descriptors the server process can hold. Open_files counts files the server opened through its own file layer (MyISAM and Aria tables, binary and relay logs, some temporary files), not InnoDB's, which Innodb_num_open_files counts; each client connection also uses a socket. myflames adds the three, a lower bound: other descriptors are not visible through SQL.",
+      "rule": "watch when the file descriptors myflames can account for reach 75% of open_files_limit, problem at 90%",
+      "numbers": [
+        {
+          "key": "accounted",
+          "label": "Descriptors accounted for",
+          "value": 0,
+          "unit": "%",
+          "text": "20 of open_files_limit 1,048,576"
+        },
+        {
+          "key": "open_files",
+          "label": "Open_files",
+          "value": 2,
+          "unit": "",
+          "text": "2"
+        },
+        {
+          "key": "innodb_files",
+          "label": "Innodb_num_open_files",
+          "value": 16,
+          "unit": "",
+          "text": "16"
+        },
+        {
+          "key": "connections",
+          "label": "Client connections (sockets)",
+          "value": 2,
+          "unit": "",
+          "text": "2"
+        }
+      ],
+      "settings": [
+        {
+          "name": "open_files_limit",
+          "value": "1048576",
+          "display": "1048576",
+          "default": "sized at startup"
+        },
+        {
+          "name": "table_open_cache",
+          "value": "4000",
+          "display": "4000",
+          "default": "4000"
+        }
+      ],
+      "recommendation": null,
+      "sources": [
+        "Open_files",
+        "Innodb_num_open_files",
+        "Threads_connected",
+        "open_files_limit"
+      ],
+      "learn": null,
+      "link": null,
+      "trend": null
+    },
+    {
+      "key": "full_scans",
+      "title": "Rows read by full scans",
+      "status": "info",
+      "state": null,
+      "headline": "198 rows/s by sequential scans",
+      "value": 197.93,
+      "unit": "/s",
+      "verdict": "Storage engines returned 198 rows per second to sequential scans, 0.9% of all rows read through handlers.",
+      "why": "Handler_read_rnd_next counts requests for the next row of a sequential table scan, so a high rate points at full table scans. It also counts scans of internal temporary tables (GROUP BY, DISTINCT, derived tables, UNION), and this tool's own SHOW GLOBAL STATUS reads about 1,000 rows that way per window (measured), so it is an upper bound on rows from full scans of user tables. Full index scans count in Handler_read_first and Handler_read_next instead. Top statements shows which statements scan.",
+      "rule": "No threshold: compare with this server's usual values",
+      "numbers": [
+        {
+          "key": "rnd_next",
+          "label": "Rows read by sequential scans",
+          "value": 197.93,
+          "unit": "/s",
+          "text": "198/s (996 in the window)"
+        },
+        {
+          "key": "share",
+          "label": "Share of all rows read through handlers",
+          "value": 0.94,
+          "unit": "%",
+          "text": "0.9% of 105,591"
+        }
+      ],
+      "settings": [],
+      "recommendation": null,
+      "sources": [
+        "Handler_read_rnd_next",
+        "Handler_read_first",
+        "Handler_read_key",
+        "Handler_read_last",
+        "Handler_read_next",
+        "Handler_read_prev",
+        "Handler_read_rnd"
+      ],
+      "learn": "full_scan",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "trend": null
+    },
+    {
+      "key": "tmp_tables",
+      "title": "Temporary tables on disk",
+      "status": "ok",
+      "state": null,
+      "headline": "0.0% of 1 on disk",
+      "value": 0,
+      "unit": "%",
+      "verdict": "0 of 1 internal temporary tables in the window were on disk (0.0%).",
+      "why": "Internal temporary tables (GROUP BY, DISTINCT, UNION, derived tables) start in memory and move to disk when they outgrow the limit. TempTable keeps each internal temporary table in memory up to tmp_table_size (16.0 MiB), and all of them up to temptable_max_ram (1.0 GiB) together; on disk they are InnoDB tables. TempTable overflow into memory-mapped files (temptable_max_mmap) is not counted as disk.",
+      "rule": "watch at 10% on disk, problem at 25%; with fewer than 20 temporary tables in the window, watch at most",
+      "numbers": [
+        {
+          "key": "created",
+          "label": "Internal temporary tables",
+          "value": 0.2,
+          "unit": "/s",
+          "text": "0.20/s (1 in the window)"
+        },
+        {
+          "key": "disk",
+          "label": "Created on disk or moved there",
+          "value": 0,
+          "unit": "/s",
+          "text": "0/s (0 in the window)"
+        }
+      ],
+      "settings": [
+        {
+          "name": "internal_tmp_mem_storage_engine",
+          "value": "TempTable",
+          "display": "TempTable",
+          "default": "TempTable"
+        },
+        {
+          "name": "tmp_table_size",
+          "value": "16777216",
+          "display": "16.0 MiB",
+          "default": "16.0 MiB"
+        },
+        {
+          "name": "temptable_max_ram",
+          "value": "1073741824",
+          "display": "1.0 GiB",
+          "default": "3% of memory, 1 to 4 GiB (8.4 to 9.5); 1 GiB from 9.6 unless server_memory is set"
+        },
+        {
+          "name": "temptable_max_mmap",
+          "value": "0",
+          "display": "0 B",
+          "default": "0 B"
+        }
+      ],
+      "recommendation": null,
+      "sources": [
+        "Created_tmp_tables",
+        "Created_tmp_disk_tables",
+        "internal_tmp_mem_storage_engine",
+        "tmp_table_size",
+        "temptable_max_ram",
+        "temptable_max_mmap"
+      ],
+      "learn": "tmp",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "trend": null
+    },
+    {
+      "key": "sorts",
+      "title": "Sorts that spill to disk",
+      "status": "ok",
+      "state": null,
+      "headline": "0 merge passes for 0 sorts",
+      "value": 0,
+      "unit": "/s",
+      "verdict": "0 merge passes in the window for 0 sorts. Sorts fit in sort_buffer_size.",
+      "why": "A sort that cannot use an index (filesort) collects rows in sort_buffer_size. When they do not fit, it writes sorted runs to a temporary file and merges them, and each merge pass is counted in Sort_merge_passes. Sort_range and Sort_scan count the sorts themselves. sort_buffer_size is a limit for each sort in every session, so raise it for the sessions that need it rather than globally.",
+      "rule": "watch at 1 per second, problem at 10 per second, with at least 5 in the window",
+      "numbers": [
+        {
+          "key": "passes",
+          "label": "Merge passes",
+          "value": 0,
+          "unit": "/s",
+          "text": "0/s (0 in the window)"
+        },
+        {
+          "key": "sorts",
+          "label": "Sorts",
+          "value": 0,
+          "unit": "/s",
+          "text": "0/s (0 in the window)"
+        },
+        {
+          "key": "rows",
+          "label": "Rows sorted",
+          "value": 0,
+          "unit": "/s",
+          "text": "0/s"
+        }
+      ],
+      "settings": [
+        {
+          "name": "sort_buffer_size",
+          "value": "262144",
+          "display": "256.0 KiB",
+          "default": "256.0 KiB"
+        }
+      ],
+      "recommendation": null,
+      "sources": [
+        "Sort_merge_passes",
+        "Sort_range",
+        "Sort_scan",
+        "Sort_rows",
+        "sort_buffer_size"
+      ],
+      "learn": "filesort",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "trend": null
+    }
+  ],
+  "metrics": [
+    {
+      "key": "questions",
+      "group": "throughput",
+      "label": "Statements from clients",
+      "explain": "Statements clients sent per second (Questions). Statements inside stored programs are not counted here; they are in all statements.",
+      "unit": "/s",
+      "value": 0.6,
+      "delta": 3,
+      "rate": 0.6,
+      "max": null,
+      "status": "info",
+      "why": "3 statements in 5 s (0.60 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "3 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": null,
+      "sources": [
+        "Questions"
+      ],
+      "inputs": {},
+      "sparkline": true
+    },
+    {
+      "key": "queries",
+      "group": "throughput",
+      "label": "All statements",
+      "explain": "Nearly every statement the server ran per second (Queries): client statements plus those inside stored procedures, functions, triggers and events, replicated events, and on MySQL pings.",
+      "unit": "/s",
+      "value": 62362.08,
+      "delta": 313806,
+      "rate": 62362.08,
+      "max": null,
+      "status": "info",
+      "why": "313,806 statements in 5 s (62,362 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "313,806 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": null,
+      "sources": [
+        "Queries"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "com_select",
+      "group": "throughput",
+      "label": "SELECT statements",
+      "explain": "SELECT statements per second (Com_select).",
+      "unit": "/s",
+      "value": 20786.17,
+      "delta": 104596,
+      "rate": 20786.17,
+      "max": null,
+      "status": "info",
+      "why": "104,596 statements in 5 s (20,786 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "104,596 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": null,
+      "sources": [
+        "Com_select"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "com_insert",
+      "group": "throughput",
+      "label": "INSERT statements",
+      "explain": "INSERT statements per second (Com_insert + Com_insert_select).",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "info",
+      "why": "0 statements in 5 s (0 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "0 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": null,
+      "sources": [
+        "Com_insert",
+        "Com_insert_select"
+      ],
+      "inputs": {
+        "Com_insert": 0,
+        "Com_insert_select": 0
+      },
+      "sparkline": false
+    },
+    {
+      "key": "com_update",
+      "group": "throughput",
+      "label": "UPDATE statements",
+      "explain": "UPDATE statements per second (Com_update + Com_update_multi).",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "info",
+      "why": "0 statements in 5 s (0 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "0 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": null,
+      "sources": [
+        "Com_update",
+        "Com_update_multi"
+      ],
+      "inputs": {
+        "Com_update": 0,
+        "Com_update_multi": 0
+      },
+      "sparkline": false
+    },
+    {
+      "key": "com_delete",
+      "group": "throughput",
+      "label": "DELETE statements",
+      "explain": "DELETE statements per second (Com_delete + Com_delete_multi).",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "info",
+      "why": "0 statements in 5 s (0 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "0 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": null,
+      "sources": [
+        "Com_delete",
+        "Com_delete_multi"
+      ],
+      "inputs": {
+        "Com_delete": 0,
+        "Com_delete_multi": 0
+      },
+      "sparkline": false
+    },
+    {
+      "key": "threads_connected",
+      "group": "connections",
+      "label": "Open connections",
+      "explain": "Client connections open now (Threads_connected), including this tool's own.",
+      "unit": "connections",
+      "value": 2,
+      "delta": null,
+      "rate": null,
+      "max": 2,
+      "status": "info",
+      "why": "2 open; 2 at the first sample. No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "of max_connections 151",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Threads_connected"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "threads_running",
+      "group": "connections",
+      "label": "Statements running now",
+      "explain": "Sessions executing a statement at the moment of each sample (Threads_running), including this tool's own. Waiting on a lock or I/O counts as running. It also counts binlog dump threads and the event scheduler.",
+      "unit": "threads",
+      "value": 3,
+      "delta": null,
+      "rate": null,
+      "max": 3,
+      "status": "ok",
+      "why": "3 now, 3 at most across both samples. Rule of thumb: watch at 32, problem at 100 (the larger sample). Above the CPU core count, statements queue; myflames cannot see the core count, so the limits are high.",
+      "rule": "watch at 32, problem at 100 (the larger sample). Above the CPU core count, statements queue; myflames cannot see the core count, so the limits are high",
+      "detail": "max of both samples 3",
+      "link": {
+        "view": "running",
+        "label": "Open Running queries"
+      },
+      "learn": null,
+      "sources": [
+        "Threads_running"
+      ],
+      "inputs": {},
+      "sparkline": true
+    },
+    {
+      "key": "aborted_connects",
+      "group": "connections",
+      "label": "Failed connection attempts",
+      "explain": "Connection attempts that failed (Aborted_connects): a wrong password, a missing privilege, a handshake timeout, or a load balancer's TCP check that connects and closes. MySQL counts refusals at max_connections separately (see Connection limit used).",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 failed attempts in 5 s (0 per second). Rule of thumb: watch at 1 per second, problem at 10 per second, with at least 5 in the window.",
+      "rule": "watch at 1 per second, problem at 10 per second, with at least 5 in the window",
+      "detail": "0 in the window",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Aborted_connects"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "aborted_clients",
+      "group": "connections",
+      "label": "Connections dropped",
+      "explain": "Connections that ended without closing properly (Aborted_clients): the client exited, crashed or was killed, a network error, wait_timeout expired, or a packet exceeded max_allowed_packet.",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 dropped connections in 5 s (0 per second). Rule of thumb: watch at 1 per second, problem at 10 per second, with at least 5 in the window.",
+      "rule": "watch at 1 per second, problem at 10 per second, with at least 5 in the window",
+      "detail": "0 in the window",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Aborted_clients"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "connections_used",
+      "group": "connections",
+      "label": "Connection limit used",
+      "explain": "Open connections as a share of max_connections. When it is full, new clients get \"Too many connections\" (one more is kept for administrators).",
+      "unit": "%",
+      "value": 1.32,
+      "delta": null,
+      "rate": null,
+      "max": null,
+      "status": "ok",
+      "why": "1.3% of max_connections in use. Rule of thumb: watch at 75% of max_connections, problem at 90% or when clients were refused in the window (Connection_errors_max_connections).",
+      "rule": "watch at 75% of max_connections, problem at 90% or when clients were refused in the window (Connection_errors_max_connections)",
+      "detail": "2 of max_connections 151; peak 2",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Threads_connected",
+        "Max_used_connections",
+        "max_connections",
+        "Connection_errors_max_connections"
+      ],
+      "inputs": {
+        "Threads_connected": 2,
+        "Max_used_connections": 2,
+        "max_connections": 151,
+        "Connection_errors_max_connections": 0
+      },
+      "sparkline": false
+    },
+    {
+      "key": "bp_hit_ratio",
+      "group": "buffer_pool",
+      "label": "Buffer pool hit ratio",
+      "explain": "Share of page requests InnoDB served from memory over the window, without reading the page from disk. MySQL counts linear read-ahead only in Innodb_buffer_pool_read_ahead, so it is added; disk reads are the sum.",
+      "unit": "%",
+      "value": 78.63,
+      "delta": null,
+      "rate": null,
+      "max": null,
+      "status": "problem",
+      "why": "85,536 disk reads for 400,313 page requests. Rule of thumb: watch below 99%, problem below 95% with at least 10 disk reads per second; judged only with 10,000 or more page requests.",
+      "rule": "watch below 99%, problem below 95% with at least 10 disk reads per second; judged only with 10,000 or more page requests",
+      "detail": "85,536 disk reads per 400,313 requests",
+      "link": null,
+      "learn": "lru",
+      "sources": [
+        "Innodb_buffer_pool_read_requests",
+        "Innodb_buffer_pool_reads",
+        "Innodb_buffer_pool_read_ahead"
+      ],
+      "inputs": {
+        "Innodb_buffer_pool_read_requests": 400313,
+        "disk_reads": 85536,
+        "Innodb_buffer_pool_reads": 85536,
+        "Innodb_buffer_pool_read_ahead": 0
+      },
+      "sparkline": false
+    },
+    {
+      "key": "bp_disk_reads",
+      "group": "buffer_pool",
+      "label": "Pages read from disk",
+      "explain": "InnoDB pages read from disk per second (Innodb_buffer_pool_reads + Innodb_buffer_pool_read_ahead).",
+      "unit": "pages/s",
+      "value": 16998.41,
+      "delta": 85536,
+      "rate": 16998.41,
+      "max": null,
+      "status": "info",
+      "why": "85,536 pages in the window. No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "85,536 in the window",
+      "link": null,
+      "learn": "buffer_pool_warmup",
+      "sources": [
+        "Innodb_buffer_pool_reads",
+        "Innodb_buffer_pool_read_ahead"
+      ],
+      "inputs": {},
+      "sparkline": true
+    },
+    {
+      "key": "bp_dirty",
+      "group": "buffer_pool",
+      "label": "Dirty pages",
+      "explain": "Pages changed in memory and not yet flushed to disk, as a share of the buffer pool. Near innodb_max_dirty_pages_pct (90%) InnoDB flushes harder. A high share alone is not a stall; waits for a free page and a nearly full redo log are. MySQL starts flushing gradually at innodb_max_dirty_pages_pct_lwm (10 by default).",
+      "unit": "%",
+      "value": 0,
+      "delta": null,
+      "rate": null,
+      "max": null,
+      "status": "ok",
+      "why": "0 of 4,096 pages are dirty. Rule of thumb: watch at innodb_max_dirty_pages_pct; a high share alone is not a stall, waits for a free page and a nearly full redo log are.",
+      "rule": "watch at innodb_max_dirty_pages_pct; a high share alone is not a stall, waits for a free page and a nearly full redo log are",
+      "detail": "0 of 4,096 pages",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Innodb_buffer_pool_pages_dirty",
+        "Innodb_buffer_pool_pages_total",
+        "innodb_max_dirty_pages_pct"
+      ],
+      "inputs": {
+        "Innodb_buffer_pool_pages_dirty": 0,
+        "Innodb_buffer_pool_pages_total": 4096,
+        "innodb_max_dirty_pages_pct": 90
+      },
+      "sparkline": false
+    },
+    {
+      "key": "bp_free",
+      "group": "buffer_pool",
+      "label": "Free pages",
+      "explain": "Empty pages ready for new reads. A busy server's buffer pool is usually full, which is normal: InnoDB evicts the least recently used pages. Waits for a free page are the signal.",
+      "unit": "pages",
+      "value": 0,
+      "delta": null,
+      "rate": null,
+      "max": null,
+      "status": "info",
+      "why": "0 of 4,096 pages are free. No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "of 4,096 pages",
+      "link": null,
+      "learn": "lru",
+      "sources": [
+        "Innodb_buffer_pool_pages_free",
+        "Innodb_buffer_pool_pages_total"
+      ],
+      "inputs": {
+        "Innodb_buffer_pool_pages_free": 0,
+        "Innodb_buffer_pool_pages_total": 4096
+      },
+      "sparkline": false
+    },
+    {
+      "key": "bp_wait_free",
+      "group": "buffer_pool",
+      "label": "Waits for a free page",
+      "explain": "Times a session found no free page, even after scanning the LRU list, so it had to flush a page or wait (Innodb_buffer_pool_wait_free; MySQL counts each retry). The page cleaner is not keeping up, or the buffer pool is small for the workload.",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 waits in 5 s (0 per second). Rule of thumb: watch when any occur in the window, problem at 1 per second or more.",
+      "rule": "watch when any occur in the window, problem at 1 per second or more",
+      "detail": "0 in the window",
+      "link": null,
+      "learn": "lru",
+      "sources": [
+        "Innodb_buffer_pool_wait_free"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "row_lock_waits",
+      "group": "row_locks",
+      "label": "Row lock waits",
+      "explain": "Times a statement had to wait for a row lock another transaction held (Innodb_row_lock_waits, counted when the wait starts).",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 waits in 5 s (0 per second). Rule of thumb: watch at 1 per second, problem at 10 per second, with at least 5 in the window.",
+      "rule": "watch at 1 per second, problem at 10 per second, with at least 5 in the window",
+      "detail": "0 in the window",
+      "link": {
+        "view": "locks",
+        "label": "Open Locks"
+      },
+      "learn": null,
+      "sources": [
+        "Innodb_row_lock_waits"
+      ],
+      "inputs": {},
+      "sparkline": true
+    },
+    {
+      "key": "row_lock_time",
+      "group": "row_locks",
+      "label": "Time waiting for row locks",
+      "explain": "Milliseconds of row lock waiting per second of wall time (Innodb_row_lock_time, added when each wait ends). 1,000 ms per second means one session waited the whole time. A long wait that ends in the window adds all of its time here.",
+      "unit": "ms/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 ms of waiting ended in the window. Rule of thumb: watch at 100 ms of waiting per second, problem at 1,000 ms per second (one session always waiting).",
+      "rule": "watch at 100 ms of waiting per second, problem at 1,000 ms per second (one session always waiting)",
+      "detail": "0 ms in the window",
+      "link": {
+        "view": "locks",
+        "label": "Open Locks"
+      },
+      "learn": null,
+      "sources": [
+        "Innodb_row_lock_time"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "row_lock_avg",
+      "group": "row_locks",
+      "label": "Average row lock wait",
+      "explain": "Average length of a row lock wait in the window.",
+      "unit": "ms",
+      "value": null,
+      "delta": null,
+      "rate": null,
+      "max": null,
+      "status": "ok",
+      "why": "No row lock wait started in the window. Rule of thumb: watch at 50 ms per wait, problem at 1 s per wait.",
+      "rule": "watch at 50 ms per wait, problem at 1 s per wait",
+      "detail": "",
+      "link": {
+        "view": "locks",
+        "label": "Open Locks"
+      },
+      "learn": null,
+      "sources": [
+        "Innodb_row_lock_time",
+        "Innodb_row_lock_waits"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "row_lock_current",
+      "group": "row_locks",
+      "label": "Waiting for a row lock now",
+      "explain": "Sessions waiting for a row lock at the second sample (Innodb_row_lock_current_waits). Brief waits are normal, so the status needs waits in both samples; if it stays above zero, Locks shows who blocks whom.",
+      "unit": "sessions",
+      "value": 0,
+      "delta": null,
+      "rate": null,
+      "max": null,
+      "status": "ok",
+      "why": "0 waiting now, 0 at the first sample. Rule of thumb: watch at 1 session waiting in both samples, problem at 10.",
+      "rule": "watch at 1 session waiting in both samples, problem at 10",
+      "detail": "",
+      "link": {
+        "view": "locks",
+        "label": "Open Locks"
+      },
+      "learn": null,
+      "sources": [
+        "Innodb_row_lock_current_waits"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "tmp_disk_ratio",
+      "group": "temp_sorts",
+      "label": "Temporary tables on disk",
+      "explain": "Internal temporary tables (for GROUP BY, DISTINCT, UNION, derived tables) that were created on disk or moved there, as a share of all of them. TempTable overflow into memory-mapped files (temptable_max_mmap) is not counted as disk.",
+      "unit": "%",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 of 1 temporary tables were on disk. Rule of thumb: watch at 10% on disk, problem at 25%; with fewer than 20 temporary tables in the window, watch at most.",
+      "rule": "watch at 10% on disk, problem at 25%; with fewer than 20 temporary tables in the window, watch at most",
+      "detail": "0 of 1 (0.20/s)",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": "tmp",
+      "sources": [
+        "Created_tmp_disk_tables",
+        "Created_tmp_tables"
+      ],
+      "inputs": {
+        "Created_tmp_tables": 1,
+        "Created_tmp_disk_tables": 0
+      },
+      "sparkline": false
+    },
+    {
+      "key": "sort_merge_passes",
+      "group": "temp_sorts",
+      "label": "Sort merge passes",
+      "explain": "Merge passes sorts needed because the rows did not fit in sort_buffer_size, so sorted runs were written to temporary files and merged (Sort_merge_passes).",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 passes in 5 s (0 per second). Rule of thumb: watch at 1 per second, problem at 10 per second, with at least 5 in the window.",
+      "rule": "watch at 1 per second, problem at 10 per second, with at least 5 in the window",
+      "detail": "0 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": "filesort",
+      "sources": [
+        "Sort_merge_passes"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "select_full_join",
+      "group": "temp_sorts",
+      "label": "Joins without an index",
+      "explain": "Joins that read a later table with a full scan because no index fit the join (Select_full_join). Usually a missing index on the join column. On MySQL a hash join's inner table counts too; it is read once, not once per row.",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 joins in 5 s (0 per second). Rule of thumb: watch when any occur in the window, problem at 10 per second.",
+      "rule": "watch when any occur in the window, problem at 10 per second",
+      "detail": "0 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": "join",
+      "sources": [
+        "Select_full_join"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "select_scan",
+      "group": "temp_sorts",
+      "label": "Full scans of the first table",
+      "explain": "Query blocks whose first table was read with a full table or index scan (Select_scan). Common and often harmless for small tables.",
+      "unit": "/s",
+      "value": 0.4,
+      "delta": 2,
+      "rate": 0.4,
+      "max": null,
+      "status": "info",
+      "why": "2 scans in 5 s (0.40 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "2 in the window",
+      "link": {
+        "view": "top",
+        "label": "Open Top statements"
+      },
+      "learn": "full_scan",
+      "sources": [
+        "Select_scan"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "opened_tables",
+      "group": "table_cache",
+      "label": "Tables opened",
+      "explain": "Tables opened because no free instance was in the table cache (Opened_tables; user temporary tables count too). A steady rate suggests table_open_cache is too small.",
+      "unit": "/s",
+      "value": 0.2,
+      "delta": 1,
+      "rate": 0.2,
+      "max": null,
+      "status": "ok",
+      "why": "1 tables in 5 s (0.20 per second). Rule of thumb: watch at 1 per second, problem at 10 per second, with at least 5 in the window.",
+      "rule": "watch at 1 per second, problem at 10 per second, with at least 5 in the window",
+      "detail": "1 in the window",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Opened_tables"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "table_cache_used",
+      "group": "table_cache",
+      "label": "Table cache in use",
+      "explain": "Open table instances as a share of table_open_cache. A full cache is normal on a busy server; tables opened per second shows whether it is too small.",
+      "unit": "%",
+      "value": 2.77,
+      "delta": null,
+      "rate": null,
+      "max": null,
+      "status": "info",
+      "why": "111 of table_open_cache 4,000. No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "111 of 4,000",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Open_tables",
+        "table_open_cache"
+      ],
+      "inputs": {
+        "Open_tables": 111,
+        "table_open_cache": 4000
+      },
+      "sparkline": false
+    },
+    {
+      "key": "data_reads",
+      "group": "redo_io",
+      "label": "Data file reads",
+      "explain": "Read operations on InnoDB data files per second (Innodb_data_reads). One operation can read several pages.",
+      "unit": "/s",
+      "value": 16998.41,
+      "delta": 85536,
+      "rate": 16998.41,
+      "max": null,
+      "status": "info",
+      "why": "85,536 reads in 5 s (16,998 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "85,536 in the window",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Innodb_data_reads"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "data_writes",
+      "group": "redo_io",
+      "label": "Data file writes",
+      "explain": "Write operations InnoDB issued per second (Innodb_data_writes). On MySQL this includes redo log writes.",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "info",
+      "why": "0 writes in 5 s (0 per second). No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "0 in the window",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Innodb_data_writes"
+      ],
+      "inputs": {},
+      "sparkline": false
+    },
+    {
+      "key": "redo_generated",
+      "group": "redo_io",
+      "label": "Redo generated",
+      "explain": "Redo log generated per second (Innodb_redo_log_current_lsn, the log sequence number's growth). MySQL's adaptive flushing reaches its age limit when the checkpoint age is about 73% of the redo capacity, and MariaDB flushes ahead from 7/8 of Innodb_checkpoint_max_age (about 71% of innodb_log_file_size), so the time shown runs from the current checkpoint age to that point. Writes stall if the log fills before a checkpoint frees it.",
+      "unit": "B/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "info",
+      "why": "0 B of redo in the window. No threshold: compare with this server's usual values.",
+      "rule": null,
+      "detail": "redo capacity 100.0 MiB",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Innodb_redo_log_current_lsn",
+        "Innodb_redo_log_capacity_resized",
+        "Innodb_redo_log_checkpoint_lsn"
+      ],
+      "inputs": {
+        "Innodb_redo_log_current_lsn": 0,
+        "redo_capacity_bytes": 104857600,
+        "checkpoint_age_bytes": 0
+      },
+      "sparkline": false
+    },
+    {
+      "key": "log_waits",
+      "group": "redo_io",
+      "label": "Waits for the log buffer",
+      "explain": "Times a change had to wait for space in the redo log buffer (Innodb_log_waits). innodb_log_buffer_size is small for the write load.",
+      "unit": "/s",
+      "value": 0,
+      "delta": 0,
+      "rate": 0,
+      "max": null,
+      "status": "ok",
+      "why": "0 waits in 5 s (0 per second). Rule of thumb: watch when any occur in the window, problem at 1 per second or more.",
+      "rule": "watch when any occur in the window, problem at 1 per second or more",
+      "detail": "0 in the window",
+      "link": null,
+      "learn": null,
+      "sources": [
+        "Innodb_log_waits"
+      ],
+      "inputs": {},
+      "sparkline": false
+    }
+  ],
+  "notes": [
+    "The server started 11 s ago. Its buffer pool may still be warming up, so disk reads are expected to be higher than usual.",
+    "Statuses are rules of thumb, not verdicts; each metric and diagnostic says which rule it uses. Each window includes this tool's own second sample: about 3 statements, with the temporary table and scans they need, and its connection."
+  ]
+}

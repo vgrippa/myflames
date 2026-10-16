@@ -1,129 +1,16 @@
-# MyFlames Project Rules
+# MyFlames Claude Code
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Overview
-**myflames** visualizes MySQL and MariaDB `EXPLAIN ANALYZE FORMAT=JSON` output as interactive SVG flame graphs, bar charts, execution trees, and Visual Explain–style diagrams. It requires MySQL 8.4+ or MariaDB 10.11+/11.4+ and Python 3.7+ with no external dependencies.
+@AGENTS.md
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/). **Never remove this inspiration / credit line** from the README (or anywhere else it appears). Brendan Gregg and Tanel Poder are the origin of this work and must always be acknowledged.
 
-## 🛠 Skills & Specialized Agents
-- **Testing Specialist (`/test-pro`)**: Located at `.claude/skills/test-pro/SKILL.md`. Use for writing, running, and fixing Python tests.
-- **Visualization Specialist (`/viz-specialist`)**: Located at `.claude/skills/viz-specialist/SKILL.md`. Use for improving UI/UX, CSS, and SVG layouts in `docs/demos/`.
-- **Web Dev (`/web-dev`)**: Located at `.claude/skills/web-dev/SKILL.md`. Use when building or modifying React/TypeScript/Vite/Tailwind components, pages, or API clients.
-- **Web Design (`/web-design`)**: Located at `.claude/skills/web-design/SKILL.md`. Use when designing layouts, typography, color, spacing, or accessibility.
-- **MySQL Expert (`/mysql-expert`)**: Located at `.claude/skills/mysql-expert/SKILL.md`. The MySQL/MariaDB brain — owns correctness of advisor rules, optimizer_switch explanations, and every plain-English claim myflames makes about a plan. Consult before adding or modifying `advisor.py` rules or `OPTIMIZER_SWITCH_EXPLANATIONS`.
-- **Progressive UX (`/progressive-ux`)**: Located at `.claude/skills/progressive-ux/SKILL.md`. Designs outputs that serve newcomers AND senior DBAs via progressive disclosure (glossary chips, primary-action strips, collapsible details). Use when changing HTML wrappers, onboarding copy, or glossary entries.
-- **Structured Output (`/structured-output`)**: Located at `.claude/skills/structured-output/SKILL.md`. Owns the JSON sidecar schema, the token-cheap digest, and every decision about what gets serialized where. Consult when adding new data to an output or changing the shape of what myflames emits for external tools / AI agents.
-- **CLI UX (`/cli-ux`)**: Located at `.claude/skills/cli-ux/SKILL.md`. Owns the command-line surface — subcommand vs flag design, flag-name consistency, help text, the `0/1/2` exit-code contract, and stdout-vs-stderr discipline. Consult before adding or changing a subcommand or flag in `cli.py`. Distinct from progressive-ux (rendered output UX).
-- **Brutal Review (`/brutal-review`)**: Located at `.claude/skills/brutal-review/SKILL.md`. Ruthless, multi-perspective code review of the most recent change (git `HEAD`). Gathers context, then fans out parallel reviewer subagents across logic/3.7-compat, reliability/testing, clean-campground/invariants, and MySQL-correctness/output-safety, and synthesizes prioritized findings. Tuned to myflames' load-bearing rules (stdlib-only, Python 3.7+, single parser, SVG height+viewBox lockstep, SVG/HTML escaping, inspiration credit, docs-mandatory). Delegates MySQL claim verification to the `mysql-correctness-reviewer` agent.
+## Claude Code specifics
 
-See `.claude/skills/README.md` for the full ownership map (one owner per decision; who defers to whom).
+Invoke skills as /<name>. Subagents live in .claude/agents: mysql-correctness-reviewer, test-author, renderer-builder, teach-lesson-author. Follow the orchestrator-worker pattern defined in AGENTS.md: implement, run mysql-correctness-reviewer and test-author in parallel, then apply corrections.
 
-## 🤖 Agent Team (orchestrator-worker)
-The main session is the **coordinator**; it delegates well-scoped subtasks to the workers in `.claude/agents/` (see `.claude/agents/README.md`). Each worker has least-privilege tools and is bound to a skill above:
-- **`mysql-correctness-reviewer`** (read-only escalation) — verifies every MySQL/MariaDB claim against `mysql-server/` + `mariadb-server/` source. Delegate to it *before* shipping advisor/explanation/complexity changes.
-- **`test-author`** — writes + runs the mandatory paired tests.
-- **`renderer-builder`** — implements `output_*.py` / demo changes.
-- **`teach-lesson-author`** — authors `teach/*` lessons.
-Standard pattern for a logic change: implement → in parallel run `mysql-correctness-reviewer` + `test-author` → apply corrections → ship.
+External workers (Codex, Gemini, Kimi) get AGENTS.md automatically.
 
-## 🧪 Development Workflow & Testing
-- **Mandatory Tests**: Every new feature or logic change in the Python package MUST include a corresponding test case.
-- **Verification**: Use the `/test-pro` skill to ensure coverage and verify that MySQL explain data is parsed correctly before completing a task.
-- **Test Commands**:
-  - Full suite: `./run-tests.sh`
-  - Direct: `python3 -m unittest discover -s test -p "test_myflames.py" -v`
-
-## 🎨 Visualization & UI Standards
-- **Consistency**: All HTML demos and SVGs must share a unified design language (modern system fonts like Inter/Roboto, consistent color palettes for 'Join' vs 'Scan').
-- **Modernization**: For any file in `docs/demos/`, ensure high-contrast colors and responsive layouts.
-- **Review**: Proactively use the `/viz-specialist` skill when modifying renderers (`output_*.py`) to audit visual hierarchy and accessibility.
-
-## 🏗 Architecture (Python package: `myflames/`)
-1. **`parser.py`**: Single entry point. Builds a unified tree. Auto-detects MySQL vs MariaDB format. MariaDB normalization (`_normalize_mariadb*` functions) converts MariaDB's `query_block/nested_loop/table` structure into MySQL's `operation/inputs` tree before `parse_node` processes it. `analyze_plan(root)` scans for full_scans, hash_joins, etc.
-2. **`cli.py`**: Argument parsing and SVG height patching for the analysis panel.
-3. **Renderers**: `flamegraph.py`, `output_bargraph.py`, `output_tree.py`, `output_diagram.py`, `output_workbench.py`. (The treemap view was removed; `--type treemap` is a deprecated alias that warns and renders the bar chart.)
-
-## ⚠️ Key Constraints & Coding Standards
-- **No External Dependencies**: Stdlib only. Python 3.7+ compatible (no walrus operator, no `match` statements).
-- **Single Parser**: Never parse JSON in output modules; always use `parser.parse_explain`.
-- **SVG Rules**: Always update both `height` AND `viewBox` together. Use `_wrap()` for info panel text.
-- **Preserve Order**: Do not sort `inputs[]` in the JSON; order is semantically significant (outer vs inner table).
-- **Preserve Inspiration Credit**: Never remove the "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs" line from the README or anywhere else. This attribution is load-bearing for the project and must always remain.
-- **Commit & release-note conventions**: Do NOT add `Co-Authored-By` or any AI-attribution trailer to commit messages. Keep commit messages, CHANGELOG entries, and GitHub release notes professional: no emojis, no "generated with" footers, and no meta-commentary that an AI/LLM authored or verified the work. Legitimate product references (the tool targets LLMs/agents; `--tokenizer claude` uses Anthropic's `count_tokens`) are fine.
-- **Documentation is mandatory, not optional**: Any change to a user-facing parameter, subcommand, flag, or core feature — adding, renaming, changing behavior, or removing — MUST update the docs in the same change: `README.md` (the relevant section + the Agent/CI subcommands block + any CLI reference), `CLAUDE.md` (this Commands Reference), the `CHANGELOG.md` `[Unreleased]` section, and any affected file under `docs/` (walkthroughs, examples) and `ROADMAP.md`. A PR/commit that ships a CLI surface change without the matching doc edits is incomplete. When renaming, keep a deprecated alias and document it.
-
-## 📖 Commands Reference
-
-- **Local UI**: `python3 -m myflames ui [--port PORT] [--no-browser]` launches the
-  saved-plan workspace on IPv4 loopback. React/TypeScript source is in
-  `apps/workspace/`; the app mark is `docs/brand/myflames-icon-v2.png`, shared
-  by the sidebar, welcome screen, and favicon. Vite emits the stable
-  `/assets/myflames-logo.png` URL; retain earlier logo URL aliases in `ui.py`. `npm ci && npm run build` there regenerates committed
-  `myflames/ui_assets/` files shipped in the wheel. Python users need no Node.js.
-  The UI API reuses the parser, sidecars, and renderers; plans stay in browser
-  memory until explicitly saved. Investigations and credential-free connection
-  profiles use `~/.myflames/workspace.sqlite3`. Live capture jobs reuse `live.py`.
-  Its Teach catalog and lesson player use the existing `LESSONS` registry
-  and `CURRICULUM` order. See `docs/LOCAL_UI.md` and `docs/QUERY_WORKSPACE.md`. Test with `test/test_ui.py` and the CLI suite.
-  Keep the import dialog's native file control visually clipped but keyboard
-  accessible; verify open/error states at desktop and narrow, short viewports.
-  Use `docs/UI_TESTING.md` for the interaction matrix. Check contextual Teach
-  links after navigating to a different lesson and returning to the plan.
-- **Run**: `python3 -m myflames --type [flamegraph|bargraph|diagram|tree|workbench] explain.json > output.svg`
-- **Digest** (AI-era): `python3 -m myflames digest explain.json` — emits the compact, source-grounded digest of a plan (pipe to an LLM). `--cost` shows the token + $ saving vs pasting the raw plan; `--show-prompts` prints both prompts; `--tokenizer {heuristic,claude,gpt}` selects how tokens are counted (`claude` = Anthropic `count_tokens`, needs `myflames[tokens]` + `ANTHROPIC_API_KEY`; `gpt` = tiktoken, keyless, needs `myflames[gpt]`); `--json` for machine output. Lives in `myflames/digest.py`. (Deprecated alias `tokens` still works — it warns on stderr and defaults to `--cost`.)
-- **Plan diff**: `python3 -m myflames diff before.json after.json` (alias of `compare`). `--digest` = token-cheap text diff for an LLM; `--json` = structured `compare-1.0` delta.
-- **CI gate**: `python3 -m myflames check explain.json --fail-on full_scan,filesort` — exits 1 if a trigger matches (categories, severities, or `any`), 0 if clean, 2 on bad input. For pre-commit/CI/agent loops. Lives in `myflames/findings.py`.
-- **Advise**: `python3 -m myflames advise explain.json [--json]` — ranked warnings + suggestions with `confidence`. Also `myflames/findings.py`. (Deprecated alias `findings` still works — it warns on stderr.) The single "Fix first" pick is `findings.primary_suggestion_index` / `build_findings` (one ranking policy, shared by the HTML card and the sidecar `primary_action`).
-- **`--quiet` / `-q`**: uniform across `check`, `digest`, `advise`, `compare` — suppresses incidental stderr diagnostics (the `Written to <path>` line, digest's tokenizer note); stdout data and the exit code are untouched. Registered via `_add_quiet_flag` and routed through `_write_output(..., quiet=...)` in `cli.py`.
-- **MCP server** (agent tools): `myflames-mcp` (optional extra: `pip install myflames[mcp]`). Exposes `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`. Tool logic in `myflames/mcp_server.py` is stdlib + tested; only the transport needs the extra. Register: `claude mcp add myflames -- myflames-mcp`. `analyze_plan` defaults to `detail="core"` (token-cheap decision-grade sidecar); `detail="full"` restores the complete record (adds `collected`/`query`/`teach_hooks`). The `detail` gate lives on `build_sidecar` in `output_sidecar.py` (single source of truth, shared with the CLI `--sidecar` path, which stays `full`); the digest path (`digest_plan_tool`) also stays `full`.
-- **Playground**: `docs/playground/index.html` — client-side Pyodide page (`python3 -m http.server -d docs/playground`).
-- **MySQL Fixtures**: `./scripts/generate-fixtures.sh` (requires Docker) to regenerate MySQL `test/fixtures/`.
-- **MariaDB Fixtures**: `./scripts/generate-mariadb-fixtures.sh` (requires Docker) to regenerate MariaDB `test/fixtures/`.
-
-## Review corrections (2026-09-15)
-
-- Treat parsed operator times as milliseconds. `render_bargraph` converts display
-  units internally; callers must not scale the shared tree.
-- Comparison pairs repeated labels by traversal occurrence. Preserve all
-  occurrences; this is not structural matching across reordered plans.
-- Render/compare input and output failures return 2 with a stderr diagnostic.
-- MySQL TempTable is limited per table by `tmp_table_size`; MEMORY also uses
-  `max_heap_table_size`. Collect `internal_tmp_mem_storage_engine` before making
-  engine-specific recommendations. Configuration size alone does not prove a spill.
-- Scalar/streaming aggregation is linear in input rows; sorting is a separate
-  operator, and DISTINCT or ordered aggregates require separate accounting.
-- Test current MySQL versions with the configurable fixture generator and
-  `MYFLAMES_MYSQL_FIXTURES`; see `test/README.md`. Keep fresh version corpora
-  separate from the committed fixture directory unless intentionally updating it.
-
-## Visual Explain (merged Diagram / Workbench)
-
-`output_workbench.py` renders the canonical tree using Workbench 26.7 visual
-conventions; `workbench.js` supplies scoped pan/zoom/search/selection. Preserve
-every parsed node and edge. Colors encode operation type; arrow widths use
-estimated rows. Keep estimated cost separate from measured milliseconds.
-The UI and CLI share this renderer. `output_diagram.render_diagram` is a
-compatibility wrapper; the UI exposes one Visual Explain tab. Preserve reported
-`join_type` for Venn shading, and keep MariaDB synthetic joins explicitly unknown.
-Join cards have their own height; edges must attach to the actual card bounds.
-Wheel input uses normalized deltas with bounded animation in `workbench.js`. See `docs/WORKBENCH_VIEW.md`.
-Update the zoom percentage and directional button limits in the shared paint
-path so button, wheel, fit, and reset actions stay synchronized.
-
-## Investigation engine
-
-- `myflames capture`: shared `LiveJob` engine; estimated/analyzed JSON capture,
-  typed parameters, timeout, repeat, trace, and cancellation. Capture1.0 artifacts
-  include run statistics and context, never connection credentials.
-- `myflames explore`: four interactive charts (`diagram` remains a `workbench` alias; `treemap` is a deprecated alias for `bargraph`) with `--metric`, `--focus`, repeatable
-  `--collapse`, and `--selected` canonical node IDs.
-- `exploration.py`: copy projections only; never mutate canonical measurements.
-  Selection is linked with `myflames-node` / `myflames-select` messages.
-- `plan_matching.py`: shared structural comparison. Uncertain matches and absent
-  timing must not count as measured regressions. Honor `timing_available`.
-- `workspace_store.py`: explicit opt-in SQLite persistence and versioned bundles.
-- `live.py`: preserve client SQL comments for statement tags; disable optimizer
-  trace immediately after the target statement, before any marker SELECT.
-  Status/P_S scope is the capture statement, not bare SELECT result delivery.
+Accounts CLI: every change accepts `--json`, `-o/--output PATH` and `-q`
+(with `--yes` to suppress the plan description). Refusals and declines return
+`account-change-1.0` with `--json`; cancellation at either confirmation prompt
+is audited as declined (exit 1). Use `accounts role --help` for role actions.

@@ -1,0 +1,87 @@
+
+=====================================
+2026-10-12 21:33:56 0xffff941e9fc0 INNODB MONITOR OUTPUT
+=====================================
+Per second averages calculated from the last 32 seconds
+-----------------
+BACKGROUND THREAD
+-----------------
+srv_master_thread loops: 0 srv_active, 811 srv_idle
+srv_master_thread log flush and writes: 811
+----------
+SEMAPHORES
+----------
+------------------------
+LATEST DETECTED DEADLOCK
+------------------------
+2026-10-12 21:33:53 0xffff941e9fc0
+*** (1) TRANSACTION:
+TRANSACTION 53, ACTIVE 2 sec inserting
+mysql tables in use 1, locked 1
+LOCK WAIT 3 lock struct(s), heap size 1120, 2 row lock(s)
+MariaDB thread id 34, OS thread handle 281473166778304, query id 110 localhost root Update
+INSERT INTO g VALUES (15,1)
+*** WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 11 page no 3 n bits 320 index PRIMARY of table `lk`.`g` trx id 53 lock_mode X locks gap before rec insert intention waiting
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 80000014; asc     ;;
+ 1: len 6; hex 000000000031; asc      1;;
+ 2: len 7; hex 950000002d011c; asc     -  ;;
+ 3: len 4; hex 80000000; asc     ;;
+
+*** CONFLICTING WITH:
+RECORD LOCKS space id 11 page no 3 n bits 320 index PRIMARY of table `lk`.`g` trx id 53 lock_mode X locks gap before rec
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 80000014; asc     ;;
+ 1: len 6; hex 000000000031; asc      1;;
+ 2: len 7; hex 950000002d011c; asc     -  ;;
+ 3: len 4; hex 80000000; asc     ;;
+
+RECORD LOCKS space id 11 page no 3 n bits 320 index PRIMARY of table `lk`.`g` trx id 54 lock_mode X locks gap before rec
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 80000014; asc     ;;
+ 1: len 6; hex 000000000031; asc      1;;
+ 2: len 7; hex 950000002d011c; asc     -  ;;
+ 3: len 4; hex 80000000; asc     ;;
+
+
+*** (2) TRANSACTION:
+TRANSACTION 54, ACTIVE 1 sec inserting
+mysql tables in use 1, locked 1
+LOCK WAIT 3 lock struct(s), heap size 1120, 2 row lock(s)
+MariaDB thread id 35, OS thread handle 281473166409664, query id 109 localhost root Update
+INSERT INTO g VALUES (16,1)
+*** WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 11 page no 3 n bits 320 index PRIMARY of table `lk`.`g` trx id 54 lock_mode X locks gap before rec insert intention waiting
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 80000014; asc     ;;
+ 1: len 6; hex 000000000031; asc      1;;
+ 2: len 7; hex 950000002d011c; asc     -  ;;
+ 3: len 4; hex 80000000; asc     ;;
+
+*** CONFLICTING WITH:
+RECORD LOCKS space id 11 page no 3 n bits 320 index PRIMARY of table `lk`.`g` trx id 53 lock_mode X locks gap before rec
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 80000014; asc     ;;
+ 1: len 6; hex 000000000031; asc      1;;
+ 2: len 7; hex 950000002d011c; asc     -  ;;
+ 3: len 4; hex 80000000; asc     ;;
+
+RECORD LOCKS space id 11 page no 3 n bits 320 index PRIMARY of table `lk`.`g` trx id 54 lock_mode X locks gap before rec
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 4; hex 80000014; asc     ;;
+ 1: len 6; hex 000000000031; asc      1;;
+ 2: len 7; hex 950000002d011c; asc     -  ;;
+ 3: len 4; hex 80000000; asc     ;;
+
+*** WE ROLL BACK TRANSACTION (1)
+------------
+TRANSACTIONS
+------------
+Trx id counter 56
+Purge done for trx's n:o < 46 undo n:o < 0 state: running
+History list length 5
+LIST OF TRANSACTIONS FOR EACH SESSION:
+---TRANSACTION (0xffffa9541500), not started
+0 lock struct(s), heap size 1120, 0 row lock(s)
+---TRANSACTION (0xffffa9540900), not started

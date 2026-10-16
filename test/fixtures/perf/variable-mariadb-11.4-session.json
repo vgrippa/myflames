@@ -1,0 +1,61 @@
+{
+ "server": "mariadb-11.4",
+ "version": "11.4.13-MariaDB-ubu2404",
+ "scenario": "session",
+ "user": "root",
+ "args": {
+  "name": "sort_buffer_size",
+  "value": "4M",
+  "mode": "session",
+  "apply": true,
+  "between": null
+ },
+ "calls": [
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'persisted_globals_load', 'server_id', 'server_uuid', 'sort_buffer_size', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'sort_buffer_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nsort_buffer_size\t2097152\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\nmyflames:session\nsort_buffer_size\t2097152\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'SORT_BUFFER_SIZE'",
+   "SORT_BUFFER_SIZE\t2097152\t2097152\tCOMPILE-TIME\t2097152\tSESSION\tBIGINT UNSIGNED\t1024\t18446744073709551615\t1\tNULL\tNO\tNULL\tEach thread that needs to do a sort allocates a buffer of this size\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GRANTS",
+   "GRANT ALL PRIVILEGES ON *.* TO `root`@`%` IDENTIFIED BY PASSWORD '*284E87FC0AF18FACF1B87EE6FD8E1381AE081615' WITH GRANT OPTION\nGRANT PROXY ON ``@`%` TO `root`@`%` WITH GRANT OPTION\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'persisted_globals_load', 'server_id', 'server_uuid', 'sort_buffer_size', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'sort_buffer_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nsort_buffer_size\t2097152\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\nmyflames:session\nsort_buffer_size\t2097152\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'SORT_BUFFER_SIZE'",
+   "SORT_BUFFER_SIZE\t2097152\t2097152\tCOMPILE-TIME\t2097152\tSESSION\tBIGINT UNSIGNED\t1024\t18446744073709551615\t1\tNULL\tNO\tNULL\tEach thread that needs to do a sort allocates a buffer of this size\n"
+  ],
+  [
+   "/*myflames:variable*/ SET SESSION sort_buffer_size = 4194304; /*myflames:variable*/ SELECT 'myflames:after'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'sort_buffer_size'",
+   "myflames:after\nsort_buffer_size\t4194304\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'persisted_globals_load', 'server_id', 'server_uuid', 'sort_buffer_size', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'sort_buffer_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nsort_buffer_size\t2097152\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\nmyflames:session\nsort_buffer_size\t2097152\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'SORT_BUFFER_SIZE'",
+   "SORT_BUFFER_SIZE\t2097152\t2097152\tCOMPILE-TIME\t2097152\tSESSION\tBIGINT UNSIGNED\t1024\t18446744073709551615\t1\tNULL\tNO\tNULL\tEach thread that needs to do a sort allocates a buffer of this size\n"
+  ]
+ ],
+ "recorded": {
+  "plan_status": "ready",
+  "statement": "SET SESSION sort_buffer_size = 4194304",
+  "result_status": "changed",
+  "after": {
+   "global": "2097152",
+   "persisted": null,
+   "session": "4194304"
+  }
+ },
+ "synthetic_extensions": [
+  "Original variable values and write results were recorded live. Server identity (fixture-db, server_id 1, fixed MySQL UUID) and Linux platform rows are synthetic additions for identity/platform regression coverage.",
+  "The persisted-value read was adapted to IS NULL and HEX; encoded answers are derived from the recorded values, not a new live capture."
+ ]
+}

@@ -1,14 +1,15 @@
 {
-  "schema_version": "1.0",
-  "generated_at": "2026-04-10T20:15:40Z",
-  "myflames_version": "1.2.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-10-15T19:55:24Z",
+  "myflames_version": "2.3.0",
   "source": {
     "type": "live",
     "engine": "mariadb",
-    "engine_version": "11.4.10-MariaDB-ubu2404"
+    "engine_version": "11.4.13-MariaDB-ubu2404"
   },
   "plan_summary": {
-    "total_time_ms": 1210.322,
+    "total_time_ms": 1295.141,
     "rows_sent": 5,
     "rows_examined_estimate": 11000,
     "operator_count": 4,
@@ -65,19 +66,7 @@
     {
       "severity": "warn",
       "category": "env",
-      "text": "Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.",
-      "source": "environment"
-    },
-    {
-      "severity": "warn",
-      "category": "env",
       "text": "Block Nested-Loop detected but join_buffer_size is only 256.0 KB. Build/batch phase may spill to tmpdir.",
-      "source": "environment"
-    },
-    {
-      "severity": "warn",
-      "category": "env",
-      "text": "optimizer_switch has mrr=off; range scans followed by filesort may read rows in random order.",
       "source": "environment"
     }
   ],
@@ -112,28 +101,39 @@
     {
       "severity": "medium",
       "category": "tuning_variable",
-      "action": "Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024).",
-      "source": "environment",
-      "why": "when the sort set does not fit in sort_buffer_size, MySQL writes multiple sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.",
-      "target_variable": "sort_buffer_size"
-    },
-    {
-      "severity": "medium",
-      "category": "tuning_variable",
       "action": "Raise join_buffer_size per-session to 2M–8M (SET SESSION join_buffer_size = 8*1024*1024).",
       "source": "environment",
       "why": "BNL scans the inner table once per outer batch that fits in the join buffer. A tiny buffer means more batches, and each batch triggers another full scan of the inner side. Bigger win: add an index on the join column — that removes the need for the join buffer entirely by turning the join into an indexed lookup.",
       "target_variable": "join_buffer_size"
-    },
-    {
-      "severity": "medium",
-      "category": "optimizer_switch",
-      "action": "Consider SET SESSION optimizer_switch='mrr=on,mrr_cost_based=on';.",
-      "source": "environment",
-      "why": "Multi-Range Read collects row IDs from a secondary-index range scan, sorts them by primary key, and then fetches rows in (mostly) physical order. Without MRR, InnoDB has to dereference each secondary-index row in secondary-index order, which translates to random I/O on the clustered index and hurts both disk and buffer-pool cache locality."
     }
   ],
-  "executive_summary": "Query scans 2 tables, joins via block nested-loop and sorts the result; examines ~11,000 rows to return 5 in 1210 ms. Main finding: join predicate wraps the column in CONCAT() — no index can be used.",
+  "executive_summary": "Query scans 2 tables, joins via block nested-loop and sorts the result; examines ~11,000 rows to return 5 in 1295 ms. Main finding: join predicate wraps the column in CONCAT() — no regular index can be used (only a functional index on that exact expression).",
+  "plan_tree": {
+    "node_id": "n:f4f29c429056",
+    "short_label": "Sort",
+    "folded_label": "SORT starts=1 rows=5",
+    "children": [
+      {
+        "node_id": "n:71b4ad99c5af",
+        "short_label": "Nested loop inner join",
+        "folded_label": "NESTED LOOP INNER starts=1 rows=8000",
+        "children": [
+          {
+            "node_id": "n:ad535b01566b",
+            "short_label": "Table scan [u]",
+            "folded_label": "TABLE SCAN [u] starts=1 rows=3000",
+            "children": []
+          },
+          {
+            "node_id": "n:ee0a97ddd30d",
+            "short_label": "Table scan [o]",
+            "folded_label": "TABLE SCAN [o] starts=1 rows=8000",
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
   "query": {
     "raw": "SELECT u.country, SUM(o.amount) AS total FROM users u JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id) WHERE u.status='active' GROUP BY u.country ORDER BY total DESC",
     "beautified": "SELECT u.country, SUM(o.amount) AS total\nFROM users u\n  JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id)\nWHERE u.status='active'\nGROUP BY u.country\nORDER BY total DESC"
@@ -164,7 +164,7 @@
       "bulk_insert_buffer_size": "8388608",
       "character_set_connection": "utf8mb4",
       "character_set_server": "utf8mb4",
-      "collation_connection": "utf8mb4_0900_ai_ci",
+      "collation_connection": "utf8mb4_uca1400_ai_ci",
       "collation_server": "utf8mb4_uca1400_ai_ci",
       "eq_range_index_dive_limit": "200",
       "innodb_buffer_pool_size": "134217728",
@@ -183,11 +183,11 @@
       "optimizer_switch": "index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=off,sargable_casefold=on",
       "read_buffer_size": "131072",
       "read_rnd_buffer_size": "262144",
-      "sort_buffer_size": "262144",
+      "sort_buffer_size": "2097152",
       "table_open_cache": "2000",
       "thread_cache_size": "151",
       "tmp_table_size": "16777216",
-      "version": "11.4.10-MariaDB-ubu2404",
+      "version": "11.4.13-MariaDB-ubu2404",
       "version_comment": "mariadb.org binary distribution",
       "version_compile_os": "debian-linux-gnu"
     },
@@ -206,7 +206,7 @@
       "demodb.orders": {
         "table_schema": "demodb",
         "table_name": "orders",
-        "table_rows": 7993,
+        "table_rows": 8213,
         "data_length": 425984,
         "index_length": 180224,
         "data_free": 0,
@@ -252,14 +252,32 @@
             "name": null,
             "columns": [
               "id"
-            ]
+            ],
+            "parts": [
+              {
+                "name": "id",
+                "length": null,
+                "desc": false,
+                "expression": false
+              }
+            ],
+            "using": null
           },
           {
             "kind": "KEY",
             "name": "idx_country",
             "columns": [
               "country"
-            ]
+            ],
+            "parts": [
+              {
+                "name": "country",
+                "length": null,
+                "desc": false,
+                "expression": false
+              }
+            ],
+            "using": null
           }
         ],
         "engine": "InnoDB",
@@ -301,19 +319,151 @@
             "name": null,
             "columns": [
               "id"
-            ]
+            ],
+            "parts": [
+              {
+                "name": "id",
+                "length": null,
+                "desc": false,
+                "expression": false
+              }
+            ],
+            "using": null
           },
           {
             "kind": "KEY",
             "name": "idx_user",
             "columns": [
               "user_id"
-            ]
+            ],
+            "parts": [
+              {
+                "name": "user_id",
+                "length": null,
+                "desc": false,
+                "expression": false
+              }
+            ],
+            "using": null
           }
         ],
         "engine": "InnoDB",
         "charset": "utf8mb4"
       }
     }
-  }
+  },
+  "teach_hooks": [
+    {
+      "lesson": "filesort",
+      "match": {
+        "folded_label": "SORT starts=1 rows=5",
+        "short_label": "Sort"
+      },
+      "controls": {
+        "rows": 5,
+        "row_size": 200,
+        "sbs": 2097152
+      },
+      "note": "Sort: sum(o.amount) desc",
+      "query_sql": "SELECT u.country, SUM(o.amount) AS total FROM users u JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id) WHERE u.status='active' GROUP BY u.country ORDER BY total DESC"
+    },
+    {
+      "lesson": "nested_loop",
+      "match": {
+        "folded_label": "NESTED LOOP INNER starts=1 rows=8000",
+        "short_label": "Nested loop inner join"
+      },
+      "controls": {
+        "outer_rows": 3000,
+        "inner_rows": 8000,
+        "row_size": 200,
+        "jbs": 262144
+      },
+      "note": "Nested loop inner join",
+      "query_sql": "SELECT u.country, SUM(o.amount) AS total FROM users u JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id) WHERE u.status='active' GROUP BY u.country ORDER BY total DESC"
+    },
+    {
+      "lesson": "full_scan",
+      "match": {
+        "folded_label": "TABLE SCAN [u] starts=1 rows=3000",
+        "short_label": "Table scan [u]"
+      },
+      "controls": {
+        "rows": 3000,
+        "row_size": 200,
+        "selectivity": 10.0
+      },
+      "note": "Table scan on u (u)",
+      "query_sql": "SELECT u.country, SUM(o.amount) AS total FROM users u JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id) WHERE u.status='active' GROUP BY u.country ORDER BY total DESC"
+    },
+    {
+      "lesson": "bnl",
+      "match": {
+        "folded_label": "TABLE SCAN [o] starts=1 rows=8000",
+        "short_label": "Table scan [o]"
+      },
+      "controls": {
+        "outer_rows": 8000,
+        "inner_rows": 8000,
+        "row_size": 200,
+        "jbs": 262144
+      },
+      "note": "Table scan on o (o)",
+      "query_sql": "SELECT u.country, SUM(o.amount) AS total FROM users u JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id) WHERE u.status='active' GROUP BY u.country ORDER BY total DESC"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "node_id": "n:f4f29c429056",
+      "folded_label": "SORT starts=1 rows=5",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "node_id": "n:71b4ad99c5af",
+      "folded_label": "NESTED LOOP INNER starts=1 rows=8000",
+      "short_label": "Nested loop inner join",
+      "complexity": {
+        "big_o": "O(n · m)",
+        "short": "n · m",
+        "severity": "bad",
+        "rationale": "Unindexed nested loop: every outer row drives a full scan of the inner side. This is the classic O(n²)-class blow-up.",
+        "confidence": "exact",
+        "learn_more": "nested_loop_join"
+      }
+    },
+    {
+      "node_id": "n:ad535b01566b",
+      "folded_label": "TABLE SCAN [u] starts=1 rows=3000",
+      "short_label": "Table scan [u]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "node_id": "n:ee0a97ddd30d",
+      "folded_label": "TABLE SCAN [o] starts=1 rows=8000",
+      "short_label": "Table scan [o]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    }
+  ]
 }

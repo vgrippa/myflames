@@ -1,0 +1,159 @@
+{
+ "server": "MySQL 8.4.11 replica, file and position, after STOP REPLICA SQL_THREAD (live, 2026-10-15)",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:replication*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('enforce_gtid_consistency', 'gtid_current_pos', 'gtid_domain_id', 'gtid_mode', 'gtid_slave_pos', 'gtid_strict_mode', 'performance_schema', 'read_only', 'replica_parallel_workers', 'replica_preserve_commit_order', 'slave_parallel_threads', 'slave_parallel_workers', 'slave_preserve_commit_order', 'super_read_only', 'userstat', 'version', 'version_comment')",
+   "enforce_gtid_consistency\tOFF\ngtid_mode\tOFF\nperformance_schema\tON\nread_only\tOFF\nreplica_parallel_workers\t4\nreplica_preserve_commit_order\tON\nslave_parallel_workers\t4\nslave_preserve_commit_order\tON\nsuper_read_only\tOFF\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t860\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW REPLICA STATUS",
+   "<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:replication*/ SHOW REPLICA STATUS\n\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"Replica_IO_State\">Waiting for source to send event</field>\n\t<field name=\"Source_Host\">mf-repl-f-src</field>\n\t<field name=\"Source_User\">repl</field>\n\t<field name=\"Source_Port\">3306</field>\n\t<field name=\"Connect_Retry\">60</field>\n\t<field name=\"Source_Log_File\">binlog.000003</field>\n\t<field name=\"Read_Source_Log_Pos\">2252</field>\n\t<field name=\"Relay_Log_File\">fac0573be3f7-relay-bin.000003</field>\n\t<field name=\"Relay_Log_Pos\">618</field>\n\t<field name=\"Relay_Source_Log_File\">binlog.000003</field>\n\t<field name=\"Replica_IO_Running\">Yes</field>\n\t<field name=\"Replica_SQL_Running\">No</field>\n\t<field name=\"Replicate_Do_DB\"></field>\n\t<field name=\"Replicate_Ignore_DB\"></field>\n\t<field name=\"Replicate_Do_Table\"></field>\n\t<field name=\"Replicate_Ignore_Table\"></field>\n\t<field name=\"Replicate_Wild_Do_Table\"></field>\n\t<field name=\"Replicate_Wild_Ignore_Table\"></field>\n\t<field name=\"Last_Errno\">0</field>\n\t<field name=\"Last_Error\"></field>\n\t<field name=\"Skip_Counter\">0</field>\n\t<field name=\"Exec_Source_Log_Pos\">2252</field>\n\t<field name=\"Relay_Log_Space\">2279</field>\n\t<field name=\"Until_Condition\">None</field>\n\t<field name=\"Until_Log_File\"></field>\n\t<field name=\"Until_Log_Pos\">0</field>\n\t<field name=\"Source_SSL_Allowed\">No</field>\n\t<field name=\"Source_SSL_CA_File\"></field>\n\t<field name=\"Source_SSL_CA_Path\"></field>\n\t<field name=\"Source_SSL_Cert\"></field>\n\t<field name=\"Source_SSL_Cipher\"></field>\n\t<field name=\"Source_SSL_Key\"></field>\n\t<field name=\"Seconds_Behind_Source\" xsi:nil=\"true\" />\n\t<field name=\"Source_SSL_Verify_Server_Cert\">No</field>\n\t<field name=\"Last_IO_Errno\">0</field>\n\t<field name=\"Last_IO_Error\"></field>\n\t<field name=\"Last_SQL_Errno\">0</field>\n\t<field name=\"Last_SQL_Error\"></field>\n\t<field name=\"Replicate_Ignore_Server_Ids\"></field>\n\t<field name=\"Source_Server_Id\">3</field>\n\t<field name=\"Source_UUID\">728bc031-c8b1-11f1-8e2d-dafb60f7f718</field>\n\t<field name=\"Source_Info_File\">mysql.slave_master_info</field>\n\t<field name=\"SQL_Delay\">0</field>\n\t<field name=\"SQL_Remaining_Delay\" xsi:nil=\"true\" />\n\t<field name=\"Replica_SQL_Running_State\"></field>\n\t<field name=\"Source_Retry_Count\">10</field>\n\t<field name=\"Source_Bind\"></field>\n\t<field name=\"Last_IO_Error_Timestamp\"></field>\n\t<field name=\"Last_SQL_Error_Timestamp\"></field>\n\t<field name=\"Source_SSL_Crl\"></field>\n\t<field name=\"Source_SSL_Crlpath\"></field>\n\t<field name=\"Retrieved_Gtid_Set\"></field>\n\t<field name=\"Executed_Gtid_Set\"></field>\n\t<field name=\"Auto_Position\">0</field>\n\t<field name=\"Replicate_Rewrite_DB\"></field>\n\t<field name=\"Channel_Name\"></field>\n\t<field name=\"Source_TLS_Version\"></field>\n\t<field name=\"Source_public_key_path\"></field>\n\t<field name=\"Get_Source_public_key\">1</field>\n\t<field name=\"Network_Namespace\"></field>\n  </row>\n</resultset>\n"
+  ],
+  [
+   "/*myflames:replication*/ SELECT CHANNEL_NAME, HEARTBEAT_INTERVAL FROM performance_schema.replication_connection_configuration",
+   "\t30.000\n"
+  ],
+  [
+   "/*myflames:replication*/ SELECT CHANNEL_NAME, ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_TYPE FROM performance_schema.replication_applier_configuration",
+   "\tOFF\n"
+  ],
+  [
+   "/*myflames:replication*/ SELECT CHANNEL_NAME, SERVICE_STATE, COUNT_RECEIVED_HEARTBEATS, LAST_HEARTBEAT_TIMESTAMP, LAST_QUEUED_TRANSACTION, LAST_QUEUED_TRANSACTION_END_QUEUE_TIMESTAMP, TIMESTAMPDIFF(MICROSECOND, LAST_HEARTBEAT_TIMESTAMP, NOW(6)), TIMESTAMPDIFF(MICROSECOND, LAST_QUEUED_TRANSACTION_END_QUEUE_TIMESTAMP, NOW(6)) FROM performance_schema.replication_connection_status",
+   "\tON\t15\t2026-10-15 16:13:50.003024\tANONYMOUS\t2026-10-15 16:14:13.906181\t26359475\t2456318\n"
+  ],
+  [
+   "/*myflames:replication*/ SELECT CHANNEL_NAME, WORKER_ID, LAST_ERROR_NUMBER, LAST_ERROR_MESSAGE, LAST_ERROR_TIMESTAMP, APPLYING_TRANSACTION, APPLYING_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP, TIMESTAMPDIFF(MICROSECOND, APPLYING_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP, NOW(6)), LAST_APPLIED_TRANSACTION, LAST_APPLIED_TRANSACTION_END_APPLY_TIMESTAMP, TIMESTAMPDIFF(MICROSECOND, LAST_APPLIED_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP, LAST_APPLIED_TRANSACTION_END_APPLY_TIMESTAMP) FROM performance_schema.replication_applier_status_by_worker",
+   "\t1\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\tANONYMOUS\t2026-10-15 16:14:13.911794\t1293427\n\t2\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\n\t3\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\n\t4\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "replication-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "captured_at": "2026-10-15T16:34:49.310190+00:00",
+  "uptime_s": 860,
+  "available": true,
+  "message": null,
+  "replica": true,
+  "statement": "SHOW REPLICA STATUS",
+  "gtid": {
+   "mode": "OFF",
+   "enforce_consistency": "OFF"
+  },
+  "settings": {
+   "read_only": "OFF",
+   "super_read_only": "OFF",
+   "parallel_workers": 4,
+   "preserve_commit_order": "ON"
+  },
+  "channels": [
+   {
+    "name": "",
+    "kind": "replication",
+    "judged": true,
+    "source": {
+     "host": "mf-repl-f-src",
+     "port": 3306,
+     "uuid": "728bc031-c8b1-11f1-8e2d-dafb60f7f718",
+     "server_id": 3
+    },
+    "io": {
+     "running": "Yes",
+     "state": "Waiting for source to send event",
+     "error": {
+      "errno": 0,
+      "message": null,
+      "timestamp": null
+     }
+    },
+    "sql": {
+     "running": "No",
+     "state": null,
+     "error": {
+      "errno": 0,
+      "message": null,
+      "timestamp": null,
+      "table": null,
+      "end_log_pos": null
+     },
+     "delay_s": 0,
+     "remaining_delay_s": null
+    },
+    "lag_s": null,
+    "lag_notes": [
+     "Seconds_Behind_Source is NULL because the SQL thread is not running.",
+     "Worker lag compares the source's commit timestamp with the replica's clock: the two servers' clocks must be in sync for it to be exact."
+    ],
+    "lag_signals": {
+     "applying_lag_s": null,
+     "last_apply_lag_s": 1.293,
+     "heartbeat_interval_s": 30.0,
+     "heartbeats_received": 15,
+     "heartbeat_age_s": 26.359,
+     "last_queued_age_s": 2.456,
+     "receiver_idle_s": 2.456
+    },
+    "position": {
+     "auto_position": false,
+     "retrieved_gtid_set": null,
+     "executed_gtid_set": null,
+     "source_log_file": "binlog.000003",
+     "read_source_log_pos": 2252,
+     "exec_file": "binlog.000003",
+     "exec_pos": 2252,
+     "relay_log_file": "fac0573be3f7-relay-bin.000003",
+     "relay_log_pos": 618,
+     "skip_counter": 0
+    },
+    "worker": {
+     "workers": 4,
+     "error": {
+      "errno": 0,
+      "message": null,
+      "timestamp": null
+     },
+     "failing_worker_id": null,
+     "failing_applying_transaction": null,
+     "applying_transactions": [],
+     "last_applied_transaction": "ANONYMOUS",
+     "last_applied_end_apply": "2026-10-15 16:14:13.911794"
+    },
+    "agat": "OFF",
+    "failing_gtid": null,
+    "relay": null,
+    "status": "problem",
+    "status_why": [
+     "The applier (SQL thread) is not running."
+    ],
+    "receiver": {
+     "service_state": "ON",
+     "last_queued_transaction": "ANONYMOUS"
+    }
+   }
+  ],
+  "capabilities": {
+   "status": true,
+   "performance_schema": true,
+   "worker_timestamps": true,
+   "agat": true
+  },
+  "notes": [
+   "Seconds_Behind_Source compares the original timestamp of the event being applied with the replica's clock, adjusted by the clock difference measured when the receiver connected. A clock change on either server after that skews it, and one long transaction shows as a jump, so it is never the only lag signal."
+  ],
+  "summary": {
+   "channels": 1,
+   "judged": 1,
+   "ok": 0,
+   "watch": 0,
+   "problem": 1,
+   "unknown": 0,
+   "failed": 0,
+   "lag_max_s": null
+  }
+ }
+}

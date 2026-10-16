@@ -1,0 +1,37 @@
+{
+ "server": "mariadb-11.4",
+ "version": "11.4.13-MariaDB-ubu2404",
+ "scenario": "persist",
+ "user": "root",
+ "args": {
+  "name": "max_connections",
+  "value": "300",
+  "mode": "persist",
+  "apply": false,
+  "between": null
+ },
+ "calls": [
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'max_connections', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'max_connections'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nmax_connections\t300\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\nmyflames:session\nmax_connections\t300\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'MAX_CONNECTIONS'",
+   "MAX_CONNECTIONS\tNULL\t300\tSQL\t151\tGLOBAL\tBIGINT UNSIGNED\t10\t100000\t1\tNULL\tNO\tNULL\tThe number of simultaneous clients allowed\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GRANTS",
+   "GRANT ALL PRIVILEGES ON *.* TO `root`@`%` IDENTIFIED BY PASSWORD '*284E87FC0AF18FACF1B87EE6FD8E1381AE081615' WITH GRANT OPTION\nGRANT PROXY ON ``@`%` TO `root`@`%` WITH GRANT OPTION\n"
+  ]
+ ],
+ "recorded": {
+  "plan_status": "refused",
+  "statement": null,
+  "result_status": null,
+  "after": null
+ },
+ "synthetic_extensions": [
+  "Original variable values and write results were recorded live. Server identity (fixture-db, server_id 1, fixed MySQL UUID) and Linux platform rows are synthetic additions for identity/platform regression coverage.",
+  "The persisted-value read was adapted to IS NULL and HEX; encoded answers are derived from the recorded values, not a new live capture."
+ ]
+}

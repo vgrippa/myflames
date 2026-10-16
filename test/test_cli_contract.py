@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from myflames.parser import parse_explain
+
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TEST_DIR)
 FIXTURE_DIR = os.path.join(TEST_DIR, "fixtures")
@@ -86,11 +88,15 @@ class TestOutputFlag(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, '')
                 content = output.read_text()
-                self.assertIn('class="wb-plan"', content)
-                self.assertIn('data-node-id=', content)
                 if extension == 'svg':
+                    self.assertIn('class="wb-plan"', content)
+                    self.assertIn('data-node-id=', content)
                     ET.fromstring(content)
                 else:
+                    # The report mounts Visual Explain from chart data with
+                    # the inlined bundle (browser coverage: charts.mjs).
+                    self.assertIn('data-mfc-view="workbench"', content)
+                    self.assertIn('"id":"' + parse_explain(Path(FULL_SCAN).read_text())['node_id'] + '"', content)
                     self.assertIn('application/ld+json', content)
                     sidecar = json.loads(output.with_suffix('.json').read_text())
                     self.assertIn('plan_tree', sidecar)

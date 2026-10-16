@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="1730" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1730" style="max-width: 100%; height: auto;">
+<svg version="1.1" width="1200" height="1730" viewBox="0 0 1200 1730" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="max-width: 100%; height: auto;">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -20,7 +20,7 @@
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
 <text x="600.0" y="28" text-anchor="middle" class="title">Live MySQL 8.4 — hash join + ORDER BY</text>
-<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 11 ms</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 9 ms</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
 <text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
 <text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
@@ -37,34 +37,34 @@
 <text id="details-l6" x="20" y="1692" text-anchor="start" class="details-line"></text>
 <text id="details-l7" x="20" y="1706" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
-<text x="320" y="98.0" text-anchor="end" class="label">Inner hash join (concat('u',o.user_id) = concat(...</text>
+<text x="320" y="98.0" text-anchor="end" class="label">Inner hash join (concat('u',o.user_id) = concat('…</text>
 <text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar in-query-analysis" x="410" y="80" width="217.06423654456614" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Inner hash join (concat('u',o.user_id) = concat('u',u.id))  ·  Self: 4 ms (33.9%)  ·  Total: 7 ms  ·  Rows: 6859  ·  Loops: 1  ·  Access: join  ·  Est.rows: 2397900  ⚠ Optimizer overestimate" data-label="Inner hash join (concat('u',o.user_id) = concat('u..." data-analysis-msg="Non-sargable join predicate: CONCAT(...) in Inner hash join (concat('u',o.user_id) = concat('u',u.id)) — a function wrapped around the join column prevents index use."/>
-<text x="1060" y="98.0" class="value">4 ms (33.9%)</text>
+<rect class="bar in-query-analysis" x="410" y="80" width="228.0527000659602" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-node-id="n:5a3c13968281" data-info="Inner hash join (concat(&#39;u&#39;,o.user_id) = concat(&#39;u&#39;,u.id))  ·  Self: 3 ms (35.6%)  ·  Total: 6 ms  ·  Rows: 6859  ·  Loops: 1  ·  Access: join  ·  Est.rows: 2358600  ⚠ Optimizer overestimate" data-label="Inner hash join (concat(&#39;u&#39;,o.user_id) = concat(&#39;u..." data-analysis-msg="Non-sargable join predicate: CONCAT(...) in Inner hash join (concat(&#39;u&#39;,o.user_id) = concat(&#39;u&#39;,u.id)) — a function wrapped around the join column prevents index use." data-teach-index="3"/>
+<text x="1060" y="98.0" class="value">3 ms (35.6%)</text>
 <text x="320" y="132.0" text-anchor="end" class="label">Aggregate</text>
 <text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="114" width="216.63480400898808" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Aggregate using temporary table  ·  Self: 4 ms (33.8%)  ·  Total: 11 ms  ·  Rows: 5  ·  Loops: 1  ·  Access: temp_table_aggregate" data-label="Aggregate"/>
-<text x="1060" y="132.0" class="value">4 ms (33.8%)</text>
+<rect class="bar" x="410" y="114" width="217.76485474708875" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-node-id="n:288184b1ac9b" data-info="Aggregate using temporary table  ·  Self: 3 ms (34.0%)  ·  Total: 9 ms  ·  Rows: 5  ·  Loops: 1  ·  Access: temp_table_aggregate" data-label="Aggregate" data-teach-index="2"/>
+<text x="1060" y="132.0" class="value">3 ms (34.0%)</text>
 <text x="320" y="166.0" text-anchor="end" class="label">Table scan [orders]</text>
 <text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar in-query-analysis" x="410" y="148" width="122.34481815695928" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Table scan on o  ·  Self: 2 ms (19.1%)  ·  Rows: 8000  ·  Loops: 1  ·  Table: orders  ·  Access: table  ·  Est.rows: 7993" data-label="Table scan [orders]" data-analysis-msg="Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)"/>
-<text x="1060" y="166.0" class="value">2 ms (19.1%)</text>
+<rect class="bar in-query-analysis" x="410" y="148" width="109.1044367350189" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-node-id="n:13f9abc9fc00" data-info="Table scan on o  ·  Self: 1 ms (17.0%)  ·  Rows: 8000  ·  Loops: 1  ·  Table: orders  ·  Access: table  ·  Est.rows: 7862" data-label="Table scan [orders]" data-analysis-msg="Full table scan: orders (8000 rows), users (3000 rows)" data-teach-index="4"/>
+<text x="1060" y="166.0" class="value">1 ms (17.0%)</text>
 <text x="320" y="200.0" text-anchor="end" class="label">Table scan [users]</text>
 <text x="370.0" y="200.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar in-query-analysis" x="410" y="182" width="56.045523177705654" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-info="Table scan on u  ·  Self: 0.943 ms (8.8%)  ·  Rows: 3000  ·  Loops: 1  ·  Table: users  ·  Access: table  ·  Est.rows: 3000" data-label="Table scan [users]" data-analysis-msg="Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)"/>
-<text x="1060" y="200.0" class="value">0.943 ms (8.8%)</text>
+<rect class="bar in-query-analysis" x="410" y="182" width="54.95035491026323" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-node-id="n:3faf9eb683af" data-info="Table scan on u  ·  Self: 0.746 ms (8.6%)  ·  Rows: 3000  ·  Loops: 1  ·  Table: users  ·  Access: table  ·  Est.rows: 3000" data-label="Table scan [users]" data-analysis-msg="Full table scan: orders (8000 rows), users (3000 rows)" data-teach-index="6"/>
+<text x="1060" y="200.0" class="value">0.746 ms (8.6%)</text>
 <text x="320" y="234.0" text-anchor="end" class="label">Filter: ((u.status = 'active'))</text>
 <text x="370.0" y="234.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar" x="410" y="216" width="26.949566644077475" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-info="Filter: (u.status = 'active')  ·  Self: 0.453 ms (4.2%)  ·  Total: 1 ms  ·  Rows: 2572  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 300  ⚠ Optimizer underestimate (8.6×)  ·  Cond: (u.`status` = 'active')" data-label="Filter: ((u.status = 'active'))"/>
-<text x="1060" y="234.0" class="value">0.453 ms (4.2%)</text>
+<rect class="bar" x="410" y="216" width="29.234608088943684" height="28" fill="rgb(255,220,80)" rx="3" ry="3" data-node-id="n:f52549d0242a" data-info="Filter: (u.status = &#39;active&#39;)  ·  Self: 0.397 ms (4.6%)  ·  Total: 1 ms  ·  Rows: 2572  ·  Loops: 1  ·  Access: filter  ·  Est.rows: 300  ⚠ Optimizer underestimate (8.6×)  ·  Cond: (u.`status` = &#39;active&#39;)" data-label="Filter: ((u.status = &#39;active&#39;))" data-teach-index="5"/>
+<text x="1060" y="234.0" class="value">0.397 ms (4.6%)</text>
 <text x="320" y="268.0" text-anchor="end" class="label">Sort</text>
 <text x="370.0" y="268.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar in-query-analysis" x="410" y="250" width="3" height="28" fill="rgb(200,200,100)" rx="3" ry="3" data-info="Sort: total DESC  ·  Self: 0.015 ms (0.1%)  ·  Total: 11 ms  ·  Rows: 5  ·  Loops: 1  ·  Access: sort" data-label="Sort" data-analysis-msg="1 sort operation(s) — 5 rows; may use disk-based filesort"/>
-<text x="1060" y="268.0" class="value">0.015 ms (0.1%)</text>
+<rect class="bar in-query-analysis" x="410" y="250" width="3" height="28" fill="rgb(200,200,100)" rx="3" ry="3" data-node-id="n:6a06df7aace7" data-info="Sort: total DESC  ·  Self: 0.011 ms (0.1%)  ·  Total: 9 ms  ·  Rows: 5  ·  Loops: 1  ·  Access: sort" data-label="Sort" data-analysis-msg="1 sort operation(s) — 5 rows; may use disk-based filesort" data-teach-index="0"/>
+<text x="1060" y="268.0" class="value">0.011 ms (0.1%)</text>
 <text x="320" y="302.0" text-anchor="end" class="label">Table scan [&lt;temporary&gt;]</text>
 <text x="370.0" y="302.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar in-query-analysis" x="410" y="284" width="3" height="28" fill="rgb(150,200,150)" rx="3" ry="3" data-info="Table scan on &lt;temporary&gt;  ·  Self: 0.002 ms (0.0%)  ·  Total: 11 ms  ·  Rows: 5  ·  Loops: 1  ·  Table: &lt;temporary&gt;  ·  Access: table" data-label="Table scan [&lt;temporary&gt;]" data-analysis-msg="Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)"/>
-<text x="1060" y="302.0" class="value">0.002 ms (0.0%)</text>
+<rect class="bar" x="410" y="284" width="3" height="28" fill="rgb(150,200,150)" rx="3" ry="3" data-node-id="n:fe47e746b576" data-info="Table scan on &lt;temporary&gt;  ·  Self: 0.001 ms (0.0%)  ·  Total: 9 ms  ·  Rows: 5  ·  Loops: 1  ·  Table: &lt;temporary&gt;  ·  Access: table" data-label="Table scan [&lt;temporary&gt;]" data-teach-index="1"/>
+<text x="1060" y="302.0" class="value">0.001 ms (0.0%)</text>
 <rect x="10" y="466" width="1180" height="1264" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
 <rect x="10" y="476" width="1180" height="30" fill="#e8eaf6" rx="6"/>
 <rect x="10" y="482" width="1180" height="24" fill="#e8eaf6"/>
@@ -89,8 +89,8 @@
 <text x="26" y="795" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
 <text x="36" y="819" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Non-sargable join predicate: CONCAT(...) in Inner hash join (concat('u',o.user_id) = concat('u',u.id)) — a function wrapped around the join column prevents index use.</text>
 <text x="36" y="836" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (concat('u',o.user_id) = concat('u...”</text>
-<text x="36" y="853" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (5 rows), orders (8000 rows), users (3000 rows)</text>
-<text x="36" y="870" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [orders]”, “Table scan [users]”</text>
+<text x="36" y="853" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: orders (8000 rows), users (3000 rows)</text>
+<text x="36" y="870" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [orders]”, “Table scan [users]”</text>
 <text x="36" y="887" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 hash join(s) — uses join_buffer_size (~6859 rows in build phase)</text>
 <text x="36" y="904" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Inner hash join (concat('u',o.user_id) = concat('u...”</text>
 <text x="36" y="921" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 5 rows; may use disk-based filesort</text>
@@ -109,21 +109,21 @@
 <text x="36" y="1138" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">    CREATE INDEX idx_users_status ON users (status);</text>
 <rect x="14" y="1148" width="1172" height="22" fill="#fff3f3" rx="4"/>
 <text x="26" y="1163" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">🔍  Environment warnings (from collected server state)</text>
-<text x="36" y="1187" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.</text>
+<text x="36" y="1187" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Filesort detected with sort_buffer_size=256.0 KB. Whether it spills depends on the sort's row count and record size.</text>
 <text x="36" y="1204" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Hash join detected but join_buffer_size is only 256.0 KB. Build/batch phase may spill to tmpdir.</text>
 <text x="36" y="1221" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Table users has no index covering (status).</text>
 <rect x="14" y="1231" width="1172" height="22" fill="#e8f5e9" rx="4"/>
 <text x="26" y="1246" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">⚙  Environment tuning suggestions</text>
-<text x="36" y="1270" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024). Why: when the sort set does not fit in sort_buffer_size, MySQL writes multiple</text>
-<text x="36" y="1287" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort.</text>
-<text x="36" y="1304" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.</text>
+<text x="36" y="1270" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Check sort merge passes and query timing before increasing sort_buffer_size for this session. Why: when sort records exceed the buffer, MySQL can write sorted runs and merge</text>
+<text x="36" y="1287" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">them. A larger buffer may avoid that work; small sorts may already fit in memory. Test session-level changes and account for concurrent sorting sessions before changing the global</text>
+<text x="36" y="1304" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">default.</text>
 <text x="36" y="1321" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise join_buffer_size per-session to 2M–8M (SET SESSION join_buffer_size = 8*1024*1024). Why: hash join builds an in-memory hash table on the smaller input and probes from the</text>
 <text x="36" y="1338" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">other side. If the build side does not fit in join_buffer_size, MySQL spills to tmpdir and does a multi-pass (Grace) hash join — each extra pass re-reads the probe side, so total</text>
 <text x="36" y="1355" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">I/O roughly multiplies. Bigger win: add an index on the join column — that removes the need for the join buffer entirely by turning the join into an indexed lookup.</text>
 <text x="36" y="1372" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  CREATE INDEX idx_users_status ON users (status);</text>
 <rect x="14" y="1382" width="1172" height="22" fill="#e3f2fd" rx="4"/>
 <text x="26" y="1397" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected session variables</text>
-<text x="36" y="1421" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 8.4.8</text>
+<text x="36" y="1421" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 8.4.11</text>
 <text x="36" y="1438" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_buffer_pool_size = 134217728</text>
 <text x="36" y="1455" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_log_file_size = 50331648</text>
 <text x="36" y="1472" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_flush_log_at_trx_commit = 1</text>
@@ -136,7 +136,7 @@
 <rect x="14" y="1584" width="1172" height="22" fill="#e3f2fd" rx="4"/>
 <text x="26" y="1599" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected table stats (information_schema.tables)</text>
 <text x="36" y="1623" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users: rows=3000, data=180224, idx=81920</text>
-<text x="36" y="1640" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders: rows=7993, data=425984, idx=180224</text>
+<text x="36" y="1640" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders: rows=7862, data=425984, idx=180224</text>
 <rect x="14" y="1650" width="1172" height="22" fill="#e3f2fd" rx="4"/>
 <text x="26" y="1665" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected schema (SHOW CREATE TABLE)</text>
 <text x="36" y="1689" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users — 5 cols, indexes: PRIMARY, idx_country</text>
@@ -218,30 +218,57 @@
     });
   }
 
-  function searchPrompt() {
-    if (searchBtn.textContent === "Reset Search") {
-      var bars = document.querySelectorAll(".bar");
-      for (var i = 0; i < bars.length; i++) {
-        bars[i].style.opacity = "";
-        bars[i].style.stroke = "";
-        bars[i].style.strokeWidth = "";
-      }
-      searchBtn.textContent = "Search";
-      if (!pinnedBar) clearDetails();
-      searching = false;
-      return;
+  // Slice 4 / V4 — unified search: honest match count + next/prev.
+  var _searchMatches = [];
+  var _searchIdx = 0;
+
+  function _clearSearchStyles() {
+    var bars = document.querySelectorAll(".bar");
+    for (var i = 0; i < bars.length; i++) {
+      bars[i].style.opacity = "";
+      bars[i].style.stroke = "";
+      bars[i].style.strokeWidth = "";
     }
+  }
+
+  function _focusMatch(idx) {
+    if (!_searchMatches.length) return;
+    var n = _searchMatches.length;
+    _searchIdx = ((idx % n) + n) % n;
+    for (var i = 0; i < n; i++) {
+      var active = (i === _searchIdx);
+      _searchMatches[i].style.stroke = active ? "rgb(230,0,230)" : "rgb(210,140,210)";
+      _searchMatches[i].style.strokeWidth = active ? "3" : "1.5";
+    }
+    try {
+      _searchMatches[_searchIdx].scrollIntoView({block: "center", behavior: "smooth"});
+    } catch (e) {}
+    setDetailsText([
+      "Match " + (_searchIdx + 1) + "/" + n + "  ·  n=next, N=prev, Esc=clear"
+    ]);
+  }
+
+  function _clearSearch() {
+    _clearSearchStyles();
+    _searchMatches = [];
+    searchBtn.textContent = "Search";
+    if (!pinnedBar) clearDetails();
+    searching = false;
+  }
+
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") { _clearSearch(); return; }
     var term = prompt("Search (regex):");
     if (term == null) return;
     var re;
     try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
     var bars = document.querySelectorAll(".bar");
+    _searchMatches = [];
     for (var i = 0; i < bars.length; i++) {
       var label = bars[i].getAttribute("data-label") || "";
       if (re.test(label)) {
         bars[i].style.opacity = "1";
-        bars[i].style.stroke = "rgb(230,0,230)";
-        bars[i].style.strokeWidth = "2";
+        _searchMatches.push(bars[i]);
       } else {
         bars[i].style.opacity = "0.3";
         bars[i].style.stroke = "";
@@ -250,8 +277,27 @@
     }
     searchBtn.textContent = "Reset Search";
     searching = true;
-    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+    if (!_searchMatches.length) {
+      setDetailsText([
+        "0 matches for " + term + "  ·  Click ‘Reset Search’ to clear"
+      ]);
+      return;
+    }
+    _focusMatch(0);
   }
+
+  function _searchNext(delta) {
+    if (!_searchMatches.length) return;
+    _focusMatch(_searchIdx + delta);
+  }
+
+  document.addEventListener("keydown", function(e) {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (e.key === "n" && _searchMatches.length) { _searchNext(1); e.preventDefault(); }
+    else if (e.key === "N" && _searchMatches.length) { _searchNext(-1); e.preventDefault(); }
+    else if (e.key === "Escape" && _searchMatches.length) { _clearSearch(); e.preventDefault(); }
+    else if (e.key === "/") { e.preventDefault(); searchPrompt(); }
+  });
 
   window.init = init;
 })();

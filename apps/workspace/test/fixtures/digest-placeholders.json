@@ -1,0 +1,248 @@
+{
+  "about": "Shared cases for apps/workspace/src/placeholders.ts (test/placeholders.mjs) and myflames/discover.py (test/test_digest_capture.py). Digest texts are copied from MySQL 8.4 / 26.7 and MariaDB 11.4 / 13.0 servers. join_function_calls covers the built-in names that need \"(\" right after them (MySQL sql/lex.h SYM_FN, MariaDB sql/lex.h sql_functions[]).",
+  "parameterize": [
+    {
+      "name": "MySQL digest with two literals",
+      "text": "SELECT * FROM `orders` WHERE STATUS = ? ORDER BY `total` DESC LIMIT ?",
+      "sql": "SELECT * FROM `orders` WHERE STATUS = :p1 ORDER BY `total` DESC LIMIT :p2",
+      "names": [
+        "p1",
+        "p2"
+      ],
+      "lists": []
+    },
+    {
+      "name": "IN (...) collapsed list becomes one parameter",
+      "text": "SELECT * FROM `orders` WHERE `customer_id` IN (...) AND `created_at` > ?",
+      "sql": "SELECT * FROM `orders` WHERE `customer_id` IN (:p1) AND `created_at` > :p2",
+      "names": [
+        "p1",
+        "p2"
+      ],
+      "lists": [
+        "p1"
+      ]
+    },
+    {
+      "name": "generic value list ?, ...",
+      "text": "SELECT ?, ... FROM `customers` WHERE ID = ? ",
+      "sql": "SELECT :p1 FROM `customers` WHERE ID = :p2 ",
+      "names": [
+        "p1",
+        "p2"
+      ],
+      "lists": [
+        "p1"
+      ]
+    },
+    {
+      "name": "row value lists keep their comment",
+      "text": "SELECT * FROM `t` WHERE ( `a` , `b` ) IN ( (?) /* , ... */ ) OR `c` IN ( (...) /* , ... */ )",
+      "sql": "SELECT * FROM `t` WHERE ( `a` , `b` ) IN ( (:p1) /* , ... */ ) OR `c` IN ( (:p2) /* , ... */ )",
+      "names": [
+        "p1",
+        "p2"
+      ],
+      "lists": [
+        "p2"
+      ]
+    },
+    {
+      "name": "quotes, backticks and comments are left alone",
+      "text": "SELECT '?' , `a?b` , \"?\" /* ? */ FROM t WHERE x = ? -- ?\n AND y = ? # ?\n AND z = ?",
+      "sql": "SELECT '?' , `a?b` , \"?\" /* ? */ FROM t WHERE x = :p1 -- ?\n AND y = :p2 # ?\n AND z = :p3",
+      "names": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "lists": []
+    },
+    {
+      "name": "escaped quotes inside strings",
+      "text": "SELECT 'it''s ?', 'a\\'?', `x``?` FROM t WHERE a = ?",
+      "sql": "SELECT 'it''s ?', 'a\\'?', `x``?` FROM t WHERE a = :p1",
+      "names": [
+        "p1"
+      ],
+      "lists": []
+    },
+    {
+      "name": "optimizer hint comment",
+      "text": "SELECT /*+ NO_ICP(t) */ * FROM t WHERE a = ?",
+      "sql": "SELECT /*+ NO_ICP(t) */ * FROM t WHERE a = :p1",
+      "names": [
+        "p1"
+      ],
+      "lists": []
+    },
+    {
+      "name": "double dash without a space is not a comment",
+      "text": "SELECT a--? FROM t",
+      "sql": "SELECT a--:p1 FROM t",
+      "names": [
+        "p1"
+      ],
+      "lists": []
+    },
+    {
+      "name": "sample text without placeholders is unchanged",
+      "text": "SELECT * FROM orders WHERE status = 'new' ORDER BY total DESC LIMIT 10",
+      "sql": "SELECT * FROM orders WHERE status = 'new' ORDER BY total DESC LIMIT 10",
+      "names": [],
+      "lists": []
+    },
+    {
+      "name": "unterminated quote runs to the end",
+      "text": "SELECT a FROM t WHERE b = ? AND c = 'cut off ?",
+      "sql": "SELECT a FROM t WHERE b = :p1 AND c = 'cut off ?",
+      "names": [
+        "p1"
+      ],
+      "lists": []
+    },
+    {
+      "name": "empty text",
+      "text": "",
+      "sql": "",
+      "names": [],
+      "lists": []
+    }
+  ],
+  "digest_query": [
+    {
+      "name": "MySQL sample runs as recorded",
+      "row": {
+        "digest_text": "SELECT * FROM `orders` WHERE STATUS = ?",
+        "sample_text": "SELECT * FROM orders WHERE status = 'new'",
+        "sample_truncated": false
+      },
+      "sql": "SELECT * FROM orders WHERE status = 'new'",
+      "names": [],
+      "from_sample": true,
+      "reason": null
+    },
+    {
+      "name": "MariaDB has only digest text",
+      "row": {
+        "digest_text": "SELECT * FROM `orders` WHERE STATUS = ? ORDER BY `total` DESC LIMIT ? ",
+        "sample_text": null,
+        "sample_truncated": false
+      },
+      "sql": "SELECT * FROM `orders` WHERE STATUS = :p1 ORDER BY `total` DESC LIMIT :p2",
+      "names": [
+        "p1",
+        "p2"
+      ],
+      "from_sample": false,
+      "reason": "normalized"
+    },
+    {
+      "name": "truncated MySQL sample falls back to the digest text",
+      "row": {
+        "digest_text": "SELECT `a` FROM `t` WHERE `b` IN (...)",
+        "sample_text": "SELECT a FROM t WHERE b IN (1, 2, 3, 4",
+        "sample_truncated": true
+      },
+      "sql": "SELECT `a` FROM `t` WHERE `b` IN (:p1)",
+      "names": [
+        "p1"
+      ],
+      "from_sample": false,
+      "reason": "truncated"
+    },
+    {
+      "name": "truncated sample of a literal-free statement runs the digest text",
+      "row": {
+        "digest_text": "SELECT COUNT ( * ) FROM `orders`",
+        "sample_text": "SELECT COUNT(*) FROM ord",
+        "sample_truncated": true
+      },
+      "sql": "SELECT COUNT( * ) FROM `orders`",
+      "names": [],
+      "from_sample": false,
+      "reason": null
+    },
+    {
+      "name": "prepared statement sample keeps its markers",
+      "row": {
+        "digest_text": "SELECT * FROM `t` WHERE `id` = ?",
+        "sample_text": "SELECT * FROM t WHERE id = ?",
+        "sample_truncated": false
+      },
+      "sql": "SELECT * FROM t WHERE id = :p1",
+      "names": [
+        "p1"
+      ],
+      "from_sample": true,
+      "reason": "placeholders"
+    },
+    {
+      "name": "no text at all",
+      "row": {
+        "digest_text": null,
+        "sample_text": null,
+        "sample_truncated": false
+      },
+      "sql": "",
+      "names": [],
+      "from_sample": false,
+      "reason": "missing"
+    },
+    {
+      "name": "digest text is rejoined so it parses",
+      "row": {
+        "digest_text": "SELECT `c` . `name` , SUM ( `o` . `total` ) FROM `orders` `o` JOIN `customers` `c` ON `c` . `id` = `o` . `customer_id` WHERE `c` . `country` = ? GROUP BY `c` . `name` ORDER BY ? DESC LIMIT ? ",
+        "sample_text": null,
+        "sample_truncated": false
+      },
+      "sql": "SELECT `c` . `name` , SUM( `o` . `total` ) FROM `orders` `o` JOIN `customers` `c` ON `c` . `id` = `o` . `customer_id` WHERE `c` . `country` = :p1 GROUP BY `c` . `name` ORDER BY :p2 DESC LIMIT :p3",
+      "names": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "from_sample": false,
+      "reason": "normalized"
+    },
+    {
+      "name": "sample text is sent as recorded, spaces and all",
+      "row": {
+        "digest_text": "SELECT COUNT ( * ) FROM `t`",
+        "sample_text": "SELECT COUNT (*) FROM t",
+        "sample_truncated": false
+      },
+      "sql": "SELECT COUNT (*) FROM t",
+      "names": [],
+      "from_sample": true,
+      "reason": null
+    }
+  ],
+  "join_function_calls": [
+    {
+      "name": "aggregates from MariaDB digest text",
+      "text": "SELECT COUNT ( * ) FROM `shop` . `orders` ",
+      "sql": "SELECT COUNT( * ) FROM `shop` . `orders` "
+    },
+    {
+      "name": "lowercase, extra spaces, several calls",
+      "text": "SELECT sum  (a), MAX (b), GROUP_CONCAT (c), DATE_SUB ( NOW ( ) , INTERVAL ? DAY )",
+      "sql": "SELECT sum(a), MAX(b), GROUP_CONCAT(c), DATE_SUB( NOW( ) , INTERVAL ? DAY )"
+    },
+    {
+      "name": "quoted names, qualified names, quotes and comments stay",
+      "text": "SELECT `SUM` ( a ) , t.max (b) , 'COUNT (x)' /* MIN ( */ , `count` ( 1 )",
+      "sql": "SELECT `SUM` ( a ) , t.max (b) , 'COUNT (x)' /* MIN ( */ , `count` ( 1 )"
+    },
+    {
+      "name": "keywords before ( are left alone",
+      "text": "SELECT * FROM ( SELECT 1 ) d WHERE a IN ( 1 ) AND EXISTS ( SELECT 2 )",
+      "sql": "SELECT * FROM ( SELECT 1 ) d WHERE a IN ( 1 ) AND EXISTS ( SELECT 2 )"
+    },
+    {
+      "name": "longer names that start with a function name",
+      "text": "SELECT COUNTRY ( a ) , SUMMARY (b) , MAXIMUM ( c )",
+      "sql": "SELECT COUNTRY ( a ) , SUMMARY (b) , MAXIMUM ( c )"
+    }
+  ]
+}

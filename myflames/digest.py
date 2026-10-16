@@ -305,7 +305,13 @@ def build_compare_digest(compare_sidecar):
     ta = after.get("total_time_ms")
     pct = summary.get("time_delta_pct")
     def timing_text(value, available=True):
-        return "not measured" if available is False or value is None else "{} ms".format(value)
+        if available is False or value is None:
+            return "not measured"
+        # Four significant digits: float sums like 0.20727341500000002 add
+        # tokens without information.
+        if isinstance(value, float):
+            value = float("{:.4g}".format(value))
+        return "{} ms".format(value)
 
     available_b = before.get("timing_available", tb is not None)
     available_a = after.get("timing_available", ta is not None)

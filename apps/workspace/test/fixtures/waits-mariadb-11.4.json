@@ -1,0 +1,419 @@
+{
+ "available": true,
+ "coverage": [
+  {
+   "class": "wait/io/file",
+   "enabled": 55,
+   "explain": "Reads, writes, syncs and opens of files: data files, redo and undo logs, binary logs, temporary files.",
+   "label": "File I/O",
+   "state": "on",
+   "timed": 55,
+   "total": 55
+  },
+  {
+   "class": "wait/io/table",
+   "enabled": 1,
+   "explain": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events. InnoDB row lock waits have no event of their own and are inside this time too (Locks shows them).",
+   "label": "Table I/O",
+   "state": "on",
+   "timed": 1,
+   "total": 1
+  },
+  {
+   "class": "wait/lock/table",
+   "enabled": 1,
+   "explain": "Table lock requests: THR_LOCK table locks (MyISAM, MEMORY, LOCK TABLES) and each storage engine external lock call. For InnoDB this is the per-statement table lock call, which includes waits for LOCK TABLES; row lock waits are not here.",
+   "label": "Table locks",
+   "state": "on",
+   "timed": 1,
+   "total": 1
+  },
+  {
+   "class": "wait/lock/metadata",
+   "enabled": 1,
+   "explain": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+   "label": "Metadata locks",
+   "state": "on",
+   "timed": 1,
+   "total": 1
+  },
+  {
+   "class": "wait/synch/mutex",
+   "enable": {
+    "config": "performance-schema-instrument = 'wait/synch/mutex/%=ON'",
+    "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/mutex/%';"
+   },
+   "enabled": 0,
+   "explain": "Short-term internal locks that protect shared memory structures.",
+   "label": "Mutexes",
+   "state": "off",
+   "timed": 0,
+   "total": 173
+  },
+  {
+   "class": "wait/synch/rwlock",
+   "enable": {
+    "config": "performance-schema-instrument = 'wait/synch/rwlock/%=ON'",
+    "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/rwlock/%';"
+   },
+   "enabled": 0,
+   "explain": "Internal read/write locks.",
+   "label": "Read/write locks",
+   "state": "off",
+   "timed": 0,
+   "total": 33
+  },
+  {
+   "class": "wait/synch/sxlock",
+   "enable": {
+    "config": "performance-schema-instrument = 'wait/synch/sxlock/%=ON'",
+    "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/sxlock/%';"
+   },
+   "enabled": 0,
+   "explain": "InnoDB's shared/exclusive internal locks, such as an index tree's lock.",
+   "label": "Shared/exclusive locks",
+   "state": "off",
+   "timed": 0,
+   "total": 1
+  },
+  {
+   "class": "wait/synch/cond",
+   "enable": {
+    "config": "performance-schema-instrument = 'wait/synch/cond/%=ON'",
+    "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/cond/%';"
+   },
+   "enabled": 0,
+   "explain": "Threads waiting to be signalled by another thread (for example a group commit).",
+   "label": "Condition waits",
+   "state": "off",
+   "timed": 0,
+   "total": 79
+  },
+  {
+   "class": "wait/io/socket",
+   "enable": {
+    "config": "performance-schema-instrument = 'wait/io/socket/%=ON'",
+    "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/io/socket/%';"
+   },
+   "enabled": 0,
+   "explain": "Network reads and writes on client and replication connections.",
+   "label": "Socket I/O",
+   "state": "off",
+   "timed": 0,
+   "total": 3
+  }
+ ],
+ "elapsed_s": 5.1,
+ "enable_caveat": "The UPDATE takes effect at once, for existing and new instances, and lasts until the server restarts; the my.cnf line (under [mysqld]) keeps it after a restart. Waits already in progress when you turn it on are missed. Synch instruments add overhead on busy servers, so enable them for an investigation and turn them off afterwards.",
+ "engine": "mariadb",
+ "interval": 5,
+ "notes": [
+  "Some wait classes are not instrumented (mutexes 0 of 173 on, read/write locks 0 of 33 on, shared/exclusive locks 0 of 1 on, condition waits 0 of 79 on, socket i/o 0 of 3 on), so their waits are not in this report. No mutex or rwlock waits here never means no contention.",
+  "MariaDB turns the metadata lock instrument (wait/lock/metadata/sql/mdl) off by default; MySQL turns it on.",
+  "Wait time is summed across all threads, background threads included, so it can exceed the wall-clock window. Table I/O includes the file I/O and internal lock waits inside each call, which are counted again under their own events, so the classes are never added up.",
+  "InnoDB asynchronous I/O (read-ahead, page cleaner writes) is timed only for submitting the request, so its latency is understated. Bytes are exact (see I/O).",
+  "Since server start covers 13 min 55 s of uptime; the longest single wait (max) is since start too, never per window."
+ ],
+ "performance_schema": true,
+ "restarted": false,
+ "schema_version": "waits-1.0",
+ "server_version": "11.4.13-MariaDB-ubu2404",
+ "since_start": {
+  "classes": [
+   {
+    "class": "wait/lock/metadata",
+    "count": 2,
+    "events": 1,
+    "explain": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+    "label": "Metadata locks",
+    "wait_ms": 4981.682
+   },
+   {
+    "class": "wait/io/table",
+    "count": 11804151,
+    "events": 1,
+    "explain": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events. InnoDB row lock waits have no event of their own and are inside this time too (Locks shows them).",
+    "label": "Table I/O",
+    "wait_ms": 1338.139
+   },
+   {
+    "class": "wait/io/file",
+    "count": 1625,
+    "events": 12,
+    "explain": "Reads, writes, syncs and opens of files: data files, redo and undo logs, binary logs, temporary files.",
+    "label": "File I/O",
+    "wait_ms": 28.025
+   },
+   {
+    "class": "wait/lock/table",
+    "count": 356,
+    "events": 1,
+    "explain": "Table lock requests: THR_LOCK table locks (MyISAM, MEMORY, LOCK TABLES) and each storage engine external lock call. For InnoDB this is the per-statement table lock call, which includes waits for LOCK TABLES; row lock waits are not here.",
+    "label": "Table locks",
+    "wait_ms": 0.151
+   }
+  ],
+  "events": [
+   {
+    "avg_ms": 2490.8412,
+    "class": "wait/lock/metadata",
+    "class_label": "Metadata locks",
+    "count": 2,
+    "event": "wait/lock/metadata/sql/mdl",
+    "max_ms": 2503.8902,
+    "meaning": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+    "timed": true,
+    "wait_ms": 4981.682
+   },
+   {
+    "avg_ms": 0.0001,
+    "class": "wait/io/table",
+    "class_label": "Table I/O",
+    "count": 11804151,
+    "event": "wait/io/table/sql/handler",
+    "max_ms": 26.8386,
+    "meaning": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events. InnoDB row lock waits have no event of their own and are inside this time too (Locks shows them).",
+    "timed": true,
+    "wait_ms": 1338.139
+   },
+   {
+    "avg_ms": 0.0189,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 1323,
+    "event": "wait/io/file/innodb/innodb_data_file",
+    "max_ms": 3.6012,
+    "meaning": "InnoDB tablespace files (.ibd, the system tablespace, undo tablespaces). Read-ahead and page cleaner writes are timed only for submitting the request, so their latency is understated.",
+    "timed": true,
+    "wait_ms": 24.944
+   },
+   {
+    "avg_ms": 0.2364,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 4,
+    "event": "wait/io/file/sql/global_ddl_log",
+    "max_ms": 0.9105,
+    "meaning": "A file read, write or sync (sql/global_ddl_log).",
+    "timed": true,
+    "wait_ms": 0.945
+   },
+   {
+    "avg_ms": 0.0067,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 89,
+    "event": "wait/io/file/aria/MAI",
+    "max_ms": 0.1699,
+    "meaning": "Aria index files (.MAI).",
+    "timed": true,
+    "wait_ms": 0.599
+   },
+   {
+    "avg_ms": 0.1511,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 3,
+    "event": "wait/io/file/mysys/charset",
+    "max_ms": 0.4448,
+    "meaning": "A file read, write or sync (mysys/charset).",
+    "timed": true,
+    "wait_ms": 0.453
+   },
+   {
+    "avg_ms": 0.0091,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 49,
+    "event": "wait/io/file/aria/MAD",
+    "max_ms": 0.107,
+    "meaning": "Aria data files (.MAD), used by MariaDB's system tables and on-disk temporary tables.",
+    "timed": true,
+    "wait_ms": 0.448
+   },
+   {
+    "avg_ms": 0.0035,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 122,
+    "event": "wait/io/file/sql/FRM",
+    "max_ms": 0.0615,
+    "meaning": "Table definition (.frm) files (MariaDB).",
+    "timed": true,
+    "wait_ms": 0.421
+   },
+   {
+    "avg_ms": 0.0004,
+    "class": "wait/lock/table",
+    "class_label": "Table locks",
+    "count": 356,
+    "event": "wait/lock/table/sql/handler",
+    "max_ms": 0.008,
+    "meaning": "Table lock requests: THR_LOCK table locks (MyISAM, MEMORY, LOCK TABLES) and each storage engine external lock call. For InnoDB this is the per-statement table lock call, which includes waits for LOCK TABLES; row lock waits are not here.",
+    "timed": true,
+    "wait_ms": 0.151
+   },
+   {
+    "avg_ms": 0.0066,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 12,
+    "event": "wait/io/file/sql/dbopt",
+    "max_ms": 0.0335,
+    "meaning": "A file read, write or sync (sql/dbopt).",
+    "timed": true,
+    "wait_ms": 0.079
+   },
+   {
+    "avg_ms": 0.0192,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 3,
+    "event": "wait/io/file/sql/pid",
+    "max_ms": 0.0456,
+    "meaning": "A file read, write or sync (sql/pid).",
+    "timed": true,
+    "wait_ms": 0.057
+   },
+   {
+    "avg_ms": 0.0051,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 5,
+    "event": "wait/io/file/sql/casetest",
+    "max_ms": 0.0146,
+    "meaning": "A file read, write or sync (sql/casetest).",
+    "timed": true,
+    "wait_ms": 0.026
+   },
+   {
+    "avg_ms": 0.0082,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 3,
+    "event": "wait/io/file/sql/tclog",
+    "max_ms": 0.0113,
+    "meaning": "A file read, write or sync (sql/tclog).",
+    "timed": true,
+    "wait_ms": 0.025
+   },
+   {
+    "avg_ms": 0.0025,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 9,
+    "event": "wait/io/file/aria/translog",
+    "max_ms": 0.0104,
+    "meaning": "A file read, write or sync (aria/translog).",
+    "timed": true,
+    "wait_ms": 0.023
+   },
+   {
+    "avg_ms": 0.0017,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 3,
+    "event": "wait/io/file/aria/control",
+    "max_ms": 0.0038,
+    "meaning": "A file read, write or sync (aria/control).",
+    "timed": true,
+    "wait_ms": 0.005
+   }
+  ],
+  "more": 0,
+  "uptime_s": 841
+ },
+ "started_at": "2026-10-13T17:42:06.774706+00:00",
+ "taken_at": "2026-10-13T17:14:44.063926+00:00",
+ "unavailable": null,
+ "uptime_s": 835,
+ "window": {
+  "classes": [
+   {
+    "class": "wait/lock/metadata",
+    "count": 2,
+    "events": 1,
+    "explain": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+    "label": "Metadata locks",
+    "wait_ms": 4981.682,
+    "wait_ms_per_s": 976.8
+   },
+   {
+    "class": "wait/io/table",
+    "count": 10646636,
+    "events": 1,
+    "explain": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events. InnoDB row lock waits have no event of their own and are inside this time too (Locks shows them).",
+    "label": "Table I/O",
+    "wait_ms": 1205.88,
+    "wait_ms_per_s": 236.447
+   },
+   {
+    "class": "wait/io/file",
+    "count": 6,
+    "events": 1,
+    "explain": "Reads, writes, syncs and opens of files: data files, redo and undo logs, binary logs, temporary files.",
+    "label": "File I/O",
+    "wait_ms": 2.798,
+    "wait_ms_per_s": 0.549
+   },
+   {
+    "class": "wait/lock/table",
+    "count": 318,
+    "events": 1,
+    "explain": "Table lock requests: THR_LOCK table locks (MyISAM, MEMORY, LOCK TABLES) and each storage engine external lock call. For InnoDB this is the per-statement table lock call, which includes waits for LOCK TABLES; row lock waits are not here.",
+    "label": "Table locks",
+    "wait_ms": 0.129,
+    "wait_ms_per_s": 0.025
+   }
+  ],
+  "events": [
+   {
+    "avg_ms": 2490.8412,
+    "class": "wait/lock/metadata",
+    "class_label": "Metadata locks",
+    "count": 2,
+    "event": "wait/lock/metadata/sql/mdl",
+    "meaning": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+    "timed": true,
+    "wait_ms": 4981.682,
+    "wait_ms_per_s": 976.8
+   },
+   {
+    "avg_ms": 0.0001,
+    "class": "wait/io/table",
+    "class_label": "Table I/O",
+    "count": 10646636,
+    "event": "wait/io/table/sql/handler",
+    "meaning": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events. InnoDB row lock waits have no event of their own and are inside this time too (Locks shows them).",
+    "timed": true,
+    "wait_ms": 1205.88,
+    "wait_ms_per_s": 236.447
+   },
+   {
+    "avg_ms": 0.4663,
+    "class": "wait/io/file",
+    "class_label": "File I/O",
+    "count": 6,
+    "event": "wait/io/file/innodb/innodb_data_file",
+    "meaning": "InnoDB tablespace files (.ibd, the system tablespace, undo tablespaces). Read-ahead and page cleaner writes are timed only for submitting the request, so their latency is understated.",
+    "timed": true,
+    "wait_ms": 2.798,
+    "wait_ms_per_s": 0.549
+   },
+   {
+    "avg_ms": 0.0004,
+    "class": "wait/lock/table",
+    "class_label": "Table locks",
+    "count": 318,
+    "event": "wait/lock/table/sql/handler",
+    "meaning": "Table lock requests: THR_LOCK table locks (MyISAM, MEMORY, LOCK TABLES) and each storage engine external lock call. For InnoDB this is the per-statement table lock call, which includes waits for LOCK TABLES; row lock waits are not here.",
+    "timed": true,
+    "wait_ms": 0.129,
+    "wait_ms_per_s": 0.025
+   }
+  ],
+  "more": 0,
+  "status": "ok",
+  "untimed": []
+ }
+}

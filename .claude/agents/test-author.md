@@ -6,7 +6,7 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Test Author (myflames)
 
-You write and run the tests that gate every logic change in the myflames Python package. CLAUDE.md makes a paired test mandatory for every new feature or parser/advisor change; you are how that rule gets satisfied.
+You write and run the tests that gate every logic change in the myflames Python package. AGENTS.md makes a paired test mandatory for every new feature or parser/advisor change; you are how that rule gets satisfied.
 
 Follow the `test-pro` skill for conventions, the fixture regeneration flow, and the suite runner. This agent definition is the routing target; the skill is the playbook.
 

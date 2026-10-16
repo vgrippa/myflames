@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Temporary tables — MEMORY to on-disk conversion</title>
-  <meta name="description" content="Watch a GROUP BY fill a MEMORY temp table, hit the limit, and convert to on-disk InnoDB. That cliff is why your query suddenly slows down.">
+  <title>Temporary tables — in-memory to on-disk conversion</title>
+  <meta name="description" content="Watch a GROUP BY fill an in-memory temp table, hit its size limit, and convert to an on-disk table. That cliff is why your query suddenly slows down, and the engine decides where the cliff is.">
   <meta name="generator" content="myflames teach">
   <style>
 :root {
@@ -701,8 +701,8 @@ footer a { color: var(--muted); }
 <body data-lesson="tmp">
   <header>
     <div class="inner">
-      <h1>Temporary tables — MEMORY to on-disk conversion<span class="version-chip">MySQL 8.4</span></h1>
-      <p class="subtitle">Watch a GROUP BY fill a MEMORY temp table, hit the limit, and convert to on-disk InnoDB. That cliff is why your query suddenly slows down.</p>
+      <h1>Temporary tables — in-memory to on-disk conversion<span class="version-chip">MySQL 8.4 • MariaDB 11.4</span></h1>
+      <p class="subtitle">Watch a GROUP BY fill an in-memory temp table, hit its size limit, and convert to an on-disk table. That cliff is why your query suddenly slows down, and the engine decides where the cliff is.</p>
       <div class="lesson-meta"><span class="meta-label">Lesson family</span><span class="family-chip"><span class="chip-dot" aria-hidden="true"></span>Temp Operator</span></div>
     </div>
   </header>
@@ -710,7 +710,7 @@ footer a { color: var(--muted); }
     
     
 <section class="controls" aria-labelledby="controls-h">
-  <h2 id="controls-h">Parameters (MySQL 8.4 internal temporary tables)</h2>
+  <h2 id="controls-h">Parameters (internal temporary tables, MySQL 8.4 and MariaDB 11.4)</h2>
   <div class="control-grid">
 
     <div class="control">
@@ -721,20 +721,30 @@ footer a { color: var(--muted); }
 
     <div class="control">
       <label for="row_size">Row size (bytes): <span class="value-pill" data-pill-for="row_size">200</span></label>
-      <input type="range" id="row_size" name="row_size" min="32" max="4096" step="32" value="200">
+      <input type="range" id="row_size" name="row_size" min="32" max="4096" step="8" value="200">
       <div class="hint">Size of each materialized row in the temp table.</div>
+    </div>
+
+    <div class="control">
+      <label for="engine">In-memory temp table engine</label>
+      <select id="engine" name="engine">
+        <option value="temptable" selected>MySQL TempTable (8.4 default)</option>
+        <option value="memory">MySQL MEMORY</option>
+        <option value="mariadb">MariaDB (spills to Aria)</option>
+      </select>
+      <div class="hint">On MySQL this is <code>internal_tmp_mem_storage_engine</code>. It decides which size limit applies.</div>
     </div>
 
     <div class="control">
       <label for="tmp_size">tmp_table_size (bytes): <span class="value-pill" data-pill-for="tmp_size">16777216</span></label>
       <input type="range" id="tmp_size" name="tmp_size" min="65536" max="134217728" step="65536" value="16777216">
-      <div class="hint">Default: 16 MiB. MySQL uses min(tmp_table_size, max_heap_table_size).</div>
+      <div class="hint">Default: 16 MiB. Limits each in-memory temp table on every engine.</div>
     </div>
 
-    <div class="control">
+    <div class="control" id="max-heap-control" style="transition: opacity 200ms ease-out">
       <label for="max_heap">max_heap_table_size (bytes): <span class="value-pill" data-pill-for="max_heap">16777216</span></label>
       <input type="range" id="max_heap" name="max_heap" min="65536" max="134217728" step="65536" value="16777216">
-      <div class="hint">Default: 16 MiB. The effective limit is min(tmp_table_size, max_heap_table_size).</div>
+      <div class="hint" id="max-heap-hint">Default: 16 MiB. Used only by MEMORY and MariaDB, where the smaller of the two sizes wins. TempTable ignores it.</div>
     </div>
 
   </div>
@@ -750,13 +760,13 @@ SELECT   department, COUNT(*) AS headcount
 FROM     employees
 GROUP BY department
 HAVING   COUNT(*) &gt; 5;</pre>
-  <p class="query-note">Internal temp-table operator flow: materialize rows in MEMORY first, then convert to on-disk InnoDB when the effective limit is exceeded.</p>
+  <p class="query-note">No index matches GROUP BY department, so the server groups the rows in an internal temporary table. The table starts in memory and moves to disk if it outgrows its size limit.</p>
 </div>
 
   
 <div class="explainer-card">
   <p class="explainer-title">What you&#x27;ll see in the animation</p>
-  <ul class="explainer-list"><li>Rows from child operators are inserted into internal MEMORY temp table first.</li><li>Capacity is bounded by min(tmp_table_size, max_heap_table_size).</li><li>Once limit is crossed, MySQL converts to on-disk InnoDB temp table.</li><li>Remaining inserts hit disk-backed structure, increasing latency.</li><li>Higher effective limit delays conversion and reduces disk I/O risk.</li></ul>
+  <ul class="explainer-list"><li>Each pill is a sample employees row such as &quot;Alice (Engineering)&quot;. The 12 pills each stand for one twelfth of the rows you set above.</li><li>Green box: the in-memory temp table. Its bar fills toward the size limit printed above it on the right.</li><li>That limit depends on the engine. MySQL&#x27;s default, TempTable, uses <code>tmp_table_size</code> alone. The MEMORY engine and MariaDB use the smaller of <code>tmp_table_size</code> and <code>max_heap_table_size</code>.</li><li>At 100%, the table is copied into the red box: an on-disk table (InnoDB on MySQL, Aria on MariaDB). Red pills are rows inserted after that conversion.</li><li>Try it: set max_heap_table_size below tmp_table_size, then switch the engine and watch the limit move (or not).</li></ul>
 </div>
 
   
@@ -797,7 +807,7 @@ HAVING   COUNT(*) &gt; 5;</pre>
 </div>
 
   <div class="stage-with-phases">
-    <svg id="tmp-svg" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg"></svg>
+    <svg id="tmp-svg" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg"></svg>
     <div id="phase-nav" class="phase-nav"></div>
   </div>
 </section>
@@ -806,40 +816,65 @@ HAVING   COUNT(*) &gt; 5;</pre>
 <section class="readout">
   <h2>Cost readout (internal temporary tables)</h2>
   <div class="readout-grid">
-    <div class="item"><p class="label">Effective limit <span class="help-tip">?<span class="tip-text">MySQL uses min(tmp_table_size, max_heap_table_size) as the effective MEMORY temp table limit.</span></span></p><p class="value" id="out-limit">—</p></div>
-    <div class="item"><p class="label">MEMORY capacity (rows) <span class="help-tip">?<span class="tip-text">How many rows fit in the MEMORY temp table before the on-disk conversion is triggered.</span></span></p><p class="value" id="out-cap">—</p></div>
-    <div class="item"><p class="label">Rows in MEMORY <span class="help-tip">?<span class="tip-text">Rows inserted while the temp table is still in-memory. These are fast, no disk I/O.</span></span></p><p class="value" id="out-mem-rows">—</p></div>
-    <div class="item"><p class="label">Rows on disk <span class="help-tip">?<span class="tip-text">Rows inserted after the MEMORY limit was exceeded and the table was converted to on-disk InnoDB.</span></span></p><p class="value" id="out-disk-rows">—</p></div>
-    <div class="item"><p class="label">Disk conversion? <span class="help-tip">?<span class="tip-text">If Yes, the MEMORY temp table exceeded the limit and was converted to on-disk InnoDB — a costly operation.</span></span></p><p class="value ok" id="out-conversion">—</p></div>
+    <div class="item"><p class="label">Effective limit <span class="help-tip">?<span class="tip-text">The most this one temp table can hold in memory. TempTable (MySQL&#x27;s default) uses tmp_table_size. The MEMORY engine and MariaDB use the smaller of tmp_table_size and max_heap_table_size.</span></span></p><p class="value" id="out-limit">—</p></div>
+    <div class="item"><p class="label">Limit set by <span class="help-tip">?<span class="tip-text">The setting to raise if you want this table to stay in memory. With MEMORY or MariaDB, raising the larger setting changes nothing: raise the smaller one, or both.</span></span></p><p class="value" id="out-source">—</p></div>
+    <div class="item"><p class="label">In-memory capacity (rows) <span class="help-tip">?<span class="tip-text">How many rows fit under the limit before the conversion to disk starts: the limit divided by the row size.</span></span></p><p class="value" id="out-cap">—</p></div>
+    <div class="item"><p class="label">Rows inserted in memory <span class="help-tip">?<span class="tip-text">Rows inserted while the temp table is still in memory. These are fast: no disk I/O.</span></span></p><p class="value" id="out-mem-rows">—</p></div>
+    <div class="item"><p class="label">Rows inserted on disk <span class="help-tip">?<span class="tip-text">Rows inserted after the table outgrew its limit and moved to an on-disk table (InnoDB on MySQL, Aria on MariaDB).</span></span></p><p class="value" id="out-disk-rows">—</p></div>
+    <div class="item"><p class="label">Disk conversion? <span class="help-tip">?<span class="tip-text">Yes means the table outgrew its limit. The server then copies every row already in memory into a new on-disk table, which is slow.</span></span></p><p class="value ok" id="out-conversion">—</p></div>
   </div>
   <div class="explanation" id="out-explanation"></div>
 </section>
 
     
 <details class="learn-more">
-  <summary>Learn more — when does MySQL use internal temp tables?</summary>
+  <summary>Learn more — which limit applies, and when does MySQL use internal temp tables?</summary>
   <div class="body">
-    <p>MySQL creates internal temporary tables for several query patterns:</p>
-    <p><strong>GROUP BY / DISTINCT / ORDER BY with GROUP BY</strong> — when
-    there's no covering index that produces rows in the grouped/sorted order.
-    This is the most common trigger.</p>
-    <p><strong>UNION / UNION DISTINCT</strong> — the de-duplication step
+    <p><strong>Which limit applies.</strong> MySQL 8.4 keeps internal temp tables
+    in the <strong>TempTable</strong> engine by default
+    (<code>internal_tmp_mem_storage_engine=TempTable</code>). Since MySQL 8.0.28,
+    each TempTable table may use up to <code>tmp_table_size</code>;
+    <code>max_heap_table_size</code> does not apply. With
+    <code>internal_tmp_mem_storage_engine=MEMORY</code>, the limit is the smaller
+    of <code>tmp_table_size</code> and <code>max_heap_table_size</code>. MariaDB
+    also uses the smaller of the two (there, <code>tmp_table_size</code> is an
+    alias of <code>tmp_memory_table_size</code>).</p>
+    <p><strong>The shared TempTable pool.</strong> All TempTable tables on the
+    server also share one RAM budget, <code>temptable_max_ram</code> (MySQL 8.4
+    default: 3% of physical memory, at least 1 GiB and at most 4 GiB; 1 GiB on
+    8.0 to 8.3 and on 9.6+ unless <code>server_memory</code> is set). Once it is
+    used up, TempTable may continue in memory-mapped files only when
+    <code>temptable_use_mmap=ON</code> (default OFF in 8.4, removed in 9.4) and
+    only up to <code>temptable_max_mmap</code> (default 0). So with default
+    settings a busy server can push a table to disk even while that table is
+    under <code>tmp_table_size</code>.</p>
+    <p><strong>Where it spills.</strong> MySQL rebuilds the table as an on-disk
+    InnoDB temporary table and copies the rows already in memory into it.
+    MariaDB rebuilds it as an on-disk Aria table (MyISAM only in builds
+    compiled with <code>USE_ARIA_FOR_TMP_TABLES=OFF</code>).</p>
+    <p><strong>Straight to disk.</strong> Some tables skip memory entirely. On
+    MySQL that happens with <code>big_tables=ON</code> (unless the query uses
+    <code>SQL_SMALL_RESULT</code>), and, with the MEMORY engine only, for tables
+    with BLOB or TEXT columns. TempTable keeps BLOB and TEXT in memory. MariaDB
+    sends tables with BLOB or TEXT columns straight to Aria.</p>
+    <hr>
+    <p>Queries that create internal temporary tables:</p>
+    <p><strong>GROUP BY / DISTINCT / ORDER BY with GROUP BY</strong>: when no
+    index produces rows in the grouped or sorted order. This is the most
+    common trigger.</p>
+    <p><strong>UNION / UNION DISTINCT</strong>: the de-duplication step
     materializes into a temp table. <code>UNION ALL</code> does not need one.</p>
-    <p><strong>Derived tables and CTEs</strong> — subqueries in FROM clauses
+    <p><strong>Derived tables and CTEs</strong>: subqueries in FROM clauses
     and non-recursive CTEs are often materialized.</p>
-    <p><strong>Semijoin materialization</strong> — the optimizer may
+    <p><strong>Semijoin materialization</strong>: the optimizer may
     materialize the inner side of <code>IN (SELECT ...)</code> into a temp
     table and probe it for each outer row.</p>
-    <p>The conversion to on-disk happens when <strong>any</strong> of these
-    are true: (1) data exceeds <code>min(tmp_table_size, max_heap_table_size)</code>,
-    (2) the table contains BLOB/TEXT columns (can't be stored in MEMORY engine),
-    (3) the total row length exceeds MEMORY engine limits.</p>
-    <p>In MySQL 8.4, on-disk temp tables use the <strong>TempTable</strong>
-    storage engine by default (<code>internal_tmp_mem_storage_engine=TempTable</code>),
-    which is more efficient than the old InnoDB-backed path. The TempTable engine
-    also has its own memory limit: <code>temptable_max_ram</code> (default 1 GiB).</p>
-    <p>Sources: MySQL 8.4 reference manual §10.4.4 "Internal Temporary Table Use";
-    MySQL 8.4 reference manual §7.1.8 "Server System Variables".</p>
+    <p>Sources: MySQL 8.4 source <code>sql/sql_tmp_table.cc</code> (row cap per
+    engine, <code>create_ondisk_from_heap</code>),
+    <code>storage/temptable/include/temptable/allocator.h</code> (per-table and
+    shared limits), <code>sql/sys_vars.cc</code> (defaults); MariaDB 11.4
+    <code>sql/sql_select.cc</code> (in-memory cap, conversion to Aria); MySQL 8.4
+    reference manual §10.4.4 "Internal Temporary Table Use in MySQL".</p>
   </div>
 </details>
 
@@ -919,7 +954,7 @@ var anim = (function() {
   function tween(opts) {
     var from = opts.from;
     var to = opts.to;
-    var baseDuration = opts.duration || 400;
+    var baseDuration = opts.duration == null ? 400 : Math.max(0, opts.duration);
     var ease = opts.ease || easeOutCubic;
     var onUpdate = opts.onUpdate || function() {};
     var onComplete = opts.onComplete || function() {};
@@ -933,7 +968,7 @@ var anim = (function() {
       return out;
     }
 
-    var virtualElapsed = 0;  // accumulated virtual time inside this tween
+    var virtualElapsed = opts.elapsed || 0;  // virtual time, including a seek offset
     var lastFrame = null;
 
     // reduced-motion: skip to end state instantly
@@ -959,7 +994,7 @@ var anim = (function() {
       }
       var adjusted = virtualElapsed - delay;
       if (adjusted < 0) { requestAnimationFrame(frame); return; }
-      var t = Math.min(1, adjusted / baseDuration);
+      var t = baseDuration === 0 ? 1 : Math.min(1, adjusted / baseDuration);
       var eased = ease(t);
       onUpdate(interpolate(from, to, eased));
       if (t < 1) requestAnimationFrame(frame);
@@ -1008,23 +1043,28 @@ var anim = (function() {
     var current = null;
     var playing = false;
     var onDoneCb = null;
-    var pendingDelayTimer = null;
-    var pendingDelayRemaining = 0;
     var marks = [];  // phase markers: [{name, ms}]
 
-    // Virtual-time ticker state. ``virtualElapsed`` is the total ms we have
-    // "played" across all steps, pause-adjusted and speed-adjusted. The
-    // currently-running tween reports its own elapsed; we add that to
-    // ``stepVirtualStart`` to get the precise scrubber position.
+    // Tweens and delays share the same pause/speed-aware virtual clock.
     var virtualElapsed = 0;
     var stepVirtualStart = 0;
-    var tickerLastFrame = null;
+
+    function runDelay(step, elapsed, next) {
+      current = tween({
+        from: 0, to: 0, duration: step._duration, elapsed: elapsed,
+        onComplete: function() {
+          current = null;
+          virtualElapsed = step._start + step._duration;
+          next();
+        }
+      });
+    }
 
     var tl = {};
     tl.add = function(step) {
       step._type = "tween";
       step._start = totalDuration;
-      step._duration = step.duration || 400;
+      step._duration = step.duration == null ? 400 : Math.max(0, step.duration);
       totalDuration += step._duration;
       steps.push(step);
       return tl;
@@ -1094,46 +1134,13 @@ var anim = (function() {
     };
 
     tl.play = function(onDone) {
+      tl.stop();
       playing = true;
       onDoneCb = onDone || null;
       virtualElapsed = 0;
       stepVirtualStart = 0;
-      tickerLastFrame = null;
       var i = 0;
 
-      // Scrubber-tracking RAF loop. Runs while playing; updates
-      // virtualElapsed so getCurrentTime() reflects the current position
-      // even across delay gaps.
-      function ticker(now) {
-        if (!playing) return;
-        if (tickerLastFrame === null) tickerLastFrame = now;
-        var delta = now - tickerLastFrame;
-        tickerLastFrame = now;
-        if (!_paused && !current) {
-          // Only advance during delay windows; while a tween is running,
-          // getCurrentTime() reads the tween's own elapsed instead.
-          virtualElapsed += delta * _speed;
-        } else if (!_paused && current && typeof current.getElapsed === "function") {
-          // Keep virtualElapsed in sync with the running tween so
-          // getCurrentTime() is monotonic even if nothing queries it.
-          virtualElapsed = stepVirtualStart + current.getElapsed();
-        }
-        if (playing) requestAnimationFrame(ticker);
-      }
-      requestAnimationFrame(ticker);
-
-      function scheduleDelay(remaining, after) {
-        if (_paused) {
-          pendingDelayRemaining = remaining;
-          return;
-        }
-        pendingDelayRemaining = remaining;
-        pendingDelayTimer = setTimeout(function() {
-          pendingDelayTimer = null;
-          pendingDelayRemaining = 0;
-          after();
-        }, remaining / _speed);
-      }
       function next() {
         if (!playing) return;
         if (i >= steps.length) {
@@ -1150,10 +1157,7 @@ var anim = (function() {
             next();
             return;
           }
-          scheduleDelay(step._duration, function() {
-            virtualElapsed = step._start + step._duration;
-            next();
-          });
+          runDelay(step, 0, next);
           return;
         }
         if (step._type === "call") {
@@ -1173,12 +1177,6 @@ var anim = (function() {
           }
         }));
       }
-      var offPause = function(p) {
-        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
-          scheduleDelay(pendingDelayRemaining, next);
-        }
-      };
-      onPauseChange(offPause);
       next();
       return tl;
     };
@@ -1205,13 +1203,10 @@ var anim = (function() {
           break;
         }
       }
-      // Now start live playback. The play() method will walk from step 0,
-      // but each step whose _start + _duration <= virtualElapsed will
-      // complete instantly because virtualElapsed is already past them.
-      // We override virtualElapsed inside play() to resume cleanly.
+      // Continue with the first unfinished step, preserving its elapsed
+      // time so resuming a tween uses the original easing curve.
       playing = true;
       onDoneCb = onDone || null;
-      tickerLastFrame = null;
       var resumeIdx = 0;
       // Find the first step that hasn't been fully applied yet
       for (var j = 0; j < steps.length; j++) {
@@ -1224,29 +1219,6 @@ var anim = (function() {
       virtualElapsed = fromMs;
       stepVirtualStart = (resumeIdx < steps.length) ? steps[resumeIdx]._start : totalDuration;
 
-      function ticker2(now) {
-        if (!playing) return;
-        if (tickerLastFrame === null) tickerLastFrame = now;
-        var delta = now - tickerLastFrame;
-        tickerLastFrame = now;
-        if (!_paused && !current) {
-          virtualElapsed += delta * _speed;
-        } else if (!_paused && current && typeof current.getElapsed === "function") {
-          virtualElapsed = stepVirtualStart + current.getElapsed();
-        }
-        if (playing) requestAnimationFrame(ticker2);
-      }
-      requestAnimationFrame(ticker2);
-
-      function scheduleDelay2(remaining, after) {
-        if (_paused) { pendingDelayRemaining = remaining; return; }
-        pendingDelayRemaining = remaining;
-        pendingDelayTimer = setTimeout(function() {
-          pendingDelayTimer = null;
-          pendingDelayRemaining = 0;
-          after();
-        }, remaining / _speed);
-      }
       var ri = resumeIdx;
       function next2() {
         if (!playing) return;
@@ -1261,13 +1233,10 @@ var anim = (function() {
         if (step._type === "delay") {
           if (reducedMotion()) { virtualElapsed = step._start + step._duration; next2(); return; }
           // If we're resuming mid-delay, shorten it
-          var elapsed = fromMs - step._start;
+          var elapsed = Math.max(0, fromMs - step._start);
           var remaining = Math.max(0, step._duration - elapsed);
           if (remaining <= 0) { virtualElapsed = step._start + step._duration; next2(); return; }
-          scheduleDelay2(remaining, function() {
-            virtualElapsed = step._start + step._duration;
-            next2();
-          });
+          runDelay(step, elapsed, next2);
           return;
         }
         if (step._type === "call") {
@@ -1286,6 +1255,7 @@ var anim = (function() {
         }
         var origComplete = step.onComplete || function() {};
         current = tween(Object.assign({}, step, {
+          elapsed: Math.max(0, fromMs - step._start),
           onComplete: function() {
             origComplete();
             current = null;
@@ -1294,20 +1264,12 @@ var anim = (function() {
           }
         }));
       }
-      var offPause2 = function(p) {
-        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
-          scheduleDelay2(pendingDelayRemaining, next2);
-        }
-      };
-      onPauseChange(offPause2);
       next2();
       return tl;
     };
 
     tl.stop = function() {
       playing = false;
-      if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }
-      pendingDelayRemaining = 0;
       if (current) {
         if (typeof current === "function") current();
         current = null;
@@ -1347,6 +1309,27 @@ var anim = (function() {
         });
       }
     });
+  }
+
+  // --- arrival: universal "something just landed here" pulse -----------
+  // Slice 3 / A5. Call after every tween/timeline step that places a
+  // node or cell in its final position. Centralizes the visual
+  // vocabulary so every lesson's arrival looks the same — users learn
+  // "short ring pulse = new state arrived" once, it applies everywhere.
+  //
+  //   anim.arrival(rect)                 // default ring pulse
+  //   anim.arrival(rect, {peakWidth: 3}) // tuning
+  //
+  // Respects reducedMotion() by short-circuiting to no-op.
+  function arrival(el, opts) {
+    if (!el || reducedMotion()) return;
+    opts = opts || {};
+    pulse(
+      el,
+      opts.peakWidth || 2.5,
+      opts.baseWidth || 1,
+      opts.durationMs || 320
+    );
   }
 
   // --- svg element creators (tiny helpers to reduce boilerplate) -------
@@ -1475,12 +1458,17 @@ var anim = (function() {
       svgEl.appendChild(xl);
     }
     if (opts.yLabel) {
+      // When lowerIsBetter is set, append a hint so readers don't
+      // bring the default "higher = better" intuition. User-reported
+      // confusion 2026-04-24 — the chart was correct but read wrong.
+      var yLabelText = opts.yLabel;
+      if (opts.lowerIsBetter) yLabelText += "  (lower = better ↓)";
       var yl = svgEl_create("text", {
         x: 12, y: padT + plotH/2,
         "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
         transform: "rotate(-90 12," + (padT + plotH/2) + ")"
       });
-      yl.textContent = opts.yLabel;
+      yl.textContent = yLabelText;
       svgEl.appendChild(yl);
     }
 
@@ -1520,16 +1508,22 @@ var anim = (function() {
     if (opts.current && opts.current.x) {
       var cx = opts.current.x;
       if (cx >= xMin && cx <= xMax) {
-        opts.curves.forEach(function(c, idx) {
+        // Compute each curve's y at the cursor — used both for the
+        // dots AND the lower-is-better winner annotation below.
+        var perCurve = opts.curves.map(function(c) {
           var cy = c.fn(cx);
-          if (!isFinite(cy) || cy <= 0) return;
-          var svg = toSvg(cx, cy);
+          return (isFinite(cy) && cy > 0) ? { c: c, cy: cy } : null;
+        }).filter(function(e) { return e !== null; });
+
+        perCurve.forEach(function(e) {
+          var svg = toSvg(cx, e.cy);
           var dot = svgEl_create("circle", {
             cx: svg.x, cy: svg.y, r: 5,
-            fill: c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+            fill: e.c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
           });
           svgEl.appendChild(dot);
         });
+
         // Vertical guide line at the current x
         var vx = toSvg(cx, yMin).x;
         var vline = svgEl_create("line", {
@@ -1537,6 +1531,58 @@ var anim = (function() {
           stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
         });
         svgEl.appendChild(vline);
+
+        // Winner annotation: when lowerIsBetter is set, mark the
+        // lowest curve at the cursor with a green ✓, and (when there
+        // are exactly 2 curves) draw a "N× cheaper" callout between
+        // their dots so the visual win is unambiguous. Without this
+        // the reader has to mentally translate "low number = good".
+        if (opts.lowerIsBetter && perCurve.length >= 2) {
+          var sorted = perCurve.slice().sort(function(a, b) { return a.cy - b.cy; });
+          var winner = sorted[0];
+          var loser = sorted[sorted.length - 1];
+          var winSvg = toSvg(cx, winner.cy);
+          var loseSvg = toSvg(cx, loser.cy);
+
+          // Green check next to the winning dot.
+          var check = svgEl_create("text", {
+            x: winSvg.x + 9, y: winSvg.y + 4,
+            "font-size": 14, "font-weight": 800,
+            fill: "#16a34a"
+          });
+          check.textContent = "✓";
+          svgEl.appendChild(check);
+
+          // Speedup label between the two dots, mid-y.
+          var ratio = loser.cy / winner.cy;
+          if (isFinite(ratio) && ratio >= 1.2) {
+            var ratioStr;
+            if (ratio >= 1000) ratioStr = (ratio / 1000).toFixed(1) + "k×";
+            else if (ratio >= 100) ratioStr = ratio.toFixed(0) + "×";
+            else ratioStr = ratio.toFixed(1) + "×";
+            var midY = (winSvg.y + loseSvg.y) / 2;
+            var labelText = (winner.c.label || "winner").split(":")[0]
+                          + " is " + ratioStr + " cheaper";
+            // Background pill so the callout reads cleanly across
+            // the chart grid.
+            var approxW = labelText.length * 6.2 + 16;
+            var pillX = winSvg.x + 14;
+            var pillY = midY - 9;
+            var pillBg = svgEl_create("rect", {
+              x: pillX, y: pillY, width: approxW, height: 18,
+              rx: 9, ry: 9,
+              fill: "rgba(22,163,74,0.12)",
+              stroke: "#16a34a", "stroke-width": 1
+            });
+            svgEl.appendChild(pillBg);
+            var pillTxt = svgEl_create("text", {
+              x: pillX + 8, y: midY + 3,
+              "font-size": 10.5, "font-weight": 700, fill: "#15803d"
+            });
+            pillTxt.textContent = labelText;
+            svgEl.appendChild(pillTxt);
+          }
+        }
       }
     }
 
@@ -1708,6 +1754,7 @@ var anim = (function() {
     timeline: timeline,
     path: path,
     pulse: pulse,
+    arrival: arrival,
     svgEl: svgEl,
     reducedMotion: reducedMotion,
     setSpeed: setSpeed,
@@ -1718,6 +1765,22 @@ var anim = (function() {
     complexityChart: complexityChart
   };
 })();
+
+// Auto-generated by assets/build.mjs — do not edit by hand.
+// Source: assets/src/runtime.ts + deps (motion, d3-hierarchy, d3-shape).
+// To regenerate: cd assets && npm install && npm run build.
+"use strict";var MyflamesAnim=(()=>{var Qt=Object.defineProperty;var ui=Object.getOwnPropertyDescriptor;var fi=Object.getOwnPropertyNames;var mi=Object.prototype.hasOwnProperty;var pi=(t,e)=>{for(var r in e)Qt(t,r,{get:e[r],enumerable:!0})},ci=(t,e,r,n)=>{if(e&&typeof e=="object"||typeof e=="function")for(let o of fi(e))!mi.call(t,o)&&o!==r&&Qt(t,o,{get:()=>e[o],enumerable:!(n=ui(e,o))||n.enumerable});return t};var di=t=>ci(Qt({},"__esModule",{value:!0}),t);var Zs={};pi(Zs,{anim:()=>Xs});var O=t=>t;var Q=O,K=O;var J=(t,e,r)=>{let n=e-t;return n===0?1:(r-t)/n};function de(t){let e;return()=>(e===void 0&&(e=t()),e)}var Br=de(()=>window.ScrollTimeline!==void 0);var nt=class{constructor(e){this.stop=()=>this.runAll("stop"),this.animations=e.filter(Boolean)}get finished(){return Promise.all(this.animations.map(e=>"finished"in e?e.finished:e))}getAll(e){return this.animations[0][e]}setAll(e,r){for(let n=0;n<this.animations.length;n++)this.animations[n][e]=r}attachTimeline(e,r){let n=this.animations.map(o=>{if(Br()&&o.attachTimeline)return o.attachTimeline(e);if(typeof r=="function")return r(o)});return()=>{n.forEach((o,i)=>{o&&o(),this.animations[i].stop()})}}get time(){return this.getAll("time")}set time(e){this.setAll("time",e)}get speed(){return this.getAll("speed")}set speed(e){this.setAll("speed",e)}get startTime(){return this.getAll("startTime")}get duration(){let e=0;for(let r=0;r<this.animations.length;r++)e=Math.max(e,this.animations[r].duration);return e}runAll(e){this.animations.forEach(r=>r[e]())}flatten(){this.runAll("flatten")}play(){this.runAll("play")}pause(){this.runAll("pause")}cancel(){this.runAll("cancel")}complete(){this.runAll("complete")}};var he=class extends nt{then(e,r){return Promise.all(this.animations).then(e).catch(r)}};var D=t=>t*1e3,R=t=>t/1e3;function ge(t){let e=0,r=50,n=t.next(e);for(;!n.done&&e<2e4;)e+=r,n=t.next(e);return e>=2e4?1/0:e}var ot=(t,e,r=10)=>{let n="",o=Math.max(Math.round(e/r),2);for(let i=0;i<o;i++)n+=t(J(0,o-1,i))+", ";return`linear(${n.substring(0,n.length-2)})`};var k=(t,e,r)=>r>e?e:r<t?t:r;function it(t,e){return e?t*(1e3/e):0}var hi=5;function st(t,e,r){let n=Math.max(e-hi,0);return it(r-t(n),e-n)}var M={stiffness:100,damping:10,mass:1,velocity:0,duration:800,bounce:.3,visualDuration:.3,restSpeed:{granular:.01,default:2},restDelta:{granular:.005,default:.5},minDuration:.01,maxDuration:10,minDamping:.05,maxDamping:1};var Jt=.001;function $r({duration:t=M.duration,bounce:e=M.bounce,velocity:r=M.velocity,mass:n=M.mass}){let o,i;Q(t<=D(M.maxDuration),"Spring duration must be 10 seconds or less");let s=1-e;s=k(M.minDamping,M.maxDamping,s),t=k(M.minDuration,M.maxDuration,R(t)),s<1?(o=f=>{let u=f*s,p=u*t,m=u-r,c=at(f,s),g=Math.exp(-p);return Jt-m/c*g},i=f=>{let p=f*s*t,m=p*r+r,c=Math.pow(s,2)*Math.pow(f,2)*t,g=Math.exp(-p),y=at(Math.pow(f,2),s);return(-o(f)+Jt>0?-1:1)*((m-c)*g)/y}):(o=f=>{let u=Math.exp(-f*t),p=(f-r)*t+1;return-Jt+u*p},i=f=>{let u=Math.exp(-f*t),p=(r-f)*(t*t);return u*p});let l=5/t,a=yi(o,i,l);if(t=D(t),isNaN(a))return{stiffness:M.stiffness,damping:M.damping,duration:t};{let f=Math.pow(a,2)*n;return{stiffness:f,damping:s*2*Math.sqrt(n*f),duration:t}}}var gi=12;function yi(t,e,r){let n=r;for(let o=1;o<gi;o++)n=n-t(n)/e(n);return n}function at(t,e){return t*Math.sqrt(1-e*e)}var xi=["duration","bounce"],vi=["stiffness","damping","mass"];function Kr(t,e){return e.some(r=>t[r]!==void 0)}function bi(t){let e={velocity:M.velocity,stiffness:M.stiffness,damping:M.damping,mass:M.mass,isResolvedFromDuration:!1,...t};if(!Kr(t,vi)&&Kr(t,xi))if(t.visualDuration){let r=t.visualDuration,n=2*Math.PI/(r*1.2),o=n*n,i=2*k(.05,1,1-(t.bounce||0))*Math.sqrt(o);e={...e,mass:M.mass,stiffness:o,damping:i}}else{let r=$r(t);e={...e,...r,mass:M.mass},e.isResolvedFromDuration=!0}return e}function U(t=M.visualDuration,e=M.bounce){let r=typeof t!="object"?{visualDuration:t,keyframes:[0,1],bounce:e}:t,{restSpeed:n,restDelta:o}=r,i=r.keyframes[0],s=r.keyframes[r.keyframes.length-1],l={done:!1,value:i},{stiffness:a,damping:f,mass:u,duration:p,velocity:m,isResolvedFromDuration:c}=bi({...r,velocity:-R(r.velocity||0)}),g=m||0,y=f/(2*Math.sqrt(a*u)),h=s-i,d=R(Math.sqrt(a/u)),b=Math.abs(h)<5;n||(n=b?M.restSpeed.granular:M.restSpeed.default),o||(o=b?M.restDelta.granular:M.restDelta.default);let S;if(y<1){let v=at(d,y);S=_=>{let C=Math.exp(-y*d*_);return s-C*((g+y*d*h)/v*Math.sin(v*_)+h*Math.cos(v*_))}}else if(y===1)S=v=>s-Math.exp(-d*v)*(h+(g+d*h)*v);else{let v=d*Math.sqrt(y*y-1);S=_=>{let C=Math.exp(-y*d*_),T=Math.min(v*_,300);return s-C*((g+y*d*h)*Math.sinh(T)+v*h*Math.cosh(T))/v}}let V={calculatedDuration:c&&p||null,next:v=>{let _=S(v);if(c)l.done=v>=p;else{let C=0;y<1&&(C=v===0?D(g):st(S,v,_));let T=Math.abs(C)<=n,w=Math.abs(s-_)<=o;l.done=T&&w}return l.value=l.done?s:_,l},toString:()=>{let v=Math.min(ge(V),2e4),_=ot(C=>V.next(v*C).value,v,30);return v+"ms "+_}};return V}function Lr(t,e=100,r){let n=r({...t,keyframes:[0,e]}),o=Math.min(ge(n),2e4);return{type:"keyframes",ease:i=>n.next(o*i).value/e,duration:R(o)}}function ee(t){return typeof t=="function"}var Gr=(t,e,r)=>{let n=e-t;return((r-t)%n+n)%n+t};var lt=t=>Array.isArray(t)&&typeof t[0]!="number";function ut(t,e){return lt(t)?t[Gr(0,t.length,e)]:t}var G=(t,e,r)=>t+(e-t)*r;function ft(t,e){let r=t[t.length-1];for(let n=1;n<=e;n++){let o=J(0,e,n);t.push(G(r,1,o))}}function mt(t){let e=[0];return ft(e,t.length-1),e}var A=t=>!!(t&&t.getVelocity);function qr(t,e,r){var n;if(t instanceof Element)return[t];if(typeof t=="string"){let o=document;e&&(o=e.current);let i=(n=r?.[t])!==null&&n!==void 0?n:o.querySelectorAll(t);return i?Array.from(i):[]}return Array.from(t)}function Le(t){return typeof t=="object"&&!Array.isArray(t)}function pt(t,e,r,n){return typeof t=="string"&&Le(e)?qr(t,r,n):t instanceof NodeList?Array.from(t):Array.isArray(t)?t:[t]}function Wr(t,e,r){return t*(e+1)}function tr(t,e,r,n){var o;return typeof e=="number"?e:e.startsWith("-")||e.startsWith("+")?Math.max(0,t+parseFloat(e)):e==="<"?r:(o=n.get(e))!==null&&o!==void 0?o:t}function zr(t,e){t.indexOf(e)===-1&&t.push(e)}function ct(t,e){let r=t.indexOf(e);r>-1&&t.splice(r,1)}function Ti(t,e,r){for(let n=0;n<t.length;n++){let o=t[n];o.at>e&&o.at<r&&(ct(t,o),n--)}}function jr(t,e,r,n,o,i){Ti(t,o,i);for(let s=0;s<e.length;s++)t.push({value:e[s],at:G(o,i,n[s]),easing:ut(r,s)})}function Ur(t,e){for(let r=0;r<t.length;r++)t[r]=t[r]/(e+1)}function Hr(t,e){return t.at===e.at?t.value===null?1:e.value===null?-1:0:t.at-e.at}var _i="easeInOut",Vi=20;function Zr(t,{defaultTransition:e={},...r}={},n,o){let i=e.duration||.3,s=new Map,l=new Map,a={},f=new Map,u=0,p=0,m=0;for(let c=0;c<t.length;c++){let g=t[c];if(typeof g=="string"){f.set(g,p);continue}else if(!Array.isArray(g)){f.set(g.name,tr(p,g.at,u,f));continue}let[y,h,d={}]=g;d.at!==void 0&&(p=tr(p,d.at,u,f));let b=0,S=(V,v,_,C=0,T=0)=>{let w=Si(V),{delay:E=0,times:L=mt(w),type:Zt="keyframes",repeat:Ie,repeatType:Qs,repeatDelay:Js=0,...li}=v,{ease:Z=e.ease||"easeOut",duration:$}=v,Or=typeof E=="function"?E(C,T):E,Rr=w.length,Er=ee(Zt)?Zt:o?.[Zt];if(Rr<=2&&Er){let Be=100;if(Rr===2&&Ai(w)){let $e=w[1]-w[0];Be=Math.abs($e)}let tt={...li};$!==void 0&&(tt.duration=D($));let rt=Lr(tt,Be,Er);Z=rt.ease,$=rt.duration}$??($=i);let kr=p+Or;L.length===1&&L[0]===0&&(L[1]=1);let Nr=L.length-w.length;if(Nr>0&&ft(L,Nr),w.length===1&&w.unshift(null),Ie){K(Ie<Vi,"Repeat count too high, must be less than 20"),$=Wr($,Ie);let Be=[...w],tt=[...L];Z=Array.isArray(Z)?[...Z]:[Z];let rt=[...Z];for(let $e=0;$e<Ie;$e++){w.push(...Be);for(let Ke=0;Ke<Be.length;Ke++)L.push(tt[Ke]+($e+1)),Z.push(Ke===0?"linear":ut(rt,Ke-1))}Ur(L,Ie)}let Ir=kr+$;jr(_,w,Z,L,kr,Ir),b=Math.max(Or+$,b),m=Math.max(Ir,m)};if(A(y)){let V=Yr(y,l);S(h,d,Xr("default",V))}else{let V=pt(y,h,n,a),v=V.length;for(let _=0;_<v;_++){h=h,d=d;let C=V[_],T=Yr(C,l);for(let w in h)S(h[w],wi(d,w),Xr(w,T),_,v)}}u=p,p+=b}return l.forEach((c,g)=>{for(let y in c){let h=c[y];h.sort(Hr);let d=[],b=[],S=[];for(let v=0;v<h.length;v++){let{at:_,value:C,easing:T}=h[v];d.push(C),b.push(J(0,m,_)),S.push(T||"easeOut")}b[0]!==0&&(b.unshift(0),d.unshift(d[0]),S.unshift(_i)),b[b.length-1]!==1&&(b.push(1),d.push(null)),s.has(g)||s.set(g,{keyframes:{},transition:{}});let V=s.get(g);V.keyframes[y]=d,V.transition[y]={...e,duration:m,ease:S,times:b,...r}}}),s}function Yr(t,e){return!e.has(t)&&e.set(t,{}),e.get(t)}function Xr(t,e){return e[t]||(e[t]=[]),e[t]}function Si(t){return Array.isArray(t)?t:[t]}function wi(t,e){return t&&t[e]?{...t,...t[e]}:{...t}}var Mi=t=>typeof t=="number",Ai=t=>t.every(Mi);var H=new WeakMap;function dt(t,e){return t?t[e]||t.default||t:void 0}var q=["transformPerspective","x","y","z","translateX","translateY","translateZ","scale","scaleX","scaleY","rotate","rotateX","rotateY","rotateZ","skew","skewX","skewY"],N=new Set(q);var ht=new Set(["width","height","top","left","right","bottom",...q]);var Qr=t=>Array.isArray(t);var Jr=t=>Qr(t)?t[t.length-1]||0:t;var ye={skipAnimations:!1,useManualTiming:!1};function en(t){let e=new Set,r=new Set,n=!1,o=!1,i=new WeakSet,s={delta:0,timestamp:0,isProcessing:!1};function l(f){i.has(f)&&(a.schedule(f),t()),f(s)}let a={schedule:(f,u=!1,p=!1)=>{let c=p&&n?e:r;return u&&i.add(f),c.has(f)||c.add(f),f},cancel:f=>{r.delete(f),i.delete(f)},process:f=>{if(s=f,n){o=!0;return}n=!0,[e,r]=[r,e],e.forEach(l),e.clear(),n=!1,o&&(o=!1,a.process(f))}};return a}var gt=["read","resolveKeyframes","update","preRender","render","postRender"],Ci=40;function tn(t,e){let r=!1,n=!0,o={delta:0,timestamp:0,isProcessing:!1},i=()=>r=!0,s=gt.reduce((d,b)=>(d[b]=en(i),d),{}),{read:l,resolveKeyframes:a,update:f,preRender:u,render:p,postRender:m}=s,c=()=>{let d=ye.useManualTiming?o.timestamp:performance.now();r=!1,o.delta=n?1e3/60:Math.max(Math.min(d-o.timestamp,Ci),1),o.timestamp=d,o.isProcessing=!0,l.process(o),a.process(o),f.process(o),u.process(o),p.process(o),m.process(o),o.isProcessing=!1,r&&e&&(n=!1,t(c))},g=()=>{r=!0,n=!0,o.isProcessing||t(c)};return{schedule:gt.reduce((d,b)=>{let S=s[b];return d[b]=(V,v=!1,_=!1)=>(r||g(),S.schedule(V,v,_)),d},{}),cancel:d=>{for(let b=0;b<gt.length;b++)s[gt[b]].cancel(d)},state:o,steps:s}}var{schedule:F,cancel:Ge,state:xe,steps:Ll}=tn(typeof requestAnimationFrame<"u"?requestAnimationFrame:O,!0);var yt;function Pi(){yt=void 0}var I={now:()=>(yt===void 0&&I.set(xe.isProcessing||ye.useManualTiming?xe.timestamp:performance.now()),yt),set:t=>{yt=t,queueMicrotask(Pi)}};var ve=class{constructor(){this.subscriptions=[]}add(e){return zr(this.subscriptions,e),()=>ct(this.subscriptions,e)}notify(e,r,n){let o=this.subscriptions.length;if(o)if(o===1)this.subscriptions[0](e,r,n);else for(let i=0;i<o;i++){let s=this.subscriptions[i];s&&s(e,r,n)}}getSize(){return this.subscriptions.length}clear(){this.subscriptions.length=0}};var rn=30,Di=t=>!isNaN(parseFloat(t)),nn={current:void 0},rr=class{constructor(e,r={}){this.version="11.18.2",this.canTrackVelocity=null,this.events={},this.updateAndNotify=(n,o=!0)=>{let i=I.now();this.updatedAt!==i&&this.setPrevFrameValue(),this.prev=this.current,this.setCurrent(n),this.current!==this.prev&&this.events.change&&this.events.change.notify(this.current),o&&this.events.renderRequest&&this.events.renderRequest.notify(this.current)},this.hasAnimated=!1,this.setCurrent(e),this.owner=r.owner}setCurrent(e){this.current=e,this.updatedAt=I.now(),this.canTrackVelocity===null&&e!==void 0&&(this.canTrackVelocity=Di(this.current))}setPrevFrameValue(e=this.current){this.prevFrameValue=e,this.prevUpdatedAt=this.updatedAt}onChange(e){return this.on("change",e)}on(e,r){this.events[e]||(this.events[e]=new ve);let n=this.events[e].add(r);return e==="change"?()=>{n(),F.read(()=>{this.events.change.getSize()||this.stop()})}:n}clearListeners(){for(let e in this.events)this.events[e].clear()}attach(e,r){this.passiveEffect=e,this.stopPassiveEffect=r}set(e,r=!0){!r||!this.passiveEffect?this.updateAndNotify(e,r):this.passiveEffect(e,this.updateAndNotify)}setWithVelocity(e,r,n){this.set(r),this.prev=void 0,this.prevFrameValue=e,this.prevUpdatedAt=this.updatedAt-n}jump(e,r=!0){this.updateAndNotify(e),this.prev=e,this.prevUpdatedAt=this.prevFrameValue=void 0,r&&this.stop(),this.stopPassiveEffect&&this.stopPassiveEffect()}get(){return nn.current&&nn.current.push(this),this.current}getPrevious(){return this.prev}getVelocity(){let e=I.now();if(!this.canTrackVelocity||this.prevFrameValue===void 0||e-this.updatedAt>rn)return 0;let r=Math.min(this.updatedAt-this.prevUpdatedAt,rn);return it(parseFloat(this.current)-parseFloat(this.prevFrameValue),r)}start(e){return this.stop(),new Promise(r=>{this.hasAnimated=!0,this.animation=e(r),this.events.animationStart&&this.events.animationStart.notify()}).then(()=>{this.events.animationComplete&&this.events.animationComplete.notify(),this.clearAnimation()})}stop(){this.animation&&(this.animation.stop(),this.events.animationCancel&&this.events.animationCancel.notify()),this.clearAnimation()}isAnimating(){return!!this.animation}clearAnimation(){delete this.animation}destroy(){this.clearListeners(),this.stop(),this.stopPassiveEffect&&this.stopPassiveEffect()}};function Y(t,e){return new rr(t,e)}function on(t){let e=[{},{}];return t?.values.forEach((r,n)=>{e[0][n]=r.get(),e[1][n]=r.getVelocity()}),e}function xt(t,e,r,n){if(typeof e=="function"){let[o,i]=on(n);e=e(r!==void 0?r:t.custom,o,i)}if(typeof e=="string"&&(e=t.variants&&t.variants[e]),typeof e=="function"){let[o,i]=on(n);e=e(r!==void 0?r:t.custom,o,i)}return e}function sn(t,e,r){let n=t.getProps();return xt(n,e,r!==void 0?r:n.custom,t)}function Fi(t,e,r){t.hasValue(e)?t.getValue(e).set(r):t.addValue(e,Y(r))}function an(t,e){let r=sn(t,e),{transitionEnd:n={},transition:o={},...i}=r||{};i={...i,...n};for(let s in i){let l=Jr(i[s]);Fi(t,s,l)}}function ln(t){return!!(A(t)&&t.add)}function un(t,e){let r=t.getValue("willChange");if(ln(r))return r.add(e)}var be=t=>t.replace(/([a-z])([A-Z])/gu,"$1-$2").toLowerCase();var Oi="framerAppearId",fn="data-"+be(Oi);function mn(t){return t.props[fn]}var vt={current:!1};function nr(t,e){t.timeline=e,t.onfinish=null}var qe=t=>Array.isArray(t)&&typeof t[0]=="number";var pn={linearEasing:void 0};function cn(t,e){let r=de(t);return()=>{var n;return(n=pn[e])!==null&&n!==void 0?n:r()}}var Te=cn(()=>{try{document.createElement("div").animate({opacity:0},{easing:"linear(0, 1)"})}catch{return!1}return!0},"linearEasing");function ir(t){return!!(typeof t=="function"&&Te()||!t||typeof t=="string"&&(t in or||Te())||qe(t)||Array.isArray(t)&&t.every(ir))}var We=([t,e,r,n])=>`cubic-bezier(${t}, ${e}, ${r}, ${n})`,or={linear:"linear",ease:"ease",easeIn:"ease-in",easeOut:"ease-out",easeInOut:"ease-in-out",circIn:We([0,.65,.55,1]),circOut:We([.55,0,1,.45]),backIn:We([.31,.01,.66,-.59]),backOut:We([.33,1.53,.69,.99])};function sr(t,e){if(t)return typeof t=="function"&&Te()?ot(t,e):qe(t)?We(t):Array.isArray(t)?t.map(r=>sr(r,e)||or.easeOut):or[t]}var dn=(t,e,r)=>(((1-3*r+3*e)*t+(3*r-6*e))*t+3*e)*t,Ri=1e-7,Ei=12;function ki(t,e,r,n,o){let i,s,l=0;do s=e+(r-e)/2,i=dn(s,n,o)-t,i>0?r=s:e=s;while(Math.abs(i)>Ri&&++l<Ei);return s}function te(t,e,r,n){if(t===e&&r===n)return O;let o=i=>ki(i,0,1,t,r);return i=>i===0||i===1?i:dn(o(i),e,n)}var bt=t=>e=>e<=.5?t(2*e)/2:(2-t(2*(1-e)))/2;var Tt=t=>e=>1-t(1-e);var ar=te(.33,1.53,.69,.99),ze=Tt(ar),_t=bt(ze);var Vt=t=>(t*=2)<1?.5*ze(t):.5*(2-Math.pow(2,-10*(t-1)));var St=t=>1-Math.sin(Math.acos(t)),hn=Tt(St),wt=bt(St);var Mt=t=>/^0[^.\s]+$/u.test(t);function gn(t){return typeof t=="number"?t===0:t!==null?t==="none"||t==="0"||Mt(t):!0}var W={test:t=>typeof t=="number",parse:parseFloat,transform:t=>t},X={...W,transform:t=>k(0,1,t)},je={...W,default:1};var re=t=>Math.round(t*1e5)/1e5;var _e=/-?(?:\d+(?:\.\d+)?|\.\d+)/gu;function yn(t){return t==null}var xn=/^(?:#[\da-f]{3,8}|(?:rgb|hsl)a?\((?:-?[\d.]+%?[,\s]+){2}-?[\d.]+%?\s*(?:[,/]\s*)?(?:\b\d+(?:\.\d+)?|\.\d+)?%?\))$/iu;var Ve=(t,e)=>r=>!!(typeof r=="string"&&xn.test(r)&&r.startsWith(t)||e&&!yn(r)&&Object.prototype.hasOwnProperty.call(r,e)),At=(t,e,r)=>n=>{if(typeof n!="string")return n;let[o,i,s,l]=n.match(_e);return{[t]:parseFloat(o),[e]:parseFloat(i),[r]:parseFloat(s),alpha:l!==void 0?parseFloat(l):1}};var Ni=t=>k(0,255,t),lr={...W,transform:t=>Math.round(Ni(t))},z={test:Ve("rgb","red"),parse:At("red","green","blue"),transform:({red:t,green:e,blue:r,alpha:n=1})=>"rgba("+lr.transform(t)+", "+lr.transform(e)+", "+lr.transform(r)+", "+re(X.transform(n))+")"};function Ii(t){let e="",r="",n="",o="";return t.length>5?(e=t.substring(1,3),r=t.substring(3,5),n=t.substring(5,7),o=t.substring(7,9)):(e=t.substring(1,2),r=t.substring(2,3),n=t.substring(3,4),o=t.substring(4,5),e+=e,r+=r,n+=n,o+=o),{red:parseInt(e,16),green:parseInt(r,16),blue:parseInt(n,16),alpha:o?parseInt(o,16)/255:1}}var Ue={test:Ve("#"),parse:Ii,transform:z.transform};var He=t=>({test:e=>typeof e=="string"&&e.endsWith(t)&&e.split(" ").length===1,parse:parseFloat,transform:e=>`${e}${t}`}),j=He("deg"),ne=He("%"),x=He("px"),vn=He("vh"),bn=He("vw"),ur={...ne,parse:t=>ne.parse(t)/100,transform:t=>ne.transform(t*100)};var oe={test:Ve("hsl","hue"),parse:At("hue","saturation","lightness"),transform:({hue:t,saturation:e,lightness:r,alpha:n=1})=>"hsla("+Math.round(t)+", "+ne.transform(re(e))+", "+ne.transform(re(r))+", "+re(X.transform(n))+")"};var P={test:t=>z.test(t)||Ue.test(t)||oe.test(t),parse:t=>z.test(t)?z.parse(t):oe.test(t)?oe.parse(t):Ue.parse(t),transform:t=>typeof t=="string"?t:t.hasOwnProperty("red")?z.transform(t):oe.transform(t)};var Tn=/(?:#[\da-f]{3,8}|(?:rgb|hsl)a?\((?:-?[\d.]+%?[,\s]+){2}-?[\d.]+%?\s*(?:[,/]\s*)?(?:\b\d+(?:\.\d+)?|\.\d+)?%?\))/giu;function Bi(t){var e,r;return isNaN(t)&&typeof t=="string"&&(((e=t.match(_e))===null||e===void 0?void 0:e.length)||0)+(((r=t.match(Tn))===null||r===void 0?void 0:r.length)||0)>0}var Vn="number",Sn="color",$i="var",Ki="var(",_n="${}",Li=/var\s*\(\s*--(?:[\w-]+\s*|[\w-]+\s*,(?:\s*[^)(\s]|\s*\((?:[^)(]|\([^)(]*\))*\))+\s*)\)|#[\da-f]{3,8}|(?:rgb|hsl)a?\((?:-?[\d.]+%?[,\s]+){2}-?[\d.]+%?\s*(?:[,/]\s*)?(?:\b\d+(?:\.\d+)?|\.\d+)?%?\)|-?(?:\d+(?:\.\d+)?|\.\d+)/giu;function ae(t){let e=t.toString(),r=[],n={color:[],number:[],var:[]},o=[],i=0,l=e.replace(Li,a=>(P.test(a)?(n.color.push(i),o.push(Sn),r.push(P.parse(a))):a.startsWith(Ki)?(n.var.push(i),o.push($i),r.push(a)):(n.number.push(i),o.push(Vn),r.push(parseFloat(a))),++i,_n)).split(_n);return{values:r,split:l,indexes:n,types:o}}function wn(t){return ae(t).values}function Mn(t){let{split:e,types:r}=ae(t),n=e.length;return o=>{let i="";for(let s=0;s<n;s++)if(i+=e[s],o[s]!==void 0){let l=r[s];l===Vn?i+=re(o[s]):l===Sn?i+=P.transform(o[s]):i+=o[s]}return i}}var Gi=t=>typeof t=="number"?0:t;function qi(t){let e=wn(t);return Mn(t)(e.map(Gi))}var B={test:Bi,parse:wn,createTransformer:Mn,getAnimatableNone:qi};var Wi=new Set(["brightness","contrast","saturate","opacity"]);function zi(t){let[e,r]=t.slice(0,-1).split("(");if(e==="drop-shadow")return t;let[n]=r.match(_e)||[];if(!n)return t;let o=r.replace(n,""),i=Wi.has(e)?1:0;return n!==r&&(i*=100),e+"("+i+o+")"}var ji=/\b([a-z-]*)\(.*?\)/gu,Ye={...B,getAnimatableNone:t=>{let e=t.match(ji);return e?e.map(zi).join(" "):t}};var An={borderWidth:x,borderTopWidth:x,borderRightWidth:x,borderBottomWidth:x,borderLeftWidth:x,borderRadius:x,radius:x,borderTopLeftRadius:x,borderTopRightRadius:x,borderBottomRightRadius:x,borderBottomLeftRadius:x,width:x,maxWidth:x,height:x,maxHeight:x,top:x,right:x,bottom:x,left:x,padding:x,paddingTop:x,paddingRight:x,paddingBottom:x,paddingLeft:x,margin:x,marginTop:x,marginRight:x,marginBottom:x,marginLeft:x,backgroundPositionX:x,backgroundPositionY:x};var Cn={rotate:j,rotateX:j,rotateY:j,rotateZ:j,scale:je,scaleX:je,scaleY:je,scaleZ:je,skew:j,skewX:j,skewY:j,distance:x,translateX:x,translateY:x,translateZ:x,x,y:x,z:x,perspective:x,transformPerspective:x,opacity:X,originX:ur,originY:ur,originZ:x};var fr={...W,transform:Math.round};var Se={...An,...Cn,zIndex:fr,size:x,fillOpacity:X,strokeOpacity:X,numOctaves:fr};var Ui={...Se,color:P,backgroundColor:P,outlineColor:P,fill:P,stroke:P,borderColor:P,borderTopColor:P,borderRightColor:P,borderBottomColor:P,borderLeftColor:P,filter:Ye,WebkitFilter:Ye},we=t=>Ui[t];function Ct(t,e){let r=we(t);return r!==Ye&&(r=B),r.getAnimatableNone?r.getAnimatableNone(e):void 0}var Hi=new Set(["auto","none","0"]);function Pn(t,e,r){let n=0,o;for(;n<t.length&&!o;){let i=t[n];typeof i=="string"&&!Hi.has(i)&&ae(i).values.length&&(o=t[n]),n++}if(o&&r)for(let i of e)t[i]=Ct(r,o)}var mr=t=>t===W||t===x,Dn=(t,e)=>parseFloat(t.split(", ")[e]),Fn=(t,e)=>(r,{transform:n})=>{if(n==="none"||!n)return 0;let o=n.match(/^matrix3d\((.+)\)$/u);if(o)return Dn(o[1],e);{let i=n.match(/^matrix\((.+)\)$/u);return i?Dn(i[1],t):0}},Yi=new Set(["x","y","z"]),Xi=q.filter(t=>!Yi.has(t));function On(t){let e=[];return Xi.forEach(r=>{let n=t.getValue(r);n!==void 0&&(e.push([r,n.get()]),n.set(r.startsWith("scale")?1:0))}),e}var le={width:({x:t},{paddingLeft:e="0",paddingRight:r="0"})=>t.max-t.min-parseFloat(e)-parseFloat(r),height:({y:t},{paddingTop:e="0",paddingBottom:r="0"})=>t.max-t.min-parseFloat(e)-parseFloat(r),top:(t,{top:e})=>parseFloat(e),left:(t,{left:e})=>parseFloat(e),bottom:({y:t},{top:e})=>parseFloat(e)+(t.max-t.min),right:({x:t},{left:e})=>parseFloat(e)+(t.max-t.min),x:Fn(4,13),y:Fn(5,14)};le.translateX=le.x;le.translateY=le.y;var ue=new Set,pr=!1,cr=!1;function Rn(){if(cr){let t=Array.from(ue).filter(n=>n.needsMeasurement),e=new Set(t.map(n=>n.element)),r=new Map;e.forEach(n=>{let o=On(n);o.length&&(r.set(n,o),n.render())}),t.forEach(n=>n.measureInitialState()),e.forEach(n=>{n.render();let o=r.get(n);o&&o.forEach(([i,s])=>{var l;(l=n.getValue(i))===null||l===void 0||l.set(s)})}),t.forEach(n=>n.measureEndState()),t.forEach(n=>{n.suspendedScrollY!==void 0&&window.scrollTo(0,n.suspendedScrollY)})}cr=!1,pr=!1,ue.forEach(t=>t.complete()),ue.clear()}function En(){ue.forEach(t=>{t.readKeyframes(),t.needsMeasurement&&(cr=!0)})}function kn(){En(),Rn()}var ie=class{constructor(e,r,n,o,i,s=!1){this.isComplete=!1,this.isAsync=!1,this.needsMeasurement=!1,this.isScheduled=!1,this.unresolvedKeyframes=[...e],this.onComplete=r,this.name=n,this.motionValue=o,this.element=i,this.isAsync=s}scheduleResolve(){this.isScheduled=!0,this.isAsync?(ue.add(this),pr||(pr=!0,F.read(En),F.resolveKeyframes(Rn))):(this.readKeyframes(),this.complete())}readKeyframes(){let{unresolvedKeyframes:e,name:r,element:n,motionValue:o}=this;for(let i=0;i<e.length;i++)if(e[i]===null)if(i===0){let s=o?.get(),l=e[e.length-1];if(s!==void 0)e[0]=s;else if(n&&r){let a=n.readValue(r,l);a!=null&&(e[0]=a)}e[0]===void 0&&(e[0]=l),o&&s===void 0&&o.set(e[0])}else e[i]=e[i-1]}setFinalKeyframe(){}measureInitialState(){}renderEndStyles(){}measureEndState(){}complete(){this.isComplete=!0,this.onComplete(this.unresolvedKeyframes,this.finalKeyframe),ue.delete(this)}cancel(){this.isComplete||(this.isScheduled=!1,ue.delete(this))}resume(){this.isComplete||this.scheduleResolve()}};var Pt=t=>/^-?(?:\d+(?:\.\d+)?|\.\d+)$/u.test(t);var Nn=t=>e=>typeof e=="string"&&e.startsWith(t),Dt=Nn("--"),Zi=Nn("var(--"),Me=t=>Zi(t)?Qi.test(t.split("/*")[0].trim()):!1,Qi=/var\(--(?:[\w-]+\s*|[\w-]+\s*,(?:\s*[^)(\s]|\s*\((?:[^)(]|\([^)(]*\))*\))+\s*)\)$/iu;var Ji=/^var\(--(?:([\w-]+)|([\w-]+), ?([a-zA-Z\d ()%#.,-]+))\)/u;function es(t){let e=Ji.exec(t);if(!e)return[,];let[,r,n,o]=e;return[`--${r??n}`,o]}var ts=4;function dr(t,e,r=1){K(r<=ts,`Max CSS variable fallback depth detected in property "${t}". This may indicate a circular fallback dependency.`);let[n,o]=es(t);if(!n)return;let i=window.getComputedStyle(e).getPropertyValue(n);if(i){let s=i.trim();return Pt(s)?parseFloat(s):s}return Me(o)?dr(o,e,r+1):o}var Ft=t=>e=>e.test(t);var In={test:t=>t==="auto",parse:t=>t};var hr=[W,x,ne,j,bn,vn,In],gr=t=>hr.find(Ft(t));var Ae=class extends ie{constructor(e,r,n,o,i){super(e,r,n,o,i,!0)}readKeyframes(){let{unresolvedKeyframes:e,element:r,name:n}=this;if(!r||!r.current)return;super.readKeyframes();for(let a=0;a<e.length;a++){let f=e[a];if(typeof f=="string"&&(f=f.trim(),Me(f))){let u=dr(f,r.current);u!==void 0&&(e[a]=u),a===e.length-1&&(this.finalKeyframe=f)}}if(this.resolveNoneKeyframes(),!ht.has(n)||e.length!==2)return;let[o,i]=e,s=gr(o),l=gr(i);if(s!==l)if(mr(s)&&mr(l))for(let a=0;a<e.length;a++){let f=e[a];typeof f=="string"&&(e[a]=parseFloat(f))}else this.needsMeasurement=!0}resolveNoneKeyframes(){let{unresolvedKeyframes:e,name:r}=this,n=[];for(let o=0;o<e.length;o++)gn(e[o])&&n.push(o);n.length&&Pn(e,n,r)}measureInitialState(){let{element:e,unresolvedKeyframes:r,name:n}=this;if(!e||!e.current)return;n==="height"&&(this.suspendedScrollY=window.pageYOffset),this.measuredOrigin=le[n](e.measureViewportBox(),window.getComputedStyle(e.current)),r[0]=this.measuredOrigin;let o=r[r.length-1];o!==void 0&&e.getValue(n,o).jump(o,!1)}measureEndState(){var e;let{element:r,name:n,unresolvedKeyframes:o}=this;if(!r||!r.current)return;let i=r.getValue(n);i&&i.jump(this.measuredOrigin,!1);let s=o.length-1,l=o[s];o[s]=le[n](r.measureViewportBox(),window.getComputedStyle(r.current)),l!==null&&this.finalKeyframe===void 0&&(this.finalKeyframe=l),!((e=this.removedTransforms)===null||e===void 0)&&e.length&&this.removedTransforms.forEach(([a,f])=>{r.getValue(a).set(f)}),this.resolveNoneKeyframes()}};var yr=(t,e)=>e==="zIndex"?!1:!!(typeof t=="number"||Array.isArray(t)||typeof t=="string"&&(B.test(t)||t==="0")&&!t.startsWith("url("));function rs(t){let e=t[0];if(t.length===1)return!0;for(let r=0;r<t.length;r++)if(t[r]!==e)return!0}function Bn(t,e,r,n){let o=t[0];if(o===null)return!1;if(e==="display"||e==="visibility")return!0;let i=t[t.length-1],s=yr(o,e),l=yr(i,e);return Q(s===l,`You are trying to animate ${e} from "${o}" to "${i}". ${o} is not an animatable value - to enable this animation set ${o} to a value animatable to ${i} via the \`style\` property.`),!s||!l?!1:rs(t)||(r==="spring"||ee(r))&&n}var ns=t=>t!==null;function se(t,{repeat:e,repeatType:r="loop"},n){let o=t.filter(ns),i=e&&r!=="loop"&&e%2===1?0:o.length-1;return!i||n===void 0?o[i]:n}var os=40,Ce=class{constructor({autoplay:e=!0,delay:r=0,type:n="keyframes",repeat:o=0,repeatDelay:i=0,repeatType:s="loop",...l}){this.isStopped=!1,this.hasAttemptedResolve=!1,this.createdAt=I.now(),this.options={autoplay:e,delay:r,type:n,repeat:o,repeatDelay:i,repeatType:s,...l},this.updateFinishedPromise()}calcStartTime(){return this.resolvedAt?this.resolvedAt-this.createdAt>os?this.resolvedAt:this.createdAt:this.createdAt}get resolved(){return!this._resolved&&!this.hasAttemptedResolve&&kn(),this._resolved}onKeyframesResolved(e,r){this.resolvedAt=I.now(),this.hasAttemptedResolve=!0;let{name:n,type:o,velocity:i,delay:s,onComplete:l,onUpdate:a,isGenerator:f}=this.options;if(!f&&!Bn(e,n,o,i))if(vt.current||!s){a&&a(se(e,this.options,r)),l&&l(),this.resolveFinishedPromise();return}else this.options.duration=0;let u=this.initPlayback(e,r);u!==!1&&(this._resolved={keyframes:e,finalKeyframe:r,...u},this.onPostResolved())}onPostResolved(){}then(e,r){return this.currentFinishedPromise.then(e,r)}flatten(){this.options.type="keyframes",this.options.ease="linear"}updateFinishedPromise(){this.currentFinishedPromise=new Promise(e=>{this.resolveFinishedPromise=e})}};function xr(t,e,r){return r<0&&(r+=1),r>1&&(r-=1),r<1/6?t+(e-t)*6*r:r<1/2?e:r<2/3?t+(e-t)*(2/3-r)*6:t}function $n({hue:t,saturation:e,lightness:r,alpha:n}){t/=360,e/=100,r/=100;let o=0,i=0,s=0;if(!e)o=i=s=r;else{let l=r<.5?r*(1+e):r+e-r*e,a=2*r-l;o=xr(a,l,t+1/3),i=xr(a,l,t),s=xr(a,l,t-1/3)}return{red:Math.round(o*255),green:Math.round(i*255),blue:Math.round(s*255),alpha:n}}function Pe(t,e){return r=>r>0?e:t}var vr=(t,e,r)=>{let n=t*t,o=r*(e*e-n)+n;return o<0?0:Math.sqrt(o)},is=[Ue,z,oe],ss=t=>is.find(e=>e.test(t));function Kn(t){let e=ss(t);if(Q(!!e,`'${t}' is not an animatable color. Use the equivalent color code instead.`),!e)return!1;let r=e.parse(t);return e===oe&&(r=$n(r)),r}var br=(t,e)=>{let r=Kn(t),n=Kn(e);if(!r||!n)return Pe(t,e);let o={...r};return i=>(o.red=vr(r.red,n.red,i),o.green=vr(r.green,n.green,i),o.blue=vr(r.blue,n.blue,i),o.alpha=G(r.alpha,n.alpha,i),z.transform(o))};var as=(t,e)=>r=>e(t(r)),De=(...t)=>t.reduce(as);var Ot=new Set(["none","hidden"]);function Ln(t,e){return Ot.has(t)?r=>r<=0?t:e:r=>r>=1?e:t}function ls(t,e){return r=>G(t,e,r)}function Rt(t){return typeof t=="number"?ls:typeof t=="string"?Me(t)?Pe:P.test(t)?br:ms:Array.isArray(t)?Gn:typeof t=="object"?P.test(t)?br:us:Pe}function Gn(t,e){let r=[...t],n=r.length,o=t.map((i,s)=>Rt(i)(i,e[s]));return i=>{for(let s=0;s<n;s++)r[s]=o[s](i);return r}}function us(t,e){let r={...t,...e},n={};for(let o in r)t[o]!==void 0&&e[o]!==void 0&&(n[o]=Rt(t[o])(t[o],e[o]));return o=>{for(let i in n)r[i]=n[i](o);return r}}function fs(t,e){var r;let n=[],o={color:0,var:0,number:0};for(let i=0;i<e.values.length;i++){let s=e.types[i],l=t.indexes[s][o[s]],a=(r=t.values[l])!==null&&r!==void 0?r:0;n[i]=a,o[s]++}return n}var ms=(t,e)=>{let r=B.createTransformer(e),n=ae(t),o=ae(e);return n.indexes.var.length===o.indexes.var.length&&n.indexes.color.length===o.indexes.color.length&&n.indexes.number.length>=o.indexes.number.length?Ot.has(t)&&!o.values.length||Ot.has(e)&&!n.values.length?Ln(t,e):De(Gn(fs(n,o),o.values),r):(Q(!0,`Complex values '${t}' and '${e}' too different to mix. Ensure all colors are of the same type, and that each contains the same quantity of number and color values. Falling back to instant transition.`),Pe(t,e))};function Et(t,e,r){return typeof t=="number"&&typeof e=="number"&&typeof r=="number"?G(t,e,r):Rt(t)(t,e)}function Tr({keyframes:t,velocity:e=0,power:r=.8,timeConstant:n=325,bounceDamping:o=10,bounceStiffness:i=500,modifyTarget:s,min:l,max:a,restDelta:f=.5,restSpeed:u}){let p=t[0],m={done:!1,value:p},c=T=>l!==void 0&&T<l||a!==void 0&&T>a,g=T=>l===void 0?a:a===void 0||Math.abs(l-T)<Math.abs(a-T)?l:a,y=r*e,h=p+y,d=s===void 0?h:s(h);d!==h&&(y=d-p);let b=T=>-y*Math.exp(-T/n),S=T=>d+b(T),V=T=>{let w=b(T),E=S(T);m.done=Math.abs(w)<=f,m.value=m.done?d:E},v,_,C=T=>{c(m.value)&&(v=T,_=U({keyframes:[m.value,g(m.value)],velocity:st(S,T,m.value),damping:o,stiffness:i,restDelta:f,restSpeed:u}))};return C(0),{calculatedDuration:null,next:T=>{let w=!1;return!_&&v===void 0&&(w=!0,V(T),C(T)),v!==void 0&&T>=v?_.next(T-v):(!w&&V(T),m)}}}var qn=te(.42,0,1,1),Wn=te(0,0,.58,1),kt=te(.42,0,.58,1);var zn={linear:O,easeIn:qn,easeInOut:kt,easeOut:Wn,circIn:St,circInOut:wt,circOut:hn,backIn:ze,backInOut:_t,backOut:ar,anticipate:Vt},_r=t=>{if(qe(t)){K(t.length===4,"Cubic bezier arrays must contain four numerical values.");let[e,r,n,o]=t;return te(e,r,n,o)}else if(typeof t=="string")return K(zn[t]!==void 0,`Invalid easing type '${t}'`),zn[t];return t};function ps(t,e,r){let n=[],o=r||Et,i=t.length-1;for(let s=0;s<i;s++){let l=o(t[s],t[s+1]);if(e){let a=Array.isArray(e)?e[s]||O:e;l=De(a,l)}n.push(l)}return n}function jn(t,e,{clamp:r=!0,ease:n,mixer:o}={}){let i=t.length;if(K(i===e.length,"Both input and output ranges must be the same length"),i===1)return()=>e[0];if(i===2&&e[0]===e[1])return()=>e[1];let s=t[0]===t[1];t[0]>t[i-1]&&(t=[...t].reverse(),e=[...e].reverse());let l=ps(e,n,o),a=l.length,f=u=>{if(s&&u<t[0])return e[0];let p=0;if(a>1)for(;p<t.length-2&&!(u<t[p+1]);p++);let m=J(t[p],t[p+1],u);return l[p](m)};return r?u=>f(k(t[0],t[i-1],u)):f}function Un(t,e){return t.map(r=>r*e)}function cs(t,e){return t.map(()=>e||kt).splice(0,t.length-1)}function Xe({duration:t=300,keyframes:e,times:r,ease:n="easeInOut"}){let o=lt(n)?n.map(_r):_r(n),i={done:!1,value:e[0]},s=Un(r&&r.length===e.length?r:mt(e),t),l=jn(s,e,{ease:Array.isArray(o)?o:cs(e,o)});return{calculatedDuration:t,next:a=>(i.value=l(a),i.done=a>=t,i)}}var Hn=t=>{let e=({timestamp:r})=>t(r);return{start:()=>F.update(e,!0),stop:()=>Ge(e),now:()=>xe.isProcessing?xe.timestamp:I.now()}};var ds={decay:Tr,inertia:Tr,tween:Xe,keyframes:Xe,spring:U},hs=t=>t/100,fe=class extends Ce{constructor(e){super(e),this.holdTime=null,this.cancelTime=null,this.currentTime=0,this.playbackSpeed=1,this.pendingPlayState="running",this.startTime=null,this.state="idle",this.stop=()=>{if(this.resolver.cancel(),this.isStopped=!0,this.state==="idle")return;this.teardown();let{onStop:a}=this.options;a&&a()};let{name:r,motionValue:n,element:o,keyframes:i}=this.options,s=o?.KeyframeResolver||ie,l=(a,f)=>this.onKeyframesResolved(a,f);this.resolver=new s(i,l,r,n,o),this.resolver.scheduleResolve()}flatten(){super.flatten(),this._resolved&&Object.assign(this._resolved,this.initPlayback(this._resolved.keyframes))}initPlayback(e){let{type:r="keyframes",repeat:n=0,repeatDelay:o=0,repeatType:i,velocity:s=0}=this.options,l=ee(r)?r:ds[r]||Xe,a,f;l!==Xe&&typeof e[0]!="number"&&(a=De(hs,Et(e[0],e[1])),e=[0,100]);let u=l({...this.options,keyframes:e});i==="mirror"&&(f=l({...this.options,keyframes:[...e].reverse(),velocity:-s})),u.calculatedDuration===null&&(u.calculatedDuration=ge(u));let{calculatedDuration:p}=u,m=p+o,c=m*(n+1)-o;return{generator:u,mirroredGenerator:f,mapPercentToKeyframes:a,calculatedDuration:p,resolvedDuration:m,totalDuration:c}}onPostResolved(){let{autoplay:e=!0}=this.options;this.play(),this.pendingPlayState==="paused"||!e?this.pause():this.state=this.pendingPlayState}tick(e,r=!1){let{resolved:n}=this;if(!n){let{keyframes:T}=this.options;return{done:!0,value:T[T.length-1]}}let{finalKeyframe:o,generator:i,mirroredGenerator:s,mapPercentToKeyframes:l,keyframes:a,calculatedDuration:f,totalDuration:u,resolvedDuration:p}=n;if(this.startTime===null)return i.next(0);let{delay:m,repeat:c,repeatType:g,repeatDelay:y,onUpdate:h}=this.options;this.speed>0?this.startTime=Math.min(this.startTime,e):this.speed<0&&(this.startTime=Math.min(e-u/this.speed,this.startTime)),r?this.currentTime=e:this.holdTime!==null?this.currentTime=this.holdTime:this.currentTime=Math.round(e-this.startTime)*this.speed;let d=this.currentTime-m*(this.speed>=0?1:-1),b=this.speed>=0?d<0:d>u;this.currentTime=Math.max(d,0),this.state==="finished"&&this.holdTime===null&&(this.currentTime=u);let S=this.currentTime,V=i;if(c){let T=Math.min(this.currentTime,u)/p,w=Math.floor(T),E=T%1;!E&&T>=1&&(E=1),E===1&&w--,w=Math.min(w,c+1),!!(w%2)&&(g==="reverse"?(E=1-E,y&&(E-=y/p)):g==="mirror"&&(V=s)),S=k(0,1,E)*p}let v=b?{done:!1,value:a[0]}:V.next(S);l&&(v.value=l(v.value));let{done:_}=v;!b&&f!==null&&(_=this.speed>=0?this.currentTime>=u:this.currentTime<=0);let C=this.holdTime===null&&(this.state==="finished"||this.state==="running"&&_);return C&&o!==void 0&&(v.value=se(a,this.options,o)),h&&h(v.value),C&&this.finish(),v}get duration(){let{resolved:e}=this;return e?R(e.calculatedDuration):0}get time(){return R(this.currentTime)}set time(e){e=D(e),this.currentTime=e,this.holdTime!==null||this.speed===0?this.holdTime=e:this.driver&&(this.startTime=this.driver.now()-e/this.speed)}get speed(){return this.playbackSpeed}set speed(e){let r=this.playbackSpeed!==e;this.playbackSpeed=e,r&&(this.time=R(this.currentTime))}play(){if(this.resolver.isScheduled||this.resolver.resume(),!this._resolved){this.pendingPlayState="running";return}if(this.isStopped)return;let{driver:e=Hn,onPlay:r,startTime:n}=this.options;this.driver||(this.driver=e(i=>this.tick(i))),r&&r();let o=this.driver.now();this.holdTime!==null?this.startTime=o-this.holdTime:this.startTime?this.state==="finished"&&(this.startTime=o):this.startTime=n??this.calcStartTime(),this.state==="finished"&&this.updateFinishedPromise(),this.cancelTime=this.startTime,this.holdTime=null,this.state="running",this.driver.start()}pause(){var e;if(!this._resolved){this.pendingPlayState="paused";return}this.state="paused",this.holdTime=(e=this.currentTime)!==null&&e!==void 0?e:0}complete(){this.state!=="running"&&this.play(),this.pendingPlayState=this.state="finished",this.holdTime=null}finish(){this.teardown(),this.state="finished";let{onComplete:e}=this.options;e&&e()}cancel(){this.cancelTime!==null&&this.tick(this.cancelTime),this.teardown(),this.updateFinishedPromise()}teardown(){this.state="idle",this.stopDriver(),this.resolveFinishedPromise(),this.updateFinishedPromise(),this.startTime=this.cancelTime=null,this.resolver.cancel()}stopDriver(){this.driver&&(this.driver.stop(),this.driver=void 0)}sample(e){return this.startTime=0,this.tick(e,!0)}};var Yn=new Set(["opacity","clipPath","filter","transform"]);function Xn(t,e,r,{delay:n=0,duration:o=300,repeat:i=0,repeatType:s="loop",ease:l="easeInOut",times:a}={}){let f={[e]:r};a&&(f.offset=a);let u=sr(l,o);return Array.isArray(u)&&(f.easing=u),t.animate(f,{delay:n,duration:o,easing:Array.isArray(u)?"linear":u,fill:"both",iterations:i+1,direction:s==="reverse"?"alternate":"normal"})}var Zn=de(()=>Object.hasOwnProperty.call(Element.prototype,"animate"));var Nt=10,gs=2e4;function ys(t){return ee(t.type)||t.type==="spring"||!ir(t.ease)}function xs(t,e){let r=new fe({...e,keyframes:t,repeat:0,delay:0,isGenerator:!0}),n={done:!1,value:t[0]},o=[],i=0;for(;!n.done&&i<gs;)n=r.sample(i),o.push(n.value),i+=Nt;return{times:void 0,keyframes:o,duration:i-Nt,ease:"linear"}}var Qn={anticipate:Vt,backInOut:_t,circInOut:wt};function vs(t){return t in Qn}var Ze=class extends Ce{constructor(e){super(e);let{name:r,motionValue:n,element:o,keyframes:i}=this.options;this.resolver=new Ae(i,(s,l)=>this.onKeyframesResolved(s,l),r,n,o),this.resolver.scheduleResolve()}initPlayback(e,r){let{duration:n=300,times:o,ease:i,type:s,motionValue:l,name:a,startTime:f}=this.options;if(!l.owner||!l.owner.current)return!1;if(typeof i=="string"&&Te()&&vs(i)&&(i=Qn[i]),ys(this.options)){let{onComplete:p,onUpdate:m,motionValue:c,element:g,...y}=this.options,h=xs(e,y);e=h.keyframes,e.length===1&&(e[1]=e[0]),n=h.duration,o=h.times,i=h.ease,s="keyframes"}let u=Xn(l.owner.current,a,e,{...this.options,duration:n,times:o,ease:i});return u.startTime=f??this.calcStartTime(),this.pendingTimeline?(nr(u,this.pendingTimeline),this.pendingTimeline=void 0):u.onfinish=()=>{let{onComplete:p}=this.options;l.set(se(e,this.options,r)),p&&p(),this.cancel(),this.resolveFinishedPromise()},{animation:u,duration:n,times:o,type:s,ease:i,keyframes:e}}get duration(){let{resolved:e}=this;if(!e)return 0;let{duration:r}=e;return R(r)}get time(){let{resolved:e}=this;if(!e)return 0;let{animation:r}=e;return R(r.currentTime||0)}set time(e){let{resolved:r}=this;if(!r)return;let{animation:n}=r;n.currentTime=D(e)}get speed(){let{resolved:e}=this;if(!e)return 1;let{animation:r}=e;return r.playbackRate}set speed(e){let{resolved:r}=this;if(!r)return;let{animation:n}=r;n.playbackRate=e}get state(){let{resolved:e}=this;if(!e)return"idle";let{animation:r}=e;return r.playState}get startTime(){let{resolved:e}=this;if(!e)return null;let{animation:r}=e;return r.startTime}attachTimeline(e){if(!this._resolved)this.pendingTimeline=e;else{let{resolved:r}=this;if(!r)return O;let{animation:n}=r;nr(n,e)}return O}play(){if(this.isStopped)return;let{resolved:e}=this;if(!e)return;let{animation:r}=e;r.playState==="finished"&&this.updateFinishedPromise(),r.play()}pause(){let{resolved:e}=this;if(!e)return;let{animation:r}=e;r.pause()}stop(){if(this.resolver.cancel(),this.isStopped=!0,this.state==="idle")return;this.resolveFinishedPromise(),this.updateFinishedPromise();let{resolved:e}=this;if(!e)return;let{animation:r,keyframes:n,duration:o,type:i,ease:s,times:l}=e;if(r.playState==="idle"||r.playState==="finished")return;if(this.time){let{motionValue:f,onUpdate:u,onComplete:p,element:m,...c}=this.options,g=new fe({...c,keyframes:n,duration:o,type:i,ease:s,times:l,isGenerator:!0}),y=D(this.time);f.setWithVelocity(g.sample(y-Nt).value,g.sample(y).value,Nt)}let{onStop:a}=this.options;a&&a(),this.cancel()}complete(){let{resolved:e}=this;e&&e.animation.finish()}cancel(){let{resolved:e}=this;e&&e.animation.cancel()}static supports(e){let{motionValue:r,name:n,repeatDelay:o,repeatType:i,damping:s,type:l}=e;if(!r||!r.owner||!(r.owner.current instanceof HTMLElement))return!1;let{onUpdate:a,transformTemplate:f}=r.owner.getProps();return Zn()&&n&&Yn.has(n)&&!a&&!f&&!o&&i!=="mirror"&&s!==0&&l!=="inertia"}};var bs={type:"spring",stiffness:500,damping:25,restSpeed:10},Ts=t=>({type:"spring",stiffness:550,damping:t===0?2*Math.sqrt(550):30,restSpeed:10}),_s={type:"keyframes",duration:.8},Vs={type:"keyframes",ease:[.25,.1,.35,1],duration:.3},Jn=(t,{keyframes:e})=>e.length>2?_s:N.has(t)?t.startsWith("scale")?Ts(e[1]):bs:Vs;function eo({when:t,delay:e,delayChildren:r,staggerChildren:n,staggerDirection:o,repeat:i,repeatType:s,repeatDelay:l,from:a,elapsed:f,...u}){return!!Object.keys(u).length}var It=(t,e,r,n={},o,i)=>s=>{let l=dt(n,t)||{},a=l.delay||n.delay||0,{elapsed:f=0}=n;f=f-D(a);let u={keyframes:Array.isArray(r)?r:[null,r],ease:"easeOut",velocity:e.getVelocity(),...l,delay:-f,onUpdate:m=>{e.set(m),l.onUpdate&&l.onUpdate(m)},onComplete:()=>{s(),l.onComplete&&l.onComplete()},name:t,motionValue:e,element:i?void 0:o};eo(l)||(u={...u,...Jn(t,u)}),u.duration&&(u.duration=D(u.duration)),u.repeatDelay&&(u.repeatDelay=D(u.repeatDelay)),u.from!==void 0&&(u.keyframes[0]=u.from);let p=!1;if((u.type===!1||u.duration===0&&!u.repeatDelay)&&(u.duration=0,u.delay===0&&(p=!0)),(vt.current||ye.skipAnimations)&&(p=!0,u.duration=0,u.delay=0),p&&!i&&e.get()!==void 0){let m=se(u.keyframes,l);if(m!==void 0)return F.update(()=>{u.onUpdate(m),u.onComplete()}),new he([])}return!i&&Ze.supports(u)?new Ze(u):new fe(u)};function Ss({protectedKeys:t,needsAnimating:e},r){let n=t.hasOwnProperty(r)&&e[r]!==!0;return e[r]=!1,n}function to(t,e,{delay:r=0,transitionOverride:n,type:o}={}){var i;let{transition:s=t.getDefaultTransition(),transitionEnd:l,...a}=e;n&&(s=n);let f=[],u=o&&t.animationState&&t.animationState.getState()[o];for(let p in a){let m=t.getValue(p,(i=t.latestValues[p])!==null&&i!==void 0?i:null),c=a[p];if(c===void 0||u&&Ss(u,p))continue;let g={delay:r,...dt(s||{},p)},y=!1;if(window.MotionHandoffAnimation){let d=mn(t);if(d){let b=window.MotionHandoffAnimation(d,p,F);b!==null&&(g.startTime=b,y=!0)}}un(t,p),m.start(It(p,m,c,t.shouldReduceMotion&&ht.has(p)?{type:!1}:g,t,y));let h=m.animation;h&&f.push(h)}return l&&Promise.all(f).then(()=>{F.update(()=>{l&&an(t,l)})}),f}function ro(t){return t instanceof SVGElement&&t.tagName!=="svg"}var no=()=>({min:0,max:0}),Fe=()=>({x:no(),y:no()});var oo={animation:["animate","variants","whileHover","whileTap","exit","whileInView","whileFocus","whileDrag"],exit:["exit"],drag:["drag","dragControls"],focus:["whileFocus"],hover:["whileHover","onHoverStart","onHoverEnd"],tap:["whileTap","onTap","onTapStart","onTapCancel"],pan:["onPan","onPanStart","onPanSessionStart","onPanEnd"],inView:["whileInView","onViewportEnter","onViewportLeave"],layout:["layout","layoutId"]},Bt={};for(let t in oo)Bt[t]={isEnabled:e=>oo[t].some(r=>!!e[r])};var io=typeof window<"u";var Qe={current:null},$t={current:!1};function so(){if($t.current=!0,!!io)if(window.matchMedia){let t=window.matchMedia("(prefers-reduced-motion)"),e=()=>Qe.current=t.matches;t.addListener(e),e()}else Qe.current=!1}var ws=[...hr,P,B],ao=t=>ws.find(Ft(t));function lo(t){return t!==null&&typeof t=="object"&&typeof t.start=="function"}function uo(t){return typeof t=="string"||Array.isArray(t)}var Ms=["animate","whileInView","whileFocus","whileHover","whileTap","whileDrag","exit"],fo=["initial",...Ms];function Vr(t){return lo(t.animate)||fo.some(e=>uo(t[e]))}function mo(t){return!!(Vr(t)||t.variants)}function po(t,e,r){for(let n in e){let o=e[n],i=r[n];if(A(o))t.addValue(n,o);else if(A(i))t.addValue(n,Y(o,{owner:t}));else if(i!==o)if(t.hasValue(n)){let s=t.getValue(n);s.liveStyle===!0?s.jump(o):s.hasAnimated||s.set(o)}else{let s=t.getStaticValue(n);t.addValue(n,Y(s!==void 0?s:o,{owner:t}))}}for(let n in r)e[n]===void 0&&t.removeValue(n);return e}var co=["AnimationStart","AnimationComplete","Update","BeforeLayoutMeasure","LayoutMeasure","LayoutAnimationStart","LayoutAnimationComplete"],Oe=class{scrapeMotionValuesFromProps(e,r,n){return{}}constructor({parent:e,props:r,presenceContext:n,reducedMotionConfig:o,blockInitialAnimation:i,visualState:s},l={}){this.current=null,this.children=new Set,this.isVariantNode=!1,this.isControllingVariants=!1,this.shouldReduceMotion=null,this.values=new Map,this.KeyframeResolver=ie,this.features={},this.valueSubscriptions=new Map,this.prevMotionValues={},this.events={},this.propEventSubscriptions={},this.notifyUpdate=()=>this.notify("Update",this.latestValues),this.render=()=>{this.current&&(this.triggerBuild(),this.renderInstance(this.current,this.renderState,this.props.style,this.projection))},this.renderScheduledAt=0,this.scheduleRender=()=>{let c=I.now();this.renderScheduledAt<c&&(this.renderScheduledAt=c,F.render(this.render,!1,!0))};let{latestValues:a,renderState:f,onUpdate:u}=s;this.onUpdate=u,this.latestValues=a,this.baseTarget={...a},this.initialValues=r.initial?{...a}:{},this.renderState=f,this.parent=e,this.props=r,this.presenceContext=n,this.depth=e?e.depth+1:0,this.reducedMotionConfig=o,this.options=l,this.blockInitialAnimation=!!i,this.isControllingVariants=Vr(r),this.isVariantNode=mo(r),this.isVariantNode&&(this.variantChildren=new Set),this.manuallyAnimateOnMount=!!(e&&e.current);let{willChange:p,...m}=this.scrapeMotionValuesFromProps(r,{},this);for(let c in m){let g=m[c];a[c]!==void 0&&A(g)&&g.set(a[c],!1)}}mount(e){this.current=e,H.set(e,this),this.projection&&!this.projection.instance&&this.projection.mount(e),this.parent&&this.isVariantNode&&!this.isControllingVariants&&(this.removeFromVariantTree=this.parent.addVariantChild(this)),this.values.forEach((r,n)=>this.bindToMotionValue(n,r)),$t.current||so(),this.shouldReduceMotion=this.reducedMotionConfig==="never"?!1:this.reducedMotionConfig==="always"?!0:Qe.current,this.parent&&this.parent.children.add(this),this.update(this.props,this.presenceContext)}unmount(){H.delete(this.current),this.projection&&this.projection.unmount(),Ge(this.notifyUpdate),Ge(this.render),this.valueSubscriptions.forEach(e=>e()),this.valueSubscriptions.clear(),this.removeFromVariantTree&&this.removeFromVariantTree(),this.parent&&this.parent.children.delete(this);for(let e in this.events)this.events[e].clear();for(let e in this.features){let r=this.features[e];r&&(r.unmount(),r.isMounted=!1)}this.current=null}bindToMotionValue(e,r){this.valueSubscriptions.has(e)&&this.valueSubscriptions.get(e)();let n=N.has(e),o=r.on("change",l=>{this.latestValues[e]=l,this.props.onUpdate&&F.preRender(this.notifyUpdate),n&&this.projection&&(this.projection.isTransformDirty=!0)}),i=r.on("renderRequest",this.scheduleRender),s;window.MotionCheckAppearSync&&(s=window.MotionCheckAppearSync(this,e,r)),this.valueSubscriptions.set(e,()=>{o(),i(),s&&s(),r.owner&&r.stop()})}sortNodePosition(e){return!this.current||!this.sortInstanceNodePosition||this.type!==e.type?0:this.sortInstanceNodePosition(this.current,e.current)}updateFeatures(){let e="animation";for(e in Bt){let r=Bt[e];if(!r)continue;let{isEnabled:n,Feature:o}=r;if(!this.features[e]&&o&&n(this.props)&&(this.features[e]=new o(this)),this.features[e]){let i=this.features[e];i.isMounted?i.update():(i.mount(),i.isMounted=!0)}}}triggerBuild(){this.build(this.renderState,this.latestValues,this.props)}measureViewportBox(){return this.current?this.measureInstanceViewportBox(this.current,this.props):Fe()}getStaticValue(e){return this.latestValues[e]}setStaticValue(e,r){this.latestValues[e]=r}update(e,r){(e.transformTemplate||this.props.transformTemplate)&&this.scheduleRender(),this.prevProps=this.props,this.props=e,this.prevPresenceContext=this.presenceContext,this.presenceContext=r;for(let n=0;n<co.length;n++){let o=co[n];this.propEventSubscriptions[o]&&(this.propEventSubscriptions[o](),delete this.propEventSubscriptions[o]);let i="on"+o,s=e[i];s&&(this.propEventSubscriptions[o]=this.on(o,s))}this.prevMotionValues=po(this,this.scrapeMotionValuesFromProps(e,this.prevProps,this),this.prevMotionValues),this.handleChildMotionValue&&this.handleChildMotionValue(),this.onUpdate&&this.onUpdate(this)}getProps(){return this.props}getVariant(e){return this.props.variants?this.props.variants[e]:void 0}getDefaultTransition(){return this.props.transition}getTransformPagePoint(){return this.props.transformPagePoint}getClosestVariantNode(){return this.isVariantNode?this:this.parent?this.parent.getClosestVariantNode():void 0}addVariantChild(e){let r=this.getClosestVariantNode();if(r)return r.variantChildren&&r.variantChildren.add(e),()=>r.variantChildren.delete(e)}addValue(e,r){let n=this.values.get(e);r!==n&&(n&&this.removeValue(e),this.bindToMotionValue(e,r),this.values.set(e,r),this.latestValues[e]=r.get())}removeValue(e){this.values.delete(e);let r=this.valueSubscriptions.get(e);r&&(r(),this.valueSubscriptions.delete(e)),delete this.latestValues[e],this.removeValueFromRenderState(e,this.renderState)}hasValue(e){return this.values.has(e)}getValue(e,r){if(this.props.values&&this.props.values[e])return this.props.values[e];let n=this.values.get(e);return n===void 0&&r!==void 0&&(n=Y(r===null?void 0:r,{owner:this}),this.addValue(e,n)),n}readValue(e,r){var n;let o=this.latestValues[e]!==void 0||!this.current?this.latestValues[e]:(n=this.getBaseTargetFromProps(this.props,e))!==null&&n!==void 0?n:this.readValueFromInstance(this.current,e,this.options);return o!=null&&(typeof o=="string"&&(Pt(o)||Mt(o))?o=parseFloat(o):!ao(o)&&B.test(r)&&(o=Ct(e,r)),this.setBaseTarget(e,A(o)?o.get():o)),A(o)?o.get():o}setBaseTarget(e,r){this.baseTarget[e]=r}getBaseTarget(e){var r;let{initial:n}=this.props,o;if(typeof n=="string"||typeof n=="object"){let s=xt(this.props,n,(r=this.presenceContext)===null||r===void 0?void 0:r.custom);s&&(o=s[e])}if(n&&o!==void 0)return o;let i=this.getBaseTargetFromProps(this.props,e);return i!==void 0&&!A(i)?i:this.initialValues[e]!==void 0&&o===void 0?void 0:this.baseTarget[e]}on(e,r){return this.events[e]||(this.events[e]=new ve),this.events[e].add(r)}notify(e,...r){this.events[e]&&this.events[e].notify(...r)}};var Re=class extends Oe{constructor(){super(...arguments),this.KeyframeResolver=Ae}sortInstanceNodePosition(e,r){return e.compareDocumentPosition(r)&2?1:-1}getBaseTargetFromProps(e,r){return e.style?e.style[r]:void 0}removeValueFromRenderState(e,{vars:r,style:n}){delete r[e],delete n[e]}handleChildMotionValue(){this.childSubscription&&(this.childSubscription(),delete this.childSubscription);let{children:e}=this.props;A(e)&&(this.childSubscription=e.on("change",r=>{this.current&&(this.current.textContent=`${r}`)}))}};var Kt=(t,e)=>e&&typeof t=="number"?e.transform(t):t;var As={x:"translateX",y:"translateY",z:"translateZ",transformPerspective:"perspective"},Cs=q.length;function ho(t,e,r){let n="",o=!0;for(let i=0;i<Cs;i++){let s=q[i],l=t[s];if(l===void 0)continue;let a=!0;if(typeof l=="number"?a=l===(s.startsWith("scale")?1:0):a=parseFloat(l)===0,!a||r){let f=Kt(l,Se[s]);if(!a){o=!1;let u=As[s]||s;n+=`${u}(${f}) `}r&&(e[s]=f)}}return n=n.trim(),r?n=r(e,o?"":n):o&&(n="none"),n}function Lt(t,e,r){let{style:n,vars:o,transformOrigin:i}=t,s=!1,l=!1;for(let a in e){let f=e[a];if(N.has(a)){s=!0;continue}else if(Dt(a)){o[a]=f;continue}else{let u=Kt(f,Se[a]);a.startsWith("origin")?(l=!0,i[a]=u):n[a]=u}}if(e.transform||(s||r?n.transform=ho(e,t.transform,r):n.transform&&(n.transform="none")),l){let{originX:a="50%",originY:f="50%",originZ:u=0}=i;n.transformOrigin=`${a} ${f} ${u}`}}var Ps={offset:"stroke-dashoffset",array:"stroke-dasharray"},Ds={offset:"strokeDashoffset",array:"strokeDasharray"};function go(t,e,r=1,n=0,o=!0){t.pathLength=1;let i=o?Ps:Ds;t[i.offset]=x.transform(-n);let s=x.transform(e),l=x.transform(r);t[i.array]=`${s} ${l}`}function yo(t,e,r){return typeof t=="string"?t:x.transform(e+r*t)}function xo(t,e,r){let n=yo(e,t.x,t.width),o=yo(r,t.y,t.height);return`${n} ${o}`}function vo(t,{attrX:e,attrY:r,attrScale:n,originX:o,originY:i,pathLength:s,pathSpacing:l=1,pathOffset:a=0,...f},u,p){if(Lt(t,f,p),u){t.style.viewBox&&(t.attrs.viewBox=t.style.viewBox);return}t.attrs=t.style,t.style={};let{attrs:m,style:c,dimensions:g}=t;m.transform&&(g&&(c.transform=m.transform),delete m.transform),g&&(o!==void 0||i!==void 0||c.transform)&&(c.transformOrigin=xo(g,o!==void 0?o:.5,i!==void 0?i:.5)),e!==void 0&&(m.x=e),r!==void 0&&(m.y=r),n!==void 0&&(m.scale=n),s!==void 0&&go(m,s,l,a,!1)}var Gt=new Set(["baseFrequency","diffuseConstant","kernelMatrix","kernelUnitLength","keySplines","keyTimes","limitingConeAngle","markerHeight","markerWidth","numOctaves","targetX","targetY","surfaceScale","specularConstant","specularExponent","stdDeviation","tableValues","viewBox","gradientTransform","pathLength","startOffset","textLength","lengthAdjust"]);var bo=t=>typeof t=="string"&&t.toLowerCase()==="svg";function qt(t,{style:e,vars:r},n,o){Object.assign(t.style,e,o&&o.getProjectionStyles(n));for(let i in r)t.style.setProperty(i,r[i])}function To(t,e,r,n){qt(t,e,void 0,n);for(let o in e.attrs)t.setAttribute(Gt.has(o)?o:be(o),e.attrs[o])}var _o={};function Vo(t,{layout:e,layoutId:r}){return N.has(t)||t.startsWith("origin")||(e||r!==void 0)&&(!!_o[t]||t==="opacity")}function Wt(t,e,r){var n;let{style:o}=t,i={};for(let s in o)(A(o[s])||e.style&&A(e.style[s])||Vo(s,t)||((n=r?.getValue(s))===null||n===void 0?void 0:n.liveStyle)!==void 0)&&(i[s]=o[s]);return i}function So(t,e,r){let n=Wt(t,e,r);for(let o in t)if(A(t[o])||A(e[o])){let i=q.indexOf(o)!==-1?"attr"+o.charAt(0).toUpperCase()+o.substring(1):o;n[i]=t[o]}return n}var zt=class extends Re{constructor(){super(...arguments),this.type="svg",this.isSVGTag=!1,this.measureInstanceViewportBox=Fe}getBaseTargetFromProps(e,r){return e[r]}readValueFromInstance(e,r){if(N.has(r)){let n=we(r);return n&&n.default||0}return r=Gt.has(r)?r:be(r),e.getAttribute(r)}scrapeMotionValuesFromProps(e,r,n){return So(e,r,n)}build(e,r,n){vo(e,r,this.isSVGTag,n.transformTemplate)}renderInstance(e,r,n,o){To(e,r,n,o)}mount(e){this.isSVGTag=bo(e.tagName),super.mount(e)}};function wo({top:t,left:e,right:r,bottom:n}){return{x:{min:e,max:r},y:{min:t,max:n}}}function Mo(t,e){if(!e)return t;let r=e({x:t.left,y:t.top}),n=e({x:t.right,y:t.bottom});return{top:r.y,left:r.x,bottom:n.y,right:n.x}}function Ao(t,e){return wo(Mo(t.getBoundingClientRect(),e))}function Fs(t){return window.getComputedStyle(t)}var jt=class extends Re{constructor(){super(...arguments),this.type="html",this.renderInstance=qt}readValueFromInstance(e,r){if(N.has(r)){let n=we(r);return n&&n.default||0}else{let n=Fs(e),o=(Dt(r)?n.getPropertyValue(r):n[r])||0;return typeof o=="string"?o.trim():o}}measureInstanceViewportBox(e,{transformPagePoint:r}){return Ao(e,r)}build(e,r,n){Lt(e,r,n.transformTemplate)}scrapeMotionValuesFromProps(e,r,n){return Wt(e,r,n)}};function Os(t,e){return t in e}var Ut=class extends Oe{constructor(){super(...arguments),this.type="object"}readValueFromInstance(e,r){if(Os(r,e)){let n=e[r];if(typeof n=="string"||typeof n=="number")return n}}getBaseTargetFromProps(){}removeValueFromRenderState(e,r){delete r.output[e]}measureInstanceViewportBox(){return Fe()}build(e,r){Object.assign(e.output,r)}renderInstance(e,{output:r}){Object.assign(e,r)}sortInstanceNodePosition(){return 0}};function Co(t){let e={presenceContext:null,props:{},visualState:{renderState:{transform:{},transformOrigin:{},style:{},vars:{},attrs:{}},latestValues:{}}},r=ro(t)?new zt(e):new jt(e);r.mount(t),H.set(t,r)}function Po(t){let e={presenceContext:null,props:{},visualState:{renderState:{output:{}},latestValues:{}}},r=new Ut(e);r.mount(t),H.set(t,r)}function Do(t,e,r){let n=A(t)?t:Y(t);return n.start(It("",n,e,r)),n.animation}function Rs(t,e){return A(t)||typeof t=="number"||typeof t=="string"&&!Le(e)}function Ht(t,e,r,n){let o=[];if(Rs(t,e))o.push(Do(t,Le(e)&&e.default||e,r&&(r.default||r)));else{let i=pt(t,e,n),s=i.length;K(!!s,"No valid elements provided.");for(let l=0;l<s;l++){let a=i[l],f=a instanceof Element?Co:Po;H.has(a)||f(a);let u=H.get(a),p={...r};"delay"in p&&typeof p.delay=="function"&&(p.delay=p.delay(l,s)),o.push(...to(u,{...e,transition:p},{}))}}return o}function Fo(t,e,r){let n=[];return Zr(t,e,r,{spring:U}).forEach(({keyframes:i,transition:s},l)=>{n.push(...Ht(l,i,s))}),n}function Es(t){return Array.isArray(t)&&t.some(Array.isArray)}function Oo(t){function e(r,n,o){let i=[];Es(r)?i=Fo(r,n,t):i=Ht(r,n,o,t);let s=new he(i);return t&&t.animations.push(s),s}return e}var Sr=Oo();function ks(t){var e=0,r=t.children,n=r&&r.length;if(!n)e=1;else for(;--n>=0;)e+=r[n].value;t.value=e}function Ro(){return this.eachAfter(ks)}function Eo(t,e){let r=-1;for(let n of this)t.call(e,n,++r,this);return this}function ko(t,e){for(var r=this,n=[r],o,i,s=-1;r=n.pop();)if(t.call(e,r,++s,this),o=r.children)for(i=o.length-1;i>=0;--i)n.push(o[i]);return this}function No(t,e){for(var r=this,n=[r],o=[],i,s,l,a=-1;r=n.pop();)if(o.push(r),i=r.children)for(s=0,l=i.length;s<l;++s)n.push(i[s]);for(;r=o.pop();)t.call(e,r,++a,this);return this}function Io(t,e){let r=-1;for(let n of this)if(t.call(e,n,++r,this))return n}function Bo(t){return this.eachAfter(function(e){for(var r=+t(e.data)||0,n=e.children,o=n&&n.length;--o>=0;)r+=n[o].value;e.value=r})}function $o(t){return this.eachBefore(function(e){e.children&&e.children.sort(t)})}function Ko(t){for(var e=this,r=Ns(e,t),n=[e];e!==r;)e=e.parent,n.push(e);for(var o=n.length;t!==r;)n.splice(o,0,t),t=t.parent;return n}function Ns(t,e){if(t===e)return t;var r=t.ancestors(),n=e.ancestors(),o=null;for(t=r.pop(),e=n.pop();t===e;)o=t,t=r.pop(),e=n.pop();return o}function Lo(){for(var t=this,e=[t];t=t.parent;)e.push(t);return e}function Go(){return Array.from(this)}function qo(){var t=[];return this.eachBefore(function(e){e.children||t.push(e)}),t}function Wo(){var t=this,e=[];return t.each(function(r){r!==t&&e.push({source:r.parent,target:r})}),e}function*zo(){var t=this,e,r=[t],n,o,i;do for(e=r.reverse(),r=[];t=e.pop();)if(yield t,n=t.children)for(o=0,i=n.length;o<i;++o)r.push(n[o]);while(r.length)}function Ee(t,e){t instanceof Map?(t=[void 0,t],e===void 0&&(e=$s)):e===void 0&&(e=Bs);for(var r=new Je(t),n,o=[r],i,s,l,a;n=o.pop();)if((s=e(n.data))&&(a=(s=Array.from(s)).length))for(n.children=s,l=a-1;l>=0;--l)o.push(i=s[l]=new Je(s[l])),i.parent=n,i.depth=n.depth+1;return r.eachBefore(Ls)}function Is(){return Ee(this).eachBefore(Ks)}function Bs(t){return t.children}function $s(t){return Array.isArray(t)?t[1]:null}function Ks(t){t.data.value!==void 0&&(t.value=t.data.value),t.data=t.data.data}function Ls(t){var e=0;do t.height=e;while((t=t.parent)&&t.height<++e)}function Je(t){this.data=t,this.depth=this.height=0,this.parent=null}Je.prototype=Ee.prototype={constructor:Je,count:Ro,each:Eo,eachAfter:No,eachBefore:ko,find:Io,sum:Bo,sort:$o,path:Ko,ancestors:Lo,descendants:Go,leaves:qo,links:Wo,copy:Is,[Symbol.iterator]:zo};function jo(t){if(typeof t!="function")throw new Error;return t}function ke(){return 0}function Ne(t){return function(){return t}}function Uo(t){t.x0=Math.round(t.x0),t.y0=Math.round(t.y0),t.x1=Math.round(t.x1),t.y1=Math.round(t.y1)}function Ho(t,e,r,n,o){for(var i=t.children,s,l=-1,a=i.length,f=t.value&&(n-e)/t.value;++l<a;)s=i[l],s.y0=r,s.y1=o,s.x0=e,s.x1=e+=s.value*f}function Yo(t,e,r,n,o){for(var i=t.children,s,l=-1,a=i.length,f=t.value&&(o-r)/t.value;++l<a;)s=i[l],s.x0=e,s.x1=n,s.y0=r,s.y1=r+=s.value*f}var Gs=(1+Math.sqrt(5))/2;function qs(t,e,r,n,o,i){for(var s=[],l=e.children,a,f,u=0,p=0,m=l.length,c,g,y=e.value,h,d,b,S,V,v,_;u<m;){c=o-r,g=i-n;do h=l[p++].value;while(!h&&p<m);for(d=b=h,v=Math.max(g/c,c/g)/(y*t),_=h*h*v,V=Math.max(b/_,_/d);p<m;++p){if(h+=f=l[p].value,f<d&&(d=f),f>b&&(b=f),_=h*h*v,S=Math.max(b/_,_/d),S>V){h-=f;break}V=S}s.push(a={value:h,dice:c<g,children:l.slice(u,p)}),a.dice?Ho(a,r,n,o,y?n+=g*h/y:i):Yo(a,r,n,y?r+=c*h/y:o,i),y-=h,u=p}return s}var et=function t(e){function r(n,o,i,s,l){qs(e,n,o,i,s,l)}return r.ratio=function(n){return t((n=+n)>1?n:1)},r}(Gs);function wr(){var t=et,e=!1,r=1,n=1,o=[0],i=ke,s=ke,l=ke,a=ke,f=ke;function u(m){return m.x0=m.y0=0,m.x1=r,m.y1=n,m.eachBefore(p),o=[0],e&&m.eachBefore(Uo),m}function p(m){var c=o[m.depth],g=m.x0+c,y=m.y0+c,h=m.x1-c,d=m.y1-c;h<g&&(g=h=(g+h)/2),d<y&&(y=d=(y+d)/2),m.x0=g,m.y0=y,m.x1=h,m.y1=d,m.children&&(c=o[m.depth+1]=i(m)/2,g+=f(m)-c,y+=s(m)-c,h-=l(m)-c,d-=a(m)-c,h<g&&(g=h=(g+h)/2),d<y&&(y=d=(y+d)/2),t(m,g,y,h,d))}return u.round=function(m){return arguments.length?(e=!!m,u):e},u.size=function(m){return arguments.length?(r=+m[0],n=+m[1],u):[r,n]},u.tile=function(m){return arguments.length?(t=jo(m),u):t},u.padding=function(m){return arguments.length?u.paddingInner(m).paddingOuter(m):u.paddingInner()},u.paddingInner=function(m){return arguments.length?(i=typeof m=="function"?m:Ne(+m),u):i},u.paddingOuter=function(m){return arguments.length?u.paddingTop(m).paddingRight(m).paddingBottom(m).paddingLeft(m):u.paddingTop()},u.paddingTop=function(m){return arguments.length?(s=typeof m=="function"?m:Ne(+m),u):s},u.paddingRight=function(m){return arguments.length?(l=typeof m=="function"?m:Ne(+m),u):l},u.paddingBottom=function(m){return arguments.length?(a=typeof m=="function"?m:Ne(+m),u):a},u.paddingLeft=function(m){return arguments.length?(f=typeof m=="function"?m:Ne(+m),u):f},u}function me(t){return function(){return t}}var Mr=1e-12,Xo=Math.PI,xy=Xo/2,vy=2*Xo;var Ar=Math.PI,Cr=2*Ar,pe=1e-6,Ws=Cr-pe;function Zo(t){this._+=t[0];for(let e=1,r=t.length;e<r;++e)this._+=arguments[e]+t[e]}function zs(t){let e=Math.floor(t);if(!(e>=0))throw new Error(`invalid digits: ${t}`);if(e>15)return Zo;let r=10**e;return function(n){this._+=n[0];for(let o=1,i=n.length;o<i;++o)this._+=Math.round(arguments[o]*r)/r+n[o]}}var ce=class{constructor(e){this._x0=this._y0=this._x1=this._y1=null,this._="",this._append=e==null?Zo:zs(e)}moveTo(e,r){this._append`M${this._x0=this._x1=+e},${this._y0=this._y1=+r}`}closePath(){this._x1!==null&&(this._x1=this._x0,this._y1=this._y0,this._append`Z`)}lineTo(e,r){this._append`L${this._x1=+e},${this._y1=+r}`}quadraticCurveTo(e,r,n,o){this._append`Q${+e},${+r},${this._x1=+n},${this._y1=+o}`}bezierCurveTo(e,r,n,o,i,s){this._append`C${+e},${+r},${+n},${+o},${this._x1=+i},${this._y1=+s}`}arcTo(e,r,n,o,i){if(e=+e,r=+r,n=+n,o=+o,i=+i,i<0)throw new Error(`negative radius: ${i}`);let s=this._x1,l=this._y1,a=n-e,f=o-r,u=s-e,p=l-r,m=u*u+p*p;if(this._x1===null)this._append`M${this._x1=e},${this._y1=r}`;else if(m>pe)if(!(Math.abs(p*a-f*u)>pe)||!i)this._append`L${this._x1=e},${this._y1=r}`;else{let c=n-s,g=o-l,y=a*a+f*f,h=c*c+g*g,d=Math.sqrt(y),b=Math.sqrt(m),S=i*Math.tan((Ar-Math.acos((y+m-h)/(2*d*b)))/2),V=S/b,v=S/d;Math.abs(V-1)>pe&&this._append`L${e+V*u},${r+V*p}`,this._append`A${i},${i},0,0,${+(p*c>u*g)},${this._x1=e+v*a},${this._y1=r+v*f}`}}arc(e,r,n,o,i,s){if(e=+e,r=+r,n=+n,s=!!s,n<0)throw new Error(`negative radius: ${n}`);let l=n*Math.cos(o),a=n*Math.sin(o),f=e+l,u=r+a,p=1^s,m=s?o-i:i-o;this._x1===null?this._append`M${f},${u}`:(Math.abs(this._x1-f)>pe||Math.abs(this._y1-u)>pe)&&this._append`L${f},${u}`,n&&(m<0&&(m=m%Cr+Cr),m>Ws?this._append`A${n},${n},0,1,${p},${e-l},${r-a}A${n},${n},0,1,${p},${this._x1=f},${this._y1=u}`:m>pe&&this._append`A${n},${n},0,${+(m>=Ar)},${p},${this._x1=e+n*Math.cos(i)},${this._y1=r+n*Math.sin(i)}`)}rect(e,r,n,o){this._append`M${this._x0=this._x1=+e},${this._y0=this._y1=+r}h${n=+n}v${+o}h${-n}Z`}toString(){return this._}};function Qo(){return new ce}Qo.prototype=ce.prototype;function Jo(t){let e=3;return t.digits=function(r){if(!arguments.length)return e;if(r==null)e=null;else{let n=Math.floor(r);if(!(n>=0))throw new RangeError(`invalid digits: ${r}`);e=n}return t},()=>new ce(e)}var Ay=Array.prototype.slice;function ei(t){return typeof t=="object"&&"length"in t?t:Array.from(t)}function ti(t){this._context=t}ti.prototype={areaStart:function(){this._line=0},areaEnd:function(){this._line=NaN},lineStart:function(){this._point=0},lineEnd:function(){(this._line||this._line!==0&&this._point===1)&&this._context.closePath(),this._line=1-this._line},point:function(t,e){switch(t=+t,e=+e,this._point){case 0:this._point=1,this._line?this._context.lineTo(t,e):this._context.moveTo(t,e);break;case 1:this._point=2;default:this._context.lineTo(t,e);break}}};function ri(t){return new ti(t)}function ni(t){return t[0]}function oi(t){return t[1]}function Pr(t,e){var r=me(!0),n=null,o=ri,i=null,s=Jo(l);t=typeof t=="function"?t:t===void 0?ni:me(t),e=typeof e=="function"?e:e===void 0?oi:me(e);function l(a){var f,u=(a=ei(a)).length,p,m=!1,c;for(n==null&&(i=o(c=s())),f=0;f<=u;++f)!(f<u&&r(p=a[f],f,a))===m&&((m=!m)?i.lineStart():i.lineEnd()),m&&i.point(+t(p,f,a),+e(p,f,a));if(c)return i=null,c+""||null}return l.x=function(a){return arguments.length?(t=typeof a=="function"?a:me(+a),l):t},l.y=function(a){return arguments.length?(e=typeof a=="function"?a:me(+a),l):e},l.defined=function(a){return arguments.length?(r=typeof a=="function"?a:me(!!a),l):r},l.curve=function(a){return arguments.length?(o=a,n!=null&&(i=o(n)),l):o},l.context=function(a){return arguments.length?(a==null?n=i=null:i=o(n=a),l):n},l}function ii(t,e,r){t._context.bezierCurveTo(t._x1+t._k*(t._x2-t._x0),t._y1+t._k*(t._y2-t._y0),t._x2+t._k*(t._x1-e),t._y2+t._k*(t._y1-r),t._x2,t._y2)}function Yt(t,e){this._context=t,this._k=(1-e)/6}Yt.prototype={areaStart:function(){this._line=0},areaEnd:function(){this._line=NaN},lineStart:function(){this._x0=this._x1=this._x2=this._y0=this._y1=this._y2=NaN,this._point=0},lineEnd:function(){switch(this._point){case 2:this._context.lineTo(this._x2,this._y2);break;case 3:ii(this,this._x1,this._y1);break}(this._line||this._line!==0&&this._point===1)&&this._context.closePath(),this._line=1-this._line},point:function(t,e){switch(t=+t,e=+e,this._point){case 0:this._point=1,this._line?this._context.lineTo(t,e):this._context.moveTo(t,e);break;case 1:this._point=2,this._x1=t,this._y1=e;break;case 2:this._point=3;default:ii(this,t,e);break}this._x0=this._x1,this._x1=this._x2,this._x2=t,this._y0=this._y1,this._y1=this._y2,this._y2=e}};var Iy=function t(e){function r(n){return new Yt(n,e)}return r.tension=function(n){return t(+n)},r}(0);function js(t,e,r){var n=t._x1,o=t._y1,i=t._x2,s=t._y2;if(t._l01_a>Mr){var l=2*t._l01_2a+3*t._l01_a*t._l12_a+t._l12_2a,a=3*t._l01_a*(t._l01_a+t._l12_a);n=(n*l-t._x0*t._l12_2a+t._x2*t._l01_2a)/a,o=(o*l-t._y0*t._l12_2a+t._y2*t._l01_2a)/a}if(t._l23_a>Mr){var f=2*t._l23_2a+3*t._l23_a*t._l12_a+t._l12_2a,u=3*t._l23_a*(t._l23_a+t._l12_a);i=(i*f+t._x1*t._l23_2a-e*t._l12_2a)/u,s=(s*f+t._y1*t._l23_2a-r*t._l12_2a)/u}t._context.bezierCurveTo(n,o,i,s,t._x2,t._y2)}function si(t,e){this._context=t,this._alpha=e}si.prototype={areaStart:function(){this._line=0},areaEnd:function(){this._line=NaN},lineStart:function(){this._x0=this._x1=this._x2=this._y0=this._y1=this._y2=NaN,this._l01_a=this._l12_a=this._l23_a=this._l01_2a=this._l12_2a=this._l23_2a=this._point=0},lineEnd:function(){switch(this._point){case 2:this._context.lineTo(this._x2,this._y2);break;case 3:this.point(this._x2,this._y2);break}(this._line||this._line!==0&&this._point===1)&&this._context.closePath(),this._line=1-this._line},point:function(t,e){if(t=+t,e=+e,this._point){var r=this._x2-t,n=this._y2-e;this._l23_a=Math.sqrt(this._l23_2a=Math.pow(r*r+n*n,this._alpha))}switch(this._point){case 0:this._point=1,this._line?this._context.lineTo(t,e):this._context.moveTo(t,e);break;case 1:this._point=2;break;case 2:this._point=3;default:js(this,t,e);break}this._l01_a=this._l12_a,this._l12_a=this._l23_a,this._l01_2a=this._l12_2a,this._l12_2a=this._l23_2a,this._x0=this._x1,this._x1=this._x2,this._x2=t,this._y0=this._y1,this._y1=this._y2,this._y2=e}};var Dr=function t(e){function r(n){return e?new si(n,e):new Yt(n,0)}return r.alpha=function(n){return t(+n)},r}(.5);var Xt=!1,Fr=typeof window<"u"&&window.matchMedia?window.matchMedia("(prefers-reduced-motion: reduce)"):null;Fr&&(Xt=Fr.matches,Fr.addEventListener?.("change",t=>{Xt=t.matches}));function ai(t,e,r={}){if(Xt){let i=[];return(e.x!==void 0||e.y!==void 0)&&i.push(`translate(${e.x??0}px, ${e.y??0}px)`),e.scale!==void 0&&i.push(`scale(${e.scale})`),e.rotate!==void 0&&i.push(`rotate(${e.rotate}deg)`),i.length&&(t.style.transform=i.join(" ")),e.opacity!==void 0&&(t.style.opacity=String(e.opacity)),{finished:Promise.resolve()}}let n={};e.x!==void 0&&(n.x=e.x),e.y!==void 0&&(n.y=e.y),e.scale!==void 0&&(n.scale=e.scale),e.rotate!==void 0&&(n.rotate=e.rotate),e.opacity!==void 0&&(n.opacity=e.opacity);let o=r.spring?{easing:U(r.spring)}:{duration:r.duration??.35,easing:r.easing??[.2,.7,.2,1]};return Sr(t,n,o)}function Us(t,e,r={}){return ai(t,e,{spring:{stiffness:r.stiffness??180,damping:r.damping??16,mass:r.mass??1}})}function Hs(t,e,r,n={}){let o=Ee(t,a=>a.children).sum(a=>typeof a.value=="number"?a.value:0).sort((a,f)=>(f.value??0)-(a.value??0)),s=wr().tile(et.ratio(n.ratio??1.618)).size([e,r]).paddingInner(n.paddingInner??1).paddingOuter(n.paddingOuter??0).round(!0)(o),l=[];return s.each(a=>{l.push({x:a.x0,y:a.y0,w:a.x1-a.x0,h:a.y1-a.y0,depth:a.depth,node:a.data})}),l}function Ys(t,e=.5){return Pr().x(n=>n.x).y(n=>n.y).curve(Dr.alpha(e))(t)??""}var Xs={flip:ai,spring:Us,squarify:Hs,smoothPath:Ys,reducedMotion(){return Xt}};return di(Zs);})();
+// Merge Tier-1 primitives into the existing window.anim (installed
+// by the hand-rolled ANIM_JS IIFE in _html.py). We copy each key
+// from MyflamesAnim.anim without overwriting the hand-rolled ones
+// that came first — the two surfaces are intentionally disjoint.
+if (typeof window !== 'undefined') {
+  window.anim = window.anim || {};
+  for (var _k in MyflamesAnim.anim) {
+    if (!(_k in window.anim)) window.anim[_k] = MyflamesAnim.anim[_k];
+  }
+  window.MyflamesTier1 = MyflamesAnim;
+}
 
 
 var teachRuntime = (function() {
@@ -1809,285 +1872,197 @@ var teachRuntime = (function() {
     }
   }
 
-  // Wire the shared stage toolbar.
+  // =====================================================================
+  // Playback controller — unified toolbar, scrubber, and phase navigation.
   //
-  // New API: wireToolbar({ build: fn, reset: fn }) where
-  //   build  returns a fresh anim.timeline() that has NOT yet been played
-  //   reset  clears the stage back to its ready state
+  // One state machine, one RAF loop, one seek() primitive that every entry
+  // point (Play, Pause, Reset, scrubber drag, phase click) routes through.
   //
-  // The toolbar owns the Play/Pause/Reset buttons, the speed dropdown, and
-  // the YouTube-style scrubber. Lessons do not call .play() themselves.
-  //
-  // Legacy compat: wireToolbar(playFn, resetFn) — two positional function
-  // arguments — still works for any lesson we haven't migrated yet.
-  function wireToolbar(optsOrPlay, maybeReset) {
-    var btnPlay = document.getElementById("btn-play");
-    var btnReset = document.getElementById("btn-reset");
-    var btnLoop = document.getElementById("btn-loop");
-    var selSpeed = document.getElementById("sel-speed");
-    var scrubber = document.getElementById("scrubber");
-    var timeCurLbl = document.getElementById("scrubber-time-current");
-    var timeTotLbl = document.getElementById("scrubber-time-total");
+  // State diagram:
+  //   IDLE  → Play    → PLAYING
+  //   PLAYING → Pause  → PAUSED
+  //   PAUSED  → Resume → PLAYING  (continues from currentMs)
+  //   PAUSED  → Play   → PLAYING  (restart from 0)
+  //   *       → seek() → SEEKED   (paused at targetMs, Resume → PLAYING)
+  //   *       → Reset  → IDLE
+  // =====================================================================
+  var _ctrl = {
+    build: null,         // fn → returns fresh anim.timeline()
+    reset: null,         // fn → clears stage to ready state
+    legacyPlay: null,    // fn → old-style play callback
+    tl: null,            // current anim.timeline()
+    phase: "idle",       // "idle" | "playing" | "paused" | "seeked"
+    seekMs: 0,           // ms position we seeked to (valid when phase=seeked)
+    loopEnabled: false,
+    rafId: 0,            // current RAF id (0 = none)
+    dragging: false,     // true while scrubber thumb is held
+    // Phase nav
+    phaseContainer: null,
+    marks: []
+  };
+  // User-calibrated baseline: the dropdown's "1×" maps to this internal
+  // speed. Started at 0.52 (original); user asked for 40% slower →
+  // 0.312 felt too slow for state-swap lessons (icp etc.) where flat
+  // tl.delay times then stretched to 3× wallclock and looked frozen.
+  // 0.42 is a compromise: ~20% slower than the original 0.52 baseline
+  // — tweened animations still breathe, stepped ones stay responsive.
+  var BASELINE_SPEED_SCALE = 0.42;
 
-    var build = null, reset = null, legacyPlay = null;
-    if (typeof optsOrPlay === "function") {
-      legacyPlay = optsOrPlay;
-      reset = maybeReset;
-    } else if (optsOrPlay && typeof optsOrPlay === "object") {
-      build = optsOrPlay.build;
-      reset = optsOrPlay.reset;
-    }
+  // --- DOM refs (resolved once in wireToolbar) ---
+  var _dom = {};
 
-    var state = {
-      running: false,
-      paused: false,
-      draggingScrubber: false,
-      scrubbedToMs: -1,
-      loopEnabled: false
-    };
-    var currentTL = null;
-    // Recalibrated baseline: every labeled speed runs 25% slower.
-    // Example: UI 1x => effective 0.8x, 2x => 1.6x.
-    var BASELINE_SPEED_SCALE = 0.8;
+  // --- Helpers ---
+  function _formatSec(ms) { return (Math.max(0, ms) / 1000).toFixed(1) + "s"; }
 
-    function labelFor() {
-      if (!state.running) return "Play";
-      if (state.paused) return "Resume";
-      return "Pause";
-    }
-    function setBtnLabel(btn, txt) {
-      if (!btn) return;
-      var lbl = btn.querySelector(".btn-label");
-      if (lbl) lbl.textContent = txt;
-      else btn.textContent = txt;
-    }
-    function updateLabel() { setBtnLabel(btnPlay, labelFor()); }
-    function updateLoopLabel() {
-      if (!btnLoop) return;
-      setBtnLabel(btnLoop, state.loopEnabled ? "Loop: On" : "Loop: Off");
-      btnLoop.setAttribute("aria-pressed", state.loopEnabled ? "true" : "false");
-    }
+  function _setBtnLabel(btn, txt) {
+    if (!btn) return;
+    var lbl = btn.querySelector(".btn-label");
+    if (lbl) lbl.textContent = txt; else btn.textContent = txt;
+  }
 
-    function formatSec(ms) {
-      var s = Math.max(0, ms / 1000);
-      return s.toFixed(1) + "s";
-    }
-    function syncTimeLabels() {
-      if (!currentTL) { if (timeCurLbl) timeCurLbl.textContent = "0.0s"; return; }
-      if (timeTotLbl) timeTotLbl.textContent = formatSec(currentTL.getTotalDuration());
-    }
-
-    function onPlaybackDone() {
-      if (state.loopEnabled) {
-        startPlayback();
-        return;
+  function _syncUI() {
+    // Button label
+    var label = _ctrl.phase === "idle" ? "Play"
+              : _ctrl.phase === "playing" ? "Pause"
+              : "Resume";
+    _setBtnLabel(_dom.btnPlay, label);
+    // Scrubber + time labels
+    if (_ctrl.tl && _dom.scrubber) {
+      var total = _ctrl.tl.getTotalDuration();
+      if (_dom.timeTot) _dom.timeTot.textContent = _formatSec(total);
+      if (total > 0) {
+        var cur = _ctrl.tl.getCurrentTime();
+        _dom.scrubber.value = String(Math.round(Math.min(1, cur / total) * 1000));
+        if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(cur);
       }
-      state.running = false;
-      state.paused = false;
-      state.scrubbedToMs = -1;
-      anim.setPaused(false);
-      if (scrubber && currentTL) scrubber.value = "1000";
-      if (timeCurLbl && currentTL) timeCurLbl.textContent = formatSec(currentTL.getTotalDuration());
-      updateLabel();
+    } else {
+      if (_dom.scrubber) _dom.scrubber.value = "0";
+      if (_dom.timeCur) _dom.timeCur.textContent = "0.0s";
     }
-
-    // Scrubber RAF loop — moves the thumb based on currentTL.getCurrentTime().
-    // Keeps running as long as state.running is true (even when paused) so it
-    // can resume updating immediately on unpause without needing a new kick.
-    function scrubberTick() {
-      if (!currentTL || state.draggingScrubber) { if (state.running) requestAnimationFrame(scrubberTick); return; }
-      if (!state.running) return;
-      var total = currentTL.getTotalDuration();
-      if (total > 0 && !state.paused) {
-        var curMs = currentTL.getCurrentTime();
-        var frac = Math.min(1, curMs / total);
-        if (scrubber) scrubber.value = String(Math.round(frac * 1000));
-        if (timeCurLbl) timeCurLbl.textContent = formatSec(curMs);
-        teachRuntime._tickPhaseNav(curMs);
-      }
-      requestAnimationFrame(scrubberTick);
-    }
-
-    function startPlayback() {
-      if (legacyPlay) { legacyPlay(); return; }
-      if (!build) return;
-      if (currentTL) currentTL.stop();
-      if (reset) reset();
-      currentTL = build();
-      teachRuntime._updatePhaseNav(currentTL);
-      syncTimeLabels();
-      if (scrubber) scrubber.value = "0";
-      state.running = true;
-      state.paused = false;
-      state.scrubbedToMs = -1;
-      anim.setPaused(false);
-      updateLabel();
-      currentTL.play(onPlaybackDone);
-      requestAnimationFrame(scrubberTick);
-    }
-
-    function resumeFromScrub() {
-      // After a scrub, the timeline was fast-forwarded but never played.
-      // Rebuild it and use playFrom(scrubPosition) which applies all steps
-      // up to the scrub point synchronously, then starts the RAF loop.
-      if (!build) return;
-      var resumeMs = state.scrubbedToMs;
-      if (resumeMs < 0) resumeMs = 0;
-      if (currentTL) currentTL.stop();
-      if (reset) reset();
-      currentTL = build();
-      teachRuntime._updatePhaseNav(currentTL);
-      syncTimeLabels();
-      state.running = true;
-      state.paused = false;
-      state.scrubbedToMs = -1;
-      anim.setPaused(false);
-      updateLabel();
-      currentTL.playFrom(resumeMs, onPlaybackDone);
-      requestAnimationFrame(scrubberTick);
-    }
-
-    function togglePause() {
-      if (state.paused && state.scrubbedToMs >= 0) {
-        resumeFromScrub();
-        return;
-      }
-      state.paused = !state.paused;
-      anim.setPaused(state.paused);
-      updateLabel();
-    }
-
-    // Used by lessons that still rely on the old legacy done-notification
-    window._teachOnDone = function() {
-      if (state.loopEnabled) {
-        startPlayback();
-        return;
-      }
-      state.running = false;
-      state.paused = false;
-      anim.setPaused(false);
-      updateLabel();
-    };
-
-    if (btnPlay) btnPlay.addEventListener("click", function() {
-      if (!state.running) {
-        startPlayback();
-        return;
-      }
-      togglePause();
-    });
-    if (btnReset) btnReset.addEventListener("click", function() {
-      if (currentTL) currentTL.stop();
-      currentTL = null;
-      state.running = false;
-      state.paused = false;
-      anim.setPaused(false);
-      updateLabel();
-      if (reset) reset();
-      if (scrubber) scrubber.value = "0";
-      if (timeCurLbl) timeCurLbl.textContent = "0.0s";
-    });
-    if (btnLoop) btnLoop.addEventListener("click", function() {
-      state.loopEnabled = !state.loopEnabled;
-      updateLoopLabel();
-    });
-    updateLoopLabel();
-    function applyUiSpeed() {
-      if (!selSpeed) return;
-      var uiSpeed = Number(selSpeed.value);
-      anim.setSpeed(uiSpeed * BASELINE_SPEED_SCALE);
-    }
-    if (selSpeed) selSpeed.addEventListener("change", applyUiSpeed);
-    if (selSpeed) applyUiSpeed();
-
-    // Scrubber behaviour: dragging seeks (stop, reset, rebuild, fast-forward
-    // to target, leave paused). Releasing the thumb leaves playback paused
-    // at the scrub target — the user can press Play to resume from the
-    // beginning (a deliberate simplification; mid-point resume adds a lot
-    // of complexity for little teaching benefit).
-    if (scrubber && build) {
-      function seekToScrubber() {
-        var frac = Number(scrubber.value) / 1000;
-        if (currentTL) currentTL.stop();
-        if (reset) reset();
-        currentTL = build();
-        var target = frac * currentTL.getTotalDuration();
-        currentTL.fastForwardTo(target);
-        syncTimeLabels();
-        if (timeCurLbl) timeCurLbl.textContent = formatSec(target);
-        state.running = true;
-        state.paused = true;
-        state.scrubbedToMs = target;
-        anim.setPaused(true);
-        updateLabel();
-      }
-      scrubber.addEventListener("mousedown", function() { state.draggingScrubber = true; });
-      scrubber.addEventListener("touchstart", function() { state.draggingScrubber = true; });
-      scrubber.addEventListener("input", seekToScrubber);
-      scrubber.addEventListener("change", function() {
-        seekToScrubber();
-        state.draggingScrubber = false;
-      });
-      scrubber.addEventListener("mouseup", function() { state.draggingScrubber = false; });
-      scrubber.addEventListener("touchend", function() { state.draggingScrubber = false; });
+    // Loop button
+    if (_dom.btnLoop) {
+      _setBtnLabel(_dom.btnLoop, _ctrl.loopEnabled ? "Loop: On" : "Loop: Off");
+      _dom.btnLoop.setAttribute("aria-pressed", _ctrl.loopEnabled ? "true" : "false");
     }
   }
 
-  // Helper that lesson code calls when its animation reaches the end.
-  // (Only used by legacy wireToolbar(playFn, resetFn) calls.)
-  function animationDone() {
-    if (typeof window._teachOnDone === "function") window._teachOnDone();
+  // --- Single RAF loop: runs only while phase = "playing" ---
+  // Uses a generation counter so stale loops from previous playbacks die.
+  var _tickGen = 0;
+  function _tick(gen) {
+    if (gen !== _tickGen) return;                // stale loop — die
+    if (_ctrl.phase !== "playing") { _ctrl.rafId = 0; return; }
+    if (_ctrl.tl && _dom.scrubber && !_ctrl.dragging) {
+      var total = _ctrl.tl.getTotalDuration();
+      if (total > 0) {
+        var cur = _ctrl.tl.getCurrentTime();
+        var frac = Math.min(1, cur / total);
+        _dom.scrubber.value = String(Math.round(frac * 1000));
+        if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(cur);
+        _updatePhaseHighlight(cur);
+      }
+    }
+    _ctrl.rafId = requestAnimationFrame(function() { _tick(gen); });
+  }
+  function _startTick() {
+    _tickGen++;
+    var gen = _tickGen;
+    _ctrl.rafId = requestAnimationFrame(function() { _tick(gen); });
   }
 
-  // Phase navigation — clickable phase list sidebar.
-  //
-  // Call wirePhaseNav(containerId, opts) AFTER wireToolbar. The toolbar's
-  // build/reset closures and scrubber-seek logic are reused.
-  //
-  // The phase nav reads timeline marks (tl.getMarks()) each time the
-  // timeline is built. Clicking a phase seeks to that mark's timestamp
-  // using the same scrubber infrastructure. During playback, the current
-  // phase is highlighted based on getCurrentTime().
-  var _phaseNavState = { container: null, build: null, reset: null, marks: [] };
+  // --- Core operations ---
 
-  function wirePhaseNav(containerId, opts) {
-    var container = document.getElementById(containerId);
-    if (!container) return;
-    _phaseNavState.container = container;
-    _phaseNavState.build = opts.build;
-    _phaseNavState.reset = opts.reset;
-
-    // Render initial empty state
-    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
+  // Fully stop everything and return to idle.  Does NOT call reset().
+  function _stopAll() {
+    if (_ctrl.tl) _ctrl.tl.stop();
+    _ctrl.tl = null;
+    _ctrl.phase = "idle";
+    _ctrl.seekMs = 0;
+    anim.setPaused(false);
+    _tickGen++;                                    // kill any stale _tick loop
+    if (_ctrl.rafId) { cancelAnimationFrame(_ctrl.rafId); _ctrl.rafId = 0; }
   }
 
-  // Called by wireToolbar internals to update phase nav after timeline build
-  function _updatePhaseNav(tl) {
-    var container = _phaseNavState.container;
-    if (!container || !tl || !tl.getMarks) return;
-    var marks = tl.getMarks();
-    _phaseNavState.marks = marks;
-    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
-    for (var i = 0; i < marks.length; i++) {
+  // Build a fresh timeline, apply all state up to `ms`, leave paused there.
+  // This is the single seek primitive — scrubber, phase-nav, and toolbar
+  // all route through here.
+  function _seek(ms) {
+    _stopAll();
+    if (_ctrl.reset) _ctrl.reset();
+    if (!_ctrl.build) return;
+    _ctrl.tl = _ctrl.build();
+    var total = _ctrl.tl.getTotalDuration();
+    if (ms > total) ms = total;
+    if (ms < 0) ms = 0;
+    _ctrl.tl.fastForwardTo(ms);
+    _ctrl.phase = "seeked";
+    _ctrl.seekMs = ms;
+    anim.setPaused(true);
+    _renderPhaseNav();
+    _syncUI();
+    // Override scrubber to exact seek position
+    if (_dom.scrubber && total > 0) {
+      _dom.scrubber.value = String(Math.round((ms / total) * 1000));
+    }
+    if (_dom.timeCur) _dom.timeCur.textContent = _formatSec(ms);
+  }
+
+  // Start playing from `ms` (0 for fresh start).
+  function _playFrom(ms) {
+    _stopAll();
+    if (_ctrl.reset) _ctrl.reset();
+    if (!_ctrl.build) return;
+    _ctrl.tl = _ctrl.build();
+    _ctrl.phase = "playing";
+    _ctrl.seekMs = 0;
+    anim.setPaused(false);
+    _renderPhaseNav();
+    _syncUI();
+    if (ms > 0) {
+      _ctrl.tl.playFrom(ms, _onDone);
+    } else {
+      _ctrl.tl.play(_onDone);
+    }
+    _startTick();
+  }
+
+  function _onDone() {
+    if (_ctrl.loopEnabled) { _playFrom(0); return; }
+    _ctrl.phase = "idle";
+    if (_ctrl.rafId) { cancelAnimationFrame(_ctrl.rafId); _ctrl.rafId = 0; }
+    anim.setPaused(false);
+    _syncUI();
+    // Pin scrubber to end
+    if (_ctrl.tl && _dom.scrubber) _dom.scrubber.value = "1000";
+    if (_ctrl.tl && _dom.timeCur) _dom.timeCur.textContent = _formatSec(_ctrl.tl.getTotalDuration());
+  }
+
+  // --- Phase nav rendering & highlighting ---
+  function _renderPhaseNav() {
+    var c = _ctrl.phaseContainer;
+    if (!c || !_ctrl.tl || !_ctrl.tl.getMarks) return;
+    _ctrl.marks = _ctrl.tl.getMarks();
+    c.innerHTML = '<div class="phase-nav-title">Phases</div>';
+    for (var i = 0; i < _ctrl.marks.length; i++) {
       (function(idx) {
         var item = document.createElement("div");
         item.className = "phase-item";
         item.setAttribute("data-phase-idx", idx);
-        item.innerHTML = '<span class="phase-dot"></span>' + marks[idx].name;
+        item.innerHTML = '<span class="phase-dot"></span>' + _ctrl.marks[idx].name;
         item.addEventListener("click", function() {
-          _seekToPhase(idx);
+          _seek(_ctrl.marks[idx].ms);
+          _highlightPhaseIdx(idx);
         });
-        container.appendChild(item);
+        c.appendChild(item);
       })(i);
     }
-    // Highlight the first phase
-    _highlightPhase(0);
+    _highlightPhaseIdx(0);
   }
 
-  function _highlightPhase(activeIdx) {
-    var container = _phaseNavState.container;
-    if (!container) return;
-    var items = container.querySelectorAll(".phase-item");
+  function _highlightPhaseIdx(activeIdx) {
+    var c = _ctrl.phaseContainer;
+    if (!c) return;
+    var items = c.querySelectorAll(".phase-item");
     for (var i = 0; i < items.length; i++) {
       var cls = "phase-item";
       if (i === activeIdx) cls += " active";
@@ -2096,46 +2071,133 @@ var teachRuntime = (function() {
     }
   }
 
-  function _seekToPhase(idx) {
-    var marks = _phaseNavState.marks;
-    if (idx < 0 || idx >= marks.length) return;
-    var scrubber = document.getElementById("scrubber");
-    var build = _phaseNavState.build;
-    var reset = _phaseNavState.reset;
-    if (!build) return;
-
-    // Reuse the scrubber seek pattern: stop, reset, rebuild, fastForwardTo
-    if (reset) reset();
-    var tl = build();
-    var targetMs = marks[idx].ms;
-    tl.fastForwardTo(targetMs);
-    _updatePhaseNav(tl);
-    _highlightPhase(idx);
-
-    // Update scrubber position
-    var total = tl.getTotalDuration();
-    if (scrubber && total > 0) {
-      scrubber.value = String(Math.round((targetMs / total) * 1000));
+  function _updatePhaseHighlight(currentMs) {
+    if (!_ctrl.marks.length) return;
+    var active = 0;
+    for (var i = _ctrl.marks.length - 1; i >= 0; i--) {
+      if (currentMs >= _ctrl.marks[i].ms) { active = i; break; }
     }
-    var timeCurLbl = document.getElementById("scrubber-time-current");
-    var timeTotLbl = document.getElementById("scrubber-time-total");
-    if (timeCurLbl) timeCurLbl.textContent = (targetMs / 1000).toFixed(1) + "s";
-    if (timeTotLbl) timeTotLbl.textContent = (total / 1000).toFixed(1) + "s";
-
-    // Store the scrubbed position for toolbar resume
-    window._phaseSeekTl = tl;
-    window._phaseSeekMs = targetMs;
+    _highlightPhaseIdx(active);
   }
 
-  // Phase tracking during playback — call from scrubber tick RAF
-  function _tickPhaseNav(currentMs) {
-    var marks = _phaseNavState.marks;
-    if (!marks.length) return;
-    var active = 0;
-    for (var i = marks.length - 1; i >= 0; i--) {
-      if (currentMs >= marks[i].ms) { active = i; break; }
+  // --- Public API: wireToolbar ---
+  function wireToolbar(optsOrPlay, maybeReset) {
+    _dom.btnPlay  = document.getElementById("btn-play");
+    _dom.btnReset = document.getElementById("btn-reset");
+    _dom.btnLoop  = document.getElementById("btn-loop");
+    _dom.selSpeed = document.getElementById("sel-speed");
+    _dom.scrubber = document.getElementById("scrubber");
+    _dom.timeCur  = document.getElementById("scrubber-time-current");
+    _dom.timeTot  = document.getElementById("scrubber-time-total");
+
+    if (typeof optsOrPlay === "function") {
+      _ctrl.legacyPlay = optsOrPlay;
+      _ctrl.reset = maybeReset;
+    } else if (optsOrPlay && typeof optsOrPlay === "object") {
+      _ctrl.build = optsOrPlay.build;
+      _ctrl.reset = optsOrPlay.reset;
     }
-    _highlightPhase(active);
+
+    // --- Play / Pause / Resume button ---
+    if (_dom.btnPlay) _dom.btnPlay.addEventListener("click", function() {
+      switch (_ctrl.phase) {
+        case "idle":
+          if (_ctrl.legacyPlay) { _ctrl.legacyPlay(); return; }
+          _playFrom(0);
+          break;
+        case "playing":
+          // Pause
+          _ctrl.phase = "paused";
+          anim.setPaused(true);
+          _syncUI();
+          break;
+        case "paused":
+          // Resume from current position
+          _ctrl.phase = "playing";
+          anim.setPaused(false);
+          _syncUI();
+          _startTick();
+          break;
+        case "seeked":
+          // Resume from seeked position
+          _playFrom(_ctrl.seekMs);
+          break;
+      }
+    });
+
+    // --- Reset button ---
+    if (_dom.btnReset) _dom.btnReset.addEventListener("click", function() {
+      _stopAll();
+      if (_ctrl.reset) _ctrl.reset();
+      _syncUI();
+    });
+
+    // --- Loop button ---
+    if (_dom.btnLoop) _dom.btnLoop.addEventListener("click", function() {
+      _ctrl.loopEnabled = !_ctrl.loopEnabled;
+      _syncUI();
+    });
+
+    // --- Speed dropdown ---
+    function applyUiSpeed() {
+      if (!_dom.selSpeed) return;
+      anim.setSpeed(Number(_dom.selSpeed.value) * BASELINE_SPEED_SCALE);
+    }
+    if (_dom.selSpeed) _dom.selSpeed.addEventListener("change", applyUiSpeed);
+    if (_dom.selSpeed) applyUiSpeed();
+
+    // --- Scrubber (range input) ---
+    if (_dom.scrubber && _ctrl.build) {
+      _dom.scrubber.addEventListener("mousedown",  function() { _ctrl.dragging = true; });
+      _dom.scrubber.addEventListener("touchstart", function() { _ctrl.dragging = true; });
+      _dom.scrubber.addEventListener("input", function() {
+        var frac = Number(_dom.scrubber.value) / 1000;
+        if (!_ctrl.build) return;
+        // _seek rebuilds the timeline internally; we need total from a
+        // fresh build to convert frac → ms. Use _seek(0) first to get a
+        // timeline, read its total, then re-seek to the real target.
+        // Optimisation: if we already have a tl, reuse its totalDuration.
+        var total;
+        if (_ctrl.tl) {
+          total = _ctrl.tl.getTotalDuration();
+        } else {
+          // No timeline yet — do a throwaway seek to 0 to get one
+          _seek(0);
+          if (!_ctrl.tl) return;
+          total = _ctrl.tl.getTotalDuration();
+        }
+        _seek(frac * total);
+      });
+      function endDrag() { _ctrl.dragging = false; }
+      _dom.scrubber.addEventListener("change",  endDrag);
+      _dom.scrubber.addEventListener("mouseup",  endDrag);
+      _dom.scrubber.addEventListener("touchend", endDrag);
+    }
+
+    // Legacy done callback
+    window._teachOnDone = function() { _onDone(); };
+
+    _syncUI();
+  }
+
+  // --- Public API: wirePhaseNav ---
+  function wirePhaseNav(containerId, opts) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    _ctrl.phaseContainer = container;
+    // build/reset already set by wireToolbar; opts here are redundant but
+    // kept for backward compat.
+    if (opts && opts.build && !_ctrl.build) _ctrl.build = opts.build;
+    if (opts && opts.reset && !_ctrl.reset) _ctrl.reset = opts.reset;
+    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
+  }
+
+  // Backward-compat aliases used by older code paths
+  function _updatePhaseNav(tl) { _renderPhaseNav(); }
+  function _tickPhaseNav(currentMs) { _updatePhaseHighlight(currentMs); }
+
+  function animationDone() {
+    if (typeof window._teachOnDone === "function") window._teachOnDone();
   }
 
   return {
@@ -2153,21 +2215,81 @@ var teachRuntime = (function() {
   };
 })();
 
-
 var TMP_TABLE_SIZE_DEFAULT = 16777216;
 var MAX_HEAP_TABLE_SIZE_DEFAULT = 16777216;
 
-function tmpTableCost(rows, rowSize, tmpSize, maxHeap) {
-  var limit = Math.min(tmpSize, maxHeap);
+// Mirrors tmp_table_cost() in myflames/teach/_cost_model.py, which cites the
+// MySQL 8.4 / MariaDB 11.4 source for each rule:
+//   temptable  tmp_table_size per table; max_heap_table_size does not apply
+//   memory     smaller of tmp_table_size and max_heap_table_size
+//   mariadb    smaller of the two; spills to Aria instead of InnoDB
+var TMP_ENGINES = {
+  temptable: {label: "TempTable", long: "TempTable", disk: "InnoDB", server: "MySQL"},
+  memory: {label: "MEMORY", long: "MEMORY", disk: "InnoDB", server: "MySQL"},
+  mariadb: {label: "MariaDB HEAP", long: "MariaDB in-memory (HEAP)", disk: "Aria", server: "MariaDB"}
+};
+
+function tmpTableCost(rows, rowSize, tmpSize, maxHeap, engine) {
+  var key = Object.prototype.hasOwnProperty.call(TMP_ENGINES, engine) ? engine : "temptable";
+  var limit, source;
+  if (key === "temptable") {
+    limit = tmpSize;
+    source = "tmp_table_size";
+  } else {
+    limit = Math.min(tmpSize, maxHeap);
+    source = tmpSize === maxHeap ? "both"
+      : (tmpSize < maxHeap ? "tmp_table_size" : "max_heap_table_size");
+  }
+  var diskEngine = TMP_ENGINES[key].disk;
+  if (rows <= 0 || rowSize <= 0) {
+    return {engine: key, limit: limit, source: source, cap: 0, fits: true,
+            memRows: 0, diskRows: 0, diskEngine: diskEngine};
+  }
   var cap = Math.max(1, Math.floor(limit / rowSize));
   var fits = rows <= cap;
-  var memRows = Math.min(rows, cap);
-  var diskRows = fits ? 0 : rows - cap;
-  return {limit: limit, cap: cap, fits: fits, memRows: memRows, diskRows: diskRows};
+  return {engine: key, limit: limit, source: source, cap: cap, fits: fits,
+          memRows: Math.min(rows, cap), diskRows: fits ? 0 : rows - cap,
+          diskEngine: diskEngine};
 }
 
-var W = 800, H = 360;
+function fmtN(n) { return Math.round(n).toLocaleString("en-US"); }
+function fmtB(b) { return teachRuntime.formatBytes(b); }
+function clamp01(v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+// Progress of v inside the sub-range [a, b], clamped to 0..1.
+function sub(v, a, b) { return clamp01((v - a) / (b - a)); }
+
+function ruleText(cost) {
+  return cost.engine === "temptable"
+    ? "tmp_table_size alone; max_heap_table_size does not apply to TempTable"
+    : "the smaller of tmp_table_size and max_heap_table_size";
+}
+// Short form printed on the stage, right above the in-memory box.
+function limitLabel(cost) {
+  return cost.engine === "temptable"
+    ? "limit: tmp_table_size = " + fmtB(cost.limit) + " (max_heap_table_size ignored)"
+    : "limit: smaller of tmp_table_size, max_heap_table_size = " + fmtB(cost.limit);
+}
+function limitPhrase(cost) {
+  return cost.engine === "temptable"
+    ? "its limit is tmp_table_size, " + fmtB(cost.limit)
+    : "its limit is the smaller of tmp_table_size and max_heap_table_size, " + fmtB(cost.limit);
+}
+function pctText(frac) {
+  var p = frac * 100;
+  return (p > 0 && p < 1 ? "<1" : String(Math.round(p))) + "%";
+}
+
+var W = 800, H = 380;
 var stage = null;
+
+// Stage geometry. Boxes and bars are created once per recompute and only
+// mutated afterwards (animation-expert: move, don't redraw).
+var SRC_Y = 61;
+var MEM_Y = 124, MEM_H = 72;
+var DISK_Y = 246, DISK_H = 66;
+var BAR_X = 30, BAR_W = W - 60, BAR_H = 14;
+var MEM_BAR_Y = MEM_Y + 12;
+var DISK_BAR_Y = DISK_Y + 12;
 
 var EMPLOYEES = [
   {name: "Alice", dept: "Engineering"},
@@ -2183,99 +2305,100 @@ var EMPLOYEES = [
   {name: "Kate", dept: "HR"},
   {name: "Leo", dept: "Engineering"}
 ];
+var N_SAMPLE = EMPLOYEES.length;
 
-function buildStage(fits) {
+var MEM_IDLE_TEXT = "Rows land here first: fast, no disk I/O";
+var DISK_IDLE_TEXT = "Used only if the table outgrows its limit";
+
+function svgText(svg, attrs, text) {
+  var t = anim.svgEl("text", attrs);
+  t.textContent = text;
+  svg.appendChild(t);
+  return t;
+}
+
+function buildStage(cost) {
   var svg = document.getElementById("tmp-svg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
+  var eng = TMP_ENGINES[cost.engine];
 
   // Source rows (top)
-  var srcLbl = anim.svgEl("text", {
-    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "#0c4a6e"
-  });
-  srcLbl.textContent = "employees table \u2192 streaming rows";
-  svg.appendChild(srcLbl);
-
+  svgText(svg, {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "#0c4a6e"},
+    "employees table → rows streaming into GROUP BY department");
   var srcRect = anim.svgEl("rect", {
-    x: 20, y: 40, width: W - 40, height: 50, rx: 8, ry: 8,
+    x: 20, y: 36, width: W - 40, height: 50, rx: 8, ry: 8,
     fill: "#f0f9ff", stroke: "#0284c7", "stroke-width": 1.5
   });
   svg.appendChild(srcRect);
 
-  // MEMORY temp table (middle)
-  var memY = 120;
-  var memLbl = anim.svgEl("text", {
-    x: 20, y: memY, "font-size": 13, "font-weight": 700, fill: "#047857"
-  });
-  memLbl.textContent = "MEMORY temp table (GROUP BY department)";
-  svg.appendChild(memLbl);
-
+  // In-memory temp table (middle): engine name on the left, the limit
+  // rule with its value on the right.
+  var memLbl = svgText(svg, {x: 20, y: MEM_Y - 10, "font-size": 13, "font-weight": 700, fill: "#047857"},
+    "In memory: " + eng.label + " temp table");
+  var limitLbl = svgText(svg, {
+    x: W - 20, y: MEM_Y - 10, "text-anchor": "end",
+    "font-size": 11.5, "font-weight": 700, fill: "#047857"
+  }, limitLabel(cost));
   var memRect = anim.svgEl("rect", {
-    x: 20, y: memY + 12, width: W - 40, height: 65, rx: 8, ry: 8,
+    x: 20, y: MEM_Y, width: W - 40, height: MEM_H, rx: 8, ry: 8,
     fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5
   });
   svg.appendChild(memRect);
-
-  var memContent = anim.svgEl("text", {
-    x: W / 2, y: memY + 50, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#065f46"
-  });
-  memContent.textContent = "(rows accumulate here — fast, in-memory)";
-  svg.appendChild(memContent);
-
-  // Capacity bar inside mem table
-  var barX = 30, barY = memY + 22, barW = W - 60, barH = 14;
   var barBg = anim.svgEl("rect", {
-    x: barX, y: barY, width: barW, height: barH, rx: 3, ry: 3,
+    x: BAR_X, y: MEM_BAR_Y, width: BAR_W, height: BAR_H, rx: 3, ry: 3,
     fill: "#d1fae5", stroke: "#a7f3d0", "stroke-width": 1
   });
   svg.appendChild(barBg);
   var barFill = anim.svgEl("rect", {
-    x: barX, y: barY, width: 0, height: barH, rx: 3, ry: 3,
-    fill: "#34d399"
+    x: BAR_X, y: MEM_BAR_Y, width: 0, height: BAR_H, rx: 3, ry: 3, fill: "#34d399"
   });
   svg.appendChild(barFill);
-  var barPct = anim.svgEl("text", {
-    x: barX + barW / 2, y: barY + 11, "text-anchor": "middle",
+  var barPct = svgText(svg, {
+    x: BAR_X + BAR_W / 2, y: MEM_BAR_Y + 11, "text-anchor": "middle",
     "font-size": 9, "font-weight": 700, fill: "#065f46"
-  });
-  barPct.textContent = "0%";
-  svg.appendChild(barPct);
+  }, "0% of limit");
+  var memContent = svgText(svg, {
+    x: W / 2, y: MEM_Y + 52, "text-anchor": "middle",
+    "font-size": 11.5, "font-weight": 600, fill: "#065f46"
+  }, MEM_IDLE_TEXT);
 
-  // On-disk area (bottom)
-  var diskY = 225;
-  var diskLbl = anim.svgEl("text", {
-    x: 20, y: diskY, "font-size": 13, "font-weight": 700, fill: "#991b1b"
-  });
-  diskLbl.textContent = "on-disk InnoDB temp table (after conversion)";
-  svg.appendChild(diskLbl);
-
+  // On-disk temp table (bottom). Everything but the title sits in one
+  // group so a single opacity tween brings it to life at conversion.
+  svgText(svg, {x: 20, y: DISK_Y - 10, "font-size": 13, "font-weight": 700, fill: "#991b1b"},
+    "On disk: " + eng.disk + " temp table (after conversion)");
+  var diskGroup = anim.svgEl("g", {opacity: 0.3});
+  svg.appendChild(diskGroup);
   var diskRect = anim.svgEl("rect", {
-    x: 20, y: diskY + 12, width: W - 40, height: 55, rx: 8, ry: 8,
-    fill: "#fef2f2", stroke: "#dc2626", "stroke-width": 1.5, opacity: 0.3
+    x: 20, y: DISK_Y, width: W - 40, height: DISK_H, rx: 8, ry: 8,
+    fill: "#fef2f2", stroke: "#dc2626", "stroke-width": 1.5
   });
-  svg.appendChild(diskRect);
-
+  diskGroup.appendChild(diskRect);
+  diskGroup.appendChild(anim.svgEl("rect", {
+    x: BAR_X, y: DISK_BAR_Y, width: BAR_W, height: BAR_H, rx: 3, ry: 3,
+    fill: "#fee2e2", stroke: "#fecaca", "stroke-width": 1
+  }));
+  var diskBarFill = anim.svgEl("rect", {
+    x: BAR_X, y: DISK_BAR_Y, width: 0, height: BAR_H, rx: 3, ry: 3, fill: "#f87171"
+  });
+  diskGroup.appendChild(diskBarFill);
   var diskContent = anim.svgEl("text", {
-    x: W / 2, y: diskY + 44, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#991b1b", opacity: 0.3
+    x: W / 2, y: DISK_Y + 48, "text-anchor": "middle",
+    "font-size": 11.5, "font-weight": 600, fill: "#991b1b"
   });
-  diskContent.textContent = "(slow — random I/O on disk)";
-  svg.appendChild(diskContent);
+  diskContent.textContent = DISK_IDLE_TEXT;
+  diskGroup.appendChild(diskContent);
 
-  var statusLbl = anim.svgEl("text", {
-    x: W / 2, y: H - 20, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#1f2937"
-  });
-  statusLbl.textContent = "";
-  svg.appendChild(statusLbl);
+  var statusLbl = svgText(svg, {
+    x: W / 2, y: H - 14, "text-anchor": "middle",
+    "font-size": 12.5, "font-weight": 600, fill: "#1f2937"
+  }, "");
 
   stage = {
-    svg: svg, srcRect: srcRect,
-    memRect: memRect, memContent: memContent, memLbl: memLbl,
-    barFill: barFill, barBg: barBg, barPct: barPct,
-    barX: barX, barW: barW,
-    diskRect: diskRect, diskContent: diskContent, diskLbl: diskLbl,
-    statusLbl: statusLbl, tuples: []
+    svg: svg, memLbl: memLbl, limitLbl: limitLbl,
+    memRect: memRect, memContent: memContent,
+    barFill: barFill, barPct: barPct,
+    diskGroup: diskGroup, diskRect: diskRect, diskBarFill: diskBarFill,
+    diskContent: diskContent, statusLbl: statusLbl, tuples: []
   };
 }
 
@@ -2283,28 +2406,42 @@ function resetStage() {
   if (!stage) return;
   stage.memRect.setAttribute("fill", "#ecfdf5");
   stage.memRect.setAttribute("stroke", "#059669");
-  stage.memContent.textContent = "(rows accumulate here \u2014 fast, in-memory)";
-  stage.barFill.setAttribute("width", 0);
-  stage.barFill.setAttribute("fill", "#34d399");
-  stage.barPct.textContent = "0%";
-  stage.diskRect.setAttribute("opacity", 0.3);
-  stage.diskContent.setAttribute("opacity", 0.3);
+  stage.memContent.textContent = MEM_IDLE_TEXT;
+  setMemBar(0);
+  stage.diskGroup.setAttribute("opacity", 0.3);
+  stage.diskBarFill.setAttribute("width", 0);
+  stage.diskContent.textContent = DISK_IDLE_TEXT;
   stage.statusLbl.textContent = "";
   stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
   stage.tuples = [];
 }
 
+// Bar colour eases green -> amber -> red as the table nears its limit.
+function barColor(frac) {
+  if (frac <= 0.6) return "#34d399";
+  if (frac <= 0.8) return anim.lerpColor("#34d399", "#fbbf24", (frac - 0.6) / 0.2);
+  return anim.lerpColor("#fbbf24", "#f87171", clamp01((frac - 0.8) / 0.2));
+}
+function setMemBar(frac) {
+  var f = clamp01(frac);
+  stage.barFill.setAttribute("width", (BAR_W * f).toFixed(1));
+  stage.barFill.setAttribute("fill", barColor(f));
+  stage.barPct.textContent = f >= 1 ? "FULL" : pctText(f) + " of limit";
+}
+function setDiskBar(frac) {
+  stage.diskBarFill.setAttribute("width", (BAR_W * clamp01(frac)).toFixed(1));
+}
+
 function spawnTuple(text, color, cx, cy) {
   var g = anim.svgEl("g", { opacity: 0, transform: "translate(" + cx + "," + cy + ")" });
   var tw = Math.max(70, text.length * 5.5 + 14);
-  var bg = anim.svgEl("rect", {
+  g.appendChild(anim.svgEl("rect", {
     x: -tw / 2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
     fill: color, stroke: "#1f2937", "stroke-width": 1
-  });
-  g.appendChild(bg);
+  }));
   var lbl = anim.svgEl("text", {
     x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 8, "font-weight": 700, fill: "#ffffff"
+    "font-size": 8.5, "font-weight": 700, fill: "#ffffff"
   });
   lbl.textContent = text;
   g.appendChild(lbl);
@@ -2313,134 +2450,271 @@ function spawnTuple(text, color, cx, cy) {
   return g;
 }
 
-function buildTimeline(cap, fits) {
+// Where a pill lands: the growing edge of a bar, kept clear of the box ends.
+function barEdgeX(frac) {
+  return Math.max(BAR_X + 50, Math.min(BAR_X + BAR_W - 50, BAR_X + BAR_W * clamp01(frac)));
+}
+
+// Move a pill along a slight arc from (x1, y1) to (x2, y2) at eased
+// progress v. opts.fadeIn fades it in at the start; opts.fadeOut fades it
+// out as it lands (the row has joined the bar).
+function placePill(slot, x1, y1, x2, y2, v, opts) {
+  var g = slot.g;
+  if (!g) return;
+  var p = anim.path(x1, y1, (x1 + x2) / 2, Math.min(y1, y2) - 18, x2, y2)(v);
+  var op = 1;
+  if (opts.fadeIn) op = Math.min(op, v / 0.15);
+  if (opts.fadeOut) op = Math.min(op, 1 - sub(v, 0.82, 1));
+  g.setAttribute("transform", "translate(" + p.x.toFixed(1) + "," + p.y.toFixed(1) + ")");
+  g.setAttribute("opacity", clamp01(op).toFixed(3));
+}
+
+function buildTimeline(cost, c) {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
-  var total = EMPLOYEES.length;
-  var conversionRow = Math.min(cap, total);
+  var eng = TMP_ENGINES[cost.engine];
+  var rows = c.rows;
+  var phases = cost.fits ? 2 : 3;
 
-  tl.mark("Stream into MEMORY");
+  // Each sample pill stands for one twelfth of the real rows.
+  function realAfter(i) { return Math.min(rows, Math.round((i + 1) * rows / N_SAMPLE)); }
+  var convIdx = -1;
+  if (!cost.fits) {
+    for (var k = 0; k < N_SAMPLE; k++) {
+      if (realAfter(k) > cost.cap) { convIdx = k; break; }
+    }
+  }
+  var copiedFrac = cost.cap / rows;
+  var memBarMid = MEM_BAR_Y + BAR_H / 2;
+  var diskBarMid = DISK_BAR_Y + BAR_H / 2;
+
+  tl.mark("Fill in memory");
   tl.call(function() {
-    phase.textContent = "Phase 1 \u2014 streaming rows into MEMORY temp table";
+    phase.textContent = "Phase 1/" + phases + ": GROUP BY streams " + fmtN(rows) +
+      " employees rows into an in-memory temp table (" + eng.label + "); " + limitPhrase(cost);
   });
 
-  for (var i = 0; i < total; i++) {
+  for (var i = 0; i < N_SAMPLE; i++) {
     (function(idx) {
       var emp = EMPLOYEES[idx];
       var label = emp.name + " (" + emp.dept + ")";
-      var isConversion = !fits && idx === conversionRow;
+      var after = realAfter(idx);
+      var before = idx === 0 ? 0 : realAfter(idx - 1);
+      var col = 60 + (idx % 8) * 90;
+      var slot = {g: null, x: 0, y: 0};
 
-      tl.call(function() {
-        // Update capacity bar
-        var pct = Math.min(100, Math.round(((idx + 1) / cap) * 100));
-        var fillW = Math.min(stage.barW, stage.barW * (idx + 1) / cap);
-        stage.barFill.setAttribute("width", fillW);
-        stage.barPct.textContent = pct + "%";
+      if (convIdx === -1 || idx < convIdx) {
+        // Row batch fits: the pill drops onto the bar's growing edge.
+        var fromFrac = before / cost.cap;
+        var toFrac = after / cost.cap;
+        tl.call(function() {
+          slot.g = spawnTuple(label, "#059669", col, SRC_Y);
+          stage.statusLbl.textContent = "Insert " + label + ": " + fmtN(after) + " of " +
+            fmtN(rows) + " rows in memory, " + pctText(toFrac) + " of the " + fmtB(cost.limit) + " limit";
+        });
+        tl.add({from: 0, to: 1, duration: 360, ease: anim.easeInOutQuad, onUpdate: function(v) {
+          placePill(slot, col, SRC_Y, barEdgeX(toFrac), memBarMid, v, {fadeIn: true, fadeOut: true});
+          setMemBar(fromFrac + (toFrac - fromFrac) * sub(v, 0.55, 1));
+        }});
+        tl.call(function() {
+          anim.arrival(stage.memRect);
+          stage.memContent.textContent = fmtN(after) + " of " + fmtN(rows) + " rows in memory (" +
+            fmtB(after * c.row_size) + " of " + fmtB(cost.limit) + ")";
+        });
+        tl.delay(60);
+        return;
+      }
 
-        if (pct >= 90 && !fits) {
-          stage.barFill.setAttribute("fill", "#f87171");
-          stage.memRect.setAttribute("stroke", "#dc2626");
-        } else if (pct >= 70 && !fits) {
-          stage.barFill.setAttribute("fill", "#fbbf24");
-          stage.memRect.setAttribute("stroke", "#f59e0b");
-        }
-
-        var cx = 60 + (idx % 8) * 90;
-        var tuple = spawnTuple(label, idx < conversionRow ? "#059669" : "#dc2626", cx, 65);
-        anim.tween({from: 0, to: 1, duration: 180, ease: anim.easeOutCubic,
-          onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
-
-        if (idx < conversionRow) {
-          stage.memContent.textContent = (idx + 1) + " rows in MEMORY (" + pct + "% full)";
-        }
-      });
-
-      if (isConversion) {
+      if (idx === convIdx) {
+        // The batch that does not fit: amber pill fills the bar and waits.
+        var startFrac = before / cost.cap;
+        slot.x = barEdgeX(1);
+        slot.y = memBarMid;
+        tl.call(function() {
+          slot.g = spawnTuple(label, "#d97706", col, SRC_Y);
+          stage.statusLbl.textContent = "Insert " + label + ": row " + fmtN(cost.cap + 1) + " of " +
+            fmtN(rows) + " does not fit under the " + fmtB(cost.limit) + " limit";
+        });
+        tl.add({from: 0, to: 1, duration: 360, ease: anim.easeInOutQuad, onUpdate: function(v) {
+          placePill(slot, col, SRC_Y, slot.x, slot.y, v, {fadeIn: true});
+          setMemBar(startFrac + (1 - startFrac) * sub(v, 0.55, 1));
+        }});
+        tl.call(function() {
+          stage.memContent.textContent = fmtN(cost.cap) + " rows fill the " + fmtB(cost.limit) + " limit";
+        });
         tl.delay(300);
-        tl.mark("MEMORY \u2192 disk conversion");
+
+        // The one anticipation moment: the box flushes red, disk wakes up.
+        tl.mark("Convert to disk");
         tl.call(function() {
-          phase.textContent = "\u26a0 MEMORY limit exceeded \u2014 converting to on-disk InnoDB!";
-          stage.memRect.setAttribute("fill", "#fef2f2");
-          stage.memRect.setAttribute("stroke", "#dc2626");
-          stage.memContent.textContent = "CONVERTING TO DISK\u2026";
-          stage.barFill.setAttribute("fill", "#ef4444");
-          stage.barPct.textContent = "FULL";
-          stage.diskRect.setAttribute("opacity", 1);
-          stage.diskContent.setAttribute("opacity", 1);
-          stage.diskContent.textContent = "Conversion in progress\u2026 copying all rows to InnoDB";
+          phase.textContent = "Phase 2/3: ⚠ the " + eng.label + " table hit its " +
+            fmtB(cost.limit) + " limit, so " + eng.server + " converts it to an on-disk " +
+            cost.diskEngine + " temp table";
+          stage.statusLbl.textContent = "Conversion: create an on-disk " + cost.diskEngine +
+            " table, then copy every row already in memory into it";
         });
-        tl.delay(600);
+        tl.add({from: 0, to: 1, duration: 420, ease: anim.easeOutCubic, onUpdate: function(v) {
+          stage.memRect.setAttribute("fill", anim.lerpColor("#ecfdf5", "#fef2f2", v));
+          stage.memRect.setAttribute("stroke", anim.lerpColor("#059669", "#dc2626", v));
+          stage.diskGroup.setAttribute("opacity", (0.3 + 0.7 * v).toFixed(3));
+        }});
         tl.call(function() {
-          stage.diskContent.textContent = "On-disk InnoDB temp table active \u2014 remaining rows go here";
-          phase.textContent = "Phase 2 \u2014 inserting remaining rows on disk (slow)";
+          anim.arrival(stage.memRect, {peakWidth: 3});
+          stage.barPct.textContent = "copying…";
+          stage.memContent.textContent = "Copying " + fmtN(cost.cap) + " rows to the on-disk " +
+            cost.diskEngine + " table…";
+          stage.diskContent.textContent = "Receiving " + fmtN(cost.cap) + " rows from memory…";
         });
-        tl.mark("Insert on disk (slow)");
+        // Copy: the memory bar drains while the disk bar fills.
+        tl.add({from: 0, to: 1, duration: 800, ease: anim.easeInOutCubic, onUpdate: function(v) {
+          stage.barFill.setAttribute("width", (BAR_W * (1 - v)).toFixed(1));
+          setDiskBar(copiedFrac * v);
+        }});
+        tl.call(function() {
+          stage.barPct.textContent = "freed";
+          stage.memContent.textContent = "Memory freed: the whole table now lives on disk";
+          stage.diskContent.textContent = fmtN(cost.cap) + " rows copied from memory";
+          anim.arrival(stage.diskRect);
+        });
+        tl.delay(300);
+
+        tl.mark("Insert on disk");
+        tl.call(function() {
+          phase.textContent = "Phase 3/3: the remaining " + fmtN(cost.diskRows) +
+            " rows go straight to the on-disk " + cost.diskEngine + " table (slower)";
+        });
+        var diskTo = after / rows;
+        tl.add({from: 0, to: 1, duration: 400, ease: anim.easeInOutQuad, onUpdate: function(v) {
+          placePill(slot, slot.x, slot.y, barEdgeX(diskTo), diskBarMid, v, {fadeOut: true});
+          setDiskBar(copiedFrac + (diskTo - copiedFrac) * sub(v, 0.55, 1));
+        }});
+        tl.call(function() {
+          anim.arrival(stage.diskRect);
+          stage.diskContent.textContent = fmtN(cost.cap) + " rows copied + " +
+            fmtN(after - cost.cap) + " rows inserted on disk";
+        });
+        tl.delay(60);
+        return;
       }
 
-      if (!fits && idx >= conversionRow) {
-        tl.call(function() {
-          stage.diskContent.textContent = (idx - conversionRow + 1) + " rows inserted on disk";
-        });
-      }
-
-      tl.delay(200);
-
-      // Fade out tuple
+      // After the conversion: red pills skip memory and land on disk.
+      var dFrom = before / rows;
+      var dTo = after / rows;
       tl.call(function() {
-        stage.tuples.forEach(function(t) {
-          if (parseFloat(t.getAttribute("opacity") || 1) > 0.3) {
-            anim.tween({from: 1, to: 0, duration: 150, ease: anim.easeInCubic,
-              onUpdate: function(v) { t.setAttribute("opacity", v); }});
-          }
-        });
+        slot.g = spawnTuple(label, "#dc2626", col, SRC_Y);
+        stage.statusLbl.textContent = "Insert " + label + ": straight to disk, " +
+          fmtN(after - cost.cap) + " rows inserted on disk so far";
       });
+      tl.add({from: 0, to: 1, duration: 400, ease: anim.easeInOutQuad, onUpdate: function(v) {
+        placePill(slot, col, SRC_Y, barEdgeX(dTo), diskBarMid, v, {fadeIn: true, fadeOut: true});
+        setDiskBar(dFrom + (dTo - dFrom) * sub(v, 0.55, 1));
+      }});
+      tl.call(function() {
+        anim.arrival(stage.diskRect);
+        stage.diskContent.textContent = fmtN(cost.cap) + " rows copied + " +
+          fmtN(after - cost.cap) + " rows inserted on disk";
+      });
+      tl.delay(60);
     })(i);
   }
 
   tl.delay(300);
   tl.mark("Done");
   tl.call(function() {
-    if (fits) {
-      phase.textContent = "\u2713 All rows fit in MEMORY \u2014 no disk conversion needed!";
-      stage.statusLbl.textContent = "Fast path: pure MEMORY temp table, 0 disk I/O.";
+    var need = fmtB(rows * c.row_size);
+    if (cost.fits) {
+      phase.textContent = "Phase 2/2: ✓ done. All " + fmtN(rows) + " rows (" + need +
+        ") stayed in the " + eng.label + " table, under its " + fmtB(cost.limit) + " limit";
+      stage.statusLbl.textContent = cost.engine === "temptable"
+        ? "0 rows on disk. TempTable also needs room in the shared temptable_max_ram pool."
+        : "0 rows on disk: the whole GROUP BY ran in memory.";
     } else {
-      phase.textContent = "\u2713 GROUP BY complete \u2014 but conversion to disk was costly";
-      stage.statusLbl.textContent = "The MEMORY \u2192 disk conversion adds significant latency. Raise tmp_table_size or add an index.";
+      phase.textContent = "✓ Done: " + fmtN(cost.cap) + " rows fit in memory, then the table moved to disk and " +
+        fmtN(cost.diskRows) + " more rows were inserted into on-disk " + cost.diskEngine;
+      stage.statusLbl.textContent = cost.engine === "temptable"
+        ? "To stay in memory: tmp_table_size ≥ ~" + need + ". max_heap_table_size does not matter here."
+        : "To stay in memory: tmp_table_size and max_heap_table_size both ≥ ~" + need + ".";
     }
   });
-
+  tl.delay(350);
   return tl;
 }
 
-function buildCurrentTimeline() {
+function readCost() {
   var c = teachRuntime.readControls();
-  var cost = tmpTableCost(c.rows, c.row_size, c.tmp_size, c.max_heap);
-  return buildTimeline(cost.cap, cost.fits);
+  return {c: c, cost: tmpTableCost(c.rows, c.row_size, c.tmp_size, c.max_heap, c.engine)};
+}
+
+function buildCurrentTimeline() {
+  var rc = readCost();
+  return buildTimeline(rc.cost, rc.c);
 }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready — press Play";
+}
+
+// TempTable ignores max_heap_table_size: dim that control and say so, but
+// keep it draggable so the learner can see the limit stay put.
+function syncMaxHeapControl(engine) {
+  var ctl = document.getElementById("max-heap-control");
+  var hint = document.getElementById("max-heap-hint");
+  if (!ctl || !hint) return;
+  if (engine === "temptable") {
+    ctl.style.opacity = "0.55";
+    hint.textContent = "TempTable ignores this setting. Drag it: the limit stays put.";
+  } else {
+    ctl.style.opacity = "1";
+    hint.textContent = "Default: " + (MAX_HEAP_TABLE_SIZE_DEFAULT / 1048576) + " MiB. " +
+      TMP_ENGINES[engine].server + (engine === "memory" ? " MEMORY" : "") +
+      " uses the smaller of this and tmp_table_size.";
+  }
+}
+
+function sourceText(cost) {
+  if (cost.engine === "temptable") return "tmp_table_size";
+  if (cost.source === "both") return "both (equal)";
+  return cost.source + " (smaller)";
+}
+
+function explanationText(cost, c) {
+  var label = TMP_ENGINES[cost.engine].long;
+  if (cost.fits) {
+    var s = "All " + fmtN(c.rows) + " rows (" + fmtB(c.rows * c.row_size) + ") fit in the " + label +
+      " temp table. Its limit is " + fmtB(cost.limit) + " (" + ruleText(cost) + "). No on-disk conversion.";
+    if (cost.engine === "temptable") {
+      s += " TempTable tables also share the global temptable_max_ram pool; if it runs out, " +
+        "a table converts to on-disk InnoDB even below tmp_table_size.";
+    }
+    return s;
+  }
+  var out = "The " + label + " temp table holds " + fmtN(cost.cap) + " rows (" + fmtB(cost.limit) +
+    ": " + ruleText(cost) + "). Row " + fmtN(cost.cap + 1) + " triggers conversion to an on-disk " +
+    cost.diskEngine + " temp table, and the remaining " + fmtN(cost.diskRows) + " rows are inserted there. ";
+  if (cost.engine === "temptable") {
+    out += "Raise tmp_table_size to avoid the conversion; raising max_heap_table_size changes nothing here.";
+  } else {
+    out += "Raise tmp_table_size and max_heap_table_size together; raising only one leaves the smaller limit in force.";
+  }
+  return out;
 }
 
 function recompute() {
-  var c = teachRuntime.readControls();
-  var cost = tmpTableCost(c.rows, c.row_size, c.tmp_size, c.max_heap);
-  document.getElementById("out-limit").textContent = teachRuntime.formatBytes(cost.limit);
+  var rc = readCost();
+  var c = rc.c, cost = rc.cost;
+  syncMaxHeapControl(cost.engine);
+  document.getElementById("out-limit").textContent = fmtB(cost.limit);
+  document.getElementById("out-source").textContent = sourceText(cost);
   document.getElementById("out-cap").textContent = teachRuntime.formatInt(cost.cap);
   document.getElementById("out-mem-rows").textContent = teachRuntime.formatInt(cost.memRows);
   document.getElementById("out-disk-rows").textContent = teachRuntime.formatInt(cost.diskRows);
-  document.getElementById("out-conversion").textContent = cost.fits ? "No \u2014 all in MEMORY" : "Yes \u2014 converted to disk";
+  document.getElementById("out-conversion").textContent = cost.fits
+    ? "No: all in memory"
+    : "Yes: moved to on-disk " + cost.diskEngine;
   document.getElementById("out-conversion").className = "value " + (cost.fits ? "ok" : "hot");
-  document.getElementById("out-explanation").textContent =
-    cost.fits
-      ? "All " + cost.memRows + " rows fit in the MEMORY temp table (limit " +
-        teachRuntime.formatBytes(cost.limit) + "). No on-disk conversion needed."
-      : "MEMORY temp table holds " + cost.cap + " rows (" +
-        teachRuntime.formatBytes(cost.limit) + "). Row " + (cost.cap + 1) +
-        " triggers conversion to on-disk InnoDB \u2014 " + cost.diskRows +
-        " remaining rows inserted on disk. Raise tmp_table_size or max_heap_table_size.";
-  buildStage(cost.fits);
+  document.getElementById("out-explanation").textContent = explanationText(cost, c);
+  buildStage(cost);
   resetStage();
 }
 

@@ -109,6 +109,48 @@ class TestCaptureCLI(unittest.TestCase):
         self.assertEqual(self.err.getvalue(), 'myflames: Use a read-only SELECT.\n')
 
 
+class TestServerFailureContract(unittest.TestCase):
+    def test_json_connection_errors_are_stderr_only_even_when_quiet(self):
+        from myflames.connector import ConnectorError
+        commands = [(name, []) for name in ('top', 'sessions', 'running', 'locks', 'innodb',
+                    'health', 'waits', 'indexes', 'tables', 'io', 'config', 'instruments', 'report', 'replication')]
+        commands += [('replication', ['skip', '--channel', '', '--yes']),
+                     ('replication', ['skip-loop', '--channel', '', '--errors', '1062', '--yes']),
+                     ('sessions', ['--kill', '41', '--yes'])]
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {
+                'HOME': directory, 'USERPROFILE': directory, 'MYFLAMES_SECRET_BACKEND': 'vault'}):
+            os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
+            for name, arguments in commands:
+                for save in (False, True):
+                    output = os.path.join(directory, 'result.json')
+                    with open(output, 'w') as handle:
+                        handle.write('existing result')
+                    args = arguments + ['--json', '-qq', '-psecret'] + (['-o', output] if save else [])
+                    out, err = io.StringIO(), io.StringIO()
+                    with self.subTest(command=name, args=args), \
+                            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                            mock.patch.object(workspace_cli, '_resolve_connection',
+                                              side_effect=ConnectorError('Connection failed for secret')):
+                        with self.assertRaises(SystemExit) as error:
+                            getattr(workspace_cli, 'cmd_' + name)(args)
+                        self.assertEqual(error.exception.code, 2)
+                        self.assertEqual(out.getvalue(), '')
+                        self.assertIn('Connection failed for [redacted]', err.getvalue())
+                        self.assertNotIn('secret', err.getvalue())
+                        self.assertNotIn('Traceback', err.getvalue())
+                        with open(output) as handle:
+                            self.assertEqual(handle.read(), 'existing result')
+
+    def test_running_warning_uses_parsed_quiet(self):
+        for quiet in ('-q', '-qq', '--qui', '--quie'):
+            out, err = io.StringIO(), io.StringIO()
+            with self.subTest(quiet=quiet), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                    mock.patch.object(workspace_cli, '_discover_run', return_value={'statements': [], 'notes': []}):
+                workspace_cli.cmd_running(['--json', quiet])
+            self.assertEqual(json.loads(out.getvalue())['statements'], [])
+            self.assertEqual(err.getvalue(), '')
+
+
 class TestExploreCLI(unittest.TestCase):
     def test_real_fixture_html_and_selected_id(self):
         with open(FIXTURE) as handle:

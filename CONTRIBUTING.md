@@ -210,4 +210,4 @@ Cite the file:line(s) in the commit message **and** in the lesson / advisor rule
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the same [CDDL 1.0](docs/cddl1.txt) license as the project.
+By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE), the same license as the project. Don't copy code from FlameGraph (`flamegraph.pl`, CDDL 1.0) or other projects with incompatible licenses; the flame graph renderers are original, clean-room implementations.

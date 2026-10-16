@@ -1,0 +1,31 @@
+{
+  "serverAddress": "127.0.0.1:3306",
+  "serverVersion": "8.0.36",
+  "targetVersion": "8.4.0",
+  "errorCount": 1,
+  "warningCount": 1,
+  "noticeCount": 0,
+  "summary": "Example containing an upgrade error, a warning, and a checker configuration failure.",
+  "checksPerformed": [
+    {
+      "id": "authMethodUsage",
+      "title": "Authentication methods",
+      "status": "OK",
+      "detectedProblems": [
+        {"level": "Error", "dbObject": "app@localhost", "dbObjectType": "User", "description": "Example upgrade-blocking account finding."}
+      ],
+      "documentationLink": "https://dev.mysql.com/doc/refman/8.4/en/native-pluggable-authentication.html",
+      "solutions": ["Review account authentication before upgrading."]
+    },
+    {
+      "id": "reservedKeywords",
+      "title": "Identifiers and keywords",
+      "status": "OK",
+      "detectedProblems": [
+        {"level": "Warning", "dbObject": "app.window", "dbObjectType": "Table", "description": "Identifier requires quoting."}
+      ]
+    },
+    {"id": "sysVars", "title": "System variables", "status": "CONFIGURATION_ERROR", "description": "Example checker setup failure."}
+  ],
+  "manualChecks": [{"id": "defaultAuthenticationPlugin", "title": "Review configuration on the server host"}]
+}

@@ -7,17 +7,175 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
+## [3.0.0] - 2026-10-16
 
-- The treemap view. Area made relative cost hard to compare and labels were
-  often unreadable; the bar chart answers the same question more precisely.
-  `myflames --type treemap` and `myflames explore --type treemap` still work as
-  deprecated aliases: they print a warning on stderr and render the bar chart.
-  `render_explain(output_type="treemap")` raises a `DeprecationWarning` and
-  returns the bar chart. The local workspace drops its Treemap tab, and the
-  treemap demos are removed from `docs/demos/`.
+### Added
 
-## [2.3.0] — 2026-09-30
+- Add `sql -o/--output PATH`, `--insert-table NAME` (default `result`), and `--confirm-target NAME` for exact DROP DATABASE/SCHEMA confirmation.
+- Add connection duplication and multi-selection deletion with a shared confirmation sheet, per-connection password notices and failure reporting, and keyboard controls.
+- Add Database diagram under Server > Schema, with live metadata, SQL/Mermaid/JSON imports, keyboard and pointer layout controls, editable JSON, SQL, Mermaid and SVG exports. Imports never execute SQL; unsupported details and lossy exports are reported.
+- Add a source-verified privilege catalog and complete grant scopes to Users and roles. Unticked privileges and the Add scope picker feed one batch review for users and roles; metadata lists support exact manual names when coverage is incomplete. Include MariaDB package/package-body grants with reviewed temporary Oracle SQL mode, MySQL 9.2+ MLE library scopes, and anonymous proxy accounts.
+- Add shared CLI server-write confirmation through `dbops.cli_confirm` with default No, stderr-only plans and prompts, exact typed guards, and audited credential/confirmation cancellation. Non-terminal Development SQL also requires `--yes`.
+- Follow the system dark appearance across the workspace, chart controls, Compare and Audit while preserving light chart canvases and operator colors.
+- Open Configuration Session statements in the Query editor for review and execution in the session used for subsequent SQL.
+- Add `myflames sql` to execute SQL scripts from `-e`, `-f`, or standard input in a Query editor session with write safety, audit logging, and export formatting.
+- Add `sql --format insert` to output query results as SQL INSERT statements into a named table (`--insert-table`, default `result`) with typed binary literals.
+- Add read-only MCP tools: `server_report`, `top_statements`, `sessions`, `locks_report`, `health_sample`, `innodb_status`, `my_privileges`, and `replication_status`.
+- Add privilege awareness and account management via `myflames privileges`, `POST /api/live/privileges`, `myflames accounts`, and `POST /api/accounts/*`.
+- Add `connector.MySQLConnection.run_stdin` to pipe statements on client standard input with empty temporary HOME and no automatic reconnect.
+- Add `dbops.strip_credentials` to remove IDENTIFIED clauses from SHOW GRANTS and SHOW CREATE USER strings.
+- Add `myflames io --all-instances` to inspect table and file I/O beyond 2,000 instances within collection budgets.
+- Add Server place Replication view and recovery commands supporting single transaction skips and multi-error skip loops.
+- Add Server place Maintenance view supporting tool detection, upgrade checking, dumps, restores, and instance cloning.
+- Add variable modification in Configuration view and CLI (`myflames config set`, `reset-persist`, `POST /api/live/variable/*`) supporting global, persist, persist-only, and session scopes.
+- Add lifecycle management in `myflames/lifecycle.py` and CLI (`upgrade-check`, `dump`, `restore`, `clone`, `POST /api/lifecycle/*`).
+- Add Query editor workbench with statement splitting, cursor or selection execution, Stop via KILL QUERY, multi-tab results, Messages, and transaction controls.
+- Add persistent Query editor server sessions (`myflames/editor_session.py`, `POST /api/editor/*`) maintaining variables, temporary tables, settings, and open transactions.
+- Add write safety framework in `myflames/dbops.py` with Production, Development, and Read-only policies, statement classification, and confirmation tokens.
+- Add local SQLite audit logging (`~/.myflames/workspace.sqlite3`) tracking write attempts, refusals, and declines with credential redaction.
+- Add workspace Audit log viewer under Settings with status filtering, record inspection, retention settings, and CSV or JSON export.
+- Add Full analysis report (`myflames report`, `POST /api/live/report`, `report-1.0`) composing Server views into ranked findings with export.
+- Add workload attribution in `myflames top` and `/api/live/top` (`--order full_join`, `--order scan`, `--order no_index`, `--table SCHEMA.TABLE`).
+- Add Server place Full analysis view executing native health checklists with copyable remediation lines and export.
+- Add Server place Refresh all action (Option+Cmd+R) reloading loaded views in single-flight parallel execution with Stop.
+- Add statement attribution links in Health and Indexes inspectors opening filtered Top statements.
+- Add storage engine breakdown (`summary.engines` in `schema-1.0`) reporting table counts and bytes per engine.
+- Add interactive 3D B+tree lesson view in Learn (`apps/teach-3d`, Three.js) with 2D or 3D switching and page navigation.
+- Add connection inspection in `myflames sessions` and `POST /api/live/sessions` (`sessions-1.0`) with transaction metrics and long-running flags.
+- Add parsed InnoDB status in `myflames innodb` and `POST /api/live/innodb` (`innodb-1.0`) summarizing semaphores, transactions, deadlocks, and buffer pools.
+- Add table health and fragmentation inspection in `myflames tables` and Server Tables view (`schema-1.0`) detecting missing primary keys and free space.
+- Add multi-database selection picker for Indexes and Tables views with table counts and default user database scoping.
+- Add metadata lock blocker tracking and single-session kill in `myflames locks` and Server Locks view (`locks-1.1`).
+- Add server health diagnostics in `myflames health` and Server Health view evaluating multi-delta status metrics and buffer or redo performance.
+- Add read-only Server views: Waits (`waits-1.0`), Indexes (`indexes-1.0`), I/O (`io-1.0`), and Configuration (`config-1.0`).
+- Add direct explain and analysis from Performance Schema digests in Top statements with parameter skeletons.
+- Add `myflames capture --statement-digest` to capture statements behind digest hashes (retaining `--digest` as a deprecated alias).
+- Add Top statements and Running queries tabs to the workspace Server place.
+- Add `myflames import-shell` to convert MySQL Shell diagnostic zip archives into capture JSON.
+- Add MySQL Shell plugin in `contrib/mysqlsh-plugin/` providing `explain()`, `digest()`, and `advise()` functions.
+- Add advisor rule detecting large row estimate discrepancies with histogram and ANALYZE syntax suggestions.
+- Add fresh InnoDB statistics collection during live captures for misestimated tables.
+- Add advisor rule detecting redundant BTREE indexes sharing leftmost prefixes.
+- Add advisor rule detecting cold buffer pool cache scans across repeated analyze runs.
+- Add `--ignore` and `--list-rules` flags on `check` and `advise` commands with documentation links.
+- Add Performance Schema instruments guide in `myflames instruments` and Server Instruments view (`instruments-1.0`) with presets and setup SQL.
+
+### Changed
+
+- Rebuild Home around a dense Connections table with an inspector and one Recent work list; keep New query tab in the Query editor and focus the table from Manage connections.
+- Keep flame graph, execution tree and bar chart labels readable on phones with a scrollable canvas.
+- Use colons in accessible chart titles and HTML report titles, and replace phrase-separating dashes in report copy.
+- The workspace credits Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs in an About myflames window (Settings menu), like a desktop app's About, instead of a footer on every screen.
+- Deprecate `capture --digest` in favor of `capture --statement-digest`.
+- Deprecate `myflames running` in favor of `myflames sessions`, retaining `running-1.0` output and warning on stderr.
+- Deprecate `diff` in favor of `compare`, printing a warning unless quiet mode is active.
+- Deprecate `treemap` view in favor of the bar chart; `--type treemap` warns on stderr and renders a bar chart, while `render_explain(output_type="treemap")` raises DeprecationWarning.
+- Add unified window status bar at the bottom of Plans, Query editor, and Server places reporting engine, connection, session, transaction, last run, duration, rows, and refresh status.
+- Update workspace buttons to be privilege-aware, disabling definitively denied actions with explanatory tooltips while keeping unverified permissions enabled.
+- Update Query editor statement privilege checks to display a single quiet status note below the toolbar without blocking mixed batches.
+- Update Visual Explain fit-to-view behavior to fit width between 75% and 100% starting from top inputs, keeping wide and tall trees pannable.
+- Update Visual Explain Compare mode to stack plan canvases vertically at narrow widths to preserve card legibility.
+- Streamline Home place into a launcher with one Import plan button in the top bar, connection management, recent work, and drag-and-drop import.
+- Implement scoped focus trapping for dialogs, sheets, popovers, and drawers, cycling Tab and Shift+Tab, navigating menus with arrow keys, and restoring focus upon Escape.
+- Add context menu triggers in table grids and schema trees via right-click, row More actions buttons, and Shift+F10 or ContextMenu keys.
+- Update phone layouts to wrap toolbars and segmented controls cleanly, hiding the duplicate secondary editor status bar in favor of the window status bar.
+- Reorganize workspace Server place navigation into grouped categories: Overview, Workload, Contention, Schema, Setup, and Security.
+- Add pointer and keyboard column resizing, column visibility menus, and layout persistence to all Server tables.
+- Consolidate auto-refresh controls into a single segmented selector defaulting to Off across Server views.
+- Restrict capture comment recognition for `-- ` to require trailing ASCII whitespace, matching mysql client behavior.
+- Subject Kill blocker and connection actions to connection write policies, requiring explicit confirmation on Production and auditing all outcomes.
+- Apply desktop design tokens across the workspace with 28 px control heights, hairline dividers, compact badges, and system typography.
+- Render charts in workspace and HTML reports using inlined TypeScript runtime from `chart-data-1.0` payloads.
+- Standalone `--type workbench` replaces `--type diagram`, preserving diagram as a compatible alias.
+
+#### CLI consistency
+
+- Add `sessions --kill ID [--query] [--yes]` as an alias of `locks --kill`, sharing confirmation, identity checks, write policy, audit, and exit codes.
+- Print a Top statements command for flagged joins without an index in health text and for the first table read without an index in indexes text.
+- Standardize stderr-only expected failures under `--json`: exit code 2, empty stdout, and unchanged output destination.
+- Route skip-loop live events to stderr and write identical final text or JSON for started loops to stdout or `-o`.
+- Suppress deprecated-alias warnings using parsed quiet flags, including `-qq` and accepted long-option abbreviations.
+- Reject conflicting digest and compare output modes; listing modes and empty server results honor output destinations.
+- Return exit code 2 for teach write failures, unreadable query files, and failed explicit sidecar exports; keep automatic auxiliary exports best-effort.
+- Share root live-render connection and profile resolution, enable live mode from `--execute`, and preserve TLS client paths and client executable overrides.
+- Add quiet flags to artifact commands and output flags to guide and replication skip-loop; live events go to stderr.
+- Reject repeated single-schema filters on top, sessions, and I/O.
+
+### Fixed
+
+- Recheck saved connection policy after editor credential lookup and immediately before execution; a concurrent read-only or type change refuses the run.
+- Require an exact typed database name for DROP DATABASE/SCHEMA in the editor and SQL CLI. Confirm each DDL separately; scripts containing several DDL statements must run them one at a time.
+- Review ALTER TABLE with approximate table size, observed metadata locks and open transactions. Run the shown five-second session lock-wait guard immediately before ALTER, and offer explicit INPLACE/LOCK=NONE SQL only for supported InnoDB forms. Suggested SQL requires a new review; ALTER runs on its own.
+- Resolve replication worker error 3030 to its underlying failure in the skip loop's final guards; refuse when that failure cannot be identified.
+- Constrain the optional MCP SDK to `mcp>=1.2,<2` and report its installed version and original transport import failure.
+- Reject an incorrect restore target before starting a job in the API, CLI and direct calls, with an audited "Nothing was restored" refusal.
+- Treat native `SELECT SLEEP()`, `UUID()` and `UUID_SHORT()` as reads while preserving confirmation for side-effecting and unknown functions.
+
+- Give each client invocation its own temporary credential file to prevent parallel Full analysis failures and password-file leaks; report exits 2 when all views fail and warns on partial failures.
+
+- Every client connection uses utf8mb4 (`--default-character-set=utf8mb4` and `SET NAMES utf8mb4`), so non-ASCII names and values no longer depend on the locale or come back as latin1 or `?`; this also covers MariaDB 10.11 servers reached through a MySQL client.
+- Support replication skip loops with disabled receiver stages, denied stage reads, or Performance Schema disabled.
+- Preserve executed account results through `-o/--output`; unsent refusals and declines exit 2 with stderr only, including Ctrl+C and EOF.
+- Audit account drift as a stale refusal before rebuilding account plans, and enforce single-claim server plan ownership.
+- Enforce owner-only POSIX permissions on workspace database opens, including custom directories and SQLite WAL, SHM, and journal files.
+- Prioritize granted lock waits over queued waiters in Locks view and share metadata lock inspection round-robin.
+- Accept `--all-schemas` alongside `--schema` in `indexes`, `tables`, and `report` to lift the 2,000-table limit.
+- Strip password hashes and plugin credentials in `dbops.read_grants` and `dbops.redact`.
+- Preserve literal databases, patterns, and package or library routines without dropping lines in `dbops.parse_grants`.
+- Correct MariaDB SUPER privilege mapping for split privileges across 10.11 releases up to 11.0.1 and READ_ONLY ADMIN before 10.11.1.
+- Fix read-only connection refusal messaging to use proper plural phrasing when blocking multiple statements.
+- Synchronize Query editor unsaved edit state immediately on keystrokes, preventing missed leave-page prompts during reload.
+- Place inspector identifier labels on dedicated lines above values across all views to prevent awkward mid-name wrapping.
+- Reserve minimum widths for primary name columns in Server tables during narrow viewports while number columns scroll horizontally.
+- Track flame graph timings in microseconds, preventing sub-millisecond operators from vanishing due to rounding.
+- Capture overflow executions and elapsed time from full Performance Schema digest tables in `top`.
+- Align Configuration review redo log checkpoint age thresholds with server source forced flushing points.
+- Recognize MariaDB `innodb_flush_log_at_trx_commit=3` as durable without generating false warnings.
+- Reject `SELECT ... FOR SHARE` locking clauses in capture consistently with `FOR UPDATE`.
+- Filter out internal capture helper statements and metadata queries from `top`.
+- Validate plan structure strictly in `check`, `advise`, and `digest`, rejecting non-plan JSON with exit code 2.
+- Account for sequential scan read-ahead pages on MySQL buffer pools in the cold-cache advisor rule.
+- Handle carriage returns and Unicode line separators within result field values during connector client parsing.
+- Eliminate precision floating-point formatting noise from `compare --digest` output.
+- Parse and preserve MariaDB and MySQL format-1 subqueries, CTEs, and wrapper operations in unified plan trees.
+- Avoid duplicate time accounting for derived table materialization and inner iterators in MariaDB plans.
+- Skip recursive CTE work tables and reference actual base tables behind aliases in advisor suggestions.
+- Update Temporary tables educational lesson to reflect engine-specific memory limits for TempTable, MEMORY, and MariaDB engines.
+- Send KILL QUERY to terminate executing server queries before client termination upon Ctrl+C during capture.
+- Guard session restore request retries so newer autosaved session revisions are not overwritten.
+- Avoid unsupported POSIX chmod calls on Windows during connector configuration file setup.
+- Parse valid plans containing embedded `EXPLAIN:` strings inside queries or conditions without corruption.
+- Bind Server reports, selections, and queries strictly to originating connection identities across switches.
+- Respect cancellation, reject mismatched connection reports, and clean up jobs promptly during Top statements Explain top N.
+- Replace earlier in-flight queries rather than dropping newer requests in Sessions and Locks views.
+- Keep Query editor tabs originating from Top statements bound to their source server across connection changes.
+- Execute connection testing and saving operations single-flight and validate matching form settings before applying results.
+- Clear stale comparison results on pending or failed comparisons in Compare view.
+- Preserve focus in view inspectors during background automated refreshes.
+
+### Security
+
+- Replace the HTML API token with a one-use launch fragment, per-instance HttpOnly cookie, and origin-scoped session proof. Both credentials are required for refresh and API requests; server restart invalidates them.
+- Isolate read clients, capture jobs and editor sessions from ambient client environment settings, personal and system option files, and login files. Validate browser connection fields before remembered-password lookup.
+- Remove automatic server public-key retrieval from client options.
+- Re-read lifecycle profile policy at job and tool boundaries; refuse removed or changed connections before starting the next operation.
+- Check recipient TLS before sending a saved clone donor password, and bind clone execution to the reviewed donor/recipient endpoints and policies.
+- Reject state-changing administrative functions and unverified function calls inside SELECT during read-only capture; the Query editor requires write review for them.
+- Preserve endpoint and profile ownership for ended editor sessions so another connection cannot reuse their results. Redact the reused session's actual password from history and SQL credential literals in persisted editor drafts.
+- Require one-use server review tokens for Kill, single replication skips and lifecycle starts; reject missing, expired, altered or replayed plans before credentials are read.
+- Bound HTTP workers and body-read deadlines, account request size and retained-plan memory, and restore manifest traversal.
+- Reject symlinks and foreign owners for workspace files, sidecars, vault directories, keys and locks; use exclusive creation and close SQLite connections after setup failures.
+
+- Reject SQL with ambiguous backslash string escaping under differing NO_BACKSLASH_ESCAPES modes during capture.
+- Key stored connection credentials strictly by host, port, user, and TLS parameters, preventing cross-profile exposure.
+- Validate numeric input in plan parsers strictly, rejecting invalid types, infinities, and values exceeding 64-bit limits.
+- Escape ANSI and control characters in server text output, preventing terminal injection from external SQL queries.
+
+### License
+
+- myflames is now licensed under the Apache License 2.0 (`LICENSE`, `NOTICE`). It began as a fork of Brendan Gregg's FlameGraph (CDDL 1.0); the flame graph renderers (`myflames/flamegraph.py` and the workspace chart) were rewritten as original, clean-room implementations from a functional specification, so no FlameGraph code remains. Releases up to and including 2.3.0 remain under CDDL 1.0. The inspiration credit to Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs is unchanged.
+
+## [2.3.0] (2026-09-30)
 
 ### Added
 
@@ -57,19 +215,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single-base-table `ORDER BY` filesort on plain columns, myflames now suggests
   the ordered/covering index (`CREATE INDEX … (col1, col2 [DESC])`, preserving
   each column's sort direction) that lets MySQL read rows already sorted and
-  skip the O(n log n) sort — not just "grow the sort buffer." The parser threads
+  skip the O(n log n) sort; not just "grow the sort buffer." The parser threads
   the sort columns through (MySQL `sort_fields`, MariaDB `sort_key`); the rule
   deliberately bails to the generic hint on joins, aggregates, or expression
   sort keys, where a naive single-table index cannot satisfy the order. Every
   claim was verified against MySQL/MariaDB server source.
-- **`semijoin_firstmatch` teach lesson** — the flagship of the semijoin cluster,
+- **`semijoin_firstmatch` teach lesson**: the flagship of the semijoin cluster,
   animating the FirstMatch early-out: a `WHERE col IN (subquery)` asks
   *does-it-exist*, not *how-many*, so the inner scan stops at the first match.
 - **`--quiet/-q` on `digest`, `advise`, and `compare`** (previously only on
   `check`). Uniform contract across subcommands: suppress incidental stderr
   diagnostics (the `Written to <path>` line, digest's tokenizer `Note:`); stdout
   data and the exit code are never affected.
-- **Zero-install browser playground linked from the README** — paste a plan and
+- **Zero-install browser playground linked from the README**: paste a plan and
   render it client-side via Pyodide, installing the published PyPI wheel with
   micropip.
 
@@ -153,7 +311,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Validation details and remaining limitations: [September review](docs/reviews/2026-09-15.md).
 
-## [2.2.0] — 2026-06-30
+## [2.2.0] (2026-06-30)
 
 ### Fixed
 
@@ -168,7 +326,7 @@ Validation details and remaining limitations: [September review](docs/reviews/20
   (a scalar or array) instead of leaking an opaque `TypeError`. This also fixes
   the MCP tools crashing on such input.
 - **`check` rejects an unrecognized `--fail-on` trigger** (exit code 2) instead
-  of silently matching nothing and exiting 0 — a misspelled trigger no longer
+  of silently matching nothing and exiting 0; a misspelled trigger no longer
   turns a CI gate green.
 - **`render` exits 2 (bad input), not 1, when a plan has no flame-graph data**
   (all-zero self-time), keeping exit code 1 reserved for a tripped finding.
@@ -185,12 +343,12 @@ Validation details and remaining limitations: [September review](docs/reviews/20
 
 - Documented the `--no-teach-bundle` and `--refresh-teach-bundle` render flags.
 
-## [2.1.0] — 2026-06-05
+## [2.1.0] (2026-06-05)
 
 ### Changed
 
 - **Renamed the `tokens` subcommand to `digest`.** The command's product is the
-  digest — the compact, source-grounded projection of a plan you hand an LLM —
+  digest; the compact, source-grounded projection of a plan you hand an LLM,
   so the name now advertises that. Bare `myflames digest plan.json` emits the
   digest text (previously `tokens --digest`); the token + $ savings report moved
   to `myflames digest --cost` (previously the bare `tokens` default). `--show`
@@ -206,26 +364,26 @@ Validation details and remaining limitations: [September review](docs/reviews/20
 
 ### Added
 
-- **Exact GPT token counts, keyless** — `myflames digest --cost --tokenizer gpt`
+- **Exact GPT token counts, keyless**: `myflames digest --cost --tokenizer gpt`
   uses tiktoken (optional extra `pip install 'myflames[gpt]'`) to count tokens
   exactly for GPT models. No API key or network needed.
 
-## [2.0.2] — 2026-06-05
+## [2.0.2] (2026-06-05)
 
 ### Added / Verified
 
 - **MySQL 9.7 support, verified against a live server** (and the checked-out
   9.6 source). A broad battery (scan / pk / range / join / group-by / filesort /
   semijoin / antijoin / index_merge / derived / window) was captured on real
-  MySQL 9.7 under **both** the traditional and **hypergraph** optimizer — 24/24
+  MySQL 9.7 under **both** the traditional and **hypergraph** optimizer; 24/24
   parse, validate, and detect correctly. The 9.x `query_plan` envelope
   (`{query, query_plan, query_type, json_schema_version}`) and new access types
   (`temp_table_aggregate`, `rows_fetched_before_execution`) are handled; the
   hypergraph optimizer's FirstMatch semijoin is now picked up. Real 9.7
   fixtures + regression tests added (`test/mysql-9.7-*.json`). Fully backward
-  compatible — every 8.4 / 10.11 / 11.4 fixture still passes.
+  compatible; every 8.4 / 10.11 / 11.4 fixture still passes.
 - **MariaDB 11.8 support, verified against a live server** (11.8.8). Same
-  battery captured via `ANALYZE FORMAT=JSON` — 11/11 parse, validate, and
+  battery captured via `ANALYZE FORMAT=JSON`; 11/11 parse, validate, and
   detect; real fixtures + tests added (`test/mariadb-11.8-*.json`).
 
 ### Docs
@@ -245,7 +403,7 @@ Validation details and remaining limitations: [September review](docs/reviews/20
   and falls back to the offline heuristic with a clear stderr note
   (`--exact unavailable (no ANTHROPIC_API_KEY)`) instead of crashing.
 
-## [2.0.1] — 2026-06-05
+## [2.0.1] (2026-06-05)
 
 Advisor correctness pass. Every claim was verified against real MySQL 8.4
 plans (with optimizer switches toggled on and off on a live server) and the
@@ -259,31 +417,31 @@ MySQL server source, rather than against documentation or assumption.
   (cost is ~proportional to rows processed). Join-strategy findings (BNL, hash
   join) still lead when present.
 - **Trivial full scans are no longer flagged.** A scan touching fewer than
-  ~100 rows total (rows × loops) cannot be helped by an index — for a narrow
+  ~100 rows total (rows × loops) cannot be helped by an index; for a narrow
   InnoDB table it is one or two pages, and the optimizer itself declines an
-  index there — so "full table scan, add an index" was noise. Gating on
+  index there; so "full table scan, add an index" was noise. Gating on
   rows × loops keeps a small inner table of a large join flagged.
 - **Advisor no longer flags scans of derived tables / CTEs / `<temporary>`
   results as base-table full scans.** A "table scan" over a materialized
   intermediate (the `GROUP BY`/`DISTINCT` temp table, a derived table, or a
-  CTE) is not a missing-index problem — you cannot index a result that only
+  CTE) is not a missing-index problem; you cannot index a result that only
   exists at query time. The structural signal is that such a scan node has a
   sub-plan (children); a real base-table scan is a leaf. The `full_scans`
   detector now excludes both angle-bracket pseudo-tables (`<temporary>`,
   `<derived N>`) and named derived/CTE aliases (`agg`, `prod_stats`, …).
 - **`use_index_extensions` is no longer reported.** It was keyed on
   `details["covering"] is True`, but a covering-index read is not evidence the
-  switch was used — verified against MySQL 8.4 by toggling the switch on/off
+  switch was used; verified against MySQL 8.4 by toggling the switch on/off
   (the plan, including the covering read, is identical either way; the flag is
   not surfaced in EXPLAIN at all). A covering read is now surfaced as a plain
   `covering index` feature instead, never as an optimizer_switch claim.
 - **`index_merge` sort-union is now detected on MySQL 8.4.** Real v2 output is
   `access_type=index_merge`, operation `"Sort-deduplicate by row ID"`
-  (mysql-server `explain_access_path.cc:1382`) — myflames matched neither and
+  (mysql-server `explain_access_path.cc:1382`); myflames matched neither and
   detected nothing. It now recognizes the sort-union operation text and a
   generic `index_merge` access type as a fallback. Real-capture fixtures added.
 
-## [2.0.0] — 2026-06-05
+## [2.0.0] (2026-06-05)
 
 Major release. A full `EXPLAIN ANALYZE FORMAT=JSON` plan is large and
 repetitive, which makes it expensive to pass to an LLM and unusable from an
@@ -295,16 +453,16 @@ the digest or JSON for tools, an exit code for CI.
 
 ### Added
 
-- **`tokens` subcommand** — quantifies the saving from handing an LLM the
+- **`tokens` subcommand**: quantifies the saving from handing an LLM the
   myflames digest instead of the raw plan: side-by-side token counts and USD
   cost (Opus 4.8 / Sonnet 4.6 / Haiku 4.5 input pricing), `--digest` to emit
   the digest itself, `--show` to print both prompts, `--exact` for real Claude
   counts via Anthropic `count_tokens` (optional `myflames[tokens]` extra),
   `--json` for machine output. New module `myflames/tokens.py`
   (`build_digest`, `build_compare_digest`, `estimate_tokens`, `compare`).
-- **`findings` subcommand** — ranked warnings + suggestions, each with a
+- **`findings` subcommand**: ranked warnings + suggestions, each with a
   `confidence`, as text or `--json`. New module `myflames/findings.py`.
-- **`check` subcommand** — CI gate: `--fail-on <categories|severities|any>`
+- **`check` subcommand**: CI gate: `--fail-on <categories|severities|any>`
   exits non-zero when the plan trips a trigger. Lives in `myflames/findings.py`.
 - **`diff` alias** for `compare`, plus `--digest` (token-cheap text diff) and
   `--json` (structured `compare-1.0` delta) modes.
@@ -315,8 +473,8 @@ the digest or JSON for tools, an exit code for CI.
 - **"Agent-ready" panel** in every HTML report showing the token/cost saving,
   plus a "Made with myflames" footer (carrying the Brendan Gregg / Tanel Poder
   inspiration credit).
-- **`ROADMAP.md`** — contributor-facing vision, shipped/next, and non-goals.
-- **Browser playground scaffold** ([docs/playground/](docs/playground/)) —
+- **`ROADMAP.md`**: contributor-facing vision, shipped/next, and non-goals.
+- **Browser playground scaffold** ([docs/playground/](docs/playground/)),
   client-side Pyodide page (pending a published wheel).
 - **Live, reproducible token-savings walkthrough**
   ([docs/examples/](docs/examples/)) backed by a real MySQL 8.4 Docker script.
@@ -327,7 +485,7 @@ the digest or JSON for tools, an exit code for CI.
 - **Exit-code contract unified across all subcommands:** `0` success, `1` a
   gate/finding tripped (`check`), `2` bad input (unreadable/missing file,
   unparseable JSON). The default render path previously exited `1` on a parse
-  error — it now exits `2`. (Behavior change → major bump.)
+  error; it now exits `2`. (Behavior change → major bump.)
 - `tokens` and `findings` gained `-o/--output`; machine output now goes to
   stdout while diagnostics (including `check`'s status line) go to stderr, so
   `| jq` and redirects stay clean.
@@ -338,7 +496,7 @@ the digest or JSON for tools, an exit code for CI.
   `tiktoken` (which mis-counts Claude tokens). The offline heuristic is the
   zero-dependency default and is labelled as an estimate everywhere it surfaces.
 
-## [1.5.0] — 2026-04-25
+## [1.5.0] (2026-04-25)
 
 Minor release focused on **correctness, identity, accessibility, and
 authoring ergonomics**. Highlights: advisor rules verified against MySQL 8.4
@@ -359,7 +517,7 @@ comparison report.
 
 #### Advisor correctness (verified against MySQL / MariaDB source)
 
-- **M1 — BNL / `hash_join` advice rewritten.** The pre-1.5 advice
+- **M1; BNL / `hash_join` advice rewritten.** The pre-1.5 advice
   recommended `optimizer_switch='hash_join=on,block_nested_loop=off'`. That's
   wrong on MySQL 8.0.20+: `hash_join` is defined in `sql/sql_const.h:221` but
   never checked anywhere in the planner, and `block_nested_loop=off` actually
@@ -367,13 +525,13 @@ comparison report.
   (`sql/sql_executor.cc:~2891`). The new rule explains directly and
   recommends an index instead. MariaDB plans (detected by `join_cache_hashed`
   in `optimizer_switch`) get a separate, correct branch.
-- **M2 — MRR rule gated** on a detected secondary-index range scan; never
+- **M2; MRR rule gated** on a detected secondary-index range scan; never
   forces `mrr=on` (only suggests `mrr_cost_based=on` so the cost-based gate
-  stays in charge — important on SSDs where MRR is often a regression).
-- **M3 — BKA + BNL glossary corrected.** BKA is **off by default**
+  stays in charge; important on SSDs where MRR is often a regression).
+- **M3; BKA + BNL glossary corrected.** BKA is **off by default**
   (verified in `OPTIMIZER_SWITCH_DEFAULT` in `sql/sys_vars.cc:213`).
-- **M4 — MariaDB `range-checked-for-each-record` normalization** added.
-- **M5 — `innodb_flush_log_at_trx_commit` durability split.** `=2` (OS
+- **M4; MariaDB `range-checked-for-each-record` normalization** added.
+- **M5; `innodb_flush_log_at_trx_commit` durability split.** `=2` (OS
   crash only) and `=0` (any crash including mysqld) now have distinct
   rule_ids, severities, and Why explanations.
 - **Advisor rule tagging.** Every finding carries a `rule_id` + `severity`
@@ -387,14 +545,14 @@ comparison report.
   parse. Test: `test/test_slice1_contracts.py::TestNodeIdStability`.
 - **`$schema` URL** in every sidecar pointing at the published JSON Schema
   (`docs/schemas/sidecar-v1.json`).
-- **`plan_tree` identity graph** — compact tree of `{node_id, short_label,
+- **`plan_tree` identity graph**: compact tree of `{node_id, short_label,
   children}` so external consumers can resolve any `node_id` reference back
   to a position + label without parsing SVG.
 - **`operator_complexities[].node_id`** added.
 
 #### HTML report polish
 
-- **Design tokens** in `:root` — `--font-{ui,mono}`, `--sp-{1..6}`
+- **Design tokens** in `:root`; `--font-{ui,mono}`, `--sp-{1..6}`
   (4/8/12/16/24/32), `--rad-{sm,,lg}`, `--dur-{sm,md,lg}`,
   `--ease-{out,in-out}`.
 - **Accessibility floor.** Global `:focus-visible` ring, darkened `--muted`
@@ -402,18 +560,18 @@ comparison report.
 - **`prefers-reduced-motion: reduce`** guard collapses every animation
   duration to ~0 across HTML, the standalone complexity SVG, and the Tier-1
   lesson runtime.
-- **JSON-LD envelope** — sidecars wrap as `{ "@context":
+- **JSON-LD envelope**: sidecars wrap as `{ "@context":
   "https://myflames.dev/ns/v1", "@type": "QueryPlanAnalysis", "@id": ... }`
   so search crawlers and LLM retrieval pipelines parse correctly.
 - **`<link rel="alternate" type="application/json">`** in every HTML
   `<head>` pointing at the sibling sidecar.
-- **Header metadata strip** (D5) — two-row sticky header with title +
+- **Header metadata strip** (D5); two-row sticky header with title +
   toolbar above engine / version / operator-count / total-time / generated-at.
 - **Glossary chips become anchors.** `<abbr>` upgraded to `<a
   href="#gloss-{key}">` with `:target` highlight + a JS shim that
   auto-opens the collapsed `<details>`. Sibling **"Learn → "** button on
   chips whose key has a matching teach lesson.
-- **Primary-action card always carries a `why`** — `_why_fallback()`
+- **Primary-action card always carries a `why`**: `_why_fallback()`
   derives a non-empty rationale from the suggestion's `category`.
 - **Concrete `CREATE INDEX` DDL** in the primary-action card when the
   primary suggestion has `category == "index"`.
@@ -430,13 +588,13 @@ comparison report.
 
 #### Visualization
 
-- **V1 — categorical flame palette** keyed to the 12 canonical access_type
+- **V1; categorical flame palette** keyed to the 12 canonical access_type
   families. Severity red stays reserved for advisor chrome (D4).
-- **V3 — squarified treemap.** Bruls/Huijsen/van Wijk replaces the old
+- **V3; squarified treemap.** Bruls/Huijsen/van Wijk replaces the old
   slice-and-dice; cells stay near 1:1 aspect ratio.
-- **V4 — unified search counter.** Bargraph and treemap report honest
+- **V4; unified search counter.** Bargraph and treemap report honest
   `Match N/M`, scroll-to-next via `n` / `N` / `Esc`.
-- **V5 — shared `fit_label()`** with Unicode middle-ellipsis and CJK-aware
+- **V5; shared `fit_label()`** with Unicode middle-ellipsis and CJK-aware
   width estimation. Migrated bargraph, treemap, diagram.
 - **viewBox** now emitted by bargraph and treemap (CLAUDE.md SVG rule was
   previously unenforced).
@@ -448,16 +606,16 @@ comparison report.
 
 #### teach lessons (Tier 0 + Tier 1)
 
-- **Tier 0 — JS authoring ergonomics.** Every lesson's JavaScript was
+- **Tier 0; JS authoring ergonomics.** Every lesson's JavaScript was
   extracted from Python raw-string literals into a sibling `<lesson>.js`
   file loaded at render time via `_html.load_lesson_js(__file__)`. Editor
   syntax highlighting, eslint, prettier, and `node --check` all work now.
-- **Tier 1 — Motion One + d3 helpers via committed bundle.** New
+- **Tier 1; Motion One + d3 helpers via committed bundle.** New
   `assets/` workspace with esbuild + TypeScript builds
   `myflames/assets/anim-runtime.js` (68 KB minified, 25 KB gzipped) which
   installs additive helpers on `window.anim`: `flip`, `spring`, `squarify`,
-  `smoothPath`. Bundle is checked in — end users never touch npm.
-- **`anim.arrival(el, opts)` primitive** — universal "this just landed"
+  `smoothPath`. Bundle is checked in; end users never touch npm.
+- **`anim.arrival(el, opts)` primitive**: universal "this just landed"
   pulse used in every lesson's `onComplete` for visual consistency.
 - **`lesson_stage()` scaffold** in `_html.py` that returns the four blobs
   `render_page` expects.
@@ -465,26 +623,26 @@ comparison report.
   `teach/cache_family/buffer_pool_warmup.py`. Both verified against the
   MySQL 8.4 source tree (`storage/innobase/dict/dict0dict.cc:3149` for the
   PK-append behavior, `ha_innodb.cc:22692` for the dump_pct default).
-- **`nested_loop` flagship rewrite** — replaced state-swaps with tweens,
+- **`nested_loop` flagship rewrite**: replaced state-swaps with tweens,
   added arc'd probe pills via `anim.path` with 80 ms stagger, added
   per-driver match verdicts ("Acme id=1 → 2 orders ✓").
-- **LRU lerpColor flashes + staged verdict fade-ins** (A4) — act
+- **LRU lerpColor flashes + staged verdict fade-ins** (A4); act
   boundaries fade their conclusion in over 400 ms instead of appearing
   instantly.
-- **`buffer_pool_warmup` + `covering_index` Play-button wiring** fixed —
+- **`buffer_pool_warmup` + `covering_index` Play-button wiring** fixed,
   were binding to `#btn-play` directly instead of via `wireToolbar`.
 - **`BASELINE_SPEED_SCALE`** retuned 0.52 → 0.42 (~20% slower).
 
 ### Fixed
 
 - **Critical: `%%` in lesson JS was emitted as invalid JavaScript.** Six
-  lessons had `var col = i %% colsPerRow` in their raw-string templates —
+  lessons had `var col = i %% colsPerRow` in their raw-string templates,
   a Python `.format()` escape mistakenly applied to lessons that never went
   through `%`-formatting. Result: `SyntaxError` at script-parse time that
   silently killed the whole lesson's animation in the browser.
   `node --check` revealed it immediately.
 - **`tl.tween` was never a thing.** `skip_scan.js` called
-  `tl.tween(stage.cursor, {x,y}, 300, ease)` — that method doesn't exist
+  `tl.tween(stage.cursor, {x,y}, 300, ease)`; that method doesn't exist
   on the timeline API. Rewritten to `tl.call`-then-`tl.add({onUpdate})`.
   Caught by the new headless harness on its first run.
 - **`<circle cy="NaN">` in `non_unique_lookup.js`.** Stage object missing
@@ -493,27 +651,27 @@ comparison report.
 
 ### Test infrastructure
 
-- **`assets/verify-animations.mjs`** — headless Chromium harness that
+- **`assets/verify-animations.mjs`**: headless Chromium harness that
   loads every lesson, captures every `console.error` / `pageerror`, clicks
   Play, and verifies the SVG byte-snapshot diverges after ~1.5 s of
   animation. Three pre-existing silent JS bugs found on first run.
-- **`test/test_slice1_contracts.py`** — 7 contracts (advisor digest
+- **`test/test_slice1_contracts.py`**: 7 contracts (advisor digest
   goldens, MariaDB normalization invariants, `node_id` stability,
   sidecar `$schema`, `plan_tree`, `operator_complexities[].node_id`).
-- **`test/test_compare_sidecar.py`** — round-trip + classification +
+- **`test/test_compare_sidecar.py`**: round-trip + classification +
   node-id validation for the new `compare-1.0` sidecar.
-- **`test/test_labels.py`** — pure-function tests for `fit_label()`
+- **`test/test_labels.py`**: pure-function tests for `fit_label()`
   including CJK and surrogate-pair cases.
-- **`test/test_svg_contract.py`** — `assert_svg_contract()` helper:
+- **`test/test_svg_contract.py`**: `assert_svg_contract()` helper:
   asserts viewBox presence, no `calcMode="linear"` on SMIL, no unbounded
   SMIL without a class/id/begin handle.
 
 ### CI
 
-- **`.github/workflows/fixtures-drift.yml`** — nightly cron regenerates
+- **`.github/workflows/fixtures-drift.yml`**: nightly cron regenerates
   fixtures from `mysql:8.4` and `mariadb:11.4` Docker images and fails on
   drift.
-- **`.github/workflows/integration.yml`** — matrix integration tests
+- **`.github/workflows/integration.yml`**: matrix integration tests
   against live MySQL 8.4 + MariaDB 11.4 service containers with
   `MYFLAMES_REQUIRE_LIVE=1` so connector tests fail rather than silently
   skip.
@@ -525,20 +683,20 @@ reports **20 / 20 lessons passing**.
 
 ### Build dependencies
 
-The Tier-1 bundle pulls these at build time only — they don't ship with
+The Tier-1 bundle pulls these at build time only; they don't ship with
 the wheel and end users don't run npm:
 
-- **Motion One** (MIT) — animation runtime.
-- **d3-hierarchy** (ISC) — squarified treemap layout.
-- **d3-shape** (ISC) — Catmull-Rom curve generators.
-- **esbuild** (MIT, dev) — bundler.
-- **TypeScript** (Apache-2.0, dev) — runtime types.
-- **Puppeteer** (Apache-2.0, dev) — headless browser harness.
+- **Motion One** (MIT); animation runtime.
+- **d3-hierarchy** (ISC); squarified treemap layout.
+- **d3-shape** (ISC); Catmull-Rom curve generators.
+- **esbuild** (MIT, dev); bundler.
+- **TypeScript** (Apache-2.0, dev); runtime types.
+- **Puppeteer** (Apache-2.0, dev); headless browser harness.
 
 All licenses verified by fetching upstream LICENSE files.
 
 
-## [1.4.0] — 2026-04-23
+## [1.4.0] (2026-04-23)
 
 Minor release adding **Big O complexity annotations to every operator in every
 view**, a **JSON sidecar schema bump** (1.2), and a refreshed README with
@@ -548,13 +706,13 @@ by a vetted decision table and a shared severity palette.
 
 ### Added
 
-- **`myflames/complexity.py`** — single source of truth for per-operator Big O
+- **`myflames/complexity.py`**: single source of truth for per-operator Big O
   annotations. `compute_complexity(node, parent=None)` returns a dict with
   `big_o`, `short`, `severity` (`good` / `medium` / `bad`), `rationale`,
   `confidence` (`exact` / `typical` / `worst_case`), and an optional glossary
   `learn_more` key. Returns `None` on uncertainty so renderers can omit
   chips rather than display a misleading value.
-- **`myflames/complexity_legend.py`** — shared SVG legend fragment
+- **`myflames/complexity_legend.py`**: shared SVG legend fragment
   (`render_complexity_legend_svg`) embedded at the bottom of the diagram,
   bargraph, and treemap views so a newcomer can decode the chips without
   leaving the page.
@@ -568,39 +726,39 @@ by a vetted decision table and a shared severity palette.
   - **Treemap**: `data-complexity="O(...)"` attribute on every tile, plus a
     corner chip on tiles larger than `80 × 40 px`.
   - **Diagram**: colored chip below each access box and below each join
-    diamond. The chip lives on the join frame only — inner children of a
-    join never duplicate the chip — so the `O(n · m)` / `O(n · log m)`
+    diamond. The chip lives on the join frame only; inner children of a
+    join never duplicate the chip; so the `O(n · m)` / `O(n · log m)`
     story sits in the right place.
-- **JSON sidecar schema 1.2** — new optional top-level
+- **JSON sidecar schema 1.2**: new optional top-level
   `operator_complexities` array, one entry per operator node that carries
   complexity metadata. Each entry is keyed by `folded_label` and
   `short_label` (matching the existing `teach_hooks` convention) and
   contains the full complexity dict. The array is omitted entirely when no
   node has complexity metadata, keeping payloads minimal and avoiding any
   shape surprise for consumers pinned to 1.1.
-- **`test/test_complexity.py`** — 41 unit tests, one per row of the decision
+- **`test/test_complexity.py`**: 41 unit tests, one per row of the decision
   table plus contract and palette tests. The decision table is the
   authoritative reference for what Big O class we claim for each operator.
-- **README refresh** — hero diagram, an "output types" table with thumbnail
+- **README refresh**: hero diagram, an "output types" table with thumbnail
   previews of each view, and a "What does the output look like?" section
   highlighting the Big O chips. Screenshots live under `docs/screenshots/`.
-- **docs/VISUAL_EXPLAIN_REFERENCE.md** — new section documenting the
+- **docs/VISUAL_EXPLAIN_REFERENCE.md**: new section documenting the
   complexity dict shape, the per-renderer surface area, the severity
   palette, and the schema 1.2 sidecar contract.
 
 ### Changed
 
-- **`myflames/parser.py`** — `parse_node` now attaches
+- **`myflames/parser.py`**: `parse_node` now attaches
   `details["complexity"]` once per node via `compute_complexity(node)`;
   downstream consumers read the same field.
-- **`myflames/output_sidecar.py`** — `SCHEMA_VERSION` bumped to `"1.2"`;
+- **`myflames/output_sidecar.py`**: `SCHEMA_VERSION` bumped to `"1.2"`;
   `validate_sidecar()` extended to validate `operator_complexities` entries
   (severity enum, confidence enum, required string fields, optional
   `build_complexity` / `scan_complexity` sub-dicts for Materialize).
-- **`myflames/flamegraph.py`** — `folded_to_svg` accepts a new optional
+- **`myflames/flamegraph.py`**: `folded_to_svg` accepts a new optional
   `complexity_by_folded` mapping; `enhance_tooltip_flame` (in
   `parser.py`) appends a `Complexity: ...` line to flamegraph tooltips.
-- **`.github/workflows/test.yml`** — broadened the discovery pattern from
+- **`.github/workflows/test.yml`**: broadened the discovery pattern from
   `test_myflames.py` to `test_*.py` so the new `test_complexity.py` and
   `test_sidecar.py` suites run in CI.
 
@@ -614,14 +772,14 @@ cost model via the `/mysql-expert` skill before landing:
   Batched Key Access gets its own distinct `O(n · log m)` entry so the
   pedagogical difference is preserved.
 - Hash join is `O(n + m)` (exact). Disk-spill does not change the
-  asymptotic class, only the constants — the rationale says so.
+  asymptotic class, only the constants; the rationale says so.
 - Filesort defaults to `O(n log n)` at `worst_case` confidence; a future
   release will narrow to `O(n log k)` for priority-queue filesort once
   outer-LIMIT parsing lands.
 - Skip scan is `O(d · log n)` at `typical` confidence with `d = distinct
   prefix values, not exposed by EXPLAIN` called out in the rationale.
 - Materialize emits two-phase `build_complexity` + `scan_complexity`
-  rather than a single `big_o` string — collapsing into one would mislead
+  rather than a single `big_o` string; collapsing into one would mislead
   students about how `actual_loops` compounds with the build phase.
 
 ### Deferred
@@ -631,14 +789,14 @@ cost model via the `/mysql-expert` skill before landing:
 - Per-node disk-spill rationale for hash join (needs `join_buffer_size`
   awareness).
 
-## [1.3.1] — 2026-04-13
+## [1.3.1] (2026-04-13)
 
 Feature and maintenance release adding **interactive teach lessons**,
 **modernized Visual Explain diagrams**, and a thorough repo cleanup.
 
 ### Added
 
-- **Interactive algorithm teach lessons (`myflames/teach/`)** — five
+- **Interactive algorithm teach lessons (`myflames/teach/`)**: five
   self-contained, animated HTML lessons that visualize how MySQL internals
   work: **B-tree index lookup**, **Block Nested Loop (BNL)**, **Hash Join**,
   **Join algorithm comparison**, and **LRU buffer pool cache**.
@@ -646,7 +804,7 @@ Feature and maintenance release adding **interactive teach lessons**,
   - Interactive complexity charts showing algorithmic cost curves.
   - Pause, speed control, and real SQL examples baked into each lesson.
   - Rendered demos served via GitHub Pages at `docs/teach/`.
-- **Modernized Visual Explain diagram** — hotspot layer with viridis
+- **Modernized Visual Explain diagram**: hotspot layer with viridis
   heat-map palette, borders-only hotspot marks, and WCAG-compliant text
   contrast.
 
@@ -654,14 +812,14 @@ Feature and maintenance release adding **interactive teach lessons**,
 
 - **4 legacy root-level Python scripts** (`mysql_explain.py`,
   `mysql_explain_bargraph.py`, `mysql_explain_flamegraph.py`,
-  `stackcollapse_mysql_explain_json.py`) — thin wrappers superseded by
+  `stackcollapse_mysql_explain_json.py`); thin wrappers superseded by
   the unified `myflames` CLI entry point since v1.0.
 - **91 legacy Linux perf test fixtures** (`test/perf-*.txt`,
-  `test/results/`) — inherited from the original FlameGraph fork,
+  `test/results/`); inherited from the original FlameGraph fork,
   unused by the MySQL-focused test suite.
 - **Dead code**: `render_analysis_panel()` from `parser.py` (replaced by
   `render_info_panel()`), plus 6 associated tests.
-- **Empty `requirements.txt`** — `pyproject.toml` is the authoritative
+- **Empty `requirements.txt`**: `pyproject.toml` is the authoritative
   dependency spec.
 
 ### Changed
@@ -674,7 +832,7 @@ Feature and maintenance release adding **interactive teach lessons**,
   - `docs/prompts/` → `.claude/prompts/`
   - `docs/teach/ALGORITHM_ROADMAP.md` → `.claude/ALGORITHM_ROADMAP.md`
 
-## [1.3.0] — 2026-04-10
+## [1.3.0] (2026-04-10)
 
 A large quality-of-life release focused on **three audiences at once**:
 newcomers, senior DBAs, and AI agents. The main additions are a live-
@@ -683,16 +841,16 @@ reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
 
 ### Added
 
-- **Live-connection mode (`-h host -P port -u user -p -D db -e "SELECT ..."`)** —
+- **Live-connection mode (`-h host -P port -u user -p -D db -e "SELECT ..."`)**,
   myflames can now connect directly to a MySQL 8.4 or MariaDB 10.11/11.4 server
   using the same flags as the `mysql` CLI, run `EXPLAIN ANALYZE FORMAT=JSON` (or
   MariaDB's `ANALYZE FORMAT=JSON`) for you, collect server state, and render the
   result in one invocation. Replaces the need to pipe `mysql -e '...' | myflames`
   for simple cases.
-  - Uses the real `mysql` / `mariadb` client binary under the hood — **no PyMySQL
+  - Uses the real `mysql` / `mariadb` client binary under the hood; **no PyMySQL
     or driver install**, stays stdlib-only, authenticates via whatever plugin the
     server uses (`mysql_native_password`, `caching_sha2_password`, Kerberos, etc.).
-  - Passwords go into a mode-0600 `--defaults-extra-file` temp file — never
+  - Passwords go into a mode-0600 `--defaults-extra-file` temp file; never
     visible in `ps`, process env, or logs. Temp file is deleted on exit.
   - Supports every SSL flag the `mysql` client supports:
     `--ssl-mode`, `--ssl-ca`, `--ssl-cert`, `--ssl-key`. Verified against RDS
@@ -700,30 +858,30 @@ reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
   - `-p` with no value prompts; `-p'password'` inline works; `-p` alone works.
   - `--mysql-binary /path/to/mysql` overrides the binary autodetection when
     you want a specific client version.
-- **Live collectors (on by default; individually toggleable)** — when live mode
+- **Live collectors (on by default; individually toggleable)**: when live mode
   is active, myflames also captures:
   - `SHOW CREATE TABLE` for every table the query touches (`--no-collect-schema`
     to disable)
   - Row counts / data length / index length from `information_schema.tables`
     (`--no-collect-stats` to disable)
-  - A curated subset of `SHOW SESSION VARIABLES` the advisor inspects — buffer
+  - A curated subset of `SHOW SESSION VARIABLES` the advisor inspects; buffer
     pool, sort/join/tmp buffers, `optimizer_switch`, durability settings
     (`--no-collect-variables` to disable)
-- **Environment advisor (`myflames/advisor.py`)** — eight rules that combine the
+- **Environment advisor (`myflames/advisor.py`)**: eight rules that combine the
   parsed plan with the collected environment data and emit concrete, copy-paste-able
   tuning suggestions with a `Why:` clause grounded in the MySQL cost model:
   - `innodb_buffer_pool_size` vs the working set of tables touched
   - `sort_buffer_size` vs filesorts (in-memory vs disk-merge trade-off)
   - `join_buffer_size` vs hash joins / BNL (separate explanations for each)
   - `tmp_table_size` + `max_heap_table_size` vs materialized temp tables
-    (both must be raised together — MySQL always picks the smaller)
+    (both must be raised together; MySQL always picks the smaller)
   - `optimizer_switch` overrides (`hash_join=off`, `mrr=off`,
     `derived_condition_pushdown=off`)
-  - Missing indexes — cross-checks plan heuristics against the collected schema
+  - Missing indexes; cross-checks plan heuristics against the collected schema
     so we only flag indexes that **actually don't exist**
   - MyISAM / non-InnoDB engine detection
   - `innodb_flush_log_at_trx_commit` on UPDATE/DELETE/INSERT queries
-- **Non-sargable join predicate detection** — a new advisor rule walks every
+- **Non-sargable join predicate detection**: a new advisor rule walks every
   join condition looking for function calls on column references
   (`CONCAT(col)`, `CAST(col AS ...)`, `LOWER(col)`, `DATE(col)`,
   `CONVERT(col USING ...)`, 30+ functions total) and flags them as the
@@ -732,7 +890,7 @@ reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
   Cross-engine: works on MySQL hash joins (via `hash_condition`) and MariaDB
   BNL joins (via `block-nl-join.attached_condition`, now preserved through
   normalization).
-- **JSON sidecar (v1 schema)** — every `--output` invocation now writes a
+- **JSON sidecar (v1 schema)**: every `--output` invocation now writes a
   `<base>.json` next to the SVG/HTML with a stable, versioned, schema-validated
   structured summary of the analysis. Consumable by AI agents, CI dashboards,
   or `jq` without parsing SVG or HTML. Key fields:
@@ -743,36 +901,36 @@ reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
   action + why + target_variable), `executive_summary`, `primary_action`,
   `collected.{variables,stats,schema}`. Fail-fast validation enforces enum
   discipline and required keys at write time.
-- **Progressive-UX HTML report template** — the `--output foo.html` pipeline
+- **Progressive-UX HTML report template**: the `--output foo.html` pipeline
   emits a redesigned self-contained report with:
   - **Executive summary strip** + **"Fix first" primary action card** above
     the fold (newcomer-friendly)
   - **Glossary chips** (`<abbr>` tooltips with zero JS) on every jargon term:
     filesort, hash join, BNL, materialize, ICP, MRR, sargable, etc.
   - **Copy-paste affordance**: every SET / CREATE INDEX / ALTER TABLE
-    suggestion lives in a selectable `<pre><code>` block — never locked
+    suggestion lives in a selectable `<pre><code>` block; never locked
     inside the SVG
   - **Collapsible `<details>` sections** for warnings, Why clauses, collected
     environment, and raw sidecar JSON (dense but navigable for DBAs)
-  - **JSON-LD `<script>`** in `<head>` with the full sidecar payload — AI
+  - **JSON-LD `<script>`** in `<head>` with the full sidecar payload; AI
     agents can answer "what's wrong with this query?" from the HTML alone
     without parsing SVG text nodes
   - **Semantic HTML landmarks** (`role="banner"`, `role="main"`, `<nav>`,
     `<aside>`) + ARIA labels so screen readers can navigate sections
-  - **Responsive layout** — scales from 720px mobile to 1400px desktop
-- **Responsive SVG output** — the CLI now post-processes every SVG it writes
+  - **Responsive layout**: scales from 720px mobile to 1400px desktop
+- **Responsive SVG output**: the CLI now post-processes every SVG it writes
   to inject `style="max-width: 100%; height: auto;"` and backfill a `viewBox`
   when one is missing. Standalone `.svg` files opened directly in a browser
   now scale to the viewport instead of overflowing at the fixed 1800px
   flamegraph width.
-- **Glossary module (`myflames/glossary.py`)** — 30+ canonical EXPLAIN /
+- **Glossary module (`myflames/glossary.py`)**: 30+ canonical EXPLAIN /
   optimizer terms with three tiers of explanation each:
   - `short`: ≤90-char tooltip text
   - `technical`: senior-DBA grade with cost-model citations
   - `newcomer`: plain English, no jargon, no analogies that distort
   Also exposes `find_terms_in_text()` for HTML glossary-chip wrapping and
   `generate_executive_summary()` for deterministic one-line plan summaries.
-- **Complex-query demos** — 3 new example topics (15 files each):
+- **Complex-query demos**: 3 new example topics (15 files each):
   - **CTE + window functions** (`ROW_NUMBER() OVER (PARTITION BY ...)` top-N per group)
   - **Correlated subquery** (N+1 anti-pattern)
   - **Recursive CTE** (org-chart traversal)
@@ -788,13 +946,13 @@ reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
 
 ### Changed
 
-- **`-h` is now `--host`, not `--help`** — to match the `mysql` CLI. Use
+- **`-h` is now `--host`, not `--help`**: to match the `mysql` CLI. Use
   `--help` if you want help. (`--version` still works.)
-- **HTML report template rebuilt** — the old `output_html_report.py` layout
+- **HTML report template rebuilt**: the old `output_html_report.py` layout
   has been replaced with the progressive-ux template described above. Every
   existing test assertion (`<!DOCTYPE html>`, `<svg`, `Export SVG`,
   `Export Analysis JSON`, `Print`, `Warnings`, `Suggestions`) still passes.
-- **Advisor suggestions always include `Why:` explanations** — the contract
+- **Advisor suggestions always include `Why:` explanations**: the contract
   is now enforced by a dedicated test
   (`test_every_suggestion_explains_why`) so future rules cannot ship
   without a cost-model justification. Rewrote every existing rule to
@@ -805,7 +963,7 @@ reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
   for non-sargable predicates. `_detect_optimizer_switches()` promoted to
   a standalone function with a stable dict shape.
 - **Docs**: `docs/index.html` reorganized with new sections for Complex
-  queries, Optimizer switches, and Live mode — the 20 new demos are all
+  queries, Optimizer switches, and Live mode; the 20 new demos are all
   linked. Every legacy demo was regenerated through the new template so
   the whole set is consistent.
 
@@ -818,59 +976,59 @@ reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
 
 ### Fixed
 
-- **MariaDB BNL join condition lost during normalization** — the
+- **MariaDB BNL join condition lost during normalization**: the
   `block-nl-join.attached_condition` field was being dropped when the
   inner table was normalized, hiding non-sargable predicates on BNL
   plans. Now preserved on the normalized node so the advisor sees it.
-- **Standalone SVG viewing overflow** — `width="1800"` SVGs no longer
+- **Standalone SVG viewing overflow**: `width="1800"` SVGs no longer
   require horizontal scrolling when opened directly in a browser.
 
-## [1.2.0] — 2026-04-09
+## [1.2.0] (2026-04-09)
 
 ### Added
 
-- **MariaDB 10.11 and 11.4 support** — myflames now auto-detects and visualizes
+- **MariaDB 10.11 and 11.4 support**: myflames now auto-detects and visualizes
   MariaDB `ANALYZE FORMAT=JSON` output alongside MySQL `EXPLAIN ANALYZE FORMAT=JSON`.
   All five view types (flame graph, bar chart, treemap, diagram, tree) work with both
   databases. Supported MariaDB input methods:
   - `ANALYZE FORMAT=JSON SELECT ...`
   - `SHOW ANALYZE FORMAT=JSON FOR <connection_id>` (live query analysis)
   - `SHOW EXPLAIN FORMAT=JSON FOR <connection_id>`
-- **MariaDB normalization layer** — transparent conversion of MariaDB's
+- **MariaDB normalization layer**: transparent conversion of MariaDB's
   `query_block/nested_loop/table` JSON structure into the existing MySQL tree format.
   Handles nested loops, filesort, unions, window functions, materialized subqueries,
   derived tables, covering indexes, and correlated subqueries.
-- **MariaDB fixture generation** — `scripts/generate-mariadb-fixtures.sh` generates 60
+- **MariaDB fixture generation**: `scripts/generate-mariadb-fixtures.sh` generates 60
   test fixtures (30 per version) from Docker containers running MariaDB 10.11 and 11.4.
 - **28 new MariaDB-specific unit tests** covering format detection, normalization,
   timing accuracy, access type mapping, and analysis plan detection.
 
-## [1.1.0] — 2026-04-01
+## [1.1.0] (2026-04-01)
 
 ### Added
 
-- **HTML report output** — `myflames --output report.html explain.json` generates a
+- **HTML report output**: `myflames --output report.html explain.json` generates a
   self-contained HTML file with embedded interactive SVG, analysis sidebar, stat cards,
   and export buttons (SVG, JSON, Print/PDF). Works with all five view types.
-- **Before vs after comparison** — `myflames compare before.json after.json` produces
+- **Before vs after comparison**: `myflames compare before.json after.json` produces
   an HTML diff report with total time delta, per-operator changes (self-time, rows,
   loops), new/removed full scans, resolved/new warnings, and a color-coded summary.
-- **Guided onboarding** — `myflames guide` prints which view to pick based on what you
+- **Guided onboarding**: `myflames guide` prints which view to pick based on what you
   want to learn (time distribution, slowest operator, join order, etc.).
-- **`--version` flag** — `myflames --version` prints the installed version.
-- **`--output` / `-o` flag** — write output to a file instead of stdout. Automatically
+- **`--version` flag**: `myflames --version` prints the installed version.
+- **`--output` / `-o` flag**: write output to a file instead of stdout. Automatically
   produces an HTML report when the path ends in `.html`.
-- **`sample.json`** — included in the repo root so new users can try the tool in 30
+- **`sample.json`**: included in the repo root so new users can try the tool in 30
   seconds: `myflames sample.json > query.svg`.
-- **Diagram zoom buttons** — +/− and reset (↺) buttons in the bottom-right corner of
+- **Diagram zoom buttons**: +/− and reset (↺) buttons in the bottom-right corner of
   the diagram view replace the previous Ctrl+scroll-wheel zoom. Drag-to-pan and
   double-click-to-reset are unchanged.
-- **Installable via pip** — `pip install myflames` installs the `myflames` console
+- **Installable via pip**: `pip install myflames` installs the `myflames` console
   command. No external dependencies.
 
 ### Fixed
 
-- **MySQL CLI output parsing** — the parser now handles all common `mysql` command-line
+- **MySQL CLI output parsing**: the parser now handles all common `mysql` command-line
   output formats automatically:
   - Escaped newlines/tabs (`mysql -N -e` without `-r`)
   - `EXPLAIN` column header (`mysql -e` without `-N`)
@@ -878,24 +1036,24 @@ reports, a non-sargable join detector, and a +236 test growth (997 → 1233).
   - UTF-8 BOM (files saved from Windows editors)
   - Junk text before JSON (e.g. MySQL warnings on stderr leaking to stdout)
 
-  Users no longer need `-s -r` flags — any `mysql -e` invocation works. When input
+  Users no longer need `-s -r` flags; any `mysql -e` invocation works. When input
   cannot be parsed, the error message now suggests the correct flags.
 
-  Reported by [Anil Joshi](https://github.com/aniljoshi) — thanks for catching this!
+  Reported by [Anil Joshi](https://github.com/aniljoshi); thanks for catching this!
 
-## [1.0.0] — 2025-12-15
+## [1.0.0] (2025-12-15)
 
 ### Added
 
-- **Five visualization types** — flame graph (default), bar chart, treemap, Visual
+- **Five visualization types**: flame graph (default), bar chart, treemap, Visual
   Explain–style diagram, and collapsible execution tree.
-- **Query Analysis panel** — every view includes warnings (full table scans, hash joins,
+- **Query Analysis panel**: every view includes warnings (full table scans, hash joins,
   BNL join buffers, temp tables, filesorts), optimizer feature detection, tuning
   suggestions, and heuristic index suggestions with DDL.
-- **Interactive features** — click-to-zoom, hover details, search (Ctrl+F), pin/unpin,
+- **Interactive features**: click-to-zoom, hover details, search (Ctrl+F), pin/unpin,
   drag-to-pan (diagram), collapse/expand (tree).
-- **MySQL 9.7 support** — `query_plan` envelope and hypergraph optimizer plans.
-- **SQL embedding** — `--query` and `--query-file` flags, plus auto-extraction from
+- **MySQL 9.7 support**: `query_plan` envelope and hypergraph optimizer plans.
+- **SQL embedding**: `--query` and `--query-file` flags, plus auto-extraction from
   the EXPLAIN JSON.
-- **Time unit auto-detection** — switches between ms and µs based on total query time.
-- **Zero dependencies** — pure Python 3.7+ stdlib.
+- **Time unit auto-detection**: switches between ms and µs based on total query time.
+- **Zero dependencies**: pure Python 3.7+ stdlib.

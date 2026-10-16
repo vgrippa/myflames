@@ -1,0 +1,115 @@
+{
+ "schema_version": "lifecycle-tools-1.0",
+ "tools": {
+  "mysqlsh": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysqlsh",
+   "version": "mysqlsh Ver 9.6.0",
+   "version_tuple": [
+    9,
+    6,
+    0
+   ],
+   "engine": "mysql"
+  },
+  "mysqldump": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysqldump",
+   "version": "mysqldump Ver 8.4.3",
+   "version_tuple": [
+    8,
+    4,
+    3
+   ],
+   "engine": "mysql"
+  },
+  "mysqlpump": {
+   "available": true,
+   "deprecated": true,
+   "path": "/usr/local/bin/mysqlpump",
+   "version": "mysqlpump Ver 8.0.36",
+   "version_tuple": [
+    8,
+    0,
+    36
+   ],
+   "engine": "mysql"
+  },
+  "mariadb-dump": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-dump",
+   "version": "mariadb-dump Ver 10.19 Distrib 11.4.5-MariaDB",
+   "version_tuple": [
+    11,
+    4,
+    5
+   ],
+   "engine": "mariadb"
+  },
+  "mariadb-backup": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-backup",
+   "version": "mariadb-backup based on MariaDB server 11.4.5-MariaDB",
+   "version_tuple": [
+    11,
+    4,
+    5
+   ],
+   "engine": "mariadb"
+  },
+  "mysql": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysql",
+   "version": "mysql Ver 8.4.3",
+   "version_tuple": [
+    8,
+    4,
+    3
+   ],
+   "engine": "mysql"
+  },
+  "mariadb": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb",
+   "version": "mariadb Ver 15.1 Distrib 11.4.5-MariaDB",
+   "version_tuple": [
+    11,
+    4,
+    5
+   ],
+   "engine": "mariadb"
+  },
+  "mariadb-upgrade": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-upgrade",
+   "version": "mariadb-upgrade Ver 2.0.0 Distrib 11.4.5-MariaDB",
+   "version_tuple": [
+    11,
+    4,
+    5
+   ],
+   "engine": "mariadb"
+  }
+ },
+ "server": {
+  "engine": "mysql",
+  "version": "8.4.3"
+ },
+ "offered": {
+  "dump": [
+   "mysqlsh",
+   "mysqldump"
+  ],
+  "upgrade": "mysqlsh",
+  "clone": true,
+  "physical_backup": false,
+  "physical_backup_requires_local_files": true
+ }
+}

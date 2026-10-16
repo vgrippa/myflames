@@ -1,0 +1,89 @@
+{
+ "schema_version": "lifecycle-plan-1.0",
+ "operation": "restore",
+ "request": {
+  "directory": "/Users/dba/maintenance/backup",
+  "schema": null,
+  "allow_source_restore": false,
+  "existing_objects": "refuse",
+  "threads": 4,
+  "resume": false
+ },
+ "server": {
+  "engine": "mysql",
+  "version": "8.4.3",
+  "variables": {
+   "version": "8.4.3",
+   "version_comment": "mysql",
+   "hostname": "recipient",
+   "server_id": "2",
+   "server_uuid": "recipient",
+   "port": "3306",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock",
+   "local_infile": "ON",
+   "version_compile_os": "Linux",
+   "version_compile_machine": "x86_64",
+   "character_set_server": "utf8mb4",
+   "character_set_filesystem": "binary",
+   "collation_server": "utf8mb4_0900_ai_ci",
+   "innodb_page_size": "16384",
+   "max_allowed_packet": "4194304",
+   "clone_valid_donor_list": "127.0.0.1:3306",
+   "sql_mode": "STRICT_TRANS_TABLES,NO_ZERO_DATE",
+   "gtid_executed": "a:1-2"
+  },
+  "identity": {
+   "server_uuid": "recipient",
+   "server_id": "2",
+   "hostname": "recipient",
+   "port": "3306",
+   "version": "8.4.3",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock"
+  }
+ },
+ "connection_key": "[\"\",\"127.0.0.1\",3306,\"operator\",\"\",\"\"]",
+ "tool": {
+  "available": true,
+  "deprecated": false,
+  "path": "/Users/dba/maintenance/bin/mysql",
+  "version": "mysql Ver 8.4.3",
+  "version_tuple": [
+   8,
+   4,
+   3
+  ],
+  "engine": "mysql",
+  "name": "mysql"
+ },
+ "target": "127.0.0.1:3306",
+ "commands": [
+  "mysql --defaults-extra-file=<0600 file> --binary-mode --comments < /Users/dba/maintenance/backup/dump.sql"
+ ],
+ "checks": [
+  {
+   "check": "source_identity",
+   "status": "passed",
+   "reason": "Target differs from source."
+  },
+  {
+   "objects": [],
+   "check": "existing_objects",
+   "status": "passed",
+   "reason": "Existing objects require an explicit Shell ignore/drop choice."
+  },
+  {
+   "missing_any_of": [],
+   "check": "privileges",
+   "status": "passed",
+   "reason": "Privilege hint only; server/tool has the final decision."
+  }
+ ],
+ "warnings": [
+  "Restore executes DDL and DML and can overwrite data. It cannot be undone.",
+  "SQL dumps can address other schemas; selecting a default schema is not a sandbox."
+ ],
+ "ready": true,
+ "binding": "81f737b8a9b16f85f7e3967a18b4957d085c727a660e23d597e8c3a768c00cf7"
+}

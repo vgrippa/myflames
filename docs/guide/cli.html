@@ -47,11 +47,15 @@
     <h2>Local browser workspace</h2>
     <p>Run <code>myflames ui</code> to import saved plans, inspect charts and
     operators, compare plans, and export reports. The built interface ships with
-    Python; Node.js is not needed. Plans stay in memory until the page closes or
-    reloads. Live database capture remains available through the CLI.</p>
+    Python; Node.js is not needed. The workspace autosaves its open plans, query
+    tabs, connection settings (never passwords), and current screen to
+    <code>~/.myflames/workspace.sqlite3</code> and restores them on the next
+    launch. Live database capture remains available through the CLI.</p>
     <p><code>--port PORT</code> chooses a local port; the default selects an
     available port. <code>--no-browser</code> prints the URL without opening a
-    browser. Press Ctrl+C to stop the server.</p>
+    browser. <code>--no-restore</code> starts with a clean workspace for that
+    launch, without autosaving, and keeps the saved session for next time.
+    Press Ctrl+C to stop the server.</p>
     <h2>Synopsis</h2>
     <pre><code>myflames [options] [explain.json]
 myflames -h HOST -u USER -p -D DB -e 'SQL' -o report.html
@@ -61,7 +65,7 @@ myflames advise explain.json [--json]
 myflames check  explain.json --fail-on full_scan,filesort
 myflames teach &lt;lesson&gt; [-o file.html]
 myflames guide
-myflames ui [--port PORT] [--no-browser]</code></pre>
+myflames ui [--port PORT] [--no-browser] [--no-restore]</code></pre>
 
     <div class="tip">
       <strong>Built for the AI era.</strong> Beyond the visual renderers, myflames
@@ -132,6 +136,32 @@ myflames diff    before.json after.json --digest   # token-cheap text diff for a
 myflames diff    before.json after.json --json     # structured compare-1.0 delta</code></pre>
     <p>Side-by-side before/after comparison showing total time delta, per-operator self-time/rows/loops changes, and new/resolved warnings. Default output is an HTML report; <code>--digest</code> emits a compact text diff (for pasting into an LLM) and <code>--json</code> emits the structured <code>compare-1.0</code> delta.</p>
 
+    <h3><code>myflames top</code> and <code>myflames running</code></h3>
+    <pre><code>myflames top -h db -u analyst -p --order avg --limit 10       # heaviest statements
+myflames capture -h db -u analyst -p --digest 028d37443170      # plan a top statement
+myflames running -h db -u analyst -p --min-seconds 5            # running now
+myflames running -h db -u analyst -p --explain 42 | myflames -o plan.html -</code></pre>
+    <p>Read-only discovery, sharing the connection flags of <code>capture</code>, including <code>--profile NAME</code>, which reuses a connection profile saved in the workspace and its remembered password (<code>myflames profiles list</code>, <code>forget NAME</code>, <code>delete NAME</code>). <code>top</code> ranks Performance Schema statement digests (<code>--order total|avg|examined|count</code>, <code>--schema</code>, <code>--json</code> for <code>top-1.0</code>; the DIGEST column shows the first 12 characters). <code>--order full_join|scan|no_index</code> lists the statements behind Health's joins without an index, first-table full scans, and reads without an index, and <code>--table SCHEMA.TABLE</code> keeps those whose digest text names one table, each labeled a text match, not proof. <code>capture --digest HASH</code> captures that statement from its sample text in its recorded schema and records <code>source</code> in the capture; when only normalized text exists (MariaDB, or a sample cut off) it exits 2 and prints the SQL with <code>:p1</code>, <code>:p2</code> parameters for <code>-e</code> and <code>--parameters</code>. <code>running</code> lists running statements; <code>--explain ID</code> prints the plan of that connection's statement (estimated on MySQL 8.3+, partial analyze on MariaDB 10.9+). Neither command kills a session.</p>
+
+    <h3><code>myflames report</code></h3>
+    <pre><code>myflames report --profile prod                        # full analysis as text
+myflames report --profile prod --html -o report.html  # one static page to share
+myflames report --profile prod --fail-on problem -q   # exit 1 for cron or CI</code></pre>
+    <p>Runs every Server view once (at most three at a time) and composes ranked findings with their numbers, rule, why, caveat and a suggestion that is never applied, per-area sections (memory, redo and durability, connections, temporary tables, caches, the MariaDB query cache, indexes, schema health, waits, I/O, InnoDB, replication, security basics, Performance Schema coverage), and the statements behind joins without an index and full scans. <code>--json</code> emits <code>report-1.0</code>; <code>--markdown</code>, <code>--html</code> and <code>--digest</code> are the other formats.</p>
+
+    <h3><code>myflames profiles</code> and <code>myflames audit</code></h3>
+    <pre><code>myflames profiles list                                # type, read-only, saved password
+myflames profiles set prod --type production --read-only
+myflames audit --since 7                              # writes sent, refused or declined
+myflames audit export --csv -o audit.csv
+myflames audit purge --older-than 30 --yes</code></pre>
+    <p>Each saved connection is Production (the default: myflames asks before every write) or Development (it asks only before risky writes such as DDL, KILL, SET GLOBAL, or UPDATE and DELETE without a key in WHERE), and can be read-only, which refuses every write before connecting. Every write attempt, including declined and refused ones, is recorded in a local audit trail with the exact statements (passwords redacted) and the result; records are kept 90 days by default and never hold a password.</p>
+
+    <h3><code>myflames import-shell</code></h3>
+    <pre><code>myflames import-shell diagnostics.zip --list
+myflames import-shell diagnostics.zip --query 0 -o capture.json</code></pre>
+    <p>Converts a MySQL Shell <code>util.debug.collectSlowQueryDiagnostics()</code> zip into <code>capture-1.0</code> JSON for the workspace. Every plan-reading command also accepts the zip directly.</p>
+
     <h3><code>myflames guide</code></h3>
     <pre><code>myflames guide</code></pre>
     <p>Interactive guide that helps you pick the right view type for your situation.</p>
@@ -194,7 +224,9 @@ myflames check explain.json --fail-on any -q               # silent; rely on exi
     <table>
       <thead><tr><th>Option</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td><code>--fail-on LIST</code></td><td>Comma-separated triggers: warning categories (<code>full_scan</code>, <code>filesort</code>, <code>temp_table</code>, <code>bnl</code>, <code>hash_join</code>, <code>index_merge</code>, <code>nonsargable_join</code>, <code>env</code>), severities (<code>error</code>, <code>warn</code>, <code>info</code>), or <code>any</code> (default)</td></tr>
+        <tr><td><code>--fail-on LIST</code></td><td>Comma-separated triggers: warning categories (see <code>--list-rules</code>), severities (<code>error</code>, <code>warn</code>, <code>info</code>), or <code>any</code> (default)</td></tr>
+        <tr><td><code>--ignore LIST</code></td><td>Drop these categories before evaluating (also on <code>advise</code>); an unknown category exits 2</td></tr>
+        <tr><td><code>--list-rules</code></td><td>Print every category with its default severity and documentation link, then exit (also on <code>advise</code>)</td></tr>
         <tr><td><code>--quiet</code>, <code>-q</code></td><td>Suppress per-match output; rely on the exit code</td></tr>
       </tbody>
     </table>

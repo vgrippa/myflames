@@ -25,7 +25,7 @@ Sources:
 from __future__ import annotations
 
 import math
-from typing import Dict, NamedTuple
+from typing import Dict, List, NamedTuple
 
 # ---------------------------------------------------------------------------
 # Version-default constants (asserted by tests so upgrades break loudly)
@@ -164,6 +164,121 @@ def btree_lookup_cost(
         traversals=traversals,
         explanation=explanation,
     )
+
+
+# ---------------------------------------------------------------------------
+# InnoDB B+tree shape (pages per level), used by the 3D B+tree view
+# ---------------------------------------------------------------------------
+
+#: Extra bytes in front of every COMPACT/DYNAMIC record
+#: (``REC_N_NEW_EXTRA_BYTES``, storage/innobase/rem/rec.h). The 9 B
+#: ``INNODB_CHILD_POINTER_BYTES`` above is this header plus the 4 B child page
+#: number (``REC_NODE_PTR_SIZE``).
+INNODB_RECORD_HEADER_BYTES = 5
+
+#: Hidden columns in every clustered-index leaf record: ``DB_TRX_ID`` (6 B) and
+#: ``DB_ROLL_PTR`` (7 B) (``DATA_TRX_ID_LEN``, ``DATA_ROLL_PTR_LEN``,
+#: storage/innobase/include/data0type.h).
+INNODB_CLUSTERED_SYSTEM_BYTES = 13
+
+#: ``BIGINT`` primary key size used by the 3D view's ``users.id``.
+PK_BIGINT_BYTES = 8
+
+#: Clustered-index leaf pages filled by in-order inserts keep 1/16 of the
+#: page free for future updates: ``btr_cur_optimistic_insert`` splits instead
+#: once less than ``dict_index_get_space_reserve()`` (page size / 16) would be
+#: left (storage/innobase/btr/btr0cur.cc, include/dict0dict.ic; same in
+#: MariaDB). Secondary indexes and non-leaf pages have no such reserve.
+INNODB_CLUSTERED_LEAF_RESERVE_DIVISOR = 16
+
+
+def innodb_leaf_capacity(entry_bytes: int, page_size: int = INNODB_PAGE_SIZE_DEFAULT,
+                         reserve_bytes: int = 0) -> int:
+    """Return how many leaf records of *entry_bytes* fit in one page.
+
+    Same first-order estimate as ``innodb_fanout``: the
+    ``INNODB_PAGE_OVERHEAD_BYTES`` round number for the page headers, minus
+    *reserve_bytes* kept free (the clustered leaf reserve). The page
+    directory (2 bytes per 4 to 8 records) is left out. Pages that take
+    random inserts split in the middle and are often much emptier, so a real
+    tree can have more leaf pages.
+    """
+    if entry_bytes <= 0 or page_size <= 0:
+        raise ValueError("entry_bytes and page_size must be positive")
+    if reserve_bytes < 0:
+        raise ValueError("reserve_bytes must not be negative")
+    return max(1, (page_size - INNODB_PAGE_OVERHEAD_BYTES - reserve_bytes) // entry_bytes)
+
+
+def innodb_btree_shape(rows: int, leaf_entry_bytes: int, node_key_bytes: int,
+                       page_size: int = INNODB_PAGE_SIZE_DEFAULT,
+                       leaf_reserve_bytes: int = 0) -> List[int]:
+    """Return the page count of every level, root first, leaf last.
+
+    Leaves hold ``innodb_leaf_capacity(leaf_entry_bytes, page_size,
+    leaf_reserve_bytes)`` records; each level above holds
+    ``innodb_fanout(node_key_bytes)`` child pointers per page, with every
+    page full except the last. A table whose rows fit in one page is a single
+    page that is both root and leaf, as in InnoDB (``btr_create`` makes the
+    root at level 0).
+    """
+    if rows < 0:
+        raise ValueError("rows must not be negative")
+    capacity = innodb_leaf_capacity(leaf_entry_bytes, page_size, leaf_reserve_bytes)
+    fan_out = innodb_fanout(node_key_bytes, page_size)
+    levels = [max(1, -(-rows // capacity))]
+    while levels[-1] > 1:
+        levels.append(-(-levels[-1] // fan_out))
+    levels.reverse()
+    return levels
+
+
+def innodb_index_shapes(rows: int, row_bytes: int, email_bytes: int,
+                        page_size: int = INNODB_PAGE_SIZE_DEFAULT) -> Dict[str, Dict[str, object]]:
+    """Shape of ``users`` (clustered on ``id BIGINT``) and ``idx_users_email``.
+
+    * Clustered leaf record: column data (*row_bytes*, the ``id`` included) +
+      the fixed record header + ``DB_TRX_ID`` + ``DB_ROLL_PTR``. Leaves keep
+      the 1/16 update reserve. Node pointers hold the primary key.
+    * Secondary leaf record: email + primary key + the fixed record header.
+      Node pointers of a secondary index hold every index field, the primary
+      key included (``dict_index_get_n_unique_in_tree``), so its fan-out
+      depends on email + id. Its pages are counted full.
+
+    The fixed header is 5 bytes; DYNAMIC records also store null flags and a
+    length byte or two per variable-length column, which *row_bytes* and
+    *email_bytes* are meant to include.
+    """
+    clustered_leaf = row_bytes + INNODB_RECORD_HEADER_BYTES + INNODB_CLUSTERED_SYSTEM_BYTES
+    secondary_leaf = email_bytes + PK_BIGINT_BYTES + INNODB_RECORD_HEADER_BYTES
+    reserve = page_size // INNODB_CLUSTERED_LEAF_RESERVE_DIVISOR
+    shapes = {}
+    for name, leaf_bytes, node_key, leaf_reserve in (
+            ("clustered", clustered_leaf, PK_BIGINT_BYTES, reserve),
+            ("secondary", secondary_leaf, email_bytes + PK_BIGINT_BYTES, 0)):
+        levels = innodb_btree_shape(rows, leaf_bytes, node_key, page_size, leaf_reserve)
+        shapes[name] = {
+            "levels": levels,
+            "fan_out": innodb_fanout(node_key, page_size),
+            "leaf_capacity": innodb_leaf_capacity(leaf_bytes, page_size, leaf_reserve),
+            "leaf_entry_bytes": leaf_bytes,
+            "leaf_reserve_bytes": leaf_reserve,
+            "pages": sum(levels),
+        }
+    return shapes
+
+
+def leaf_range_pages(first_id: int, last_id: int, leaf_capacity: int) -> int:
+    """Leaf pages a primary key range ``first_id..last_id`` spans.
+
+    Assumes ids 1..N packed in order, leaf *i* holding ids
+    ``i * capacity + 1`` to ``(i + 1) * capacity``. A range scan reads the
+    first of them by descending the tree and each later one through the
+    leaf's next-page link.
+    """
+    if first_id < 1 or last_id < first_id or leaf_capacity < 1:
+        raise ValueError("need 1 <= first_id <= last_id and leaf_capacity >= 1")
+    return (last_id - 1) // leaf_capacity - (first_id - 1) // leaf_capacity + 1
 
 
 # ---------------------------------------------------------------------------
@@ -487,14 +602,67 @@ def filesort_cost(
 
 
 # ---------------------------------------------------------------------------
-# Temporary tables (MEMORY → InnoDB on-disk conversion)
+# Internal temporary tables (in-memory → on-disk conversion)
 # ---------------------------------------------------------------------------
+#
+# The in-memory limit depends on which engine holds the table. Verified
+# against the MySQL tag mysql-8.4.9 and the MariaDB tag mariadb-11.4.9:
+#
+# * MySQL picks the in-memory engine from internal_tmp_mem_storage_engine,
+#   default TempTable (sql/sys_vars.cc:5121, DEFAULT(TMP_TABLE_TEMPTABLE)).
+# * The row cap takes min(tmp_table_size, max_heap_table_size) only for a
+#   MEMORY (heap_hton) table; every other engine gets tmp_table_size alone
+#   (sql/sql_tmp_table.cc:2226).
+# * TempTable hands tmp_table_size to each table as its per-table limit
+#   (storage/temptable/src/handler.cc:185) and throws RECORD_FILE_FULL once
+#   that table's allocations would pass it
+#   (storage/temptable/include/temptable/allocator.h:627-629). This
+#   per-table limit exists since MySQL 8.0.28 (absent from mysql-8.0.27).
+# * Every TempTable table also draws from one global RAM pool,
+#   temptable_max_ram (default: 3% of physical memory clamped to 1-4 GiB,
+#   sql/sys_vars.cc:5130). Past it, TempTable uses mmap files only within
+#   temptable_max_mmap (default 0, sql/sys_vars.cc:5141; in 8.4 also only
+#   when temptable_use_mmap=ON, default OFF, sql/sys_vars.cc:5149 and
+#   allocator.h:104). Otherwise it throws RECORD_FILE_FULL
+#   (allocator.h:216-234), so with the defaults an exhausted pool converts
+#   a table to disk even while it is under tmp_table_size.
+# * RECORD_FILE_FULL from a MEMORY or TempTable table makes
+#   create_ondisk_from_heap() rebuild it as an on-disk InnoDB table
+#   (sql/sql_tmp_table.cc:2595, 2639).
+# * MariaDB: tmp_table_size is an alias of tmp_memory_table_size
+#   (sql/sys_vars.cc:4510). The HEAP row cap is
+#   MY_MIN(tmp_memory_table_size, max_heap_table_size)
+#   (sql/sql_select.cc:22453), and create_internal_tmp_table_from_heap()
+#   moves the table to TMP_ENGINE_HTON (sql/sql_select.cc:23438): Aria in
+#   default builds (sql/sql_class.h:6646; USE_ARIA_FOR_TMP_TABLES defaults
+#   ON in storage/maria/CMakeLists.txt:107), MyISAM otherwise.
 
-#: ``tmp_table_size`` default in MySQL 8.4 (bytes).
+#: ``tmp_table_size`` default in MySQL 8.4 and MariaDB 11.4 (bytes).
 TMP_TABLE_SIZE_DEFAULT = 16 * 1024 * 1024  # 16 MiB
 
-#: ``max_heap_table_size`` default in MySQL 8.4 (bytes).
+#: ``max_heap_table_size`` default in MySQL 8.4 and MariaDB 11.4 (bytes).
 MAX_HEAP_TABLE_SIZE_DEFAULT = 16 * 1024 * 1024  # 16 MiB
+
+#: MySQL TempTable engine (``internal_tmp_mem_storage_engine=TempTable``),
+#: the MySQL 8.0+ default.
+TMP_ENGINE_TEMPTABLE = "temptable"
+#: MySQL MEMORY engine (``internal_tmp_mem_storage_engine=MEMORY``).
+TMP_ENGINE_MEMORY = "memory"
+#: MariaDB's in-memory (HEAP) internal temporary table.
+TMP_ENGINE_MARIADB = "mariadb"
+#: Accepted ``engine`` values for :func:`tmp_table_cost`.
+TMP_TABLE_ENGINES = (TMP_ENGINE_TEMPTABLE, TMP_ENGINE_MEMORY, TMP_ENGINE_MARIADB)
+
+_TMP_ENGINE_LABEL = {
+    TMP_ENGINE_TEMPTABLE: "TempTable",
+    TMP_ENGINE_MEMORY: "MEMORY",
+    TMP_ENGINE_MARIADB: "MariaDB in-memory (HEAP)",
+}
+_TMP_ENGINE_DISK = {
+    TMP_ENGINE_TEMPTABLE: "InnoDB",
+    TMP_ENGINE_MEMORY: "InnoDB",
+    TMP_ENGINE_MARIADB: "Aria",
+}
 
 
 class TmpTableCost(NamedTuple):
@@ -503,6 +671,25 @@ class TmpTableCost(NamedTuple):
     memory_rows: int
     disk_rows: int
     explanation: str
+    #: One of :data:`TMP_TABLE_ENGINES`.
+    engine: str = TMP_ENGINE_TEMPTABLE
+    #: Which setting sets ``effective_limit``: ``"tmp_table_size"``,
+    #: ``"max_heap_table_size"``, or ``"both"`` when they are equal and both
+    #: apply (MEMORY, MariaDB).
+    limit_source: str = "tmp_table_size"
+    #: Engine of the on-disk table after conversion.
+    disk_engine: str = "InnoDB"
+
+
+def _normalize_tmp_engine(engine: str) -> str:
+    key = str(engine or "").strip().lower()
+    if key not in TMP_TABLE_ENGINES:
+        raise ValueError(
+            "engine must be one of {}, got {!r}".format(
+                ", ".join(TMP_TABLE_ENGINES), engine,
+            )
+        )
+    return key
 
 
 def tmp_table_cost(
@@ -510,43 +697,92 @@ def tmp_table_cost(
     row_size: int,
     tmp_table_size: int = TMP_TABLE_SIZE_DEFAULT,
     max_heap_table_size: int = MAX_HEAP_TABLE_SIZE_DEFAULT,
+    engine: str = TMP_ENGINE_TEMPTABLE,
 ) -> TmpTableCost:
-    """Return a cost breakdown for MySQL's internal temporary tables.
+    """Return a cost breakdown for one internal temporary table.
 
-    MySQL uses ``min(tmp_table_size, max_heap_table_size)`` as the effective
-    limit. When the materialized data exceeds this, the MEMORY temp table
-    is converted to an on-disk InnoDB temp table (slow).
+    The in-memory limit depends on ``engine`` (case-insensitive):
+
+    * ``"temptable"`` (default; MySQL 8.0+ ``internal_tmp_mem_storage_engine``
+      default): ``tmp_table_size`` per table. ``max_heap_table_size`` does
+      not apply. All TempTable tables also share the global
+      ``temptable_max_ram`` pool; with the default ``temptable_max_mmap=0``
+      an exhausted pool converts a table to disk even below
+      ``tmp_table_size``. This model covers the per-table limit only.
+    * ``"memory"`` (``internal_tmp_mem_storage_engine=MEMORY``): the smaller
+      of ``tmp_table_size`` and ``max_heap_table_size``.
+    * ``"mariadb"``: the smaller of the two as well.
+
+    Past the limit, MySQL rebuilds the table as an on-disk InnoDB temporary
+    table and MariaDB as an on-disk Aria table. Callers that pass only the
+    two sizes get MySQL's default TempTable rule. Source citations are in
+    the comment block above.
     """
+    engine = _normalize_tmp_engine(engine)
+    if engine == TMP_ENGINE_TEMPTABLE:
+        effective_limit = tmp_table_size
+        limit_source = "tmp_table_size"
+        rule = "tmp_table_size alone; max_heap_table_size does not apply to TempTable"
+    else:
+        effective_limit = min(tmp_table_size, max_heap_table_size)
+        if tmp_table_size == max_heap_table_size:
+            limit_source = "both"
+        elif tmp_table_size < max_heap_table_size:
+            limit_source = "tmp_table_size"
+        else:
+            limit_source = "max_heap_table_size"
+        rule = "the smaller of tmp_table_size and max_heap_table_size"
+    label = _TMP_ENGINE_LABEL[engine]
+    disk_engine = _TMP_ENGINE_DISK[engine]
     if rows <= 0 or row_size <= 0:
         return TmpTableCost(
-            effective_limit=min(tmp_table_size, max_heap_table_size),
+            effective_limit=effective_limit,
             fits_in_memory=True, memory_rows=0, disk_rows=0,
             explanation="No rows to materialize.",
+            engine=engine, limit_source=limit_source, disk_engine=disk_engine,
         )
-    effective_limit = min(tmp_table_size, max_heap_table_size)
     memory_capacity = max(1, effective_limit // row_size)
     fits = rows <= memory_capacity
     memory_rows = min(rows, memory_capacity)
     disk_rows = 0 if fits else rows - memory_capacity
     if fits:
         explanation = (
-            f"All {rows:,} rows ({rows * row_size:,} bytes) fit in the MEMORY "
-            f"temp table (limit {effective_limit:,} bytes). No on-disk conversion."
+            f"All {rows:,} rows ({rows * row_size:,} bytes) fit in the {label} "
+            f"temp table. Its limit is {effective_limit:,} bytes ({rule}). "
+            f"No on-disk conversion."
         )
+        if engine == TMP_ENGINE_TEMPTABLE:
+            explanation += (
+                " TempTable tables also share the global temptable_max_ram "
+                "pool; if it runs out, a table converts to on-disk InnoDB even "
+                "below tmp_table_size."
+            )
     else:
         explanation = (
-            f"MEMORY temp table holds {memory_capacity:,} rows "
-            f"({effective_limit:,} bytes). Row {memory_capacity + 1:,} triggers "
-            f"conversion to on-disk InnoDB — {disk_rows:,} remaining rows are "
-            f"inserted on disk. Raise tmp_table_size or max_heap_table_size to "
-            f"avoid the conversion."
+            f"The {label} temp table holds {memory_capacity:,} rows "
+            f"({effective_limit:,} bytes: {rule}). Row {memory_capacity + 1:,} "
+            f"triggers conversion to an on-disk {disk_engine} temp table, and "
+            f"the remaining {disk_rows:,} rows are inserted there. "
         )
+        if engine == TMP_ENGINE_TEMPTABLE:
+            explanation += (
+                "Raise tmp_table_size to avoid the conversion; raising "
+                "max_heap_table_size changes nothing here."
+            )
+        else:
+            explanation += (
+                "Raise tmp_table_size and max_heap_table_size together; "
+                "raising only one leaves the smaller limit in force."
+            )
     return TmpTableCost(
         effective_limit=effective_limit,
         fits_in_memory=fits,
         memory_rows=memory_rows,
         disk_rows=disk_rows,
         explanation=explanation,
+        engine=engine,
+        limit_source=limit_source,
+        disk_engine=disk_engine,
     )
 
 

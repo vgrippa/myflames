@@ -1,0 +1,343 @@
+{
+ "args": {
+  "active_only": true
+ },
+ "calls": [
+  [
+   "/*myflames:sessions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('max_connections', 'performance_schema', 'version', 'version_comment')",
+   "max_connections\t151\nperformance_schema\tOFF\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:sessions*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Threads_connected', 'Threads_running', 'Max_used_connections', 'Uptime', 'Innodb_history_list_length')",
+   "Max_used_connections\t4\nThreads_connected\t4\nThreads_running\t4\nUptime\t1693\n"
+  ],
+  [
+   "/*myflames:sessions*/ SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, LEFT(INFO, 16384), LENGTH(INFO) FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() ORDER BY TIME DESC LIMIT 10001",
+   "5\tevent_scheduler\tlocalhost\tNULL\tDaemon\t1692\tWaiting on empty queue\tNULL\tNULL\n41\troot\t172.17.0.1:63434\tmf\tSleep\t71\t\tNULL\tNULL\n42\troot\t172.17.0.1:63450\tmf\tQuery\t71\tupdating\tUPDATE u SET v = 0 WHERE id = 1\t31\n43\troot\t172.17.0.1:63460\tmf\tQuery\t71\tUser sleep\tSELECT SLEEP(7200)\t18\n"
+  ],
+  [
+   "/*myflames:sessions*/ SET SESSION time_zone = 'SYSTEM'; /*myflames:sessions*/ SELECT trx_mysql_thread_id, trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), trx_wait_started, TIMESTAMPDIFF(SECOND, trx_wait_started, NOW()), trx_rows_locked, trx_rows_modified, trx_lock_structs, trx_tables_locked, trx_isolation_level, trx_is_read_only, trx_operation_state FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id <> CONNECTION_ID() ORDER BY trx_started, trx_id LIMIT 10001",
+   "41\t1824\tRUNNING\t2026-10-14 18:21:56\t71\tNULL\tNULL\t1\t1\t2\t1\tREPEATABLE READ\t0\tNULL\n42\t1827\tLOCK WAIT\t2026-10-14 18:21:56\t71\t2026-10-14 18:21:56\t71\t1\t0\t2\t1\tREPEATABLE READ\t0\tstarting index read\n"
+  ],
+  [
+   "/*myflames:sessions*/ SELECT COUNT, STATUS FROM information_schema.INNODB_METRICS WHERE NAME = 'trx_rseg_history_len'",
+   "0\tenabled\n"
+  ]
+ ],
+ "report": {
+  "attention": {
+   "idle_in_trx": [
+    {
+     "id": 41,
+     "seconds": 71,
+     "status": "problem"
+    }
+   ],
+   "lock_wait": [
+    {
+     "id": 42,
+     "kind": "innodb",
+     "seconds": 71,
+     "status": "problem"
+    }
+   ],
+   "long_running": [
+    {
+     "id": 42,
+     "seconds": 71,
+     "status": "problem"
+    },
+    {
+     "id": 43,
+     "seconds": 71,
+     "status": "problem"
+    }
+   ]
+  },
+  "capabilities": {
+   "history_list_length": true,
+   "process_privilege": true,
+   "transactions": true
+  },
+  "engine": "mysql",
+  "filters": {
+   "active_only": true,
+   "db": null,
+   "host": null,
+   "min_seconds": 0,
+   "user": null
+  },
+  "limit": 1000,
+  "links": {
+   "innodb": {
+    "label": "Open InnoDB",
+    "view": "innodb"
+   },
+   "locks": {
+    "label": "Open Locks",
+    "view": "locks"
+   }
+  },
+  "matched": 3,
+  "notes": [
+   "The last statement of a session idle in a transaction needs Performance Schema (events_statements_current).",
+   "The oldest open transaction (connection 41, 1 min 11 s) runs under REPEATABLE READ, so after its first consistent read it keeps a read view until it ends: InnoDB cannot purge the undo logs that view may still need, and the history list length grows.",
+   "Statuses are rules of thumb, not verdicts. The summary counts every session this account can see; the filters narrow only the list. This tool's own session is left out."
+  ],
+  "performance_schema": false,
+  "rules": {
+   "connections": "watch at 75% of max_connections, problem at 90% (Threads_connected)",
+   "idle_in_trx": "a session idle (Sleep) inside an open InnoDB transaction keeps its row locks; under REPEATABLE READ it also keeps the read view from its first consistent read, which holds back purge; watched when the transaction is 10 s old, a problem at 60 s (rules of thumb)",
+   "lock_wait": "a session waiting for an InnoDB lock (INNODB_TRX trx_state LOCK WAIT: a row lock or an InnoDB table lock such as AUTO-INC), a metadata lock, or a table-level lock is watched; the long-running rule raises it to a problem",
+   "long_running": "a statement running for 10 s or more is watched, 60 s or more is a problem (rules of thumb for OLTP; reports and batch jobs can run longer by design)",
+   "oldest_transaction": "the oldest open transaction is watched at 10 s and a problem at 60 s; under REPEATABLE READ (or while a statement runs) its read view also holds back purge, so the history list length grows behind it"
+  },
+  "schema_version": "sessions-1.0",
+  "server_version": "8.4.11",
+  "sessions": [
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 63434,
+    "command": "Sleep",
+    "db": "mf",
+    "explainable": false,
+    "flags": [
+     "idle_in_trx"
+    ],
+    "host": "172.17.0.1:63434",
+    "id": 41,
+    "info": null,
+    "info_short": null,
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": null,
+    "progress": null,
+    "rows_examined": null,
+    "state": null,
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 71,
+    "trx": {
+     "age_s": 71,
+     "id": "1824",
+     "isolation_level": "REPEATABLE READ",
+     "lock_structs": 2,
+     "operation_state": null,
+     "read_only": false,
+     "rows_locked": 1,
+     "rows_modified": 1,
+     "started": "2026-10-14 18:21:56",
+     "state": "RUNNING",
+     "tables_locked": 1,
+     "wait_s": null,
+     "wait_started": null
+    },
+    "user": "root",
+    "why": "Idle for 1 min 11 s inside a transaction open for 1 min 11 s."
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 63450,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [
+     "long_running",
+     "lock_wait"
+    ],
+    "host": "172.17.0.1:63450",
+    "id": 42,
+    "info": "UPDATE u SET v = 0 WHERE id = 1",
+    "info_short": "UPDATE u SET v = 0 WHERE id = 1",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": {
+     "detail": "starting index read",
+     "kind": "innodb",
+     "wait_s": 71
+    },
+    "memory_used": null,
+    "progress": null,
+    "rows_examined": null,
+    "state": "updating",
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 71,
+    "trx": {
+     "age_s": 71,
+     "id": "1827",
+     "isolation_level": "REPEATABLE READ",
+     "lock_structs": 2,
+     "operation_state": "starting index read",
+     "read_only": false,
+     "rows_locked": 1,
+     "rows_modified": 0,
+     "started": "2026-10-14 18:21:56",
+     "state": "LOCK WAIT",
+     "tables_locked": 1,
+     "wait_s": 71,
+     "wait_started": "2026-10-14 18:21:56"
+    },
+    "user": "root",
+    "why": "Running a statement for 1 min 11 s; waiting for an InnoDB lock (row or table) for 1 min 11 s."
+   },
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 63460,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [
+     "long_running"
+    ],
+    "host": "172.17.0.1:63460",
+    "id": 43,
+    "info": "SELECT SLEEP(7200)",
+    "info_short": "SELECT SLEEP(7200)",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": null,
+    "progress": null,
+    "rows_examined": null,
+    "state": "User sleep",
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 71,
+    "trx": null,
+    "user": "root",
+    "why": "Running a statement for 1 min 11 s."
+   }
+  ],
+  "source": "information_schema.PROCESSLIST",
+  "summary": {
+   "active": 3,
+   "by_command": [
+    {
+     "count": 2,
+     "key": "Query"
+    },
+    {
+     "count": 1,
+     "key": "Daemon"
+    },
+    {
+     "count": 1,
+     "key": "Sleep"
+    }
+   ],
+   "by_db": [
+    {
+     "count": 3,
+     "key": "mf"
+    },
+    {
+     "count": 1,
+     "key": null
+    }
+   ],
+   "by_host": [
+    {
+     "count": 3,
+     "key": "172.17.0.1"
+    },
+    {
+     "count": 1,
+     "key": "localhost"
+    }
+   ],
+   "by_state": [
+    {
+     "count": 1,
+     "key": "User sleep"
+    },
+    {
+     "count": 1,
+     "key": "Waiting on empty queue"
+    },
+    {
+     "count": 1,
+     "key": "updating"
+    }
+   ],
+   "by_user": [
+    {
+     "count": 3,
+     "key": "root"
+    },
+    {
+     "count": 1,
+     "key": "event_scheduler"
+    }
+   ],
+   "connections": {
+    "current": 4,
+    "listed": 4,
+    "max": 151,
+    "max_used": 4,
+    "peak_pct": 2.6,
+    "rule": "watch at 75% of max_connections, problem at 90% (Threads_connected)",
+    "running": 4,
+    "status": "ok",
+    "used_pct": 2.6
+   },
+   "history_list_length": {
+    "rule": "a rule of thumb without a trend: watch at 100,000 committed transactions whose undo logs purge has not processed yet, problem at 1,000,000. The size alone says little; a list that keeps growing across refreshes means purge is falling behind, most often because an old read view (a REPEATABLE READ transaction or a long statement) is still open",
+    "source": "information_schema.INNODB_METRICS trx_rseg_history_len",
+    "status": "ok",
+    "value": 0
+   },
+   "idle": 0,
+   "idle_in_trx": 1,
+   "lock_wait": {
+    "innodb": 1,
+    "metadata": 0,
+    "table": 0,
+    "total": 1
+   },
+   "long_running": {
+    "problem": 2,
+    "watch": 0
+   },
+   "oldest_transaction": {
+    "age_s": 71,
+    "client_host": "172.17.0.1",
+    "connection_id": 41,
+    "idle": true,
+    "isolation_level": "REPEATABLE READ",
+    "read_only": false,
+    "rows_locked": 1,
+    "rows_modified": 1,
+    "rule": "the oldest open transaction is watched at 10 s and a problem at 60 s; under REPEATABLE READ (or while a statement runs) its read view also holds back purge, so the history list length grows behind it",
+    "session_command": "Sleep",
+    "state": "RUNNING",
+    "status": "problem",
+    "trx_id": "1824",
+    "user": "root"
+   },
+   "running_statements": 2,
+   "status": "problem",
+   "system": 1,
+   "text": "4 connections of 151 · 3 active · 1 idle in transaction · 1 waiting for a lock · 2 running 10 s or more · oldest transaction 1 min 11 s",
+   "total": 4
+  },
+  "taken_at": "2026-10-14T18:23:07.947463+00:00",
+  "thresholds": {
+   "long_running_s": [
+    10,
+    60
+   ],
+   "trx_age_s": [
+    10,
+    60
+   ]
+  },
+  "truncated": false,
+  "uptime_s": 1693
+ },
+ "server": "mysql-8.4-ps-off"
+}

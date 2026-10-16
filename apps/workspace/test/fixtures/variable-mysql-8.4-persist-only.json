@@ -1,0 +1,340 @@
+{
+ "variable": {
+  "schema_version": "variable-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "name": "innodb_log_file_size",
+  "exists": true,
+  "scope": "global",
+  "scope_source": "myflames map (sys_vars.cc)",
+  "dynamic": false,
+  "type": "bytes",
+  "values": null,
+  "min": 4194304,
+  "max": 18446744073709551615,
+  "block_size": null,
+  "global_value": "50331648",
+  "session_value": null,
+  "default": "50331648",
+  "set_by": "default",
+  "source": "COMPILED",
+  "source_path": null,
+  "set_time": null,
+  "set_user": null,
+  "set_host": null,
+  "persisted": {
+   "supported": true,
+   "value": null,
+   "present": false,
+   "load": true
+  },
+  "non_persistent": false,
+  "persist_as_read_only": false,
+  "session_read_only": false,
+  "description": null,
+  "notes": [],
+  "modes": {
+   "global": {
+    "available": false,
+    "reason": "innodb_log_file_size is read-only while the server runs.",
+    "recommended": false
+   },
+   "persist": {
+    "available": false,
+    "reason": "innodb_log_file_size is read-only while the server runs: use After restart only (SET PERSIST_ONLY).",
+    "recommended": false
+   },
+   "persist_only": {
+    "available": true,
+    "reason": null,
+    "recommended": true
+   },
+   "reset_persist": {
+    "available": false,
+    "reason": "mysqld-auto.cnf has no value for innodb_log_file_size.",
+    "recommended": false
+   },
+   "session": {
+    "available": false,
+    "reason": "innodb_log_file_size is read-only while the server runs.",
+    "recommended": false
+   }
+  }
+ },
+ "plan": {
+  "schema_version": "variable-plan-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "name": "innodb_log_file_size",
+  "mode": "persist_only",
+  "mode_label": "After restart only",
+  "requested": "64M",
+  "value": "67108864",
+  "display": "67,108,864 (64.0 MiB)",
+  "status": "ready",
+  "problems": [],
+  "statement": "SET PERSIST_ONLY innodb_log_file_size = 67108864",
+  "config_line": "innodb_log_file_size = 67108864",
+  "before": {
+   "global": "50331648",
+   "session": null,
+   "persisted": null
+  },
+  "undo": [
+   "RESET PERSIST innodb_log_file_size;"
+  ],
+  "effect": {
+   "now": false,
+   "after_restart": true,
+   "needs_restart": true,
+   "text": "Writes the value to mysqld-auto.cnf only. The running value does not change; the new value applies at the next restart."
+  },
+  "caveats": [
+   "The server does not check the value of SET PERSIST_ONLY beyond its type (it does check ON and OFF for booleans); myflames checked it against what it knows. A value the server cannot use shows up only at the next restart.",
+   "At startup the server applies mysqld-auto.cnf after the option files, so this value wins over my.cnf until RESET PERSIST innodb_log_file_size."
+  ],
+  "privileges": {
+   "checked": true,
+   "available": true,
+   "allowed": true,
+   "via": "SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN",
+   "need": "SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN",
+   "note": "SUPER is not enough (error 3630).",
+   "operation": "set_persist_only"
+  },
+  "classification": {
+   "kind": "risky",
+   "category": "persist",
+   "reasons": [
+    "SET PERSIST_ONLY writes innodb_log_file_size to mysqld-auto.cnf for the next restart."
+   ]
+  },
+  "expect": {
+   "name": "innodb_log_file_size",
+   "mode": "persist_only",
+   "statement": "SET PERSIST_ONLY innodb_log_file_size = 67108864",
+   "global_value": "50331648",
+   "session_value": null,
+   "persisted_value": null
+  },
+  "variable": {
+   "schema_version": "variable-1.0",
+   "engine": "mysql",
+   "server_version": "8.4.11",
+   "name": "innodb_log_file_size",
+   "exists": true,
+   "scope": "global",
+   "scope_source": "myflames map (sys_vars.cc)",
+   "dynamic": false,
+   "type": "bytes",
+   "values": null,
+   "min": 4194304,
+   "max": 18446744073709551615,
+   "block_size": null,
+   "global_value": "50331648",
+   "session_value": null,
+   "default": "50331648",
+   "set_by": "default",
+   "source": "COMPILED",
+   "source_path": null,
+   "set_time": null,
+   "set_user": null,
+   "set_host": null,
+   "persisted": {
+    "supported": true,
+    "value": null,
+    "present": false,
+    "load": true
+   },
+   "non_persistent": false,
+   "persist_as_read_only": false,
+   "session_read_only": false,
+   "description": null,
+   "notes": [],
+   "modes": {
+    "global": {
+     "available": false,
+     "reason": "innodb_log_file_size is read-only while the server runs.",
+     "recommended": false
+    },
+    "persist": {
+     "available": false,
+     "reason": "innodb_log_file_size is read-only while the server runs: use After restart only (SET PERSIST_ONLY).",
+     "recommended": false
+    },
+    "persist_only": {
+     "available": true,
+     "reason": null,
+     "recommended": true
+    },
+    "reset_persist": {
+     "available": false,
+     "reason": "mysqld-auto.cnf has no value for innodb_log_file_size.",
+     "recommended": false
+    },
+    "session": {
+     "available": false,
+     "reason": "innodb_log_file_size is read-only while the server runs.",
+     "recommended": false
+    }
+   }
+  },
+  "alternative": null,
+  "policy": {
+   "action": "confirm",
+   "tone": "danger",
+   "title": "Production connection",
+   "text": "This is a Production connection, so myflames asks before every write.",
+   "connection_type": "production",
+   "read_only": false
+  }
+ },
+ "change": {
+  "schema_version": "variable-change-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "name": "innodb_log_file_size",
+  "mode": "persist_only",
+  "statement": "SET PERSIST_ONLY innodb_log_file_size = 67108864",
+  "status": "changed",
+  "message": "Set innodb_log_file_size in mysqld-auto.cnf for the next restart: (none) -> 64.0 MiB.",
+  "requested": "64M",
+  "value": "67108864",
+  "before": {
+   "global": "50331648",
+   "session": null,
+   "persisted": null
+  },
+  "after": {
+   "global": "50331648",
+   "persisted": "67108864",
+   "session": null
+  },
+  "adjusted": false,
+  "verified": [
+   "statement",
+   "global value",
+   "persisted value"
+  ],
+  "plan": {
+   "schema_version": "variable-plan-1.0",
+   "engine": "mysql",
+   "server_version": "8.4.11",
+   "name": "innodb_log_file_size",
+   "mode": "persist_only",
+   "mode_label": "After restart only",
+   "requested": "64M",
+   "value": "67108864",
+   "display": "67,108,864 (64.0 MiB)",
+   "status": "ready",
+   "problems": [],
+   "statement": "SET PERSIST_ONLY innodb_log_file_size = 67108864",
+   "config_line": "innodb_log_file_size = 67108864",
+   "before": {
+    "global": "50331648",
+    "session": null,
+    "persisted": null
+   },
+   "undo": [
+    "RESET PERSIST innodb_log_file_size;"
+   ],
+   "effect": {
+    "now": false,
+    "after_restart": true,
+    "needs_restart": true,
+    "text": "Writes the value to mysqld-auto.cnf only. The running value does not change; the new value applies at the next restart."
+   },
+   "caveats": [
+    "The server does not check the value of SET PERSIST_ONLY beyond its type (it does check ON and OFF for booleans); myflames checked it against what it knows. A value the server cannot use shows up only at the next restart.",
+    "At startup the server applies mysqld-auto.cnf after the option files, so this value wins over my.cnf until RESET PERSIST innodb_log_file_size."
+   ],
+   "privileges": {
+    "checked": false,
+    "available": true,
+    "allowed": null,
+    "via": null,
+    "need": "SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN",
+    "note": "SUPER is not enough (error 3630).",
+    "operation": "set_persist_only"
+   },
+   "classification": {
+    "kind": "risky",
+    "category": "persist",
+    "reasons": [
+     "SET PERSIST_ONLY writes innodb_log_file_size to mysqld-auto.cnf for the next restart."
+    ]
+   },
+   "expect": {
+    "name": "innodb_log_file_size",
+    "mode": "persist_only",
+    "statement": "SET PERSIST_ONLY innodb_log_file_size = 67108864",
+    "global_value": "50331648",
+    "session_value": null,
+    "persisted_value": null
+   },
+   "variable": {
+    "schema_version": "variable-1.0",
+    "engine": "mysql",
+    "server_version": "8.4.11",
+    "name": "innodb_log_file_size",
+    "exists": true,
+    "scope": "global",
+    "scope_source": "myflames map (sys_vars.cc)",
+    "dynamic": false,
+    "type": "bytes",
+    "values": null,
+    "min": 4194304,
+    "max": 18446744073709551615,
+    "block_size": null,
+    "global_value": "50331648",
+    "session_value": null,
+    "default": "50331648",
+    "set_by": "default",
+    "source": "COMPILED",
+    "source_path": null,
+    "set_time": null,
+    "set_user": null,
+    "set_host": null,
+    "persisted": {
+     "supported": true,
+     "value": null,
+     "present": false,
+     "load": true
+    },
+    "non_persistent": false,
+    "persist_as_read_only": false,
+    "session_read_only": false,
+    "description": null,
+    "notes": [],
+    "modes": {
+     "global": {
+      "available": false,
+      "reason": "innodb_log_file_size is read-only while the server runs.",
+      "recommended": false
+     },
+     "persist": {
+      "available": false,
+      "reason": "innodb_log_file_size is read-only while the server runs: use After restart only (SET PERSIST_ONLY).",
+      "recommended": false
+     },
+     "persist_only": {
+      "available": true,
+      "reason": null,
+      "recommended": true
+     },
+     "reset_persist": {
+      "available": false,
+      "reason": "mysqld-auto.cnf has no value for innodb_log_file_size.",
+      "recommended": false
+     },
+     "session": {
+      "available": false,
+      "reason": "innodb_log_file_size is read-only while the server runs.",
+      "recommended": false
+     }
+    }
+   },
+   "alternative": null
+  }
+ }
+}

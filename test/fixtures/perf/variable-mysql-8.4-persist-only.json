@@ -1,0 +1,61 @@
+{
+ "server": "mysql-8.4",
+ "version": "8.4.11",
+ "scenario": "persist-only",
+ "user": "root",
+ "args": {
+  "name": "innodb_log_file_size",
+  "value": "64M",
+  "mode": "persist_only",
+  "apply": true,
+  "between": null
+ },
+ "calls": [
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'innodb_log_file_size', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'innodb_log_file_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nserver_uuid\t11111111-2222-3333-4444-555555555555\ninnodb_log_file_size\t50331648\npersisted_globals_load\tON\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\nmyflames:session\ninnodb_log_file_size\t50331648\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT 'myflames:info'; /*myflames:variable*/ SELECT VARIABLE_SOURCE, VARIABLE_PATH, MIN_VALUE, MAX_VALUE, SET_TIME, SET_USER, SET_HOST FROM performance_schema.variables_info WHERE VARIABLE_NAME = 'innodb_log_file_size'; /*myflames:variable*/ SELECT 'myflames:persisted'; /*myflames:variable*/ SELECT VARIABLE_VALUE IS NULL, HEX(VARIABLE_VALUE) FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'innodb_log_file_size'",
+   "myflames:info\nCOMPILED\t\t4194304\t18446744073709551615\tNULL\tNULL\tNULL\nmyflames:persisted\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GRANTS",
+   "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `root`@`%` WITH GRANT OPTION\nGRANT ALLOW_NONEXISTENT_DEFINER,APPLICATION_PASSWORD_ADMIN,AUDIT_ABORT_EXEMPT,AUDIT_ADMIN,AUTHENTICATION_POLICY_ADMIN,BACKUP_ADMIN,BINLOG_ADMIN,BINLOG_ENCRYPTION_ADMIN,CLONE_ADMIN,CONNECTION_ADMIN,ENCRYPTION_KEY_ADMIN,FIREWALL_EXEMPT,FLUSH_OPTIMIZER_COSTS,FLUSH_PRIVILEGES,FLUSH_STATUS,FLUSH_TABLES,FLUSH_USER_RESOURCES,GROUP_REPLICATION_ADMIN,GROUP_REPLICATION_STREAM,INNODB_REDO_LOG_ARCHIVE,INNODB_REDO_LOG_ENABLE,OPTIMIZE_LOCAL_TABLE,PASSWORDLESS_USER_ADMIN,PERSIST_RO_VARIABLES_ADMIN,REPLICATION_APPLIER,REPLICATION_SLAVE_ADMIN,RESOURCE_GROUP_ADMIN,RESOURCE_GROUP_USER,ROLE_ADMIN,SENSITIVE_VARIABLES_OBSERVER,SERVICE_CONNECTION_ADMIN,SESSION_VARIABLES_ADMIN,SET_ANY_DEFINER,SHOW_ROUTINE,SYSTEM_USER,SYSTEM_VARIABLES_ADMIN,TABLE_ENCRYPTION_ADMIN,TELEMETRY_LOG_ADMIN,TRANSACTION_GTID_TAG,XA_RECOVER_ADMIN ON *.* TO `root`@`%` WITH GRANT OPTION\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'innodb_log_file_size', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'innodb_log_file_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nserver_uuid\t11111111-2222-3333-4444-555555555555\ninnodb_log_file_size\t50331648\npersisted_globals_load\tON\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\nmyflames:session\ninnodb_log_file_size\t50331648\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT 'myflames:info'; /*myflames:variable*/ SELECT VARIABLE_SOURCE, VARIABLE_PATH, MIN_VALUE, MAX_VALUE, SET_TIME, SET_USER, SET_HOST FROM performance_schema.variables_info WHERE VARIABLE_NAME = 'innodb_log_file_size'; /*myflames:variable*/ SELECT 'myflames:persisted'; /*myflames:variable*/ SELECT VARIABLE_VALUE IS NULL, HEX(VARIABLE_VALUE) FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'innodb_log_file_size'",
+   "myflames:info\nCOMPILED\t\t4194304\t18446744073709551615\tNULL\tNULL\tNULL\nmyflames:persisted\n"
+  ],
+  [
+   "/*myflames:variable*/ SET PERSIST_ONLY innodb_log_file_size = 67108864",
+   ""
+  ],
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'innodb_log_file_size', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'innodb_log_file_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nserver_uuid\t11111111-2222-3333-4444-555555555555\ninnodb_log_file_size\t50331648\npersisted_globals_load\tON\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\nmyflames:session\ninnodb_log_file_size\t50331648\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT 'myflames:info'; /*myflames:variable*/ SELECT VARIABLE_SOURCE, VARIABLE_PATH, MIN_VALUE, MAX_VALUE, SET_TIME, SET_USER, SET_HOST FROM performance_schema.variables_info WHERE VARIABLE_NAME = 'innodb_log_file_size'; /*myflames:variable*/ SELECT 'myflames:persisted'; /*myflames:variable*/ SELECT VARIABLE_VALUE IS NULL, HEX(VARIABLE_VALUE) FROM performance_schema.persisted_variables WHERE VARIABLE_NAME = 'innodb_log_file_size'",
+   "myflames:info\nCOMPILED\t\t4194304\t18446744073709551615\t2026-10-15 16:41:36.517138\troot\tNULL\nmyflames:persisted\n0\t3637313038383634\n"
+  ]
+ ],
+ "recorded": {
+  "plan_status": "ready",
+  "statement": "SET PERSIST_ONLY innodb_log_file_size = 67108864",
+  "result_status": "changed",
+  "after": {
+   "global": "50331648",
+   "persisted": "67108864",
+   "session": null
+  }
+ },
+ "synthetic_extensions": [
+  "Original variable values and write results were recorded live. Server identity (fixture-db, server_id 1, fixed MySQL UUID) and Linux platform rows are synthetic additions for identity/platform regression coverage.",
+  "The persisted-value read was adapted to IS NULL and HEX; encoded answers are derived from the recorded values, not a new live capture."
+ ]
+}

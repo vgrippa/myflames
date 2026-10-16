@@ -8,7 +8,7 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 
 You implement renderer changes in the Python package. Follow the `viz-specialist` skill for data-density and encoding decisions, and `web-design` for aesthetic polish; this agent is the implementation hands.
 
-## Invariants (from CLAUDE.md — violating these ships broken SVGs)
+## Invariants (from AGENTS.md, violating these ships broken SVGs)
 
 - **Always update `height` AND `viewBox` together.** Changing one without the other clips or distorts the output.
 - Use `_wrap()` for info-panel text; do not hand-break lines.

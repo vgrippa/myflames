@@ -1,0 +1,202 @@
+/* Configuration: Change… in the inspector and the Change sheet (Config.tsx). */
+
+/* Change… and Reset persisted value… under a setting's value in the inspector. */
+.config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-top: 2px;
+}
+.config-actions .text-button {
+  padding: 0;
+  font-size: var(--text-sm);
+}
+
+/* The sheet: facts, when it applies, the value, then the checked statement. */
+.variable-sheet .hint {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.variable-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.variable-facts > div {
+  display: contents;
+}
+.variable-facts dt {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.variable-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.variable-facts code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.variable-modes {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.variable-modes legend {
+  padding: 0 var(--space-1);
+  font-weight: 600;
+}
+.variable-modes label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2);
+  align-items: start;
+  cursor: pointer;
+}
+.variable-modes input {
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.variable-modes .hint {
+  display: block;
+  margin-top: 2px;
+}
+.variable-field {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+.variable-field label {
+  font-weight: 600;
+}
+.variable-input {
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+.variable-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.variable-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+.variable-statement {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.variable-caveats {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-4);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.variable-problems {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+  background: var(--warn-soft);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+ul.variable-problems {
+  padding-left: var(--space-5);
+}
+.variable-alternative {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.variable-alternative p,
+.variable-note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.variable-alternative .perf-sql,
+.variable-plan .perf-sql {
+  width: 100%;
+  margin-bottom: var(--space-3);
+}
+.variable-policy {
+  margin: 0;
+}
+
+/* The answer to a change, above the settings until dismissed. */
+.variable-result {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.variable-result p {
+  margin: 0 0 var(--space-1);
+}
+.variable-result .variable-facts {
+  margin: var(--space-1) 0;
+}
+.variable-result.is-ok {
+  border-left-color: var(--ok);
+  background: var(--ok-soft);
+}
+.variable-result.is-warn {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+.variable-result.is-danger {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+.variable-result:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 650px) {
+  .variable-facts {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .variable-facts dd {
+    margin-bottom: var(--space-1);
+  }
+}

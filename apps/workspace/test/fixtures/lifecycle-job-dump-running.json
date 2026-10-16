@@ -1,0 +1,17 @@
+{
+ "schema_version": "lifecycle-job-1.0",
+ "id": "06c09bfc804a49a1845e8b14f3d24974",
+ "operation": "dump",
+ "state": "running",
+ "progress": 25.0,
+ "detail": null,
+ "events": [
+  {
+   "at": "2026-10-15T18:16:15.456847+00:00",
+   "stream": "stderr",
+   "text": "25% waiting"
+  }
+ ],
+ "result": null,
+ "error": ""
+}

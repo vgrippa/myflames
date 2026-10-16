@@ -1,363 +1,308 @@
-<?xml version="1.0" standalone="no"?>
-<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1800" height="845" onload="init(evt)" viewBox="0 0 1800 845" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="max-width: 100%; height: auto;">
-<defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs>
-<style type="text/css">text { font-family: Verdana; font-size: 12px; fill: rgb(0,0,0); }
-#search, #ignorecase { opacity:0.1; cursor:pointer; } #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
-#title { text-anchor:middle; font-size:17px } #unzoom { cursor:pointer; } #frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; } .hide { display:none; } .parent { opacity:0.5; }</style>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1800" height="901" viewBox="0 0 1800 901" class="mfc-flame" aria-label="MySQL Query Plan" style="max-width: 100%; height: auto;">
+<style>.mfc-flame{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}.mfc-flame text{font-size:12px;fill:#1d1d1f}.mfc-flame .fg-title{font-size:17px;font-weight:600}.mfc-flame .fg-reset,.mfc-flame .fg-search,.mfc-flame .fg-ic{fill:#176aa8;cursor:pointer}.mfc-flame .fg-reset:hover,.mfc-flame .fg-search:hover,.mfc-flame .fg-ic:hover{text-decoration:underline}.mfc-flame .fg-ic.fg-on{font-weight:700;text-decoration:underline}.mfc-flame .fg-off,.mfc-flame .fg-hidden{display:none}.mfc-flame .frames>g{cursor:pointer}.mfc-flame .frames>g:hover>rect{stroke:#1d1d1f;stroke-width:.6}.mfc-flame .frames text{fill:#000;pointer-events:none}.mfc-flame .fg-ancestor{opacity:.55}.mfc-flame .fg-details{fill:#3a3a3c}.mfc-flame .fg-matched{font-weight:600}</style>
+<rect x="0" y="0" width="100%" height="100%" fill="#fafafa"/>
+<text class="fg-title" x="900.00" y="24" text-anchor="middle">MySQL Query Plan</text>
+<text class="fg-reset fg-off" x="10" y="24" role="button">Reset zoom</text>
+<text class="fg-ic" x="1730" y="24" text-anchor="end" role="button">ic</text>
+<text class="fg-search" x="1790" y="24" text-anchor="end" role="button">Search</text>
+<g class="frames" data-left="10" data-span="1780" data-icicle="0" data-measured="1" data-match="#ff38c8">
+<g data-teach-index="0" data-label="SORT starts=1 rows=9">
+<title>SORT starts=1 rows=9 (6,357 ms, 100.00%)&#10;&#10;Access: sort&#10;Rows: 9 actual&#10;Time: 6357.230 ms (last row)</title>
+<rect x="10.00" y="234" width="1780.00" height="32" rx="2" ry="2" fill="#c7b49b"/>
+<text x="13.00" y="254.00">SORT starts=1 rows=9</text>
+</g>
+<g data-teach-index="1" data-label="TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9">
+<title>TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9 (6,357 ms, 100.00%)&#10;&#10;Table: &lt;temporary&gt;&#10;Access: table&#10;Rows: 9 actual&#10;Time: 6357.164 ms (last row)</title>
+<rect x="10.00" y="201" width="1779.98" height="32" rx="2" ry="2" fill="#db9292"/>
+<text x="13.00" y="221.00">TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9</text>
+</g>
+<g data-teach-index="2" data-label="AGGREGATE starts=1 rows=9">
+<title>AGGREGATE starts=1 rows=9 (6,357 ms, 100.00%)&#10;&#10;Access: temp_table_aggregate&#10;Rows: 9 actual&#10;Time: 6357.160 ms (last row)</title>
+<rect x="10.00" y="168" width="1779.98" height="32" rx="2" ry="2" fill="#a8bfdc"/>
+<text x="13.00" y="188.00">AGGREGATE starts=1 rows=9</text>
+</g>
+<g data-teach-index="3" data-label="NESTED LOOP INNER starts=1 rows=240124">
+<title>NESTED LOOP INNER starts=1 rows=240124 (5,625 ms, 88.48%)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
+<rect x="10.00" y="135" width="1574.94" height="32" rx="2" ry="2" fill="#c998b3"/>
+<text x="13.00" y="155.00">NESTED LOOP INNER starts=1 rows=240124</text>
+</g>
+<g data-teach-index="3" data-label="NESTED LOOP INNER starts=1 rows=240124">
+<title>NESTED LOOP INNER starts=1 rows=240124 (4,378 ms, 68.86%)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
+<rect x="10.00" y="102" width="1225.77" height="32" rx="2" ry="2" fill="#c998b3"/>
+<text x="13.00" y="122.00">NESTED LOOP INNER starts=1 rows=240124</text>
+</g>
+<g data-teach-index="4" data-label="FILTER ((de.to_date = DATE'9999-01-01')) starts=1 rows=240124">
+<title>FILTER ((de.to_date = DATE'9999-01-01')) starts=1 rows=240124 (319 ms, 5.02%)&#10;&#10;Access: filter&#10;Rows: 240124 actual (33114 estimated) [UNDERESTIMATE]&#10;Time: 319.156 ms (last row)&#10;Cost: 33298.55&#10;Condition: (de.to_date = DATE'9999-01-01')</title>
+<rect x="10.00" y="69" width="89.36" height="32" rx="2" ry="2" fill="#d1cfad"/>
+<text x="13.00" y="89.00">FILTER ((..</text>
+</g>
+<g data-teach-index="5" data-label="TABLE SCAN [dept_emp] starts=1 rows=331603">
+<title>TABLE SCAN [dept_emp] starts=1 rows=331603 (211 ms, 3.32%)&#10;&#10;Table: employees.dept_emp&#10;Access: table&#10;Rows: 331603 actual (331143 estimated)&#10;Time: 210.978 ms (last row)&#10;Cost: 33298.55</title>
+<rect x="10.00" y="36" width="59.07" height="32" rx="2" ry="2" fill="#db9292"/>
+<text x="13.00" y="56.00">TABLE..</text>
+</g>
+<g data-teach-index="6" data-label="FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1">
+<title>FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1 (3,970 ms, 62.45%)&#10;&#10;Access: filter&#10;Rows: 1 actual (0 estimated) [UNDERESTIMATE]&#10;Loops: 240124&#10;Time: 0.017 ms (last row)&#10;Cost: 0.39&#10;Condition: (s.to_date = DATE'9999-01-01')</title>
+<rect x="99.36" y="69" width="1111.53" height="32" rx="2" ry="2" fill="#d1cfad"/>
+<text x="102.36" y="89.00">FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1</text>
+</g>
+<g data-teach-index="7" data-label="INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11">
+<title>INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11 (3,568 ms, 56.12%)&#10;&#10;Table: employees.salaries (index: PRIMARY)&#10;Access: index&#10;Rows: 11 actual (1 estimated) [UNDERESTIMATE]&#10;Loops: 240124&#10;Time: 0.015 ms (last row)&#10;Cost: 0.39&#10;Covering: No</title>
+<rect x="99.36" y="36" width="998.90" height="32" rx="2" ry="2" fill="#9ac59d"/>
+<text x="102.36" y="56.00">INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11</text>
+</g>
+<g data-teach-index="8" data-label="SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1">
+<title>SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1 (1,153 ms, 18.14%)&#10;&#10;Table: employees.departments (index: PRIMARY)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 240124&#10;Time: 0.005 ms (last row)&#10;Cost: 1.00&#10;Covering: No</title>
+<rect x="1235.77" y="102" width="322.84" height="32" rx="2" ry="2" fill="#9ac59d"/>
+<text x="1238.77" y="122.00">SINGLE ROW LOOKUP [departments.PRIMARY] st..</text>
+</g>
+</g>
+<text class="fg-details" x="10" y="287">Hover a frame for details. Click to zoom, double-click the background to reset, Ctrl+F to search.</text>
+<text class="fg-matched" x="1790" y="287" text-anchor="end"></text>
 <script type="text/ecmascript"><![CDATA[
+(function () {
+  "use strict";
+  var doc = document;
+  var me = doc.currentScript;
+  var svg = me && me.ownerSVGElement ? me.ownerSVGElement : doc.documentElement;
+  if (!svg || !svg.querySelector) return;
+  var holder = svg.querySelector(".frames");
+  if (!holder) return;
+  var MATCH = holder.getAttribute("data-match") || "#ff38c8";
+  var left = Number(holder.getAttribute("data-left")) || 0;
+  var span = Number(holder.getAttribute("data-span")) || 1;
+  var icicle = holder.getAttribute("data-icicle") === "1";
+  // A plan without measured time states no share: count matching frames.
+  var measured = holder.getAttribute("data-measured") !== "0";
+  var CHAR = 12 * 0.59;
+  var EPS = 0.02;
+  var resetBtn = svg.querySelector(".fg-reset");
+  var searchBtn = svg.querySelector(".fg-search");
+  var caseBtn = svg.querySelector(".fg-ic");
+  var details = svg.querySelector(".fg-details");
+  var matched = svg.querySelector(".fg-matched");
+  var hint = details ? details.textContent : "";
+  var frames = [];
+  var groups = [];
+  var zoomed = null;
+  var term = "";
+  var ignoreCase = false;
 
-	"use strict";
-	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn, pinnedDetails = null;
-	function init(evt) {
-		details = document.getElementById("details").firstChild;
-		searchbtn = document.getElementById("search");
-		ignorecaseBtn = document.getElementById("ignorecase");
-		unzoombtn = document.getElementById("unzoom");
-		matchedtxt = document.getElementById("matched");
-		svg = document.getElementsByTagName("svg")[0];
-		searching = 0;
-		currentSearchTerm = null;
-		var params = get_params();
-		if (params.x && params.y)
-			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
-		if (params.s) search(params.s);
-	}
-	window.addEventListener("click", function(e) {
-		var target = find_group(e.target);
-		if (target) {
-			if (target.nodeName == "a") {
-				if (e.ctrlKey === false) return;
-				e.preventDefault();
-			}
-			if (target.classList.contains("parent")) { pinnedDetails = null; unzoom(true); }
-			else {
-			zoom(target);
-			pinnedDetails = "Function: " + g_to_text(target);
-			}
-			if (!document.querySelector('.parent')) {
-				var params = get_params();
-				if (params.x) delete params.x;
-				if (params.y) delete params.y;
-				history.replaceState(null, null, parse_params(params));
-				unzoombtn.classList.add("hide");
-				return;
-			}
-			var el = target.querySelector("rect");
-			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
-				var params = get_params();
-				params.x = el.attributes._orig_x.value;
-				params.y = el.attributes.y.value;
-				history.replaceState(null, null, parse_params(params));
-			}
-		}
-		else if (e.target.id == "unzoom") clearzoom();
-		else if (e.target.id == "search") search_prompt();
-		else if (e.target.id == "ignorecase") toggle_ignorecase();
-	}, false);
-	window.addEventListener("mouseover", function(e) {
-		var target = find_group(e.target);
-		if (target) details.nodeValue = (pinnedDetails !== null ? pinnedDetails : "Function: " + g_to_text(target));
-	}, false);
-	window.addEventListener("mouseout", function(e) {
-		var target = find_group(e.target);
-		if (target && pinnedDetails === null) details.nodeValue = ' ';
-	}, false);
-	window.addEventListener("keydown", function(e) {
-		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) { e.preventDefault(); search_prompt(); }
-		else if (e.ctrlKey && e.keyCode === 73) { e.preventDefault(); toggle_ignorecase(); }
-	}, false);
-	function get_params() {
-		var params = {};
-		var paramsarr = window.location.search.substr(1).split('&');
-		for (var i = 0; i < paramsarr.length; ++i) {
-			var tmp = paramsarr[i].split("=");
-			if (!tmp[0] || !tmp[1]) continue;
-			params[tmp[0]] = decodeURIComponent(tmp[1]);
-		}
-		return params;
-	}
-	function parse_params(params) {
-		var uri = "?";
-		for (var key in params) { uri += key + '=' + encodeURIComponent(params[key]) + '&'; }
-		if (uri.slice(-1) == "&") uri = uri.substring(0, uri.length - 1);
-		if (uri == '?') uri = window.location.href.split('?')[0];
-		return uri;
-	}
-	function find_child(node, selector) {
-		var children = node.querySelectorAll(selector);
-		if (children.length) return children[0];
-	}
-	function find_group(node) {
-		var parent = node.parentElement;
-		if (!parent) return;
-		if (parent.id == "frames") return node;
-		return find_group(parent);
-	}
-	function orig_save(e, attr, val) {
-		if (e.attributes["_orig_" + attr] != undefined) return;
-		if (e.attributes[attr] == undefined) return;
-		if (val == undefined) val = e.attributes[attr].value;
-		e.setAttribute("_orig_" + attr, val);
-	}
-	function orig_load(e, attr) {
-		if (e.attributes["_orig_"+attr] == undefined) return;
-		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
-		e.removeAttribute("_orig_"+attr);
-	}
-	function g_to_text(e) {
-		var text = find_child(e, "title");
-		return text ? text.firstChild.nodeValue : "";
-	}
-	function g_to_func(e) { return g_to_text(e); }
-	function update_text(e) {
-		var r = find_child(e, "rect");
-		var t = find_child(e, "text");
-		if (!r || !t) return;
-		var w = parseFloat(r.attributes.width.value) - 3;
-		var txt = (find_child(e, "title") ? find_child(e, "title").textContent : "").replace(/\([^(]*\)$/,"");
-		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
-		if (w < 2 * 12 * 0.59) { t.textContent = ""; return; }
-		t.textContent = txt;
-		var sl = t.getSubStringLength ? t.getSubStringLength(0, txt.length) : txt.length * 7;
-		if (/^ *$/.test(txt) || sl < w) return;
-		var start = Math.floor((w/sl) * txt.length);
-		for (var x = start; x > 0; x = x-2) {
-			if ((t.getSubStringLength ? t.getSubStringLength(0, x + 2) : (x+2)*7) <= w) {
-				t.textContent = txt.substring(0, x) + "..";
-				return;
-			}
-		}
-		t.textContent = "";
-	}
-	function zoom_reset(e) {
-		if (e.attributes != undefined) { orig_load(e, "x"); orig_load(e, "width"); }
-		if (e.childNodes == undefined) return;
-		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_reset(c[i]);
-	}
-	function zoom_child(e, x, ratio) {
-		if (e.attributes != undefined) {
-			if (e.attributes.x != undefined) {
-				orig_save(e, "x");
-				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
-				if (e.tagName == "text" && e.parentNode) {
-					var rect = find_child(e.parentNode, "rect[x]") || find_child(e.parentNode, "rect");
-					if (rect) e.attributes.x.value = parseFloat(rect.attributes.x.value) + 3;
-				}
-			}
-			if (e.attributes.width != undefined) {
-				orig_save(e, "width");
-				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
-			}
-		}
-		if (e.childNodes == undefined) return;
-		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_child(c[i], x - 10, ratio);
-	}
-	function zoom_parent(e) {
-		if (e.attributes) {
-			if (e.attributes.x != undefined) { orig_save(e, "x"); e.attributes.x.value = 10; }
-			if (e.attributes.width != undefined) { orig_save(e, "width"); e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2); }
-		}
-		if (e.childNodes == undefined) return;
-		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_parent(c[i]);
-	}
-	function zoom(node) {
-		var attr = find_child(node, "rect").attributes;
-		var width = parseFloat(attr.width.value);
-		var xmin = parseFloat(attr.x.value);
-		var xmax = parseFloat(xmin + width);
-		var ymin = parseFloat(attr.y.value);
-		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
-		var fudge = 0.0001;
-		unzoombtn.classList.remove("hide");
-		var el = document.getElementById("frames").children;
-		for (var i = 0; i < el.length; i++) {
-			var e = el[i];
-			var a = find_child(e, "rect").attributes;
-			var ex = parseFloat(a.x.value);
-			var ew = parseFloat(a.width.value);
-			var upstack = (0 == 0) ? (parseFloat(a.y.value) > ymin) : (parseFloat(a.y.value) < ymin);
-			if (upstack) {
-				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
-					e.classList.add("parent");
-					zoom_parent(e);
-					update_text(e);
-				} else e.classList.add("hide");
-			} else {
-				if (ex < xmin || ex + fudge >= xmax) e.classList.add("hide");
-				else { zoom_child(e, xmin, ratio); update_text(e); }
-			}
-		}
-		search();
-	}
-	function unzoom(dont_update_text) {
-		unzoombtn.classList.add("hide");
-		var el = document.getElementById("frames").children;
-		for (var i = 0; i < el.length; i++) {
-			el[i].classList.remove("parent");
-			el[i].classList.remove("hide");
-			zoom_reset(el[i]);
-			if (!dont_update_text) update_text(el[i]);
-		}
-		search();
-	}
-	function clearzoom() {
-		pinnedDetails = null;
-		unzoom();
-		var params = get_params();
-		if (params.x) delete params.x;
-		if (params.y) delete params.y;
-		history.replaceState(null, null, parse_params(params));
-	}
-	function toggle_ignorecase() {
-		ignorecase = !ignorecase;
-		ignorecaseBtn.classList.toggle("show", ignorecase);
-		reset_search();
-		search();
-	}
-	function reset_search() {
-		var el = document.querySelectorAll("#frames rect");
-		for (var i = 0; i < el.length; i++) orig_load(el[i], "fill");
-		var params = get_params();
-		delete params.s;
-		history.replaceState(null, null, parse_params(params));
-	}
-	function search_prompt() {
-		if (!searching) {
-			var term = prompt("Enter a search term (regexp allowed)" + (ignorecase ? ", ignoring case" : "") + "\\nPress Ctrl-i to toggle case sensitivity", "");
-			if (term != null) search(term);
-		} else {
-			reset_search();
-			searching = 0;
-			currentSearchTerm = null;
-			searchbtn.classList.remove("show");
-			searchbtn.firstChild.nodeValue = "Search";
-			matchedtxt.classList.add("hide");
-			matchedtxt.firstChild.nodeValue = "";
-		}
-	}
-	function search(term) {
-		if (term) currentSearchTerm = term;
-		if (currentSearchTerm === null) return;
-		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
-		var el = document.getElementById("frames").children;
-		var matches = {};
-		var maxwidth = 0;
-		for (var i = 0; i < el.length; i++) {
-			var e = el[i];
-			var func = g_to_func(e);
-			var rect = find_child(e, "rect");
-			if (func == null || rect == null) continue;
-			var w = parseFloat(rect.attributes.width.value);
-			if (w > maxwidth) maxwidth = w;
-			if (func.match(re)) {
-				var x = parseFloat(rect.attributes.x.value);
-				orig_save(rect, "fill");
-				rect.attributes.fill.value = "rgb(230,0,230)";
-				matches[x] = (matches[x] === undefined || w > matches[x]) ? w : matches[x];
-				searching = 1;
-			}
-		}
-		if (!searching) return;
-		var params = get_params();
-		params.s = currentSearchTerm;
-		history.replaceState(null, null, parse_params(params));
-		searchbtn.classList.add("show");
-		searchbtn.firstChild.nodeValue = "Reset Search";
-		var count = 0, lastx = -1, lastw = 0, keys = [];
-		for (var k in matches) { if (matches.hasOwnProperty(k)) keys.push(k); }
-		keys.sort(function(a,b){ return a - b; });
-		var fudge = 0.0001;
-		for (var ki = 0; ki < keys.length; ki++) {
-			var x = parseFloat(keys[ki]);
-			var w = matches[keys[ki]];
-			if (x >= lastx + lastw - fudge) { count += w; lastx = x; lastw = w; }
-		}
-		matchedtxt.classList.remove("hide");
-		var pct = 100 * count / maxwidth;
-		if (pct != 100) pct = pct.toFixed(1);
-		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
-	}
+  function chars(text) { return Array.from ? Array.from(text) : String(text).split(""); }
+  // Same rule as fit_frame_label: under 3 characters of room draws nothing.
+  function fitLabel(label, w) {
+    var list = chars(label);
+    var room = Math.floor((w - 6) / CHAR);
+    if (room < 3) return "";
+    return list.length <= room ? label : list.slice(0, room - 2).join("") + "..";
+  }
+  function fitLine(text, px) {
+    var list = chars(text);
+    var room = Math.floor(px / CHAR);
+    if (list.length <= room) return text;
+    return room >= 3 ? list.slice(0, room - 2).join("") + ".." : "";
+  }
+  function mark(el, name, on) {
+    if (!el) return;
+    var names = (el.getAttribute("class") || "").split(/\s+/).filter(function (n) { return n && n !== name; });
+    if (on) names.push(name);
+    el.setAttribute("class", names.join(" "));
+  }
+  function child(el, tag) {
+    var found = el.getElementsByTagName(tag);
+    return found.length ? found[0] : null;
+  }
+  function num(el, name) { return el ? Number(el.getAttribute(name)) || 0 : 0; }
 
+  var nodes = holder.childNodes;
+  for (var i = 0; i < nodes.length; i++) {
+    var g = nodes[i];
+    if (!g || g.nodeType !== 1) continue;
+    var rect = child(g, "rect");
+    if (!rect) continue;
+    var text = child(g, "text");
+    var tip = child(g, "title");
+    var y = num(rect, "y");
+    groups.push(g);
+    frames.push({
+      g: g, rect: rect, text: text, x: num(rect, "x"), w: num(rect, "width"),
+      level: icicle ? y : -y, label: g.getAttribute("data-label") || "",
+      fill: rect.getAttribute("fill"), shown: text ? text.textContent : "",
+      info: tip ? tip.textContent : ""
+    });
+  }
+
+  function show(text) {
+    if (!details) return;
+    var lines = String(text || "").split("\n").filter(function (l) { return /\S/.test(l); });
+    details.textContent = fitLine(lines.join("  ·  "), span - 150);
+  }
+  function put(f, x, w, label) {
+    f.rect.setAttribute("x", x.toFixed(2));
+    f.rect.setAttribute("width", w.toFixed(2));
+    if (f.text) {
+      f.text.setAttribute("x", (x + 3).toFixed(2));
+      f.text.textContent = label;
+    }
+  }
+  function within(outer, inner) {
+    return outer.x - EPS <= inner.x && inner.x + inner.w <= outer.x + outer.w + EPS;
+  }
+  function reset() {
+    frames.forEach(function (f) {
+      put(f, f.x, f.w, f.shown);
+      mark(f.g, "fg-hidden", false);
+      mark(f.g, "fg-ancestor", false);
+    });
+    zoomed = null;
+    mark(resetBtn, "fg-off", true);
+  }
+  function zoom(target) {
+    var ancestors = frames.filter(function (f) { return f.level < target.level && within(f, target); });
+    if (!ancestors.length && target.w >= span - EPS) { reset(); return; }
+    var scale = span / target.w;
+    frames.forEach(function (f) {
+      if (f === target || (f.level > target.level && within(target, f))) {
+        var w = f.w * scale;
+        put(f, left + (f.x - target.x) * scale, w, fitLabel(f.label, w));
+        mark(f.g, "fg-hidden", false);
+        mark(f.g, "fg-ancestor", false);
+      } else if (ancestors.indexOf(f) !== -1) {
+        put(f, left, span, fitLabel(f.label, span));
+        mark(f.g, "fg-hidden", false);
+        mark(f.g, "fg-ancestor", true);
+      } else {
+        mark(f.g, "fg-hidden", true);
+      }
+    });
+    zoomed = target;
+    mark(resetBtn, "fg-off", false);
+  }
+  function coverage(spans) {
+    spans.sort(function (a, b) { return a[0] - b[0]; });
+    var covered = 0, start = null, end = null;
+    spans.forEach(function (s) {
+      if (start === null || s[0] > end + EPS) {
+        if (start !== null) covered += end - start;
+        start = s[0];
+        end = s[1];
+      } else if (s[1] > end) {
+        end = s[1];
+      }
+    });
+    if (start !== null) covered += end - start;
+    return covered;
+  }
+  function search(value) {
+    term = value || "";
+    var pattern = null;
+    if (term) {
+      try { pattern = new RegExp(term, ignoreCase ? "i" : ""); }
+      catch (err) { pattern = null; show("Invalid regular expression: " + term); }
+    }
+    var spans = [];
+    frames.forEach(function (f) {
+      var hit = !!pattern && pattern.test(f.label);
+      f.rect.setAttribute("fill", hit ? MATCH : f.fill);
+      if (hit) spans.push([f.x, f.x + f.w]);
+    });
+    if (matched) {
+      matched.textContent = !pattern ? ""
+        : measured ? "Matched: " + Math.min(100, coverage(spans) / span * 100).toFixed(1) + "%"
+        : "Matched: " + spans.length + (spans.length === 1 ? " frame" : " frames");
+    }
+  }
+  function ask() {
+    var win = doc.defaultView || (typeof window !== "undefined" ? window : null);
+    if (!win || typeof win.prompt !== "function") return;
+    var value = win.prompt("Search frames (regular expression, empty clears)", term);
+    if (value !== null && value !== undefined) search(value);
+  }
+  function frameOf(el) {
+    while (el && el !== holder && el !== svg) {
+      if (el.parentNode === holder) {
+        var at = groups.indexOf(el);
+        return at === -1 ? null : frames[at];
+      }
+      el = el.parentNode;
+    }
+    return null;
+  }
+
+  holder.addEventListener("mouseover", function (event) {
+    var f = frameOf(event.target);
+    if (f) show(f.info || f.label);
+  });
+  holder.addEventListener("mouseout", function (event) {
+    var f = frameOf(event.target);
+    if (f && frameOf(event.relatedTarget) !== f) show(hint);
+  });
+  holder.addEventListener("click", function (event) {
+    var f = frameOf(event.target);
+    if (f) zoom(f);
+  });
+  svg.addEventListener("dblclick", function (event) {
+    if (!frameOf(event.target)) reset();
+  });
+  if (resetBtn) resetBtn.addEventListener("click", reset);
+  if (searchBtn) searchBtn.addEventListener("click", ask);
+  if (caseBtn) {
+    caseBtn.addEventListener("click", function () {
+      ignoreCase = !ignoreCase;
+      mark(caseBtn, "fg-on", ignoreCase);
+      if (term) search(term);
+    });
+  }
+  // Standalone: the whole document. Inline in a page: only this chart, so
+  // the browser's own find keeps working elsewhere.
+  var keys = svg === doc.documentElement ? doc : svg;
+  if (keys === svg && !svg.hasAttribute("tabindex")) svg.setAttribute("tabindex", "-1");
+  keys.addEventListener("keydown", function (event) {
+    var key = event.key || "";
+    if (key === "F3" || ((event.ctrlKey || event.metaKey) && !event.altKey && (key === "f" || key === "F"))) {
+      event.preventDefault();
+      ask();
+    } else if (key === "Escape") {
+      if (term) search(""); else if (zoomed) reset();
+    }
+  });
+})();
 ]]></script>
-<rect width="100%" height="100%" fill="url(#background)"/>
-<text id="title" x="900" y="24">MySQL Query Plan</text>
-<text id="details" x="10" y="309"> </text>
-<text id="unzoom" class="hide" x="10" y="24">Reset Zoom</text>
-<text id="search" x="1690" y="24">Search</text>
-<text id="ignorecase" x="1774" y="24">ic</text>
-<text id="matched" x="1690" y="309"> </text>
-<g id="frames">
-<g data-teach-index="2"><title>AGGREGATE starts=1 rows=9 (6,357 ms, 99.98%)&#10;&#10;Access: temp_table_aggregate&#10;Rows: 9 actual&#10;Time: 6357.160 ms (last row)</title>
-<rect x="10.3" y="165.0" width="1779.7" height="31.0" fill="#1abc9c" rx="2" ry="2"/>
-<text x="13.28" y="183.50">AGGREGATE starts=1 rows=9</text>
-</g>
-<g data-teach-index="4"><title>FILTER ((de.to_date = DATE'9999-01-01')) starts=1 rows=240124 (319 ms, 5.02%)&#10;&#10;Access: filter&#10;Rows: 240124 actual (33114 estimated) [UNDERESTIMATE]&#10;Time: 319.156 ms (last row)&#10;Cost: 33298.55&#10;Condition: (de.to_date = DATE'9999-01-01')</title>
-<rect x="266.4" y="69.0" width="89.3" height="31.0" fill="#95a5a6" rx="2" ry="2"/>
-<text x="269.45" y="87.50">FILTER ((d..</text>
-</g>
-<g data-teach-index="6"><title>FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1 (3,970 ms, 62.44%)&#10;&#10;Access: filter&#10;Rows: 1 actual (0 estimated) [UNDERESTIMATE]&#10;Loops: 240124&#10;Time: 0.017 ms (last row)&#10;Cost: 0.39&#10;Condition: (s.to_date = DATE'9999-01-01')</title>
-<rect x="355.8" y="69.0" width="1111.5" height="31.0" fill="#95a5a6" rx="2" ry="2"/>
-<text x="358.75" y="87.50">FILTER ((s.to_date = DATE'9999-01-01')) starts=240124 rows=1</text>
-</g>
-<g data-teach-index="7"><title>INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11 (3,568 ms, 56.12%)&#10;&#10;Table: employees.salaries (index: PRIMARY)&#10;Access: index&#10;Rows: 11 actual (1 estimated) [UNDERESTIMATE]&#10;Loops: 240124&#10;Time: 0.015 ms (last row)&#10;Cost: 0.39&#10;Covering: No</title>
-<rect x="468.3" y="37.0" width="998.9" height="31.0" fill="#2ecc71" rx="2" ry="2"/>
-<text x="471.30" y="55.50">INDEX LOOKUP [salaries.PRIMARY] starts=240124 rows=11</text>
-</g>
-<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=240124 (5,625 ms, 88.47%)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
-<rect x="215.2" y="133.0" width="1574.8" height="31.0" fill="#3498db" rx="2" ry="2"/>
-<text x="218.21" y="151.50">NESTED LOOP INNER starts=1 rows=240124</text>
-</g>
-<g data-teach-index="3"><title>NESTED LOOP INNER starts=1 rows=240124 (4,378 ms, 68.86%)&#10;&#10;Access: join&#10;Rows: 240124 actual (3311 estimated) [UNDERESTIMATE]&#10;Time: 4377.821 ms (last row)&#10;Cost: 49571.30</title>
-<rect x="241.5" y="101.0" width="1225.7" height="31.0" fill="#3498db" rx="2" ry="2"/>
-<text x="244.53" y="119.50">NESTED LOOP INNER starts=1 rows=240124</text>
-</g>
-<g data-teach-index="8"><title>SINGLE ROW LOOKUP [departments.PRIMARY] starts=240124 rows=1 (1,153 ms, 18.13%)&#10;&#10;Table: employees.departments (index: PRIMARY)&#10;Access: index&#10;Rows: 1 actual (1 estimated)&#10;Loops: 240124&#10;Time: 0.005 ms (last row)&#10;Cost: 1.00&#10;Covering: No</title>
-<rect x="1467.2" y="101.0" width="322.8" height="31.0" fill="#2ecc71" rx="2" ry="2"/>
-<text x="1470.20" y="119.50">SINGLE ROW LOOKUP [departments.PRIMARY] sta..</text>
-</g>
-<g data-teach-index="0"><title>SORT starts=1 rows=9 (6,358 ms, 100.00%)&#10;&#10;Access: sort&#10;Rows: 9 actual&#10;Time: 6357.230 ms (last row)</title>
-<rect x="10.0" y="229.0" width="1780.0" height="31.0" fill="#e74c3c" rx="2" ry="2"/>
-<text x="13.00" y="247.50">SORT starts=1 rows=9</text>
-</g>
-<g data-teach-index="1"><title>TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9 (6,357 ms, 99.98%)&#10;&#10;Table: &lt;temporary&gt;&#10;Access: table&#10;Rows: 9 actual&#10;Time: 6357.164 ms (last row)</title>
-<rect x="10.3" y="197.0" width="1779.7" height="31.0" fill="#e67e22" rx="2" ry="2"/>
-<text x="13.28" y="215.50">TABLE SCAN [&lt;temporary&gt;] starts=1 rows=9</text>
-</g>
-<g data-teach-index="5"><title>TABLE SCAN [dept_emp] starts=1 rows=331603 (211 ms, 3.32%)&#10;&#10;Table: employees.dept_emp&#10;Access: table&#10;Rows: 331603 actual (331143 estimated)&#10;Time: 210.978 ms (last row)&#10;Cost: 33298.55</title>
-<rect x="296.7" y="37.0" width="59.1" height="31.0" fill="#e67e22" rx="2" ry="2"/>
-<text x="299.68" y="55.50">TABLE ..</text>
-</g>
-</g>
-<rect x="4" y="334" width="1792" height="511" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
-<rect x="4" y="344" width="1792" height="30" fill="#e8eaf6" rx="6"/>
-<rect x="4" y="350" width="1792" height="24" fill="#e8eaf6"/>
-<text x="20" y="363" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="8" y="382" width="1784" height="22" fill="#f5f5f5" rx="4"/>
-<text x="20" y="397" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
-<text x="30" y="421" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
-<text x="30" y="438" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
-<text x="30" y="455" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
-<text x="30" y="472" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
-<text x="30" y="489" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
-<text x="30" y="506" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
-<text x="30" y="523" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
-<rect x="8" y="533" width="1784" height="22" fill="#f1f8e9" rx="4"/>
-<text x="20" y="548" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="30" y="572" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Width = time for that operation (wider = slower). Bottom = query root; top = leaf table access.</text>
-<text x="30" y="589" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.</text>
-<text x="30" y="606" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
-<rect x="8" y="616" width="1784" height="22" fill="#e3f2fd" rx="4"/>
-<text x="20" y="631" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="30" y="655" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
-<rect x="8" y="665" width="1784" height="22" fill="#fff3f3" rx="4"/>
-<text x="20" y="680" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="30" y="704" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
-<text x="30" y="721" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
-<text x="30" y="738" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
-<text x="30" y="755" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
-<rect x="8" y="765" width="1784" height="22" fill="#e8f5e9" rx="4"/>
-<text x="20" y="780" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="30" y="804" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="30" y="821" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<rect x="4" y="305" width="1792" height="596" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="4" y="315" width="1792" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="4" y="321" width="1792" height="24" fill="#e8eaf6"/>
+<text x="20" y="334" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="8" y="353" width="1784" height="22" fill="#f5f5f5" rx="4"/>
+<text x="20" y="368" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="30" y="392" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
+<text x="30" y="409" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
+<text x="30" y="426" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
+<text x="30" y="443" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
+<text x="30" y="460" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
+<text x="30" y="477" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
+<text x="30" y="494" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
+<rect x="8" y="504" width="1784" height="22" fill="#f1f8e9" rx="4"/>
+<text x="20" y="519" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="30" y="543" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Width = time for that operation (wider = slower). Bottom = query root; top = leaf table access.</text>
+<text x="30" y="560" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click a frame to zoom in on that operation. Ctrl+F to search. Hover for time, rows and loops.</text>
+<text x="30" y="577" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Warnings below refer to specific operations by label (e.g. TABLE SCAN [users]).</text>
+<rect x="8" y="587" width="1784" height="22" fill="#e3f2fd" rx="4"/>
+<text x="20" y="602" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="30" y="626" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
+<rect x="8" y="636" width="1784" height="22" fill="#fff3f3" rx="4"/>
+<text x="20" y="651" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="30" y="675" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Row estimate off by 10× or more: salaries (estimated 1, actual 11 rows per loop, 11× under)</text>
+<text x="30" y="692" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Index lookup [salaries.PRIMARY]”</text>
+<text x="30" y="709" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: dept_emp (331603 rows)</text>
+<text x="30" y="726" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [dept_emp]”</text>
+<text x="30" y="743" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
+<text x="30" y="760" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="8" y="770" width="1784" height="22" fill="#e8f5e9" rx="4"/>
+<text x="20" y="785" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="30" y="809" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Refresh statistics with ANALYZE TABLE salaries. If a filter on a non-indexed column stays misestimated, add a histogram: on MySQL 8.0+, ANALYZE TABLE salaries UPDATE HISTOGRAM ON &lt;column&gt; WITH 100 BUCKETS; on MariaDB, ANALYZE TABLE salaries PERSISTENT FOR COLUMNS (&lt;column&gt;)</text>
+<text x="30" y="826" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">INDEXES (). Why: the optimizer picks join order and access methods from these estimates. InnoDB recalculates persistent statistics on its own only after about 10% of a table's rows change, and on MariaDB, under the default use_stat_tables=PREFERABLY_FOR_QUERIES, ANALYZE TABLE</text>
+<text x="30" y="843" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">collects column statistics and histograms only when you add PERSISTENT FOR.</text>
+<text x="30" y="860" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="30" y="877" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
 </svg>

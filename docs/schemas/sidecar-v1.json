@@ -139,7 +139,7 @@
       "required": ["severity", "category", "source", "text"],
       "properties": {
         "severity": { "type": "string", "enum": ["error", "warn", "info"] },
-        "category": { "type": "string", "enum": ["full_scan","filesort","temp_table","hash_join","bnl","semijoin","index_merge","nonsargable_join","env","engine","durability","other"] },
+        "category": { "type": "string", "enum": ["full_scan","filesort","temp_table","hash_join","bnl","semijoin","index_merge","nonsargable_join","misestimate","env","engine","durability","redundant_index","cold_cache","other"] },
         "source":   { "type": "string", "enum": ["plan", "environment"] },
         "text":     { "type": "string" },
         "node_labels": { "type": "array", "items": { "type": "string" } }
@@ -150,7 +150,7 @@
       "required": ["severity", "category", "action"],
       "properties": {
         "severity": { "type": "string", "enum": ["high", "medium", "low"] },
-        "category": { "type": "string", "enum": ["tuning_variable","index","optimizer_switch","engine","durability","rewrite","other"] },
+        "category": { "type": "string", "enum": ["tuning_variable","index","optimizer_switch","engine","durability","rewrite","statistics","other"] },
         "action":   { "type": "string" },
         "why":      { "type": "string" }
       }

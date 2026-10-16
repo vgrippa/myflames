@@ -21,6 +21,14 @@ def plan(op, inputs=None, **fields):
 
 
 class TestWorkbench(unittest.TestCase):
+    def test_accessible_title_uses_colon_and_preserves_plan_text(self):
+        root = plan('Table scan on t')
+        for title in ('Query plan', 'A < B & "quoted"', ''):
+            with self.subTest(title=title):
+                document = ET.fromstring(render_workbench(root, title=title))
+                expected = (title + ': ' if title else '') + 'Visual Explain'
+                self.assertEqual(document.find(SVG+'title').text, expected)
+
     def test_zoom_controls_are_labeled_and_have_feedback_styles(self):
         document = ET.fromstring(render_workbench(plan('Table scan on t')))
         controls = {item.attrib['data-action']: item

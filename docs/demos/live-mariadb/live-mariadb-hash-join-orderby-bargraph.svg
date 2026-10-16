@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="1662" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1662" style="max-width: 100%; height: auto;">
+<svg version="1.1" width="1200" height="1560" viewBox="0 0 1200 1560" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="max-width: 100%; height: auto;">
 <style>
   text { font-family: Arial, sans-serif; font-size: 12px; }
   .title { font-size: 18px; font-weight: bold; }
@@ -20,115 +20,111 @@
 </style>
 <rect width="100%" height="100%" fill="#fafafa"/>
 <text x="600.0" y="28" text-anchor="middle" class="title">Live MariaDB 11.4 — BNL join + ORDER BY</text>
-<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 1173 ms</text>
+<text x="600.0" y="46" text-anchor="middle" class="subtitle">Self-time per operation  ·  Total: 1297 ms</text>
 <text x="320" y="68" text-anchor="end" class="col-header">OPERATION</text>
 <text x="370.0" y="68" text-anchor="middle" class="col-header">LOOPS</text>
 <text x="730.0" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>
 <text id="search" x="1190" y="68" text-anchor="end">Search</text>
 <line x1="10" y1="72" x2="1190" y2="72" stroke="#e0e0e0" stroke-width="1"/>
-<line x1="10" y1="1528" x2="1190" y2="1528" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="10" y="1532" width="1180" height="130" fill="#f5f5f5" rx="4"/>
-<text id="details-l0" x="20" y="1540" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
-<text id="details-l1" x="20" y="1554" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="20" y="1568" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="20" y="1582" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="20" y="1596" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="20" y="1610" text-anchor="start" class="details-line"></text>
-<text id="details-l6" x="20" y="1624" text-anchor="start" class="details-line"></text>
-<text id="details-l7" x="20" y="1638" text-anchor="start" class="details-line"></text>
+<line x1="10" y1="1426" x2="1190" y2="1426" stroke="#e0e0e0" stroke-width="1"/>
+<rect x="10" y="1430" width="1180" height="130" fill="#f5f5f5" rx="4"/>
+<text id="details-l0" x="20" y="1438" text-anchor="start" class="details-line">Hover a bar for details; click to pin  ·  Ctrl+F to search</text>
+<text id="details-l1" x="20" y="1452" text-anchor="start" class="details-line"></text>
+<text id="details-l2" x="20" y="1466" text-anchor="start" class="details-line"></text>
+<text id="details-l3" x="20" y="1480" text-anchor="start" class="details-line"></text>
+<text id="details-l4" x="20" y="1494" text-anchor="start" class="details-line"></text>
+<text id="details-l5" x="20" y="1508" text-anchor="start" class="details-line"></text>
+<text id="details-l6" x="20" y="1522" text-anchor="start" class="details-line"></text>
+<text id="details-l7" x="20" y="1536" text-anchor="start" class="details-line"></text>
 <!-- end details area -->
-<text x="320" y="98.0" text-anchor="end" class="label">Sort</text>
+<text x="320" y="98.0" text-anchor="end" class="label">Nested loop inner join</text>
 <text x="370.0" y="98.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar in-query-analysis" x="410" y="80" width="640.0" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-info="Sort: sum(o.amount) desc  ·  Self: 1173 ms (100.0%)  ·  Rows: 5  ·  Loops: 1  ·  Access: sort" data-label="Sort" data-analysis-msg="1 sort operation(s) — 5 rows; may use disk-based filesort"/>
-<text x="1060" y="98.0" class="value">1173 ms (100.0%)</text>
+<rect class="bar" x="410" y="80" width="639.4559063985665" height="28" fill="rgb(255,90,90)" rx="3" ry="3" data-node-id="n:71b4ad99c5af" data-info="Nested loop inner join  ·  Self: 1296 ms (99.9%)  ·  Total: 1297 ms  ·  Rows: 8000  ·  Loops: 1  ·  Access: join" data-label="Nested loop inner join" data-teach-index="1"/>
+<text x="1060" y="98.0" class="value">1296 ms (99.9%)</text>
 <text x="320" y="132.0" text-anchor="end" class="label">Table scan [o]</text>
 <text x="370.0" y="132.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar in-query-analysis" x="410" y="114" width="3" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-info="Table scan on o  ·  Self: 0.848 ms (0.1%)  ·  Rows: 8000  ·  Loops: 1  ·  Table: o  ·  Access: table  ·  Est.rows: 7993  ·  Cond: concat('u',o.user_id) = concat('u',u.`id`)" data-label="Table scan [o]" data-analysis-msg="Non-sargable join predicate: CONCAT(...) in concat('u',o.user_id) = concat('u',u.`id`) — a function wrapped around the join column prevents index use."/>
-<text x="1060" y="132.0" class="value">0.848 ms (0.1%)</text>
+<rect class="bar in-query-analysis" x="410" y="114" width="3" height="28" fill="rgb(255,130,70)" rx="3" ry="3" data-node-id="n:ee0a97ddd30d" data-info="Table scan on o  ·  Self: 0.733 ms (0.1%)  ·  Rows: 8000  ·  Loops: 1  ·  Table: o  ·  Access: table  ·  Est.rows: 8213  ·  Cond: concat(&#39;u&#39;,o.user_id) = concat(&#39;u&#39;,u.`id`)" data-label="Table scan [o]" data-analysis-msg="Non-sargable join predicate: CONCAT(...) in concat(&#39;u&#39;,o.user_id) = concat(&#39;u&#39;,u.`id`) — a function wrapped around the join column prevents index use." data-teach-index="3"/>
+<text x="1060" y="132.0" class="value">0.733 ms (0.1%)</text>
 <text x="320" y="166.0" text-anchor="end" class="label">Table scan [u]</text>
 <text x="370.0" y="166.0" text-anchor="middle" class="loops">1</text>
-<rect class="bar in-query-analysis" x="410" y="148" width="3" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-info="Table scan on u  ·  Self: 0.310 ms (0.0%)  ·  Rows: 3000  ·  Loops: 1  ·  Table: u  ·  Access: table  ·  Est.rows: 3000  ·  Cond: u.`status` = 'active'" data-label="Table scan [u]" data-analysis-msg="Full table scan: u (3000 rows), o (8000 rows)"/>
-<text x="1060" y="166.0" class="value">0.310 ms (0.0%)</text>
-<rect x="10" y="330" width="1180" height="1332" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
-<rect x="10" y="340" width="1180" height="30" fill="#e8eaf6" rx="6"/>
-<rect x="10" y="346" width="1180" height="24" fill="#e8eaf6"/>
-<text x="26" y="359" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="14" y="378" width="1172" height="22" fill="#f5f5f5" rx="4"/>
-<text x="26" y="393" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
-<text x="36" y="417" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">SELECT u.country, SUM(o.amount) AS total</text>
-<text x="36" y="434" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">FROM users u</text>
-<text x="36" y="451" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id)</text>
-<text x="36" y="468" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">WHERE u.status='active'</text>
-<text x="36" y="485" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">GROUP BY u.country</text>
-<text x="36" y="502" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">ORDER BY total DESC</text>
-<rect x="14" y="512" width="1172" height="22" fill="#f1f8e9" rx="4"/>
-<text x="26" y="527" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="36" y="551" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
-<text x="36" y="568" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
-<rect x="14" y="578" width="1172" height="22" fill="#e3f2fd" rx="4"/>
-<text x="26" y="593" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="36" y="617" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">block_nested_loop=on — Buffers a batch of outer rows in a join buffer and scans the inner table once per batch instead of once per row. Inner still does a full/index/range scan — a</text>
-<text x="36" y="634" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">missing index on the join column is the root cause.</text>
-<rect x="14" y="644" width="1172" height="22" fill="#fff3f3" rx="4"/>
-<text x="26" y="659" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="36" y="683" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Non-sargable join predicate: CONCAT(...) in concat('u',o.user_id) = concat('u',u.`id`) — a function wrapped around the join column prevents index use.</text>
-<text x="36" y="700" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [o]”</text>
-<text x="36" y="717" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: u (3000 rows), o (8000 rows)</text>
-<text x="36" y="734" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [u]”, “Table scan [o]”</text>
-<text x="36" y="751" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 5 rows; may use disk-based filesort</text>
-<text x="36" y="768" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
-<text x="36" y="785" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)</text>
-<text x="36" y="802" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [o]”</text>
-<rect x="14" y="812" width="1172" height="22" fill="#e8f5e9" rx="4"/>
-<text x="26" y="827" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="36" y="851" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)'). Why: wrapping a column in a function</text>
-<text x="36" y="868" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets</text>
-<text x="36" y="885" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables.</text>
-<text x="36" y="902" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="36" y="919" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
-<text x="36" y="936" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes to eliminate BNL full/index scans, or increase join_buffer_size. In MySQL 8.0.20+, set block_nested_loop=off to force hash join instead</text>
-<rect x="14" y="946" width="1172" height="22" fill="#fff8e1" rx="4"/>
-<text x="26" y="961" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#e65100">📈  Index suggestions (heuristic — verify before applying)</text>
-<text x="36" y="985" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">•  Full scan on u with filter on (status)</text>
-<text x="36" y="1002" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">    CREATE INDEX idx_u_status ON u (status);</text>
-<text x="36" y="1019" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">•  Full scan on o with filter on (user_id)</text>
-<text x="36" y="1036" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">    CREATE INDEX idx_o_user_id ON o (user_id);</text>
-<rect x="14" y="1046" width="1172" height="22" fill="#fff3f3" rx="4"/>
-<text x="26" y="1061" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">🔍  Environment warnings (from collected server state)</text>
-<text x="36" y="1085" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.</text>
-<text x="36" y="1102" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Block Nested-Loop detected but join_buffer_size is only 256.0 KB. Build/batch phase may spill to tmpdir.</text>
-<text x="36" y="1119" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  optimizer_switch has mrr=off; range scans followed by filesort may read rows in random order.</text>
+<rect class="bar in-query-analysis" x="410" y="148" width="3" height="28" fill="rgb(255,165,50)" rx="3" ry="3" data-node-id="n:ad535b01566b" data-info="Table scan on u  ·  Self: 0.344 ms (0.0%)  ·  Rows: 3000  ·  Loops: 1  ·  Table: u  ·  Access: table  ·  Est.rows: 3000  ·  Cond: u.`status` = &#39;active&#39;" data-label="Table scan [u]" data-analysis-msg="Full table scan: u (3000 rows), o (8000 rows)" data-teach-index="2"/>
+<text x="1060" y="166.0" class="value">0.344 ms (0.0%)</text>
+<text x="320" y="200.0" text-anchor="end" class="label">Sort</text>
+<text x="370.0" y="200.0" text-anchor="middle" class="loops">1</text>
+<rect class="bar in-query-analysis" x="410" y="182" width="3" height="28" fill="rgb(255,200,50)" rx="3" ry="3" data-node-id="n:f4f29c429056" data-info="Sort: sum(o.amount) desc  ·  Self: 0.025 ms (0.0%)  ·  Total: 1297 ms  ·  Rows: 5  ·  Loops: 1  ·  Access: sort" data-label="Sort" data-analysis-msg="1 sort operation(s) — 5 rows; may use disk-based filesort" data-teach-index="0"/>
+<text x="1060" y="200.0" class="value">0.025 ms (0.0%)</text>
+<rect x="10" y="364" width="1180" height="1196" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="10" y="374" width="1180" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="10" y="380" width="1180" height="24" fill="#e8eaf6"/>
+<text x="26" y="393" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="14" y="412" width="1172" height="22" fill="#f5f5f5" rx="4"/>
+<text x="26" y="427" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="36" y="451" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">SELECT u.country, SUM(o.amount) AS total</text>
+<text x="36" y="468" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">FROM users u</text>
+<text x="36" y="485" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  JOIN orders o ON CONCAT('u', o.user_id) = CONCAT('u', u.id)</text>
+<text x="36" y="502" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">WHERE u.status='active'</text>
+<text x="36" y="519" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">GROUP BY u.country</text>
+<text x="36" y="536" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">ORDER BY total DESC</text>
+<rect x="14" y="546" width="1172" height="22" fill="#f1f8e9" rx="4"/>
+<text x="26" y="561" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="36" y="585" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Bar width = self-time (time in this operation only). Darker bars = slower.</text>
+<text x="36" y="602" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Where a warning applies: hover the bar — it will show “In Query Analysis” and the info panel lists the bar label.</text>
+<rect x="14" y="612" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="627" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="36" y="651" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">block_nested_loop=on — Buffers a batch of outer rows in a join buffer and scans the inner table once per batch instead of once per row. Inner still does a full/index/range scan — a</text>
+<text x="36" y="668" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">missing index on the join column is the root cause.</text>
+<rect x="14" y="678" width="1172" height="22" fill="#fff3f3" rx="4"/>
+<text x="26" y="693" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="36" y="717" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Non-sargable join predicate: CONCAT(...) in concat('u',o.user_id) = concat('u',u.`id`) — a function wrapped around the join column prevents index use.</text>
+<text x="36" y="734" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [o]”</text>
+<text x="36" y="751" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: u (3000 rows), o (8000 rows)</text>
+<text x="36" y="768" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [u]”, “Table scan [o]”</text>
+<text x="36" y="785" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 5 rows; may use disk-based filesort</text>
+<text x="36" y="802" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<text x="36" y="819" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Block Nested-Loop (BNL) join buffer detected — uses join_buffer_size (Extra: 'Using join buffer (Block Nested Loop)', type ALL/index/range)</text>
+<text x="36" y="836" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [o]”</text>
+<rect x="14" y="846" width="1172" height="22" fill="#e8f5e9" rx="4"/>
+<text x="26" y="861" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="36" y="885" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Rewrite the join condition to compare the bare column on both sides (e.g. 'a.id = b.other_id' instead of 'CONCAT(a.id)=CONCAT(b.other_id)'). Why: wrapping a column in a function</text>
+<text x="36" y="902" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">means the optimizer cannot use any index on that column — every row-pair is evaluated in the server layer, making the cost O(outer × inner). Dropping the function lets</text>
+<text x="36" y="919" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">MySQL/MariaDB pick an index lookup or hash join with real selectivity, typically 100–1000× faster on mid-sized tables.</text>
+<text x="36" y="936" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="36" y="953" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<text x="36" y="970" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes to eliminate BNL full/index scans, or increase join_buffer_size. In MySQL 8.0.20+, set block_nested_loop=off to force hash join instead</text>
+<rect x="14" y="980" width="1172" height="22" fill="#fff8e1" rx="4"/>
+<text x="26" y="995" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#e65100">📈  Index suggestions (heuristic — verify before applying)</text>
+<text x="36" y="1019" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">•  Full scan on u with filter on (status)</text>
+<text x="36" y="1036" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">    CREATE INDEX idx_u_status ON u (status);</text>
+<text x="36" y="1053" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">•  Full scan on o with filter on (user_id)</text>
+<text x="36" y="1070" font-family="Courier New,Courier,monospace" font-size="11" fill="#bf360c">    CREATE INDEX idx_o_user_id ON o (user_id);</text>
+<rect x="14" y="1080" width="1172" height="22" fill="#fff3f3" rx="4"/>
+<text x="26" y="1095" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">🔍  Environment warnings (from collected server state)</text>
+<text x="36" y="1119" font-family="Arial,sans-serif" font-size="11" fill="#c62828">⚠  Block Nested-Loop detected but join_buffer_size is only 256.0 KB. Build/batch phase may spill to tmpdir.</text>
 <rect x="14" y="1129" width="1172" height="22" fill="#e8f5e9" rx="4"/>
 <text x="26" y="1144" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">⚙  Environment tuning suggestions</text>
-<text x="36" y="1168" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024). Why: when the sort set does not fit in sort_buffer_size, MySQL writes multiple</text>
-<text x="36" y="1185" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort.</text>
-<text x="36" y="1202" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.</text>
-<text x="36" y="1219" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise join_buffer_size per-session to 2M–8M (SET SESSION join_buffer_size = 8*1024*1024). Why: BNL scans the inner table once per outer batch that fits in the join buffer. A</text>
-<text x="36" y="1236" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">tiny buffer means more batches, and each batch triggers another full scan of the inner side. Bigger win: add an index on the join column — that removes the need for the join buffer</text>
-<text x="36" y="1253" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">entirely by turning the join into an indexed lookup.</text>
-<text x="36" y="1270" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Consider SET SESSION optimizer_switch='mrr=on,mrr_cost_based=on'; Why: Multi-Range Read collects row IDs from a secondary-index range scan, sorts them by primary key, and then</text>
-<text x="36" y="1287" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">fetches rows in (mostly) physical order. Without MRR, InnoDB has to dereference each secondary-index row in secondary-index order, which translates to random I/O on the clustered</text>
-<text x="36" y="1304" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">index and hurts both disk and buffer-pool cache locality.</text>
-<rect x="14" y="1314" width="1172" height="22" fill="#e3f2fd" rx="4"/>
-<text x="26" y="1329" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected session variables</text>
-<text x="36" y="1353" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 11.4.10-MariaDB-ubu2404</text>
-<text x="36" y="1370" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_buffer_pool_size = 134217728</text>
-<text x="36" y="1387" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_log_file_size = 100663296</text>
-<text x="36" y="1404" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_flush_log_at_trx_commit = 1</text>
-<text x="36" y="1421" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">sort_buffer_size = 262144</text>
-<text x="36" y="1438" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">join_buffer_size = 262144</text>
-<text x="36" y="1455" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">tmp_table_size = 16777216</text>
-<text x="36" y="1472" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">max_heap_table_size = 16777216</text>
-<text x="36" y="1489" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">optimizer_switch =</text>
-<text x="36" y="1506" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=off,sargable_casefold=on</text>
-<rect x="14" y="1516" width="1172" height="22" fill="#e3f2fd" rx="4"/>
-<text x="26" y="1531" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected table stats (information_schema.tables)</text>
-<text x="36" y="1555" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users: rows=3000, data=180224, idx=81920</text>
-<text x="36" y="1572" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders: rows=7993, data=425984, idx=180224</text>
-<rect x="14" y="1582" width="1172" height="22" fill="#e3f2fd" rx="4"/>
-<text x="26" y="1597" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected schema (SHOW CREATE TABLE)</text>
-<text x="36" y="1621" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users — 5 cols, indexes: PRIMARY, idx_country</text>
-<text x="36" y="1638" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders — 5 cols, indexes: PRIMARY, idx_user</text>
+<text x="36" y="1168" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Raise join_buffer_size per-session to 2M–8M (SET SESSION join_buffer_size = 8*1024*1024). Why: BNL scans the inner table once per outer batch that fits in the join buffer. A</text>
+<text x="36" y="1185" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">tiny buffer means more batches, and each batch triggers another full scan of the inner side. Bigger win: add an index on the join column — that removes the need for the join buffer</text>
+<text x="36" y="1202" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">entirely by turning the join into an indexed lookup.</text>
+<rect x="14" y="1212" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="1227" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected session variables</text>
+<text x="36" y="1251" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">version = 11.4.13-MariaDB-ubu2404</text>
+<text x="36" y="1268" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_buffer_pool_size = 134217728</text>
+<text x="36" y="1285" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_log_file_size = 100663296</text>
+<text x="36" y="1302" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">innodb_flush_log_at_trx_commit = 1</text>
+<text x="36" y="1319" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">sort_buffer_size = 2097152</text>
+<text x="36" y="1336" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">join_buffer_size = 262144</text>
+<text x="36" y="1353" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">tmp_table_size = 16777216</text>
+<text x="36" y="1370" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">max_heap_table_size = 16777216</text>
+<text x="36" y="1387" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">optimizer_switch =</text>
+<text x="36" y="1404" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=off,sargable_casefold=on</text>
+<rect x="14" y="1414" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="1429" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected table stats (information_schema.tables)</text>
+<text x="36" y="1453" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users: rows=3000, data=180224, idx=81920</text>
+<text x="36" y="1470" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders: rows=8213, data=425984, idx=180224</text>
+<rect x="14" y="1480" width="1172" height="22" fill="#e3f2fd" rx="4"/>
+<text x="26" y="1495" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Collected schema (SHOW CREATE TABLE)</text>
+<text x="36" y="1519" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.users — 5 cols, indexes: PRIMARY, idx_country</text>
+<text x="36" y="1536" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">demodb.orders — 5 cols, indexes: PRIMARY, idx_user</text>
 <script type="text/ecmascript"><![CDATA[
 (function() {
   var detailLines = [];
@@ -206,30 +202,57 @@
     });
   }
 
-  function searchPrompt() {
-    if (searchBtn.textContent === "Reset Search") {
-      var bars = document.querySelectorAll(".bar");
-      for (var i = 0; i < bars.length; i++) {
-        bars[i].style.opacity = "";
-        bars[i].style.stroke = "";
-        bars[i].style.strokeWidth = "";
-      }
-      searchBtn.textContent = "Search";
-      if (!pinnedBar) clearDetails();
-      searching = false;
-      return;
+  // Slice 4 / V4 — unified search: honest match count + next/prev.
+  var _searchMatches = [];
+  var _searchIdx = 0;
+
+  function _clearSearchStyles() {
+    var bars = document.querySelectorAll(".bar");
+    for (var i = 0; i < bars.length; i++) {
+      bars[i].style.opacity = "";
+      bars[i].style.stroke = "";
+      bars[i].style.strokeWidth = "";
     }
+  }
+
+  function _focusMatch(idx) {
+    if (!_searchMatches.length) return;
+    var n = _searchMatches.length;
+    _searchIdx = ((idx % n) + n) % n;
+    for (var i = 0; i < n; i++) {
+      var active = (i === _searchIdx);
+      _searchMatches[i].style.stroke = active ? "rgb(230,0,230)" : "rgb(210,140,210)";
+      _searchMatches[i].style.strokeWidth = active ? "3" : "1.5";
+    }
+    try {
+      _searchMatches[_searchIdx].scrollIntoView({block: "center", behavior: "smooth"});
+    } catch (e) {}
+    setDetailsText([
+      "Match " + (_searchIdx + 1) + "/" + n + "  ·  n=next, N=prev, Esc=clear"
+    ]);
+  }
+
+  function _clearSearch() {
+    _clearSearchStyles();
+    _searchMatches = [];
+    searchBtn.textContent = "Search";
+    if (!pinnedBar) clearDetails();
+    searching = false;
+  }
+
+  function searchPrompt() {
+    if (searchBtn.textContent === "Reset Search") { _clearSearch(); return; }
     var term = prompt("Search (regex):");
     if (term == null) return;
     var re;
     try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
     var bars = document.querySelectorAll(".bar");
+    _searchMatches = [];
     for (var i = 0; i < bars.length; i++) {
       var label = bars[i].getAttribute("data-label") || "";
       if (re.test(label)) {
         bars[i].style.opacity = "1";
-        bars[i].style.stroke = "rgb(230,0,230)";
-        bars[i].style.strokeWidth = "2";
+        _searchMatches.push(bars[i]);
       } else {
         bars[i].style.opacity = "0.3";
         bars[i].style.stroke = "";
@@ -238,8 +261,27 @@
     }
     searchBtn.textContent = "Reset Search";
     searching = true;
-    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
+    if (!_searchMatches.length) {
+      setDetailsText([
+        "0 matches for " + term + "  ·  Click ‘Reset Search’ to clear"
+      ]);
+      return;
+    }
+    _focusMatch(0);
   }
+
+  function _searchNext(delta) {
+    if (!_searchMatches.length) return;
+    _focusMatch(_searchIdx + delta);
+  }
+
+  document.addEventListener("keydown", function(e) {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (e.key === "n" && _searchMatches.length) { _searchNext(1); e.preventDefault(); }
+    else if (e.key === "N" && _searchMatches.length) { _searchNext(-1); e.preventDefault(); }
+    else if (e.key === "Escape" && _searchMatches.length) { _clearSearch(); e.preventDefault(); }
+    else if (e.key === "/") { e.preventDefault(); searchPrompt(); }
+  });
 
   window.init = init;
 })();

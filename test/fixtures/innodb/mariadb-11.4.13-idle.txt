@@ -1,0 +1,64 @@
+
+=====================================
+2026-10-14 17:33:12 0xffff79cc0040 INNODB MONITOR OUTPUT
+=====================================
+Per second averages calculated from the last 0 seconds
+-----------------
+BACKGROUND THREAD
+-----------------
+srv_master_thread loops: 0 srv_active, 61 srv_idle
+srv_master_thread log flush and writes: 61
+----------
+SEMAPHORES
+----------
+------------
+TRANSACTIONS
+------------
+Trx id counter 16
+Purge done for trx's n:o < 0 undo n:o < 0 state: running but idle
+History list length 0
+LIST OF TRANSACTIONS FOR EACH SESSION:
+--------
+FILE I/O
+--------
+Pending flushes (fsync): 0
+166 OS file reads, 0 OS file writes, 1 OS fsyncs
+0.00 reads/s, 0 avg bytes/read, 0.00 writes/s, 0.00 fsyncs/s
+---
+LOG
+---
+Log sequence number 45450
+Log flushed up to   45450
+Pages flushed up to 45450
+Last checkpoint at  45434
+----------------------
+BUFFER POOL AND MEMORY
+----------------------
+Total large memory allocated 301989888
+Dictionary memory allocated 1682648
+Buffer pool size   16224
+Free buffers       15941
+Database pages     283
+Old database pages 0
+Modified db pages  0
+Percent of dirty pages(LRU & free pages): 0.000
+Max dirty pages percent: 90.000
+Pending reads 0
+Pending writes: LRU 0, flush list 0
+Pages made young 0, not young 0
+0.00 youngs/s, 0.00 non-youngs/s
+Pages read 152, created 131, written 0
+0.00 reads/s, 0.00 creates/s, 0.00 writes/s
+No buffer pool page gets since the last printout
+Pages read ahead 0.00/s, evicted without access 0.00/s, Random read ahead 0.00/s
+LRU len: 283, unzip_LRU len: 0
+I/O sum[0]:cur[0], unzip sum[0]:cur[0]
+--------------
+ROW OPERATIONS
+--------------
+0 read views open inside InnoDB
+state: sleeping
+----------------------------
+END OF INNODB MONITOR OUTPUT
+============================
+

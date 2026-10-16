@@ -1,0 +1,532 @@
+{
+ "args": {
+  "interval": 5,
+  "limit": 20
+ },
+ "calls": [
+  [
+   "/*myflames:waits*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment')",
+   "performance_schema\tON\nversion\t9.7.2\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:waits*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t807\n"
+  ],
+  [
+   "/*myflames:waits*/ SELECT SUBSTRING_INDEX(NAME, '/', 3) AS wait_class, SUM(ENABLED = 'YES'), SUM(TIMED = 'YES'), COUNT(*) FROM performance_schema.setup_instruments WHERE NAME LIKE 'wait/%' GROUP BY wait_class",
+   "wait/synch/mutex\t0\t0\t236\nwait/synch/rwlock\t0\t0\t33\nwait/synch/prlock\t0\t0\t2\nwait/synch/sxlock\t0\t0\t15\nwait/synch/cond\t0\t0\t56\nwait/io/file\t51\t51\t51\nwait/io/table\t1\t1\t1\nwait/lock/table\t1\t1\t1\nwait/io/socket\t0\t0\t7\nwait/lock/metadata\t1\t1\t1\n"
+  ],
+  [
+   "/*myflames:waits*/ SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN ('global_instrumentation', 'thread_instrumentation')",
+   "global_instrumentation\tYES\nthread_instrumentation\tYES\n"
+  ],
+  [
+   "/*myflames:waits*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime'",
+   "Uptime\t807\n"
+  ],
+  [
+   "/*myflames:waits*/ SELECT EVENT_NAME, COUNT_STAR, SUM_TIMER_WAIT, MAX_TIMER_WAIT FROM performance_schema.events_waits_summary_global_by_event_name WHERE EVENT_NAME LIKE 'wait/%' AND COUNT_STAR > 0",
+   "wait/io/file/sql/binlog\t592\t8209685244\t1666802754\nwait/io/file/sql/binlog_index\t23\t170774528\t92725232\nwait/io/file/sql/io_cache\t60\t865338215\t116031619\nwait/io/file/sql/casetest\t15\t201585655\t158766944\nwait/io/file/sql/ERRMSG\t5\t135377171\t119075208\nwait/io/file/sql/misc\t5\t21138351\t10590022\nwait/io/file/sql/pid\t3\t28934942\t18386613\nwait/io/file/mysys/charset\t3\t9047381\t4210993\nwait/io/file/mysys/cnf\t5\t7004424\t4044221\nwait/io/file/innodb/innodb_dblwr_file\t14\t4054811022\t1143555604\nwait/io/file/innodb/innodb_data_file\t2317\t70235944414\t3761959390\nwait/io/file/innodb/innodb_log_file\t447\t75936336453\t2036077655\nwait/io/file/innodb/innodb_temp_file\t90\t26699655191\t1911332199\nwait/io/table/sql/handler\t1057510\t142152241807\t11375684892\nwait/lock/table/sql/handler\t46\t16260270\t3752370\nwait/io/socket/sql/client_connection\t455\t0\t0\n"
+  ],
+  [
+   "/*myflames:waits*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime'",
+   "Uptime\t812\n"
+  ],
+  [
+   "/*myflames:waits*/ SELECT EVENT_NAME, COUNT_STAR, SUM_TIMER_WAIT, MAX_TIMER_WAIT FROM performance_schema.events_waits_summary_global_by_event_name WHERE EVENT_NAME LIKE 'wait/%' AND COUNT_STAR > 0",
+   "wait/io/file/sql/binlog\t1517\t89194918918\t3436295367\nwait/io/file/sql/binlog_index\t23\t170774528\t92725232\nwait/io/file/sql/io_cache\t612\t8061508322\t186617868\nwait/io/file/sql/casetest\t15\t201585655\t158766944\nwait/io/file/sql/ERRMSG\t5\t135377171\t119075208\nwait/io/file/sql/misc\t5\t21138351\t10590022\nwait/io/file/sql/pid\t3\t28934942\t18386613\nwait/io/file/mysys/charset\t3\t9047381\t4210993\nwait/io/file/mysys/cnf\t5\t7004424\t4044221\nwait/io/file/innodb/innodb_dblwr_file\t24\t17598240063\t2768790437\nwait/io/file/innodb/innodb_data_file\t3557\t106697556932\t5756385738\nwait/io/file/innodb/innodb_log_file\t2346\t169732536544\t2917259210\nwait/io/file/innodb/innodb_temp_file\t90\t26699655191\t1911332199\nwait/io/table/sql/handler\t11959603\t1281570649417\t24435933756\nwait/lock/table/sql/handler\t462\t176820013\t12299435\nwait/io/socket/sql/client_connection\t3033\t0\t0\nwait/lock/metadata/sql/mdl\t2\t4978844267163\t2502706711632\n"
+  ]
+ ],
+ "report": {
+  "available": true,
+  "coverage": [
+   {
+    "class": "wait/io/file",
+    "enabled": 51,
+    "explain": "Reads, writes, syncs and opens of files: data files, redo and undo logs, binary logs, temporary files.",
+    "label": "File I/O",
+    "state": "on",
+    "timed": 51,
+    "total": 51
+   },
+   {
+    "class": "wait/io/table",
+    "enabled": 1,
+    "explain": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events.",
+    "label": "Table I/O",
+    "state": "on",
+    "timed": 1,
+    "total": 1
+   },
+   {
+    "class": "wait/lock/table",
+    "enabled": 1,
+    "explain": "Table-level lock requests made through the storage engine interface.",
+    "label": "Table locks",
+    "state": "on",
+    "timed": 1,
+    "total": 1
+   },
+   {
+    "class": "wait/lock/metadata",
+    "enabled": 1,
+    "explain": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+    "label": "Metadata locks",
+    "state": "on",
+    "timed": 1,
+    "total": 1
+   },
+   {
+    "class": "wait/synch/mutex",
+    "enable": {
+     "config": "performance-schema-instrument = 'wait/synch/mutex/%=ON'",
+     "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/mutex/%';"
+    },
+    "enabled": 0,
+    "explain": "Short-term internal locks that protect shared memory structures.",
+    "label": "Mutexes",
+    "state": "off",
+    "timed": 0,
+    "total": 236
+   },
+   {
+    "class": "wait/synch/rwlock",
+    "enable": {
+     "config": "performance-schema-instrument = 'wait/synch/rwlock/%=ON'",
+     "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/rwlock/%';"
+    },
+    "enabled": 0,
+    "explain": "Internal read/write locks.",
+    "label": "Read/write locks",
+    "state": "off",
+    "timed": 0,
+    "total": 33
+   },
+   {
+    "class": "wait/synch/sxlock",
+    "enable": {
+     "config": "performance-schema-instrument = 'wait/synch/sxlock/%=ON'",
+     "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/sxlock/%';"
+    },
+    "enabled": 0,
+    "explain": "InnoDB's shared/exclusive internal locks (for example on index pages).",
+    "label": "Shared/exclusive locks",
+    "state": "off",
+    "timed": 0,
+    "total": 15
+   },
+   {
+    "class": "wait/synch/prlock",
+    "enable": {
+     "config": "performance-schema-instrument = 'wait/synch/prlock/%=ON'",
+     "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/prlock/%';"
+    },
+    "enabled": 0,
+    "explain": "Internal read/write locks that prefer readers.",
+    "label": "Priority read/write locks",
+    "state": "off",
+    "timed": 0,
+    "total": 2
+   },
+   {
+    "class": "wait/synch/cond",
+    "enable": {
+     "config": "performance-schema-instrument = 'wait/synch/cond/%=ON'",
+     "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/cond/%';"
+    },
+    "enabled": 0,
+    "explain": "Threads waiting to be signalled by another thread (for example a group commit).",
+    "label": "Condition waits",
+    "state": "off",
+    "timed": 0,
+    "total": 56
+   },
+   {
+    "class": "wait/io/socket",
+    "enable": {
+     "config": "performance-schema-instrument = 'wait/io/socket/%=ON'",
+     "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/io/socket/%';"
+    },
+    "enabled": 0,
+    "explain": "Network reads and writes on client and replication connections.",
+    "label": "Socket I/O",
+    "state": "off",
+    "timed": 0,
+    "total": 7
+   }
+  ],
+  "elapsed_s": 5.052,
+  "engine": "mysql",
+  "interval": 5,
+  "notes": [
+   "Some wait classes are not instrumented (mutexes 0 of 236 on, read/write locks 0 of 33 on, shared/exclusive locks 0 of 15 on, priority read/write locks 0 of 2 on, condition waits 0 of 56 on, socket i/o 0 of 7 on), so their waits are not in this report. No mutex or rwlock waits here never means no contention.",
+   "1 event(s) were counted but not timed, so they are not ranked: wait/io/socket/sql/client_connection.",
+   "Wait time is summed across all threads, background threads included, so it can exceed the wall-clock window. Table I/O includes the file I/O and internal lock waits inside each call, which are counted again under their own events, so the classes are never added up.",
+   "InnoDB asynchronous I/O (read-ahead, page cleaner writes) is timed only for submitting the request, so its latency is understated. Bytes are exact (see I/O).",
+   "Since server start covers 13 min 27 s of uptime; the longest single wait (max) is since start too, never per window."
+  ],
+  "performance_schema": true,
+  "restarted": false,
+  "schema_version": "waits-1.0",
+  "server_version": "9.7.2",
+  "since_start": {
+   "classes": [
+    {
+     "class": "wait/lock/metadata",
+     "count": 2,
+     "events": 1,
+     "explain": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+     "label": "Metadata locks",
+     "wait_ms": 4978.844
+    },
+    {
+     "class": "wait/io/table",
+     "count": 11959603,
+     "events": 1,
+     "explain": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events.",
+     "label": "Table I/O",
+     "wait_ms": 1281.571
+    },
+    {
+     "class": "wait/io/file",
+     "count": 8205,
+     "events": 13,
+     "explain": "Reads, writes, syncs and opens of files: data files, redo and undo logs, binary logs, temporary files.",
+     "label": "File I/O",
+     "wait_ms": 418.56
+    },
+    {
+     "class": "wait/lock/table",
+     "count": 462,
+     "events": 1,
+     "explain": "Table-level lock requests made through the storage engine interface.",
+     "label": "Table locks",
+     "wait_ms": 0.177
+    }
+   ],
+   "events": [
+    {
+     "avg_ms": 2489.4221,
+     "class": "wait/lock/metadata",
+     "class_label": "Metadata locks",
+     "count": 2,
+     "event": "wait/lock/metadata/sql/mdl",
+     "max_ms": 2502.7067,
+     "meaning": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+     "timed": true,
+     "wait_ms": 4978.844
+    },
+    {
+     "avg_ms": 0.0001,
+     "class": "wait/io/table",
+     "class_label": "Table I/O",
+     "count": 11959603,
+     "event": "wait/io/table/sql/handler",
+     "max_ms": 24.4359,
+     "meaning": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events.",
+     "timed": true,
+     "wait_ms": 1281.571
+    },
+    {
+     "avg_ms": 0.0723,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 2346,
+     "event": "wait/io/file/innodb/innodb_log_file",
+     "max_ms": 2.9173,
+     "meaning": "The InnoDB redo log: writes and syncs. Commit latency depends on it when innodb_flush_log_at_trx_commit is 1.",
+     "timed": true,
+     "wait_ms": 169.733
+    },
+    {
+     "avg_ms": 0.03,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 3557,
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "max_ms": 5.7564,
+     "meaning": "InnoDB tablespace files (.ibd, the system tablespace, undo tablespaces). Read-ahead and page cleaner writes are timed only for submitting the request, so their latency is understated.",
+     "timed": true,
+     "wait_ms": 106.698
+    },
+    {
+     "avg_ms": 0.0588,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 1517,
+     "event": "wait/io/file/sql/binlog",
+     "max_ms": 3.4363,
+     "meaning": "Binary log writes and syncs (sync_binlog controls how often they sync).",
+     "timed": true,
+     "wait_ms": 89.195
+    },
+    {
+     "avg_ms": 0.2967,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 90,
+     "event": "wait/io/file/innodb/innodb_temp_file",
+     "max_ms": 1.9113,
+     "meaning": "InnoDB temporary tablespace files (internal temporary tables on disk).",
+     "timed": true,
+     "wait_ms": 26.7
+    },
+    {
+     "avg_ms": 0.7333,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 24,
+     "event": "wait/io/file/innodb/innodb_dblwr_file",
+     "max_ms": 2.7688,
+     "meaning": "The InnoDB doublewrite buffer files (MySQL).",
+     "timed": true,
+     "wait_ms": 17.598
+    },
+    {
+     "avg_ms": 0.0132,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 612,
+     "event": "wait/io/file/sql/io_cache",
+     "max_ms": 0.1866,
+     "meaning": "Temporary files written through the server's I/O cache, such as filesort merge files.",
+     "timed": true,
+     "wait_ms": 8.062
+    },
+    {
+     "avg_ms": 0.0134,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 15,
+     "event": "wait/io/file/sql/casetest",
+     "max_ms": 0.1588,
+     "meaning": "A file read, write or sync (sql/casetest).",
+     "timed": true,
+     "wait_ms": 0.202
+    },
+    {
+     "avg_ms": 0.0004,
+     "class": "wait/lock/table",
+     "class_label": "Table locks",
+     "count": 462,
+     "event": "wait/lock/table/sql/handler",
+     "max_ms": 0.0123,
+     "meaning": "Table-level lock requests made through the storage engine interface.",
+     "timed": true,
+     "wait_ms": 0.177
+    },
+    {
+     "avg_ms": 0.0074,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 23,
+     "event": "wait/io/file/sql/binlog_index",
+     "max_ms": 0.0927,
+     "meaning": "The binary log index file.",
+     "timed": true,
+     "wait_ms": 0.171
+    },
+    {
+     "avg_ms": 0.0271,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 5,
+     "event": "wait/io/file/sql/ERRMSG",
+     "max_ms": 0.1191,
+     "meaning": "A file read, write or sync (sql/ERRMSG).",
+     "timed": true,
+     "wait_ms": 0.135
+    },
+    {
+     "avg_ms": 0.0096,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 3,
+     "event": "wait/io/file/sql/pid",
+     "max_ms": 0.0184,
+     "meaning": "A file read, write or sync (sql/pid).",
+     "timed": true,
+     "wait_ms": 0.029
+    },
+    {
+     "avg_ms": 0.0042,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 5,
+     "event": "wait/io/file/sql/misc",
+     "max_ms": 0.0106,
+     "meaning": "A file read, write or sync (sql/misc).",
+     "timed": true,
+     "wait_ms": 0.021
+    },
+    {
+     "avg_ms": 0.003,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 3,
+     "event": "wait/io/file/mysys/charset",
+     "max_ms": 0.0042,
+     "meaning": "A file read, write or sync (mysys/charset).",
+     "timed": true,
+     "wait_ms": 0.009
+    },
+    {
+     "avg_ms": 0.0014,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 5,
+     "event": "wait/io/file/mysys/cnf",
+     "max_ms": 0.004,
+     "meaning": "A file read, write or sync (mysys/cnf).",
+     "timed": true,
+     "wait_ms": 0.007
+    }
+   ],
+   "more": 0,
+   "uptime_s": 812
+  },
+  "started_at": "2026-10-13T17:14:08.898566+00:00",
+  "taken_at": "2026-10-13T17:14:13.950235+00:00",
+  "unavailable": null,
+  "uptime_s": 807,
+  "window": {
+   "classes": [
+    {
+     "class": "wait/lock/metadata",
+     "count": 2,
+     "events": 1,
+     "explain": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+     "label": "Metadata locks",
+     "wait_ms": 4978.844,
+     "wait_ms_per_s": 985.519
+    },
+    {
+     "class": "wait/io/table",
+     "count": 10902093,
+     "events": 1,
+     "explain": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events.",
+     "label": "Table I/O",
+     "wait_ms": 1139.418,
+     "wait_ms_per_s": 225.538
+    },
+    {
+     "class": "wait/io/file",
+     "count": 4626,
+     "events": 5,
+     "explain": "Reads, writes, syncs and opens of files: data files, redo and undo logs, binary logs, temporary files.",
+     "label": "File I/O",
+     "wait_ms": 231.982,
+     "wait_ms_per_s": 45.918
+    },
+    {
+     "class": "wait/lock/table",
+     "count": 416,
+     "events": 1,
+     "explain": "Table-level lock requests made through the storage engine interface.",
+     "label": "Table locks",
+     "wait_ms": 0.161,
+     "wait_ms_per_s": 0.032
+    }
+   ],
+   "events": [
+    {
+     "avg_ms": 2489.4221,
+     "class": "wait/lock/metadata",
+     "class_label": "Metadata locks",
+     "count": 2,
+     "event": "wait/lock/metadata/sql/mdl",
+     "meaning": "Waits for metadata locks: DDL waiting for open transactions, or statements waiting behind DDL, LOCK TABLES or FLUSH TABLES WITH READ LOCK.",
+     "timed": true,
+     "wait_ms": 4978.844,
+     "wait_ms_per_s": 985.519
+    },
+    {
+     "avg_ms": 0.0001,
+     "class": "wait/io/table",
+     "class_label": "Table I/O",
+     "count": 10902093,
+     "event": "wait/io/table/sql/handler",
+     "meaning": "Row operations through the storage engine interface (fetch, insert, update, delete). Each wait covers the whole engine call, so file I/O and internal lock waits inside it are counted here and again under their own events.",
+     "timed": true,
+     "wait_ms": 1139.418,
+     "wait_ms_per_s": 225.538
+    },
+    {
+     "avg_ms": 0.0494,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 1899,
+     "event": "wait/io/file/innodb/innodb_log_file",
+     "meaning": "The InnoDB redo log: writes and syncs. Commit latency depends on it when innodb_flush_log_at_trx_commit is 1.",
+     "timed": true,
+     "wait_ms": 93.796,
+     "wait_ms_per_s": 18.566
+    },
+    {
+     "avg_ms": 0.0876,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 925,
+     "event": "wait/io/file/sql/binlog",
+     "meaning": "Binary log writes and syncs (sync_binlog controls how often they sync).",
+     "timed": true,
+     "wait_ms": 80.985,
+     "wait_ms_per_s": 16.03
+    },
+    {
+     "avg_ms": 0.0294,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 1240,
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "meaning": "InnoDB tablespace files (.ibd, the system tablespace, undo tablespaces). Read-ahead and page cleaner writes are timed only for submitting the request, so their latency is understated.",
+     "timed": true,
+     "wait_ms": 36.462,
+     "wait_ms_per_s": 7.217
+    },
+    {
+     "avg_ms": 1.3543,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 10,
+     "event": "wait/io/file/innodb/innodb_dblwr_file",
+     "meaning": "The InnoDB doublewrite buffer files (MySQL).",
+     "timed": true,
+     "wait_ms": 13.543,
+     "wait_ms_per_s": 2.681
+    },
+    {
+     "avg_ms": 0.013,
+     "class": "wait/io/file",
+     "class_label": "File I/O",
+     "count": 552,
+     "event": "wait/io/file/sql/io_cache",
+     "meaning": "Temporary files written through the server's I/O cache, such as filesort merge files.",
+     "timed": true,
+     "wait_ms": 7.196,
+     "wait_ms_per_s": 1.424
+    },
+    {
+     "avg_ms": 0.0004,
+     "class": "wait/lock/table",
+     "class_label": "Table locks",
+     "count": 416,
+     "event": "wait/lock/table/sql/handler",
+     "meaning": "Table-level lock requests made through the storage engine interface.",
+     "timed": true,
+     "wait_ms": 0.161,
+     "wait_ms_per_s": 0.032
+    }
+   ],
+   "more": 0,
+   "status": "ok",
+   "untimed": [
+    {
+     "count": 2578,
+     "event": "wait/io/socket/sql/client_connection"
+    }
+   ]
+  }
+ },
+ "server": "mysql-9.7"
+}

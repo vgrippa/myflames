@@ -1,0 +1,61 @@
+{
+ "server": "mariadb-11.4",
+ "version": "11.4.13-MariaDB-ubu2404",
+ "scenario": "block",
+ "user": "root",
+ "args": {
+  "name": "innodb_log_file_size",
+  "value": "100000000",
+  "mode": "global",
+  "apply": true,
+  "between": null
+ },
+ "calls": [
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'innodb_log_file_size', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'innodb_log_file_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\ninnodb_log_file_size\t100663296\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\nmyflames:session\ninnodb_log_file_size\t100663296\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'INNODB_LOG_FILE_SIZE'",
+   "INNODB_LOG_FILE_SIZE\tNULL\t100663296\tCOMPILE-TIME\t100663296\tGLOBAL\tBIGINT UNSIGNED\t4194304\t18446744073709551615\t4096\tNULL\tNO\tNULL\tRedo log size in bytes.\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GRANTS",
+   "GRANT ALL PRIVILEGES ON *.* TO `root`@`%` IDENTIFIED BY PASSWORD '*284E87FC0AF18FACF1B87EE6FD8E1381AE081615' WITH GRANT OPTION\nGRANT PROXY ON ``@`%` TO `root`@`%` WITH GRANT OPTION\n"
+  ],
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'innodb_log_file_size', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'innodb_log_file_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\ninnodb_log_file_size\t100663296\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\nmyflames:session\ninnodb_log_file_size\t100663296\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'INNODB_LOG_FILE_SIZE'",
+   "INNODB_LOG_FILE_SIZE\tNULL\t100663296\tCOMPILE-TIME\t100663296\tGLOBAL\tBIGINT UNSIGNED\t4194304\t18446744073709551615\t4096\tNULL\tNO\tNULL\tRedo log size in bytes.\n"
+  ],
+  [
+   "/*myflames:variable*/ SET GLOBAL innodb_log_file_size = 100000000",
+   ""
+  ],
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'innodb_log_file_size', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'innodb_log_file_size'",
+   "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\ninnodb_log_file_size\t99999744\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\nmyflames:session\ninnodb_log_file_size\t99999744\n"
+  ],
+  [
+   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'INNODB_LOG_FILE_SIZE'",
+   "INNODB_LOG_FILE_SIZE\tNULL\t99999744\tSQL\t100663296\tGLOBAL\tBIGINT UNSIGNED\t4194304\t18446744073709551615\t4096\tNULL\tNO\tNULL\tRedo log size in bytes.\n"
+  ]
+ ],
+ "recorded": {
+  "plan_status": "ready",
+  "statement": "SET GLOBAL innodb_log_file_size = 100000000",
+  "result_status": "changed",
+  "after": {
+   "global": "99999744",
+   "persisted": null,
+   "session": null
+  }
+ },
+ "synthetic_extensions": [
+  "Original variable values and write results were recorded live. Server identity (fixture-db, server_id 1, fixed MySQL UUID) and Linux platform rows are synthetic additions for identity/platform regression coverage.",
+  "The persisted-value read was adapted to IS NULL and HEX; encoded answers are derived from the recorded values, not a new live capture."
+ ]
+}

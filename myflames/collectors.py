@@ -232,7 +232,7 @@ _KEY_RE = re.compile(
         (?:(?P<kind>PRIMARY\ KEY|UNIQUE\ KEY|UNIQUE|FULLTEXT\ KEY|FULLTEXT|
                     SPATIAL\ KEY|SPATIAL|FOREIGN\ KEY|KEY|INDEX))
         (?:\s+`(?P<name>[^`]+)`)?       # optional index name
-        \s*\((?P<cols>[^)]+)\)
+        \s*\(
     """,
     re.VERBOSE | re.IGNORECASE,
 )
@@ -240,12 +240,72 @@ _ENGINE_RE = re.compile(r"ENGINE\s*=\s*(\w+)", re.IGNORECASE)
 _CHARSET_RE = re.compile(r"DEFAULT\s+CHARSET\s*=\s*(\w+)", re.IGNORECASE)
 
 
+_USING_RE = re.compile(r"\)\s+USING\s+(BTREE|HASH)\b", re.IGNORECASE)
+_PART_RE = re.compile(r"^`(?P<name>(?:[^`]|``)+)`(?:\((?P<length>\d+)\))?(?:\s+(?P<dir>ASC|DESC))?$",
+                      re.IGNORECASE)
+
+
+def _parse_key_parts(line, start):
+    """Parse the key-part list that opens at ``line[start - 1] == '('``.
+
+    Returns ``[{"name", "length", "desc", "expression"}]`` or ``None`` when
+    the parenthesis never closes. A part is a backquoted column name,
+    optionally followed by a prefix length such as (10) and ASC or DESC, or a
+    functional key part in parentheses (MySQL 8.0.13+), which is kept with
+    ``expression`` true and ``name`` set to the expression text.
+    """
+    depth, quote, item, items = 1, None, [], []
+    i = start
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            item.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in "`'\"":
+            quote = ch
+            item.append(ch)
+        elif ch == "(":
+            depth += 1
+            item.append(ch)
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                items.append("".join(item).strip())
+                break
+            item.append(ch)
+        elif ch == "," and depth == 1:
+            items.append("".join(item).strip())
+            item = []
+        else:
+            item.append(ch)
+        i += 1
+    else:
+        return None
+    parts = []
+    for raw in items:
+        m = _PART_RE.match(raw)
+        if m:
+            parts.append({
+                "name": m.group("name").replace("``", "`"),
+                "length": int(m.group("length")) if m.group("length") else None,
+                "desc": (m.group("dir") or "").upper() == "DESC",
+                "expression": False,
+            })
+        else:
+            parts.append({"name": raw, "length": None, "desc": False, "expression": True})
+    return parts
+
+
 def parse_show_create_table(ddl):
     """Parse a ``SHOW CREATE TABLE`` DDL string into a structured dict.
 
     Returns: ``{"ddl", "table_name", "columns", "indexes", "engine",
     "charset"}``. Columns are ``[{"name","type","rest"}]``; indexes are
-    ``[{"name","kind","columns"}]``. Unparseable lines are dropped.
+    ``[{"name","kind","columns","parts","using"}]`` where ``parts`` keeps
+    prefix lengths, DESC, and functional key parts that ``columns`` (bare
+    names, kept for existing callers) cannot express. Unparseable lines are
+    dropped.
     """
     result = {
         "ddl": ddl,
@@ -282,12 +342,16 @@ def parse_show_create_table(ddl):
             continue
         key_match = _KEY_RE.match(line)
         if key_match:
-            cols_raw = key_match.group("cols")
-            cols = [c.strip().strip("`").split("(")[0].strip("`") for c in cols_raw.split(",")]
+            parts = _parse_key_parts(line, key_match.end())
+            if parts is None:
+                continue
             result["indexes"].append({
                 "kind": (key_match.group("kind") or "KEY").upper().replace("  ", " "),
                 "name": key_match.group("name"),
-                "columns": cols,
+                "columns": [part["name"] for part in parts],
+                "parts": parts,
+                "using": (_USING_RE.search(line).group(1).upper()
+                          if _USING_RE.search(line) else None),
             })
             continue
         col_match = _COL_RE.match(line)
@@ -383,9 +447,9 @@ def collect_stats(conn, tables):
             schema, table = fq.split(".", 1)
         else:
             schema, table = None, fq
-        where = "table_name = '" + table.replace("'", "''") + "'"
+        where = "table_name = " + _sql_string(table)
         if schema:
-            where += " AND table_schema = '" + schema.replace("'", "''") + "'"
+            where += " AND table_schema = " + _sql_string(schema)
         else:
             where += " AND table_schema = DATABASE()"
         sql = (
@@ -407,6 +471,78 @@ def collect_stats(conn, tables):
             except ValueError:
                 row[k] = 0
         out[fq] = row
+    return out
+
+
+def _sql_string(text):
+    """Quote *text* as a SQL string literal.
+
+    Names come from backquoted identifiers in user SQL, so they may contain
+    quotes and backslashes. Doubling both is safe whether or not the session
+    uses NO_BACKSLASH_ESCAPES: a backslash can never escape the closing quote.
+    """
+    return "'" + text.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def _table_filter(fq, schema_col, table_col):
+    """``schema_col = '..' AND table_col = '..'`` for one ``schema.table``
+    (``DATABASE()`` when unqualified)."""
+    if "." in fq:
+        schema, table = fq.split(".", 1)
+        schema_sql = _sql_string(schema)
+    else:
+        table, schema_sql = fq, "DATABASE()"
+    return "({} = {} AND {} = {})".format(schema_col, schema_sql, table_col, _sql_string(table))
+
+
+def collect_stats_freshness(conn, tables, mariadb=False):
+    """Return ``{fq_table_name: {"last_update", "n_rows", "histograms"}}``.
+
+    ``last_update`` and ``n_rows`` come from ``mysql.innodb_table_stats``
+    (InnoDB persistent statistics, both engines). ``histograms`` lists the
+    columns with a histogram: ``information_schema.COLUMN_STATISTICS`` on
+    MySQL 8.0+, ``mysql.column_stats`` rows with ``hist_size > 0`` on
+    MariaDB. Reading ``mysql.*`` needs SELECT on those tables, which is not
+    granted by default, so each query degrades to nothing on error.
+    """
+    from .connector import ConnectorError
+
+    if not tables:
+        return {}
+    out = {}
+    where = " OR ".join(_table_filter(fq, "database_name", "table_name") for fq in tables)
+    try:
+        rows = conn.query_rows(
+            "SELECT database_name, table_name, last_update, n_rows "
+            "FROM mysql.innodb_table_stats WHERE " + where)
+    except ConnectorError:
+        rows = []
+    for row in rows:
+        if len(row) < 4:
+            continue
+        try:
+            n_rows = int(row[3])
+        except (TypeError, ValueError):
+            n_rows = None
+        out[row[0] + "." + row[1]] = {"last_update": row[2], "n_rows": n_rows, "histograms": []}
+    if mariadb:
+        sql = ("SELECT db_name, table_name, column_name FROM mysql.column_stats "
+               "WHERE hist_size > 0 AND ("
+               + " OR ".join(_table_filter(fq, "db_name", "table_name") for fq in tables) + ")")
+    else:
+        sql = ("SELECT SCHEMA_NAME, TABLE_NAME, COLUMN_NAME FROM "
+               "information_schema.COLUMN_STATISTICS WHERE "
+               + " OR ".join(_table_filter(fq, "SCHEMA_NAME", "TABLE_NAME") for fq in tables))
+    try:
+        rows = conn.query_rows(sql)
+    except ConnectorError:
+        rows = []
+    for row in rows:
+        if len(row) < 3:
+            continue
+        entry = out.setdefault(row[0] + "." + row[1],
+                               {"last_update": None, "n_rows": None, "histograms": []})
+        entry["histograms"].append(row[2])
     return out
 
 

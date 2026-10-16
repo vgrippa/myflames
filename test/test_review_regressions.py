@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -54,11 +55,17 @@ class TestReportRegressions(unittest.TestCase):
         self.assertIn('Total: 500 µs', tooltip)
 
     def test_microsecond_bargraph_matches_html_and_programmatic_paths(self):
-        for output in [render_explain(PLAN, 'bargraph'),
-                       render_html_report(PLAN, view_type='bargraph')]:
-            with self.subTest(html=output.startswith('<!DOCTYPE')):
-                self.assertIn('Self: 300 µs', output)
-                self.assertIn('Total: 500 µs', output)
+        output = render_explain(PLAN, 'bargraph')
+        self.assertIn('Self: 300 µs', output)
+        self.assertIn('Total: 500 µs', output)
+        # The HTML report's bar chart is drawn by the chart bundle from
+        # millisecond chart data plus a µs display hint; charts.mjs asserts
+        # it prints the same "Self: 300 µs" / "Total: 500 µs" details.
+        html = render_html_report(PLAN, view_type='bargraph')
+        data = json.loads(re.search(r'<script type="application/json" class="mfc-data">(.*?)</script>',
+                                    html, re.S).group(1))
+        self.assertEqual(data['display_unit'], 'µs')
+        self.assertEqual([(n['self_ms'], n['total_ms']) for n in data['nodes']], [(0.3, 0.5), (0.2, 0.2)])
 
 
 class TestCliInputRegressions(unittest.TestCase):

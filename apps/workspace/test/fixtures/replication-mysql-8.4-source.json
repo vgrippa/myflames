@@ -1,0 +1,39 @@
+{
+ "schema_version": "replication-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "captured_at": "2026-10-15T18:16:14.818891+00:00",
+ "uptime_s": 842,
+ "available": true,
+ "message": "This server is not a replica: SHOW REPLICA STATUS returned no channel.",
+ "replica": false,
+ "statement": "SHOW REPLICA STATUS",
+ "gtid": {
+  "mode": "ON",
+  "enforce_consistency": "ON"
+ },
+ "settings": {
+  "read_only": "OFF",
+  "super_read_only": "OFF",
+  "parallel_workers": 4,
+  "preserve_commit_order": "ON"
+ },
+ "channels": [],
+ "capabilities": {
+  "status": false,
+  "performance_schema": true,
+  "worker_timestamps": false,
+  "agat": false
+ },
+ "notes": [],
+ "summary": {
+  "channels": 0,
+  "judged": 0,
+  "ok": 0,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 0,
+  "failed": 0,
+  "lag_max_s": null
+ }
+}

@@ -11,14 +11,22 @@ myflames --type workbench explain.json -o workbench.svg
 ```
 
 The HTML report includes the existing findings, teaching links, and JSON-LD.
-The SVG contains its own interaction script. Open either file directly in a
-browser for interactive controls; an SVG embedded as an image is static.
+It draws the chart in the browser with the inlined myflames chart runtime, so
+it needs JavaScript; **Export SVG** in the report saves a static, self-styled
+copy. A `.svg` output file contains its own interaction script. Open either file
+directly in a browser for interactive controls; an SVG embedded as an image is
+static.
 
 ## Reading the plan
 
 The zoom percentage follows **+**, **−**, wheel gestures, and **Fit plan**.
 Click the percentage to reset to 100%. Buttons highlight when activated; a
 disabled zoom button means that direction has reached its limit.
+Initial view fitting scales the diagram between 75% and 100%, prioritizing width
+so that wide trees remain readable instead of shrinking into illegible text.
+Trees start positioned at the top inputs, and larger trees remain pannable by
+dragging the canvas. In Compare mode, plans stack vertically at narrow viewport
+widths to preserve readable card layouts.
 
 Data flows from inputs at the top toward the plan output below. Every node and
 parent-child edge in the myflames parsed tree is retained, including filters,
@@ -77,7 +85,9 @@ live in [`docs/demos/mysql-joins/`](demos/mysql-joins/).
   small macOS mouse/trackpad gestures make small changes. Horizontal scrolling
   and zero vertical deltas do not zoom. Fit, buttons, and dragging stop pending
   wheel motion.
-- Use **Fit plan**, **+**, **−**, or **100%** to change the viewport.
+- Use **Fit plan**, **+**, **−**, or **100%** to change the viewport. **Fit plan**
+  fits width first between 75% and 100%, starting at the top inputs while
+  leaving taller trees pannable.
 - Search node details to dim nonmatching operations.
 - Click a node, or focus it and press Enter/Space, to see its details. In the
   workspace this also selects the matching operator in the inspector.
@@ -93,18 +103,27 @@ The older Workbench source's `plugins/wb.query.analysis/explain_renderer.py`
 uses a different, classic diamond layout. The former **Diagram** view now
 forwards to this renderer so interactions and join semantics stay consistent.
 
-This is an independent SVG implementation in `myflames/output_workbench.py`
-and `myflames/workbench.js`. It adds no Workbench code, runtime, or dependency
-to the package. Python remains standard-library-only.
+This is an independent implementation with two renderers that draw the same
+picture. `apps/workspace/src/charts/workbench.ts`, built into the committed
+`myflames/assets/myflames-charts.js`, draws HTML reports, `myflames explore`
+pages, and the workspace from the `chart-data-1.0` payload that
+`myflames/chart_data.py` builds. `myflames/output_workbench.py` and
+`myflames/workbench.js` still write standalone `.svg` files. The parity suite
+(`apps/workspace/test/parity.mjs`) checks that both produce the same nodes,
+edges, positions, and colors for every fixture. Neither adds Workbench code,
+runtime, or dependency to the package, and Python remains
+standard-library-only.
 
 The view uses myflames' existing parser, including its MySQL and MariaDB
 normalization. It is not a complete reproduction of Workbench: it does not add
 Workbench's raw-schema support, query-block reconstruction, or metadata that
 the current parser does not retain (such as some query-block metadata).
-There is one downward orientation, and large plans initially fit to the canvas;
-zoom in to read individual cards. The separate output terminal is a visual
-endpoint, not another measured operator. Existing analysis and JSON schemas
-remain unchanged.
+There is one downward orientation; wide plans initially fit width between 75%
+and 100%, starting at the top inputs, while larger trees can be panned. In
+Compare mode, plans stack vertically at narrow widths to maintain card
+legibility. Zoom in or out to inspect individual cards. The separate output
+terminal is a visual endpoint, not another measured operator. Existing
+analysis and JSON schemas remain unchanged.
 
 The workspace adds shared selection, branch focus/collapse, and metric bars to
 this view. SELECT-list subqueries are now preserved as additional branches. See

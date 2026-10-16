@@ -314,12 +314,14 @@ GLOSSARY = {
     "materialization": {
         "short": "Subquery/derived table is computed once, stored in a temp table.",
         "technical": (
-            "The subquery result is materialized into an internal temp table "
-            "(MEMORY or on-disk InnoDB depending on size). The outer query "
-            "reads from the temp table. Controlled by ``tmp_table_size`` and "
-            "``max_heap_table_size`` — MySQL always uses the smaller of the "
-            "two. If the temp table exceeds that limit, MySQL converts to "
-            "an on-disk temp table and performance drops sharply."
+            "The subquery result is materialized into an internal temp table, "
+            "and the outer query reads from it. On MySQL the default "
+            "TempTable engine (``internal_tmp_mem_storage_engine``) limits "
+            "each in-memory temp table by ``tmp_table_size``; the MEMORY "
+            "engine, and MariaDB, use the smaller of ``tmp_table_size`` and "
+            "``max_heap_table_size``. Past that limit the table moves to disk "
+            "(InnoDB on MySQL, Aria or MyISAM on MariaDB) and reads get much "
+            "slower."
         ),
         "newcomer": (
             "MySQL ran your subquery or derived table once, stored the "
@@ -350,10 +352,12 @@ GLOSSARY = {
         "short": "MySQL built an internal temporary table.",
         "technical": (
             "Used for materialized subqueries, GROUP BY with no suitable "
-            "index, DISTINCT, and some ORDER BY cases. MEMORY/TempTable "
-            "engine while it fits in ``min(tmp_table_size, max_heap_table_size)``, "
-            "converted to on-disk InnoDB when it doesn't. The on-disk "
-            "version is typically 10–100× slower."
+            "index, DISTINCT, and some ORDER BY cases. It stays in memory "
+            "while it fits: ``tmp_table_size`` per table with MySQL's default "
+            "TempTable engine, or the smaller of ``tmp_table_size`` and "
+            "``max_heap_table_size`` with the MEMORY engine and on MariaDB. "
+            "Otherwise it is converted to an on-disk table (InnoDB on MySQL, "
+            "Aria or MyISAM on MariaDB), which is typically much slower."
         ),
         "newcomer": (
             "MySQL built a scratch table in memory to help process your "
@@ -504,21 +508,23 @@ GLOSSARY = {
         "aliases": ["join_buffer_size", "join buffer"],
     },
     "tmp_table_size": {
-        "short": "Maximum in-memory temp table size (half of the pair with max_heap_table_size).",
+        "short": "Maximum size of one in-memory internal temporary table.",
         "technical": (
-            "The effective limit is ``min(tmp_table_size, max_heap_table_size)``. "
             "Internal temp tables (from materialized subqueries, GROUP BY, "
-            "DISTINCT, etc.) are MEMORY-engine until they exceed this, at "
-            "which point MySQL converts them to on-disk InnoDB temp tables "
-            "(10–100× slower for scans). Both variables must be raised "
-            "together — raising only one has no effect."
+            "DISTINCT, etc.) stay in memory until they exceed their limit, "
+            "then move to disk (InnoDB on MySQL, Aria or MyISAM on MariaDB). "
+            "With MySQL's default TempTable engine "
+            "(``internal_tmp_mem_storage_engine=TempTable``) the per-table "
+            "limit is ``tmp_table_size`` alone; ``max_heap_table_size`` does "
+            "not apply. With the MEMORY engine, and on MariaDB, the limit is "
+            "the smaller of ``tmp_table_size`` and ``max_heap_table_size``, "
+            "so both must be raised together."
         ),
         "newcomer": (
             "How big MySQL's scratch tables can get before they move from "
             "RAM to disk. If your query builds bigger scratch tables than "
-            "this, expect a big slowdown — and you have to raise "
-            "``max_heap_table_size`` at the same time, otherwise it does "
-            "nothing."
+            "this, expect a slowdown. On MariaDB, or with the MEMORY engine, "
+            "``max_heap_table_size`` caps it too, so raise both."
         ),
         "aliases": ["tmp_table_size", "max_heap_table_size", "tmp table size"],
     },

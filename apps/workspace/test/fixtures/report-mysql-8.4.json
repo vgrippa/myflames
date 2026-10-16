@@ -1,0 +1,2945 @@
+{
+  "schema_version": "report-1.0",
+  "myflames_version": "2.3.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "taken_at": "2026-10-15T01:07:20.062912+00:00",
+  "uptime_s": 192385,
+  "performance_schema": true,
+  "header": {
+    "server": {
+      "engine": "mysql",
+      "version": "8.4.11",
+      "version_comment": "MySQL Community Server - GPL",
+      "uptime_s": 192385,
+      "performance_schema": true
+    },
+    "started_at": "2026-10-15T01:07:09.268142+00:00",
+    "elapsed_s": 10.794,
+    "interval": 10,
+    "scope": {
+      "schemas": null,
+      "all_user_schemas": true,
+      "text": "every user schema"
+    },
+    "views": [
+      {
+        "key": "health",
+        "label": "Health",
+        "status": "ok",
+        "schema_version": "health-1.0",
+        "started_at": "2026-10-15T01:07:09.349576+00:00",
+        "taken_at": "2026-10-15T01:07:19.442145+00:00",
+        "elapsed_s": 10.093,
+        "error": null,
+        "notes": [
+          "Statuses are rules of thumb, not verdicts; each metric and diagnostic says which rule it uses. Each window includes this tool's own second sample: about 3 statements, with the temporary table and scans they need, and its connection."
+        ]
+      },
+      {
+        "key": "waits",
+        "label": "Waits",
+        "status": "ok",
+        "schema_version": "waits-1.0",
+        "started_at": "2026-10-15T01:07:09.349697+00:00",
+        "taken_at": "2026-10-15T01:07:19.537832+00:00",
+        "elapsed_s": 10.188,
+        "error": null,
+        "notes": [
+          "Some wait classes are not instrumented (mutexes 0 of 236 on, read/write locks 0 of 33 on, shared/exclusive locks 0 of 15 on, priority read/write locks 0 of 2 on, condition waits 0 of 56 on, socket i/o 0 of 7 on), so their waits are not in this report. No mutex or rwlock waits here never means no contention.",
+          "1 event(s) were counted but not timed, so they are not ranked: wait/io/socket/sql/client_connection.",
+          "Wait time is summed across all threads, background threads included, so it can exceed the wall-clock window. Table I/O includes the file I/O and internal lock waits inside each call, which are counted again under their own events, so the classes are never added up.",
+          "InnoDB asynchronous I/O (read-ahead, page cleaner writes) is timed only for submitting the request, so its latency is understated. Bytes are exact (see I/O).",
+          "Since server start covers 2 d 5 h of uptime; the longest single wait (max) is since start too, never per window."
+        ]
+      },
+      {
+        "key": "io",
+        "label": "I/O",
+        "status": "ok",
+        "schema_version": "io-1.0",
+        "started_at": "2026-10-15T01:07:09.351031+00:00",
+        "taken_at": "2026-10-15T01:07:19.617446+00:00",
+        "elapsed_s": 10.267,
+        "error": null,
+        "notes": [
+          "Table figures are row operations through the storage engine (rows fetched, inserted, updated, deleted) and their time, which includes the file I/O inside each call. They are not bytes; the files show bytes.",
+          "Temporary and deleted files leave the per-file list when closed; their I/O stays in the file kinds, so check those for sort and temporary table spills.",
+          "InnoDB asynchronous I/O (read-ahead, page cleaner writes) is timed only for submitting the request: bytes are right, latency is understated.",
+          "Since server start covers 2 d 5 h of uptime."
+        ]
+      },
+      {
+        "key": "config",
+        "label": "Configuration",
+        "status": "ok",
+        "schema_version": "config-1.0",
+        "started_at": "2026-10-15T01:07:19.442936+00:00",
+        "taken_at": "2026-10-15T01:07:19.560967+00:00",
+        "elapsed_s": 0.118,
+        "error": null,
+        "notes": [
+          "Counters run from server start. The connection peak (Max_used_connections) also restarts with FLUSH STATUS on MySQL and MariaDB 11.4 or older, and with FLUSH GLOBAL STATUS on MariaDB 11.5 and later, which also resets the temporary-table and tables-opened counts.",
+          "Statuses are rules of thumb, not verdicts; each check says which rule it uses. myflames never changes a setting: run a suggested statement only after reading its caveat."
+        ]
+      },
+      {
+        "key": "innodb",
+        "label": "InnoDB",
+        "status": "ok",
+        "schema_version": "innodb-1.0",
+        "started_at": "2026-10-15T01:07:19.538152+00:00",
+        "taken_at": "2026-10-15T01:07:19.644818+00:00",
+        "elapsed_s": 0.107,
+        "error": null,
+        "notes": [
+          "Each read of SHOW ENGINE INNODB STATUS restarts InnoDB's per-second averages for every reader. Statuses are rules of thumb from one snapshot, not verdicts; values that stay high across refreshes matter more than one reading."
+        ]
+      },
+      {
+        "key": "sessions",
+        "label": "Sessions",
+        "status": "ok",
+        "schema_version": "sessions-1.0",
+        "started_at": "2026-10-15T01:07:19.561030+00:00",
+        "taken_at": "2026-10-15T01:07:19.665679+00:00",
+        "elapsed_s": 0.105,
+        "error": null,
+        "notes": [
+          "Statuses are rules of thumb, not verdicts. The summary counts every session this account can see; the filters narrow only the list. This tool's own session is left out."
+        ]
+      },
+      {
+        "key": "instruments",
+        "label": "Instruments",
+        "status": "ok",
+        "schema_version": "instruments-1.0",
+        "started_at": "2026-10-15T01:07:19.618416+00:00",
+        "taken_at": "2026-10-15T01:07:19.774626+00:00",
+        "elapsed_s": 0.161,
+        "error": null,
+        "notes": [
+          "MySQL 8.4 and 9.x share these defaults in source, and MySQL 26.7 matched them on a live server; newer versions add instruments, not new defaults."
+        ]
+      },
+      {
+        "key": "checks",
+        "label": "Server checks",
+        "status": "ok",
+        "schema_version": "checks-1.0",
+        "started_at": "2026-10-15T01:07:19.644865+00:00",
+        "taken_at": "2026-10-15T01:07:19.737369+00:00",
+        "elapsed_s": 0.093,
+        "error": null,
+        "notes": [
+          "MySQL 8.0 and later have no query cache, so there is nothing to check for it."
+        ]
+      },
+      {
+        "key": "tables",
+        "label": "Tables",
+        "status": "ok",
+        "schema_version": "schema-1.0",
+        "started_at": "2026-10-15T01:07:19.665734+00:00",
+        "taken_at": "2026-10-15T01:07:19.780133+00:00",
+        "elapsed_s": 0.114,
+        "error": null,
+        "notes": [
+          "Row counts, sizes and free space come from a cache MySQL keeps for up to 1 d 0 h (information_schema_stats_expiry; partitioned tables are never cached), so they can be that old. Fresh numbers (--fresh) reads them from InnoDB now, for myflames' own connection only.",
+          "TABLE_ROWS, DATA_LENGTH and INDEX_LENGTH are InnoDB estimates from its table statistics, recalculated in the background after about 10% of the rows change (persistent statistics, the default) or by ANALYZE TABLE. DATA_FREE is read with the other statistics, so it comes from the same cache unless Fresh numbers is on. It counts whole free extents and the unused space at the end of the file (an extent is 1 MiB with 4 to 16 KiB pages, 2 MiB with 32 KiB, 4 MiB with 64 KiB), minus a reserve of 2 extents plus about 1%; free pages in partly used extents and half-empty pages after scattered deletes are not in it, so it understates.",
+          "Read every schema except mysql, sys, performance_schema and information_schema."
+        ]
+      },
+      {
+        "key": "indexes",
+        "label": "Indexes",
+        "status": "ok",
+        "schema_version": "indexes-1.0",
+        "started_at": "2026-10-15T01:07:19.737414+00:00",
+        "taken_at": "2026-10-15T01:07:19.926123+00:00",
+        "elapsed_s": 0.189,
+        "error": null,
+        "notes": [
+          "Unused means no row read, written or looked up through the index since the server started (2 d 5 h ago), or since an index on that table was added, dropped or renamed, or the table was renamed or rebuilt by copying, any of which restarts its counts. An index used only by a weekly or monthly job looks unused until the job runs.",
+          "Tables with no row read or written since the counts started (never opened, or opened only to read their definition) are listed under No data, never as unused. A TRUNCATE of a Performance Schema summary table also resets the counts.",
+          "The server has been up only 2 d 5 h, so infrequent jobs may not have run yet.",
+          "PRIMARY and UNIQUE indexes are never listed as unused: they enforce constraints even when no query reads them. Indexes that back a foreign key are marked keep: InnoDB checks foreign keys without going through the usage counters.",
+          "Counts are per server: reads on replicas are not included."
+        ]
+      }
+    ],
+    "failures": []
+  },
+  "summary": {
+    "problem": 0,
+    "watch": 3,
+    "unknown": 4,
+    "info": 13,
+    "ok": 32,
+    "findings": 52,
+    "status": "watch",
+    "text": "0 problems, 3 to watch, 4 unknown, 32 ok; look first at Buffer pool size"
+  },
+  "look_first": "config.buffer_pool",
+  "findings": [
+    {
+      "id": "config.buffer_pool",
+      "family": "memory",
+      "status": "watch",
+      "title": "Buffer pool size",
+      "headline": "128.0 MiB",
+      "verdict": "innodb_buffer_pool_size (128.0 MiB) is much smaller than the InnoDB tablespace files (1.2 GiB).",
+      "why": "The memory InnoDB uses to cache data and index pages. Pages not in it are read from disk. Compared here with the size of the InnoDB tablespace files on disk (free space inside them included), because a pool much smaller than the data cannot hold much of it.",
+      "rule": "watch when the buffer pool is less than half the InnoDB tablespace files; a pool smaller than the data is normal when the hot data fits, so check the hit ratio in Health",
+      "caveat": "The data on disk includes cold rows and free space; what matters is the hot set. Leave room for connections, the OS and other processes: a pool that makes the server swap is far worse than disk reads.",
+      "action": {
+        "sql": "SET GLOBAL innodb_buffer_pool_size = <bytes>;",
+        "config": "innodb_buffer_pool_size = <size>  # under [mysqld]",
+        "text": "Raise it within the memory the server can spare, if Health shows disk reads and a falling hit ratio. It can be resized online."
+      },
+      "numbers": [
+        {
+          "label": "innodb_buffer_pool_size",
+          "text": "128.0 MiB"
+        },
+        {
+          "label": "innodb_dedicated_server",
+          "text": "OFF"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "buffer_pool"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "buffer_pool"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "indexes.redundant",
+      "family": "indexes",
+      "status": "watch",
+      "title": "Redundant indexes",
+      "headline": "3 indexes",
+      "verdict": "3 indexes are duplicates or leftmost prefixes of other indexes on their tables.",
+      "why": "idx_user (user_id) is a leftmost prefix of idx_user_status (user_id, status), so idx_user_status serves every lookup idx_user serves. Each extra index slows writes and uses buffer pool memory.",
+      "rule": "watch when an index is a duplicate or a leftmost prefix of another index on the same table",
+      "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+      "action": {
+        "text": "Make it invisible first, then drop it.",
+        "sql": "ALTER TABLE `testdb`.`orders` ALTER INDEX `idx_user` INVISIBLE;"
+      },
+      "numbers": [
+        {
+          "label": "testdb.orders",
+          "text": "idx_user (user_id) is a leftmost prefix of idx_user_status"
+        },
+        {
+          "label": "testdb.products",
+          "text": "idx_category (category_id) is a leftmost prefix of idx_cat_price"
+        },
+        {
+          "label": "testdb.reviews",
+          "text": "idx_product (product_id) is a leftmost prefix of idx_prod_rating"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "indexes",
+          "label": "Open Indexes",
+          "key": "redundant"
+        }
+      ],
+      "source": {
+        "view": "indexes",
+        "kind": "summary",
+        "key": "redundant"
+      },
+      "learn": null,
+      "impact": 3,
+      "attribution": null
+    },
+    {
+      "id": "config.slow_log",
+      "family": "observability",
+      "status": "watch",
+      "title": "Slow query log",
+      "headline": "OFF",
+      "verdict": "slow_query_log=OFF: slow statements are not logged.",
+      "why": "The slow query log records statements that ran longer than long_query_time.",
+      "rule": "watch when off; info when on with long_query_time at 10 s or more",
+      "caveat": "A low threshold on a busy server writes a lot of log; log_output=TABLE costs more than FILE. A new long_query_time applies to new connections only.",
+      "action": {
+        "sql": "SET GLOBAL slow_query_log = ON; SET GLOBAL long_query_time = 1;",
+        "config": "slow_query_log = ON\nlong_query_time = 1  # under [mysqld]"
+      },
+      "numbers": [
+        {
+          "label": "slow_query_log",
+          "text": "OFF"
+        },
+        {
+          "label": "long_query_time",
+          "text": "10 s"
+        },
+        {
+          "label": "log_output",
+          "text": "FILE"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "slow_log"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "slow_log"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "checks.replication",
+      "family": "replication",
+      "status": "unknown",
+      "title": "Replication",
+      "headline": "",
+      "verdict": "Could not read SHOW REPLICA STATUS: ERROR 1227 (42000) at line 1: Access denied; you need (at least one of) the SUPER, REPLICATION CLIENT privilege(s) for this operation. It needs the SUPER or REPLICATION CLIENT privilege.",
+      "why": "Replication threads on this server: the receiver (IO thread) that copies the source's binary log and the applier (SQL thread) that runs it. Read with SHOW REPLICA STATUS; nothing is started or stopped.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [],
+      "source": {
+        "view": "checks",
+        "kind": "check",
+        "key": "replication"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "checks.anonymous",
+      "family": "security",
+      "status": "unknown",
+      "title": "Anonymous accounts",
+      "headline": "",
+      "verdict": "Could not read the accounts: ERROR 1142 (42000) at line 1: SELECT command denied to user 'demo'@'172.17.0.1' for table 'user'. Reading them needs SELECT on mysql.user.",
+      "why": "Account basics from mysql.user: accounts that accept a login without a password, anonymous accounts, and root allowed from any host. Only account names are read; password hashes never leave the server.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [],
+      "source": {
+        "view": "checks",
+        "kind": "check",
+        "key": "anonymous"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "checks.no_password",
+      "family": "security",
+      "status": "unknown",
+      "title": "Accounts without a password",
+      "headline": "",
+      "verdict": "Could not read the accounts: ERROR 1142 (42000) at line 1: SELECT command denied to user 'demo'@'172.17.0.1' for table 'user'. Reading them needs SELECT on mysql.user.",
+      "why": "Account basics from mysql.user: accounts that accept a login without a password, anonymous accounts, and root allowed from any host. Only account names are read; password hashes never leave the server.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [],
+      "source": {
+        "view": "checks",
+        "kind": "check",
+        "key": "no_password"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "checks.root_any_host",
+      "family": "security",
+      "status": "unknown",
+      "title": "root from any host",
+      "headline": "",
+      "verdict": "Could not read the accounts: ERROR 1142 (42000) at line 1: SELECT command denied to user 'demo'@'172.17.0.1' for table 'user'. Reading them needs SELECT on mysql.user.",
+      "why": "Account basics from mysql.user: accounts that accept a login without a password, anonymous accounts, and root allowed from any host. Only account names are read; password hashes never leave the server.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [],
+      "source": {
+        "view": "checks",
+        "kind": "check",
+        "key": "root_any_host"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "config.flush_method",
+      "family": "redo",
+      "status": "info",
+      "title": "File flush method",
+      "headline": "O_DIRECT",
+      "verdict": "innodb_flush_method=O_DIRECT. No rule: compare with your hardware and workload.",
+      "why": "How InnoDB opens and syncs its data files. O_DIRECT bypasses the OS file cache, so data is not cached twice. MySQL uses O_DIRECT by default when the file system supports it.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "innodb_flush_method",
+          "text": "O_DIRECT (default O_DIRECT when supported, else fsync)"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "flush_method"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "flush_method"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "config.dedicated_server",
+      "family": "memory",
+      "status": "info",
+      "title": "Dedicated server mode",
+      "headline": "OFF",
+      "verdict": "innodb_dedicated_server=OFF. No rule: compare with your hardware and workload.",
+      "why": "With innodb_dedicated_server=ON, MySQL sizes the buffer pool from the machine's memory and, when innodb_redo_log_capacity is not set, the redo log from its CPU count.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "innodb_dedicated_server",
+          "text": "OFF"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "dedicated_server"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "dedicated_server"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "config.thread_handling",
+      "family": "connections",
+      "status": "info",
+      "title": "Thread handling",
+      "headline": "one-thread-per-connection",
+      "verdict": "thread_handling=one-thread-per-connection. No rule: compare with your hardware and workload.",
+      "why": "How the server runs connections: a thread per connection, or a thread pool.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "thread_handling",
+          "text": "one-thread-per-connection"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "thread_handling"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "thread_handling"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "innodb.adaptive_hash_index",
+      "family": "innodb",
+      "status": "info",
+      "title": "Adaptive hash index",
+      "headline": "The adaptive hash index is off (innodb_adaptive_hash_index=OFF; the default is OFF on this version).",
+      "verdict": "The adaptive hash index is off (innodb_adaptive_hash_index=OFF; the default is OFF on this version).",
+      "why": "",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "innodb_adaptive_hash_index",
+          "text": "OFF"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "innodb",
+          "label": "Open InnoDB",
+          "key": "adaptive_hash_index"
+        }
+      ],
+      "source": {
+        "view": "innodb",
+        "kind": "section",
+        "key": "adaptive_hash_index"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "innodb.insert_buffer",
+      "family": "innodb",
+      "status": "info",
+      "title": "Change buffer",
+      "headline": "1 page, 0 merges since startup; innodb_change_buffering=none (default none on this version).",
+      "verdict": "1 page, 0 merges since startup; innodb_change_buffering=none (default none on this version).",
+      "why": "",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "innodb_change_buffering",
+          "text": "none (default none)"
+        },
+        {
+          "label": "Size (pages)",
+          "text": "1",
+          "value": 1
+        },
+        {
+          "label": "Free list length (pages)",
+          "text": "0",
+          "value": 0
+        },
+        {
+          "label": "Merges (since startup)",
+          "text": "0",
+          "value": 0
+        },
+        {
+          "label": "Merged inserts / delete marks / deletes",
+          "text": "0 / 0 / 0",
+          "value": 0
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "innodb",
+          "label": "Open InnoDB",
+          "key": "insert_buffer"
+        }
+      ],
+      "source": {
+        "view": "innodb",
+        "kind": "section",
+        "key": "insert_buffer"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "health.full_scans",
+      "family": "temp_sorts",
+      "status": "info",
+      "title": "Rows read by full scans",
+      "headline": "408 rows/s by sequential scans",
+      "verdict": "Storage engines returned 408 rows per second to sequential scans, 89.0% of all rows read through handlers.",
+      "why": "Handler_read_rnd_next counts requests for the next row of a sequential table scan, so a high rate points at full table scans. It also counts scans of internal temporary tables (GROUP BY, DISTINCT, derived tables, UNION), and this tool's own SHOW GLOBAL STATUS reads about 1,000 rows that way per window (measured), so it is an upper bound on rows from full scans of user tables. Full index scans count in Handler_read_first and Handler_read_next instead. Top statements shows which statements scan.",
+      "rule": "No threshold: compare with this server's usual values",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Rows read by sequential scans",
+          "text": "408/s (4,096 in the window)",
+          "value": 407.83,
+          "unit": "/s"
+        },
+        {
+          "label": "Share of all rows read through handlers",
+          "text": "89.0% of 4,604",
+          "value": 88.97,
+          "unit": "%"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "full_scans"
+        },
+        {
+          "view": "top",
+          "label": "Open Top statements"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "full_scans"
+      },
+      "learn": "full_scan",
+      "impact": 407.83,
+      "attribution": null
+    },
+    {
+      "id": "tables.engines",
+      "family": "schema",
+      "status": "info",
+      "title": "Storage engines",
+      "headline": "InnoDB 28",
+      "verdict": "Every table read uses InnoDB.",
+      "why": "Tables per storage engine in the schemas read.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "InnoDB",
+          "text": "28 tables, 1.1 GiB",
+          "value": 28
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "tables",
+          "label": "Open Tables"
+        }
+      ],
+      "source": {
+        "view": "tables",
+        "kind": "summary",
+        "key": "engines"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "indexes.full_scans",
+      "family": "indexes",
+      "status": "info",
+      "title": "Tables read mostly without an index",
+      "headline": "2 tables",
+      "verdict": "2 tables spent most of their read time reading rows without an index since startup.",
+      "why": "Rows read without an index are table scans and row-position reads. A scan of a small lookup table is normal; the statements that name the table say which queries to look at.",
+      "rule": null,
+      "caveat": null,
+      "action": {
+        "text": "Look at the statements behind each table (Top statements, filtered to the table) and capture their plans."
+      },
+      "numbers": [
+        {
+          "label": "employees.employees",
+          "text": "1,200,100 rows without an index, 136.3 ms; 0 statements name it (text match, not proof)",
+          "value": 136.305,
+          "unit": "ms"
+        },
+        {
+          "label": "sakila.category",
+          "text": "17 rows without an index, 2.9 ms; 0 statements name it (text match, not proof)",
+          "value": 2.892,
+          "unit": "ms"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "indexes",
+          "label": "Open Indexes",
+          "key": "full_scans"
+        },
+        {
+          "view": "top",
+          "order": "no_index",
+          "table": "employees.employees",
+          "label": "Open Top statements that name employees.employees"
+        },
+        {
+          "view": "top",
+          "order": "no_index",
+          "table": "sakila.category",
+          "label": "Open Top statements that name sakila.category"
+        }
+      ],
+      "source": {
+        "view": "indexes",
+        "kind": "summary",
+        "key": "full_scans"
+      },
+      "learn": null,
+      "impact": 136.305,
+      "attribution": "full_scans"
+    },
+    {
+      "id": "indexes.unused",
+      "family": "indexes",
+      "status": "info",
+      "title": "Unused indexes",
+      "headline": "2 candidates",
+      "verdict": "2 indexes had no reads or writes since the server started 2 d 5 h ago; too little uptime to judge.",
+      "why": "Each index slows writes and takes buffer pool memory; an index nothing reads only costs.",
+      "rule": "watch when an index has no use since startup, after at least 7 d 0 h of uptime",
+      "caveat": "Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible.",
+      "action": {
+        "text": "Make a candidate invisible first, watch a full business cycle, then drop it.",
+        "sql": "ALTER TABLE `sakila`.`actor` ALTER INDEX `idx_actor_last_name` INVISIBLE;"
+      },
+      "numbers": [
+        {
+          "label": "sakila.actor",
+          "text": "idx_actor_last_name"
+        },
+        {
+          "label": "sakila.customer",
+          "text": "idx_last_name"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "indexes",
+          "label": "Open Indexes",
+          "key": "unused"
+        }
+      ],
+      "source": {
+        "view": "indexes",
+        "kind": "summary",
+        "key": "unused"
+      },
+      "learn": null,
+      "impact": 2,
+      "attribution": null
+    },
+    {
+      "id": "config.io_capacity",
+      "family": "io",
+      "status": "info",
+      "title": "InnoDB I/O capacity",
+      "headline": "10000",
+      "verdict": "innodb_io_capacity=10000. No rule: compare with your hardware and workload.",
+      "why": "The background I/O rate InnoDB aims for when flushing pages. The engines' defaults differ a lot: MySQL 8.4 uses 10000, MariaDB 200.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "innodb_io_capacity",
+          "text": "10000"
+        },
+        {
+          "label": "innodb_io_capacity_max",
+          "text": "20000"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "io_capacity"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "io_capacity"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "io.top",
+      "family": "io",
+      "status": "info",
+      "title": "I/O hot spots in the window",
+      "headline": "",
+      "verdict": "Per-table and per-file I/O was not readable (no activity); server-wide InnoDB counters are in I/O.",
+      "why": "Where reads and writes went; no threshold applies.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [
+        {
+          "view": "io",
+          "label": "Open I/O"
+        }
+      ],
+      "source": {
+        "view": "io",
+        "kind": "summary",
+        "key": "top"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "waits.top",
+      "family": "waits",
+      "status": "info",
+      "title": "Top wait events in the window",
+      "headline": "none timed",
+      "verdict": "No timed wait in the window.",
+      "why": "Wait time is summed across threads and classes overlap, so it is never added up.",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [
+        {
+          "view": "waits",
+          "label": "Open Waits"
+        }
+      ],
+      "source": {
+        "view": "waits",
+        "kind": "summary",
+        "key": "top"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "waits.coverage",
+      "family": "observability",
+      "status": "info",
+      "title": "Wait classes not instrumented",
+      "headline": "6 classes",
+      "verdict": "Not timed: Mutexes (0 of 236 on), Read/write locks (0 of 33 on), Shared/exclusive locks (0 of 15 on), Priority read/write locks (0 of 2 on), Condition waits (0 of 56 on), Socket I/O (0 of 7 on). Their waits are not in this report; no mutex or rwlock waits never means no contention.",
+      "why": "Waits shows only instrumented classes.",
+      "rule": null,
+      "caveat": null,
+      "action": {
+        "text": "Instruments has the statements that turn a class on for an investigation."
+      },
+      "numbers": [
+        {
+          "label": "Mutexes",
+          "text": "0 of 236 on"
+        },
+        {
+          "label": "Read/write locks",
+          "text": "0 of 33 on"
+        },
+        {
+          "label": "Shared/exclusive locks",
+          "text": "0 of 15 on"
+        },
+        {
+          "label": "Priority read/write locks",
+          "text": "0 of 2 on"
+        },
+        {
+          "label": "Condition waits",
+          "text": "0 of 56 on"
+        },
+        {
+          "label": "Socket I/O",
+          "text": "0 of 7 on"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "waits",
+          "label": "Open Waits"
+        },
+        {
+          "view": "instruments",
+          "label": "Open Instruments"
+        }
+      ],
+      "source": {
+        "view": "waits",
+        "kind": "coverage",
+        "key": "coverage"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "checks.binlog_expiry",
+      "family": "redo",
+      "status": "ok",
+      "title": "Binary log expiry",
+      "headline": "30 d 0 h",
+      "verdict": "Binary logs expire after 30 d 0 h.",
+      "why": "Binary logs are kept until they expire or someone purges them; expiry runs at startup and when the server rotates to a new binary log.",
+      "rule": "watch when the binary log is on and nothing purges it automatically (no expiry period and no total size limit)",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "log_bin",
+          "text": "ON"
+        },
+        {
+          "label": "binlog_expire_logs_seconds",
+          "text": "2592000"
+        },
+        {
+          "label": "binlog_expire_logs_auto_purge",
+          "text": "ON"
+        }
+      ],
+      "settings": [],
+      "links": [],
+      "source": {
+        "view": "checks",
+        "kind": "check",
+        "key": "binlog_expiry"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "config.flush_log",
+      "family": "redo",
+      "status": "ok",
+      "title": "Redo flush at commit",
+      "headline": "1",
+      "verdict": "innodb_flush_log_at_trx_commit=1.",
+      "why": "When InnoDB writes and syncs the redo log for a commit. 1 writes and syncs at every commit, so a committed transaction survives a crash or power loss.",
+      "rule": "ok at 1 (and MariaDB's 3), which make each commit durable; watch at 0 or 2",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "innodb_flush_log_at_trx_commit",
+          "text": "1"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "flush_log"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "flush_log"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "config.redo",
+      "family": "redo",
+      "status": "ok",
+      "title": "Redo log size",
+      "headline": "100.0 MiB",
+      "verdict": "Redo capacity 100.0 MiB; about 0 B/s of redo on average since startup, so it holds about 1714 d 11 h at that rate; the checkpoint age is 0 B now (0% of capacity; MySQL starts forced flushing near 79% and makes writes wait near 84%).",
+      "why": "The redo log holds changes not yet written to the data files. When it fills, InnoDB must flush dirty pages before more writes can proceed, so a small redo log for the write rate causes flushing bursts. A larger one means a longer crash recovery. MySQL's Innodb_os_log_written re-counts rewrites of partly filled blocks, so the rate is a little high.",
+      "rule": "watch when the redo capacity holds less than 1 hour of redo at the average rate since startup (judged after 60 minutes of uptime; peaks are higher than the average)",
+      "caveat": "Peaks write faster than the average, and a larger redo log makes crash recovery longer and uses more disk.",
+      "action": null,
+      "numbers": [
+        {
+          "label": "innodb_redo_log_capacity",
+          "text": "100.0 MiB"
+        },
+        {
+          "label": "innodb_log_file_size",
+          "text": "48.0 MiB"
+        },
+        {
+          "label": "innodb_log_files_in_group",
+          "text": "2"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "redo"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "redo"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "config.sync_binlog",
+      "family": "redo",
+      "status": "ok",
+      "title": "Binary log sync",
+      "headline": "1",
+      "verdict": "sync_binlog=1.",
+      "why": "How often the binary log is synced to disk. At 1 it is synced at each commit (group), so after an OS crash or power loss the binary log has every committed transaction and replicas stay consistent. MySQL's default is 1.",
+      "rule": "ok at 1 with the binary log on; watch at 0 or above 1",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "sync_binlog",
+          "text": "1"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "sync_binlog"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "sync_binlog"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "health.binlog_cache",
+      "family": "redo",
+      "status": "ok",
+      "title": "Binary log cache",
+      "headline": "No binary log writes",
+      "verdict": "No transaction wrote to the binary log in the window.",
+      "why": "With the binary log on, each session collects a transaction's events in memory (binlog_cache_size; binlog_stmt_cache_size for changes to non-transactional tables) and writes them to the binary log at commit. Events that do not fit spill to a temporary file on disk (Binlog_cache_disk_use, Binlog_stmt_cache_disk_use). The cache is per session, so a larger size is multiplied by the sessions that write.",
+      "rule": "watch when 10% or more of the transactions or statements that used a binary log cache spilled to a temporary file, with at least 5 spills in the window; never a problem",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Transactions that spilled to disk",
+          "text": "0 of 0",
+          "unit": "%"
+        },
+        {
+          "label": "Non-transactional statements that spilled to disk",
+          "text": "0 of 0",
+          "unit": "%"
+        }
+      ],
+      "settings": [
+        {
+          "name": "log_bin",
+          "value": "ON",
+          "display": "ON",
+          "default": "ON"
+        },
+        {
+          "name": "binlog_cache_size",
+          "value": "32768",
+          "display": "32.0 KiB",
+          "default": "32.0 KiB"
+        },
+        {
+          "name": "binlog_stmt_cache_size",
+          "value": "32768",
+          "display": "32.0 KiB",
+          "default": "32.0 KiB"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "binlog_cache"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "binlog_cache"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "health.redo",
+      "family": "redo",
+      "status": "ok",
+      "title": "Redo log size for the write rate",
+      "headline": "No redo in this window",
+      "verdict": "InnoDB wrote no redo in the window. The checkpoint age is 0 B (0% of the capacity).",
+      "why": "InnoDB writes every change to the redo log first. A checkpoint frees redo space once the matching dirty pages are flushed, so the capacity limits how far flushing can fall behind. The checkpoint age (Innodb_redo_log_current_lsn minus Innodb_redo_log_checkpoint_lsn) is how much of the capacity is in use. MySQL's redo-driven adaptive flushing starts early (about 8% of the capacity, innodb_adaptive_flushing_lwm) and grows with the age, reaches its age limit at about 73%, forces flushing from about 79% (innodb_flush_sync, on by default), and makes user writes wait from about 84%. These points compare the age of the oldest dirty page, which is at most the checkpoint age. A larger redo log smooths that out but makes crash recovery longer. Two counters measure redo. The log sequence number (Innodb_redo_log_current_lsn) grows by the redo generated, counted in 512-byte log blocks including their headers and trailers; it is what fills the capacity, so the times are computed from it. Innodb_os_log_written counts the bytes written to the redo files: the log writer rewrites the last, partly filled block on each write, so with many small commits it runs well above the redo generated. Innodb_log_waits counts waits for space in the in-memory log buffer (innodb_log_buffer_size), a different limit.",
+      "rule": "watch when the checkpoint age reaches about 73% of the capacity (where adaptive flushing reaches its age limit) in either sample, problem at about 79% (forced flushing); also watch when the capacity holds less than about 1 hour of redo at this window's rate (a common rule of thumb; this window may not be the peak) or when Innodb_log_waits grew",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Redo generated (LSN growth)",
+          "text": "0 B/s (0 B in the window)",
+          "value": 0,
+          "unit": "B/s"
+        },
+        {
+          "label": "At this rate, per hour",
+          "text": "0 B",
+          "value": 0,
+          "unit": "B"
+        },
+        {
+          "label": "Written to the redo files (Innodb_os_log_written)",
+          "text": "0 B/s (0 B in the window)",
+          "value": 0,
+          "unit": "B/s"
+        },
+        {
+          "label": "Redo capacity",
+          "text": "100.0 MiB (Innodb_redo_log_capacity_resized)",
+          "value": 104857600,
+          "unit": "B"
+        },
+        {
+          "label": "Checkpoint age now",
+          "text": "0 B (0% of the capacity)",
+          "value": 0,
+          "unit": "B"
+        },
+        {
+          "label": "Waits for the log buffer",
+          "text": "0 in the window",
+          "value": 0
+        }
+      ],
+      "settings": [
+        {
+          "name": "innodb_redo_log_capacity",
+          "value": "104857600",
+          "display": "100.0 MiB",
+          "default": "100.0 MiB"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "redo"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "redo"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "health.buffer_pool",
+      "family": "memory",
+      "status": "ok",
+      "title": "Buffer pool: full or warming",
+      "headline": "0 B/s read from disk",
+      "verdict": "The buffer pool is full (908 free pages, at or below the page cleaner's target of 1,024) and InnoDB read almost nothing from disk: 0 pages per second (0 B/s). The data this workload uses fits in memory.",
+      "why": "InnoDB keeps a small free list: while the server is busy, its page cleaner evicts the least recently used pages until each buffer pool instance has innodb_lru_scan_depth free pages, and an idle full pool can show 0 free pages (1,024 x 1 = 1,024 pages here). So \"full\" means free pages at or below that target, not zero. Once it is full, every page read from disk evicts another one. Bytes read from disk are the pages read from disk times innodb_page_size (16.0 KiB); MySQL adds Innodb_buffer_pool_read_ahead, because Innodb_buffer_pool_reads leaves out linear read-ahead. Innodb_data_read counts the bytes InnoDB read from its data files: it is lower for ROW_FORMAT=COMPRESSED tables, which read the smaller compressed page, and on MySQL it also counts redo log reads, but only during startup.",
+      "rule": "full when free pages are at or below innodb_lru_scan_depth x buffer pool instances (the free list InnoDB's page cleaner keeps). Full: ok below 10 pages read from disk per second, watch at 10 or more, problem when the hit ratio is also below 95%. Not full: no threshold",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Buffer pool in use",
+          "text": "88.9% (7,284 of 8,192 pages hold data or other structures)",
+          "value": 88.92,
+          "unit": "%"
+        },
+        {
+          "label": "Free pages",
+          "text": "908 (the page cleaner's target is 1,024)",
+          "value": 908,
+          "unit": "pages"
+        },
+        {
+          "label": "Data pages",
+          "text": "7,284, 0 in the window",
+          "value": 7284,
+          "unit": "pages"
+        },
+        {
+          "label": "Other pages (adaptive hash index, locks, compressed-page buffers)",
+          "text": "0 pages",
+          "value": 0,
+          "unit": "pages"
+        },
+        {
+          "label": "Pages read from disk",
+          "text": "0/s (0 in the window)",
+          "value": 0,
+          "unit": "/s"
+        },
+        {
+          "label": "Bytes read from disk (pages x page size)",
+          "text": "0 B/s (0 B in the window)",
+          "value": 0,
+          "unit": "B/s"
+        },
+        {
+          "label": "Innodb_data_read",
+          "text": "0 B/s (0 B in the window)",
+          "value": 0,
+          "unit": "B/s"
+        }
+      ],
+      "settings": [
+        {
+          "name": "innodb_buffer_pool_size",
+          "value": "134217728",
+          "display": "128.0 MiB",
+          "default": "128.0 MiB"
+        },
+        {
+          "name": "innodb_page_size",
+          "value": "16384",
+          "display": "16.0 KiB",
+          "default": "16.0 KiB"
+        },
+        {
+          "name": "innodb_lru_scan_depth",
+          "value": "1024",
+          "display": "1024",
+          "default": "1024"
+        },
+        {
+          "name": "innodb_buffer_pool_instances",
+          "value": "1",
+          "display": "1",
+          "default": "1 below 1 GiB of buffer pool, otherwise sized from it and the CPUs"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "buffer_pool"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "buffer_pool"
+      },
+      "learn": "lru",
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "config.join_buffer_size",
+      "family": "memory",
+      "status": "ok",
+      "title": "Join buffer",
+      "headline": "256.0 KiB",
+      "verdict": "256.0 KiB (engine default 256.0 KiB).",
+      "why": "Memory each session can allocate for each join that cannot use an index. It is a per-session limit, so a large global value is multiplied by the number of sessions doing that at once.",
+      "rule": "watch when the global value is 16.0 MiB or more",
+      "caveat": "A global change applies to new sessions only. Check first which queries sort or join large sets (Health shows sort merge passes).",
+      "action": null,
+      "numbers": [
+        {
+          "label": "join_buffer_size",
+          "text": "256.0 KiB"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "join_buffer_size"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "join_buffer_size"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "config.sort_buffer_size",
+      "family": "memory",
+      "status": "ok",
+      "title": "Sort buffer",
+      "headline": "256.0 KiB",
+      "verdict": "256.0 KiB (engine default 256.0 KiB).",
+      "why": "Memory each session can allocate for each sort. It is a per-session limit, so a large global value is multiplied by the number of sessions doing that at once.",
+      "rule": "watch when the global value is 16.0 MiB or more",
+      "caveat": "A global change applies to new sessions only. Check first which queries sort or join large sets (Health shows sort merge passes).",
+      "action": null,
+      "numbers": [
+        {
+          "label": "sort_buffer_size",
+          "text": "256.0 KiB"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "sort_buffer_size"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "sort_buffer_size"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "health.thread_cache",
+      "family": "connections",
+      "status": "ok",
+      "title": "Thread cache",
+      "headline": "100% of connections reused a thread",
+      "verdict": "0 of 11 new connections needed a new thread (0 per second); 100.0% reused a cached one. 2 idle threads are cached now (thread_cache_size 9).",
+      "why": "With one thread per connection, the server keeps up to thread_cache_size idle threads to reuse for new connections; Threads_created counts the threads it had to create instead. Connections is the next thread id: every connection that got past the max_connections check (failed logins included), plus a few internal threads. Each window includes this tool's own connection.",
+      "rule": "watch when more than 10% of new connections needed a new thread, with threads created at 1 per second or more (at least 5 in the window); never a problem",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "New connections",
+          "text": "1.10/s (11 in the window)",
+          "value": 1.1,
+          "unit": "/s"
+        },
+        {
+          "label": "Threads created",
+          "text": "0/s (0 in the window)",
+          "value": 0,
+          "unit": "/s"
+        },
+        {
+          "label": "Connections that reused a cached thread",
+          "text": "100.0%",
+          "value": 100,
+          "unit": "%"
+        },
+        {
+          "label": "Idle threads in the cache now",
+          "text": "2 of thread_cache_size 9",
+          "value": 2
+        }
+      ],
+      "settings": [
+        {
+          "name": "thread_cache_size",
+          "value": "9",
+          "display": "9",
+          "default": "8 + max_connections / 100, at most 100"
+        },
+        {
+          "name": "thread_handling",
+          "value": "one-thread-per-connection",
+          "display": "one-thread-per-connection",
+          "default": "one-thread-per-connection"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "thread_cache"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "thread_cache"
+      },
+      "learn": null,
+      "impact": 100,
+      "attribution": null
+    },
+    {
+      "id": "health.connections_used",
+      "family": "connections",
+      "status": "ok",
+      "title": "Connection limit used",
+      "headline": "0.7%",
+      "verdict": "0.7% of max_connections in use.",
+      "why": "Open connections as a share of max_connections. When it is full, new clients get \"Too many connections\" (one more is kept for administrators).",
+      "rule": "watch at 75% of max_connections, problem at 90% or when clients were refused in the window (Connection_errors_max_connections)",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Value",
+          "text": "0.7%",
+          "value": 0.66,
+          "unit": "%"
+        },
+        {
+          "label": "Detail",
+          "text": "1 of max_connections 151; peak 3"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "connections_used"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "metric",
+        "key": "connections_used"
+      },
+      "learn": null,
+      "impact": 0.66,
+      "attribution": null
+    },
+    {
+      "id": "sessions.idle_in_trx",
+      "family": "connections",
+      "status": "ok",
+      "title": "Sessions idle in a transaction",
+      "headline": "none now",
+      "verdict": "No session at this moment.",
+      "why": "a session idle (Sleep) inside an open InnoDB transaction keeps its row locks; under REPEATABLE READ it also keeps the read view from its first consistent read, which holds back purge; watched when the transaction is 10 s old, a problem at 60 s (rules of thumb)",
+      "rule": "a session idle (Sleep) inside an open InnoDB transaction keeps its row locks; under REPEATABLE READ it also keeps the read view from its first consistent read, which holds back purge; watched when the transaction is 10 s old, a problem at 60 s (rules of thumb)",
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [
+        {
+          "view": "sessions",
+          "label": "Open Sessions",
+          "key": "idle_in_trx"
+        }
+      ],
+      "source": {
+        "view": "sessions",
+        "kind": "summary",
+        "key": "idle_in_trx"
+      },
+      "learn": null,
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "sessions.lock_wait",
+      "family": "connections",
+      "status": "ok",
+      "title": "Sessions waiting for a lock",
+      "headline": "none now",
+      "verdict": "No session at this moment.",
+      "why": "a session waiting for an InnoDB lock (INNODB_TRX trx_state LOCK WAIT: a row lock or an InnoDB table lock such as AUTO-INC), a metadata lock, or a table-level lock is watched; the long-running rule raises it to a problem",
+      "rule": "a session waiting for an InnoDB lock (INNODB_TRX trx_state LOCK WAIT: a row lock or an InnoDB table lock such as AUTO-INC), a metadata lock, or a table-level lock is watched; the long-running rule raises it to a problem",
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [
+        {
+          "view": "sessions",
+          "label": "Open Sessions",
+          "key": "lock_wait"
+        }
+      ],
+      "source": {
+        "view": "sessions",
+        "kind": "summary",
+        "key": "lock_wait"
+      },
+      "learn": null,
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "sessions.long_running",
+      "family": "connections",
+      "status": "ok",
+      "title": "Long-running statements",
+      "headline": "none now",
+      "verdict": "No session at this moment.",
+      "why": "a statement running for 10 s or more is watched, 60 s or more is a problem (rules of thumb for OLTP; reports and batch jobs can run longer by design)",
+      "rule": "a statement running for 10 s or more is watched, 60 s or more is a problem (rules of thumb for OLTP; reports and batch jobs can run longer by design)",
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [
+        {
+          "view": "sessions",
+          "label": "Open Sessions",
+          "key": "long_running"
+        }
+      ],
+      "source": {
+        "view": "sessions",
+        "kind": "summary",
+        "key": "long_running"
+      },
+      "learn": null,
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "config.max_connections",
+      "family": "connections",
+      "status": "ok",
+      "title": "Connection limit",
+      "headline": "151",
+      "verdict": "Peak 3 of max_connections 151 (2%).",
+      "why": "The most client connections the server accepts (one more is kept for an administrator). Compared with the peak since startup or the last status reset.",
+      "rule": "watch when the peak since startup reached 80% of max_connections; problem when clients were refused (Connection_errors_max_connections above zero)",
+      "caveat": "Every connection can allocate its own sort, join and temporary-table memory, so a higher limit raises the worst-case memory. MySQL may lower max_connections at startup to fit open_files_limit.",
+      "action": null,
+      "numbers": [
+        {
+          "label": "max_connections",
+          "text": "151"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "max_connections"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "max_connections"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "innodb.row_operations",
+      "family": "innodb",
+      "status": "ok",
+      "title": "Row operations",
+      "headline": "0 rows read, 0 inserted, 0 updated, 0 deleted per second; 0 read views open.",
+      "verdict": "0 rows read, 0 inserted, 0 updated, 0 deleted per second; 0 read views open.",
+      "why": "",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Queries inside InnoDB / in queue",
+          "text": "0 / 0",
+          "value": 0
+        },
+        {
+          "label": "Read views open",
+          "text": "0",
+          "value": 0
+        },
+        {
+          "label": "Rows read per second",
+          "text": "0",
+          "value": 0.0,
+          "unit": "/s"
+        },
+        {
+          "label": "Rows inserted / updated / deleted per second",
+          "text": "0 / 0 / 0",
+          "value": 0.0,
+          "unit": "/s"
+        },
+        {
+          "label": "Main thread state",
+          "text": "sleeping"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "innodb",
+          "label": "Open InnoDB",
+          "key": "row_operations"
+        },
+        {
+          "view": "health",
+          "label": "Open Health"
+        }
+      ],
+      "source": {
+        "view": "innodb",
+        "kind": "section",
+        "key": "row_operations"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "innodb.semaphores",
+      "family": "innodb",
+      "status": "ok",
+      "title": "Semaphores",
+      "headline": "No thread is waiting for an InnoDB latch.",
+      "verdict": "No thread is waiting for an InnoDB latch.",
+      "why": "",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Threads waiting for a latch",
+          "text": "0",
+          "value": 0
+        },
+        {
+          "label": "OS wait array reservations (since startup)",
+          "text": "432",
+          "value": 432
+        },
+        {
+          "label": "OS wait array signals (since startup)",
+          "text": "431",
+          "value": 431
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "innodb",
+          "label": "Open InnoDB",
+          "key": "semaphores"
+        }
+      ],
+      "source": {
+        "view": "innodb",
+        "kind": "section",
+        "key": "semaphores"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "innodb.transactions",
+      "family": "innodb",
+      "status": "ok",
+      "title": "Transactions and purge",
+      "headline": "0 active transactions; history list length 0.",
+      "verdict": "0 active transactions; history list length 0.",
+      "why": "",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "History list length",
+          "text": "0",
+          "value": 0
+        },
+        {
+          "label": "Oldest active transaction",
+          "text": "none",
+          "unit": "s"
+        },
+        {
+          "label": "Transactions waiting for a lock",
+          "text": "0",
+          "value": 0
+        },
+        {
+          "label": "Active transactions listed",
+          "text": "0",
+          "value": 0
+        },
+        {
+          "label": "Purge",
+          "text": "running but idle"
+        },
+        {
+          "label": "Trx id counter",
+          "text": "3,209",
+          "value": 3209
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "innodb",
+          "label": "Open InnoDB",
+          "key": "transactions"
+        },
+        {
+          "view": "sessions",
+          "label": "Open Sessions"
+        }
+      ],
+      "source": {
+        "view": "innodb",
+        "kind": "section",
+        "key": "transactions"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "health.select_full_join",
+      "family": "temp_sorts",
+      "status": "ok",
+      "title": "Joins without an index",
+      "headline": "0/s",
+      "verdict": "0 joins in 10 s (0 per second).",
+      "why": "Joins that read a later table with a full scan because no index fit the join (Select_full_join). Usually a missing index on the join column. On MySQL a hash join's inner table counts too; it is read once, not once per row.",
+      "rule": "watch when any occur in the window, problem at 10 per second",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Value",
+          "text": "0/s",
+          "value": 0,
+          "unit": "/s"
+        },
+        {
+          "label": "Detail",
+          "text": "0 in the window"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "select_full_join"
+        },
+        {
+          "view": "top",
+          "order": "full_join",
+          "label": "Open Top statements by joins without an index"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "metric",
+        "key": "select_full_join"
+      },
+      "learn": "join",
+      "impact": 0,
+      "attribution": "full_joins"
+    },
+    {
+      "id": "health.sorts",
+      "family": "temp_sorts",
+      "status": "ok",
+      "title": "Sorts that spill to disk",
+      "headline": "0 merge passes for 0 sorts",
+      "verdict": "0 merge passes in the window for 0 sorts. Sorts fit in sort_buffer_size.",
+      "why": "A sort that cannot use an index (filesort) collects rows in sort_buffer_size. When they do not fit, it writes sorted runs to a temporary file and merges them, and each merge pass is counted in Sort_merge_passes. Sort_range and Sort_scan count the sorts themselves. sort_buffer_size is a limit for each sort in every session, so raise it for the sessions that need it rather than globally.",
+      "rule": "watch at 1 per second, problem at 10 per second, with at least 5 in the window",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Merge passes",
+          "text": "0/s (0 in the window)",
+          "value": 0,
+          "unit": "/s"
+        },
+        {
+          "label": "Sorts",
+          "text": "0/s (0 in the window)",
+          "value": 0,
+          "unit": "/s"
+        },
+        {
+          "label": "Rows sorted",
+          "text": "0/s",
+          "value": 0,
+          "unit": "/s"
+        }
+      ],
+      "settings": [
+        {
+          "name": "sort_buffer_size",
+          "value": "262144",
+          "display": "256.0 KiB",
+          "default": "256.0 KiB"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "sorts"
+        },
+        {
+          "view": "top",
+          "label": "Open Top statements"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "sorts"
+      },
+      "learn": "filesort",
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "health.tmp_tables",
+      "family": "temp_sorts",
+      "status": "ok",
+      "title": "Temporary tables on disk",
+      "headline": "0.0% of 4 on disk",
+      "verdict": "0 of 4 internal temporary tables in the window were on disk (0.0%).",
+      "why": "Internal temporary tables (GROUP BY, DISTINCT, UNION, derived tables) start in memory and move to disk when they outgrow the limit. TempTable keeps each internal temporary table in memory up to tmp_table_size (16.0 MiB), and all of them up to temptable_max_ram (1.0 GiB) together; on disk they are InnoDB tables. TempTable overflow into memory-mapped files (temptable_max_mmap) is not counted as disk.",
+      "rule": "watch at 10% on disk, problem at 25%; with fewer than 20 temporary tables in the window, watch at most",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Internal temporary tables",
+          "text": "0.40/s (4 in the window)",
+          "value": 0.4,
+          "unit": "/s"
+        },
+        {
+          "label": "Created on disk or moved there",
+          "text": "0/s (0 in the window)",
+          "value": 0,
+          "unit": "/s"
+        }
+      ],
+      "settings": [
+        {
+          "name": "internal_tmp_mem_storage_engine",
+          "value": "TempTable",
+          "display": "TempTable",
+          "default": "TempTable"
+        },
+        {
+          "name": "tmp_table_size",
+          "value": "16777216",
+          "display": "16.0 MiB",
+          "default": "16.0 MiB"
+        },
+        {
+          "name": "temptable_max_ram",
+          "value": "1073741824",
+          "display": "1.0 GiB",
+          "default": "3% of memory, 1 to 4 GiB (8.4 to 9.5); 1 GiB from 9.6 unless server_memory is set"
+        },
+        {
+          "name": "temptable_max_mmap",
+          "value": "0",
+          "display": "0 B",
+          "default": "0 B"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "tmp_tables"
+        },
+        {
+          "view": "top",
+          "label": "Open Top statements"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "tmp_tables"
+      },
+      "learn": "tmp",
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "config.tmp_tables",
+      "family": "temp_sorts",
+      "status": "ok",
+      "title": "Temporary tables",
+      "headline": "0.0% on disk",
+      "verdict": "0 of 1,166 internal temporary tables since startup went to disk (0.0%).",
+      "why": "Internal temporary tables (GROUP BY, DISTINCT, UNION, derived tables) start in memory and move to disk when they outgrow the limit. TempTable keeps each internal temporary table in memory up to tmp_table_size (16.0 MiB), and all of them up to temptable_max_ram (1.0 GiB) together.",
+      "rule": "watch when 25% or more of internal temporary tables since startup went to disk, with at least 100 of them",
+      "caveat": "Each concurrent temporary table can use up to the limit, so a large global value risks memory pressure. Tables too big for any sensible limit go to disk regardless.",
+      "action": null,
+      "numbers": [
+        {
+          "label": "internal_tmp_mem_storage_engine",
+          "text": "TempTable"
+        },
+        {
+          "label": "tmp_table_size",
+          "text": "16.0 MiB"
+        },
+        {
+          "label": "temptable_max_ram",
+          "text": "1.0 GiB"
+        },
+        {
+          "label": "temptable_max_mmap",
+          "text": "0 B"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "tmp_tables"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "tmp_tables"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "health.open_files",
+      "family": "caches",
+      "status": "ok",
+      "title": "Open files",
+      "headline": "0.0% of open_files_limit",
+      "verdict": "At least 58 file descriptors are in use: 2 through the server's file layer, 55 InnoDB files and 1 connection, 0.0% of open_files_limit 1,048,576.",
+      "why": "open_files_limit is the most file descriptors the server process can hold. Open_files counts files the server opened through its own file layer (MyISAM and Aria tables, binary and relay logs, some temporary files), not InnoDB's, which Innodb_num_open_files counts; each client connection also uses a socket. myflames adds the three, a lower bound: other descriptors are not visible through SQL.",
+      "rule": "watch when the file descriptors myflames can account for reach 75% of open_files_limit, problem at 90%",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Descriptors accounted for",
+          "text": "58 of open_files_limit 1,048,576",
+          "value": 0.01,
+          "unit": "%"
+        },
+        {
+          "label": "Open_files",
+          "text": "2",
+          "value": 2
+        },
+        {
+          "label": "Innodb_num_open_files",
+          "text": "55",
+          "value": 55
+        },
+        {
+          "label": "Client connections (sockets)",
+          "text": "1",
+          "value": 1
+        }
+      ],
+      "settings": [
+        {
+          "name": "open_files_limit",
+          "value": "1048576",
+          "display": "1048576",
+          "default": "sized at startup"
+        },
+        {
+          "name": "table_open_cache",
+          "value": "4000",
+          "display": "4000",
+          "default": "4000"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "open_files"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "open_files"
+      },
+      "learn": null,
+      "impact": 0.01,
+      "attribution": null
+    },
+    {
+      "id": "health.table_cache",
+      "family": "caches",
+      "status": "ok",
+      "title": "Table open cache",
+      "headline": "No misses",
+      "verdict": "No overflows in the window: the tables in use fit in the cache. 0.0% of 11 lookups missed. 790 of 4,000 cached instances are open.",
+      "why": "Each statement needs an open instance of every table it uses. A hit reuses a free instance from the cache. A miss opens a new one (Opened_tables): the first use of a table, or another session needing its own instance of a busy table, so misses alone are normal. An overflow means the cache was full and an unused instance was closed to make room: tables are being opened and closed over and over. MySQL divides table_open_cache across table_open_cache_instances.",
+      "rule": "watch at 1 overflow per second, problem at 10, with at least 5 in the window. Misses without overflows are not judged",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Tables opened",
+          "text": "0/s (0 in the window)",
+          "value": 0,
+          "unit": "/s"
+        },
+        {
+          "label": "Cache misses",
+          "text": "0.0% (0 misses, 11 hits)",
+          "value": 0,
+          "unit": "%"
+        },
+        {
+          "label": "Overflows",
+          "text": "0/s (0 in the window)",
+          "value": 0,
+          "unit": "/s"
+        },
+        {
+          "label": "Open tables",
+          "text": "790 of 4,000",
+          "value": 19.75,
+          "unit": "%"
+        }
+      ],
+      "settings": [
+        {
+          "name": "table_open_cache",
+          "value": "4000",
+          "display": "4000",
+          "default": "4000"
+        },
+        {
+          "name": "table_open_cache_instances",
+          "value": "16",
+          "display": "16",
+          "default": "16"
+        },
+        {
+          "name": "open_files_limit",
+          "value": "1048576",
+          "display": "1048576",
+          "default": "sized at startup"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "table_cache"
+        },
+        {
+          "view": "top",
+          "label": "Open Top statements"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "table_cache"
+      },
+      "learn": null,
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "health.table_definitions",
+      "family": "caches",
+      "status": "ok",
+      "title": "Table definition cache",
+      "headline": "0 opened per second",
+      "verdict": "0 table definitions were opened in the window (0 per second); 92 of 2,000 are cached.",
+      "why": "The definition cache keeps parsed table definitions (shares), separate from the open table instances. A definition is opened the first time a table is used, or again after it was evicted because the cache was full. Steady openings while the cache is full mean table_definition_cache is smaller than the number of tables in use.",
+      "rule": "watch when table definitions are opened at 1 per second or more (at least 5 in the window) while the definition cache is at least 95% full",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Definitions opened",
+          "text": "0/s (0 in the window)",
+          "value": 0,
+          "unit": "/s"
+        },
+        {
+          "label": "Cached definitions",
+          "text": "92 of table_definition_cache 2,000",
+          "value": 92
+        }
+      ],
+      "settings": [
+        {
+          "name": "table_definition_cache",
+          "value": "2000",
+          "display": "2000",
+          "default": "400 + table_open_cache / 2, at most 2000"
+        }
+      ],
+      "links": [
+        {
+          "view": "health",
+          "label": "Open Health",
+          "key": "table_definitions"
+        }
+      ],
+      "source": {
+        "view": "health",
+        "kind": "diagnostic",
+        "key": "table_definitions"
+      },
+      "learn": null,
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "config.table_open_cache",
+      "family": "caches",
+      "status": "ok",
+      "title": "Table cache",
+      "headline": "4,000",
+      "verdict": "790 of 4,000 in use; 0 tables opened per second on average since startup.",
+      "why": "How many open table instances the server keeps for reuse. When it is full, a table not in it must be opened again (Opened_tables).",
+      "rule": "watch when the cache is at least 95% full and tables were opened at 1 per second or more on average since startup",
+      "caveat": "Each open table uses a file descriptor and memory; the server needs open_files_limit to cover it. MySQL may lower table_open_cache at startup to fit open_files_limit.",
+      "action": null,
+      "numbers": [
+        {
+          "label": "table_open_cache",
+          "text": "4000"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "table_open_cache"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "table_open_cache"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "tables.fragmentation",
+      "family": "schema",
+      "status": "ok",
+      "title": "Free space inside tablespaces",
+      "headline": "none",
+      "verdict": "No file-per-table tablespace has free space at the rule's level.",
+      "why": "DATA_FREE against DATA_LENGTH + INDEX_LENGTH, judged only for file-per-table tablespaces.",
+      "rule": "watch when free space is at least 10% of the tablespace file and at least 100.0 MiB; problem at 25% and 1.0 GiB",
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [
+        {
+          "view": "tables",
+          "label": "Open Tables",
+          "key": "fragmentation"
+        }
+      ],
+      "source": {
+        "view": "tables",
+        "kind": "summary",
+        "key": "fragmentation"
+      },
+      "learn": null,
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "tables.no_primary_key",
+      "family": "schema",
+      "status": "ok",
+      "title": "Tables without a usable key",
+      "headline": "0 tables",
+      "verdict": "None in every user schema.",
+      "why": "InnoDB keeps each table as a B-tree ordered by the primary key, and every secondary index stores the primary key to reach the row. Without a primary key it uses the first unique key on NOT NULL columns (whole columns, not a prefix, a functional part or a virtual generated column). Without one it adds a hidden 6-byte row ID. With row-based replication (the default) each UPDATE or DELETE reaches the replica as the changed rows, and the replica has to find each one. With a primary key or a unique key on NOT NULL columns that is one index lookup per row. Without one, MySQL hashes the rows of each event and looks them up through another index if there is one, or else makes up to one full table scan per event. An event holds about 8 KiB of rows (binlog_row_event_max_size), so a large DELETE means many full scans and the replica falls behind.",
+      "rule": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [
+        {
+          "view": "tables",
+          "label": "Open Tables",
+          "key": "no_primary_key"
+        }
+      ],
+      "source": {
+        "view": "tables",
+        "kind": "summary",
+        "key": "no_primary_key"
+      },
+      "learn": null,
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "tables.unique_stand_in",
+      "family": "schema",
+      "status": "ok",
+      "title": "Tables clustered on a unique key, not a primary key",
+      "headline": "0 tables",
+      "verdict": "None in every user schema.",
+      "why": "InnoDB keeps each table as a B-tree ordered by the primary key, and every secondary index stores the primary key to reach the row. Without a primary key it uses the first unique key on NOT NULL columns (whole columns, not a prefix, a functional part or a virtual generated column). Without one it adds a hidden 6-byte row ID. With row-based replication (the default) each UPDATE or DELETE reaches the replica as the changed rows, and the replica has to find each one. With a primary key or a unique key on NOT NULL columns that is one index lookup per row. Without one, MySQL hashes the rows of each event and looks them up through another index if there is one, or else makes up to one full table scan per event. An event holds about 8 KiB of rows (binlog_row_event_max_size), so a large DELETE means many full scans and the replica falls behind.",
+      "rule": "watch: no PRIMARY KEY, but a UNIQUE key on NOT NULL columns stands in for it",
+      "caveat": null,
+      "action": null,
+      "numbers": [],
+      "settings": [],
+      "links": [
+        {
+          "view": "tables",
+          "label": "Open Tables",
+          "key": "unique_stand_in"
+        }
+      ],
+      "source": {
+        "view": "tables",
+        "kind": "summary",
+        "key": "unique_stand_in"
+      },
+      "learn": null,
+      "impact": 0,
+      "attribution": null
+    },
+    {
+      "id": "innodb.file_io",
+      "family": "io",
+      "status": "ok",
+      "title": "File I/O",
+      "headline": "No pending I/O requests; 0 reads/s, 0 writes/s, 0 fsyncs/s.",
+      "verdict": "No pending I/O requests; 0 reads/s, 0 writes/s, 0 fsyncs/s.",
+      "why": "",
+      "rule": null,
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Pending I/O now",
+          "text": "0",
+          "value": 0
+        },
+        {
+          "label": "OS file reads per second",
+          "text": "0",
+          "value": 0.0,
+          "unit": "/s"
+        },
+        {
+          "label": "OS file writes per second",
+          "text": "0",
+          "value": 0.0,
+          "unit": "/s"
+        },
+        {
+          "label": "OS fsyncs per second",
+          "text": "0",
+          "value": 0.0,
+          "unit": "/s"
+        },
+        {
+          "label": "Average bytes per read",
+          "text": "0 B",
+          "value": 0,
+          "unit": "B"
+        },
+        {
+          "label": "OS reads / writes / fsyncs (since startup)",
+          "text": "9,936 / 625 / 205",
+          "value": 9936
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "innodb",
+          "label": "Open InnoDB",
+          "key": "file_io"
+        },
+        {
+          "view": "io",
+          "label": "Open I/O"
+        }
+      ],
+      "source": {
+        "view": "innodb",
+        "kind": "section",
+        "key": "file_io"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "config.performance_schema",
+      "family": "observability",
+      "status": "ok",
+      "title": "Performance Schema",
+      "headline": "ON",
+      "verdict": "ON.",
+      "why": "Performance Schema records statement digests, waits, and table and file I/O. myflames' Top statements, Waits, I/O and unused-index views need it. It is read-only at runtime.",
+      "rule": "watch when off: Top statements, Waits, I/O and unused indexes need it",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "performance_schema",
+          "text": "ON"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "config",
+          "label": "Open Configuration",
+          "key": "performance_schema"
+        }
+      ],
+      "source": {
+        "view": "config",
+        "kind": "check",
+        "key": "performance_schema"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    },
+    {
+      "id": "instruments.views",
+      "family": "observability",
+      "status": "ok",
+      "title": "Views fed by Performance Schema",
+      "headline": "8 of 8 ready",
+      "verdict": "Every myflames view that reads Performance Schema has what it needs.",
+      "why": "Each view needs its consumers and instruments on; Instruments shows what each one costs.",
+      "rule": "watch when a view's required consumer or instrument is off",
+      "caveat": null,
+      "action": null,
+      "numbers": [
+        {
+          "label": "Top statements",
+          "text": "ready"
+        },
+        {
+          "label": "Capture statistics",
+          "text": "ready"
+        },
+        {
+          "label": "Locks: metadata locks",
+          "text": "ready"
+        },
+        {
+          "label": "Locks: an idle blocker's last statement",
+          "text": "ready"
+        },
+        {
+          "label": "Locks: InnoDB row locks",
+          "text": "ready"
+        },
+        {
+          "label": "Waits",
+          "text": "ready"
+        },
+        {
+          "label": "Indexes: unused indexes and full scans",
+          "text": "ready"
+        },
+        {
+          "label": "I/O: per table and per file",
+          "text": "ready"
+        }
+      ],
+      "settings": [],
+      "links": [
+        {
+          "view": "instruments",
+          "label": "Open Instruments"
+        }
+      ],
+      "source": {
+        "view": "instruments",
+        "kind": "features",
+        "key": "views"
+      },
+      "learn": null,
+      "impact": null,
+      "attribution": null
+    }
+  ],
+  "sections": [
+    {
+      "key": "memory",
+      "title": "Memory and buffer pool",
+      "status": "watch",
+      "summary": "1 to watch: Buffer pool size; 3 ok",
+      "counts": {
+        "problem": 0,
+        "watch": 1,
+        "unknown": 0,
+        "info": 1,
+        "ok": 3
+      },
+      "findings": [
+        "config.buffer_pool",
+        "config.dedicated_server",
+        "health.buffer_pool",
+        "config.join_buffer_size",
+        "config.sort_buffer_size"
+      ],
+      "views": [
+        "health",
+        "config",
+        "innodb"
+      ],
+      "notes": []
+    },
+    {
+      "key": "redo",
+      "title": "Redo and durability",
+      "status": "info",
+      "summary": "7 for information, no rule applies",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 1,
+        "ok": 6
+      },
+      "findings": [
+        "config.flush_method",
+        "checks.binlog_expiry",
+        "config.flush_log",
+        "config.redo",
+        "config.sync_binlog",
+        "health.binlog_cache",
+        "health.redo"
+      ],
+      "views": [
+        "health",
+        "config",
+        "innodb",
+        "checks"
+      ],
+      "notes": []
+    },
+    {
+      "key": "connections",
+      "title": "Connections and threads",
+      "status": "info",
+      "summary": "7 for information, no rule applies",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 1,
+        "ok": 6
+      },
+      "findings": [
+        "config.thread_handling",
+        "health.thread_cache",
+        "health.connections_used",
+        "sessions.idle_in_trx",
+        "sessions.lock_wait",
+        "sessions.long_running",
+        "config.max_connections"
+      ],
+      "views": [
+        "health",
+        "config",
+        "sessions"
+      ],
+      "notes": []
+    },
+    {
+      "key": "temp_sorts",
+      "title": "Temporary tables, sorts and joins",
+      "status": "info",
+      "summary": "5 for information, no rule applies",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 1,
+        "ok": 4
+      },
+      "findings": [
+        "health.full_scans",
+        "health.select_full_join",
+        "health.sorts",
+        "health.tmp_tables",
+        "config.tmp_tables"
+      ],
+      "views": [
+        "health",
+        "config"
+      ],
+      "notes": []
+    },
+    {
+      "key": "caches",
+      "title": "Table and definition caches",
+      "status": "ok",
+      "summary": "4 checked, nothing to look at",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 0,
+        "ok": 4
+      },
+      "findings": [
+        "health.open_files",
+        "health.table_cache",
+        "health.table_definitions",
+        "config.table_open_cache"
+      ],
+      "views": [
+        "health",
+        "config"
+      ],
+      "notes": []
+    },
+    {
+      "key": "query_cache",
+      "title": "Query cache",
+      "status": "info",
+      "summary": "MySQL 8.0 and later have no query cache.",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 0,
+        "ok": 0
+      },
+      "findings": [],
+      "views": [
+        "checks"
+      ],
+      "notes": [
+        "MySQL 8.0 and later have no query cache."
+      ]
+    },
+    {
+      "key": "indexes",
+      "title": "Indexes",
+      "status": "watch",
+      "summary": "1 to watch: Redundant indexes",
+      "counts": {
+        "problem": 0,
+        "watch": 1,
+        "unknown": 0,
+        "info": 2,
+        "ok": 0
+      },
+      "findings": [
+        "indexes.redundant",
+        "indexes.full_scans",
+        "indexes.unused"
+      ],
+      "views": [
+        "indexes"
+      ],
+      "notes": []
+    },
+    {
+      "key": "schema",
+      "title": "Schema health",
+      "status": "info",
+      "summary": "4 for information, no rule applies",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 1,
+        "ok": 3
+      },
+      "findings": [
+        "tables.engines",
+        "tables.fragmentation",
+        "tables.no_primary_key",
+        "tables.unique_stand_in"
+      ],
+      "views": [
+        "tables"
+      ],
+      "notes": []
+    },
+    {
+      "key": "waits",
+      "title": "Waits",
+      "status": "info",
+      "summary": "1 for information, no rule applies",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 1,
+        "ok": 0
+      },
+      "findings": [
+        "waits.top"
+      ],
+      "views": [
+        "waits"
+      ],
+      "notes": []
+    },
+    {
+      "key": "io",
+      "title": "I/O",
+      "status": "info",
+      "summary": "3 for information, no rule applies",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 2,
+        "ok": 1
+      },
+      "findings": [
+        "config.io_capacity",
+        "io.top",
+        "innodb.file_io"
+      ],
+      "views": [
+        "io",
+        "innodb",
+        "config"
+      ],
+      "notes": []
+    },
+    {
+      "key": "innodb",
+      "title": "InnoDB status",
+      "status": "info",
+      "summary": "5 for information, no rule applies",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 0,
+        "info": 2,
+        "ok": 3
+      },
+      "findings": [
+        "innodb.adaptive_hash_index",
+        "innodb.insert_buffer",
+        "innodb.row_operations",
+        "innodb.semaphores",
+        "innodb.transactions"
+      ],
+      "views": [
+        "innodb",
+        "health"
+      ],
+      "notes": []
+    },
+    {
+      "key": "replication",
+      "title": "Replication",
+      "status": "unknown",
+      "summary": "1 unknown: Replication",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 1,
+        "info": 0,
+        "ok": 0
+      },
+      "findings": [
+        "checks.replication"
+      ],
+      "views": [
+        "checks"
+      ],
+      "notes": []
+    },
+    {
+      "key": "security",
+      "title": "Security basics",
+      "status": "unknown",
+      "summary": "3 unknown: Anonymous accounts, Accounts without a password, root from any host",
+      "counts": {
+        "problem": 0,
+        "watch": 0,
+        "unknown": 3,
+        "info": 0,
+        "ok": 0
+      },
+      "findings": [
+        "checks.anonymous",
+        "checks.no_password",
+        "checks.root_any_host"
+      ],
+      "views": [
+        "checks"
+      ],
+      "notes": []
+    },
+    {
+      "key": "observability",
+      "title": "Performance Schema coverage",
+      "status": "watch",
+      "summary": "1 to watch: Slow query log; 2 ok",
+      "counts": {
+        "problem": 0,
+        "watch": 1,
+        "unknown": 0,
+        "info": 1,
+        "ok": 2
+      },
+      "findings": [
+        "config.slow_log",
+        "waits.coverage",
+        "config.performance_schema",
+        "instruments.views"
+      ],
+      "views": [
+        "instruments",
+        "config",
+        "waits"
+      ],
+      "notes": []
+    }
+  ],
+  "attribution": {
+    "available": true,
+    "gate": null,
+    "fix": null,
+    "label": "text match, not proof",
+    "caveats": [
+      "The table is matched by name in the normalized digest text, so this is a text match, not proof: a view, a stored routine or a trigger can read the table without naming it, an alias or another schema's table with the same name can match, and digest text is cut at performance_schema_max_digest_length (1024 bytes by default).",
+      "SUM_NO_INDEX_USED and SUM_SELECT_SCAN count per statement, not per table: a statement that names this table can match because it scanned another table it reads.",
+      "SCHEMA_NAME is the session's default schema, not the table's: an unqualified name matches only digests whose default schema is the table's schema."
+    ],
+    "full_joins": {
+      "order": "full_join",
+      "statements": [],
+      "taken_at": "2026-10-15T01:07:20.061010+00:00"
+    },
+    "full_scans": [
+      {
+        "schema": "employees",
+        "table": "employees",
+        "label": "text match, not proof",
+        "rows_without_index": 1200100,
+        "fetch_ms_without_index": 136.305,
+        "share_time": 1,
+        "statements": [],
+        "error": null,
+        "capped": false
+      },
+      {
+        "schema": "sakila",
+        "table": "category",
+        "label": "text match, not proof",
+        "rows_without_index": 17,
+        "fetch_ms_without_index": 2.892,
+        "share_time": 1,
+        "statements": [],
+        "error": null,
+        "capped": false
+      }
+    ],
+    "coverage": {
+      "uptime_s": 192396,
+      "first_seen": null,
+      "digest_lost": 0,
+      "overflow": null
+    },
+    "notes": [
+      "Counters accumulate since the server started or the digest table was last truncated.",
+      "Listed: statements that read a later table of a join with a full scan (SUM_SELECT_FULL_JOIN, the per-statement form of Select_full_join; on MariaDB a full table scan only) or with a range check for each row (SUM_SELECT_RANGE_CHECK). Health counts the same events over its window; these sums run since the digest was first seen."
+    ],
+    "health_window": {
+      "select_full_join": 0,
+      "rate": 0,
+      "elapsed_s": 10.043,
+      "status": "ok"
+    }
+  },
+  "checklist": {
+    "covered": [
+      {
+        "key": "identity",
+        "label": "Server identity and uptime"
+      },
+      {
+        "key": "memory",
+        "label": "Buffer pool and session buffers"
+      },
+      {
+        "key": "redo",
+        "label": "Redo log, durability, binary log cache and expiry"
+      },
+      {
+        "key": "connections",
+        "label": "Connections and threads"
+      },
+      {
+        "key": "temp_sorts",
+        "label": "Temporary tables, sorts, joins without an index, full scans"
+      },
+      {
+        "key": "caches",
+        "label": "Table open cache, definition cache, open files"
+      },
+      {
+        "key": "query_cache",
+        "label": "Query cache (MariaDB)"
+      },
+      {
+        "key": "indexes",
+        "label": "Unused and redundant indexes, tables read by full scans"
+      },
+      {
+        "key": "schema",
+        "label": "Tables without a primary key, fragmentation, storage engines"
+      },
+      {
+        "key": "waits",
+        "label": "Wait events"
+      },
+      {
+        "key": "io",
+        "label": "Table and file I/O"
+      },
+      {
+        "key": "innodb",
+        "label": "InnoDB status: purge, deadlocks, semaphores"
+      },
+      {
+        "key": "replication",
+        "label": "Replication status (read-only)"
+      },
+      {
+        "key": "security",
+        "label": "Accounts without a password, anonymous accounts, root from any host"
+      },
+      {
+        "key": "observability",
+        "label": "Performance Schema coverage and the slow query log"
+      }
+    ],
+    "not_checked": [
+      {
+        "label": "OS memory, swap, CPU and disk",
+        "reason": "Not readable over SQL."
+      },
+      {
+        "label": "Total memory budget",
+        "reason": "Global buffers plus per-session buffers times connections is a pessimistic upper bound, and the OS memory to compare it with is not readable over SQL."
+      },
+      {
+        "label": "Galera / wsrep cluster status",
+        "reason": "Not built yet; its variable names need verifying first."
+      },
+      {
+        "label": "Version support dates",
+        "reason": "Dates go stale; check the vendor's lifecycle page."
+      },
+      {
+        "label": "Lock tables (who blocks whom)",
+        "reason": "Locks reads the data_locks table, which holds the lock-system latch on some versions; open Locks when Sessions or InnoDB show lock waits."
+      },
+      {
+        "label": "MyISAM key cache and Aria page cache",
+        "reason": "Not built yet."
+      }
+    ]
+  },
+  "notes": [
+    "Statuses are rules of thumb, not verdicts: each finding names its rule. myflames never applies a recommendation; a suggested SET names its scope and needs your confirmation before anyone runs it."
+  ]
+}

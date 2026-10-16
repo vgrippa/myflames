@@ -1,0 +1,269 @@
+{
+ "server": {
+  "engine": "mysql",
+  "image": "mysql:8.4",
+  "version": "8.4.11"
+ },
+ "captured": "2026-10-15",
+ "sessions": {
+  "acct_admin": {
+   "login": "acct_admin",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_admin@172.17.0.1\tacct_admin@%\tNONE\t8.4.11\nGRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `acct_admin`@`%` WITH GRANT OPTION\nGRANT ALLOW_NONEXISTENT_DEFINER,APPLICATION_PASSWORD_ADMIN,AUDIT_ABORT_EXEMPT,AUDIT_ADMIN,AUTHENTICATION_POLICY_ADMIN,BACKUP_ADMIN,BINLOG_ADMIN,BINLOG_ENCRYPTION_ADMIN,CLONE_ADMIN,CONNECTION_ADMIN,ENCRYPTION_KEY_ADMIN,FIREWALL_EXEMPT,FLUSH_OPTIMIZER_COSTS,FLUSH_PRIVILEGES,FLUSH_STATUS,FLUSH_TABLES,FLUSH_USER_RESOURCES,GROUP_REPLICATION_ADMIN,GROUP_REPLICATION_STREAM,INNODB_REDO_LOG_ARCHIVE,INNODB_REDO_LOG_ENABLE,OPTIMIZE_LOCAL_TABLE,PASSWORDLESS_USER_ADMIN,PERSIST_RO_VARIABLES_ADMIN,REPLICATION_APPLIER,REPLICATION_SLAVE_ADMIN,RESOURCE_GROUP_ADMIN,RESOURCE_GROUP_USER,ROLE_ADMIN,SENSITIVE_VARIABLES_OBSERVER,SERVICE_CONNECTION_ADMIN,SESSION_VARIABLES_ADMIN,SET_ANY_DEFINER,SHOW_ROUTINE,SYSTEM_USER,SYSTEM_VARIABLES_ADMIN,TABLE_ENCRYPTION_ADMIN,TELEMETRY_LOG_ADMIN,TRANSACTION_GTID_TAG,XA_RECOVER_ADMIN ON *.* TO `acct_admin`@`%` WITH GRANT OPTION\nGRANT `r_mand`@`%` TO `acct_admin`@`%`\nactivate_all_roles_on_login\tOFF\nhostname\t9c470524d3c2\nmandatory_roles\t`r_mand`@`%`\npartial_revokes\tON\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tcc3cd17a-c8be-11f1-947b-969128743bda\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT ROLE_NAME, ROLE_HOST, IS_DEFAULT, IS_MANDATORY FROM information_schema.APPLICABLE_ROLES",
+     "flags": [
+      "--comments"
+     ],
+     "output": "r_mand\t%\tNO\tYES\n"
+    }
+   ]
+  },
+  "acct_ops": {
+   "login": "acct_ops",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_ops@172.17.0.1\tacct_ops@%\tNONE\t8.4.11\nGRANT RELOAD, PROCESS, CREATE USER ON *.* TO `acct_ops`@`%`\nGRANT CONNECTION_ADMIN,ROLE_ADMIN ON *.* TO `acct_ops`@`%`\nGRANT SELECT ON `mysql`.* TO `acct_ops`@`%`\nGRANT `r_mand`@`%` TO `acct_ops`@`%`\nactivate_all_roles_on_login\tOFF\nhostname\t9c470524d3c2\nmandatory_roles\t`r_mand`@`%`\npartial_revokes\tON\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tcc3cd17a-c8be-11f1-947b-969128743bda\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT ROLE_NAME, ROLE_HOST, IS_DEFAULT, IS_MANDATORY FROM information_schema.APPLICABLE_ROLES",
+     "flags": [
+      "--comments"
+     ],
+     "output": "r_mand\t%\tNO\tYES\n"
+    }
+   ]
+  },
+  "acct_app": {
+   "login": "acct_app",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_app@172.17.0.1\tacct_app@%\t`r_read`@`%`\t8.4.11\nGRANT USAGE ON *.* TO `acct_app`@`%`\nGRANT SELECT ON `shop`.* TO `acct_app`@`%`\nGRANT SELECT ON `db\\\\_x`.* TO `acct_app`@`%`\nGRANT INSERT ON `db_x`.* TO `acct_app`@`%`\nGRANT DELETE ON `shop%`.* TO `acct_app`@`%`\nGRANT SELECT (`a`, `b`), INSERT (`a`), UPDATE ON `shop`.`orders` TO `acct_app`@`%`\nGRANT EXECUTE ON PROCEDURE `shop`.`p` TO `acct_app`@`%`\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f` TO `acct_app`@`%`\nGRANT `r_mand`@`%`,`r_read`@`%`,`r_sys`@`%`,`r_write`@`%` TO `acct_app`@`%`\nactivate_all_roles_on_login\tOFF\nhostname\t9c470524d3c2\nmandatory_roles\t`r_mand`@`%`\npartial_revokes\tON\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tcc3cd17a-c8be-11f1-947b-969128743bda\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT ROLE_NAME, ROLE_HOST, IS_DEFAULT, IS_MANDATORY FROM information_schema.APPLICABLE_ROLES",
+     "flags": [
+      "--comments"
+     ],
+     "output": "r_mand\t%\tNO\tYES\nr_read\t%\tYES\tNO\nr_sys\t%\tNO\tNO\nr_write\t%\tNO\tNO\n"
+    }
+   ]
+  },
+  "acct_pr": {
+   "login": "acct_pr",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_pr@172.17.0.1\tacct_pr@%\tNONE\t8.4.11\nGRANT SELECT, INSERT, UPDATE ON *.* TO `acct_pr`@`%`\nREVOKE SELECT ON `db_x`.* FROM `acct_pr`@`%`\nREVOKE INSERT, UPDATE ON `mysql`.* FROM `acct_pr`@`%`\nGRANT `r_mand`@`%` TO `acct_pr`@`%`\nactivate_all_roles_on_login\tOFF\nhostname\t9c470524d3c2\nmandatory_roles\t`r_mand`@`%`\npartial_revokes\tON\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tcc3cd17a-c8be-11f1-947b-969128743bda\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT ROLE_NAME, ROLE_HOST, IS_DEFAULT, IS_MANDATORY FROM information_schema.APPLICABLE_ROLES",
+     "flags": [
+      "--comments"
+     ],
+     "output": "r_mand\t%\tNO\tYES\n"
+    }
+   ]
+  },
+  "acct_cu": {
+   "login": "acct_cu",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_cu@172.17.0.1\tacct_cu@%\tNONE\t8.4.11\nGRANT CREATE USER ON *.* TO `acct_cu`@`%`\nGRANT `r_mand`@`%` TO `acct_cu`@`%`\nactivate_all_roles_on_login\tOFF\nhostname\t9c470524d3c2\nmandatory_roles\t`r_mand`@`%`\npartial_revokes\tON\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tcc3cd17a-c8be-11f1-947b-969128743bda\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT ROLE_NAME, ROLE_HOST, IS_DEFAULT, IS_MANDATORY FROM information_schema.APPLICABLE_ROLES",
+     "flags": [
+      "--comments"
+     ],
+     "output": "r_mand\t%\tNO\tYES\n"
+    }
+   ]
+  }
+ },
+ "reads": {
+  "login": "root",
+  "calls": [
+   {
+    "sql": "SELECT @@version",
+    "flags": null,
+    "output": "8.4.11\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SELECT User, Host, plugin, account_locked, password_expired, password_last_changed, password_lifetime, (authentication_string = '' AND plugin IN ('mysql_native_password','caching_sha2_password','sha256_password')), (authentication_string = '') FROM mysql.user ORDER BY User, Host",
+    "flags": [
+     "--comments"
+    ],
+    "output": "acct_admin\t%\tcaching_sha2_password\tN\tN\t2026-10-15 17:38:07\tNULL\t0\t0\nacct_app\t%\tcaching_sha2_password\tN\tN\t2026-10-15 17:38:07\tNULL\t0\t0\nacct_cu\t%\tcaching_sha2_password\tN\tN\t2026-10-15 17:40:56\tNULL\t0\t0\nacct_ops\t%\tcaching_sha2_password\tN\tN\t2026-10-15 17:38:07\tNULL\t0\t0\nacct_pr\t%\tcaching_sha2_password\tN\tN\t2026-10-15 17:38:53\tNULL\t0\t0\nacct_proxy\t%\tcaching_sha2_password\tN\tN\t2026-10-15 17:38:07\tNULL\t0\t0\nmysql.infoschema\tlocalhost\tcaching_sha2_password\tY\tN\t2026-10-15 17:35:23\tNULL\t0\t0\nmysql.session\tlocalhost\tcaching_sha2_password\tY\tN\t2026-10-15 17:35:23\tNULL\t0\t0\nmysql.sys\tlocalhost\tcaching_sha2_password\tY\tN\t2026-10-15 17:35:23\tNULL\t0\t0\nr_mand\t%\tcaching_sha2_password\tY\tY\t2026-10-15 17:38:07\tNULL\t1\t1\nr_read\t%\tcaching_sha2_password\tY\tY\t2026-10-15 17:38:07\tNULL\t1\t1\nr_sys\t%\tcaching_sha2_password\tY\tY\t2026-10-15 17:38:07\tNULL\t1\t1\nr_write\t%\tcaching_sha2_password\tY\tY\t2026-10-15 17:38:07\tNULL\t1\t1\nroot\t%\tcaching_sha2_password\tN\tN\t2026-10-15 17:35:26\tNULL\t0\t0\nroot\tlocalhost\tcaching_sha2_password\tN\tN\t2026-10-15 17:35:26\tNULL\t0\t0\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SELECT FROM_USER, FROM_HOST, TO_USER, TO_HOST, WITH_ADMIN_OPTION FROM mysql.role_edges ORDER BY FROM_USER, FROM_HOST, TO_USER, TO_HOST",
+    "flags": [
+     "--comments"
+    ],
+    "output": "r_read\t%\tacct_app\t%\tN\nr_sys\t%\tacct_app\t%\tN\nr_write\t%\tacct_app\t%\tN\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SELECT USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST FROM mysql.default_roles ORDER BY USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST",
+    "flags": [
+     "--comments"
+    ],
+    "output": "acct_app\t%\tr_read\t%\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_app`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `acct_app`@`%`\nGRANT SELECT ON `db\\\\_x`.* TO `acct_app`@`%`\nGRANT INSERT ON `db_x`.* TO `acct_app`@`%`\nGRANT DELETE ON `shop%`.* TO `acct_app`@`%`\nGRANT SELECT (`a`, `b`), INSERT (`a`), UPDATE ON `shop`.`orders` TO `acct_app`@`%`\nGRANT EXECUTE ON PROCEDURE `shop`.`p` TO `acct_app`@`%`\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f` TO `acct_app`@`%`\nGRANT `r_read`@`%`,`r_sys`@`%`,`r_write`@`%` TO `acct_app`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": "partial_revokes\tON\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SET SESSION print_identified_with_as_hex = ON; /*myflames:accounts*/ SHOW CREATE USER `acct_app`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_app`@`%` IDENTIFIED WITH 'caching_sha2_password' AS 0x244124303035247E16070221253C11653D72094969717D65214E6F4E764679316730774444317137594175454B4443724B66436A345734327059657358694145634632767341 DEFAULT ROLE `r_read`@`%` REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT PASSWORD REQUIRE CURRENT DEFAULT\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_read`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `r_read`@`%`\nGRANT SELECT ON `shop`.* TO `r_read`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_sys`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `r_sys`@`%`\nGRANT SYSTEM_USER ON *.* TO `r_sys`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_write`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `r_write`@`%`\nGRANT INSERT, UPDATE ON `shop`.* TO `r_write`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_admin`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, RELOAD, SHUTDOWN, PROCESS, FILE, REFERENCES, INDEX, ALTER, SHOW DATABASES, SUPER, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, REPLICATION SLAVE, REPLICATION CLIENT, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, CREATE USER, EVENT, TRIGGER, CREATE TABLESPACE, CREATE ROLE, DROP ROLE ON *.* TO `acct_admin`@`%` WITH GRANT OPTION\nGRANT ALLOW_NONEXISTENT_DEFINER,APPLICATION_PASSWORD_ADMIN,AUDIT_ABORT_EXEMPT,AUDIT_ADMIN,AUTHENTICATION_POLICY_ADMIN,BACKUP_ADMIN,BINLOG_ADMIN,BINLOG_ENCRYPTION_ADMIN,CLONE_ADMIN,CONNECTION_ADMIN,ENCRYPTION_KEY_ADMIN,FIREWALL_EXEMPT,FLUSH_OPTIMIZER_COSTS,FLUSH_PRIVILEGES,FLUSH_STATUS,FLUSH_TABLES,FLUSH_USER_RESOURCES,GROUP_REPLICATION_ADMIN,GROUP_REPLICATION_STREAM,INNODB_REDO_LOG_ARCHIVE,INNODB_REDO_LOG_ENABLE,OPTIMIZE_LOCAL_TABLE,PASSWORDLESS_USER_ADMIN,PERSIST_RO_VARIABLES_ADMIN,REPLICATION_APPLIER,REPLICATION_SLAVE_ADMIN,RESOURCE_GROUP_ADMIN,RESOURCE_GROUP_USER,ROLE_ADMIN,SENSITIVE_VARIABLES_OBSERVER,SERVICE_CONNECTION_ADMIN,SESSION_VARIABLES_ADMIN,SET_ANY_DEFINER,SHOW_ROUTINE,SYSTEM_USER,SYSTEM_VARIABLES_ADMIN,TABLE_ENCRYPTION_ADMIN,TELEMETRY_LOG_ADMIN,TRANSACTION_GTID_TAG,XA_RECOVER_ADMIN ON *.* TO `acct_admin`@`%` WITH GRANT OPTION\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": "partial_revokes\tON\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SET SESSION print_identified_with_as_hex = ON; /*myflames:accounts*/ SHOW CREATE USER `acct_admin`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_admin`@`%` IDENTIFIED WITH 'caching_sha2_password' AS 0x24412430303524414276011B5D5527545A0A7E1E1A091B3C5546207631386B73424B4962534B7A6579576C5952436549635439444C484F39513644384B446A507736434A7142 REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT PASSWORD REQUIRE CURRENT DEFAULT\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_proxy`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `acct_proxy`@`%`\nGRANT PROXY ON `acct_app`@`%` TO `acct_proxy`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": "partial_revokes\tON\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SET SESSION print_identified_with_as_hex = ON; /*myflames:accounts*/ SHOW CREATE USER `acct_proxy`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_proxy`@`%` IDENTIFIED WITH 'caching_sha2_password' AS 0x24412430303524335D782B1822770C4E2E7770553113253621446374364B6C4B44574A584E3167567149317371435649754C4933754E5A6C786D385A62545174444F6E366B37 REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT PASSWORD REQUIRE CURRENT DEFAULT\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `r_read`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO `r_read`@`%`\nGRANT SELECT ON `shop`.* TO `r_read`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": "partial_revokes\tON\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SET SESSION print_identified_with_as_hex = ON; /*myflames:accounts*/ SHOW CREATE USER `r_read`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `r_read`@`%` IDENTIFIED WITH 'caching_sha2_password' REQUIRE NONE PASSWORD EXPIRE ACCOUNT LOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT PASSWORD REQUIRE CURRENT DEFAULT\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `nobody`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "error": "mysql client exited 1: ERROR 1141 (42000) at line 1: There is no such grant defined for user 'nobody' on host '%'"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_pr`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT SELECT, INSERT, UPDATE ON *.* TO `acct_pr`@`%`\nREVOKE SELECT ON `db_x`.* FROM `acct_pr`@`%`\nREVOKE INSERT, UPDATE ON `mysql`.* FROM `acct_pr`@`%`\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": "partial_revokes\tON\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SET SESSION print_identified_with_as_hex = ON; /*myflames:accounts*/ SHOW CREATE USER `acct_pr`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER `acct_pr`@`%` IDENTIFIED WITH 'caching_sha2_password' AS 0x244124303035241A012826492A4D726D257E070C6A566476403A2572624568586D704F71347037746B6149506539315A724B477632537370656D73667A6D433066676E4E492F REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT PASSWORD REQUIRE CURRENT DEFAULT\n"
+   }
+  ]
+ }
+}
