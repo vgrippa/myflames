@@ -39,6 +39,13 @@ export type SkipPlan = Partial<ReceiverGuard> & {
   error: ReplicationError; drift_warning: string; after: string[];
   privileges: string; notes: string[];
 };
+/** The source server's version and how myflames knows it (replication.attach_source_versions). */
+export type SourceVersion = {
+  version: string | null; version_comment: string | null; engine: "mysql" | "mariadb" | null;
+  provenance: "saved_connection" | "relay_log" | null; label: string;
+  profile_id: string | null; profile_name: string | null; relay_log_file: string | null;
+  verified: boolean; caveat: string | null; reason: string | null; hint: string | null; attempts: string[];
+};
 export type ReplicationChannel = {
   name: string; kind: "replication" | "group_replication"; judged: boolean;
   source: { host: string | null; port: number | null; uuid: string | null; server_id: number | null };
@@ -46,7 +53,7 @@ export type ReplicationChannel = {
   sql: { running: string | null; state: string | null; error: ReplicationError; delay_s: number | null; remaining_delay_s: number | null };
   lag_s: number | null; lag_notes: string[]; lag_signals: Facts;
   position: Facts; worker: Facts; agat: string | null; failing_gtid: string | null;
-  relay?: Facts | null; status: "ok" | "watch" | "problem" | "unknown";
+  relay?: Facts | null; source_version?: SourceVersion | null; status: "ok" | "watch" | "problem" | "unknown";
   status_why: string[]; skip_plan?: SkipPlan;
 };
 export type ReplicationReport = Partial<ReceiverGuard> & {

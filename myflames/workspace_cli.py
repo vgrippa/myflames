@@ -1411,14 +1411,17 @@ def cmd_replication(argv):
     """Replication status per channel; skip one failed transaction; skip until stopped."""
     if argv and argv[0] in ('skip', 'skip-loop'):
         return (_replication_skip if argv[0] == 'skip' else _replication_skip_loop)(argv[1:])
-    from .replication import format_text, read_status
+    from .replication import format_text, profile_opener, read_status, saved_profiles
+    from .workspace_store import WorkspaceStore
     parser = _discover_parser(
         'replication', 'Show every replication channel (MySQL) or connection (MariaDB): receiver and applier '
                        'threads, the last errors, positions or GTIDs, lag with its caveats, and ok/watch/problem. '
                        'A channel stopped on an error shows the exact statements that would skip that one '
-                       'transaction.',
+                       'transaction. Each source shows its version: read through a saved connection with the '
+                       "source's host and port (its own saved password), else as recorded in the relay log.",
         'Read-only: SHOW REPLICA STATUS (SHOW SLAVE STATUS before MySQL 8.0.22; SHOW ALL SLAVES STATUS on '
-        'MariaDB), the Performance Schema replication tables on MySQL, and the relay log at the applier position '
+        'MariaDB), the Performance Schema replication tables on MySQL, the first events of each relay log '
+        '(the source version; REPLICATION SLAVE on MySQL) and the relay log at the applier position '
         'of a failed channel. Needs REPLICATION CLIENT or SUPER on MySQL, SLAVE MONITOR on MariaDB. '
         'Group Replication channels are listed but not judged. Writes: myflames replication skip (one '
         'transaction) and myflames replication skip-loop (skip chosen errors until stopped). '
@@ -1429,7 +1432,9 @@ def cmd_replication(argv):
     args = parser.parse_args(argv)
 
     def work(conn):
-        report = read_status(conn)
+        store = WorkspaceStore()
+        report = read_status(conn, source_versions=True, profiles=saved_profiles(store),
+                             open_profile=profile_opener(store), replica_host=getattr(conn, 'host', None))
         if args.channel is not None:
             channel = _replication_channel(report, args.channel)
             report = dict(report, channels=[channel])

@@ -1,0 +1,140 @@
+{
+ "schema_version": "replication-1.0",
+ "engine": "mysql",
+ "server_version": "9.7.2",
+ "captured_at": "2026-10-20T14:26:28.698455+00:00",
+ "uptime_s": 102,
+ "available": true,
+ "message": null,
+ "replica": true,
+ "statement": "SHOW REPLICA STATUS",
+ "gtid": {
+  "mode": "ON",
+  "enforce_consistency": "ON"
+ },
+ "settings": {
+  "read_only": "OFF",
+  "super_read_only": "OFF",
+  "parallel_workers": 4,
+  "preserve_commit_order": "ON"
+ },
+ "global_skip_counter": 0,
+ "channels": [
+  {
+   "name": "",
+   "kind": "replication",
+   "judged": true,
+   "source": {
+    "host": "127.0.0.1",
+    "port": 33297,
+    "uuid": "716fd176-cc91-11f1-bb1e-ba63c647dbde",
+    "server_id": 301
+   },
+   "io": {
+    "running": "Yes",
+    "state": "Waiting for source to send event",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    }
+   },
+   "sql": {
+    "running": "Yes",
+    "state": "Replica has read all relay log; waiting for more updates",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null,
+     "table": null,
+     "end_log_pos": null
+    },
+    "delay_s": 0,
+    "remaining_delay_s": null
+   },
+   "lag_s": 0,
+   "lag_notes": [
+    "Seconds_Behind_Source is 0 because the applier has caught up with what the receiver has, which is also true when the receiver is far behind the source.",
+    "Worker lag compares the source's commit timestamp with the replica's clock: the two servers' clocks must be in sync for it to be exact."
+   ],
+   "lag_signals": {
+    "applying_lag_s": null,
+    "last_apply_lag_s": 0.311,
+    "heartbeat_interval_s": 30.0,
+    "heartbeats_received": 1,
+    "heartbeat_age_s": 16.242,
+    "last_queued_age_s": 46.224,
+    "receiver_idle_s": 16.242
+   },
+   "position": {
+    "auto_position": false,
+    "retrieved_gtid_set": "716fd176-cc91-11f1-bb1e-ba63c647dbde:1-11",
+    "executed_gtid_set": "716fd176-cc91-11f1-bb1e-ba63c647dbde:1-11,\n71802b70-cc91-11f1-af4f-ba63c647dbde:1-7",
+    "source_log_file": "mysql-bin.000003",
+    "read_source_log_pos": 1695,
+    "exec_file": "mysql-bin.000003",
+    "exec_pos": 1695,
+    "relay_log_file": "025357c3d20b-relay-bin.000003",
+    "relay_log_pos": 1912,
+    "skip_counter": 0
+   },
+   "worker": {
+    "workers": 4,
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    },
+    "failing_worker_id": null,
+    "failing_applying_transaction": null,
+    "applying_transactions": [],
+    "last_applied_transaction": "716fd176-cc91-11f1-bb1e-ba63c647dbde:11",
+    "last_applied_end_apply": "2026-10-20 14:21:48.015995"
+   },
+   "agat": "OFF",
+   "failing_gtid": null,
+   "relay": null,
+   "source_version": {
+    "version": "9.7.2",
+    "version_comment": "MySQL Community Server - GPL",
+    "engine": "mysql",
+    "provenance": "saved_connection",
+    "label": "from the saved connection Source 9.7",
+    "profile_id": "p-mysql",
+    "profile_name": "Source 9.7",
+    "relay_log_file": null,
+    "verified": true,
+    "caveat": null,
+    "reason": null,
+    "hint": null,
+    "attempts": []
+   },
+   "status": "ok",
+   "status_why": [],
+   "receiver": {
+    "service_state": "ON",
+    "last_queued_transaction": "716fd176-cc91-11f1-bb1e-ba63c647dbde:11"
+   }
+  }
+ ],
+ "capabilities": {
+  "status": true,
+  "performance_schema": true,
+  "worker_timestamps": true,
+  "agat": true,
+  "source_version": true
+ },
+ "notes": [
+  "Seconds_Behind_Source compares the original timestamp of the event being applied with the replica's clock, adjusted by the clock difference measured when the receiver connected. A clock change on either server after that skews it, and one long transaction shows as a jump, so it is never the only lag signal."
+ ],
+ "summary": {
+  "channels": 1,
+  "judged": 1,
+  "ok": 1,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 0,
+  "failed": 0,
+  "lag_max_s": 0
+ }
+}

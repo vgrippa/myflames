@@ -1,4 +1,4 @@
-import { chooseConnection } from "./chrome-helpers.mjs";
+import { chooseConnection, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
 // Top statements row actions: Explain, Run analysis (with its confirmation),
 // the parameter path for normalized text, Explain top N with progress and
 // cancel, disabled non-SELECT rows, and session restore of the digest source.
@@ -303,11 +303,11 @@ try {
   }), true, "unknown privileges are explained visibly outside the button label");
   const refreshPrivileges = async () => {
     const reads = privilegeReads.length;
-    await page.click('button[aria-label="Privileges"]');
-    await page.locator('[role=dialog][aria-label="Privileges"] button ::-p-text(Refresh privileges)').click();
-    await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Privileges"] button')?.disabled);
+    await openAccountSheet(page);
+    await page.locator('dialog.account-sheet button ::-p-text(Refresh privileges)').click();
+    await page.waitForFunction(() => [...document.querySelectorAll('dialog.account-sheet button')].some(b => b.textContent === "Refresh privileges" && !b.disabled));
     assert.equal(privilegeReads.length, reads + 1);
-    await page.keyboard.press("Escape");
+    await closeAccountSheet(page);
   };
   // Synthetic definitive answers exercise UI projection, not SQL grants.
   const denied = { state: "denied", grey_out: true, missing: ["TEST_GLOBAL_PRIVILEGE"], reason: "Definitive global denial." };

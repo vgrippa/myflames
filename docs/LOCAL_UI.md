@@ -320,7 +320,20 @@ on screen greys the old report until **Refresh**. The header switches between
 **Recovery**. Under the summary line four tiles show the replica state, the
 channel count, the maximum applier lag (**Unknown** whenever any judged
 channel's lag is unknown, so a measured 0 s beside a failed channel never reads
-as caught up) and the GTID mode. The inspector shows the threads, the last error once (code, time,
+as caught up) and the GTID mode. In Topology each source shows its engine and
+version beside its port, like the replica does. myflames reads it, when the view
+reads, through a saved connection whose host and port are the ones the replica
+reports (ignoring case; 127.0.0.1, localhost and ::1 count as one host only for
+a replica on this computer and only when one saved connection matches), with
+that connection's own saved password, and uses it only when its server ID (and
+server UUID on MySQL) is the source's. Otherwise it reads the source's format
+event from the start of the replica's relay log ("as recorded in the relay
+log": the version that wrote the binary log the replica was reading, so right
+after a source upgrade it can show the earlier one; needs REPLICATION SLAVE on
+MySQL, SLAVE MONITOR on MariaDB). Otherwise it says **Version unknown** with
+the reason and "Add a saved connection for host:port to show its version."
+Where the version came from is in the tooltip, the connector's details and the
+inspector's **Source version** row. The inspector shows the threads, the last error once (code, time,
 table, failing GTID, the server's text), the lag signals with their caveats
 (Seconds_Behind_Source alone never says a replica is caught up), the
 positions and GTID state in one list (GTID mode and Enforce GTID consistency
@@ -414,16 +427,29 @@ saved:** with the reason. **Settings**, next to it, opens a compact menu (Escape
 or a click outside closes it) with the appearance (System, Light, Dark),
 **Restore workspace on startup** (passwords are never part of the workspace),
 the **Audit log** (see [Audit log](#audit-log)), and **About myflames**, a window
-with the version, the license, and the credits (Brendan Gregg's FlameGraph and
-Tanel Poder's SQL Plan FlameGraphs). Close is its default button, and in a
+with the version, the license, one privacy line (myflames contacts only your
+database servers, official release pages when you check for updates,
+and news feeds when shown and turned on), and the credits (Brendan Gregg's
+FlameGraph and Tanel Poder's SQL Plan FlameGraphs). Close is its default button, and in a
 short window its text scrolls while Close stays in view. The
 top bar names the place once (Server and Workload name the view in the view
 header, Plans names the plan in the plan header, and Replication and Tuning,
 one view each, name the place in their view header only) and has one sidebar
 toggle. With plans open it also shows **Save investigation** with **Unsaved
-changes** or **Investigation saved**. One **Local** badge ends the top bar of
-every place; below about 1,100 pixels the places that send to a connection give
-its room to the connection picker. The sidebar keeps one width in every place.
+changes** or **Investigation saved**. The top bar holds no status badge and no
+privileges button: on the places that send to a connection it shows the sidebar
+toggle, the place, the connection picker, Refresh all (Server and Workload) and
+**Search…**.
+
+The connection picker's menu ends with **Account and privileges…** and **Manage
+connections…**. Account and privileges opens a sheet for the connection in use:
+the account new sessions connect as, the note that an editor tab can have
+different active roles, the active roles, the grants, the denied and
+unverified actions with their reasons, and **Refresh privileges**. Close is its
+default button, Escape closes it, and focus returns to the picker. The command
+palette opens the same sheet as **Account and privileges** (keywords include
+privileges, grants and roles) from any place. Greyed actions keep their reasons
+where they appear, in their tooltips, descriptions and review dialogs. The sidebar keeps one width in every place.
 The light appearance uses a white window, like the dark one uses its content
 color: gray is for the sidebar and side panes only.
 
@@ -493,12 +519,11 @@ On phone and narrow screens (below 720 px):
   buttons or dropping controls offscreen.
 - The sidebar collapses into a compact bar with a **Menu** drawer.
 - Below 650 px the connection pill gives up width first (its dot and a few
-  characters of the name stay, the rest ends in an ellipsis) and **Privileges**
-  becomes a key icon button, named Privileges for screen readers and in its
-  tooltip, so the two never overlap. In the Server and Workload top bar, which
-  also holds the place's own actions, this starts below 800 px (the 720 px
-  window), and the pill leaves the connection type to its dot, its accessible
-  name and the window footer, keeping the connection name readable.
+  characters of the name stay, the rest ends in an ellipsis). In the Server and
+  Workload top bar, which also holds the place's own actions, this starts below
+  800 px (the 720 px window), and the pill leaves the connection type to its
+  dot, its accessible name and the window footer, keeping the connection name
+  readable.
 - The Server place presents the view list as a separate screen, pushing selected
   views into view with a button named after the place (**Server** or
   **Workload**) to return; a view shown before the window narrowed stays on

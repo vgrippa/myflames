@@ -47,6 +47,7 @@
     "test:audit": "npm run build && node test/audit.mjs",
     "test:editor": "npm run build && node test/editor.mjs",
     "test:replication": "npm run build && node test/replication.mjs",
+    "test:replication-source-version": "npm run build && node test/replication-source-version.mjs",
     "test:startup-reads": "npm run build && node test/startup-reads.mjs",
     "test:maintenance-convenience": "npm run build && node test/maintenance-convenience.mjs",
     "test:maintenance": "npm run build && node test/maintenance.mjs",

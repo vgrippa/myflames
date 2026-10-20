@@ -1,4 +1,4 @@
-import { openConnectionPicker, chooseConnection } from "./chrome-helpers.mjs";
+import { openConnectionPicker, chooseConnection, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
 // Query editor: running SQL in the tab's session, results, Messages, Stop,
 // row limit and Load more, transactions, confirmations, export, history, the
 // schema browser, a session that ended, and restore. The packaged page and
@@ -1101,13 +1101,13 @@ try {
   // paths. New-session write denials never stand in for this tab's roles.
   const refreshPrivileges = async () => {
     const before = calls("/api/live/privileges").length;
-    await page.click('button[aria-label="Privileges"]');
-    await page.locator('[role=dialog][aria-label="Privileges"] button ::-p-text(Refresh privileges)').click();
+    await openAccountSheet(page);
+    await page.locator('dialog.account-sheet button ::-p-text(Refresh privileges)').click();
     await until(() => calls("/api/live/privileges").length > before, "privileges did not refresh");
-    await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Privileges"] button')?.disabled);
-    assert.match(await text('[role=dialog][aria-label="Privileges"]'), /Connected as a@%.*Active roles: reader@%/s);
-    assert.match(await text('[role=dialog][aria-label="Privileges"] pre'), /GRANT SELECT ON testdb/);
-    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => [...document.querySelectorAll('dialog.account-sheet button')].some(b => b.textContent === "Refresh privileges" && !b.disabled));
+    assert.match(await text('dialog.account-sheet'), /Connected as a@%.*Active roles: reader@%/s);
+    assert.match(await text('dialog.account-sheet pre'), /GRANT SELECT ON testdb/);
+    await closeAccountSheet(page);
   };
   const deniedAnswer = { state: "denied", grey_out: true, missing: ["TEST_GLOBAL_PRIVILEGE"], reason: "Definitive global denial." };
   mock.privilegeActions = { explain: deniedAnswer, run_analysis: deniedAnswer, set_global: deniedAnswer };

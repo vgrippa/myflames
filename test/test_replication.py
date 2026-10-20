@@ -55,12 +55,15 @@ def fixture(view, name):
     The original recordings predate the global-counter read and the extra
     identity reads. Duplicate the stopped snapshot, not a later healthy one.
     Grants and receiver epochs are separately injected by ReplicationCase.
+    Recordings made before source versions (2026-10-20) have no answer for
+    the relay log head the status endpoint and CLI now read: they get an
+    explicitly synthetic refusal, so those channels show "Version unknown".
     """
     data = recorded_fixture(view, name)
     calls, block = [], []
     for original in data['calls']:
         call = list(original)
-        if 'SHOW GLOBAL VARIABLES' in call[0]:
+        if 'SHOW GLOBAL VARIABLES' in call[0] and 'sql_replica_skip_counter' not in call[0]:
             call[0] = call[0].replace("'super_read_only'", "'sql_replica_skip_counter', 'sql_slave_skip_counter', 'super_read_only'")
             if call[1] is not None:
                 call[1] += 'sql_replica_skip_counter\t0\nsql_slave_skip_counter\t0\n'
@@ -74,7 +77,26 @@ def fixture(view, name):
             block.append(call)
             calls.append(call)
     data['calls'] = calls
+    _synthetic_relay_heads(data)
     return data
+
+
+SYNTHETIC_RELAY_HEAD = ('mysql client exited 1: ERROR 1220 (HY000) at line 1: synthetic: this recording predates '
+                        'the relay log head read')
+
+
+def _synthetic_relay_heads(data):
+    if any('LIMIT %d' % n in call[0] and 'RELAYLOG' in call[0] for call in data['calls']
+           for n in rp.SOURCE_VERSION_EVENTS.values()):
+        return
+    try:
+        report = rp.read_status(ReplayConn(data['calls']))
+    except (AssertionError, ValueError, ConnectorError):
+        return
+    for item in report.get('channels') or ():
+        sql = rp.source_version_statement(report['engine'], item)
+        if sql:
+            data['calls'].append([TAG + sql, None, SYNTHETIC_RELAY_HEAD])
 
 
 def replay(view, name, edit=None, error=None):

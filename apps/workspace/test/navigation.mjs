@@ -228,8 +228,10 @@ try {
       `${label}: no focus ring after a click`);
     // One sidebar width for every place: the chrome never shifts.
     sidebarWidths.add(await page.$eval(".sidebar", (e) => Math.round(e.getBoundingClientRect().width)));
-    // The Local badge is in the top bar of every place.
-    assert.equal(await page.$eval(".topbar .local-badge", (e) => e.getClientRects().length > 0), true, `${label}: Local badge shown`);
+    // The top bar stays light: no Local badge (privacy is in About myflames)
+    // and no Privileges button (Account and privileges is in the picker).
+    assert.equal(await page.$(".topbar .local-badge"), null, `${label}: no Local badge`);
+    assert.equal(await page.$('.window-toolbar button[aria-label="Privileges"], .window-toolbar .privileges-button'), null, `${label}: no Privileges button`);
     // Server and Workload: Refresh all follows the connection picker in the
     // top bar, above the bar's hairline, and never sits over a view's Refresh.
     if (label === "Server" || label === "Workload") {
@@ -265,6 +267,18 @@ try {
   assert.deepEqual(commands.filter(([, g]) => g === "Places").map(([l]) => l), places, "palette places follow the sidebar");
   assert.deepEqual(commands.find(([l]) => l === "Compare"), ["Compare", "Plans"]);
   assert.equal(commands.some(([l]) => l === "Compare plans"), false);
+  // Account and privileges is a palette action as well as a picker item.
+  await page.type('input[aria-label="Search commands"]', "privileges");
+  assert.deepEqual(await page.$$eval(".command-option", (els) => els.map((e) => [e.querySelector("span")?.textContent, e.querySelector("small")?.textContent])),
+    [["Account and privileges", "Actions"]]);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.account-sheet[open]");
+  assert.equal(await text("dialog.account-sheet h2"), "Account and privileges");
+  await page.waitForFunction(() => document.activeElement?.textContent === "Close" && document.activeElement.closest("dialog.account-sheet"));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.account-sheet"));
+  await page.keyboard.down("Meta"); await page.keyboard.press("k"); await page.keyboard.up("Meta");
+  await page.waitForSelector("dialog.command-palette[open]");
   await page.type('input[aria-label="Search commands"]', "audit");
   assert.deepEqual(await texts(".command-option span"), ["Audit log"]);
   const auditIcon = await page.$eval(".command-option svg", (e) => e.innerHTML);
@@ -300,9 +314,9 @@ try {
   assert.equal((await page.$$("button ::-p-text(Import plan)")).length, 1);
   assert.equal(await page.$(".welcome"), null, "the welcome is not part of Plans");
 
-  // 3. One status indicator, one Local badge, no duplicate "Local workspace" line.
+  // 3. One status indicator, no Local badge, no "Local workspace" line.
   assert.equal((await page.$$(".session-status")).length, 1);
-  assert.equal((await page.$$(".local-badge")).length, 1);
+  assert.equal((await page.$$(".local-badge")).length, 0);
   assert.equal(await page.evaluate(() => document.body.textContent.includes("Local workspace")), false);
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   assert.equal(await text(".session-status"), "All changes saved");
@@ -398,6 +412,9 @@ try {
   );
   assert.match(aboutText, /LicenseApache-2\.0/); // a labelled field row since the About redesign
   assert.match(aboutText, /CDDL 1\.0 \(see NOTICE\)/);
+  // One privacy line names what the app contacts, and when.
+  assert.equal(await text(about + " .about-privacy p"),
+    "myflames contacts only your database servers, official release pages when you check for updates, and news feeds when shown and turned on.");
   // Focus starts on Close and stays inside: Tab wraps to the first control
   // (Check for updates in the Updates row), Shift+Tab wraps back.
   assert.equal(await focused(), "Close");
@@ -819,6 +836,16 @@ try {
   assert.equal(await page.$(picker + " select"), null, "connection options start closed");
   await openConnectionPicker(page);
   assert.equal(await page.$eval(picker + " select", (e) => e.selectedOptions[0].textContent), "Prod");
+  // Account and privileges lives in the picker, beside Manage connections.
+  assert.deepEqual(await texts(picker + " .picker-actions button"), ["Account and privileges…", "Manage connections…"]);
+  await button("Account and privileges…", picker + " ");
+  await page.waitForSelector("dialog.account-sheet[open]");
+  assert.match(await text("dialog.account-sheet .sheet-lead"), /^Prod$/);
+  assert.ok(await page.$("dialog.account-sheet button ::-p-text(Refresh privileges)"), "Refresh privileges in the sheet");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.account-sheet"));
+  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("connection-pill")), true, "focus returns to the picker");
+  await openConnectionPicker(page);
   assert.equal(await page.$eval('.window-statusbar [data-status="safety"]', (e) => [e.dataset.safety, e.querySelector('.safety-status-text').getAttribute("aria-label")].join(" ")),
     "production Production: every change on Prod asks first");
   assert.match(await text(picker), /analyst@db\.prod:3306 · shop/);

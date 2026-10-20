@@ -874,24 +874,12 @@ details > p {
 .topbar-actions .save-state {
   margin-right: var(--space-1);
 }
-.topbar-actions .local-badge {
-  margin-left: var(--space-1);
-}
 .save-state {
   font-size: var(--text-sm);
   color: var(--ink-muted);
 }
 .save-state.unsaved {
   color: var(--warn-text);
-}
-.local-badge {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  font-weight: 500;
-  background: var(--surface-hover);
-  color: var(--ink-muted);
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-sm);
 }
 main {
   padding: var(--space-5) var(--space-6) var(--space-4);
@@ -2626,8 +2614,7 @@ main:has(> .library) { padding: 0; max-width: none; }
   .topbar {
     padding: 0 var(--space-4);
   }
-  .topbar .save-state,
-  .local-badge {
+  .topbar .save-state {
     display: none;
   }
   :root {
@@ -3815,9 +3802,28 @@ button, .plan-item, .main-nav button {
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
-.picker-manage {
-  justify-self: start;
+/* The picker's menu items: Account and privileges, Manage connections. */
+.picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
   margin-top: var(--space-1);
+}
+.picker-account {
+  overflow-wrap: anywhere;
+}
+/* Account and privileges: UI text size, as the popover it replaces; the
+   connection's name can be a long endpoint. */
+.account-sheet .sheet-body {
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+.account-sheet .sheet-body ul {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+.account-sheet .sheet-lead {
+  overflow-wrap: anywhere;
 }
 /* The window footer: one line of facts about what is on screen. On the
    places that send to the connection in use it starts with that
@@ -3992,39 +3998,16 @@ button, .plan-item, .main-nav button {
   .workspace:is([data-place="server"], [data-place="workload"]) .refresh-all-status {
     max-width: 72px;
   }
-  /* The places that send to a connection give the picker the room: Local
-     steps aside (the window footer names the connection) and Privileges
-     keeps its key icon, named for screen readers and in its tooltip. */
-  .workspace:is([data-place="query"], [data-place="server"], [data-place="workload"], [data-place="replication"], [data-place="tuning"]) .window-toolbar .local-badge,
-  .window-toolbar .privileges-button-label {
-    display: none;
-  }
-  .window-toolbar .privileges-button {
-    flex: none;
-    width: var(--control-h);
-    padding: 0;
-    justify-content: center;
-  }
 }
 /* The 720 px window: Server and Workload draw their own actions into the top
    bar, so the connection pill keeps its name (the type stays on its dot, in
-   its accessible name and first in the window footer) and Privileges keeps
-   its key icon, named for screen readers and in its tooltip. */
+   its accessible name and first in the window footer). */
 @media (max-width: 800px) {
   .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .connection-pill .safety-tags {
     display: none;
   }
   .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .connection-pill-name {
     min-width: 4ch;
-  }
-  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .privileges-button {
-    flex: none;
-    width: var(--control-h);
-    padding: 0;
-    justify-content: center;
-  }
-  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .privileges-button-label {
-    display: none;
   }
 }
 @media (max-width: 650px) {
@@ -4065,15 +4048,6 @@ button, .plan-item, .main-nav button {
     min-width: 76px;
     max-width: 132px;
   }
-  .window-toolbar .privileges-button {
-    flex: none;
-    width: var(--control-h);
-    padding: 0;
-    justify-content: center;
-  }
-  .window-toolbar .privileges-button-label {
-    display: none;
-  }
   .window-toolbar .connection-pill-name {
     flex: 1 1 auto;
     min-width: 4ch;
@@ -4084,7 +4058,6 @@ button, .plan-item, .main-nav button {
   .connection-pill .safety-tags {
     display: none;
   }
-  .window-toolbar .local-badge,
   .place-actions-slot {
     display: none;
   }

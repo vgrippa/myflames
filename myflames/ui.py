@@ -985,7 +985,10 @@ def _replication_response(path, payload, workspace):
         options["query_timeout"] = 30
         try:
             with MySQLConnection(**options) as conn:
-                report = rp.read_status(conn)
+                # Source versions: a matching saved connection, else the relay log.
+                report = rp.read_status(conn, source_versions=True, profiles=rp.saved_profiles(workspace.store),
+                                        open_profile=rp.profile_opener(workspace.store),
+                                        replica_host=options.get("host"))
                 if report.get("available") and report.get("replica"):
                     guard = rp.receiver_guard_plan(conn, report)
                     report.update(guard)

@@ -1,7 +1,8 @@
 // Saved connections (the API calls them profiles) and the active connection
 // that the Query editor and Server use. The UI says "connection"; requests
 // keep the `profiles/*` endpoints and `profile_id`.
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, type Connection, type ConnectionType, type Profile, type SecretStore } from "./api";
 import { Icon } from "./components";
 import { connectionKey } from "./binding";
@@ -1001,6 +1002,7 @@ export function ConnectionPicker({
   onSwitch,
   onPassword,
   onManage,
+  onAccount,
   note,
 }: {
   profiles: Profile[];
@@ -1010,12 +1012,12 @@ export function ConnectionPicker({
   onSwitch: (id: string) => void;
   onPassword: (password: string) => void;
   onManage: () => void;
+  /** Opens Account and privileges for the connection in use. */
+  onAccount?: () => void;
   /** A one-off remark, such as a connection that no longer exists. */
   note?: string;
 }) {
   const privileges = usePrivileges();
-  // read_privileges returns credential-stripped grant lines at the top level.
-  const grantLines = (privileges?.report as { grants?: string[] } | null)?.grants;
   const profile = profiles.find((p) => p.id === active.id);
   const saved = !!profile?.has_saved_password;
   const [override, setOverride] = useState(false);
@@ -1063,29 +1065,69 @@ export function ConnectionPicker({
           </>}
           {!hasConnection && <p className="hint">Choose a connection to work with a server.</p>}
           {note && <p className="hint picker-note" role="status">{note}</p>}
-          <button className="button picker-manage" onClick={() => { closePopovers(); onManage(); }}>Manage connections…</button>
+          {hasConnection && privileges?.report?.account && <p className="hint picker-account">Connected as {privileges.report.account}</p>}
+          <div className="picker-actions">
+            {hasConnection && privileges && onAccount && <button type="button" className="button picker-account-button" aria-haspopup="dialog"
+              onClick={() => { closePopovers(); onAccount(); }}>Account and privileges…</button>}
+            <button type="button" className="button picker-manage" onClick={() => { closePopovers(); onManage(); }}>Manage connections…</button>
+          </div>
         </div>
       </Popover>
-      {privileges && <Popover label="Privileges" buttonClassName="button small privileges-button" buttonTitle="Privileges"
-        trigger={<><Icon name="key" size={14} /><span className="privileges-button-label">Privileges</span></>}>
-        <h3 className="popover-title">Privileges</h3>
-        {privileges.report ? <>
-          <p>Connected as {privileges.report.account}</p>
+    </div>
+  );
+}
+
+/**
+ * Account and privileges of the connection in use: the account a new session
+ * logs in as, its active roles, its grants and the actions it is denied or
+ * that SHOW GRANTS cannot verify. Opened from the connection picker or the
+ * command palette; greyed actions keep their own reasons where they appear.
+ */
+export function AccountPrivilegesSheet({ name, hasConnection, onClose }: {
+  /** Name of the connection in use, for the lead line. */
+  name: string;
+  hasConnection: boolean;
+  onClose: () => void;
+}) {
+  const privileges = usePrivileges();
+  const report = privileges?.report || null;
+  // read_privileges returns credential-stripped grant lines at the top level.
+  const grantLines = (report as { grants?: string[] } | null)?.grants;
+  const dialog = useRef<HTMLDialogElement>(null);
+  const close = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const leadId = useId();
+  useFocusScope(dialog, { open: true, onClose, initialFocus: () => close.current,
+    // Back to the picker when it is on screen, else where the sheet was opened.
+    returnFocus: () => document.querySelector<HTMLElement>(".window-toolbar .connection-pill") });
+  return createPortal(
+    <dialog ref={dialog} className="confirm-sheet account-sheet" role="dialog" tabIndex={-1}
+      aria-labelledby={titleId} aria-describedby={leadId}
+      onCancel={(e) => { e.preventDefault(); onClose(); }}>
+      <div className="dialog-heading"><div><h2 id={titleId}>Account and privileges</h2></div></div>
+      <div className="sheet-body">
+        <p id={leadId} className="sheet-lead">{hasConnection ? name : "No connection in use. Choose one in the connection picker or in Connections on Home."}</p>
+        {hasConnection && (report ? <>
+          <p>Connected as {report.account}</p>
           <p className="hint">New sessions. An editor tab can have different active roles.</p>
-          <p>Active roles: {(privileges.report.current_roles || []).map(r => r.host ? `${r.name}@${r.host}` : r.name).join(", ") || "None"}</p>
-          {(grantLines || privileges.report.model) && <details><summary>Grants</summary>
-            <pre className="ops-pre">{grantLines ? grantLines.join("\n") : JSON.stringify(privileges.report.model, null, 2)}</pre>
+          <p>Active roles: {(report.current_roles || []).map(r => r.host ? `${r.name}@${r.host}` : r.name).join(", ") || "None"}</p>
+          {(grantLines || report.model) && <details><summary>Grants</summary>
+            <pre className="ops-pre">{grantLines ? grantLines.join("\n") : JSON.stringify(report.model, null, 2)}</pre>
           </details>}
           <details><summary>Denied and unverified actions</summary><ul>
-            {Object.entries(privileges.report.actions).filter(([, answer]) => answer.state !== "allowed").map(([action, answer]) =>
-              <li key={action}><strong>{actionLabel(action)}</strong>: {privilegeResult(answer, privileges.report?.account).reason}</li>)}
+            {Object.entries(report.actions).filter(([, answer]) => answer.state !== "allowed").map(([action, answer]) =>
+              <li key={action}><strong>{actionLabel(action)}</strong>: {privilegeResult(answer, report.account).reason}</li>)}
           </ul></details>
-        </> : <p className="hint">Unverified. Privileges have not been read for this connection.</p>}
-        {privileges.error && <p role="alert" className="error">{privileges.error}</p>}
-        <button type="button" className="button" disabled={privileges.loading} onClick={() => void privileges.refresh(true)}>
+        </> : <p className="hint">{privileges?.loading ? "Reading privileges…" : "Unverified. Privileges have not been read for this connection."}</p>)}
+        {hasConnection && privileges?.error && <p role="alert" className="error">{privileges.error}</p>}
+      </div>
+      <div className="dialog-actions sheet-actions">
+        {hasConnection && privileges && <button type="button" className="button" disabled={privileges.loading} onClick={() => void privileges.refresh(true)}>
           {privileges.loading ? "Reading privileges…" : "Refresh privileges"}
-        </button>
-      </Popover>}
-    </div>
+        </button>}
+        <button ref={close} type="button" className="button primary" onClick={onClose}>Close</button>
+      </div>
+    </dialog>,
+    document.body,
   );
 }

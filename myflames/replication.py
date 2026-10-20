@@ -125,6 +125,7 @@ import contextlib
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -132,6 +133,7 @@ import uuid
 from . import dbops, privileges
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, _duration_text, _version_tuple, denied, now, preflight, reason
+from .server_info import detect_flavor
 
 SCHEMA_VERSION = "replication-1.0"
 SKIP_SCHEMA_VERSION = "replication-skip-1.0"
@@ -414,7 +416,7 @@ def _summary():
             "lag_max_s": None}
 
 
-def read_status(conn):
+def read_status(conn, source_versions=False, profiles=(), open_profile=None, replica_host=None):
     """The ``replication-1.0`` report. Read-only.
 
     MySQL: ``SHOW REPLICA STATUS`` (``SHOW SLAVE STATUS`` before 8.0.22),
@@ -428,6 +430,14 @@ def read_status(conn):
     sentence ``message``. A server with no replication configured says so
     (``replica: false``). Connection failures raise ConnectorError; other
     unreadable answers raise ValueError.
+
+    With *source_versions* every replication channel gets ``source_version``
+    (:func:`attach_source_versions`): read through a matching saved
+    connection from *profiles* opened by *open_profile*, else from the relay
+    log, else unknown with the reason. *replica_host* is the host this
+    replica was reached at (default: the connection's), which decides whether
+    a loopback source address can be on this computer. Status reads for
+    skips and the skip loop leave it off.
     """
     reader = Reader(conn, REPLICATION_TAG)
     server = preflight(reader, EXTRA_VARIABLES)
@@ -447,7 +457,7 @@ def read_status(conn):
         "global_skip_counter": _int(server.variables.get("sql_replica_skip_counter", server.variables.get("sql_slave_skip_counter"))),
         "channels": [],
         "capabilities": {"status": False, "performance_schema": server.ps_on, "worker_timestamps": False,
-                         "agat": False},
+                         "agat": False, "source_version": False},
         "notes": [],
         "summary": _summary(),
     }
@@ -507,6 +517,9 @@ def read_status(conn):
             "adjusted by the clock difference measured when the receiver connected. A clock change on "
             "either server after that skews it, and one long transaction shows as a jump, so it is never "
             "the only lag signal." % lag_name)
+    if source_versions:
+        attach_source_versions(reader, report, profiles, open_profile,
+                               replica_host if replica_host is not None else getattr(conn, "host", None))
     return report
 
 
@@ -561,6 +574,7 @@ def _channel_base(name, kind, row, source, io_running, io_state, sql_running, sq
         "agat": None,
         "failing_gtid": None,
         "relay": None,
+        "source_version": None,
         "status": "unknown",
         "status_why": [],
     }
@@ -813,6 +827,339 @@ def _usable_relay(report, channel, relay):
                            "transaction, so myflames cannot show which transaction a skip counter passes."
                            % channel["name"])
     return None
+
+
+# ---- Source version ----------------------------------------------------------------
+#
+# SHOW REPLICA STATUS / SHOW ALL SLAVES STATUS do not report the source's
+# version. :func:`attach_source_versions` adds the best honest evidence per
+# channel, in this order:
+#
+# a) A saved connection whose host and port are the ones the replica reports
+#    (hosts compared ignoring case; 127.0.0.1, localhost and ::1 treated as one
+#    host only for a replica on this computer and only when exactly one saved
+#    connection matches that way). It is read with its own saved password
+#    through the same isolated client as every read (SHOW GLOBAL VARIABLES,
+#    short timeouts, never a prompt, never the replica's credentials), and
+#    the answer counts only when its server_id (and server_uuid on MySQL)
+#    is the one the replica reports for its source.
+# b) The source's Format_description event the receiver wrote to the relay
+#    log. Verified in source (M/ mysql-server 9.7 trunk, Ma/ mariadb-server
+#    13.0 trunk):
+#    * Every relay log starts with the replica's own Format_description event
+#      (M/sql/binlog.cc:4837 with server_id = ::server_id, M/sql/log_event.cc:948;
+#      Ma/sql/log.cc:4762-4766).
+#    * A receiver that gets a Rotate from the source rotates the relay log
+#      without copying the old event (M/sql/rpl_replica.cc:7580-7586;
+#      Ma/sql/slave.cc:5778-5788), and the source sends its own
+#      Format_description event right after the Rotate; the receiver keeps it
+#      and queues it unchanged (M/sql/rpl_replica.cc:7982-8010;
+#      Ma/sql/slave.cc:6090-6115), so its Server_id is the source's
+#      (M/sql/log_event.cc:966-973, shown by SHOW RELAYLOG EVENTS,
+#      M/sql/log_event.cc:1065-1077).
+#    * A relay log rotated for size or FLUSH RELAY LOGS gets a copy of that
+#      saved event right after its own header (M/sql/rpl_replica.cc:8730-8735,
+#      M/sql/binlog.cc:4960-4988; Ma/sql/log.cc:4882-4912).
+#    * Before the source's event arrives the saved event is a default one
+#      carrying the replica's server_id (M/sql/rpl_replica.cc:2738;
+#      Ma/sql/slave.cc:1697-1704), so only an event whose Server_id is the
+#      source's counts, and never the first event of the file.
+#    * Info reads "Server ver: X, Binlog ver: N" (M/sql/log_event.cc:5251-5258,
+#      Ma/sql/log_event_server.cc:2459-2466).
+#    * The source sends the event at the start of the binary log file it
+#      reads from (M/sql/rpl_binlog_sender.cc:497-498, 1098-1126), so X is
+#      the version that wrote that file: right after a source upgrade it can
+#      still be the earlier version until the replica reaches a binary log the
+#      upgraded source wrote.
+#    * SHOW RELAYLOG EVENTS needs REPLICATION SLAVE on MySQL
+#      (M/sql/sql_show.cc:667-669) and SLAVE MONITOR on MariaDB
+#      (Ma/sql/sql_parse.cc:4094-4100, Ma/sql/privilege.h:545).
+#    Only the first SOURCE_VERSION_EVENTS events of the applier's relay log
+#    are read, few enough that no statement is among them, and only the
+#    type, server ID and a format event's text are kept (the relay log holds
+#    statements, which can include account passwords).
+# c) Otherwise the version is unknown, with the reason and a hint.
+
+#: Events read from the start of the relay log, per engine. MySQL: its own
+#: header and Previous_gtids, then the source's Rotate and Format_description
+#: (or the copied event and the next transaction's Gtid). MariaDB: its own
+#: header, then Rotate and Format_description (or the copy and a Gtid). Seen
+#: live (2026-10-20, 9.7.2 and 11.8.9, after a reconnect and after FLUSH RELAY
+#: LOGS): no row read this way holds a statement. A MariaDB relay log that
+#: starts with Start_encryption (encrypt_binlog) leaves the version unknown.
+SOURCE_VERSION_EVENTS = {"mysql": 4, "mariadb": 3}
+#: At most this many saved connections are read for one report.
+SOURCE_PROFILE_READS = 4
+SOURCE_CONNECT_TIMEOUT_S = 5
+SOURCE_QUERY_TIMEOUT_S = 8
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+_SERVER_VER = re.compile(r"^Server ver: (.+?), Binlog ver: \d+\s*$")
+_SOURCE_VARIABLES_SQL = ("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
+                         "('server_id', 'server_uuid', 'version', 'version_comment')")
+RELAY_LOG_CAVEAT = ("This is the version of the source server that wrote the binary log the replica was reading "
+                    "when this relay log began. Right after a source upgrade it can still show the earlier "
+                    "version.")
+
+
+def _norm_host(host):
+    text = str(host or "").strip().lower().rstrip(".")
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    return text
+
+
+def _profile_port(profile):
+    port = _int(profile.get("port"))
+    return port if port else 3306
+
+
+def _endpoint_text(source):
+    host = source.get("host") or "?"
+    host = "[%s]" % host if ":" in host else host
+    return "%s:%s" % (host, source.get("port") or 3306)
+
+
+def match_source_profiles(source, profiles, replica_host=None):
+    """``(profiles, problem)``: the saved connections that name the source the
+    replica reports, in the order to try, or why none can be used."""
+    host = _norm_host(source.get("host"))
+    port = _int(source.get("port")) or 3306
+    if not host:
+        return [], "The replica does not report its source's host."
+    if host in _LOOPBACK and _norm_host(replica_host or "127.0.0.1") not in _LOOPBACK:
+        return [], ("The source address %s is local to the replica, which is not on this computer, so no saved "
+                    "connection can stand for it." % _endpoint_text(source))
+    candidates = [p for p in profiles or () if isinstance(p, dict) and _profile_port(p) == port]
+    exact = [p for p in candidates if _norm_host(p.get("host") or "127.0.0.1") == host]
+    if exact:
+        return exact, None
+    if host in _LOOPBACK:
+        local = [p for p in candidates if _norm_host(p.get("host") or "127.0.0.1") in _LOOPBACK]
+        if len(local) == 1:
+            return local, None
+        if len(local) > 1:
+            return [], ("%d saved connections could be %s (127.0.0.1, localhost and ::1), so none was used."
+                        % (len(local), _endpoint_text(source)))
+    return [], None
+
+
+def _unknown_version(reason_text, hint=None, attempts=()):
+    return {"version": None, "version_comment": None, "engine": None, "provenance": None, "label": "Version unknown",
+            "profile_id": None, "profile_name": None, "relay_log_file": None, "verified": False, "caveat": None,
+            "reason": reason_text, "hint": hint, "attempts": list(attempts)}
+
+
+def _known_version(version, comment, provenance, label, **extra):
+    out = _unknown_version(None)
+    out.update({"version": version, "version_comment": comment or None,
+                "engine": detect_flavor(version, comment or ""), "provenance": provenance, "label": label,
+                "reason": None})
+    out.update(extra)
+    return out
+
+
+def read_profile_variables(open_profile, profile):
+    """version, version_comment, server_id and server_uuid read through one
+    saved connection. Raises ValueError with why it could not be read."""
+    name = profile.get("name") or profile.get("id")
+    conn = open_profile(profile)
+    password = getattr(conn, "password", None)
+    try:
+        with conn:
+            return Reader(conn, REPLICATION_TAG).pairs(_SOURCE_VARIABLES_SQL)
+    except ConnectorError as exc:
+        raise ValueError("The saved connection %s could not be read: %s"
+                         % (name, dbops.redact(reason(exc), password)))
+
+
+def profile_source_version(values, profile, channel):
+    """The source version from a saved connection's variables, or raises
+    ValueError when they show another server than the channel's source."""
+    name = profile.get("name") or profile.get("id")
+    version = _text(values.get("version"))
+    if not version:
+        raise ValueError("The saved connection %s did not report a version." % name)
+    source = channel.get("source") or {}
+    want_id, got_id = _int(source.get("server_id")), _int(values.get("server_id"))
+    want_uuid, got_uuid = _text(source.get("uuid")), _text(values.get("server_uuid"))
+    # Every identity the replica reports must be present and equal: an
+    # endpoint can be reused by another server.
+    if not want_id and not want_uuid:
+        raise ValueError("The replica has not recorded its source's server ID, so the saved connection %s cannot "
+                         "be confirmed as the source." % name)
+    if want_id and got_id != want_id:
+        raise ValueError("The saved connection %s reaches server ID %s, not the source's server ID %d."
+                         % (name, got_id if got_id is not None else "(none)", want_id))
+    if want_uuid and (not got_uuid or want_uuid.lower() != got_uuid.lower()):
+        raise ValueError("The saved connection %s reaches server UUID %s, not the source's %s."
+                         % (name, got_uuid or "(none)", want_uuid))
+    verified = True
+    return _known_version(version, _text(values.get("version_comment")), "saved_connection",
+                          "from the saved connection %s" % name, profile_id=profile.get("id"),
+                          profile_name=name, verified=verified)
+
+
+def source_version_statement(engine, channel):
+    """SHOW RELAYLOG EVENTS at the start of the applier's relay log file."""
+    relay_file = (channel.get("position") or {}).get("relay_log_file")
+    if not relay_file:
+        return None
+    if engine == "mariadb":
+        return "SHOW RELAYLOG '%s' EVENTS IN '%s' LIMIT %d" % (
+            _qtext(channel["name"]), _qtext(relay_file), SOURCE_VERSION_EVENTS["mariadb"])
+    return "SHOW RELAYLOG EVENTS IN '%s' LIMIT %d FOR CHANNEL '%s'" % (
+        _qtext(relay_file), SOURCE_VERSION_EVENTS["mysql"], _qtext(channel["name"]))
+
+
+def parse_source_fde(rows, source_server_id):
+    """``(version, problem)`` from the first SHOW RELAYLOG EVENTS rows: the
+    Server ver of the last Format_description event after the file's own
+    header whose Server_id is the source's."""
+    if not source_server_id:
+        return None, ("The replica has not recorded its source's server ID (its receiver has not connected since "
+                      "the replica started), so the relay log cannot be matched to this source.")
+    own = _int(rows[0].get("Server_id")) if rows and rows[0].get("Event_type") == "Format_desc" else None
+    if own is not None and own == source_server_id:
+        return None, ("The replica and its source report the same server ID, so the relay log cannot tell "
+                      "their events apart.")
+    found = None
+    for row in rows[1:]:
+        if row.get("Event_type") != "Format_desc" or _int(row.get("Server_id")) != source_server_id:
+            continue
+        match = _SERVER_VER.match((row.get("Info") or "").strip())
+        if match:
+            found = match.group(1).strip()
+    if found:
+        return found, None
+    return None, ("The first events of the relay log hold no format event from the source (server ID %d), as "
+                  "when its receiver has not connected since this relay log began." % source_server_id)
+
+
+def _relay_version(reader, engine, channel):
+    """``(source_version, problem)`` from the relay log."""
+    relay_file = (channel.get("position") or {}).get("relay_log_file")
+    try:
+        sql = source_version_statement(engine, channel)
+        if sql is None:
+            return None, "The replica reports no relay log file for this %s." % (
+                "connection" if engine == "mariadb" else "channel")
+        rows = reader.named(sql)
+    except ConnectorError as exc:
+        if denied(exc):
+            return None, ("Reading the relay log (SHOW RELAYLOG EVENTS) needs the %s privilege."
+                          % ("SLAVE MONITOR" if engine == "mariadb" else "REPLICATION SLAVE"))
+        return None, "Could not read the relay log %s: %s" % (relay_file, reason(exc))
+    except ValueError as exc:
+        return None, "Could not read the relay log %s: %s" % (relay_file, exc)
+    # Keep only what the version needs; the relay log holds statements.
+    rows = [{k: row.get(k) for k in ("Event_type", "Server_id", "Info")} if row.get("Event_type") == "Format_desc"
+            else {"Event_type": row.get("Event_type"), "Server_id": row.get("Server_id")} for row in rows]
+    version, problem = parse_source_fde(rows, _int((channel.get("source") or {}).get("server_id")))
+    if version is None:
+        return None, problem
+    return _known_version(version, None, "relay_log", "as recorded in the relay log", relay_log_file=relay_file,
+                          verified=True, caveat=RELAY_LOG_CAVEAT), None
+
+
+def attach_source_versions(reader, report, profiles=(), open_profile=None, replica_host=None):
+    """Set ``source_version`` on every replication channel of *report*
+    (``None`` on Group Replication channels). Never raises for a source it
+    cannot read: the reason is in the field."""
+    engine = report.get("engine")
+    cache, reads = {}, [0]
+    # After a lost connection or a timeout on the replica, later channels
+    # do not wait for the relay log again.
+    relay_down = []
+
+    def from_profile(profile, channel):
+        key = profile.get("id") or id(profile)
+        if key not in cache:
+            if reads[0] >= SOURCE_PROFILE_READS:
+                return None, "More than %d saved connections matched sources; the rest were not read." \
+                    % SOURCE_PROFILE_READS
+            reads[0] += 1
+            try:
+                cache[key] = (read_profile_variables(open_profile, profile), None)
+            except (ValueError, ConnectorError) as exc:
+                cache[key] = (None, str(exc))
+            except (sqlite3.Error, OSError) as exc:
+                # The saved password lookup (workspace store, secret store).
+                cache[key] = (None, "The saved password for %s could not be read: %s"
+                              % (profile.get("name") or profile.get("id"), type(exc).__name__))
+        values, problem = cache[key]
+        if problem:
+            return None, problem
+        try:
+            return profile_source_version(values, profile, channel), None
+        except ValueError as exc:
+            return None, str(exc)
+
+    for channel in report.get("channels") or ():
+        if channel.get("kind") == "group_replication":
+            channel["source_version"] = None
+            continue
+        attempts, found = [], None
+        source = channel.get("source") or {}
+        matched, problem = match_source_profiles(source, profiles, replica_host)
+        if problem:
+            attempts.append(problem)
+        usable = [p for p in matched if p.get("remember_password") or p.get("has_saved_password")]
+        for profile in matched:
+            if profile not in usable:
+                attempts.append("The saved connection %s has no saved password, so it was not read."
+                                % (profile.get("name") or profile.get("id")))
+        if usable and open_profile is None:
+            usable = []
+        for profile in usable:
+            found, problem = from_profile(profile, channel)
+            if found:
+                break
+            attempts.append(problem)
+        if found is None and relay_down:
+            attempts.append(relay_down[0])
+        elif found is None:
+            found, problem = _relay_version(reader, engine, channel)
+            if found is None:
+                attempts.append(problem)
+                if problem and _fatal(problem):
+                    relay_down.append(problem)
+        if found is not None:
+            found["attempts"] = attempts
+            channel["source_version"] = found
+            continue
+        hint = None if matched else "Add a saved connection for %s to show its version." % _endpoint_text(source)
+        channel["source_version"] = _unknown_version(attempts[-1], hint, attempts)
+    report["capabilities"]["source_version"] = True
+    return report
+
+
+def profile_opener(store):
+    """``open_profile(profile)`` for :func:`attach_source_versions`: a client
+    for one saved connection with its own saved password (filled by
+    ``store.connection_with_saved_password``, which checks the endpoint),
+    short timeouts, and the isolated client environment of every read."""
+    from .connector import MySQLConnection
+    from .live import connection_options
+
+    def open_profile(profile):
+        value = {k: profile.get(k) for k in ("host", "port", "user", "ssl_mode", "ssl_ca")
+                 if profile.get(k) not in (None, "")}
+        value["profile_id"] = profile.get("id")
+        options = connection_options(store.connection_with_saved_password(value))
+        if not options.get("password"):
+            raise ValueError("The saved connection %s has no saved password, so it was not read."
+                             % (profile.get("name") or profile.get("id")))
+        options.update(connect_timeout=SOURCE_CONNECT_TIMEOUT_S, query_timeout=SOURCE_QUERY_TIMEOUT_S)
+        return MySQLConnection(**options)
+    return open_profile
+
+
+def saved_profiles(store):
+    """The saved connections (no secrets), or none when the store cannot be read."""
+    try:
+        return [p for p in store.list("profile") if isinstance(p, dict)]
+    except Exception:  # an unreadable workspace store must not fail a status read
+        return []
 
 
 def _worse(status, new):
@@ -2337,6 +2684,8 @@ def format_text(report):
         out.append("  receiver %s, applier %s, lag %s" % (
             _yes(channel["io"]["running"]), _yes(channel["sql"]["running"]),
             "NULL" if channel["lag_s"] is None else _duration_text(channel["lag_s"])))
+        if channel.get("source_version"):
+            out.append("  " + source_version_text(channel["source_version"]))
         position = channel.get("position") or {}
         received_key, received_label = ("gtid_io_pos", "Gtid_IO_Pos") if report.get("engine") == "mariadb" else \
             ("retrieved_gtid_set", "Retrieved_Gtid_Set")
@@ -2354,6 +2703,15 @@ def format_text(report):
             else:
                 out.append("  No safe automatic skip: " + plan["message"])
     return terminal_text("\n".join(out)) + "\n"
+
+
+def source_version_text(value):
+    """One line: ``Source version: 9.7.2 (relay log)``, or unknown with why."""
+    if value.get("version"):
+        how = "saved connection %s" % value.get("profile_name") if value.get("provenance") == "saved_connection" \
+            else "relay log"
+        return "Source version: %s (%s)" % (value["version"], how)
+    return " ".join(part for part in ("Source version: unknown.", value.get("reason"), value.get("hint")) if part)
 
 
 def _shell_word(text):

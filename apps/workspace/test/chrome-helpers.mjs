@@ -16,3 +16,13 @@ export async function connectionOption(page, name) {
   return page.$$eval('.window-toolbar select[aria-label="Connection"] option',
     (options, text) => options.find((e) => e.textContent === text).value, name);
 }
+// Account and privileges: an item in the connection picker that opens a sheet.
+export async function openAccountSheet(page) {
+  await openConnectionPicker(page);
+  await page.locator('.window-toolbar .picker-panel button ::-p-text(Account and privileges…)').click();
+  await page.waitForSelector('dialog.account-sheet[open]', { visible: true });
+}
+export async function closeAccountSheet(page) {
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('dialog.account-sheet'));
+}

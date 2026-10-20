@@ -34,6 +34,7 @@ import { WindowStatusBar, WindowStatusProvider } from "./kit";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { PLACES, Sidebar, type Place } from "./Sidebar";
 import {
+  AccountPrivilegesSheet,
   ConnectionPicker,
   Connections,
   SafetyStatus,
@@ -1406,6 +1407,8 @@ function App() {
   };
   const openSample = () =>
     importPlan(JSON.stringify(example), "sample-plan.json", undefined, { origin: "sample" }).catch(() => {});
+  // Account and privileges of the connection in use (picker and palette).
+  const [accountOpen, setAccountOpen] = useState(false);
   const picker = (
     <ConnectionPicker
       profiles={profiles}
@@ -1414,6 +1417,7 @@ function App() {
       onSwitch={switchConnection}
       onPassword={setActivePassword}
       onManage={manageConnections}
+      onAccount={() => setAccountOpen(true)}
       note={connectionNote}
     />
   );
@@ -1517,6 +1521,7 @@ function App() {
     })),
     { id: "action-import", label: "Import plan", group: "Actions", icon: "import", keywords: "open json explain analyze", run: openImport },
     { id: "action-audit", label: "Audit log", group: "Actions", icon: "audit", keywords: "writes changes kill declined refused log", run: openAuditLog },
+    { id: "action-account", label: "Account and privileges", group: "Actions", icon: "key", keywords: "privileges grants roles user account connected as permissions show grants", run: () => setAccountOpen(true) },
   ], [go]);
 
   return (
@@ -1622,12 +1627,6 @@ function App() {
               <span>Search…</span>
               <kbd>⌘K</kbd>
             </button>
-            <span
-              className="local-badge"
-              title="Runs on this computer. Nothing is sent to an external service."
-            >
-              Local
-            </span>
           </div>
         </header>
         </div>
@@ -2411,6 +2410,13 @@ function App() {
           onPaste={(raw, n) => {
             importPlan(raw, n).catch(() => {});
           }}
+        />
+      )}
+      {accountOpen && (
+        <AccountPrivilegesSheet
+          name={activeConnection.fields.name || connectionTarget(activeConnection.fields)}
+          hasConnection={!!activeConnection.fields.host}
+          onClose={() => setAccountOpen(false)}
         />
       )}
       {commandPaletteOpen && (

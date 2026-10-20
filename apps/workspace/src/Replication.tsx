@@ -24,7 +24,7 @@ import {
   type ReplicationReport, type SkipLoop, type SkipPlan, type SkipResult,
 } from "./opsApi";
 import { VisiblePrivilegeGate, VisiblePrivilegeConfirmLabel } from "./Locks";
-import { ReplicationTopology } from "./ReplicationTopology";
+import { ReplicationTopology, sourceVersionNote, sourceVersionText } from "./ReplicationTopology";
 import "./ops.css";
 import "./replication.css";
 
@@ -372,6 +372,8 @@ export function ReplicationView({ connection, disabled, selection, report: bound
       <InspectorSection title="Status">
         <Fields rows={[
           ["Source", `${chosen.source.host || "Unknown"}:${chosen.source.port ?? "?"}`],
+          !!chosen.source_version && ["Source version", <>{sourceVersionText(chosen.source_version)}
+            <span className="source-version-note">{sourceVersionNote(chosen.source_version)}</span></>],
           ["I/O thread", [chosen.io.running || "Unknown", chosen.io.state].filter(Boolean).join(": ")],
           ["SQL thread", [chosen.sql.running || "Unknown", chosen.sql.state].filter(Boolean).join(": ")],
           ["Lag", lag(chosen.lag_s)],

@@ -75,7 +75,10 @@
 
 .topology-scroll {
   padding: var(--space-5) var(--space-4);
-  overflow-x: auto;
+  /* clip, not auto: auto would also clip vertically and cut off the
+     connector's details popover below the last row. */
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .topology-empty {
@@ -363,4 +366,26 @@
   }
   .topology-link-name { grid-column: 2; grid-row: 1; align-self: end; padding: 0; }
   .topology-link-info { grid-column: 2; grid-row: 2; align-items: flex-start; align-self: start; padding: 0; }
+}
+
+/* Source version: same weight as the replica's version; a dotted underline
+   says the tooltip holds where it came from. */
+.topology-version {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--ink-faint);
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+.topology-version.is-unknown {
+  font-style: italic;
+}
+
+/* Inspector: where the source version came from, under the value. */
+.source-version-note {
+  max-width: 70ch;
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  color: var(--ink-secondary);
 }

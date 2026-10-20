@@ -198,7 +198,7 @@ All mutations are logged to a local SQLite database (`~/.myflames/workspace.sqli
 
 ### 5. Replication, lifecycle, and administration
 
-- **Replication Monitoring and Recovery**: Review channel status, GTID sets, and worker lag caveats. Plan a single transaction skip or an error-capped skip loop (`myflames replication skip`).
+- **Replication Monitoring and Recovery**: Review channel status, each source's engine and version, GTID sets, and worker lag caveats. Plan a single transaction skip or an error-capped skip loop (`myflames replication skip`).
 - **Upgrade Checking**: Validate compatibility against target versions with MySQL Shell or native checks (`myflames upgrade-check`).
 - **Backup and Restore**: Generate checksummed dumps and perform verified restores (`myflames dump`, `myflames restore`). In Maintenance, choose a folder with the system dialog and review the selected tool's compression, chunking and object options before starting. File encryption requires an encrypted destination or a separate tool.
 - **Local tools**: Open official download pages and check for newer releases with Detect tools or Refresh. Server client checks stay within the installed release series; MySQL Shell checks its latest GA release. Offline checks remain unknown.
@@ -253,7 +253,7 @@ Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
 | `config` | `[--fail-on LEVEL]`; `set NAME VAL [--persist]`; `reset-persist NAME` | Review server settings or execute planned variable modifications. |
 | `instruments`| `[--preset {minimal,locks,waits,defaults}]` | Review Performance Schema instrumentation and generate setup SQL. |
 | `report` | `[--interval N] [--schema NAME] [--html \| --json \| --markdown]` | Generate a full server analysis report across all diagnostic modules. |
-| `replication`| `[--channel NAME]`; `skip [--yes]`; `skip-loop --errors CODES` | Monitor replica lag and manage transaction skip recovery loops. |
+| `replication`| `[--channel NAME]`; `skip [--yes]`; `skip-loop --errors CODES` | Monitor replica lag and source versions, and manage transaction skip recovery loops. |
 | `accounts` | `list`, `show`, `create`, `drop`, `grant`, `revoke`, `role` | Inspect and manage users, roles, passwords, and privileges. |
 | `privileges` | `[--json]` | Report effective permissions and per-action verification status. |
 | `upgrade-check`| `--target-version X.Y.Z [--no-shell]` | Run MySQL Shell upgrade checks or native compatibility checks. |

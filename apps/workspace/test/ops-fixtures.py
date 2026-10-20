@@ -82,6 +82,17 @@ final = loop.run()
 write("replication-loop-running.json", running[0])
 write("replication-loop-stopped.json", final)
 
+# Source versions (live, 2026-10-20: MySQL 9.7.2 and MariaDB 11.8.9 replicas
+# reporting their source as 127.0.0.1:<port>): from the relay log, from the
+# saved connection "Source 9.7", and unknown without REPLICATION SLAVE.
+import test_replication_source_version as tsv  # noqa: E402
+for server, profile in (("mysql-9.7-srcver-relay", None), ("mysql-9.7-srcver-profile", tsv.MYSQL_SOURCE),
+                        ("mysql-9.7-srcver-denied", None), ("mariadb-11.8-srcver-relay", None)):
+    source = tsv.source_conn(server) if profile else None
+    write("replication-%s.json" % server, rp.read_status(
+        tr.ReplayConn(tr.fixture("replication", server)["calls"]), source_versions=True,
+        profiles=[profile] if profile else (), open_profile=lambda _p, conn=source: conn, replica_host="127.0.0.1"))
+
 
 # ---- Maintenance -----------------------------------------------------------
 

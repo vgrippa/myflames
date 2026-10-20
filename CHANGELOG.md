@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Keep popovers above the window footer: an ⓘ panel opened near the bottom of a 720x520 window ended under the footer, which hid its last lines; it now stops at the footer's top edge and scrolls.
+### Changed
+
+- Remove the Local badge from the top bar; About myflames now has one privacy line naming what the app contacts and when (your database servers, official release pages when you check for updates, and news feeds when shown and turned on).
+- Move Privileges out of the top bar: the connection picker's menu has Account and privileges…, which opens a sheet with the connected account, active roles, grants, denied and unverified actions and Refresh privileges; the command palette opens it as Account and privileges.
+- Replication shows each source's engine and version (Topology source node, the connector's details, the inspector, `myflames replication` text as "Source version: 9.7.2 (relay log)", and `source_version` in `replication-1.0`): read through a saved connection with the host and port the replica reports (its own saved password, verified by server ID), else the source's format event in the relay log (needs REPLICATION SLAVE on MySQL), else "Version unknown" with the reason and a hint to add a saved connection.
+
+### Fixed
+
+- Replication Topology: the connector's details popover is no longer cut off below the map.
 
 ## [3.1.0] - 2026-10-20
 
