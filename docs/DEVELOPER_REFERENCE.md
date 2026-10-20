@@ -124,6 +124,19 @@ absolute existing directory (the desktop app sets it to the user's Downloads
 folder, because its backend runs with an isolated HOME), else `~/Downloads`,
 else the temporary directory.
 
+Every HTTPS read (the release check and download, `tool_updates._fetch`, and
+Home news) takes its context from `myflames/tls.py` `https_context()`: the
+standard library's default context, with certificate and host name checks on.
+The packaged macOS app's bundled OpenSSL looks for certificate authorities only
+at paths on the build machine (Homebrew's `/opt/homebrew/etc/openssl@3/cert.pem`),
+so on a Mac without them the default context trusts nothing. When it holds no
+CA certificate on macOS, `https_context()` also loads the PEM that
+`/usr/bin/security find-certificate -a -p` exports from
+`/System/Library/Keychains/SystemRootCertificates.keychain` and
+`/Library/Keychains/System.keychain`, once per process (10 s limit per
+keychain; a failed export or an unreadable entry is skipped). `SSL_CERT_FILE`
+and `SSL_CERT_DIR` keep their OpenSSL meaning. Tests: `test/test_tls.py`.
+
 Home news (`myflames/news.py`, `/api/news` and `/api/news/settings`, `news-1.0`)
 reads the two feeds in `news.SOURCES` and nothing else: Planet MySQL
 (`https://planet.mysql.com/rss20.xml`, keeping only links under

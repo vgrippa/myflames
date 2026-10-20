@@ -36,6 +36,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
 from . import __version__
+from .tls import https_context
 
 SCHEMA_VERSION = 'news-1.0'
 CACHE_VERSION = 'news-cache-1.0'
@@ -214,7 +215,7 @@ def _connection_class(watchdog):
 
 class _HTTPS(urllib.request.HTTPSHandler):
     def __init__(self, watchdog):
-        super().__init__(context=ssl.create_default_context())
+        super().__init__(context=https_context())
         self._watchdog = watchdog
 
     def https_open(self, req):

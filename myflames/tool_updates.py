@@ -13,6 +13,8 @@ import time
 import urllib.error
 import urllib.request
 
+from .tls import https_context
+
 MYSQL_DOWNLOAD = 'https://dev.mysql.com/downloads/mysql/'
 SHELL_DOWNLOAD = 'https://dev.mysql.com/downloads/shell/'
 MARIA_DOWNLOAD = 'https://mariadb.org/download/'
@@ -48,7 +50,7 @@ def _fetch(url):
             re.fullmatch(re.escape(MYSQL_DOWNLOAD) + r'\?version=[0-9]{1,4}\.[0-9]{1,4}', url) is None and
             re.fullmatch(re.escape(MARIA_API) + r'[0-9]{1,4}\.[0-9]{1,4}/latest/', url) is None):
         raise ValueError('Unsupported release source.')
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=https_context()), _NoRedirect())
     request = urllib.request.Request(url, headers={'Accept-Encoding': 'identity'})
     with opener.open(request, timeout=REQUEST_TIMEOUT) as response:
         if response.geturl() != url or response.status != 200:

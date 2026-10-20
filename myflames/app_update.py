@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from . import __version__
+from .tls import https_context
 
 GITHUB_RELEASES_API = "https://api.github.com/repos/vgrippa/myflames/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/vgrippa/myflames/releases"
@@ -160,7 +161,7 @@ def check_for_updates(force=False):
             GITHUB_RELEASES_API,
             headers={"User-Agent": "myflames/%s" % __version__, "Accept": "application/vnd.github.v3+json"}
         )
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=https_context()) as response:
             if response.status != 200:
                 raise ValueError("GitHub answered with status %d" % response.status)
             body = response.read(1024 * 1024)
@@ -389,7 +390,7 @@ def download_binary_update(asset_url=None, release_url=None):
         req = urllib.request.Request(asset_url, headers={"User-Agent": "myflames/%s" % __version__})
         max_bytes = 150 * 1024 * 1024  # 150 MiB limit
         downloaded = 0
-        opener = urllib.request.build_opener(_ReleaseRedirectHandler())
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=https_context()), _ReleaseRedirectHandler())
         with opener.open(req, timeout=15.0) as resp:
             _validate_update_url(resp.geturl())
             fd, temporary = tempfile.mkstemp(prefix=".myflames-update-", suffix=".part", dir=str(downloads_dir))
