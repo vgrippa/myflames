@@ -10,7 +10,9 @@ const mysql = await load("errorlog-mysql-8.4.json");
 const maria = await load("errorlog-mariadb-11.4-file.json");
 const remote = await load("errorlog-mariadb-11.4-remote.json");
 const denied = await load("errorlog-mysql-8.4-denied.json");
-const h = await open("/api/live/error-log", "errorlog");
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
+const h = await open("/api/live/error-log", "errorlog", {}, { list: "docked" });
 const { page, state, text } = h;
 state.fallback = { status: 200, body: mysql };
 const view = '.server-view[data-view="errorlog"]';

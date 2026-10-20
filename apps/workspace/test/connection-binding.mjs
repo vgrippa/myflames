@@ -21,6 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { DOCK_KEY } from "./perf-harness.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const fixtures = fileURLToPath(new URL("./fixtures/", import.meta.url));
@@ -189,6 +190,11 @@ try {
     else answer({ path: p, body, request });
   });
   await page.setViewport({ width: 1440, height: 1000 });
+  // The list of views docked, as a person who docked it: this suite asserts
+  // the list's markers and keys (server-nav covers the floating default).
+  await page.evaluateOnNewDocument((key) => {
+    try { if (localStorage.getItem(key) === null) localStorage.setItem(key, "false"); } catch {}
+  }, DOCK_KEY);
   await page.goto(url, { waitUntil: "networkidle0" });
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
 

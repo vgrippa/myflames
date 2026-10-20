@@ -882,6 +882,132 @@ export const ViewActivityContext = createContext<((view: string, loading: boolea
  * returns to ("Server", "Workload"). */
 export const ViewBackLabelContext = createContext("Server");
 
+/** The floating list of views (Server and Workload with the list floated):
+ * the view's title becomes a pop-up button that opens the list under it.
+ * Provided by Server per view, only while the list floats; ViewLayout
+ * consumes it for its own title and clears it for anything nested. */
+export type ViewSwitcherShared = {
+  /** The list's name ("Server views"): the popover's accessible name. */
+  label: string;
+  /** The list is open (one state for the place; only the active view draws it). */
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  /** This view is the one on screen (kept views stay mounted, hidden). */
+  active: boolean;
+  /** The popover's content: its header and the grouped list of views. */
+  list: ReactNode;
+  /** The worst status among the other views of the list, if any needs attention. */
+  others?: { tone: "problem" | "watch"; text: string } | null;
+  /** After a choice, the chosen view's title button takes focus once. */
+  takeFocus: () => boolean;
+};
+export const ViewSwitcherContext = createContext<ViewSwitcherShared | null>(null);
+
+/** The view title as a pop-up button ("Health ▾") and, under it, the list of
+ * views in a popover. Enter, Space or Down opens it on the current view;
+ * arrows, Home and End move; Enter or Space chooses; Escape or a click
+ * outside closes it and returns focus to the title. */
+function ViewSwitcher({ id, title, shared }: { id: string; title: string; shared: ViewSwitcherShared }) {
+  const button = useRef<HTMLButtonElement>(null);
+  const popover = useRef<HTMLDivElement>(null);
+  const open = shared.open && shared.active;
+  const latest = useRef(shared);
+  latest.current = shared;
+  const [maxHeight, setMaxHeight] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!open) return;
+    // Within the window: from under the title to above the window footer.
+    const measure = () => {
+      const top = button.current?.getBoundingClientRect().bottom ?? 0;
+      const footer = document.querySelector<HTMLElement>(".window-statusbar")?.getBoundingClientRect().height ?? 0;
+      setMaxHeight(Math.max(160, Math.floor(window.innerHeight - top - footer - 16)));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [open]);
+  useFocusScope(popover, {
+    open,
+    onClose: () => latest.current.setOpen(false),
+    returnFocus: () => button.current,
+    initialFocus: () => popover.current?.querySelector<HTMLElement>('[aria-current="page"]'),
+  });
+  useEffect(() => {
+    if (!open) return;
+    // One popover at a time: opening another closes this list, and this list closes the others.
+    window.dispatchEvent(new CustomEvent(POPOVER_EVENT, { detail: `${id}-views` }));
+    const other = (event: Event) => {
+      if ((event as CustomEvent).detail !== `${id}-views`) latest.current.setOpen(false);
+    };
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (popover.current?.contains(target) || button.current?.contains(target)) return;
+      latest.current.setOpen(false);
+      // A click on empty space leaves focus nowhere: return it to the title.
+      // A click on a control keeps focus there.
+      requestAnimationFrame(() => {
+        const focused = document.activeElement;
+        if (!focused || focused === document.body || !focused.isConnected) button.current?.focus({ preventScroll: true });
+      });
+    };
+    window.addEventListener(POPOVER_EVENT, other);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener(POPOVER_EVENT, other);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [open, id]);
+  useEffect(() => {
+    if (!shared.active || !latest.current.takeFocus()) return;
+    // Only when the choice left focus nowhere (the list closed with its view):
+    // a view that loads late never takes focus from a surface opened since.
+    const focused = document.activeElement;
+    if (!focused || focused === document.body || !focused.isConnected) button.current?.focus({ preventScroll: true });
+  }, [shared.active]);
+  const others = shared.others;
+  return (
+    <>
+      <h2 id={`${id}-title`} tabIndex={-1} className="view-switcher-heading">
+        <button
+          ref={button}
+          type="button"
+          id={`${id}-switcher`}
+          className={`view-switcher${open ? " is-open" : ""}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? `${id}-views` : undefined}
+          title={others ? `${title}: ${others.text}` : `Switch ${shared.label.replace(/ views$/, "")} view`}
+          onClick={() => shared.setOpen(!open)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" && !open) {
+              event.preventDefault();
+              shared.setOpen(true);
+            }
+          }}
+        >
+          <span id={`${id}-title-name`} className="view-switcher-name">{title}</span>
+          {others && <span className={`status-dot is-${others.tone} view-switcher-marker`} aria-hidden="true" />}
+          {others && <span className="visually-hidden">, {others.text}</span>}
+          <span className="view-switcher-chevron" aria-hidden="true"><Icon name="chevron-down" size={12} /></span>
+        </button>
+      </h2>
+      {open && (
+        <div
+          ref={popover}
+          id={`${id}-views`}
+          role="dialog"
+          aria-label={shared.label}
+          tabIndex={-1}
+          className="view-switcher-popover"
+          style={maxHeight ? ({ maxHeight: `${maxHeight}px` } as CSSProperties) : undefined}
+        >
+          {shared.list}
+        </div>
+      )}
+    </>
+  );
+}
+
 // ---- Rows: keyboard movement shared by tables, grouped lists and tiles -----
 
 /** Arrow keys move focus between the [data-row-key] items of the nearest
@@ -2595,6 +2721,10 @@ export function ViewLayout({
 }) {
   const reportActivity = useContext(ViewActivityContext);
   const backLabel = useContext(ViewBackLabelContext);
+  // The floating list of views: this view's title switches views (never in
+  // the narrow layout, where Back returns to the list, or for a hidden title).
+  const offered = useContext(ViewSwitcherContext);
+  const switcher = offered && !onBack && !hideTitle ? offered : null;
   useEffect(() => {
     reportActivity?.(id, !!loading);
     return () => reportActivity?.(id, false);
@@ -2617,9 +2747,10 @@ export function ViewLayout({
     });
   }
   return (
+    <ViewSwitcherContext.Provider value={null}>
     <section
       className={`server-view ${className}${otherConnection ? " is-other-connection" : ""}`}
-      aria-labelledby={`${id}-title`}
+      aria-labelledby={switcher ? `${id}-title-name` : `${id}-title`}
       data-view={id}
       data-other-connection={otherConnection ? "true" : undefined}
       onKeyDown={(e) => {
@@ -2638,10 +2769,14 @@ export function ViewLayout({
             {backLabel}
           </button>
         )}
-        <div className="view-title">
-          <h2 id={`${id}-title`} tabIndex={-1} className={hideTitle ? "visually-hidden" : undefined}>
-            {title}
-          </h2>
+        <div className={`view-title${switcher ? " has-switcher" : ""}`}>
+          {switcher ? (
+            <ViewSwitcher id={id} title={title} shared={switcher} />
+          ) : (
+            <h2 id={`${id}-title`} tabIndex={-1} className={hideTitle ? "visually-hidden" : undefined}>
+              {title}
+            </h2>
+          )}
           {info && <InfoPopover label={`About ${title}`}>{info}</InfoPopover>}
         </div>
         <div className="toolbar-controls" hidden={detailOpen}>{controls}</div>
@@ -2715,6 +2850,7 @@ export function ViewLayout({
         )}
       </div>
     </section>
+    </ViewSwitcherContext.Provider>
   );
 }
 

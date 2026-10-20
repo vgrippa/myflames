@@ -428,6 +428,83 @@
 .view-title h2:focus {
   outline: none;
 }
+/* The floating list of views: the title is a pop-up button ("Health ▾") at
+   the title's size and weight, and the list opens under it. */
+.view-title.has-switcher {
+  position: relative;
+  /* The name stays whole: the toolbar's controls wrap instead. */
+  flex: none;
+}
+/* The button's text lines up with where a plain title starts. */
+.view-switcher-heading {
+  margin-left: calc(-1 * var(--space-2));
+}
+.view-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: default;
+}
+.view-switcher:hover,
+.view-switcher.is-open {
+  background: var(--surface-hover);
+}
+.view-switcher-chevron {
+  display: inline-flex;
+  color: var(--ink-muted);
+  transition: transform var(--motion-hover);
+}
+.view-switcher.is-open .view-switcher-chevron {
+  transform: rotate(180deg);
+}
+.view-switcher-marker {
+  flex: none;
+}
+.view-switcher-popover {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: calc(-1 * var(--space-2));
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  max-height: calc(100dvh - var(--topbar-height) - 3 * var(--toolbar-h));
+  overflow: hidden;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: 400;
+  letter-spacing: 0;
+  animation: view-switcher-in 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.view-switcher-popover:focus {
+  outline: none;
+}
+.view-switcher-popover > .source-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+@keyframes view-switcher-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-switcher-popover { animation: none; }
+  .view-switcher-chevron { transition: none; }
+}
 .toolbar-controls {
   display: flex;
   /* Takes the room the title and Refresh leave, and wraps inside it. */

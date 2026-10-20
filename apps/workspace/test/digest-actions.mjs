@@ -1,4 +1,4 @@
-import { chooseConnection, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
+import { chooseConnection, chooseView, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
 // Top statements row actions: Explain, Run analysis (with its confirmation),
 // the parameter path for normalized text, Explain top N with progress and
 // cancel, disabled non-SELECT rows, and session restore of the digest source.
@@ -271,7 +271,7 @@ try {
   await page.locator("label.check-field ::-p-text(Capture optimizer trace)").click();
   await page.keyboard.press("Escape");
   await nav("Workload");
-  await page.locator("#server-nav-top").click();
+  await chooseView(page, "top");
   await page.locator("button ::-p-text(Load top statements)").click();
   await page.waitForSelector(".server-view tbody tr");
   assert.equal((await page.$$(".server-view tbody tr")).length, 6);

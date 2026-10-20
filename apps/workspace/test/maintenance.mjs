@@ -73,6 +73,8 @@ const owners = new Map();
 const endpoint = (c) => JSON.stringify([c?.profile_id || "", c?.host, c?.port, c?.user, c?.ssl_mode || "", c?.ssl_ca || ""]);
 const listed = (c) => [...held.values()].filter((j) => owners.get(j.id) === endpoint(c));
 const job = (base, id, extra = {}) => ({ ...structuredClone(base), id, ...extra });
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/lifecycle/tools", "maintenance", {
   [UPGRADE]: () => ({ status: 200, body: next.upgrade, delay: 50 }),
   [PREPARE]: () => next.prepare.shift() || { status: 200, body: dumpPlan },
@@ -97,7 +99,7 @@ const h = await open("/api/lifecycle/tools", "maintenance", {
     void request.continue();
     return null;
   },
-});
+}, { list: "docked" });
 const { page, state, text, texts } = h;
 const view = '.server-view[data-view="maintenance"]';
 const sheet = "dialog.ops-confirm[open]";

@@ -1451,11 +1451,14 @@ function App() {
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
 
+  // The Server and Workload list of views floats (opened from the view's
+  // title) unless the person docked it: only a stored "false" docks it. This
+  // is the one copy of the preference; Server reads it from here.
   const [serverNavCollapsed, setServerNavCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("myflames.serverNavCollapsed") === "true";
+      return localStorage.getItem("myflames.serverNavCollapsed") !== "false";
     } catch {
-      return false;
+      return true;
     }
   });
   const toggleServerNavCollapsed = useCallback(() => {

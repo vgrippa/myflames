@@ -145,7 +145,9 @@ const extra = {
   },
 };
 
-const h = await open("/api/live/report", "report", extra);
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
+const h = await open("/api/live/report", "report", extra, { list: "docked" });
 const { page, state, text, texts } = h;
 state.fallback = { status: 200, body: rich };
 const view = ".server-view[data-view=tuning]";

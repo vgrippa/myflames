@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Replication Topology: the connector's details popover is no longer cut off below the map.
+### Changed
+
+- Float the Server and Workload list of views by default: the view's title opens it (Health ▾), a dot beside the title shows when another view has a problem or something to watch, and Dock the list of views keeps it beside the view as before.
 
 ## [3.1.0] - 2026-10-20
 

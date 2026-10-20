@@ -12,7 +12,9 @@ const rawReport = await load("innodb-mysql-8.4-raw.json");
 const mariadb = await load("innodb-mariadb-11.4.json");
 const noProcess = await load("innodb-mysql-8.4-noproc.json");
 
-const h = await open("/api/live/innodb", "innodb");
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
+const h = await open("/api/live/innodb", "innodb", {}, { list: "docked" });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: mysql };
 const view = ".server-view[data-view=innodb]";

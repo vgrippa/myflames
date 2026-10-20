@@ -41,9 +41,11 @@ const topFor = (body) => body.order === "scan"
 // holdTop: Show statements requests wait in heldTop until answered by the test.
 let holdTop = false;
 const heldTop = [];
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/health", "health", {
   "/api/live/top": (body, request) => (holdTop ? (heldTop.push({ body, request }), null) : topFor(body)),
-});
+}, { list: "docked" });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: mysql };
 const view = ".server-view[data-view=health]";

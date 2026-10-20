@@ -222,6 +222,8 @@ function planFor(body) {
     text: body.mode === "persist_only" ? "The value applies after the next restart." : "Changes the running value." };
   return p;
 }
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/config", "parameters", {
   "/api/live/variable": (body, request) => {
     variableReads.push(body);
@@ -243,7 +245,7 @@ const h = await open("/api/live/config", "parameters", {
     return applyReply ? applyReply(body) : { status: 200, body: { ...variableFixture.change, name: body.name, mode: body.mode, status: "changed", message: "The new value was read back." } };
   },
   "/api/live/report": { status: 200, body: report },
-});
+}, { list: "docked" });
 const { page, state, text, texts } = h;
 state.fallback = { status: 200, body: mysql };
 const view = '.server-view[data-view="config"]';

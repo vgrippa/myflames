@@ -39,12 +39,14 @@ const plan = {
 const kill = { status: 200, body: { schema_version: "kill-1.0", status: "killed", connection_id: 93, mode: "connection",
   statement: "KILL CONNECTION 93", verified: ["user", "host", "not this session", "transaction"], after: { present: false },
   message: "Ended connection 93. Its open transaction was rolled back and its locks were released." } };
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/sessions", "sessions", {
   "/api/live/explain-connection": { status: 200, body: plan },
   "/api/live/kill": kill,
   // A cancelled Kill is recorded in the audit trail as declined.
   "/api/audit/declined": { status: 200, body: { audit_id: "a1", status: "declined" } },
-});
+}, { list: "docked" });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: active };
 const view = ".server-view[data-view=sessions]";

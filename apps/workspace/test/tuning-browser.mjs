@@ -83,6 +83,7 @@ try {
   assert.equal(await text('.main-nav button[data-place="tuning"]'), "Tuning");
   assert.ok(await page.$(".server-place.is-tuning-place"), "the Tuning place");
   assert.equal(await page.$(".server-place.is-tuning-place .source-list"), null, "no Server sub-navigation");
+  assert.equal(await page.$(".server-place.is-tuning-place .view-switcher"), null, "its title switches no views");
   assert.equal(await page.$(".server-place.is-tuning-place .place-toolbar"), null, "no Server place toolbar");
   assert.equal(await text(".topbar-title"), "Tuning");
   await page.waitForSelector('.window-statusbar [data-status="safety"]');
@@ -260,7 +261,7 @@ try {
 
   // Server opens its own view list again, never the Tuning view.
   await page.click('.main-nav button[data-place="server"]');
-  await page.waitForSelector(".server-place:not(.is-tuning-place) .source-list [aria-current=page]");
+  await h.views();
   assert.equal(await page.$(".server-place:not(.is-tuning-place) .server-view[data-view=tuning]"), null, "Server does not embed Tuning");
   // The command palette keeps "mysql tuning" as a keyword for the place.
   await page.click(".command-trigger");

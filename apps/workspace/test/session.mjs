@@ -1,5 +1,5 @@
 import { connectionAction } from "./connection-helpers.mjs";
-import { openConnectionPicker } from "./chrome-helpers.mjs";
+import { chooseView, currentView, openConnectionPicker } from "./chrome-helpers.mjs";
 // Session restore: reload, server restart, Start fresh, a two-tab conflict,
 // the startup toggle, and --no-restore, against the packaged UI and server.
 // Run after `npm run build`: node test/session.mjs
@@ -257,7 +257,7 @@ try {
   await page.$eval(".execution-options input[type=checkbox]", (e) => e.click());
   await page.keyboard.press("Escape");
   await place(page, "Workload");
-  await page.locator("#server-nav-sessions").click();
+  await chooseView(page, "sessions");
   await place(page, "Plans");
   await chart(page);
   const before = await until(
@@ -328,10 +328,8 @@ try {
       "a typed password is never restored",
     );
     await place(p, "Workload");
-    assert.equal(
-      await p.$eval("#server-nav-sessions", (e) => e.getAttribute("aria-current")),
-      "page",
-    );
+    await p.waitForSelector(".server-view[data-view=sessions]", { visible: true });
+    assert.equal(await currentView(p), "sessions");
     await place(p, "Home");
     const unsavedName = await p.$eval(".connection-row.is-active [data-col=name] strong", el => el.textContent);
     await connectionAction(p, unsavedName, "Save");

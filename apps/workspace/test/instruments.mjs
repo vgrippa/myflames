@@ -97,7 +97,9 @@ const extras = {
   },
   "/api/editor/close": request => { calls.push(["close", request]); return response({ closed: true }); },
 };
-const h = await open("/api/live/instruments", "instruments", extras);
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
+const h = await open("/api/live/instruments", "instruments", extras, { list: "docked" });
 const { page, state, text, button } = h;
 state.fallback = response(selected);
 const view = ".server-view[data-view=instruments]";

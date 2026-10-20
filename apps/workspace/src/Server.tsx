@@ -50,8 +50,9 @@ import {
   ColumnStoreContext,
   ViewActivityContext,
   ViewBackLabelContext,
+  ViewSwitcherContext,
+  type ViewSwitcherShared,
   useWindowStatus,
-  useFocusScope,
   NavMarker,
   countState,
   type BadgeTone,
@@ -219,15 +220,28 @@ function toneOf(status: string | null | undefined): Tone {
 }
 // A sub-navigation marker (NavMarker): a dot for state, a neutral pill for a
 // count; the item's hidden text (", Watch", ", 5 blocked") names it once.
-function dot(tone: Tone, text: string) {
-  return { badge: <NavMarker tone={tone} />, badgeText: text };
+function dot(tone: Tone, text: string): Marker {
+  return { badge: <NavMarker tone={tone} />, badgeText: text, tone };
 }
 // A count draws a dot and the count only (a list row is narrow); the state
 // word moves into the tooltip and the hidden text ("2 flagged, Watch").
-function count(n: number, tone: BadgeTone, text: string) {
+function count(n: number, tone: BadgeTone, text: string): Marker {
   const state = countState(tone);
   const word = state ? TONE_TEXT[state] : "";
-  return { badge: <NavMarker compact tone={state} count={n} countTone={tone} />, badgeText: word && !text.includes(word) ? `${text}, ${word}` : text };
+  return { badge: <NavMarker compact tone={state} count={n} countTone={tone} />, badgeText: word && !text.includes(word) ? `${text}, ${word}` : text, tone: state };
+}
+/** A list item's marker and the state it stands for (the floating title's
+ * marker sums up the other views from it). */
+type Marker = Pick<SourceItem, "badge" | "badgeText"> & { tone?: Tone };
+/** With the list of views floated, the title says when another view needs
+ * attention: the worst state among the others, and how many share it. */
+function othersMarker(tones: (Tone | undefined)[]): ViewSwitcherShared["others"] {
+  const problems = tones.filter((t) => t === "problem").length;
+  const watches = tones.filter((t) => t === "watch").length;
+  const views = (n: number) => `${n} other ${n === 1 ? "view" : "views"}`;
+  if (problems) return { tone: "problem", text: `${views(problems)} ${problems === 1 ? "has" : "have"} a problem${watches ? `, ${watches} to watch` : ""}` };
+  if (watches) return { tone: "watch", text: `${views(watches)} to watch` };
+  return null;
 }
 
 export function Server({
@@ -250,8 +264,8 @@ export function Server({
   link,
   instrumentsLink,
   navigation,
-  navCollapsed: propNavCollapsed,
-  onToggleNavCollapsed: propOnToggleNavCollapsed,
+  navCollapsed,
+  onToggleNavCollapsed: toggleNavCollapsed,
   replicationLoops: propReplicationLoops,
   onReplicationLoops: propOnReplicationLoops,
   replication: propReplication,
@@ -266,8 +280,10 @@ export function Server({
   onNavigatePlace?: (place: "server" | "workload" | "tuning" | "replication", view: ServerKind) => void;
   /** Command palette navigation: changes the visible view without reading it. */
   navigation?: { view: ServerKind; n: number };
-  navCollapsed?: boolean;
-  onToggleNavCollapsed?: () => void;
+  /** The list of views floats (opened from the view's title) instead of
+   * docking beside the view; the shell owns this preference (main.tsx). */
+  navCollapsed: boolean;
+  onToggleNavCollapsed: () => void;
   picker: React.ReactNode;
   connection: Connection;
   /** The Query editor is capturing: reads and row actions wait. */
@@ -311,6 +327,8 @@ export function Server({
   useEffect(() => preloadWhenIdle(LAZY_VIEWS), []);
   const tuningPlace = place === "tuning";
   const kind: ServerKind = place === "workload" ? workloadSelectedKind : tuningPlace ? "tuning" : serverSelectedKind;
+  const kindRef = useRef(kind);
+  kindRef.current = kind;
   // The Tuning place saves the Server view under it, so Server opens where it was.
   const savedKind = tuningPlace ? serverSelectedKind : kind;
   const [order, setOrder] = useState(initial?.order || "total");
@@ -335,43 +353,18 @@ export function Server({
   /** A Full analysis ran (restored; the report itself never is). */
   const [reportRun, setReportRun] = useState(initial?.report_run === true);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
-  const [internalNavCollapsed, setInternalNavCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("myflames.serverNavCollapsed") === "true";
-    } catch {
-      return false;
-    }
-  });
-  const navCollapsed = propNavCollapsed !== undefined ? propNavCollapsed : internalNavCollapsed;
-  const toggleNavCollapsed = useCallback(() => {
-    if (propOnToggleNavCollapsed) {
-      propOnToggleNavCollapsed();
-      return;
-    }
-    setInternalNavCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("myflames.serverNavCollapsed", String(next));
-      } catch {}
-      return next;
-    });
-  }, [propOnToggleNavCollapsed]);
-  const [floatingMenuOpen, setFloatingMenuOpen] = useState(false);
-  const floatingMenuRef = useRef<HTMLDivElement>(null);
-  const floatingMenuButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!floatingMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest(".server-source-wrap.is-floating") && !target.closest(".server-floating-nav-btn")) {
-        setFloatingMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-    };
-  }, [floatingMenuOpen]);
+  /** The floating list of views is open (under the view's title, kit.tsx ViewSwitcher). */
+  // Held as the view it was opened on: navigation from elsewhere (the command
+  // palette, a link) never carries an open list onto another view.
+  const [floatingMenuFor, setFloatingMenuFor] = useState<ServerKind | null>(null);
+  const setFloatingMenuOpen = useCallback((open: boolean) => setFloatingMenuFor(open ? kindRef.current : null), []);
+  /** A view chosen from the floating list: its title button takes focus once it is on screen. */
+  const switcherFocus = useRef(false);
+  const takeSwitcherFocus = useCallback(() => {
+    const take = switcherFocus.current;
+    switcherFocus.current = false;
+    return take;
+  }, []);
   // Column widths and hidden columns of every Server table, by table id,
   // restored with the workspace (session.ts validates them).
   const [columns, setColumns] = useState<Record<string, ColumnPrefs>>(initial?.columns_v1 || {});
@@ -562,12 +555,13 @@ export function Server({
     return () => observer.disconnect();
   }, []);
   const compact = width > 0 && width < COMPACT_WIDTH;
-  const floatingNavOpen = !tuningPlace && onScreen && navCollapsed && !compact && floatingMenuOpen;
-  useFocusScope(floatingMenuRef, {
-    open: floatingNavOpen, onClose: () => setFloatingMenuOpen(false),
-    returnFocus: () => floatingMenuButton.current,
-    initialFocus: () => floatingMenuRef.current?.querySelector<HTMLElement>('[aria-current="page"]'),
-  });
+  // The list floats in a wide window only; the narrow layout keeps its own
+  // pushed list (Back), and Tuning has no list of views.
+  const floating = !tuningPlace && navCollapsed && !compact;
+  const floatingNavOpen = floating && onScreen && floatingMenuFor === kind;
+  useEffect(() => {
+    if (!floating || !onScreen || floatingMenuFor !== kind) setFloatingMenuFor(null);
+  }, [floating, onScreen, kind]);
   const sheet = width > 0 && width < SHEET_WIDTH;
   const [pushed, setPushed] = useState(false);
   const showList = compact && !pushed;
@@ -1080,7 +1074,7 @@ export function Server({
   const configNow = current(config);
   const instrumentsNow = current(instruments);
   const topNow = current(topStatements.top);
-  const badges: Partial<Record<ServerKind, Pick<SourceItem, "badge" | "badgeText">>> = {};
+  const badges: Partial<Record<ServerKind, Marker>> = {};
   if (health.report && health.key === activeKey) {
     const tone = toneOf(health.report.summary.status);
     badges.health = dot(tone, TONE_TEXT[tone]);
@@ -1213,7 +1207,10 @@ export function Server({
   const activeGroups = place === "workload" ? WORKLOAD_GROUPS : SERVER_GROUPS;
   const groups = activeGroups.map((label) => ({
     label,
-    items: activeViews.filter((v) => v.group === label).map((v) => ({ id: v.id, label: v.label, icon: v.icon, ...marked(v.id) })),
+    items: activeViews.filter((v) => v.group === label).map((v) => {
+      const { badge, badgeText } = marked(v.id) || {};
+      return { id: v.id, label: v.label, icon: v.icon, badge, badgeText };
+    }),
   }));
   const refreshableHere = refreshTasks();
   const refreshDone = refreshHere ? refreshHere.views.filter((v) => outcome(v) === "ok").length : 0;
@@ -1226,6 +1223,48 @@ export function Server({
         (refreshFailed.length ? `; ${refreshFailed.map((v) => v.label).join(", ")} failed` : "") +
         (refreshHere.state === "stopped" && refreshDone + refreshFailed.length < refreshHere.views.length ? "; stopped" : "");
   const viewFailure = staleNow(refreshOf(kind)) ? refreshOf(kind) : undefined;
+  const listLabel = place === "workload" ? "Workload views" : "Server views";
+  /** The floating list of views, opened from the view's title (ViewLayout
+   * draws it through ViewSwitcherContext, for the view on screen only). */
+  const switcherFor = (view: ServerKind): ViewSwitcherShared | null => floating ? {
+    label: listLabel,
+    open: floatingNavOpen,
+    setOpen: setFloatingMenuOpen,
+    active: view === kind,
+    others: othersMarker(activeViews.filter((v) => v.id !== kind).map((v) => badges[v.id]?.tone)),
+    takeFocus: takeSwitcherFocus,
+    list: (
+      <>
+        <div className="server-floating-header">
+          <span>{listLabel}</span>
+          <button
+            type="button"
+            className="icon-button"
+            title="Dock the list of views"
+            aria-label="Dock the list of views"
+            onClick={() => {
+              setFloatingMenuOpen(false);
+              toggleNavCollapsed();
+            }}
+          >
+            <Icon name="browser" size={13} />
+          </button>
+        </div>
+        <SourceList
+          label={listLabel}
+          groups={groups}
+          current={kind}
+          onSelect={(id) => {
+            if (id !== kind) switcherFocus.current = true;
+            setFloatingMenuOpen(false);
+            choose(id as ServerKind);
+          }}
+          idPrefix="server-nav-"
+          selectOnFocus={false}
+        />
+      </>
+    ),
+  } : null;
 
   // Performance Schema on or off, from any report already loaded for this connection.
   const known = [instrumentsNow, current(waits), current(io), indexesNow, configNow, sessionsNow, innodbNow, errorlogNow].find(
@@ -1596,63 +1635,20 @@ export function Server({
           </div>
           )}
           <div className={`server-layout${compact ? " is-compact" : ""}${showList && !tuningPlace ? " show-list" : ""}${navCollapsed && !compact && !tuningPlace ? " is-nav-collapsed" : ""}`}>
-            {!tuningPlace && (!navCollapsed || compact || floatingMenuOpen) && (
-              <div
-                ref={floatingMenuRef}
-                tabIndex={-1}
-                role={floatingNavOpen ? "dialog" : undefined}
-                aria-label={floatingNavOpen ? (place === "workload" ? "Workload views" : "Server views") : undefined}
-                className={`server-source-wrap${navCollapsed && !compact ? " is-floating" : ""}`}
-              >
-                {navCollapsed && !compact && (
-                  <div className="server-floating-header">
-                    <span>{place === "workload" ? "Workload views" : "Server views"}</span>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      title="Dock sidebar menu"
-                      aria-label="Dock sidebar menu"
-                      onClick={() => {
-                        setFloatingMenuOpen(false);
-                        toggleNavCollapsed();
-                      }}
-                    >
-                      <Icon name="browser" size={13} />
-                    </button>
-                  </div>
-                )}
+            {!tuningPlace && !floating && (
+              <div className="server-source-wrap">
                 <SourceList
-                  label={place === "workload" ? "Workload views" : "Server views"}
+                  label={listLabel}
                   groups={groups}
                   current={kind}
-                  onSelect={(id) => {
-                    choose(id as ServerKind);
-                    if (navCollapsed && !compact) setFloatingMenuOpen(false);
-                  }}
+                  onSelect={(id) => choose(id as ServerKind)}
                   idPrefix="server-nav-"
                   pushed={compact}
-                  selectOnFocus={!compact && !floatingNavOpen}
+                  selectOnFocus={!compact}
                 />
               </div>
             )}
             <div className="server-content">
-              {!tuningPlace && navCollapsed && !compact && (
-                <div className="server-floating-trigger-container">
-                  <button
-                    ref={floatingMenuButton}
-                    type="button"
-                    className={`server-floating-nav-btn${floatingMenuOpen ? " active" : ""}`}
-                    aria-label="Toggle views menu"
-                    aria-haspopup="dialog"
-                    aria-expanded={floatingMenuOpen}
-                    onClick={() => setFloatingMenuOpen((o) => !o)}
-                  >
-                    <Icon name="menu" size={14} />
-                    <span>{ALL_SERVER_VIEWS.find((v) => v.id === kind)?.label || "Views"}</span>
-                    <Icon name="chevron-down" size={10} />
-                  </button>
-                </div>
-              )}
               {viewFailure && (
                 <p className="refresh-note" role="note" data-view={kind}>
                   <Icon name="warning" size={14} />
@@ -1675,9 +1671,12 @@ export function Server({
                   <ToolbarButton onClick={() => choose("maintenance")}>Open Maintenance</ToolbarButton>
                 </div>
               )}
-              <ViewOnScreenContext.Provider value={onScreen && !(compact && showList && !tuningPlace)}>{view}</ViewOnScreenContext.Provider>
+              <ViewSwitcherContext.Provider value={switcherFor(kind)}>
+                <ViewOnScreenContext.Provider value={onScreen && !(compact && showList && !tuningPlace)}>{view}</ViewOnScreenContext.Provider>
+              </ViewSwitcherContext.Provider>
               {keptViews.includes("tables") && (
                 <div className="server-keep" hidden={kind !== "tables"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("tables")}>
                   <ViewOnScreenContext.Provider value={onScreen && kind === "tables" && !(compact && showList)}>
                   <InspectorContext.Provider value={{...inspector, open: inspector.open && kind === "tables"}}>
                     <TablesView
@@ -1696,10 +1695,12 @@ export function Server({
                     />
                   </InspectorContext.Provider>
                   </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
                 </div>
               )}
               {keptViews.includes("instruments") && (
                 <div className="server-keep" hidden={kind !== "instruments"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("instruments")}>
                   <ViewOnScreenContext.Provider value={onScreen && kind === "instruments" && !(compact && showList)}>
                   <InspectorContext.Provider value={{...inspector, open: inspector.open && kind === "instruments"}}>
                     <InstrumentsView
@@ -1714,10 +1715,12 @@ export function Server({
                     />
                   </InspectorContext.Provider>
                   </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
                 </div>
               )}
               {keptViews.includes("maintenance") && (
                 <div className="server-keep" hidden={kind !== "maintenance"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("maintenance")}>
                   <ViewOnScreenContext.Provider value={onScreen && kind === "maintenance" && !(compact && showList)}>
                   <MaintenanceView
                     {...common}
@@ -1728,6 +1731,7 @@ export function Server({
                     onMemory={setMaintenance}
                   />
                   </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
                 </div>
               )}
             </div>

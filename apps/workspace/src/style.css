@@ -3606,7 +3606,7 @@ button, .plan-item, .main-nav button {
 .workspace:is([data-place="server"], [data-place="workload"], [data-place="tuning"]) .server-view {
   min-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }
-.workspace:is([data-place="server"], [data-place="workload"]) .server-layout:not(.is-compact) > .server-source-wrap:not(.is-floating) > .source-list,
+.workspace:is([data-place="server"], [data-place="workload"]) .server-layout:not(.is-compact) > .server-source-wrap > .source-list,
 .workspace .view-inspector:not(.is-sheet) {
   max-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }

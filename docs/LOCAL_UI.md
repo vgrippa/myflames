@@ -86,6 +86,19 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   schema-size consent, Error log waits for **Load**, and nothing reads off
   screen (Server and Replication mount on their first visit, and a hidden view
   never reads on its own). The arrow keys move between items.
+- **The list of views floats** by default in a wide window, so the view gets
+  the full width: the view's title is a pop-up button ("Health ▾") that opens
+  the list under it, with the same groups, icons and markers. Enter, Space or
+  Down opens it on the current view; the arrow keys, Home and End move; Enter
+  or Space chooses (the list closes and the chosen view's title has focus);
+  Escape or a click outside closes it and returns focus to the title. While
+  the list is closed, a dot beside the title shows the worst state among the
+  other views (red for a problem, amber to watch, nothing when all are fine),
+  and screen readers hear it in words ("Health, 1 other view has a problem");
+  counts stay in the list. **Dock the list of views** (in the list's header or
+  the top bar) keeps it beside the view instead, and the choice is remembered;
+  **Float the list of views** in the top bar floats it again. Workload works
+  the same way. In a narrow window the list is a screen of its own, as below.
 - **Toolbar.** The view's title with an ⓘ that explains it, its controls (a
   sampling window, auto-refresh, a database picker, a filter) and **Refresh**.
   List controls wait on the list while details are open. Refresh stays at the
@@ -499,8 +512,9 @@ Dialogs, confirmation sheets, popovers, and drawers use scoped focus trapping:
   cell focuses its value editor (the type selector for NULL or Default).
   Shift+F10 or the ContextMenu key opens Cell actions from a cell or its editor;
   Revert change and Set to Default use the same menu keyboard controls.
-- Activate the floating Server or Workload views button to enter its drawer.
-  Arrow keys move between views; Enter opens one. Escape returns to the button.
+- With the Server or Workload list of views floating, the view's title opens
+  it (Enter, Space or Down) on the current view. Arrow keys, Home and End move
+  between views; Enter or Space opens one. Escape returns to the title.
 - Escape in a nested confirmation, including the Kill sessions review, dismisses that
   confirmation without closing its parent dialog.
 - Replication connector details appear on hover or focus. The pointer can move

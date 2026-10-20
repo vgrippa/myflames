@@ -1,4 +1,5 @@
 import { connectionAction, connectionRow } from "./connection-helpers.mjs";
+import { chooseView } from "./chrome-helpers.mjs";
 // Remembered connection passwords, managed in Home's Connections section,
 // and each connection's write safety: Type (Production by default,
 // Development) and Read-only, the strip and the picker's type dot; an
@@ -205,7 +206,7 @@ try {
   assert.equal(await page.$(".save-prompt"), null);
   // Server reads with the connection in use, by id, without a password.
   await place("Workload");
-  await page.locator("#server-nav-top").click();
+  await chooseView(page, "top");
   await button("Load top statements");
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   assert.equal(last("/api/live/top").connection.profile_id, "p1");
@@ -443,7 +444,7 @@ try {
   assert.match(await text(safety), /^Production assumed · settings not loadedRetry$/);
   assert.match(await page.$eval(`${safety} [role=note]`, (e) => e.getAttribute("aria-label")), /^Production assumed: could not read the settings of Dev box \(.+\); changes stay off until they load$/);
   await place("Workload");
-  await page.locator("#server-nav-sessions").click();
+  await chooseView(page, "sessions");
   await page.click(".server-view[data-view=sessions] [data-action=refresh]");
   await page.waitForSelector('.server-view[data-view=sessions] tbody tr[data-session="93"]');
   await page.click('.server-view[data-view=sessions] tbody tr[data-session="93"]');
@@ -513,7 +514,7 @@ try {
   assert.equal(await rowType(".connection-row.is-active"), "Production, read-only");
   assert.deepEqual(await strip(), { strip: "Read-only: myflames refuses every change on Scratch", kind: "read-only", dot: "Production, read-only" });
   await place("Workload");
-  await page.locator("#server-nav-top").click();
+  await chooseView(page, "top");
   await page.click(".server-view [data-action=refresh]");
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   const sent = last("/api/live/top").connection;

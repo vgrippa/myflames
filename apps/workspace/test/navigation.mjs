@@ -1,5 +1,5 @@
 import { connectionAction, connectionRow } from "./connection-helpers.mjs";
-import { openConnectionPicker } from "./chrome-helpers.mjs";
+import { chooseView, openConnectionPicker, openViewList } from "./chrome-helpers.mjs";
 // Workspace navigation: places and their active state, the open-plans list,
 // the single status indicator and the Settings popover with the Audit log
 // (a screen with no active place) and About myflames
@@ -303,9 +303,14 @@ try {
   await go("Tuning");
   await page.waitForSelector(".server-place.is-tuning-place .server-view[data-view=tuning]");
   await go("Server");
-  await page.waitForSelector(".server-place:not(.is-tuning-place) .source-list [aria-current=page]");
+  // The list of views floats by default: the view's title opens it.
+  await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place) .server-view .view-switcher")]
+    .some((e) => !e.closest("[hidden]") && e.offsetParent !== null));
   assert.equal(await page.$(".server-place:not(.is-tuning-place) .server-view[data-view=tuning]"), null, "Server does not embed Tuning");
+  await openViewList(page);
   assert.equal(await page.$$eval(".source-list .source-item", (els) => els.some((e) => e.dataset.view === "tuning")), false, "Tuning is not a Server view");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-switcher-popover"));
   await go("Home");
   assert.equal(await page.$(".welcome") !== null, true);
   // Plans has its own empty state, with Import plan once (in its bar).
@@ -867,7 +872,7 @@ try {
   await openConnectionPicker(page);
   assert.equal(await page.$eval(serverPicker + " select", (e) => e.value), "p2");
   assert.equal(await page.$eval(serverPicker + " .picker-password", (e) => e.value), "typed-secret");
-  await page.click("#server-nav-top");
+  await chooseView(page, "top");
   await button("Load top statements");
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   assert.equal(last("/api/live/top").connection.profile_id, "p2");

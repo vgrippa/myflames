@@ -27,9 +27,11 @@ const editorRun = (body) => body.decline
   : { status: 200, body: { status: "needs_confirmation", confirmation: { token: "t1", text: "Review the statements.", tone: "primary",
       connection: { user: "root", host: "127.0.0.1", port: 3306 }, connection_type: "development", warnings: [],
       statements: body.sql.split(";\n"), typed_target: null } } };
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/tables", "tables", { "/api/live/schemas": schemasMock, "/api/live/table-columns": tableColumns,
   "/api/editor/preview": { status: 400, body: { error: "Not checked in this test." } }, "/api/editor/run": editorRun,
-  "/api/editor/close": { status: 200, body: { closed: true, session: null } } });
+  "/api/editor/close": { status: 200, body: { closed: true, session: null } } }, { list: "docked" });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: fresh };
 const view = ".server-view[data-view=tables]";

@@ -84,14 +84,16 @@ try {
   await h.select(orders);
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "mfshop.orders");
   await page.locator(".view-inspector button ::-p-text(Index health)").click();
-  await page.waitForSelector("#server-nav-indexes[aria-current=page]");
+  // The list of views floats (the default): links switch the view the title names.
+  assert.equal(await h.floating(), true);
+  await h.onView("indexes");
   assert.equal(await page.$eval(".server-view .perf-picker-summary", (e) => e.textContent), "mfshop");
   for (let i = 0; i < 50 && !state.other.some((o) => o.path === "/api/live/indexes"); i++) await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(state.other.find((o) => o.path === "/api/live/indexes").body.schemas, ["mfshop"]);
   await h.view("io");
   await h.select(orders);
   await page.locator(".view-inspector button ::-p-text(Top statements)").click();
-  await page.waitForSelector("#server-nav-top[aria-current=page]");
+  await h.onView("top");
   assert.equal(await page.$eval("#top-schema", (e) => e.value), "mfshop");
   await h.view("io");
   // The shared schema now limits the next read.
@@ -153,7 +155,7 @@ try {
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   await page.reload({ waitUntil: "networkidle0" });
   await h.workload();
-  await page.waitForSelector("#server-nav-io[aria-current=page]");
+  await h.onView("io");
   assert.equal(await page.$eval(`${view} .perf-window select`, (e) => e.value), "5");
   assert.equal(await page.$eval("#io-schema", (e) => e.value), "mfshop");
 

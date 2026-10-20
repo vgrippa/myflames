@@ -43,12 +43,14 @@ const topFor = (body) => ({
     caveats: ["The table is matched by name in the normalized digest text, so this is a text match, not proof."] } } : {}),
 });
 
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/indexes", "indexes", {
   "/api/live/schemas": schemasMock,
   "/api/live/tables": { status: 200, body: tablesReport },
   "/api/live/top": (body) => ({ status: 200, body: topFor(body) }),
   "/api/live/start": { status: 400, body: { error: "Not mocked in this suite." } },
-});
+}, { list: "docked" });
 const { page, state, button, text } = h;
 state.fallback = { status: 200, body: mysql };
 const view = ".server-view[data-view=indexes]";

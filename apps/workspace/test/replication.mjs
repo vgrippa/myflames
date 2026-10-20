@@ -634,7 +634,7 @@ try {
   assert.equal(calls(START).length, startsBeforeLink);
   // The link opens the Server place on its Instruments row (main.tsx passes
   // onOpenInstruments); it never starts anything.
-  await page.waitForSelector("#server-nav-instruments[aria-current=page]");
+  await h.onView("instruments");
   await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="instruments"] .view-inspector .inspector-title')]
     .some((e) => !!e.offsetParent && /Replication: receiver reconnect guard/.test(e.textContent || "")));
   assert.equal(calls(START).length, startsBeforeLink);
