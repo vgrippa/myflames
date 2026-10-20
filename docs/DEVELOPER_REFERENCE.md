@@ -124,6 +124,63 @@ absolute existing directory (the desktop app sets it to the user's Downloads
 folder, because its backend runs with an isolated HOME), else `~/Downloads`,
 else the temporary directory.
 
+Home news (`myflames/news.py`, `/api/news` and `/api/news/settings`, `news-1.0`)
+reads the two feeds in `news.SOURCES` and nothing else: Planet MySQL
+(`https://planet.mysql.com/rss20.xml`, keeping only links under
+`https://blogs.oracle.com/mysql/`, the MySQL team's posts) and the MariaDB
+Foundation (`https://mariadb.org/feed/`, links on `mariadb.org`). The Oracle
+MySQL blog feed itself (`blogs.oracle.com/mysql/rss`) answered 403 to every
+client tried on 2026-10-20, and `mariadb.com/feed/` refuses a User-Agent that
+starts with Python-urllib, so neither is read. `fetch_feed` sends
+`User-Agent: Python-urllib/<python> myflames/<version>` (Planet MySQL's CDN
+refuses a first product it does not know), `Accept-Encoding: identity`, no
+cookies and no identifiers, through an opener with only an HTTPS handler and
+its own redirect handler: at most three redirects, each to an HTTPS feed host
+without credentials or a port, within the feed's deadline, closing every
+redirect response without reading its body. It reads at most 1 MiB, each
+socket operation times out after 5 s, and the feed stops at its 8 s
+deadline: a watchdog shuts the feed's sockets down at that deadline, so the
+TLS handshake, headers or chunk framing cannot outlast it either (only the DNS
+lookup can). `parse_feed` refuses NUL bytes and declared encodings other than
+UTF-8, ASCII, ISO-8859-1 and windows-1252 (UTF-16 or EBCDIC would hide a
+declaration from a byte check), refuses `<!DOCTYPE` or `<!ENTITY` anywhere
+before `xml.etree.ElementTree.XMLPullParser` sees the document, and keeps the
+RSS 2.0, RSS 1.0 or Atom entries (at most 40) that end before a cut at 1 MiB or
+a malformed tail. Titles (200 characters) and summaries (240) are stripped of
+HTML with `html.parser` and of control and bidirectional characters; RFC 822
+and ISO 8601 dates become UTC (an invalid offset or a date more than a day
+ahead is dropped); an item stays only when its link is HTTPS on the source's
+official site. `news-cache.json` (mode 0600, written atomically, read without
+following links and checked again item by item) sits next to the workspace
+store; when the write fails the process keeps the read in memory. A source is
+read again six hours after a successful read, ten minutes after a failed one,
+or on Refresh when its last read is a minute old. One shared background read
+per cache (re-checked under the lock, so a read that just finished is not
+repeated) starts at most one worker per source, and never a second one while
+an earlier worker is still stuck (a DNS lookup cannot be cancelled);
+`/api/news` waits for it at most 10 s and then answers from the cache ("News
+is taking longer than usual."). A failed source keeps its cached headlines:
+`stale` is true, `error` names it ("Planet MySQL could not be read.") or, when
+every source failed without an answer, says "News is unavailable offline.",
+and `fetched_at` is the oldest read among the sources shown. Home takes up to
+six headlines, from each source in turn, newest first, without repeated links
+or titles. The Settings switch (`settings` key `home_news`,
+`WorkspaceStore.news_enabled`, default on) is read through
+`/api/news/settings`; while it is off `/api/news` returns `enabled: false`
+without reading, and the page sends no `/api/news` request at all. In the
+page, `newsApi.ts` shares the switch between `HomeNews` (under Recent work;
+`HomeNews.tsx`, `home.css`) and the Settings popover (`NewsSetting`, disabled
+while a change is saved); writes go out one at a time in order, only the
+latest answer is shown, and a failed latest write reads the stored value
+again. `WorkspaceServer`
+reads the network only with `news_reader`, which `cmd_ui` sets to
+`news.fetch_feed`; servers built without it (every test harness) answer from
+the cache or as offline. The desktop app opens headline links with the system
+browser: `blogs.oracle.com` joins the HTTPS hosts `externalLink` permits, and
+the window-open handler always denies a new app window. Tests:
+`test/test_news.py`, `apps/workspace/test/news.mjs`,
+`apps/workspace/test/news-setting.mjs`, and the desktop `backend.test.cjs`.
+
 `python3 -m myflames ui [--port PORT] [--no-browser] [--no-restore]` launches the
   myflames Performance workspace on IPv4 loopback (deprecated in favor of the standalone desktop app binary). React/TypeScript source is in
   `apps/workspace/`. Places (sidebar, `Sidebar.tsx`): Home (`Home.tsx`: getting
@@ -1607,7 +1664,7 @@ Query Digest stores its report as `Bound<DigestReport>` through `useConnectionRe
 
 Processlist **Kill sessions…** opens the Kill sessions dialog (`MassKillDialog.tsx`; `/api/live/kill/bulk/prepare` then `/api/live/kill/bulk`, `kill-bulk-1.0`, whose `message` reads "Kill sessions finished: N killed, …"). Its **Lock waiters** preset requires a recorded wait (`lock_wait` or `lock_status: waiting`). A session that only holds locks (`is_locked` or `lock_status: holding`) is excluded. Exact bulk review, policy checks, target verification and audit remain required.
 
-Home reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Stable internal place IDs remain unchanged; Query editor and Plans are grouped under SQL workspace.
+Home reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Its News section is described under [Local UI](#local-ui) (Home news). Stable internal place IDs remain unchanged; Query editor and Plans are grouped under SQL workspace.
 
 Refresh all schedules unopened sections as well as loaded ones, with three concurrent reads and a separate Full analysis phase. It preserves scope-specific large-schema consent, joins identical reads, and drops stale results. Maintenance only detects tools. Parameters and Instruments read on open (one attempt per connection; Refresh retries). Parameters inline edit controls use parameter metadata to stage local changes, and **Review and apply** reviews up to 25 changes at once while **Change…** opens the single-parameter sheet (including **This session only** handoff to the Query editor). Guidance is collapsed by default.
 

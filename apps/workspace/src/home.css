@@ -34,6 +34,21 @@
 .home-workflows small { font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--ink-muted); }
 .main-nav .nav-group-label { font-size: var(--section-size); line-height: var(--section-leading); font-weight: var(--section-weight); color: var(--section-ink); margin: var(--space-4) var(--space-2) var(--space-1); }
 .brand img { border-radius: var(--radius-sm); }
+/* News sits under Recent work in the right column, so it never pushes
+   Connections or Recent work down; one column below 1000 px puts it last. */
+@media (min-width: 1001px) {
+  .home-launcher:has(> .home-news) { grid-template-rows: auto 1fr; }
+  .home-launcher:has(> .home-news) > .connections { grid-row: 1 / span 2; }
+  .home-news { grid-column: 2; border-top: 1px solid var(--line); }
+}
+.home-news .pane-head { gap: var(--space-1); }
+.home-news .news-state { padding: var(--space-3) var(--space-5) 0; }
+.news-list { list-style: none; margin: 0; padding: var(--space-2) var(--space-3) 0; }
+.news-item { display: grid; gap: 2px; padding: var(--space-2); border-radius: var(--radius-md); color: var(--ink); text-decoration: none; min-width: 0; }
+.news-item:hover { background: var(--surface-hover); }
+.news-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.news-item strong { font-size: var(--text-md); line-height: var(--leading-md); font-weight: 500; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.news-item small { font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 1040px) {
   .home-workflows { grid-template-columns: 1fr; }
 }

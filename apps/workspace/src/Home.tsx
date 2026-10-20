@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { appVersion, getInvestigation, listInvestigations, time, type Bundle, type InvestigationSummary, type Plan } from "./api";
 import { Icon } from "./components";
 import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
+import { HomeNews } from "./HomeNews";
 
 import { defaultLab, relativeTime, type QueryTab } from "./session";
 import "./home.css";
@@ -126,6 +127,7 @@ export function Home({
           </ul>
           {!!saved?.length && <button className="text-button recent-more" onClick={onInvestigations}>All investigations</button>}
         </section>
+        <HomeNews />
       </div>
       <footer className="home-version" aria-label="Application version">
         <strong>myflames {appVersion() || "development"}</strong>

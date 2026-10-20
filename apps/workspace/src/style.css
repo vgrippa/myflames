@@ -675,6 +675,15 @@ details > p {
 .settings-popover .session-toggle input {
   margin: 3px 0 0;
 }
+/* The news switch joins the startup option's group: no second hairline. */
+.settings-popover .news-toggle {
+  border-top: 0;
+  padding-top: var(--space-1);
+  white-space: normal;
+}
+.settings-popover .hint.error {
+  color: var(--danger-text);
+}
 .settings-popover .hint {
   margin: calc(-1 * var(--space-1)) 0 0;
   padding: 0 var(--space-2) 0 calc(var(--space-2) + 22px);

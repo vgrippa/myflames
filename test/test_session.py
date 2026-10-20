@@ -338,9 +338,10 @@ class TestUiCommand(unittest.TestCase):
             origin = 'http://127.0.0.1:1'
             launch_url = origin + '/#launch=test-only'
 
-            def __init__(self, port, no_restore=False, tool_groups_file=None):
+            def __init__(self, port, no_restore=False, tool_groups_file=None, news_reader=None):
                 created['no_restore'] = no_restore
                 created['tool_groups_file'] = tool_groups_file
+                created['news_reader'] = news_reader
 
             def __enter__(self):
                 return self
@@ -355,6 +356,9 @@ class TestUiCommand(unittest.TestCase):
                 mock.patch('sys.stderr', io.StringIO()):
             cmd_ui(['--no-browser', '--no-restore'])
         self.assertTrue(created['no_restore'])
+        # Only the real launcher reads Home news feeds (myflames/news.py).
+        from myflames.news import fetch_feed
+        self.assertIs(created['news_reader'], fetch_feed)
         with mock.patch('myflames.ui.WorkspaceServer', FakeServer), \
                 mock.patch('sys.stderr', io.StringIO()):
             cmd_ui(['--no-browser'])

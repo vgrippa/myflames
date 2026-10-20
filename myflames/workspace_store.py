@@ -712,6 +712,23 @@ class WorkspaceStore:
             conn.execute("INSERT OR REPLACE INTO settings VALUES ('app_update_last_check', ?)", (text,))
         return record
 
+    # -- Home news (news.py): Settings, "Show MySQL and MariaDB news on Home" --
+
+    def news_enabled(self):
+        """True unless the user turned news off (the default is on). Never creates the database."""
+        if not self.path.exists():
+            return True
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'home_news'").fetchone()
+        return not row or row[0] != 'off'
+
+    def set_news_enabled(self, enabled):
+        if not isinstance(enabled, bool):
+            raise ValueError('enabled must be true or false.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('home_news', ?)", ('on' if enabled else 'off',))
+        return enabled
+
     # -- Audit trail of server writes (rows shaped by dbops.py) ----------------
 
     def audit_retention_days(self):

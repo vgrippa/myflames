@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!DOCTYPE rss [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+]>
+<rss version="2.0"><channel><item><title>&lol2;</title><link>https://mariadb.org/x/</link></item></channel></rss>

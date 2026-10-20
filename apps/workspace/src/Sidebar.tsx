@@ -8,6 +8,7 @@ import { AboutDialog } from "./About";
 import { time, type Plan } from "./api";
 import { Icon, type IconName } from "./components";
 import { Checkbox, useFocusScope } from "./kit";
+import { NewsSetting } from "./HomeNews";
 import type { SaveStatus } from "./session";
 
 export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "tuning" | "query" | "plans" | "investigations" | "learn";
@@ -409,6 +410,7 @@ export function Sidebar({
                 ? "Started with --no-restore. The saved workspace is kept for the next launch."
                 : "Off clears the saved workspace. Passwords are never part of the workspace."}
             </p>
+            <NewsSetting />
             <div className="settings-menu">
               {onNewSession && (
                 <button

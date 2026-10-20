@@ -1390,6 +1390,8 @@ and never lowers a saved connection's protection.
 | `profiles/save` | `value`: settings (optionally `type` and `read_only`; omitted, the stored values stay, and a new profile is `production`, read-write), optional `id`, `password`, `remember_password` | Saved profile without the password. `remember_password: false` deletes a saved one |
 | `profiles/forget-password` | `id` | Profile with `has_saved_password: false` |
 | `profiles/delete` | `id` | `deleted`; also deletes the saved password |
+| `news` | optional `refresh` (boolean; reads again when the last read is at least a minute old) | `news-1.0`: `enabled`, up to six `items` (`title`, `link`, `source`, `source_id`, `engine`, `published` UTC or null, `summary`), `fetched_at`, `stale`, optional `error` and `offline`, and `sources` with each feed's last read. With the Settings switch off: `enabled: false` and nothing read |
+| `news/settings` | optional `enabled` (boolean) | `enabled`, the Settings switch **Show MySQL and MariaDB news on Home** (default on, stored in the workspace store) |
 | `connection/test` | `connection` | `version`, visible `schemas` |
 | `live/start` | `connection`, `query`, `parameters`, `mode`, `repeat`, `timeout`, `trace`, `conditions`, optional `source` (`{"kind": "digest", "digest", "schema"}`, copied into the capture) | Job `id`, `state` |
 | `live/status` | `id` | `state`, `progress`, `repeat`, `error`, optional `result` |

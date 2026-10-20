@@ -363,7 +363,11 @@ try {
   const focusLabel = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
   await page.click(settings);
   await page.waitForSelector("#settings-popover");
-  // Keyboard reachable: Tab from the startup option reaches the menu items.
+  // Keyboard reachable: Tab from the startup option reaches the news switch,
+  // then the menu items.
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.closest(".news-toggle")?.textContent.trim()),
+    "Show MySQL and MariaDB news on Home");
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Audit log");
   await page.keyboard.press("Tab");

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:atom="http://www.w3.org/2005/Atom"
+	>
+<!-- Shaped like https://mariadb.org/feed/ (2026-10-20), trimmed. -->
+<channel>
+	<title>MariaDB.org</title>
+	<atom:link href="https://mariadb.org/feed/" rel="self" type="application/rss+xml" />
+	<link>https://mariadb.org/</link>
+	<lastBuildDate>Tue, 20 Oct 2026 07:10:30 +0000</lastBuildDate>
+	<item>
+		<title>Amazic joins MariaDB Foundation as a Silver Sponsor</title>
+		<link>https://mariadb.org/amazic-joins-mariadb-foundation-as-a-silver-sponsor/</link>
+		<dc:creator><![CDATA[MariaDB Foundation]]></dc:creator>
+		<pubDate>Tue, 20 Oct 2026 07:06:16 +0000</pubDate>
+		<description><![CDATA[MariaDB Foundation is pleased to welcome Amazic as a Silver Sponsor&#8230; <a href="https://mariadb.org/amazic/">Continue reading</a>]]></description>
+	</item>
+	<item>
+		<title>MariaDB Foundation: Exploring TidesDB Performance with TAF</title>
+		<link>https://mariadb.org/mariadb-foundation-exploring-tidesdb-performance-with-taf/</link>
+		<pubDate>Fri, 16 Oct 2026 19:31:58 +0000</pubDate>
+		<content:encoded><![CDATA[<p>TidesDB now exists inside MariaDB as a pluggable storage engine.</p>]]></content:encoded>
+	</item>
+	<item>
+		<title>MariaDB Foundation Newsletter &#8211; 15 October 2026</title>
+		<link>https://mariadb.org/mariadb-foundation-newsletter-15-october-2026/</link>
+		<pubDate>Thu, 15 Oct 2026 15:08:27 +0000</pubDate>
+	</item>
+	<item>
+		<title>A post on another site</title>
+		<link>https://mariadb.com/resources/blog/another-site/</link>
+		<pubDate>Wed, 14 Oct 2026 20:38:19 +0000</pubDate>
+	</item>
+	<item>
+		<title>Community Spotlight: SQLtest.online</title>
+		<link>https://mariadb.org/community-spotlight/</link>
+		<pubDate>Mon, 12 Oct 2026 18:16:35 GMT</pubDate>
+	</item>
+</channel>
+</rss>

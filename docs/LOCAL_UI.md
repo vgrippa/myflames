@@ -55,7 +55,7 @@ The sidebar separates where you go from what you have open:
 
 | Place | What it holds |
 | --- | --- |
-| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. The version line sits at the bottom of Home with **Check for updates**, which asks GitHub only when clicked and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
+| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. **News**, under Recent work (below it on a narrow window), lists up to six MySQL and MariaDB headlines with their source and age; each opens in your browser, **Refresh news** reads again, and one line says when news is loading, unavailable offline (with when it was last updated) or empty. The version line sits at the bottom of Home with **Check for updates**, which asks GitHub only when clicked and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
 | **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes |
 | **Query editor** | SQL tabs that run any SQL in a session of their own (Run, Run all, Stop, results per result set, Messages, export, transactions), Explain and Run analysis, the schema browser, the run history, and the connection in use |
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
@@ -853,6 +853,16 @@ Running queries tab open on Sessions). Choose **Start fresh** to clear it, turn 
 investigations to keep named copies in the library. Downloads are saved through your browser. Nothing is sent to an
 external service.
 
+Home news only reads: while Home is on screen and **Settings > Show MySQL and
+MariaDB news on Home** is on (the default), the backend reads two fixed public
+feeds over HTTPS, Planet MySQL (keeping the MySQL team's posts on
+blogs.oracle.com) and the MariaDB Foundation, at most every six hours (ten
+minutes after a failed read, or on **Refresh news**), and keeps the headlines
+in `news-cache.json` next to the workspace database. The requests carry no
+cookies and nothing about you or your connections; the page itself never
+contacts the feeds. With the switch off, nothing is read and the section is
+hidden.
+
 The Query editor runs SQL and captures live plans using the existing local
 database client (`mysql` or `mariadb`). Each query tab keeps one client
 process, so its server session (SET SESSION, temporary tables, an open
@@ -971,6 +981,7 @@ Workspace routing in `myflames/ui.py` (`api_response`) dispatches across dedicat
 - Server lifecycle tasks (`/api/lifecycle/tools`, `/api/lifecycle/upgrade-check`, `/api/lifecycle/prepare`, `/api/lifecycle/start`, `/api/lifecycle/status`, `/api/lifecycle/cancel`, `/api/lifecycle/jobs`).
 - Users and roles (`/api/accounts/list`, `/api/accounts/read`, `/api/accounts/scope-objects`, `/api/accounts/plan`, `/api/accounts/apply`). The grant matrix supports all catalog privileges at their legal levels, dynamic grant options, role admin/default settings, anonymous proxy accounts, MariaDB package/package-body scopes and MySQL 9.2+ MLE library scopes. Packages and libraries accept exact names.
 - Full analysis export (`/api/report/export`).
+- Home news (`/api/news`, `news-1.0`, and `/api/news/settings` for the Settings switch); see [Session and scope](#session-and-scope).
 - Saved profiles and investigations (`/api/profiles/*`, `/api/investigations/*`, `/api/connection/test`).
 - Live diagnostics, Server views, and actions (`/api/live/*`, including `health`, `innodb`, `error-log`, `top`, `sessions`, `running`, `locks`, `kill/prepare`, `kill`, `waits`, `indexes`, `tables`, `io`, `config`, `variable`, `instruments`, `replication`, `privileges`, `catalog`, and `schemas`).
 

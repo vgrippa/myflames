@@ -182,3 +182,5 @@ Implemented Home version information and workflow shortcuts, grouped SQL navigat
 Implemented complete scoped Tables and Indexes inventories, pagination and CSV/HTML/PDF exports. A reusable-space filter is available for known file-per-table allocations. Per-index fragmentation measurement remains unavailable from these metadata sources.
 
 Parameters uses **Review and apply** for batch edits (up to 25 changes) and **Change…** in the inspector for single-parameter modes. Permission details appear inside the review dialog; the buttons do not show an Unverified badge. Existing confirmation and privilege checks still apply.
+
+Home shows MySQL and MariaDB news under Recent work: up to six headlines from Planet MySQL (the MySQL team's posts) and the MariaDB Foundation, read by the backend while Home is open and cached for six hours, with a Settings switch that stops every read. More official sources can join `news.SOURCES` once their feeds answer a neutral client; the Oracle MySQL blog feed and mariadb.com's feed refused one in October 2026.

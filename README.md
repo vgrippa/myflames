@@ -53,6 +53,8 @@ Where it keeps its data: under `~/Library/Application Support/myflames-desktop`,
 
 How it finds database clients: the app does not bundle `mysql`, `mariadb`, MySQL Shell or dump tools. It looks in your PATH and in the standard macOS locations (Homebrew under `/opt/homebrew` and `/usr/local`, Oracle MySQL under `/usr/local/mysql/bin`, and MacPorts under `/opt/local/bin`), so Finder launches work without shell startup files. Install a client, for example `brew install mysql-client`, and use Maintenance > Detect tools to confirm it is found.
 
+News on Home: while Home is open, the app reads two public feeds over HTTPS, [Planet MySQL](https://planet.mysql.com/rss20.xml) (keeping only the MySQL team's posts on blogs.oracle.com) and the [MariaDB Foundation](https://mariadb.org/feed/), at most every six hours, and keeps the headlines in a local cache. The requests carry no cookies and nothing about you or your connections, and headlines open in your browser. To stop it, turn off **Show MySQL and MariaDB news on Home** in Settings; nothing is read while it is off.
+
 There is no browser version of the workspace. See [Desktop app](docs/DESKTOP.md) for building the app from source.
 
 ### 2. Install the command-line tools

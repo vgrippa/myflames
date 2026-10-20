@@ -1102,7 +1102,9 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
 #: workspace asks (the Check for updates button) and keeps the outcome in the
 #: workspace store; status reads that stored outcome and never the network.
 _APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/app/update/status')
-
+# Home news (news.py): fixed official feeds, read only while Home is shown
+# and the Settings switch is on. No connection, no password.
+_NEWS_PATHS = ('/api/news', '/api/news/settings')
 
 
 def _accounts_response(path, payload, workspace):
@@ -1332,6 +1334,11 @@ def api_response(path, payload, workspace=None):
         from . import editor_session
         return editor_session.api_response(path, payload, workspace,
                                            lambda value: _with_saved_password(value, workspace))
+    if path in _NEWS_PATHS:
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        from . import news
+        return news.api_response(path, payload, workspace.store, getattr(workspace, "news_reader", None))
     if path == "/api/app/update/check":
         from . import app_update
         result = app_update.check_for_updates(force=payload.get("force") is True)
@@ -1509,13 +1516,16 @@ class WorkspaceServer(ThreadingHTTPServer):
     daemon_threads = True
     MAX_REQUEST_WORKERS = 32
 
-    def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None):
+    def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None):
         from .workspace_store import WorkspaceStore
         from .live import LiveJobs
         self.store = WorkspaceStore(store_path)
         # --no-restore: start clean for this launch and leave the stored
         # session untouched (no restore, no autosave).
         self.no_restore = bool(no_restore)
+        # Home news reads the network only through this reader: cmd_ui passes
+        # news.fetch_feed; servers built without one (tests) never read feeds.
+        self.news_reader = news_reader
         self.jobs = LiveJobs()
         from .editor_session import EditorSessions
         # One mysql/mariadb client process per Query editor tab; all are
@@ -1926,7 +1936,8 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/open", "/api/editor/run", "/api/editor/status", "/api/editor/preview",
                              "/api/editor/stop", "/api/editor/commit", "/api/editor/rollback",
                              "/api/editor/close", "/api/editor/history", "/api/editor/export", "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
-                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _APP_UPDATE_PATHS:
+                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _APP_UPDATE_PATHS \
+                + _NEWS_PATHS:
             self._send(404, {"error": "Not found."})
             return
         if self.headers.get_content_type() != "application/json":
@@ -1985,9 +1996,11 @@ def cmd_ui(argv):
     if not (ASSET_DIR / "index.html").is_file():
         parser.exit(2, "UI assets are missing. Reinstall myflames or build apps/workspace.\n")
     try:
+        from .news import fetch_feed  # Home news: the only server that reads feeds
         # Set only by the desktop app: a file in its private runtime directory.
         server = WorkspaceServer(args.port, no_restore=args.no_restore,
-                                 tool_groups_file=os.environ.get("MYFLAMES_TOOL_GROUPS_FILE") or None)
+                                 tool_groups_file=os.environ.get("MYFLAMES_TOOL_GROUPS_FILE") or None,
+                                 news_reader=fetch_feed)
     except ValueError as exc:
         parser.exit(2, "Cannot start the UI: %s\n" % exc)
     except OSError as exc:
