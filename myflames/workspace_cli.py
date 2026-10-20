@@ -1417,8 +1417,9 @@ def cmd_replication(argv):
         'replication', 'Show every replication channel (MySQL) or connection (MariaDB): receiver and applier '
                        'threads, the last errors, positions or GTIDs, lag with its caveats, and ok/watch/problem. '
                        'A channel stopped on an error shows the exact statements that would skip that one '
-                       'transaction. Each source shows its version: read through a saved connection with the '
-                       "source's host and port (its own saved password), else as recorded in the relay log.",
+                       'transaction. Each source shows its version as recorded in the relay log, else read '
+                       "through a saved connection with the source's host and port (its own saved password, "
+                       'one attempt per run, a few seconds at most).',
         'Read-only: SHOW REPLICA STATUS (SHOW SLAVE STATUS before MySQL 8.0.22; SHOW ALL SLAVES STATUS on '
         'MariaDB), the Performance Schema replication tables on MySQL, the first events of each relay log '
         '(the source version; REPLICATION SLAVE on MySQL) and the relay log at the applier position '

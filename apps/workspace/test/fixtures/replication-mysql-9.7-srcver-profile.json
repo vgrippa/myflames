@@ -2,8 +2,8 @@
  "schema_version": "replication-1.0",
  "engine": "mysql",
  "server_version": "9.7.2",
- "captured_at": "2026-10-20T14:26:28.698455+00:00",
- "uptime_s": 102,
+ "captured_at": "2026-10-20T18:49:30.512721+00:00",
+ "uptime_s": 103,
  "available": true,
  "message": null,
  "replica": true,
@@ -62,9 +62,9 @@
     "last_apply_lag_s": 0.311,
     "heartbeat_interval_s": 30.0,
     "heartbeats_received": 1,
-    "heartbeat_age_s": 16.242,
-    "last_queued_age_s": 46.224,
-    "receiver_idle_s": 16.242
+    "heartbeat_age_s": 17.048,
+    "last_queued_age_s": 47.03,
+    "receiver_idle_s": 17.048
    },
    "position": {
     "auto_position": false,
@@ -107,7 +107,9 @@
     "caveat": null,
     "reason": null,
     "hint": null,
-    "attempts": []
+    "attempts": [
+     "Reading the relay log (SHOW RELAYLOG EVENTS) needs the REPLICATION SLAVE privilege."
+    ]
    },
    "status": "ok",
    "status_why": [],

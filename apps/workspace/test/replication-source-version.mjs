@@ -4,8 +4,10 @@
 // reason and the hint. Mocked /api/live/replication with replication-1.0
 // reports the backend computed from live recordings (2026-10-20; written by
 // ops-fixtures.py): MySQL 9.7.2 from the relay log, from the saved connection
-// "Source 9.7", unknown without REPLICATION SLAVE, and MariaDB 11.8.9 from the
-// relay log. Light and dark, 1440 and 390 px.
+// "Source 9.7" when the relay log gives none, unknown without REPLICATION
+// SLAVE, and MariaDB 11.8.9 from the relay log and from the saved connection
+// "Source 11.8" (its server ID alone compared, which the text says). Light
+// and dark, 1440 and 390 px.
 import assert from "node:assert/strict";
 import path from "node:path";
 import { load, open, pause } from "./perf-harness.mjs";
@@ -14,6 +16,7 @@ const relay = await load("replication-mysql-9.7-srcver-relay.json");
 const profile = await load("replication-mysql-9.7-srcver-profile.json");
 const denied = await load("replication-mysql-9.7-srcver-denied.json");
 const maria = await load("replication-mariadb-11.8-srcver-relay.json");
+const mariaProfile = await load("replication-mariadb-11.8-srcver-profile.json");
 const view = '.server-view[data-view="replication"]';
 const topology = ".replication-topology-container";
 
@@ -112,6 +115,22 @@ try {
   s = await shown();
   assert.equal(s.version, "MariaDB 11.8.9");
   assert.match(s.title, /^MariaDB 11\.8\.9 \(11\.8\.9-MariaDB-ubu2404-log\), as recorded in the relay log\./);
+
+  // A MariaDB saved connection is confirmed by its server ID alone, and every place says so.
+  await showReport(mariaProfile, "MariaDB 11.8.9");
+  await page.waitForFunction((q) => /saved connection/.test([...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelector(".topology-version")?.title || ""), {}, topology);
+  s = await shown();
+  assert.equal(s.version, "MariaDB 11.8.9");
+  assert.equal(s.title, "MariaDB 11.8.9 (11.8.9-MariaDB-ubu2404-log), from the saved connection Source 11.8 (only its server ID could be compared).");
+  assert.equal(s.detail, "MariaDB 11.8.9, from the saved connection Source 11.8 (only its server ID could be compared)");
+  await page.evaluate((q) => [...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelector(".topology-link").click(), topology);
+  await page.waitForSelector(".view-inspector .inspector-title");
+  assert.match(await h.inspector(), /Source versionMariaDB 11\.8\.9From the saved connection Source 11\.8 \(only its server ID could be compared\)\./);
+  const backFromMaria = await page.$(".view-inspector.is-detail .detail-back");
+  if (backFromMaria) {
+    await backFromMaria.click();
+    await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
+  }
 
   // Dark appearance and a phone width: still drawn, no page overflow.
   await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "dark" }]);

@@ -8,9 +8,10 @@
 //   - a thread stopped, no error: dashed line, which thread is stopped
 //   - an error recorded: solid danger line, "Error <code>"
 //   - lag: measured seconds as text, "Lag unknown" when the value is NULL
-// Each source shows its engine and version when the backend knows it (a saved
-// connection to that host and port, else the relay log), with where the
-// version came from in its tooltip, the connector's details and the inspector.
+// Each source shows its engine and version when the backend knows it (the
+// replica's relay log, else a saved connection to that host and port), with
+// where the version came from in its tooltip, the connector's details and the
+// inspector.
 // Selecting a connector selects the channel in the inspector, and the filter
 // narrows the channels shown. Hover or keyboard focus on a connector shows the
 // thread states, positions and last error as a plain popover.
@@ -48,23 +49,31 @@ export function lagText(lag: number | null | undefined): string {
   return lag === null || lag === undefined ? "Lag unknown" : `${lag} s behind`;
 }
 
+/** A saved connection confirmed by its server ID alone (MariaDB reports no
+ * source UUID): evidence, not proof, since both sides often keep the default 1. */
+const SERVER_ID_ONLY = "only its server ID could be compared";
+
 /** "MySQL 9.7.2", or "Version unknown". */
 export function sourceVersionText(v: SourceVersion): string {
   return v.version ? engineName(v.engine, v.version) : "Version unknown";
 }
 
+/** "from the saved connection X (only its server ID could be compared)", or the label. */
+export function sourceVersionHow(v: SourceVersion): string {
+  return v.provenance === "saved_connection" && !v.verified ? `${v.label} (${SERVER_ID_ONLY})` : v.label;
+}
+
 /** Where the version came from (or why it is unknown), without the version itself. */
 export function sourceVersionNote(v: SourceVersion): string {
   if (!v.version) return [v.reason, v.hint].filter(Boolean).join(" ") || "The source's version could not be read.";
-  const how = v.label.charAt(0).toUpperCase() + v.label.slice(1);
-  const unchecked = v.provenance === "saved_connection" && !v.verified ? " (its server ID could not be compared)" : "";
-  return [`${how}${unchecked}.`, v.caveat].filter(Boolean).join(" ");
+  const how = sourceVersionHow(v);
+  return [`${how.charAt(0).toUpperCase()}${how.slice(1)}.`, v.caveat].filter(Boolean).join(" ");
 }
 
 /** Where the version came from, or why it is unknown, as sentences. */
 export function sourceVersionDetail(v: SourceVersion): string {
   if (!v.version) return [v.reason, v.hint].filter(Boolean).join(" ") || "The source's version could not be read.";
-  const how = v.provenance === "saved_connection" && !v.verified ? `${v.label} (its server ID could not be compared)` : v.label;
+  const how = sourceVersionHow(v);
   const short = engineName(v.engine, v.version);
   const full = short.endsWith(` ${v.version}`) ? short : `${short} (${v.version})`;
   return [`${full}, ${how}.`, v.caveat].filter(Boolean).join(" ");
@@ -197,7 +206,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
                   </button>
                     <span id={detailId} className={detailKey === key && dismissed !== key ? "topology-detail" : "visually-hidden"} role="tooltip">
                       {c.source_version ? <span className="topology-detail-row"><span>Source version</span><span>{c.source_version.version
-                        ? `${sourceVersionText(c.source_version)}, ${c.source_version.label}` : sourceVersionDetail(c.source_version)}</span></span> : null}
+                        ? `${sourceVersionText(c.source_version)}, ${sourceVersionHow(c.source_version)}` : sourceVersionDetail(c.source_version)}</span></span> : null}
                       <span className="topology-detail-row"><span>IO thread</span><span>{c.io.running || "Unknown"}{c.io.state ? `, ${c.io.state}` : ""}</span></span>
                       <span className="topology-detail-row"><span>SQL thread</span><span>{c.sql.running || "Unknown"}{c.sql.state ? `, ${c.sql.state}` : ""}</span></span>
                       {c.sql.delay_s ? <span className="topology-detail-row"><span>Configured delay</span><span>{c.sql.delay_s} s</span></span> : null}

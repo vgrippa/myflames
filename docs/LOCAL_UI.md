@@ -336,18 +336,30 @@ channel count, the maximum applier lag (**Unknown** whenever any judged
 channel's lag is unknown, so a measured 0 s beside a failed channel never reads
 as caught up) and the GTID mode. In Topology each source shows its engine and
 version beside its port, like the replica does. myflames reads it, when the view
-reads, through a saved connection whose host and port are the ones the replica
-reports (ignoring case; 127.0.0.1, localhost and ::1 count as one host only for
-a replica on this computer and only when one saved connection matches), with
-that connection's own saved password, and uses it only when its server ID (and
-server UUID on MySQL) is the source's. Otherwise it reads the source's format
-event from the start of the replica's relay log ("as recorded in the relay
-log": the version that wrote the binary log the replica was reading, so right
-after a source upgrade it can show the earlier one; needs REPLICATION SLAVE on
-MySQL, SLAVE MONITOR on MariaDB). Otherwise it says **Version unknown** with
-the reason and "Add a saved connection for host:port to show its version."
-Where the version came from is in the tooltip, the connector's details and the
-inspector's **Source version** row. The inspector shows the threads, the last error once (code, time,
+reads, from the source's format event at the start of the replica's relay log
+("as recorded in the relay log": the version that wrote the binary log the
+replica was reading, so right after a source upgrade it can show the earlier
+one; needs REPLICATION SLAVE on MySQL, SLAVE MONITOR on MariaDB). Only when the
+relay log gives no version does it open a saved connection whose host and port
+are the ones the replica reports (ignoring case; 127.0.0.1, localhost and ::1
+count as one host only for a replica on this computer and only when one saved
+connection matches), with that connection's own saved password, and it uses the
+answer only when its server ID (and server UUID when the replica reports one)
+is the source's and, for a source address on the replica's own computer
+(localhost or any loopback address, such as 127.0.0.1, 127.0.0.2 or ::1), when
+that server runs on the replica's own host (a loopback connection can be an SSH
+tunnel). On
+MariaDB only the server ID can be compared, and the version says "only its
+server ID could be compared". A saved connection is opened at most once while
+myflames runs, whether it answered or failed, until you edit it, so a stale
+saved password never sends a failed login on every read. Each source's login
+and read get 3 seconds, and all saved connections of one read 5 seconds,
+counting the time spent looking up their saved passwords; nothing is sent once
+that time is used, and the remaining sources say "Not checked" and get their
+turn on the next Refresh. Otherwise it says **Version
+unknown** with the reason and "Add a saved connection for host:port to show its
+version." Where the version came from is in the tooltip, the connector's
+details and the inspector's **Source version** row. The inspector shows the threads, the last error once (code, time,
 table, failing GTID, the server's text), the lag signals with their caveats
 (Seconds_Behind_Source alone never says a replica is caught up), the
 positions and GTID state in one list (GTID mode and Enforce GTID consistency

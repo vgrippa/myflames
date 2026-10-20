@@ -988,7 +988,8 @@ def _replication_response(path, payload, workspace):
         options["query_timeout"] = 30
         try:
             with MySQLConnection(**options) as conn:
-                # Source versions: a matching saved connection, else the relay log.
+                # Source versions: the relay log, else a matching saved connection
+                # (opened at most once per process for the same settings and password).
                 report = rp.read_status(conn, source_versions=True, profiles=rp.saved_profiles(workspace.store),
                                         open_profile=rp.profile_opener(workspace.store),
                                         replica_host=options.get("host"))
