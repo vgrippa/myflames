@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows, client output no longer keeps CRLF line ends in raw reads (the client writes in text mode there).
 - An estimated capture (EXPLAIN only) no longer counts as proof that a sort ran in memory, and a materialization fed by several inputs (a UNION or a recursive CTE) no longer claims the first input's rows as its size bound.
 - Visual Explain in dark mode draws the join Venn circles with dark fills and strokes, so their L and R labels are readable again (they were light text on light circles).
 - The Tuning header shows its title beside the ⓘ again, like every other view.

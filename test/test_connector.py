@@ -905,5 +905,20 @@ class TestBoundedTransport(unittest.TestCase):
             self.assertIsNotNone(self.children[0].poll())
 
 
+class TestClientText(unittest.TestCase):
+    """Windows clients write CRLF line ends; other systems keep data as is."""
+
+    def test_windows_line_ends_become_lf(self):
+        from myflames import connector
+        with mock.patch.object(connector.os, "name", "nt"):
+            self.assertEqual(connector._client_text(b"1\r\n2\r\n"), "1\n2\n")
+
+    def test_other_systems_keep_crlf_from_data(self):
+        from myflames import connector
+        with mock.patch.object(connector.os, "name", "posix"):
+            self.assertEqual(connector._client_text(b"a\r\nb\n"), "a\r\nb\n")
+        self.assertEqual(connector._client_text(None), "")
+
+
 if __name__ == "__main__":
     unittest.main()

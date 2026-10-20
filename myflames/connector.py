@@ -78,6 +78,14 @@ def _option_value(value):
     return '"' + value + '"'
 
 
+def _client_text(data):
+    """Decode client stdout. On Windows the mysql/mariadb client writes in text
+    mode, so every newline arrives as CRLF; turn those back into LF there. On
+    other systems a CRLF can only come from the data itself, so it is kept."""
+    text = (data or b"").decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n") if os.name == "nt" else text
+
+
 def _run_bounded(argv, timeout, input=None, env=None):
     """Drain both pipes concurrently on POSIX and Windows with fixed byte caps.
 
@@ -457,7 +465,7 @@ class MySQLConnection:
             raise ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
             )
-        return (proc.stdout or b"").decode("utf-8", errors="replace")
+        return _client_text(proc.stdout)
 
     # Compatibility for callers that inspect the write environment allowlist.
     _STDIN_ENV = _CLIENT_ENV
@@ -511,7 +519,7 @@ class MySQLConnection:
             raise ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
             )
-        return (proc.stdout or b"").decode("utf-8", errors="replace")
+        return _client_text(proc.stdout)
 
     def query_rows(self, sql):
         """Run *sql* and return a list of list-of-strings (one per row).
