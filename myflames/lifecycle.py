@@ -706,7 +706,8 @@ class LifecycleJob(object):
             with self.lock:
                 self.process, self.connection_id = None, None
         self.check_cancel()
-        stdout = captured['stdout'].decode('utf-8', 'replace')
+        from .connector import _client_text
+        stdout = _client_text(captured['stdout'])
         stderr = captured['stderr'].decode('utf-8', 'replace')
         if overflow.is_set():
             raise LifecycleError('Tool output exceeded the 16 MiB capture limit.')

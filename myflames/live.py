@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 
-from .connector import MySQLConnection, ConnectorError, client_environment, MAX_STDOUT_BYTES, MAX_STDERR_BYTES
+from .connector import MySQLConnection, ConnectorError, client_environment, MAX_STDOUT_BYTES, MAX_STDERR_BYTES, _client_text
 from .collectors import collect_schema, collect_stats, collect_stats_freshness, collect_session_variables, extract_table_names
 from .parser import parse_explain
 from .server_info import parse_version_tuple, unsupported_version_note
@@ -454,7 +454,7 @@ class LiveJob:
             if failed:
                 raise failed[0]
             stderr = err.decode('utf-8', errors='replace')
-            output = out.decode('utf-8', errors='replace')
+            output = _client_text(out)
             if self.cancelled.is_set():
                 raise ConnectorError('Capture cancelled or its time limit was reached.')
             if proc.returncode != 0 and not output:
