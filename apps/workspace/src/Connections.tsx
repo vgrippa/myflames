@@ -951,7 +951,7 @@ export function Connections({
         </div>
         {loading && <p role="status">Loading connections…</p>}
         {loadError && <p role="alert" className="error">{loadError} <button className="text-button" onClick={() => void refresh().catch(e => setError((e as Error).message))}>Retry connections</button></p>}
-        <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" onKeyDown={e => {
+        <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" data-compact={sheet || editingId !== null || undefined} onKeyDown={e => {
           if ((e.target as HTMLElement).closest('input:not([type="checkbox"]), select, textarea, button, [role=menu], [role=dialog]')) return;
           if (e.key === "Delete" || e.key === "Backspace") {
             e.preventDefault();

@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Move Privileges out of the top bar: the connection picker's menu has Account and privileges…, which opens a sheet with the connected account, active roles, grants, denied and unverified actions and Refresh privileges; the command palette opens it as Account and privileges.
 - Replication shows each source's engine and version (Topology source node, the connector's details, the inspector, `myflames replication` text as "Source version: 9.7.2 (relay log)", and `source_version` in `replication-1.0`): read through a saved connection with the host and port the replica reports (its own saved password, verified by server ID), else the source's format event in the relay log (needs REPLICATION SLAVE on MySQL), else "Version unknown" with the reason and a hint to add a saved connection.
 - Float the Server and Workload list of views by default: the view's title opens it (Health ▾), a dot beside the title shows when another view has a problem or something to watch, and Dock the list of views keeps it beside the view as before.
+- Home in narrow windows (the 720x520 minimum included): the three starts stay on one short row (icon and title), so Connections begins near the top, and the compact Connections table keeps each connection's type in words beside its dot (Prod, Dev, Read-only), never its color alone.
 
 ### Fixed
 

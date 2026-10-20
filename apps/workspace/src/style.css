@@ -4304,6 +4304,10 @@ button, .plan-item, .main-nav button {
 .connections .data-table-wrap { max-height: var(--home-table-max-h); }
 .connections .data-table .type-tag { display: block; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .connections .connection-type-short { display: none; }
+/* The compact table hides the Type column (narrow windows, or while a
+   connection is edited): the short type label keeps the type in words, so
+   it never rests on the dot's color alone. */
+.connections [data-compact] .cell-name > .connection-type-short { display: inline; flex: none; color: var(--ink-muted); font-size: var(--text-sm); }
 .connections .connection-row.is-active td:first-child { box-shadow: inset var(--radius-xs) 0 var(--accent); }
 .connection-actions { width: var(--control-h); height: var(--control-h); padding: 0; }
 .connection-menu { display: grid; gap: var(--space-1); }

@@ -49,8 +49,15 @@
 .news-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .news-item strong { font-size: var(--text-md); line-height: var(--leading-md); font-weight: 500; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .news-item small { font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Narrow windows (the 720 px minimum included) keep the three starts on one
+   short row, icon and title only, so Connections starts near the top. The
+   description stays in each button's accessible name. */
 @media (max-width: 1040px) {
-  .home-workflows { grid-template-columns: 1fr; }
+  .home-workflows { padding: var(--space-2) var(--space-3); gap: var(--space-1); }
+  .home-workflows button { padding: var(--space-2); gap: var(--space-2); }
+  .home-workflows button > svg:last-child { display: none; }
+  .home-workflows strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .home-workflows small { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
 @media (max-width: 650px) {
   .home-workflows { padding: var(--space-2); gap: 0; }
