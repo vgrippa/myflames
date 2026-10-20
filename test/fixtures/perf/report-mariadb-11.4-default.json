@@ -180,11 +180,11 @@
       "problem": 1,
       "watch": 7,
       "unknown": 4,
-      "info": 13,
-      "ok": 27,
+      "info": 14,
+      "ok": 26,
       "findings": 52,
       "status": "problem",
-      "text": "1 problem, 7 to watch, 4 unknown, 27 ok; look first at Tables without a usable key"
+      "text": "1 problem, 7 to watch, 4 unknown, 26 ok; look first at Tables without a usable key"
     },
     "look_first": "tables.no_primary_key",
     "findings": {
@@ -211,6 +211,7 @@
       "innodb.row_operations": "info",
       "innodb.semaphores": "info",
       "health.full_scans": "info",
+      "tables.fragmentation": "info",
       "config.io_capacity": "info",
       "io.top": "info",
       "config.flush_log": "ok",
@@ -236,7 +237,6 @@
       "health.table_definitions": "ok",
       "checks.aria_cache": "ok",
       "config.table_open_cache": "ok",
-      "tables.fragmentation": "ok",
       "checks.query_cache": "ok",
       "innodb.file_io": "ok",
       "checks.version_support": "ok"

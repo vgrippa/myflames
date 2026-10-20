@@ -532,7 +532,7 @@ ACTION_KEYS = (
     ('privileges', 'read'), ('health', 'read'), ('config', 'read'), ('config_sources', 'read'),
     ('top_statements', 'read'), ('sessions_own', 'read'), ('sessions_all', 'read'),
     ('explain_connection', 'read'), ('locks_transactions', 'read'), ('locks_metadata', 'read'),
-    ('innodb_status', 'read'), ('waits', 'read'), ('io', 'read'), ('instruments', 'read'),
+    ('innodb_status', 'read'), ('error_log', 'read'), ('waits', 'read'), ('io', 'read'), ('instruments', 'read'),
     ('indexes_usage', 'read'), ('table_lists', 'read'), ('tablespaces', 'read'), ('database_picker', 'read'),
     ('replication_status', 'read'), ('binlog_status', 'read'), ('relay_events', 'read'),
     ('routine_body', 'read'), ('view_definition', 'read'), ('accounts_list', 'read'), ('grants_other', 'read'),
@@ -560,7 +560,7 @@ ALIASES = {'replication': 'replica_start_stop', 'start_replica': 'replica_start_
            'stop_replica': 'replica_start_stop', 'write_when_read_only': 'read_only_bypass',
            'create': 'create_table', 'alter': 'alter_table', 'drop': 'drop_table', 'index': 'create_index',
            'kill_query': 'kill', 'capture': 'explain', 'analyze': 'run_analysis', 'histograms': 'analyze_table',
-           'innodb': 'innodb_status', 'top': 'top_statements', 'sessions': 'sessions_own',
+           'innodb': 'innodb_status', 'error-log': 'error_log', 'top': 'top_statements', 'sessions': 'sessions_own',
            'locks_rows': 'locks_transactions', 'tables': 'table_lists', 'indexes': 'table_lists',
            'lock': 'lock_account', 'unlock': 'unlock_account', 'expire': 'expire_password',
            'rename': 'rename_user', 'password': 'set_password', 'alter_user': 'account_options',
@@ -633,6 +633,11 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
         alternatives = g('') if maria else o('SELECT', level='database', database='performance_schema')
     elif action in ('sessions_all', 'innodb_status', 'tablespaces'):
         alternatives = g('PROCESS')
+    elif action == 'error_log':
+        # MariaDB reads settings and a verified local file, never SQL file access.
+        alternatives = g('') if maria else o('SELECT', database='performance_schema', table='error_log')
+        if maria:
+            note = 'Needs a verified local error log file readable by this process; no SQL privilege is needed.'
     elif action == 'locks_transactions':
         alternatives = g('PROCESS') if maria else [g('PROCESS')[0] + o('SELECT', level='database',
                                                                          database='performance_schema')[0]]

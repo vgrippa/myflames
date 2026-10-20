@@ -5,6 +5,7 @@ import json
 import math
 import sqlite3
 import sys
+from decimal import Decimal
 
 from . import dbops, editor_session as editor
 from .connector import ConnectorError, terminal_text
@@ -51,11 +52,42 @@ def _envelope(status, run=None, message=None, audit_id=None):
             "audit_id": audit_id or run.get("audit_id")}
 
 
+def _numeric_kind(column, value):
+    """Trust column metadata, never the appearance of an untyped value."""
+    kind = (column.get("type") or "").lower().split("(")[0].split(" ")[0]
+    if column.get("binary") or kind not in editor.NUMERIC_TYPES or value is None:
+        return None
+    return kind if isinstance(value, str) and editor._NUMBER.fullmatch(value) else None
+
+
+def _json_value(column, value):
+    kind = _numeric_kind(column, value)
+    # Preserve exact decimal and BIGINT text, as in editor exports. An
+    # unexpected oversized integer also must not lose precision in clients.
+    if kind in ("tinyint", "smallint", "mediumint", "int", "integer", "year"):
+        try:
+            number = int(value)
+            return number if abs(number) <= (1 << 53) - 1 else value
+        except ValueError:
+            return value
+    if kind in ("float", "double", "real"):
+        number = float(value)
+        if not math.isfinite(number) or (number == 0 and Decimal(value) != 0):
+            return value
+        return number
+    return value
+
+
 def _emit(body, fmt, quiet, password, output=None, insert_table="result"):
     from .cli import _write_output
     data = io.StringIO()
     body = dbops.redact_value(body, password)
     if fmt == "json":
+        # Build a projection; exporting must not change the stored result.
+        body = dict(body, results=[dict(result, rows=[
+            [_json_value(column, value) for column, value in zip(result["columns"], row)]
+            for row in result["rows"]]) if result["type"] == "rows" else result
+            for result in body["results"]])
         data.write(json.dumps(body, ensure_ascii=False, allow_nan=False) + "\n")
     for result in body["results"]:
         kind = result["type"]
@@ -63,8 +95,8 @@ def _emit(body, fmt, quiet, password, output=None, insert_table="result"):
             if fmt == "table":
                 # Quote text so SQL NULL, empty text, and the text 'NULL' differ.
                 columns = [terminal_text(c["name"]) for c in result["columns"]]
-                rows = [["NULL" if v is None else json.dumps(v, ensure_ascii=False) for v in row]
-                        for row in result["rows"]]
+                rows = [["NULL" if v is None else v if _numeric_kind(c, v) else json.dumps(v, ensure_ascii=False)
+                         for c, v in zip(result["columns"], row)] for row in result["rows"]]
                 data.write(_table(columns, rows) if columns else "")
             elif fmt != "json":
                 # The user names the target; result remains the documented
@@ -105,14 +137,21 @@ def _authorize(plan, safety, options, args, registry, audit, session=None, revie
     payload = {}
     decline_message = None
     while True:
-        # Each gate response is a finished audit attempt. The answer to its
-        # confirmation (or a re-plan) needs a fresh trail, whose pending row
-        # start_run/_finish can own. AuditTrail is intentionally single-use.
+        # A real refusal (for example an expired token) finishes its audit.
+        # A subsequent answer needs a fresh trail for start_run/_finish;
+        # AuditTrail is intentionally single-use.
         if audit.finished:
             audit = dbops.AuditTrail(audit.store, audit.operation, audit.surface,
                                      connection=audit.connection, safety=audit.safety,
                                      password=audit.password, policy=dbops.policy_summary(decision))
-        blocked = editor._gate(registry, decision, payload, digest, audit, statements, writes, name, options)
+        if decision["action"] == "confirm" and not payload:
+            # Preparing a confirmation is not a refusal. The CLI owns the
+            # prompt; pass only its actual answer to the editor's token gate.
+            token = registry.issue_token(digest)
+            blocked = {"status": "needs_confirmation",
+                       "confirmation": editor._confirmation(decision, token, statements, name, options)}
+        else:
+            blocked = editor._gate(registry, decision, payload, digest, audit, statements, writes, name, options)
         if blocked is None:
             if writes:
                 problem = dbops.cli_confirm(None, '', assume_yes=args.yes, ask=False)
@@ -139,8 +178,8 @@ def _authorize(plan, safety, options, args, registry, audit, session=None, revie
             assume_yes=args.yes, quiet=args.quiet, passwords=(audit.password,),
             no_terminal_message="Writes require --yes when stdin is not a terminal; nothing was sent.")
         if problem and problem[1] == "no_terminal":
-            # _gate already recorded the unsent confirmation requirement.
-            return {"status": "refused", "message": problem[2], "audit_id": blocked["audit_id"]}, decision, audit
+            audit_id = audit.outcome(statements, problem[0], outcome=problem[1], message=problem[2])
+            return {"status": problem[0], "message": problem[2], "audit_id": audit_id}, decision, audit
         if problem and problem[0] == "refused":
             # A missing/mismatched --confirm-target is a refusal, not a user
             # decline. Keep that distinction in the shared CLI audit contract.

@@ -1,6 +1,6 @@
 // Users and roles keeps all drafts, reports and secrets out of session.ts.
 // Only the selected view is eligible for restore.
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
 import type { Connection } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
@@ -9,11 +9,36 @@ import { VisiblePrivilegeGate } from "./Locks";
 import { Checkbox, ConfirmSheet, CountBadge, DataTable, Disclosure, EmptyState, Fields, InspectorSection,
   SearchField, Segmented, Select, StatusDot, SummaryLine, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection } from "./kit";
-import { PrivilegeGate, privilegeResult, usePrivilege, usePrivileges } from "./privileges";
+import { PrivilegeGate, privilegeButtonProps, privilegeResult, usePrivilege, usePrivileges, type PrivilegeGateResult } from "./privileges";
 import { accountKey, accountLabel, roleLabel, applyAccountGroups, declineAccountGroups, listAccounts, observedScopes, mergeGrantScopes, grantScopeKey, readScopeObjects, planAccountGroups, readAccount, previewAccountPlan, accountPlanProblem,
   type AccountChange, type AccountGroup, type AccountGroupResult, type AccountDetail, type AccountEdit, type AccountName, type AccountPlan, type AccountRow,
   type ScopeObjects, type AccountsReport, type GrantLevel, type GrantScope, type PrivilegeDefinition } from "./accountsApi";
 import "./accounts.css";
+
+function AccountGate({ action, gate: targetGate, blocked = "", write = true, children, onClick, ...props }: PropsWithChildren<{
+  action?: string; gate?: PrivilegeGateResult; blocked?: string; write?: boolean;
+} & ButtonHTMLAttributes<HTMLButtonElement>>) {
+  const generic = usePrivilege(action);
+  const gate = targetGate || generic;
+  const policy = useWritePolicy();
+  const context = usePrivileges();
+  const descriptionId = useId();
+  const reason = blocked || (write ? (context?.readOnly ? "This connection is read-only." : policy?.blocked || "") : "");
+  if (!gate.available) return null;
+  return <>
+    <button
+      {...props}
+      className={`button privilege-action ${props.className || ""}`}
+      {...privilegeButtonProps(gate, onClick, reason, [props["aria-describedby"], descriptionId].filter(Boolean).join(" "))}
+      title={reason || gate.disabledReason || props.title || gate.reason}
+      data-privilege-action={action}
+      data-privilege-state={gate.state}
+    >
+      {children}
+    </button>
+    <span id={descriptionId} className="account-sr">{reason || gate.disabledReason || gate.reason}</span>
+  </>;
+}
 
 type Via = { key: string; label: string; connection: Connection };
 type Review = { via: Via; groups: AccountGroup[] };
@@ -206,11 +231,15 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     info="Review users, roles and grants. Pending changes run only after you review the server's exact statements and confirm."
     onRefresh={() => void load()} refreshDisabled={disabled || !!busy || !!reads.loading || !!review} loading={!!reads.loading}
     controls={<><SearchField value={search} onChange={setSearch} label="Find an account" />
-      <PrivilegeGate action="create_user" blocked={blocked || (busy || review ? "Finish the current review first." : "")}
-        onClick={() => setForm({ operation: "create", target: { name: "", host: "%", role: false } })}>New user</PrivilegeGate>
-      <PrivilegeGate action="create_role" blocked={blocked || (busy || review ? "Finish the current review first." : "")}
-        onClick={() => setForm({ operation: "create", target: { name: "", host: engine === "mariadb" ? "" : "%", role: true } })}>New role</PrivilegeGate></>}
-    status={<ViewStatus loading={busy || reads.loading} error={error || reads.error} />} inspector={inspector}
+      <AccountGate action="create_user" blocked={blocked || (busy || review ? "Finish the current review first." : "")}
+        onClick={() => setForm({ operation: "create", target: { name: "", host: "%", role: false } })}>New user</AccountGate>
+      <AccountGate action="create_role" blocked={blocked || (busy || review ? "Finish the current review first." : "")}
+        onClick={() => setForm({ operation: "create", target: { name: "", host: engine === "mariadb" ? "" : "%", role: true } })}>New role</AccountGate></>}
+    status={<>
+      <ViewStatus loading={busy || reads.loading} error={error || reads.error} />
+      {result && result.key === reads.key && <BatchResult results={result.report} onDismiss={() => setResult(null)} />}
+      {generated && generated.key === reads.key && <GeneratedPassword password={generated.password} onDismiss={() => setGenerated(null)} />}
+    </>} inspector={inspector}
     inspectorEmpty="Select an account to view its grants, account settings and roles.">
     {createNote && <p className="account-note account-create-note" role="note">{createNote}</p>}
     {!report ? <EmptyState icon="server" title="Users and roles" action={<button className="button primary" disabled={disabled || !!reads.loading} onClick={() => void load()}>Load users and roles</button>}>Read accounts from the connection in use.</EmptyState> : <>
@@ -219,8 +248,6 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
       </SummaryLine>
       <DataTable label="Users and roles" columns={columns} rows={rows} rowKey={accountKey} selection={selection} empty="No matching accounts." />
     </>}
-    {result && result.key === reads.key && <BatchResult results={result.report} onDismiss={() => setResult(null)} />}
-    {generated && generated.key === reads.key && <GeneratedPassword password={generated.password} onDismiss={() => setGenerated(null)} />}
     {form && <AccountForm key={`${reads.key}:${form.operation}:${accountKey(form.target)}`} form={form} engine={engine}
       randomAvailable={engine === "mariadb" || engine === "mysql"} blocked={blocked} busy={!!busy} error={error}
       onCancel={() => setForm(null)} onPrepare={prepare} />}

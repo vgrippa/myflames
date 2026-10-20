@@ -326,11 +326,11 @@ try {
   // Click the editor beside the popover (it overlaps the editor's right half).
   await page.click(EDITOR, { offset: { x: 24, y: 24 } });
   assert.equal(await page.$eval(`button${analysisOptions}`, (e) => e.getAttribute("aria-expanded")), "false", "an outside click dismisses options");
-  await page.focus('.query-tabs [role=tab][aria-selected=true]');
+  await page.focus('.query-tablist [role=tab][aria-selected=true]');
   await page.keyboard.press("F2");
   await page.locator('[aria-label="Query name"]').fill("Cancelled name");
   await page.keyboard.press("Escape");
-  assert.equal(await text('.query-tabs [aria-selected=true]'), "Query 1", "Escape cancels a tab rename");
+  assert.equal(await text('.query-tablist [aria-selected=true]'), "Query 1", "Escape cancels a tab rename");
   // Opening the editor asks once whether the tab already has a session (a reload keeps it).
   await until(() => calls("/api/editor/status").length === 1, "no session probe");
   // No session yet: the window status bar says so; the editor shows no transaction state.
@@ -604,8 +604,8 @@ try {
   await page.waitForFunction(() => document.querySelector(".statusbar-note")?.textContent === "Committed.");
   // Closing a tab whose transaction is open asks Commit, Roll back or Cancel.
   await page.click('button[aria-label="New query tab"]');
-  await page.waitForFunction(() => document.querySelectorAll(".query-tabs [role=tab]").length === 2);
-  const second = await page.$eval(".query-tabs [aria-selected=true]", (e) => e.textContent);
+  await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 2);
+  const second = await page.$eval(".query-tablist [aria-selected=true]", (e) => e.textContent);
   assert.equal(second, "Query 2");
   mock.run.push({ status: "complete", session: session({ tab_id: "2", in_transaction: null, transaction_note: "The transaction instrument is off." }), run: run([statement(0, "UPDATE t SET a = 1 WHERE id = 1", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 1, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("UPDATE t SET a = 1 WHERE id = 1");
@@ -615,11 +615,11 @@ try {
   await page.waitForFunction(() => document.querySelector('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]')?.textContent === "Transaction unknown");
   mock.close.push({ closed: false, reason: "transaction_unknown", message: "A transaction may be open.", session: session({ in_transaction: null }) });
   mock.close.push({ closed: true, session: session({ ended: true, ended_reason: "closed", state: "ended" }) });
-  await page.click('.query-tabs button[aria-label="Close tab"]');
+  await page.click(".query-tab:has([aria-selected=true]) .query-tab-close");
   await page.waitForSelector(".confirm-sheet");
   assert.match(await text(".confirm-sheet h2"), /Close Query 2 with a transaction that may be open\?/);
   await page.locator(".confirm-sheet button ::-p-text(Roll back and close)").click();
-  await page.waitForFunction(() => document.querySelectorAll(".query-tabs [role=tab]").length === 1);
+  await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
   const closes = calls("/api/editor/close");
   assert.equal(closes.at(-1).discard, true);
   assert.equal(closes.at(-2).discard, undefined, "the first close never discards");
@@ -780,6 +780,15 @@ try {
   }));
   assert.ok(names.every((n) => n.name === n.nameTitle && n.type === n.typeTitle), "full names and types remain in tooltips");
   assert.ok(names.every((n) => !n.clipped), "short column names take priority over types");
+  // One line per column: the actions button shares the row and shows only on
+  // the row being pointed at or focused.
+  const columnRows = await page.$$eval(".tree-row.kind-column", (els) => els.map((row) => {
+    const box = row.getBoundingClientRect(), more = row.querySelector(".row-more")?.getBoundingClientRect();
+    return { height: box.height, inline: !!more && more.top >= box.top && more.bottom <= box.bottom + 0.5,
+      shown: getComputedStyle(row.querySelector(".row-more")).visibility === "visible", selected: row.getAttribute("aria-selected") === "true" };
+  }));
+  assert.ok(columnRows.every((r) => r.height <= 30 && r.inline), `column rows stay on one line: ${JSON.stringify(columnRows)}`);
+  assert.ok(columnRows.filter((r) => !r.selected).every((r) => !r.shown), "unfocused rows hide their actions button");
   assert.equal(calls("/api/live/catalog").at(-1).table, "users");
   const schemaOpener = await treeRow("table", "orders");
   const schemaMore = await schemaOpener.$('button[aria-label="More actions for orders"]');
@@ -788,7 +797,7 @@ try {
   for (const key of ["F10", "ContextMenu"]) await keyboardMenuTo(schemaOpener, key);
   await (await treeRow("table", "orders")).click({ button: "right" });
   await page.waitForSelector(".context-menu[role=menu]");
-  assert.deepEqual(await texts(".context-menu [role=menuitem]"), ["Insert name", "SELECT * … LIMIT 100", "Show CREATE TABLE", "Open in Indexes", "Open in Tables"]);
+  assert.deepEqual(await texts(".context-menu [role=menuitem]"), ["Insert name", "SELECT * … LIMIT 100", "Show CREATE TABLE", "Edit table data…", "Open in Indexes", "Open in Tables"]);
   await page.locator(".context-menu [role=menuitem] ::-p-text(SELECT * … LIMIT 100)").click();
   body = await until(() => calls("/api/editor/run").find((b) => b.sql?.includes("LIMIT 100")), "SELECT … LIMIT 100 did not run");
   assert.equal(body.sql, "SELECT * FROM testdb.users;\n\nSELECT * FROM testdb.orders LIMIT 100;");
@@ -895,12 +904,12 @@ try {
   await page.setViewport({ width: 1440, height: 1000 });
 
   // ---- Review gate regressions (2026-10-15) ----------------------------------
-  const tabCount = () => page.$$eval(".query-tabs [role=tab]", (els) => els.length);
+  const tabCount = () => page.$$eval(".query-tablist [role=tab]", (els) => els.length);
   async function newTab() {
     const n = await tabCount();
     await page.click('button[aria-label="New query tab"]');
-    await page.waitForFunction((n) => document.querySelectorAll(".query-tabs [role=tab]").length === n + 1, {}, n);
-    return page.$eval(".query-tabs [aria-selected=true]", (e) => e.textContent);
+    await page.waitForFunction((n) => document.querySelectorAll(".query-tablist [role=tab]").length === n + 1, {}, n);
+    return page.$eval(".query-tablist [aria-selected=true]", (e) => e.textContent);
   }
   const tabIdNow = async () => calls("/api/editor/status").filter((b) => !b.run_id).at(-1).tab_id;
 
@@ -952,10 +961,10 @@ try {
   const commitRun = run([statement(0, "COMMIT", 0, { kind: "write", status: "running" })], [], { kind: "action", state: "running", id: "run-commit" });
   mock.commit.push({ status: "running", session: session({ in_transaction: true, state: "running" }), run: commitRun });
   mock.status.push({ status: "idle", session: session({ in_transaction: false }), run: { ...commitRun, state: "complete", statements: [statement(0, "COMMIT", 0, { kind: "write" })] } });
-  await page.click('.query-tabs button[aria-label="Close tab"]');
+  await page.click(".query-tab:has([aria-selected=true]) .query-tab-close");
   await page.waitForSelector(".confirm-sheet");
   await page.locator(".confirm-sheet button ::-p-text(Commit and close)").click();
-  await page.waitForFunction((n) => document.querySelectorAll(".query-tabs [role=tab]").length === n - 1, { timeout: 8000 }, tabsBefore);
+  await page.waitForFunction((n) => document.querySelectorAll(".query-tablist [role=tab]").length === n - 1, { timeout: 8000 }, tabsBefore);
   assert.equal(calls("/api/editor/close").at(-1).discard, undefined, "closed after the commit, not discarded");
 
   // R5. A restore probe cut short by a tab switch is asked again; a late

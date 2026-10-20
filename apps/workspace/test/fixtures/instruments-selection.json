@@ -1,0 +1,1509 @@
+{
+  "actors": {
+    "default_text": "One row: every user on every host, enabled, with history.",
+    "explain": "Which sessions are recorded (ENABLED) and keep history (HISTORY), by user and host. The default instruments everyone. Changes reach new sessions only.",
+    "restore": null,
+    "rows": [
+      {
+        "enabled": true,
+        "history": true,
+        "host": "%",
+        "role": "%",
+        "user": "%"
+      }
+    ],
+    "state": "default"
+  },
+  "available": true,
+  "consumers": [
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "No cost of its own. Turning it off removes nearly all collection overhead without a restart; the memory stays allocated."
+      },
+      "default": true,
+      "effective": true,
+      "enabled": true,
+      "features": [
+        {
+          "key": "top",
+          "label": "Top statements",
+          "required": true,
+          "view": "top"
+        },
+        {
+          "key": "capture",
+          "label": "Capture statistics",
+          "required": true,
+          "view": "editor"
+        },
+        {
+          "key": "locks_mdl",
+          "label": "Locks: metadata locks",
+          "required": true,
+          "view": "locks"
+        },
+        {
+          "key": "locks_last",
+          "label": "Locks: an idle blocker's last statement",
+          "required": true,
+          "view": "locks"
+        },
+        {
+          "key": "waits",
+          "label": "Waits",
+          "required": true,
+          "view": "waits"
+        },
+        {
+          "key": "indexes",
+          "label": "Indexes: unused indexes and full scans",
+          "required": true,
+          "view": "indexes"
+        },
+        {
+          "key": "io",
+          "label": "I/O: per table and per file",
+          "required": true,
+          "view": "io"
+        }
+      ],
+      "gain": "The master switch: every summary table and every event table depends on it.",
+      "id": "consumer:global_instrumentation",
+      "lose": "Performance Schema stops collecting: summaries freeze and no new events are recorded. Setup and instance tables can still be read.",
+      "name": "global_instrumentation",
+      "requires": [],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-global-instrumentation = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'global_instrumentation';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME = 'global_instrumentation';"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "Per-session bookkeeping on each event."
+      },
+      "default": true,
+      "effective": true,
+      "enabled": true,
+      "features": [
+        {
+          "key": "capture",
+          "label": "Capture statistics",
+          "required": true,
+          "view": "editor"
+        },
+        {
+          "key": "locks_last",
+          "label": "Locks: an idle blocker's last statement",
+          "required": true,
+          "view": "locks"
+        }
+      ],
+      "gain": "Collection per session: the events_* tables and the per-thread, account, user and host summaries. While it is on, setup_actors decides which sessions are recorded.",
+      "id": "consumer:thread_instrumentation",
+      "lose": "No per-session data and no statement, transaction or wait event tables; global summaries still collect, from every session.",
+      "name": "thread_instrumentation",
+      "requires": [
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-thread-instrumentation = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'thread_instrumentation';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "Normalizes each statement's text and updates one row of a fixed-size table (performance_schema_digests_size rows; when it is full, new statements land in one catch-all row and Performance_schema_digest_lost rises)."
+      },
+      "default": true,
+      "effective": true,
+      "enabled": true,
+      "features": [
+        {
+          "key": "top",
+          "label": "Top statements",
+          "required": true,
+          "view": "top"
+        }
+      ],
+      "gain": "Statement digests in events_statements_summary_by_digest, the source of Top statements and sys.statement_analysis.",
+      "id": "consumer:statements_digest",
+      "lose": "Top statements stops updating; existing digest rows stay until a restart or a truncate.",
+      "name": "statements_digest",
+      "requires": [
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-statements-digest = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'statements_digest';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-statements-digest = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'statements_digest');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "Keeps one row per session up to date for each statement."
+      },
+      "default": true,
+      "effective": true,
+      "enabled": true,
+      "features": [
+        {
+          "key": "capture",
+          "label": "Capture statistics",
+          "required": true,
+          "view": "editor"
+        },
+        {
+          "key": "locks_last",
+          "label": "Locks: an idle blocker's last statement",
+          "required": true,
+          "view": "locks"
+        }
+      ],
+      "gain": "The statement each session runs now, or ran last: Locks shows an idle blocker's last statement from it. The statement history consumers record only what it records.",
+      "id": "consumer:events_statements_current",
+      "lose": "No current statement per session, and both statement history tables stop filling.",
+      "name": "events_statements_current",
+      "requires": [
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-statements-current = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_statements_current';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-statements-current = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_statements_current');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "Copies each finished statement into its session's ring buffer. The buffer is sized by the history size variable (a restart setting) whether the consumer is on or off."
+      },
+      "default": true,
+      "effective": true,
+      "enabled": true,
+      "features": [
+        {
+          "key": "capture",
+          "label": "Capture statistics",
+          "required": true,
+          "view": "editor"
+        }
+      ],
+      "gain": "The last N statements of each session (N is performance_schema_events_statements_history_size): the Query editor reads its capture statistics here, and you can see what a blocking session ran before it went idle.",
+      "id": "consumer:events_statements_history",
+      "lose": "Captures lose rows examined, temporary tables, sort merge passes and the no-index flag.",
+      "name": "events_statements_history",
+      "requires": [
+        "events_statements_current",
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-statements-history = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_statements_history';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-statements-current = ON\nperformance-schema-consumer-events-statements-history = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_statements_current', 'events_statements_history');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "moderate",
+        "text": "Every statement from every session is copied into one shared ring buffer, which busy servers contend on."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "The last N statements across all sessions in one table (events_statements_history_long).",
+      "id": "consumer:events_statements_history_long",
+      "lose": "Nothing myflames uses.",
+      "name": "events_statements_history_long",
+      "requires": [
+        "events_statements_current",
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-statements-history-long = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_statements_history_long';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-statements-current = ON\nperformance-schema-consumer-events-statements-history-long = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_statements_current', 'events_statements_history_long');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "Reads the thread's CPU clock at the start and end of each timed statement. MySQL only."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "CPU time per statement (the CPU_TIME columns of the statement tables).",
+      "id": "consumer:events_statements_cpu",
+      "lose": "CPU_TIME stays zero.",
+      "name": "events_statements_cpu",
+      "requires": [
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-statements-cpu = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_statements_cpu';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-events-statements-cpu = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'events_statements_cpu');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "One row per session, updated at each transaction start and end."
+      },
+      "default": true,
+      "effective": true,
+      "enabled": true,
+      "features": [],
+      "gain": "Each session's open or last transaction: state, isolation level, access mode, autocommit and how long it has run. Needs the transaction instrument.",
+      "id": "consumer:events_transactions_current",
+      "lose": "No current transaction per session; the transaction history tables stop filling.",
+      "name": "events_transactions_current",
+      "requires": [
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-transactions-current = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_transactions_current';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-transactions-current = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_transactions_current');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "Copies each finished transaction into its session's ring buffer."
+      },
+      "default": true,
+      "effective": true,
+      "enabled": true,
+      "features": [],
+      "gain": "The last N transactions of each session.",
+      "id": "consumer:events_transactions_history",
+      "lose": "No recent transactions per session.",
+      "name": "events_transactions_history",
+      "requires": [
+        "events_transactions_current",
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-transactions-history = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_transactions_history';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-transactions-current = ON\nperformance-schema-consumer-events-transactions-history = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_transactions_current', 'events_transactions_history');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "moderate",
+        "text": "Every transaction is copied into one shared ring buffer."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "The last N transactions across all sessions.",
+      "id": "consumer:events_transactions_history_long",
+      "lose": "Nothing myflames uses.",
+      "name": "events_transactions_history_long",
+      "requires": [
+        "events_transactions_current",
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-transactions-history-long = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_transactions_history_long';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-transactions-current = ON\nperformance-schema-consumer-events-transactions-history-long = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_transactions_current', 'events_transactions_history_long');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "low",
+        "text": "Low with the default stage instruments (progress stages only); moderate when every stage instrument is on."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "The stage each session is in now, with WORK_COMPLETED and WORK_ESTIMATED for progress stages: ALTER TABLE and buffer pool load progress.",
+      "id": "consumer:events_stages_current",
+      "lose": "No current stage or progress per session.",
+      "name": "events_stages_current",
+      "requires": [
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-stages-current = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_stages_current';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-events-stages-current = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'events_stages_current');"
+        }
+      }
+    },
+    {
+      "blocked_by": [
+        "events_stages_current"
+      ],
+      "cost": {
+        "level": "moderate",
+        "text": "Copies every finished stage, several per statement, into the session's ring buffer."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "The last N stages of each session.",
+      "id": "consumer:events_stages_history",
+      "lose": "No recent stages per session.",
+      "name": "events_stages_history",
+      "requires": [
+        "events_stages_current",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-stages-history = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_stages_history';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-events-stages-current = ON\nperformance-schema-consumer-events-stages-history = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'events_stages_current', 'events_stages_history');"
+        }
+      }
+    },
+    {
+      "blocked_by": [
+        "events_stages_current"
+      ],
+      "cost": {
+        "level": "high",
+        "text": "Every stage of every statement is copied into one shared ring buffer."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "The last N stages across all sessions.",
+      "id": "consumer:events_stages_history_long",
+      "lose": "Nothing myflames uses.",
+      "name": "events_stages_history_long",
+      "requires": [
+        "events_stages_current",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-stages-history-long = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_stages_history_long';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-events-stages-current = ON\nperformance-schema-consumer-events-stages-history-long = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'events_stages_current', 'events_stages_history_long');"
+        }
+      }
+    },
+    {
+      "blocked_by": [],
+      "cost": {
+        "level": "moderate",
+        "text": "Writes a row for every recorded wait; with the internal lock instruments on, that is a very large number of waits."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "The wait each thread is in right now (events_waits_current). Waits does not need it.",
+      "id": "consumer:events_waits_current",
+      "lose": "No current wait per thread; the wait history tables stop filling.",
+      "name": "events_waits_current",
+      "requires": [
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-waits-current = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_waits_current';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-waits-current = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_waits_current');"
+        }
+      }
+    },
+    {
+      "blocked_by": [
+        "events_waits_current"
+      ],
+      "cost": {
+        "level": "moderate",
+        "text": "Copies every finished wait into the thread's ring buffer."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "The last N waits of each thread.",
+      "id": "consumer:events_waits_history",
+      "lose": "No recent waits per thread.",
+      "name": "events_waits_history",
+      "requires": [
+        "events_waits_current",
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-waits-history = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_waits_history';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-waits-current = ON\nperformance-schema-consumer-events-waits-history = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_waits_current', 'events_waits_history');"
+        }
+      }
+    },
+    {
+      "blocked_by": [
+        "events_waits_current"
+      ],
+      "cost": {
+        "level": "high",
+        "text": "Every wait of every thread is copied into one shared ring buffer; with the internal lock instruments on, this is the most expensive consumer."
+      },
+      "default": false,
+      "effective": false,
+      "enabled": false,
+      "features": [],
+      "gain": "The last N waits across all threads.",
+      "id": "consumer:events_waits_history_long",
+      "lose": "Nothing myflames uses.",
+      "name": "events_waits_history_long",
+      "requires": [
+        "events_waits_current",
+        "thread_instrumentation",
+        "global_instrumentation"
+      ],
+      "sql": {
+        "off": {
+          "config": "performance-schema-consumer-events-waits-history-long = OFF",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'NO' WHERE NAME = 'events_waits_history_long';"
+        },
+        "on": {
+          "config": "performance-schema-consumer-global-instrumentation = ON\nperformance-schema-consumer-thread-instrumentation = ON\nperformance-schema-consumer-events-waits-current = ON\nperformance-schema-consumer-events-waits-history-long = ON",
+          "runtime": "UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_waits_current', 'events_waits_history_long');"
+        }
+      }
+    }
+  ],
+  "engine": "mysql",
+  "features": [
+    {
+      "explain": "The heaviest normalized statements since startup, from statement digests.",
+      "key": "top",
+      "label": "Top statements",
+      "missing": [],
+      "optional_missing": [],
+      "rows": [],
+      "status": "ready",
+      "view": "top"
+    },
+    {
+      "explain": "Rows examined and sent, temporary tables, sort merge passes and the no-index flag saved with each Query editor capture.",
+      "key": "capture",
+      "label": "Capture statistics",
+      "missing": [],
+      "optional_missing": [],
+      "rows": [],
+      "status": "ready",
+      "view": "editor"
+    },
+    {
+      "explain": "Who holds a table's metadata lock while ALTER TABLE or another statement waits for it.",
+      "key": "locks_mdl",
+      "label": "Locks: metadata locks",
+      "missing": [],
+      "optional_missing": [],
+      "rows": [],
+      "status": "ready",
+      "view": "locks"
+    },
+    {
+      "explain": "What a session holding locks ran last, when it now sits idle in an open transaction.",
+      "key": "locks_last",
+      "label": "Locks: an idle blocker's last statement",
+      "missing": [],
+      "optional_missing": [],
+      "rows": [],
+      "status": "ready",
+      "view": "locks"
+    },
+    {
+      "explain": "MySQL lists row locks in performance_schema.data_locks, which needs Performance Schema on but no instrument. MariaDB reads them from information_schema, with or without it.",
+      "key": "locks_rows",
+      "label": "Locks: InnoDB row locks",
+      "missing": [],
+      "optional_missing": [],
+      "rows": [],
+      "status": "ready",
+      "view": "locks"
+    },
+    {
+      "explain": "Where server threads spent their waiting time, by wait event and class.",
+      "key": "waits",
+      "label": "Waits",
+      "missing": [],
+      "optional_missing": [
+        "wait/synch/% is off",
+        "wait/io/socket/% is off"
+      ],
+      "rows": [
+        "group:wait/synch",
+        "group:wait/io/socket"
+      ],
+      "status": "ready",
+      "view": "waits"
+    },
+    {
+      "explain": "Row operations per index since startup: zero means unused; rows read without an index mean scans.",
+      "key": "indexes",
+      "label": "Indexes: unused indexes and full scans",
+      "missing": [],
+      "optional_missing": [],
+      "rows": [],
+      "status": "ready",
+      "view": "indexes"
+    },
+    {
+      "explain": "Row operations and time per table, and bytes and time per file.",
+      "key": "io",
+      "label": "I/O: per table and per file",
+      "missing": [],
+      "optional_missing": [],
+      "rows": [],
+      "status": "ready",
+      "view": "io"
+    }
+  ],
+  "groups": [
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "low",
+        "text": "One event per statement (and per statement inside a stored program), timed with two timer reads. On by default on both engines; worth keeping on in production."
+      },
+      "default": "on (stored-program control instructions off)",
+      "default_enabled": 199,
+      "enabled": 199,
+      "features": [
+        {
+          "key": "top",
+          "label": "Top statements",
+          "required": true,
+          "view": "top"
+        },
+        {
+          "key": "capture",
+          "label": "Capture statistics",
+          "required": true,
+          "view": "editor"
+        },
+        {
+          "key": "locks_last",
+          "label": "Locks: an idle blocker's last statement",
+          "required": true,
+          "view": "locks"
+        }
+      ],
+      "gain": "Time, rows examined and sent, temporary tables, sorts and errors for every statement, summarized by digest, user, host, account and stored program; with the statement consumers, the current and recent statements of each session.",
+      "id": "group:statement",
+      "key": "statement",
+      "kinds": null,
+      "label": "Statements",
+      "lose": "No new statement events: Top statements stops updating (rows already collected stay until a restart or a truncate), captures lose their Performance Schema statistics, and sys views built on statements stop updating.",
+      "match": "statement/%",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'statement/%=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME LIKE 'statement/%';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'statement/%=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'statement/%';"
+        }
+      },
+      "state": "partial",
+      "timed": 199,
+      "timed_applies": true,
+      "total": 214
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "moderate",
+        "text": "Each statement passes through several stages, and every enabled stage is a timed event. The defaults turn on only the progress stages, which fire during long operations (ALTER TABLE, buffer pool load, clone) and, on a MySQL replica, once per applied batch of row changes; turn the rest on for an investigation rather than permanently on a busy server."
+      },
+      "default": "progress stages only",
+      "default_enabled": 16,
+      "enabled": 16,
+      "features": [],
+      "gain": "Where time goes inside a statement (opening tables, optimizing, executing, waiting for a table metadata lock) and progress of long operations such as ALTER TABLE and buffer pool load, in events_stages_current (WORK_COMPLETED and WORK_ESTIMATED; needs the events_stages_current consumer).",
+      "id": "group:stage",
+      "key": "stage",
+      "kinds": null,
+      "label": "Stages",
+      "lose": "No stage breakdown and no progress for ALTER TABLE.",
+      "match": "stage/%",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'stage/%=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME LIKE 'stage/%';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'stage/%=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'stage/%';"
+        }
+      },
+      "state": "partial",
+      "timed": 16,
+      "timed_applies": true,
+      "total": 132
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "low",
+        "text": "One timed event per file operation, which is far slower than the timer reads. On by default on both engines."
+      },
+      "default": "on",
+      "default_enabled": 51,
+      "enabled": 51,
+      "features": [
+        {
+          "key": "waits",
+          "label": "Waits",
+          "required": true,
+          "view": "waits"
+        },
+        {
+          "key": "io",
+          "label": "I/O: per table and per file",
+          "required": true,
+          "view": "io"
+        }
+      ],
+      "gain": "Bytes, operations and time per file and per file kind (tablespaces, redo and binary logs, temporary files) in file_summary_by_instance and file_summary_by_event_name.",
+      "id": "group:wait/io/file",
+      "key": "wait/io/file",
+      "kinds": null,
+      "label": "File I/O",
+      "lose": "I/O loses its per-file view and Waits its file waits; server-wide InnoDB counters (Health, I/O) remain.",
+      "match": "wait/io/file/%",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'wait/io/file/%=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME LIKE 'wait/io/file/%';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'wait/io/file/%=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/io/file/%';"
+        }
+      },
+      "state": "on",
+      "timed": 51,
+      "timed_applies": true,
+      "total": 51
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "moderate",
+        "text": "About one timed event per row operation through the storage engine interface (some scans are timed as one batch of rows). On by default on both engines; setup_objects limits it by schema and table."
+      },
+      "default": "on",
+      "default_enabled": 1,
+      "enabled": 1,
+      "features": [
+        {
+          "key": "waits",
+          "label": "Waits",
+          "required": true,
+          "view": "waits"
+        },
+        {
+          "key": "indexes",
+          "label": "Indexes: unused indexes and full scans",
+          "required": true,
+          "view": "indexes"
+        },
+        {
+          "key": "io",
+          "label": "I/O: per table and per file",
+          "required": true,
+          "view": "io"
+        }
+      ],
+      "gain": "Row operations (fetch, insert, update, delete) and their time per table and per index: table_io_waits_summary_by_table and _by_index_usage, the source of sys.schema_unused_indexes and schema_tables_with_full_table_scans.",
+      "id": "group:wait/io/table",
+      "key": "wait/io/table",
+      "kinds": null,
+      "label": "Table I/O",
+      "lose": "Indexes cannot find unused indexes or full scans (redundant indexes still work) and I/O loses its per-table list.",
+      "match": "wait/io/table/sql/handler",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'wait/io/table/sql/handler=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME = 'wait/io/table/sql/handler';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'wait/io/table/sql/handler=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME = 'wait/io/table/sql/handler';"
+        }
+      },
+      "state": "on",
+      "timed": 1,
+      "timed_applies": true,
+      "total": 1
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "low",
+        "text": "One event per table lock per statement, not per row. On by default on both engines."
+      },
+      "default": "on",
+      "default_enabled": 1,
+      "enabled": 1,
+      "features": [
+        {
+          "key": "waits",
+          "label": "Waits",
+          "required": true,
+          "view": "waits"
+        }
+      ],
+      "gain": "Table lock requests and waits per table (table_lock_waits_summary_by_table): LOCK TABLES, MyISAM and MEMORY table locks, and the per-statement external lock call.",
+      "id": "group:wait/lock/table",
+      "key": "wait/lock/table",
+      "kinds": null,
+      "label": "Table locks",
+      "lose": "Table lock waits disappear from Waits and from the per-table lock summary.",
+      "match": "wait/lock/table/sql/handler",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'wait/lock/table/sql/handler=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME = 'wait/lock/table/sql/handler';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'wait/lock/table/sql/handler=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME = 'wait/lock/table/sql/handler';"
+        }
+      },
+      "state": "on",
+      "timed": 1,
+      "timed_applies": true,
+      "total": 1
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "low",
+        "text": "One record per metadata lock taken: about one per table a statement touches, plus a few global and schema locks for writes and DDL. On by default in MySQL, off in MariaDB. Locks taken while it was off are never recorded."
+      },
+      "default": "on",
+      "default_enabled": 1,
+      "enabled": 1,
+      "features": [
+        {
+          "key": "locks_mdl",
+          "label": "Locks: metadata locks",
+          "required": true,
+          "view": "locks"
+        },
+        {
+          "key": "waits",
+          "label": "Waits",
+          "required": false,
+          "view": "waits"
+        }
+      ],
+      "gain": "Granted and pending metadata locks in performance_schema.metadata_locks: which session holds the metadata lock ALTER TABLE waits for (often an idle open transaction), and metadata lock waits in the wait summaries.",
+      "id": "group:wait/lock/metadata",
+      "key": "wait/lock/metadata",
+      "kinds": null,
+      "label": "Metadata locks",
+      "lose": "A statement stuck on \"Waiting for table metadata lock\" shows no holder; Locks cannot show metadata lock waits.",
+      "match": "wait/lock/metadata/sql/mdl",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'wait/lock/metadata/sql/mdl=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME = 'wait/lock/metadata/sql/mdl';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'wait/lock/metadata/sql/mdl=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME = 'wait/lock/metadata/sql/mdl';"
+        }
+      },
+      "state": "on",
+      "timed": 1,
+      "timed_applies": true,
+      "total": 1
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "high",
+        "text": "Internal locks are taken extremely often (millions of times per second on a busy server), and every timed acquisition reads the timer twice and updates statistics. Off by default on both engines. Enable them for a short investigation, ideally a subset such as wait/synch/mutex/innodb/%, then turn them off."
+      },
+      "default": "off",
+      "default_enabled": 0,
+      "enabled": 0,
+      "features": [
+        {
+          "key": "waits",
+          "label": "Waits",
+          "required": false,
+          "view": "waits"
+        }
+      ],
+      "gain": "Contention on the server's and InnoDB's internal mutexes, read/write locks and condition waits, in the wait summaries and in mutex_instances and rwlock_instances.",
+      "id": "group:wait/synch",
+      "key": "wait/synch",
+      "kinds": [
+        {
+          "enabled": 0,
+          "kind": "mutex",
+          "total": 236
+        },
+        {
+          "enabled": 0,
+          "kind": "rwlock",
+          "total": 33
+        },
+        {
+          "enabled": 0,
+          "kind": "sxlock",
+          "total": 15
+        },
+        {
+          "enabled": 0,
+          "kind": "prlock",
+          "total": 2
+        },
+        {
+          "enabled": 0,
+          "kind": "cond",
+          "total": 56
+        }
+      ],
+      "label": "Internal locks (mutex, rwlock, cond)",
+      "lose": "No internal contention data: Waits never shows mutex waits, and their absence proves nothing.",
+      "match": "wait/synch/%",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'wait/synch/%=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME LIKE 'wait/synch/%';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'wait/synch/%=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/synch/%';"
+        }
+      },
+      "state": "off",
+      "timed": 0,
+      "timed_applies": true,
+      "total": 342
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "moderate",
+        "text": "One timed event per network read and write. Off by default on both engines."
+      },
+      "default": "off",
+      "default_enabled": 0,
+      "enabled": 0,
+      "features": [
+        {
+          "key": "waits",
+          "label": "Waits",
+          "required": false,
+          "view": "waits"
+        }
+      ],
+      "gain": "Network read and write waits for each client connection and the listening TCP and Unix sockets, in the socket summaries and socket_instances.",
+      "id": "group:wait/io/socket",
+      "key": "wait/io/socket",
+      "kinds": null,
+      "label": "Socket I/O",
+      "lose": "No network wait data.",
+      "match": "wait/io/socket/%",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'wait/io/socket/%=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME LIKE 'wait/io/socket/%';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'wait/io/socket/%=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME LIKE 'wait/io/socket/%';"
+        }
+      },
+      "state": "off",
+      "timed": 0,
+      "timed_applies": true,
+      "total": 7
+    },
+    {
+      "builtin": 79,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "low",
+        "text": "Each allocation and free updates counters; there is no timing. On by default in MySQL, off in MariaDB. Turned on at runtime, counts start at that moment: memory allocated earlier is not counted, so current bytes read low until it is freed."
+      },
+      "default": "on",
+      "default_enabled": 429,
+      "enabled": 429,
+      "features": [],
+      "gain": "Memory in use and peak, per subsystem and per thread, user, host and account (memory_summary_* tables and the sys.memory_* views).",
+      "id": "group:memory",
+      "key": "memory",
+      "kinds": null,
+      "label": "Memory",
+      "lose": "No memory accounting by subsystem. Performance Schema's own memory (memory/performance_schema/*) is always counted.",
+      "match": "memory/%",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'memory/%=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO' WHERE NAME LIKE 'memory/%';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'memory/%=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES' WHERE NAME LIKE 'memory/%';"
+        }
+      },
+      "state": "on",
+      "timed": null,
+      "timed_applies": false,
+      "total": 429
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "low",
+        "text": "One event per transaction. On by default in MySQL (with its current and history consumers), off in MariaDB."
+      },
+      "default": "on",
+      "default_enabled": 1,
+      "enabled": 1,
+      "features": [],
+      "gain": "Transaction events with state, isolation level, access mode, autocommit and duration (events_transactions_* tables); with the transaction consumers, each session's open transaction.",
+      "id": "group:transaction",
+      "key": "transaction",
+      "kinds": null,
+      "label": "Transactions",
+      "lose": "No transaction events or summaries.",
+      "match": "transaction",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'transaction=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME = 'transaction';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'transaction=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME = 'transaction';"
+        }
+      },
+      "state": "on",
+      "timed": 1,
+      "timed_applies": true,
+      "total": 1
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "low",
+        "text": "One event each time a session waits for its next command. On by default on both engines."
+      },
+      "default": "on",
+      "default_enabled": 1,
+      "enabled": 1,
+      "features": [],
+      "gain": "Time sessions spend idle, waiting for the client's next command (the idle wait row).",
+      "id": "group:idle",
+      "key": "idle",
+      "kinds": null,
+      "label": "Idle",
+      "lose": "Idle time is not recorded (Waits leaves it out anyway).",
+      "match": "idle",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'idle=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO' WHERE NAME = 'idle';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'idle=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES' WHERE NAME = 'idle';"
+        }
+      },
+      "state": "on",
+      "timed": 1,
+      "timed_applies": true,
+      "total": 1
+    },
+    {
+      "builtin": 0,
+      "changed": 0,
+      "changed_names": [],
+      "cost": {
+        "level": "low",
+        "text": "A counter update per error or warning; there is no timing. MySQL only, on by default."
+      },
+      "default": "on, not timed",
+      "default_enabled": 1,
+      "enabled": 1,
+      "features": [],
+      "gain": "Errors and warnings raised, per error code and per thread, user, host and account, with first and last seen (events_errors_summary_* tables).",
+      "id": "group:error",
+      "key": "error",
+      "kinds": null,
+      "label": "Errors",
+      "lose": "Error summaries stop counting.",
+      "match": "error",
+      "sql": {
+        "off": {
+          "config": "performance-schema-instrument = 'error=OFF'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO' WHERE NAME = 'error';"
+        },
+        "on": {
+          "config": "performance-schema-instrument = 'error=ON'",
+          "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES' WHERE NAME = 'error';"
+        }
+      },
+      "state": "on",
+      "timed": null,
+      "timed_applies": false,
+      "total": 1
+    }
+  ],
+  "notes": [
+    "MySQL 8.4 and 9.x share these defaults in source, and MySQL 26.7 matched them on a live server; newer versions add instruments, not new defaults."
+  ],
+  "objects": {
+    "default_text": "Everything except the mysql, performance_schema and information_schema schemas, for every object type.",
+    "disabled_table_schemas": [
+      "information_schema",
+      "mysql",
+      "performance_schema"
+    ],
+    "explain": "Which tables, events, triggers and stored routines are instrumented, by schema and name. Changes apply at once.",
+    "restore": null,
+    "rows": [
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "EVENT",
+        "schema": "mysql",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "EVENT",
+        "schema": "performance_schema",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "EVENT",
+        "schema": "information_schema",
+        "timed": false
+      },
+      {
+        "enabled": true,
+        "name": "%",
+        "object_type": "EVENT",
+        "schema": "%",
+        "timed": true
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "FUNCTION",
+        "schema": "mysql",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "FUNCTION",
+        "schema": "performance_schema",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "FUNCTION",
+        "schema": "information_schema",
+        "timed": false
+      },
+      {
+        "enabled": true,
+        "name": "%",
+        "object_type": "FUNCTION",
+        "schema": "%",
+        "timed": true
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "PROCEDURE",
+        "schema": "mysql",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "PROCEDURE",
+        "schema": "performance_schema",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "PROCEDURE",
+        "schema": "information_schema",
+        "timed": false
+      },
+      {
+        "enabled": true,
+        "name": "%",
+        "object_type": "PROCEDURE",
+        "schema": "%",
+        "timed": true
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "TABLE",
+        "schema": "mysql",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "TABLE",
+        "schema": "performance_schema",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "TABLE",
+        "schema": "information_schema",
+        "timed": false
+      },
+      {
+        "enabled": true,
+        "name": "%",
+        "object_type": "TABLE",
+        "schema": "%",
+        "timed": true
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "TRIGGER",
+        "schema": "mysql",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "TRIGGER",
+        "schema": "performance_schema",
+        "timed": false
+      },
+      {
+        "enabled": false,
+        "name": "%",
+        "object_type": "TRIGGER",
+        "schema": "information_schema",
+        "timed": false
+      },
+      {
+        "enabled": true,
+        "name": "%",
+        "object_type": "TRIGGER",
+        "schema": "%",
+        "timed": true
+      }
+    ],
+    "state": "default"
+  },
+  "performance_schema": true,
+  "presets": [
+    {
+      "applied": true,
+      "config": "[mysqld]\nperformance_schema = ON\n# The rest of this preset is on by default in MySQL; remove any my.cnf line that turns it off.",
+      "cost": {
+        "level": "low",
+        "text": "MySQL ships with all of it on."
+      },
+      "gain": "Top statements, capture statistics, metadata locks and an idle blocker's last statement in Locks, unused indexes and full scans in Indexes, and per-table I/O.",
+      "key": "minimal",
+      "label": "Minimal for myflames",
+      "notes": [],
+      "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES'\nWHERE (NAME LIKE 'statement/%' AND (NAME NOT LIKE 'statement/sp/%' OR NAME = 'statement/sp/stmt'))\n   OR NAME IN ('wait/io/table/sql/handler', 'wait/lock/metadata/sql/mdl');\nUPDATE performance_schema.setup_consumers SET ENABLED = 'YES'\nWHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'statements_digest',\n      'events_statements_current', 'events_statements_history');",
+      "summary": "Exactly what Top statements, capture statistics, Locks and Indexes read.",
+      "undo": null
+    },
+    {
+      "applied": true,
+      "config": "[mysqld]\nperformance_schema = ON\n# The rest of this preset is on by default in MySQL; remove any my.cnf line that turns it off.",
+      "cost": {
+        "level": "low",
+        "text": "One event per lock request, per transaction and per statement; history keeps N rows per session. All of it is on by default in MySQL."
+      },
+      "gain": "Who holds the metadata lock DDL waits for (Locks, metadata_locks), table lock waits (Waits), each session's open transaction with its state and age (events_transactions_current), and the last statements a blocking session ran before it went idle (events_statements_history).",
+      "key": "locks",
+      "label": "Lock troubleshooting",
+      "notes": [
+        "InnoDB row locks need no instrument: MySQL reads them from performance_schema.data_locks (Performance Schema on), MariaDB from information_schema.INNODB_LOCKS (needs PROCESS, works with Performance Schema off)."
+      ],
+      "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES'\nWHERE NAME IN ('wait/lock/metadata/sql/mdl', 'wait/lock/table/sql/handler', 'transaction')\n   OR (NAME LIKE 'statement/%' AND (NAME NOT LIKE 'statement/sp/%' OR NAME = 'statement/sp/stmt'));\nUPDATE performance_schema.setup_consumers SET ENABLED = 'YES'\nWHERE NAME IN ('global_instrumentation', 'thread_instrumentation',\n      'events_statements_current', 'events_statements_history',\n      'events_transactions_current', 'events_transactions_history');",
+      "summary": "Metadata and table locks, open transactions, and what blocking sessions ran.",
+      "undo": null
+    },
+    {
+      "applied": false,
+      "config": "# Keep this preset temporary. Only to record waits from startup, such as during a warm-up:\n[mysqld]\nperformance_schema = ON\nperformance-schema-instrument = 'wait/%=ON'",
+      "cost": {
+        "level": "high",
+        "text": "Every internal lock acquisition is timed: two timer reads and a statistics update, millions of times per second on a busy server. Turn it on for minutes, compare Waits, then run the undo statement. Rule of thumb: measure throughput before and after on that server."
+      },
+      "gain": "Internal contention in Waits (InnoDB and server mutexes, read/write locks, condition waits) and network waits, on top of file, table and lock waits.",
+      "key": "waits",
+      "label": "Wait analysis",
+      "notes": [
+        "Run the undo statement when you are done: it turns the internal lock and socket instruments back off (their default on both engines) and leaves file, table and lock waits on."
+      ],
+      "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES'\nWHERE NAME LIKE 'wait/%';\nUPDATE performance_schema.setup_consumers SET ENABLED = 'YES'\nWHERE NAME = 'global_instrumentation';",
+      "summary": "Every wait instrument, internal locks included, for a short investigation.",
+      "undo": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO'\nWHERE NAME LIKE 'wait/synch/%' OR NAME LIKE 'wait/io/socket/%';"
+    },
+    {
+      "applied": true,
+      "config": "# Remove every performance-schema-instrument and performance-schema-consumer-* line under\n# [mysqld]; the defaults then apply at the next restart. Keep performance_schema as you want it.",
+      "cost": {
+        "level": "low",
+        "text": "MySQL's defaults are meant for production. MariaDB's collect less: no event tables, metadata locks, transactions or memory."
+      },
+      "gain": "Returns to the Default column below: what MySQL turns on when no my.cnf line changes it.",
+      "key": "defaults",
+      "label": "Back to defaults",
+      "notes": [
+        "These are the compiled defaults. A server started with performance-schema-instrument or consumer lines in my.cnf starts differently; a restart applies that startup configuration again.",
+        "Built-in memory/performance_schema/* instruments cannot be turned off; the server ignores them silently."
+      ],
+      "restore_setup": null,
+      "runtime": "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO'\nWHERE NAME LIKE 'wait/synch/%' OR NAME LIKE 'wait/io/socket/%';\nUPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES'\nWHERE NAME LIKE 'wait/io/file/%'\n   OR NAME IN ('wait/io/table/sql/handler', 'wait/lock/table/sql/handler', 'wait/lock/metadata/sql/mdl', 'idle', 'transaction');\nUPDATE performance_schema.setup_instruments SET ENABLED = 'YES', TIMED = 'YES'\nWHERE NAME LIKE 'statement/%' AND (NAME NOT LIKE 'statement/sp/%' OR NAME = 'statement/sp/stmt');\nUPDATE performance_schema.setup_instruments SET ENABLED = 'NO', TIMED = 'NO'\nWHERE NAME LIKE 'statement/sp/%' AND NAME <> 'statement/sp/stmt';\nUPDATE performance_schema.setup_instruments\n   SET ENABLED = IF(FIND_IN_SET('progress', PROPERTIES), 'YES', 'NO'),\n       TIMED = IF(FIND_IN_SET('progress', PROPERTIES), 'YES', 'NO')\n WHERE NAME LIKE 'stage/%';\nUPDATE performance_schema.setup_instruments SET ENABLED = 'YES' WHERE NAME LIKE 'memory/%' OR NAME = 'error';\nUPDATE performance_schema.setup_consumers\n   SET ENABLED = IF(NAME IN ('global_instrumentation', 'thread_instrumentation', 'statements_digest', 'events_statements_current', 'events_statements_history', 'events_transactions_current', 'events_transactions_history'), 'YES', 'NO');",
+      "summary": "The engine's compiled-in defaults for every instrument and consumer.",
+      "undo": null
+    }
+  ],
+  "privileges": "myflames reads with SELECT on performance_schema only. Running the statements needs UPDATE on performance_schema.setup_instruments and setup_consumers (for example GRANT UPDATE ON performance_schema.setup_instruments TO 'dba'@'%';), and INSERT plus DROP (for TRUNCATE) on setup_actors and setup_objects to restore their defaults.",
+  "read_only_note": "Collecting this report does not change settings. Copy the runtime SQL or use the workspace's reviewed Apply action. Execution requires the privileges below.",
+  "rules": [
+    "UPDATE of setup_instruments and setup_consumers takes effect at once and lasts until the server restarts.",
+    "Mutex, rwlock, cond and socket instruments re-apply at once to existing instances, and table I/O and table lock changes apply from the next statement that uses each open table. A file is recorded only if it was opened while its instrument was on, so files already open (such as InnoDB tablespaces) stay unrecorded until they are reopened. Metadata locks, memory and statement, stage and transaction events count from the moment the instrument is on: locks already held and memory already allocated stay invisible.",
+    "Consumers apply to every session at once. A history consumer records only what its current consumer records, under global_instrumentation; statement, transaction and wait events also need thread_instrumentation.",
+    "setup_actors changes reach new sessions only; an existing session keeps its INSTRUMENTED and HISTORY values (change those in performance_schema.threads). setup_objects changes apply at once.",
+    "performance_schema itself and the *_size variables are read-only: they need my.cnf (or SET PERSIST_ONLY on MySQL) and a restart. To keep an instrument or consumer change after a restart, add the my.cnf lines under [mysqld]; for instruments the longest matching pattern wins whatever the order of the lines, and between patterns of the same length the later line wins."
+  ],
+  "schema_version": "instruments-1.0",
+  "server_version": "8.4.11",
+  "status": {
+    "cost": "Some buffers (history_long tables, the digest table) are allocated at startup from the *_size variables; the others grow as needed up to their *_max limits and are kept until shutdown. Memory is the main fixed cost; CPU cost depends on which instruments and consumers are on.",
+    "default": true,
+    "disable": {
+      "config": "[mysqld]\nperformance_schema = OFF"
+    },
+    "enable": null,
+    "enabled": true,
+    "id": "ps",
+    "lost": [],
+    "memory_bytes": 235514624,
+    "runtime_changeable": false,
+    "sizes": {
+      "performance_schema_digests_size": 10000,
+      "performance_schema_events_stages_history_long_size": 10000,
+      "performance_schema_events_stages_history_size": 10,
+      "performance_schema_events_statements_history_long_size": 10000,
+      "performance_schema_events_statements_history_size": 10,
+      "performance_schema_events_transactions_history_long_size": 10000,
+      "performance_schema_events_transactions_history_size": 10,
+      "performance_schema_events_waits_history_long_size": 10000,
+      "performance_schema_events_waits_history_size": 10,
+      "performance_schema_max_digest_length": 1024,
+      "performance_schema_max_sql_text_length": 1024
+    },
+    "text": "Performance Schema is on. It is read-only at runtime: turning it off needs performance_schema = OFF in my.cnf and a restart. Instruments and consumers below can change at runtime."
+  },
+  "taken_at": "2026-10-14T16:46:35.548715+00:00",
+  "unavailable": null,
+  "uptime_s": 1556,
+  "instruments": [
+    {
+      "name": "memory/performance_schema/accounts",
+      "group": "memory",
+      "enabled": true,
+      "timed": null,
+      "timed_applies": false,
+      "default_enabled": true,
+      "default_timed": null,
+      "builtin": true,
+      "properties": "global_statistics"
+    },
+    {
+      "name": "memory/sql/THD::main_mem_root",
+      "group": "memory",
+      "enabled": true,
+      "timed": null,
+      "timed_applies": false,
+      "default_enabled": true,
+      "default_timed": null,
+      "builtin": false,
+      "properties": "controlled_by_default"
+    },
+    {
+      "name": "stage/sql/Waiting for table metadata lock",
+      "group": "stage",
+      "enabled": false,
+      "timed": false,
+      "timed_applies": true,
+      "default_enabled": false,
+      "default_timed": false,
+      "builtin": false,
+      "properties": ""
+    },
+    {
+      "name": "statement/sql/select",
+      "group": "statement",
+      "enabled": false,
+      "timed": true,
+      "timed_applies": true,
+      "default_enabled": true,
+      "default_timed": true,
+      "builtin": false,
+      "properties": ""
+    },
+    {
+      "name": "wait/synch/mutex/sql/LOCK_open",
+      "group": "wait/synch",
+      "enabled": false,
+      "timed": false,
+      "timed_applies": true,
+      "default_enabled": false,
+      "default_timed": false,
+      "builtin": false,
+      "properties": "singleton"
+    }
+  ]
+}

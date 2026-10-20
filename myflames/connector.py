@@ -592,9 +592,24 @@ class MySQLConnection:
         - MySQL: prefixes ``SET explain_json_format_version=2`` and runs
           ``EXPLAIN ANALYZE FORMAT=JSON``.
         - MariaDB: runs ``ANALYZE FORMAT=JSON``.
+
+        EXPLAIN ANALYZE runs the statement, so it runs inside the same
+        read-only transaction as capture (live.LiveJob.run): ``SET SESSION
+        TRANSACTION READ ONLY; START TRANSACTION READ ONLY; ...; ROLLBACK``.
+        The client stops at the first failing statement (no ``--force``), so
+        a failed wrapper never lets the query run outside the transaction; on
+        any error the session ends with the client and its transaction rolls
+        back. The newline before ``;`` ends a trailing ``--`` comment.
+        Callers validate *sql* first (``live.bind_query``: one SELECT, no
+        backslash commands or DELIMITER lines, every comment closed); it is
+        sent with ``-e`` and without ``--binary-mode``.
         """
         if self.is_mariadb():
             stmt = "ANALYZE FORMAT=JSON " + sql
+            prefix = ""
         else:
-            stmt = "SET explain_json_format_version=2; EXPLAIN ANALYZE FORMAT=JSON " + sql
-        return self.run(stmt, extra_flags=["--raw"])
+            stmt = "EXPLAIN ANALYZE FORMAT=JSON " + sql
+            prefix = "SET explain_json_format_version=2; "
+        script = (prefix + "SET SESSION TRANSACTION READ ONLY; START TRANSACTION READ ONLY; "
+                  + stmt + "\n;\nROLLBACK")
+        return self.run(script, extra_flags=["--raw"])

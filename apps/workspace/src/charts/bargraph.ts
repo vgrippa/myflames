@@ -49,7 +49,10 @@ export function barInfo(bar: Bar, pct: number, unit: string): string {
   parts.push("Self: " + fixed(bar.self) + " " + unit + " (" + pyFixed(pct, 1) + "%)");
   if (Math.abs(bar.total - bar.self) > 0.001) parts.push("Total: " + fixed(bar.total) + " " + unit);
   const rows = node.actual_rows ?? 0;
-  parts.push("Rows: " + pyFixed(rows, 0));
+  // No row counter reads "not measured", never 0; null rows and loops (a
+  // MySQL operator that never ran) read "not executed" (output_bargraph._build_bar_info).
+  parts.push(node.actual_rows !== null ? "Rows: " + pyFixed(rows, 0)
+    : node.loops === null ? "Rows: not executed" : "Rows: not measured");
   parts.push("Loops: " + commas(node.loops || 1));
   if (node.table) parts.push("Table: " + node.table);
   if (node.index) parts.push("Index: " + node.index);
@@ -88,7 +91,7 @@ export function renderBargraph(context: ViewContext): ViewInstance {
   }, container);
   svg(doc, "title", undefined, root, (data.title ? `${data.title}: ` : "") + "Bar chart");
   svg(doc, "style", undefined, root, BAR_CSS);
-  svg(doc, "rect", { width: "100%", height: "100%", fill: "#fafafa" }, root);
+  svg(doc, "rect", { width: "100%", height: "100%", class: "mfc-background", fill: "#fafafa" }, root);
   if (!workspace) {
     svg(doc, "text", { x: width / 2, y: 28, "text-anchor": "middle", class: "title" }, root, data.title || "");
     svg(doc, "text", { x: width / 2, y: 46, "text-anchor": "middle", class: "subtitle" }, root,
@@ -99,11 +102,11 @@ export function renderBargraph(context: ViewContext): ViewInstance {
   svg(doc, "text", { x: MARGIN + LABEL_W - 10, y: hdrY, "text-anchor": "end", class: "col-header" }, root, "OPERATION");
   svg(doc, "text", { x: loopsX + LOOPS_W / 2, y: hdrY, "text-anchor": "middle", class: "col-header" }, root, "LOOPS");
   svg(doc, "text", { x: barX + area / 2, y: hdrY, "text-anchor": "middle", class: "col-header" }, root, "SELF-TIME");
-  svg(doc, "line", { x1: MARGIN, y1: ruleY, x2: width - MARGIN, y2: ruleY, stroke: "#e0e0e0", "stroke-width": 1 }, root);
+  svg(doc, "line", { x1: MARGIN, y1: ruleY, x2: width - MARGIN, y2: ruleY, class: "mfc-rule", stroke: "#e0e0e0", "stroke-width": 1 }, root);
   const lines: SVGTextElement[] = [];
   if (!workspace) {
-    svg(doc, "line", { x1: MARGIN, y1: sepY, x2: width - MARGIN, y2: sepY, stroke: "#e0e0e0", "stroke-width": 1 }, root);
-    svg(doc, "rect", { x: MARGIN, y: sepY + 4, width: width - MARGIN * 2, height: BOTTOM - 10, fill: "#f5f5f5", rx: 4 }, root);
+    svg(doc, "line", { x1: MARGIN, y1: sepY, x2: width - MARGIN, y2: sepY, class: "mfc-rule", stroke: "#e0e0e0", "stroke-width": 1 }, root);
+    svg(doc, "rect", { x: MARGIN, y: sepY + 4, width: width - MARGIN * 2, height: BOTTOM - 10, class: "mfc-pane", fill: "#f5f5f5", rx: 4 }, root);
     for (let i = 0; i < DETAIL_LINES; i++) {
       lines.push(svg(doc, "text", { x: MARGIN + 10, y: sepY + 12 + i * DETAIL_LINE_H, "text-anchor": "start", class: "details-line" }, root, i === 0 ? HINT : ""));
     }

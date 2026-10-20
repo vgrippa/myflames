@@ -43,8 +43,23 @@
   white-space: nowrap;
   color: var(--ink-muted);
 }
-.status-pill.is-ok {
-  color: var(--ok);
+/* Normal states remain in the status column, without competing with an
+   actionable warning. Standalone status dots (connection safety) keep color. */
+:is(.status-pill, .status-indicator):is(.is-ok, .is-info) {
+  color: var(--ink-muted);
+  font-weight: 400;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+:is(.status-pill, .status-indicator):is(.is-ok, .is-info) > .status-dot {
+  display: none;
+}
+/* Quiet normal states in a status column (StatusPill quiet): OK is an
+   empty cell, No threshold a faint dash; the word stays for screen readers. */
+.status-pill.is-quiet.is-info::before {
+  content: "–" / "";
+  color: var(--ink-faint);
 }
 .status-pill.is-watch {
   color: var(--warn);
@@ -135,7 +150,7 @@
 }
 .info-button:hover:not(:disabled),
 .info-button[aria-expanded="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 .notes-button {
@@ -154,7 +169,7 @@
 }
 .notes-button:hover:not(:disabled),
 .notes-button[aria-expanded="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent-line);
 }
 .popover {
@@ -282,15 +297,14 @@
   gap: var(--space-3);
   min-width: 0;
 }
+/* Group headers: sentence case and semibold, like the sidebar's. */
 .source-group h3 {
   margin: 0 0 var(--space-1);
   padding: 0 var(--space-2);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--ink-muted);
-  font-weight: 600;
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  color: var(--section-ink);
+  font-weight: var(--section-weight);
 }
 .source-group ul {
   display: grid;
@@ -299,34 +313,37 @@
   padding: 0;
   list-style: none;
 }
+/* Rows match the sidebar's places: 28 px, a tinted fill for the current
+   view, a gray hover, a focus ring only for the keyboard. */
 .source-item {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: 28px;
+  min-height: var(--nav-row-h);
   padding: 2px var(--space-2);
   border: 0;
   border-radius: var(--radius-md);
   background: none;
   color: var(--ink);
-  font-size: var(--text-md);
+  font-size: var(--nav-text);
   line-height: var(--leading-md);
   text-align: left;
 }
 .source-item > svg {
+  flex: none;
   color: var(--ink-muted);
 }
-.source-item:hover:not(:disabled) {
+.source-item:hover:not(:disabled):not([aria-current="page"]) {
   background: var(--surface-hover);
 }
 .source-item[aria-current="page"] {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 500;
+  background: var(--selection-fill);
+  color: var(--selection-ink);
+  font-weight: 600;
 }
 .source-item[aria-current="page"] > svg {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .source-label {
   flex: 1 1 auto;
@@ -335,8 +352,34 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.source-item .count-badge,
-.source-item .status-dot {
+/* Navigation markers (NavMarker): a status dot for state, a neutral count
+   pill for counts, in the Server and Workload lists and the sidebar places.
+   OK draws nothing (the row's hidden text still says it). */
+.nav-marker {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.nav-marker .count-badge,
+.nav-marker .count-badge:is(.is-warn, .is-danger, .is-ok) {
+  min-width: 18px;
+  padding: 0 5px;
+  background: var(--surface-hover);
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+.nav-marker .status-dot {
+  width: 7px;
+  height: 7px;
+}
+.nav-marker .status-dot.is-ok {
+  display: none;
+}
+.source-item > .count-badge,
+.source-item > .status-dot,
+.source-item > .spinner {
   margin-left: auto;
 }
 .source-chevron {
@@ -369,10 +412,11 @@
   gap: var(--space-1);
   min-width: 0;
 }
+/* The view header: one clear title per view (15 px semibold). */
 .view-title h2 {
-  font-size: var(--text-base);
-  line-height: var(--leading-md);
-  font-weight: 600;
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+  font-weight: var(--weight-title);
   letter-spacing: -0.01em;
   white-space: nowrap;
 }
@@ -403,7 +447,7 @@
   margin: 0;
 }
 .inspector-toggle[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 .toolbar-field {
@@ -500,12 +544,10 @@
   margin-bottom: var(--space-2);
 }
 .view-section-head h3 {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--ink-muted);
-  font-weight: 600;
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  color: var(--section-ink);
+  font-weight: var(--section-weight);
 }
 
 
@@ -590,6 +632,33 @@
   line-height: var(--leading-md);
   max-width: 70ch;
 }
+/* Selected objects use the full available width, including on a phone.
+   The retained list remains mounted to keep its sort, filters and scroll. */
+.view-main[hidden], .toolbar-controls[hidden] { display: none; }
+.view-inspector.is-detail {
+  position: static;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  max-height: none;
+  border-left: 0;
+  background: var(--surface);
+}
+.workspace .server-view .view-inspector.is-detail { max-height: none; }
+.is-detail .inspector-head { flex-wrap: wrap; padding: var(--space-3) var(--space-5); }
+.is-detail .detail-back { flex: 0 0 auto; justify-content: flex-start; width: fit-content; border-color: transparent; background: transparent; padding-inline: 0; }
+.is-detail .inspector-title { flex-basis: 100%; }
+.is-detail .inspector-actions-bar { padding-inline: var(--space-5); }
+.is-detail .inspector-scroll { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--space-5); padding: var(--space-4) var(--space-5); overflow: visible; }
+.is-detail .inspector-block { min-width: 0; }
+.is-detail .inspector-block + .inspector-block { margin-top: 0; }
+.is-detail .inspector-block:first-child { grid-column: 1 / -1; }
+.is-detail .inspector-scroll > :not(.inspector-block) { grid-column: 1 / -1; min-width: 0; }
+.is-detail .perf-sql pre { max-height: none; }
+@media (max-width: 650px) {
+  .is-detail .inspector-head, .is-detail .inspector-actions-bar, .is-detail .inspector-scroll { padding-inline: var(--space-3); }
+  .is-detail .inspector-scroll { grid-template-columns: minmax(0,1fr); gap: var(--space-4); }
+}
 .inspector-scroll p + :is(dl, ul, .perf-sql) {
   margin-top: var(--space-2);
 }
@@ -604,11 +673,10 @@
   align-items: center;
   gap: var(--space-1);
   margin: 0 0 var(--space-1);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--ink-muted);
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  color: var(--section-ink);
+  font-weight: var(--section-weight);
 }
 .inspector-block .hint + .perf-sql,
 .inspector-block .perf-sql + .hint {
@@ -903,6 +971,7 @@
   position: relative;
   max-width: 100%;
   max-height: min(70vh, 760px);
+  scroll-padding: var(--space-6) 36px var(--space-2) var(--space-2);
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -963,14 +1032,73 @@
    in view while the table scrolls sideways. */
 .data-table th.col-menu {
   right: 0;
-  z-index: 2;
+  z-index: 3;
   padding: 0 4px;
   text-align: center;
   overflow: visible;
   box-shadow: -1px 0 0 var(--line);
 }
-.data-table td.col-menu {
+.data-table.is-sized tbody tr > td.col-menu {
+  position: sticky;
+  right: 0;
+  z-index: 2;
   padding: 0;
+  background: var(--surface);
+  box-shadow: -1px 0 0 var(--line);
+}
+/* Sticky cells must stay opaque in hover/selection states as well. The
+   separate colgroup slot lets the last value scroll completely into view. */
+.data-table tbody tr[tabindex]:hover td.col-menu,
+.data-table tbody tr.is-selected td.col-menu,
+.data-table tbody tr.is-selected:hover td.col-menu {
+  background: var(--surface-pane);
+}
+/* Columns scrolled out of view sideways (overlay scroll bars stay hidden
+   until the pointer scrolls): the content fades out toward each edge with
+   more beyond it, so a column cut at the edge reads as scrolled, not covered.
+   On the right the edge is the Columns menu column, which also casts a
+   shadow over the column continuing beneath it. DataTable marks its frame;
+   other sideways scrollers (the Locks blocking tree) sit in .scroll-edges
+   (useScrollEdges in kit.tsx). */
+.data-table-frame[data-more-right] .data-table th.col-menu,
+.data-table-frame[data-more-right] .data-table.is-sized tbody tr > td.col-menu {
+  box-shadow: -1px 0 0 var(--line), -6px 0 8px -4px var(--table-edge-shadow);
+}
+.scroll-edges {
+  position: relative;
+  min-width: 0;
+}
+.data-table-frame[data-more-left]::before,
+.data-table-frame[data-more-right]::after,
+.scroll-edges[data-more-left]::before,
+.scroll-edges[data-more-right]::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  z-index: 4;
+  width: var(--space-6);
+  pointer-events: none;
+}
+/* The header row (32 px, always at the top of the frame) fades into its own
+   gray, the rows into the table surface. */
+.data-table-frame[data-more-left]::before,
+.scroll-edges[data-more-left]::before {
+  left: 1px;
+  background:
+    linear-gradient(to right, var(--surface-subtle), transparent) top / 100% 32px no-repeat,
+    linear-gradient(to right, var(--surface), transparent) 0 32px / 100% calc(100% - 32px) no-repeat;
+}
+.data-table-frame[data-more-right]::after,
+.scroll-edges[data-more-right]::after {
+  right: 1px;
+  background:
+    linear-gradient(to left, var(--surface-subtle), transparent) top / 100% 32px no-repeat,
+    linear-gradient(to left, var(--surface), transparent) 0 32px / 100% calc(100% - 32px) no-repeat;
+}
+/* Beside the Columns menu column (36 px, MENU_COLUMN in kit.tsx). */
+.data-table-frame[data-more-right]::after {
+  right: calc(36px + 1px);
 }
 .data-table tbody tr:last-child td {
   border-bottom: 0;
@@ -1029,7 +1157,7 @@
   display: inline-block;
   min-width: 8px;
   font-size: var(--text-xs);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 /* Column resize handle: the header's right edge (a hairline that turns
    accent on hover and focus). */
@@ -1069,7 +1197,7 @@
   color: var(--ink-muted);
 }
 .table-columns-button[aria-expanded="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 .columns-list {
@@ -1151,12 +1279,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--ink-muted);
-  font-weight: 600;
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  color: var(--section-ink);
+  font-weight: var(--section-weight);
 }
 .grouped-head .count {
   font-size: var(--text-xs);
@@ -1214,6 +1340,15 @@ button.grouped-row.is-selected:hover {
 .grouped-row > .status-pill {
   flex: none;
   width: 92px;
+}
+/* A row without a status keeps the status column in a list that has one,
+   so labels line up. */
+@media (min-width: 651px) {
+  .grouped-rows:has(.grouped-row > .status-pill) .grouped-row:not(:has(> .status-pill))::before {
+    content: "";
+    flex: none;
+    width: 92px;
+  }
 }
 .grouped-row > svg {
   color: var(--ink-faint);
@@ -1281,33 +1416,55 @@ button.grouped-row.is-selected:hover {
   padding: 0 var(--space-1);
 }
 .tile-section-head h3 {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--ink-muted);
-  font-weight: 600;
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  color: var(--section-ink);
+  font-weight: var(--section-weight);
 }
-/* Metric tiles share one hairline grid (one frame, a divider between
-   tiles) instead of floating as separate cards. */
+/* Every tile in a grid has the same width. The column count follows the tile
+   count (one row up to six, rows of four for seven or eight) and the room the
+   frame has: a row that does not fit becomes balanced rows (six as 3 + 3,
+   four as 2 + 2) rather than one tile stretched across a row. A track needs
+   150 px plus the 8 px gap. */
+.tile-grid-frame {
+  container: tiles / inline-size;
+}
 .tile-grid {
+  --cols: var(--tiles, 4);
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
-  gap: 0;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  /* Cells left empty in the last row read as a gutter, not as a missing tile. */
-  background: var(--surface-subtle);
+}
+/* Six across leaves about 156 px a tile: a tighter inline padding keeps a
+   label such as "Statements from clients" whole. Every grid at this width
+   takes it, so labels in stacked grids (Health) start on the same line. */
+@container tiles (min-width: 940px) {
+  .tile-grid .metric-tile { padding-inline: var(--space-2); }
+}
+@container tiles (max-width: 939px) {
+  .tile-grid:is([data-tiles="6"], [data-tiles="many"]) { --cols: 3; }
+}
+@container tiles (max-width: 781px) {
+  .tile-grid[data-tiles="5"] { --cols: 3; }
+}
+@container tiles (max-width: 623px) {
+  .tile-grid:is([data-tiles="4"], [data-tiles="7"], [data-tiles="8"]) { --cols: 2; }
+}
+@container tiles (max-width: 465px) {
+  .tile-grid:is([data-tiles="3"], [data-tiles="5"], [data-tiles="6"], [data-tiles="many"]) { --cols: 2; }
+}
+@container tiles (max-width: 307px) {
+  .tile-grid[data-tiles] { --cols: 1; }
 }
 .tile-item {
   min-width: 0;
-  box-shadow:
-    1px 0 0 var(--line),
-    0 1px 0 var(--line);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
 }
 .metric-tile {
   display: flex;
@@ -1510,6 +1667,11 @@ button.metric-tile.is-selected:hover {
   }
   .grouped-row > .status-pill {
     width: auto;
+  }
+  /* A quiet OK draws nothing: drop its gap so the label starts where an
+     unrated row's label does. */
+  .grouped-row:not(.is-wrapping) > .status-pill.is-quiet.is-ok {
+    margin-inline-end: calc(-1 * var(--space-3));
   }
   .row-detail {
     display: none;
@@ -1742,11 +1904,6 @@ button.metric-tile.is-selected:hover {
 .data-table-frame.density-default {
   --row-h: 32px;
 }
-/* This clearance is included in DataTable's measured/minimum column widths.
-   The sticky menu must not paint over the final header or its sort arrow. */
-.data-table :is(th, td):nth-last-child(2) {
-  padding-right: calc(var(--space-3) + 36px);
-}
 .data-table tbody .row-spacer td {
   padding: 0;
 }
@@ -1863,4 +2020,104 @@ button.metric-tile.is-selected:hover {
   border-color: var(--line);
   box-shadow: none;
   cursor: not-allowed;
+}
+
+/* ---- Context Menu (Excel & DBeaver-style right click) ---- */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: 380px;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: var(--space-1);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-raised);
+  user-select: none;
+  font-family: inherit;
+}
+.context-menu-header {
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.context-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 6px 10px;
+  min-height: 28px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  width: 100%;
+  box-sizing: border-box;
+}
+.context-menu [role="menuitem"]:hover,
+.context-menu [role="menuitem"]:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent-ink, var(--ink));
+  outline: none;
+}
+.context-menu [role="menuitem"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.context-menu [role="menuitem"].is-danger {
+  color: var(--danger);
+}
+.context-menu [role="menuitem"].is-danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.context-menu-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 0;
+}
+.context-menu-icon {
+  font-size: 14px;
+  width: 16px;
+  text-align: center;
+  flex: none;
+}
+.context-menu-shortcut {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  padding-left: var(--space-3);
+}
+.table-copy-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface-raised);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  padding: 8px 16px;
+  box-shadow: var(--shadow-raised);
+  font-size: var(--text-sm);
+  z-index: 1010;
+  pointer-events: none;
+  animation: fadeInOut 2s ease forwards;
+}
+@keyframes fadeInOut {
+  0% { opacity: 0; transform: translate(-50%, 8px); }
+  15% { opacity: 1; transform: translate(-50%, 0); }
+  80% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -4px); }
 }

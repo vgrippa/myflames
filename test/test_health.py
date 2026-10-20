@@ -884,6 +884,24 @@ class TestDiagnostics(HealthCase):
         self.assertEqual((d['status'], d['recommendation']), ('ok', None))
         self.assertIn('meets the rule of thumb of about an hour', d['verdict'])
 
+    def test_checkpoint_pressure_does_not_recommend_a_noop_redo_resize(self):
+        cap = 1 << 30  # Already aligned to the 256 MiB rounding increment.
+        for engine in ('mysql', 'mariadb'):
+            for fraction in (0.74, 0.85):
+                with self.subTest(engine=engine, fraction=fraction):
+                    if engine == 'mysql':
+                        variables = dict(MYSQL_VARS, innodb_redo_log_capacity=str(cap))
+                        first, second = self.lsn(0, 1000, 0, 1000 - int(fraction * cap))
+                    else:
+                        variables = dict(MARIADB_VARS, innodb_log_file_size=str(cap))
+                        first = dict(BASE, Innodb_checkpoint_age='0')
+                        second = dict(after(Innodb_os_log_written=1000),
+                                      Innodb_checkpoint_age=str(int(fraction * cap)))
+                    d, _ = self.run_diag('redo', second, variables, first=first)
+                    self.assertIn(d['status'], ('watch', 'problem'))
+                    self.assertIn('checkpoint age', d['verdict'].lower())
+                    self.assertIsNone(d['recommendation'])
+
     def test_redo_checkpoint_age_thresholds_on_mysql(self):
         cap = 104857600
         # 74% of the capacity in the second sample: flushing harder (watch).
@@ -927,6 +945,23 @@ class TestDiagnostics(HealthCase):
         no_max = dict(after(Innodb_os_log_written=1000), Innodb_checkpoint_age='72000000')
         d, _ = self.run_diag('redo', no_max, MARIADB_VARS, first=dict(BASE, Innodb_checkpoint_age='1000'))
         self.assertEqual(d['status'], 'watch')
+
+    def test_correctness_regression_mariadb_redo_resize_version(self):
+        # MySQL's separate legacy multi-file advice is covered below.
+        for version in ('10.6.25', '10.8.8', '10.9.0', '10.9.1', '10.11.19', '11.4.13'):
+            with self.subTest(version=version):
+                variables = dict(MARIADB_VARS, version=version + '-MariaDB')
+                d, _ = self.run_diag('redo', after(Innodb_os_log_written=1048576 * 10), variables)
+                text = d['recommendation']['text']
+                if version in ('10.6.25', '10.8.8', '10.9.0'):
+                    self.assertIn('innodb_log_file_size = 4026531840', text)
+                    self.assertIn('[mysqld]', text)
+                    self.assertIn('restart', text)
+                    self.assertNotIn('SET ', text)
+                    self.assertNotIn('resizes it online', text)
+                else:
+                    self.assertIn('SET GLOBAL innodb_log_file_size = 4026531840;', text)
+                    self.assertIn('resizes it online', text)
 
     def test_redo_on_old_mysql_uses_the_legacy_variables(self):
         old = dict(MYSQL_VARS, version='8.0.28', innodb_log_file_size='50331648', innodb_log_files_in_group='2')
@@ -1084,6 +1119,39 @@ class TestDiagnostics(HealthCase):
         d, report = self.run_diag('tmp_tables', after(Created_tmp_tables=100, Created_tmp_disk_tables=30))
         self.assertNotIn('hit_max_ram', numbers(d))
         self.assertFalse(any('Count_hit' in n for n in report['notes']))
+
+    def test_correctness_regression_temptable_per_table_version(self):
+        # MariaDB and MySQL MEMORY keep their per-table limit (tested above).
+        for version in ('8.0.27', '8.0.28', '8.4.11'):
+            with self.subTest(version=version):
+                d, _ = self.run_diag('tmp_tables', after(Created_tmp_tables=100, Created_tmp_disk_tables=30),
+                                     dict(MYSQL_VARS, version=version))
+                text = json.dumps(d['recommendation'])
+                if version == '8.0.27':
+                    self.assertIn('Before MySQL 8.0.28 TempTable has no per-table limit', d['why'])
+                    self.assertNotIn('tmp_table_size', text)
+                    self.assertEqual(d['recommendation']['sql'], 'SET PERSIST temptable_max_ram = <bytes>;')
+                    self.assertIn('all TempTable tables share', d['recommendation']['caveat'])
+                else:
+                    self.assertIn('up to tmp_table_size', d['why'])
+                    self.assertIn('SET SESSION tmp_table_size', text)
+
+    def test_correctness_regression_temptable_limit_hit_action(self):
+        # These counters exist only on MySQL 9.1+; MariaDB cannot emit them.
+        first = dict(BASE, Count_hit_tmp_table_size='0', TempTable_count_hit_max_ram='0')
+        for table_hits, ram_hits in ((0, 30), (5, 0), (5, 30)):
+            with self.subTest(table_hits=table_hits, ram_hits=ram_hits):
+                second = dict(after(Created_tmp_tables=100, Created_tmp_disk_tables=30),
+                              Count_hit_tmp_table_size=str(table_hits), TempTable_count_hit_max_ram=str(ram_hits))
+                d, _ = self.run_diag('tmp_tables', second, dict(MYSQL_VARS, version='9.7.2'), first=first)
+                action = d['recommendation']
+                if not table_hits:
+                    self.assertEqual(action.get('sql'), 'SET PERSIST temptable_max_ram = <bytes>;')
+                    self.assertNotIn('SET SESSION tmp_table_size', json.dumps(action))
+                    self.assertIn('all TempTable tables share', action['caveat'])
+                else:
+                    self.assertIn('SET SESSION tmp_table_size', action['text'])
+                    self.assertNotIn('SET PERSIST temptable_max_ram', json.dumps(action))
 
     def test_sorts(self):
         d, report = self.run_diag('sorts', after(Sort_merge_passes=100, Sort_range=40, Sort_scan=10))

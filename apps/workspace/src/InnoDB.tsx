@@ -4,7 +4,8 @@
 // summary; every number, the rules, and the links (the deadlock to Locks, old
 // transactions to Sessions) are in the inspector. The raw text is fetched only
 // when asked, behind "Show raw output", for support.
-import type { ReactNode } from "react";
+import { type ReactNode } from "react";
+import { useOpenRead } from "./viewOnScreen";
 import { api, type Connection, type InnodbItem, type InnodbReport, type InnodbSection } from "./api";
 import type { ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
@@ -171,6 +172,8 @@ export function InnodbView({
     );
   }
 
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!loading || reads.running(), read: () => { void load(); } });
+
   const sections = report?.sections || [];
   const flagged = sections.filter((s) => s.status === "watch" || s.status === "problem").sort((a, b) => toneRank(a.status) - toneRank(b.status));
   const [type, name, itemKey] = selection.key.split(":");
@@ -332,7 +335,7 @@ export function InnodbView({
                 title={
                   <>
                     <span className="innodb-section-title">{section.title}</span>
-                    {section.present ? <StatusPill tone={tone(section.status)} /> : <StatusPill tone="off" label="Not in output" />}
+                    {section.present ? <StatusPill tone={tone(section.status)} quiet /> : <StatusPill tone="off" label="Not in output" />}
                     <span className="innodb-section-summary" title={section.summary}>{section.summary}</span>
                   </>
                 }

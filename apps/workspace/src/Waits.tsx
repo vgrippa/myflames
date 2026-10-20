@@ -5,6 +5,7 @@
 // and never shown as a share of a total: table I/O includes the file I/O and
 // lock waits inside it.
 import { useEffect, useRef, useState } from "react";
+import { useOpenRead } from "./viewOnScreen";
 import { api, type Connection, type WaitClass, type WaitCoverage, type WaitEvent, type WaitsReport } from "./api";
 import { WINDOW_INTERVALS, type ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
@@ -85,13 +86,14 @@ export function WaitsView({
   }
   const loadRef = useRef(load);
   loadRef.current = load;
-  // The wait summary is cheap to read, so automatic refresh is offered
-  // (opt-in, and only while the view is on screen).
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!loading || reads.running(), read: () => { void load(); } });
+
   const running = reads.running;
   useEffect(() => {
     if (!auto) return;
     const timer = window.setInterval(() => {
-      const visible = !!root.current && root.current.offsetParent !== null;
+      const view = root.current?.closest<HTMLElement>(".server-view");
+      const visible = !!view && view.offsetParent !== null;
       if (!document.hidden && visible && !disabled && !running()) loadRef.current();
     }, auto * 1000);
     return () => window.clearInterval(timer);

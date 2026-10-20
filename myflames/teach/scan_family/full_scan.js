@@ -45,14 +45,14 @@ function buildStage() {
   var tableH = USERS.length * rowH + 10;
 
   var tableLbl = anim.svgEl("text", {
-    x: leftX, y: 24, "font-size": 13, "font-weight": 700, fill: "#7c2d12"
+    x: leftX, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   tableLbl.textContent = "users table — full scan reads every row";
   svg.appendChild(tableLbl);
 
   var tableRect = anim.svgEl("rect", {
     x: leftX, y: topY, width: tableW, height: tableH, rx: 8, ry: 8,
-    fill: "#fff7ed", stroke: "#fdba74", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build-soft)", "stroke-width": 1.5
   });
   svg.appendChild(tableRect);
 
@@ -62,11 +62,11 @@ function buildStage() {
     var y = topY + 6 + i * rowH;
     var r = anim.svgEl("rect", {
       x: leftX + 8, y: y, width: tableW - 16, height: rowH - 4, rx: 5, ry: 5,
-      fill: "#ffedd5", stroke: "#fed7aa", "stroke-width": 1
+      fill: "var(--svg-build-soft)", stroke: "var(--svg-build-soft)", "stroke-width": 1
     });
     svg.appendChild(r);
     var t = anim.svgEl("text", {
-      x: leftX + 18, y: y + 17, "font-size": 11, "font-weight": 600, fill: "#7c2d12"
+      x: leftX + 18, y: y + 17, "font-size": 11, "font-weight": 600, fill: "var(--svg-build-ink)"
     });
     t.textContent = "id=" + u.id + " " + u.name + " country=" + u.country;
     svg.appendChild(t);
@@ -74,12 +74,12 @@ function buildStage() {
   }
 
   // Scanner highlight: stroke-only so the row text underneath stays
-  // legible. Earlier this used a 0.95-opacity fill ("#fef3c7") which
+  // legible. Earlier this used a 0.95-opacity fill ("var(--svg-build-soft)") which
   // sat on top of the row text and washed it out (user-reported bug
   // 2026-04-24 — "I can't see the letters").
   var scanner = anim.svgEl("rect", {
     x: leftX + 10, y: topY + 8, width: tableW - 20, height: rowH - 8, rx: 6, ry: 6,
-    fill: "none", stroke: "#f59e0b", "stroke-width": 3,
+    fill: "none", stroke: "var(--svg-build)", "stroke-width": 3,
     "pointer-events": "none"
   });
   svg.appendChild(scanner);
@@ -90,21 +90,21 @@ function buildStage() {
   var resultH = 230;
 
   var outLbl = anim.svgEl("text", {
-    x: resultX, y: 24, "font-size": 13, "font-weight": 700, fill: "#065f46"
+    x: resultX, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"
   });
   outLbl.textContent = "predicate matches (country='US')";
   svg.appendChild(outLbl);
 
   var outRect = anim.svgEl("rect", {
     x: resultX, y: resultY, width: resultW, height: resultH, rx: 8, ry: 8,
-    fill: "#ecfdf5", stroke: "#34d399", "stroke-width": 1.5
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)", "stroke-width": 1.5
   });
   svg.appendChild(outRect);
 
   var resultRows = [];
   for (var j = 0; j < 5; j++) {
     var rr = anim.svgEl("text", {
-      x: resultX + 12, y: resultY + 24 + j * 20, "font-size": 11, "font-weight": 600, fill: "#065f46"
+      x: resultX + 12, y: resultY + 24 + j * 20, "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)"
     });
     rr.textContent = "";
     svg.appendChild(rr);
@@ -113,7 +113,7 @@ function buildStage() {
 
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 18, "text-anchor": "middle",
-    "font-size": 12.5, "font-weight": 600, fill: "#1f2937"
+    "font-size": 12.5, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -125,13 +125,13 @@ function buildStage() {
 
   var tickerBg = anim.svgEl("rect", {
     x: tickerX, y: tickerY, width: tickerW, height: 160, rx: 8, ry: 8,
-    fill: "#fefce8", stroke: "#fbbf24", "stroke-width": 1.2, opacity: 0.0
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.2, opacity: 0.0
   });
   svg.appendChild(tickerBg);
 
   var tickerTitle = anim.svgEl("text", {
     x: tickerX + tickerW / 2, y: tickerY + 16, "text-anchor": "middle",
-    "font-size": 10, "font-weight": 700, fill: "#92400e",
+    "font-size": 10, "font-weight": 700, fill: "var(--svg-build-ink)",
     "text-transform": "uppercase", "letter-spacing": "0.5", opacity: 0.0
   });
   tickerTitle.textContent = "LIVE COST";
@@ -151,14 +151,14 @@ function buildStage() {
   for (var m = 0; m < metricDefs.length; m++) {
     var my = tickerY + 26 + m * 22;
     var lbl = anim.svgEl("text", {
-      x: tickerX + 10, y: my + 12, "font-size": 10, fill: "#78716c",
+      x: tickerX + 10, y: my + 12, "font-size": 10, fill: "var(--svg-ink-muted)",
       "font-weight": 600, opacity: 0.0
     });
     lbl.textContent = metricDefs[m].label;
     svg.appendChild(lbl);
     var val = anim.svgEl("text", {
       x: tickerX + tickerW - 10, y: my + 12, "text-anchor": "end",
-      "font-size": 12, "font-weight": 700, fill: "#1c1917",
+      "font-size": 12, "font-weight": 700, fill: "var(--svg-ink)",
       "font-variant-numeric": "tabular-nums", opacity: 0.0
     });
     val.textContent = "—";
@@ -184,8 +184,8 @@ function buildStage() {
 function resetStage() {
   if (!stage) return;
   for (var i = 0; i < stage.rows.length; i++) {
-    stage.rows[i].bg.setAttribute("fill", "#ffedd5");
-    stage.rows[i].bg.setAttribute("stroke", "#fed7aa");
+    stage.rows[i].bg.setAttribute("fill", "var(--svg-build-soft)");
+    stage.rows[i].bg.setAttribute("stroke", "var(--svg-build-soft)");
   }
   stage.scanner.setAttribute("y", 50);
   for (var j = 0; j < stage.resultRows.length; j++) stage.resultRows[j].textContent = "";
@@ -226,12 +226,12 @@ function updateTicker(progress) {
 
   // Color: amplification red when high
   if (rowsReturned > 0 && rowsRead / rowsReturned > 2) {
-    tk.metrics[5].val.setAttribute("fill", "#dc2626");
+    tk.metrics[5].val.setAttribute("fill", "var(--svg-danger)");
   } else {
-    tk.metrics[5].val.setAttribute("fill", "#1c1917");
+    tk.metrics[5].val.setAttribute("fill", "var(--svg-ink)");
   }
   // Indexed path is always green (the comparison baseline)
-  tk.metrics[4].val.setAttribute("fill", "#059669");
+  tk.metrics[4].val.setAttribute("fill", "var(--svg-ok)");
 }
 
 function buildTimeline() {
@@ -269,18 +269,18 @@ function buildTimeline() {
         var y = 50 + idx * 28;
         stage.scanner.setAttribute("y", y);
         for (var k = 0; k < stage.rows.length; k++) {
-          stage.rows[k].bg.setAttribute("fill", "#ffedd5");
-          stage.rows[k].bg.setAttribute("stroke", "#fed7aa");
+          stage.rows[k].bg.setAttribute("fill", "var(--svg-build-soft)");
+          stage.rows[k].bg.setAttribute("stroke", "var(--svg-build-soft)");
         }
-        stage.rows[idx].bg.setAttribute("fill", "#fde68a");
-        stage.rows[idx].bg.setAttribute("stroke", "#f59e0b");
+        stage.rows[idx].bg.setAttribute("fill", "var(--svg-highlight)");
+        stage.rows[idx].bg.setAttribute("stroke", "var(--svg-build)");
         scanned += 1;
 
         var u = stage.rows[idx].data;
         var progress = scanned / totalSample;
         if (u.match) {
-          stage.rows[idx].bg.setAttribute("fill", "#bbf7d0");
-          stage.rows[idx].bg.setAttribute("stroke", "#22c55e");
+          stage.rows[idx].bg.setAttribute("fill", "var(--svg-ok-soft)");
+          stage.rows[idx].bg.setAttribute("stroke", "var(--svg-ok)");
           matched += 1;
           var label = "id=" + u.id + " " + u.name;
           stage.resultRows[Math.min(matched - 1, stage.resultRows.length - 1)].textContent = label;
@@ -291,7 +291,7 @@ function buildTimeline() {
             var matchVal = stage.ticker.metrics[1].val;
             anim.tween({from: 0, to: 1, duration: 400, ease: anim.easeOutCubic,
               onUpdate: function(t) {
-                matchVal.setAttribute("fill", anim.lerpColor("#16a34a", "#1c1917", t));
+                matchVal.setAttribute("fill", anim.lerpColor("var(--svg-ok)", "var(--svg-ink)", t));
               }
             });
           }
@@ -340,9 +340,9 @@ function renderChart(rowSize, selectivityPct, currentRows) {
     xMin: 100, xMax: 1e7,
     xLabel: "Rows in table", yLabel: "Rows touched by access path",
     curves: [
-      { label: "Full table scan O(n)", color: "#b45309",
+      { label: "Full table scan O(n)", color: "var(--svg-danger)",
         fn: function(n) { return n; } },
-      { label: "Indexed range O(log n + k)", color: "#059669",
+      { label: "Indexed range O(log n + k)", color: "var(--svg-token)",
         fn: function(n) { return Math.max(1, Math.log(Math.max(2, n)) / Math.log(2)) + (n * sel); } }
     ],
     current: { x: currentRows },

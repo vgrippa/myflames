@@ -6,7 +6,7 @@
 // the guarded Kill are in the inspector.
 import assert from "node:assert/strict";
 import path from "node:path";
-import { assertPrivilege, privilegeAnswer, load, open, pause, SERVER_GROUPS } from "./perf-harness.mjs";
+import { assertPrivilege, privilegeAnswer, load, open, pause, SERVER_GROUPS, WORKLOAD_GROUPS } from "./perf-harness.mjs";
 
 const active = await load("sessions-mysql-8.4-active.json");
 const all = await load("sessions-mysql-8.4.json");
@@ -52,22 +52,20 @@ const row = (id) => `${view} tbody tr[data-session="${id}"]`;
 const inspectorHas = (pattern) =>
   page.waitForFunction((p) => new RegExp(p, "s").test(document.querySelector(".view-inspector")?.textContent || ""), {}, pattern.source);
 try {
-  await h.server();
-  // Sessions replaces Running queries in the Workload group.
-  assert.deepEqual(await texts(".source-list .source-group:nth-child(2) .source-label"), SERVER_GROUPS.Workload);
+  await h.workload();
+  assert.deepEqual(await texts(".source-list .source-group:nth-child(1) .source-label"), WORKLOAD_GROUPS.Queries);
   assert.equal(await page.$("#server-nav-running"), null);
   await h.view("sessions");
-  assert.match(await text(`${view} .view-empty`), /Every connection, what it runs/);
-  assert.equal(state.seen.length, 0, "nothing is read until asked");
+  // Opening the view reads once, because it is on screen.
+  await page.waitForSelector(`${view} tbody tr`);
+  await h.idle(view);
+  assert.equal(state.seen.length, 1, "opening reads once");
   assert.equal(await page.$eval(`${view} .segmented button[data-value=active]`, (e) => e.getAttribute("aria-pressed")), "true",
     "Active is the default");
   assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0");
-  assert.match(await h.popover("About Sessions"), /Active hides sleeping sessions without a transaction/);
+  assert.match(await h.popover("About Processlist"), /Active hides sleeping sessions without a transaction/);
 
   // Load: the counter strip, one summary line, the table sorted problems first.
-  await button("Load sessions", view + " ");
-  await page.waitForSelector(`${view} tbody tr`);
-  await h.idle(view);
   assert.deepEqual([state.seen[0].active_only, state.seen[0].min_seconds], [true, 0]);
   assert.equal(state.seen[0].connection.host, "127.0.0.1");
   const summary = await text(`${view} .summary-line`);
@@ -106,38 +104,35 @@ try {
   assert.match(idle, /Idle in transaction: a session idle \(Sleep\) inside an open InnoDB transaction keeps its row locks/);
   assert.equal(await page.$('.view-inspector [aria-label^="Show plan"]'), null, "an idle session has no plan");
   assert.equal(await page.$eval('.view-inspector [aria-label="Kill: connection 93"]', (e) => e.disabled), false);
-  // Compact columns retain identity, time and SQL. The Columns menu still
-  // contains detail columns; explicit choices survive inspector toggles.
-  assert.deepEqual(await page.$$eval(`${view} thead th[data-col]`, (els) => els.map((e) => e.dataset.col)),
-    ["status", "id", "time", "statement"]);
-  assert.match(await text(`${view} th[data-col=time]`), /Time \(s\)/);
-  assert.equal(await page.$eval(`${view} [aria-label="Width of ID"]`, (e) => e.getAttribute("role")), "separator");
-  assert.equal(await page.$eval(`${view} [aria-label="Width of Time (s)"]`, (e) => e.getAttribute("role")), "separator");
-  assert.equal(await text(`${row(93)} td[data-col=id]`), "93", "identity remains alongside the compact numeric columns");
+  // Full-width details preserve the list's complete column choices.
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  assert.deepEqual(await page.$$eval(`${view} thead th[data-col]`, els => els.map(e => e.dataset.col)),
+    ["status", "id", "user", "db", "command", "time", "statement", "lock", "flags", "actions"]);
   const readsBeforeColumns = state.seen.length;
   await page.click(`${view} .table-columns-button`);
   await page.click('.popover input[data-col=db]');
   await page.keyboard.press("Escape");
-  assert.ok(await page.$(`${view} th[data-col=db]`));
-  await page.click(`${view} [aria-label="Width of Database"]`, { clickCount: 2 });
-  assert.ok(await page.$(`${view} th[data-col=db]`), "fitting an explicitly shown column keeps it visible");
-  await page.click(`${view} .inspector-toggle`);
-  assert.ok(await page.$(`${view} th[data-col=user]`), "closing the inspector restores secondary columns");
-  await page.click(`${view} .inspector-toggle`);
-  assert.ok(await page.$(`${view} th[data-col=db]`), "explicitly shown columns stay shown");
-  assert.equal(await page.$(`${view} th[data-col=user]`), null);
+  assert.equal(await page.$(`${view} th[data-col=db]`), null);
+  await h.select(row(93));
+  await page.click(".detail-back");
+  assert.equal(await page.$(`${view} th[data-col=db]`), null, "explicit column choices survive details");
   await page.click(`${view} .table-columns-button`);
   await page.click('.popover .columns-reset');
   await page.keyboard.press("Escape");
-  assert.equal(await page.$(`${view} th[data-col=db]`), null, "Reset restores the compact preset");
-  assert.equal(state.seen.length, readsBeforeColumns, "column changes never read the server");
+  assert.ok(await page.$(`${view} th[data-col=db]`), "Reset restores every column");
+  assert.equal(state.seen.length, readsBeforeColumns, "column choices never read the server");
   await page.focus(row(93));
   // A lock wait says what it waits for and opens Locks.
   await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
   await inspectorHas(/Connection 94/);
   assert.match(await h.inspector(), /Waiting \d+ m \d+ s for an InnoDB lock \(a row lock, or a table lock such as AUTO-INC\)/);
   assert.match(await h.inspector(), /UPDATE t SET v = 0 WHERE id = 10/);
+  await page.click(".detail-back");
+  await page.waitForFunction(selector => document.activeElement?.matches(selector), {}, row(94));
   await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
   await inspectorHas(/for a metadata lock \(Waiting for table metadata lock\)/);
   await page.locator(".view-inspector button ::-p-text(Open Locks to see who blocks it)").click();
   await page.waitForSelector("#server-nav-locks[aria-current=page]");
@@ -202,16 +197,17 @@ try {
     { timeout: 20000 },
   );
   assert.equal(state.other.findLast((o) => o.path === "/api/live/explain-connection").body.connection_id, 100);
-  await h.server();
+  await h.workload();
 
   // All: idle and system threads too (a new read); a server thread is never killed.
   state.queue.push({ status: 200, body: all });
+  await page.click(`${view} .detail-back`);
   await page.click(`${view} .segmented button[data-value=all]`);
   await page.waitForSelector(row(5));
   await h.idle(view);
   assert.equal(state.seen.at(-1).active_only, false);
-  // Flags are a detail column, hidden while the inspector is open beside the table.
-  await page.click(`${view} .inspector-toggle`);
+  // Flags remain in the full-width list.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.deepEqual(await page.$$eval(`${row(5)} .pill`, (els) => els.map((e) => e.textContent)), ["Server thread"]);
   await h.select(row(5));
@@ -219,10 +215,18 @@ try {
   assert.equal(await page.$eval('.view-inspector [aria-label="Kill: connection 5"]', (e) => e.disabled), true);
   assert.match(await page.$eval('.view-inspector [aria-label="Kill: connection 5"]', (e) => e.title), /server thread/);
   // The filter narrows the rows on screen; the minimum time is a new read.
-  await page.type(`${view} input[aria-label="Filter sessions"]`, "SLEEP(");
+  await page.click(`${view} .detail-back`);
+  await page.focus(`${view} input[aria-label="Filter sessions"]`);
+  await page.keyboard.type("SLEEP(");
+  await page.waitForFunction(() => document.querySelectorAll(".server-view[data-view=sessions] tbody tr").length === 2);
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.session)), ["97", "103"]);
-  await page.click(`${view} input[aria-label="Filter sessions"]`, { clickCount: 3 });
-  await page.keyboard.press("Backspace");
+  await page.evaluate(() => {
+    const input = document.querySelector(".server-view[data-view=sessions] input[aria-label=\"Filter sessions\"]");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".server-view[data-view=sessions] tbody tr").length > 2);
   await page.locator(`${view} input[aria-label="Running at least (seconds)"]`).fill("30");
   await h.refresh();
   await h.idle(view);
@@ -264,12 +268,12 @@ try {
   await page.select(`${view} .auto-refresh select`, "0");
   await h.idle(view);
 
-  // Narrow: the view is pushed with a back button; the inspector is a sheet that Escape closes.
+  // Narrow: the view is pushed with a back button; details use the full work area that Escape closes.
   await page.setViewport({ width: 390, height: 844 });
   await pause(250);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.click(row(97));
-  await page.waitForSelector(".view-inspector.is-sheet");
+  await page.waitForSelector(".view-inspector.is-detail");
   await page.waitForFunction(() => document.activeElement?.classList.contains("inspector-close"));
   await page.screenshot({ path: path.join(h.shots, "sessions-390.png") });
   await page.keyboard.press("Escape");
@@ -282,11 +286,11 @@ try {
   assert.equal(JSON.stringify(saved.state).includes("sessions-1.0"), false, "reports are not saved");
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   await page.reload({ waitUntil: "networkidle0" });
-  await h.server();
+  await h.workload();
   await page.waitForSelector("#server-nav-sessions[aria-current=page]");
   assert.equal(await page.$eval(`${view} .segmented button[data-value=all]`, (e) => e.getAttribute("aria-pressed")), "true");
   assert.equal(await page.$eval(`${view} input[aria-label="Running at least (seconds)"]`, (e) => e.value), "30");
-  assert.ok(await page.$(`${view} .view-empty`));
+  await page.waitForSelector(`${view} tbody tr`);
 
   // Provider denials do not block Load/Refresh or hide actions. Own-user
   // KILL uses kill_own, independently of another user's generic denial.

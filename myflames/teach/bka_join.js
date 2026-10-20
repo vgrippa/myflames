@@ -42,12 +42,12 @@ function buildStage() {
   var bufY = 30, bufH = 90;
   var bufBg = anim.svgEl("rect", {
     x: 20, y: bufY, width: W - 40, height: bufH, rx: 10, ry: 10,
-    fill: "#f3e8ff", stroke: "#a855f7", "stroke-width": 1.5
+    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5
   });
   svg.appendChild(bufBg);
 
   var bufTitle = anim.svgEl("text", {
-    x: 32, y: bufY + 20, "font-size": 12, "font-weight": 700, fill: "#6b21a8"
+    x: 32, y: bufY + 20, "font-size": 12, "font-weight": 700, fill: "var(--svg-group)"
   });
   bufTitle.textContent = "Join buffer — collecting outer-row keys";
   svg.appendChild(bufTitle);
@@ -60,12 +60,12 @@ function buildStage() {
     var px = pillStartX + i * (pillW + pillGap);
     var pill = anim.svgEl("rect", {
       x: px, y: pillY, width: pillW, height: pillH, rx: 13, ry: 13,
-      fill: "#e9d5ff", stroke: "#c084fc", "stroke-width": 1, opacity: 0
+      fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1, opacity: 0
     });
     svg.appendChild(pill);
     var ptxt = anim.svgEl("text", {
       x: px + pillW / 2, y: pillY + 16, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 600, fill: "#581c87", opacity: 0
+      "font-size": 9, "font-weight": 600, fill: "var(--svg-group)", opacity: 0
     });
     ptxt.textContent = "dept=" + OUTER_ROWS[i].dept + " (#" + OUTER_ROWS[i].id + ")";
     svg.appendChild(ptxt);
@@ -76,12 +76,12 @@ function buildStage() {
   var sortY = bufY + bufH + 20, sortH = 80;
   var sortBg = anim.svgEl("rect", {
     x: 20, y: sortY, width: W - 40, height: sortH, rx: 10, ry: 10,
-    fill: "#eff6ff", stroke: "#3b82f6", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(sortBg);
 
   var sortTitle = anim.svgEl("text", {
-    x: 32, y: sortY + 20, "font-size": 12, "font-weight": 700, fill: "#1e40af"
+    x: 32, y: sortY + 20, "font-size": 12, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   sortTitle.textContent = "Sort by rowid \u2192 MRR batch sent to inner B+tree";
   svg.appendChild(sortTitle);
@@ -92,12 +92,12 @@ function buildStage() {
     var spx = pillStartX + s * (pillW + pillGap);
     var sp = anim.svgEl("rect", {
       x: spx, y: spY, width: pillW, height: pillH, rx: 13, ry: 13,
-      fill: "#dbeafe", stroke: "#60a5fa", "stroke-width": 1, opacity: 0
+      fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1, opacity: 0
     });
     svg.appendChild(sp);
     var stxt = anim.svgEl("text", {
       x: spx + pillW / 2, y: spY + 16, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 600, fill: "#1e3a8a", opacity: 0
+      "font-size": 9, "font-weight": 600, fill: "var(--svg-token-ink)", opacity: 0
     });
     stxt.textContent = "";
     svg.appendChild(stxt);
@@ -107,7 +107,7 @@ function buildStage() {
   // Arrow from sort zone to read zone
   var arrowMid = anim.svgEl("line", {
     x1: W / 2, y1: sortY + sortH, x2: W / 2, y2: sortY + sortH + 18,
-    stroke: "#3b82f6", "stroke-width": 2, "stroke-dasharray": "4,3",
+    stroke: "var(--svg-token)", "stroke-width": 2, "stroke-dasharray": "4,3",
     "marker-end": "", opacity: 0
   });
   svg.appendChild(arrowMid);
@@ -116,12 +116,12 @@ function buildStage() {
   var readY = sortY + sortH + 20, readH = 100;
   var readBg = anim.svgEl("rect", {
     x: 20, y: readY, width: W - 40, height: readH, rx: 10, ry: 10,
-    fill: "#ecfdf5", stroke: "#10b981", "stroke-width": 1.5
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5
   });
   svg.appendChild(readBg);
 
   var readTitle = anim.svgEl("text", {
-    x: 32, y: readY + 20, "font-size": 12, "font-weight": 700, fill: "#065f46"
+    x: 32, y: readY + 20, "font-size": 12, "font-weight": 700, fill: "var(--svg-ok)"
   });
   readTitle.textContent = "Sequential disk read — matching rows in rowid order";
   svg.appendChild(readTitle);
@@ -133,18 +133,18 @@ function buildStage() {
     var rx = pillStartX + r * (slotW + slotGap);
     var slot = anim.svgEl("rect", {
       x: rx, y: slotY, width: slotW, height: slotH, rx: 8, ry: 8,
-      fill: "#d1fae5", stroke: "#6ee7b7", "stroke-width": 1, opacity: 0
+      fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)", "stroke-width": 1, opacity: 0
     });
     svg.appendChild(slot);
     var rlbl = anim.svgEl("text", {
       x: rx + slotW / 2, y: slotY + 14, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 600, fill: "#064e3b", opacity: 0
+      "font-size": 9, "font-weight": 600, fill: "var(--svg-ok)", opacity: 0
     });
     rlbl.textContent = "";
     svg.appendChild(rlbl);
     var rlbl2 = anim.svgEl("text", {
       x: rx + slotW / 2, y: slotY + 28, "text-anchor": "middle",
-      "font-size": 8, "font-weight": 600, fill: "#047857", opacity: 0
+      "font-size": 8, "font-weight": 600, fill: "var(--svg-ok)", opacity: 0
     });
     rlbl2.textContent = "";
     svg.appendChild(rlbl2);
@@ -154,14 +154,14 @@ function buildStage() {
   // Sweep bar for sequential read
   var sweep = anim.svgEl("rect", {
     x: 20, y: readY, width: 4, height: readH,
-    fill: "#059669", opacity: 0, rx: 2, ry: 2
+    fill: "var(--svg-ok)", opacity: 0, rx: 2, ry: 2
   });
   svg.appendChild(sweep);
 
   // Status label
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 10, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 600, fill: "#111827"
+    "font-size": 12, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -319,15 +319,15 @@ function renderChart(outerRows, innerRows, keySize) {
     xMin: 100, xMax: 1e6,
     xLabel: "Outer (driving) rows", yLabel: "I/O operations",
     curves: [
-      { label: "Simple NLJ: outer \u00d7 height (random)", color: "#dc2626",
+      { label: "Simple NLJ: outer \u00d7 height (random)", color: "var(--svg-danger)",
         fn: function(n) { return n * height; } },
-      { label: "BKA + MRR: batches \u00d7 (height + rpb) (seq)", color: "#059669",
+      { label: "BKA + MRR: batches \u00d7 (height + rpb) (seq)", color: "var(--svg-ok)",
         fn: function(n) {
           var c = teachRuntime.readControls();
           var cost = bkaCost(n, c.inner_rows, c.row_size, c.jbs, c.key_size);
           return cost.seqIosWith;
         } },
-      { label: "Full scan: inner_rows", color: "#9ca3af",
+      { label: "Full scan: inner_rows", color: "var(--svg-ink-muted)",
         fn: function(n) { return innerRows; } }
     ],
     current: { x: outerRows },

@@ -550,6 +550,93 @@ class TestReviewGate(unittest.TestCase):
                 self.assertEqual(self.kind(sql), 'write')
         self.assertEqual(self.kind('SET STATEMENT max_statement_time = 1 FOR SELECT 1'), 'read')
 
+    def test_15b_set_value_with_a_call_is_a_write(self):
+        """A read variable assigned from a function call, user variable or
+        subquery is a write: the value can run a stored function or take a lock."""
+        for sql in ("SET SESSION group_concat_max_len = my_writer()",
+                    "SET SESSION group_concat_max_len = GET_LOCK('a', 1)",
+                    "SET max_execution_time = (SELECT 1)",
+                    "SET SESSION group_concat_max_len = @a := 5",
+                    "SET SESSION time_zone = '+00:00', max_execution_time = db.f(1)"):
+            with self.subTest(sql=sql):
+                self.assertEqual(self.kind(sql), 'write')
+        for sql in ('SET SESSION group_concat_max_len = 1000000', "SET SESSION time_zone = 'a(b'"):
+            with self.subTest(sql=sql):
+                self.assertEqual(self.kind(sql), 'read')
+
+    def test_15c_set_values_that_can_write_are_writes(self):
+        """Security review: calls named in non-ASCII or with $, quoted names
+        (ANSI_QUOTES "f" is masked as a string), MariaDB NEXT VALUE FOR and
+        ORACLE-mode seq.NEXTVAL, and every value inside MariaDB SET STATEMENT
+        (set_stmt_option takes set_expr_or_default) can change state."""
+        for sql in ('SET time_zone = "f"()',
+                    "SET time_zone = 'f' ()",
+                    'SET sql_select_limit = é()',
+                    'SET sql_select_limit = €()',
+                    'SET sql_select_limit = ©()',
+                    'SET sql_select_limit = 。()',
+                    'SET sql_select_limit = 1$()',
+                    'SET sql_select_limit = \u00a0()',
+                    'SET sql_select_limit = (TABLE v)',
+                    'SET sql_select_limit = NEXT VALUE FOR db.s',
+                    'SET sql_select_limit = next  value  for s',
+                    'SET sql_select_limit = s.NEXTVAL',
+                    'SET sql_select_limit = db.s.`nextval`',
+                    "SET STATEMENT max_statement_time = GET_LOCK('x',1) FOR SELECT 1",
+                    'SET STATEMENT max_statement_time = (@x := 5) FOR SELECT 1',
+                    'SET STATEMENT max_statement_time = 1, sql_select_limit = f() FOR SELECT 1',
+                    'SET time_zone = CONVERT(f() USING utf8mb4)',
+                    "SET time_zone = CONCAT(CONVERT(X'41' USING utf8mb4))",
+                    "SET time_zone = CONVERT(X'41' USING utf8mb4), sql_select_limit = f()"):
+            with self.subTest(sql=sql):
+                self.assertEqual(self.kind(sql), 'write')
+                self.assertEqual(dbops.decide(dbops.classify(sql), 'development', True)['action'], 'refuse')
+
+    def test_15d_reads_myflames_sends_stay_reads(self):
+        """Plain values, and myflames' own hex text literal (the exact
+        CONVERT(X'..' USING utf8mb4) form), stay reads, so Parameters session
+        changes keep working on read-only connections."""
+        from myflames import perf_common, variables
+        reads = ["SET time_zone = '+00:00'", 'SET NAMES utf8mb4', 'SET SESSION sql_select_limit = 10',
+                 "SET @@session.optimizer_switch = 'index_merge=off'",
+                 "SET SESSION time_zone = 'SYSTEM'", 'SET SESSION explain_json_format_version=2',
+                 'SET explain_json_format_version=2', 'SET SESSION lock_wait_timeout = 5',
+                 'SET SESSION innodb_lock_wait_timeout = 5', 'SET SESSION information_schema_stats_expiry = 0',
+                 "SET SESSION optimizer_trace='enabled=on'", "SET SESSION optimizer_switch='mrr=on'",
+                 'SET SESSION TRANSACTION READ ONLY', 'SET time_zone = @@global.time_zone',
+                 'SET max_execution_time = 1.5', 'SET sql_select_limit = s.CURRVAL',
+                 'SET STATEMENT max_statement_time = 5 FOR SELECT 1',
+                 'SET SESSION time_zone = ' + perf_common.literal('Europe/Zürich'),
+                 "SET time_zone = CONVERT( X'41'  USING  UTF8MB4 )",
+                 variables.statement_for('time_zone', 'session', variables._text_literal('Europe/Zürich')),
+                 variables.statement_for('lc_time_names', 'session', variables._text_literal("it's"))]
+        for sql in reads:
+            with self.subTest(sql=sql):
+                self.assertEqual(self.kind(sql), 'read')
+                self.assertEqual(dbops.decide(dbops.classify(sql), 'production', True)['action'], 'allow')
+
+    def test_15e_calls_named_with_any_non_ascii_character_are_not_reads(self):
+        """Both lexers take any byte that starts a multibyte character as an
+        identifier character (MySQL my_ismb1st, MariaDB is_multi_byte_ident),
+        so with utf8mb4 €() calls a stored function: capture and the MCP
+        explain tool must refuse it. Non-ASCII text in strings, plain column
+        names and ASCII white space stay reads."""
+        from myflames import live
+        # Non-ASCII spaces are identifier characters too: CONCAT\u00a0( calls
+        # a function named "CONCAT\u00a0", not CONCAT.
+        for sql in ('SELECT €()', 'SELECT ©(1) FROM t', 'SELECT 。()', 'SELECT a FROM t WHERE €x(a) > 0',
+                    'SELECT db€.f()', 'SELECT \u3000() FROM t', "SELECT CONCAT\u00a0('a')",
+                    "SELECT COUNT\u2007(*) FROM t"):
+            with self.subTest(sql=sql):
+                self.assertNotEqual(self.kind(sql), 'read')
+                with self.assertRaises(ValueError):
+                    live.bind_query(sql)
+        for sql in ("SELECT '€()' FROM t", 'SELECT €col FROM t', 'SELECT `€`(1) FROM t',
+                    "SELECT CONCAT('a', '\u00a0')", 'SELECT 1\tFROM\nt'):
+            with self.subTest(sql=sql):
+                expected = 'read' if not sql.startswith('SELECT `') else 'risky'
+                self.assertEqual(self.kind(sql), expected)
+
     def test_16_backslash_commands_inside_optimizer_hints(self):
         """Editor review gate item 10: the client runs backslash commands inside
         /*+ */ hints (SSC_HINT is not a comment to add_line), e.g. \\C latin1."""

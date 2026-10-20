@@ -5,22 +5,22 @@ from . import derived_table, filesort, tmp, full_scan, filter, covering_index
 
 LESSONS = {
     "filesort": {
-        "title": "Filesort — how MySQL sorts without an index",
+        "title": "Filesort: how MySQL sorts without an index",
         "summary": "sort_buffer_size, sorted runs, k-way merge. Why ORDER BY is slow without an index.",
         "render": filesort.render,
     },
     "tmp": {
-        "title": "Temporary tables — in-memory to on-disk conversion",
+        "title": "Temporary tables: in-memory to on-disk conversion",
         "summary": "Watch GROUP BY hit the in-memory temp table limit and convert to on-disk InnoDB (Aria on MariaDB).",
         "render": tmp.render,
     },
     "full_scan": {
-        "title": "Full table scan — why every row gets read",
+        "title": "Full table scan: why every row gets read",
         "summary": "See O(n) row reads in action and compare against indexed access O(log n + k).",
         "render": full_scan.render,
     },
     "filter": {
-        "title": "Filter operator — WHERE predicate row-by-row",
+        "title": "Filter operator: WHERE predicate row-by-row",
         "summary": "Rows entering filter are all evaluated; only matching rows continue.",
         "render": filter.render,
     },
@@ -30,7 +30,7 @@ LESSONS = {
         "render": derived_table.render,
     },
     "covering_index": {
-        "title": "Covering index — why \"Using index\" in EXPLAIN is the goal",
+        "title": "Covering index: why \"Using index\" in EXPLAIN is the goal",
         "summary": "Non-covering vs covering plan; the InnoDB PK-append trick that silently covers many queries.",
         "render": covering_index.render,
     },

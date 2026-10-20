@@ -37,6 +37,8 @@
     "test:server-nav": "npm run build && node test/server-nav.mjs",
     "test:sessions": "npm run build && node test/sessions.mjs",
     "test:innodb": "npm run build && node test/innodb.mjs",
+    "test:errorlog": "npm run build && node test/errorlog.mjs",
+    "test:errorlog-static": "node test/errorlog-static.mjs",
     "test:connection-binding": "npm run build && node test/connection-binding.mjs",
     "test:session-rules": "node test/session-rules.mjs",
     "test:datatable": "npm run build && node test/datatable.mjs",
@@ -44,9 +46,23 @@
     "test:audit": "npm run build && node test/audit.mjs",
     "test:editor": "npm run build && node test/editor.mjs",
     "test:replication": "npm run build && node test/replication.mjs",
-    "test:maintenance": "npm run build && node test/maintenance.mjs"
+    "test:startup-reads": "npm run build && node test/startup-reads.mjs",
+    "test:maintenance-convenience": "npm run build && node test/maintenance-convenience.mjs",
+    "test:maintenance": "npm run build && node test/maintenance.mjs",
+    "test:analysis-projection": "npm run build && node test/analysis-projection.mjs",
+    "test:reviewed-sql-actions": "npm run build && node test/reviewed-sql-actions.mjs",
+    "test:completion": "node test/sql-completion.mjs && npm run build && node test/completion-browser.mjs",
+    "test:desktop-shell": "npm run build && node test/desktop-shell.mjs",
+    "test:editor-fixes": "node test/editor-fixes.mjs",
+    "test:table-data": "npm run build && node test/table-data.mjs",
+    "test:home-workspace": "npm run build && node test/home-workspace.mjs",
+    "test:report-table-exports": "node test/report-table-export.mjs",
+    "test:tuning-rules": "node test/tuning-rules.mjs",
+    "test:tuning-browser": "npm run build && node test/tuning-browser.mjs",
+    "test:tuning": "npm run test:tuning-rules && npm run test:tuning-browser"
   },
   "dependencies": {
+    "mermaid": "11.17.2",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },

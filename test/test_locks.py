@@ -419,9 +419,22 @@ class LockCase(unittest.TestCase):
         self.assertEqual(conn.calls[0][0], DISCOVER_TAG + VERSION_SQL)
         for sql, flags in conn.calls:
             self.assertIn('--comments', flags, sql)
-            self.assertNotRegex(sql, WRITE_WORDS)
+            self.assert_read_statement(sql)
         for sql, _ in conn.calls[1:]:
             self.assertTrue(sql.startswith(LOCKS_TAG), sql)
+
+    def assert_read_statement(self, sql):
+        body = sql[len(LOCKS_TAG):] if sql.startswith(LOCKS_TAG) else sql
+        zone = "SET SESSION time_zone = 'SYSTEM'; "
+        if body.startswith(zone):
+            # Only the module-owned InnoDB transaction-age reads may set a session zone.
+            body = body[len(zone):]
+            self.assertTrue(body.startswith(LOCKS_TAG))
+            body = body[len(LOCKS_TAG):]
+            self.assertTrue(body.startswith('SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF('))
+            self.assertIn('FROM information_schema.INNODB_TRX', body)
+            self.assertNotIn(';', body)
+        self.assertNotRegex(body, WRITE_WORDS)
 
     def report(self, conn, **kwargs):
         result = locks.lock_report(conn, **kwargs)
@@ -431,6 +444,60 @@ class LockCase(unittest.TestCase):
 
 
 # ---- 1. server versions and the data_locks latch ---------------------------------
+
+class TestTransactionTimeZone(unittest.TestCase):
+    def test_transaction_ages_use_system_time_zone(self):
+        for engine, version in (('mysql', '8.4.11'), ('mariadb', '11.4.13-MariaDB')):
+            with self.subTest(engine=engine):
+                def answer(sql):
+                    # Emulate a session zone one hour ahead of SYSTEM.
+                    system = sql.startswith(LOCKS_TAG + "SET SESSION time_zone = 'SYSTEM'; ")
+                    age, wait = (60, 10) if system else (3660, 3610)
+                    return batch([['7', 'LOCK WAIT', '2026-10-19 10:00:00', age, 'lock-1',
+                                   '2026-10-19 10:00:50', wait, 420, 'SELECT 1', None,
+                                   1, 1, 1, 1, 0, 'REPEATABLE READ', '0']])
+                conn = FakeConn(version, [('FROM information_schema.INNODB_TRX', answer)])
+                result = locks._Report(engine, version, (11, 4, 13) if engine == 'mariadb' else (8, 4, 11),
+                                       True, 100, 'all')
+                locks._read_transactions(conn, result)
+                self.assertEqual((result.trx[0]['age_s'], result.trx[0]['wait_s']), (60, 10))
+                self.assertEqual(len(conn.calls), 1)
+                self.assertIn("; " + LOCKS_TAG + 'SELECT ', conn.calls[0][0])
+
+    def test_in_session_review_converts_the_clock_without_changing_time_zone(self):
+        # ALTER review reuses the editor session, whose time_zone must stay intact.
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                seen = []
+                class Reader(object):
+                    def query_lock_rows(self, sql):
+                        seen.append(sql)
+                        converted = "CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')" in sql
+                        return [['7', 'RUNNING', '2026-10-19 10:00:00', '60' if converted else '3660',
+                                 None, None, None, '420']]
+                result = locks._Report(engine, '', (11, 4, 13) if engine == 'mariadb' else (8, 4, 11),
+                                       True, 100, 'all')
+                locks._read_transactions(Reader(), result)
+                self.assertEqual(result.trx[0]['age_s'], 60)
+                self.assertTrue(seen[0].startswith(LOCKS_TAG + 'SELECT '))
+                self.assertNotIn('SET SESSION', seen[0])
+                self.assertNotIn('NOW()', seen[0])
+
+    def test_target_transaction_age_uses_system_time_zone(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                def answer(sql):
+                    system = sql.startswith(LOCKS_TAG + "SET SESSION time_zone = 'SYSTEM'; ")
+                    return batch([['7', 'RUNNING', '2026-10-19 10:00:00', 60 if system else 3660, 1, 0]])
+                conn = FakeConn('', [('FROM information_schema.INNODB_TRX', answer),
+                                     ('FROM information_schema.PROCESSLIST',
+                                      batch([[420, 'app', 'localhost', 'shop', 'Query', 60, 'executing',
+                                              'SELECT 1', None, 999]]))])
+                result, own = locks.read_target(conn, engine, False, 420)
+                self.assertEqual((result['trx']['age_s'], own), (60, 999))
+                self.assertTrue(result['trx_checked'])
+                self.assertIn("; " + LOCKS_TAG + 'SELECT ', conn.calls[-1][0])
+
 
 class TestVersions(LockCase):
     def test_report_captures_server_identity_once_for_both_engines(self):
@@ -2159,7 +2226,7 @@ class TestKillSession(LockCase):
             if sql.startswith(KILL_TAG):
                 self.assertRegex(sql[len(KILL_TAG):], r'^KILL (CONNECTION|QUERY) \d+$')
             else:
-                self.assertNotRegex(sql, WRITE_WORDS)
+                self.assert_read_statement(sql)
         self.assertLessEqual(len(scenario.kills()), 1, 'never more than one KILL')
         return result, scenario
 

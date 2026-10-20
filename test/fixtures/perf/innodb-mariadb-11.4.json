@@ -1018,7 +1018,7 @@
       "view": "health"
      },
      {
-      "label": "Open Configuration",
+      "label": "Open Parameters",
       "view": "config"
      }
     ],

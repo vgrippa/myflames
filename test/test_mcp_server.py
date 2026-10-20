@@ -44,6 +44,63 @@ class TestToolLogic(unittest.TestCase):
         self.assertIn("plan_summary", payload)
         self.assertEqual(payload["source"]["engine"], "mysql")
 
+    def test_explain_query_tool_accepts_only_one_select(self):
+        with mock.patch("myflames.connector.MySQLConnection") as connector:
+            for query in ("SELECT 1; DELETE FROM t", "UPDATE t SET a = 1", "SELECT 1; SELECT 2"):
+                with self.assertRaises(ValueError):
+                    mcp.explain_query_tool(query, "127.0.0.1")
+            connector.assert_not_called()
+            fake = connector.return_value
+            fake.__enter__.return_value = fake
+            fake.explain_analyze.return_value = _read(PLAN)
+            mcp.explain_query_tool("SELECT * FROM users;", "127.0.0.1")
+            fake.explain_analyze.assert_called_once_with("SELECT * FROM users")
+
+    def test_explain_query_tool_runs_inside_a_read_only_transaction(self):
+        """EXPLAIN ANALYZE runs the statement: like capture, the tool sends
+        SET SESSION TRANSACTION READ ONLY, START TRANSACTION READ ONLY, the
+        query and ROLLBACK in that order, in one client session."""
+        from myflames import connector
+        cases = (("mysql", b"8.4.8\n", "EXPLAIN ANALYZE FORMAT=JSON SELECT * FROM users"),
+                 ("mariadb", b"11.4.10-MariaDB\n", "ANALYZE FORMAT=JSON SELECT * FROM users"))
+        for engine, version, explain in cases:
+            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as home:
+                sent = []
+
+                argvs = []
+
+                def fake_run(argv, **kwargs):
+                    sql = argv[-1]
+                    sent.append(sql)
+                    argvs.append(argv)
+                    if "@@version_comment" in sql:
+                        out = b"MySQL Community Server - GPL\n"
+                    elif "@@version" in sql:
+                        out = version
+                    else:
+                        out = _read(PLAN).encode("utf-8")
+                    return subprocess.CompletedProcess(argv, 0, out, b"")
+                env = {"HOME": home, "USERPROFILE": home, "MYFLAMES_SECRET_BACKEND": "vault"}
+                with mock.patch.dict(os.environ, env), \
+                        mock.patch.object(connector.MySQLConnection, "_resolve_binary", return_value="/bin/mysql"), \
+                        mock.patch("myflames.connector._run_bounded", side_effect=fake_run):
+                    os.environ.pop("MYFLAMES_VAULT_PASSPHRASE", None)
+                    digest = mcp.explain_query_tool("SELECT * FROM users -- note", "127.0.0.1")
+                self.assertIn("myflames digest", digest)
+                scripts = [sql for sql in sent if "ANALYZE" in sql]
+                self.assertEqual(len(scripts), 1, sent)
+                script = scripts[0]
+                order = ["SET SESSION TRANSACTION READ ONLY", "START TRANSACTION READ ONLY", explain, "ROLLBACK"]
+                positions = [script.find(part) for part in order]
+                self.assertNotIn(-1, positions, script)
+                self.assertEqual(positions, sorted(positions), script)
+                # The trailing comment ends at a newline before the terminator.
+                self.assertIn("-- note\n;\nROLLBACK", script)
+                self.assertTrue(script.rstrip().endswith("ROLLBACK"), script)
+                # Without --force the client stops at the first failing
+                # statement, so the query never runs outside the transaction.
+                self.assertFalse(any("--force" in argv for argv in argvs))
+
     def test_analyze_plan_tool_default_is_full(self):
         # The internal helper defaults to the complete record — the digest and
         # explain_query paths depend on it. Only the MCP transport wrapper asks
@@ -66,6 +123,30 @@ class TestToolLogic(unittest.TestCase):
         # default on the MCP wrapper must not have starved it.
         digest = mcp.digest_plan_tool(_read(PLAN))
         self.assertIn("myflames digest", digest)
+
+    def test_capture_evidence_matches_cli_digest_warnings(self):
+        from myflames.cli import _sidecar_from_input
+        from myflames.collectors import parse_show_create_table
+        from myflames.digest import build_digest
+        ddl = ("CREATE TABLE `users` (\n  `a` int,\n  `b` int,\n"
+               "  KEY `k_a` (`a`),\n  KEY `k_ab` (`a`,`b`)\n) ENGINE=InnoDB")
+        for engine, version in (('mysql', '8.4.11'), ('mariadb', '11.4.13-MariaDB')):
+            capture = {'schema_version': 'capture-1.0', 'raw': _read(PLAN),
+                       'engine': engine, 'server_version': version,
+                       'schema': {'app.users': parse_show_create_table(ddl)}}
+            text = json.dumps(capture)
+            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as directory:
+                path = os.path.join(directory, 'capture.json')
+                with open(path, 'w', encoding='utf-8') as handle:
+                    handle.write(text)
+                _, expected = _sidecar_from_input(path, quiet=True)
+                self.assertTrue(any(w['category'] == 'redundant_index' for w in expected['warnings']))
+                for detail in ('core', 'full'):
+                    actual = mcp.analyze_plan_tool(text, detail=detail)
+                    self.assertEqual(actual['warnings'], expected['warnings'])
+                    self.assertEqual(actual['source']['engine'], engine)
+                    self.assertEqual(actual['source']['engine_version'], version)
+                self.assertEqual(mcp.digest_plan_tool(text), build_digest(expected))
 
     def test_digest_plan_tool_is_compact_text(self):
         digest = mcp.digest_plan_tool(_read(PLAN))

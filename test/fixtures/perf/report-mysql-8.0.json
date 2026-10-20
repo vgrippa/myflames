@@ -388,11 +388,11 @@
       "problem": 6,
       "watch": 6,
       "unknown": 2,
-      "info": 15,
-      "ok": 26,
+      "info": 16,
+      "ok": 25,
       "findings": 55,
       "status": "problem",
-      "text": "6 problems, 6 to watch, 2 unknown, 26 ok; look first at Sessions idle in a transaction"
+      "text": "6 problems, 6 to watch, 2 unknown, 25 ok; look first at Sessions idle in a transaction"
     },
     "look_first": "sessions.idle_in_trx",
     "findings": {
@@ -419,6 +419,7 @@
       "innodb.adaptive_hash_index": "info",
       "innodb.insert_buffer": "info",
       "health.full_scans": "info",
+      "tables.fragmentation": "info",
       "indexes.full_scans": "info",
       "indexes.unused": "info",
       "config.io_capacity": "info",
@@ -447,7 +448,6 @@
       "health.table_cache": "ok",
       "health.table_definitions": "ok",
       "config.table_open_cache": "ok",
-      "tables.fragmentation": "ok",
       "innodb.file_io": "ok",
       "config.performance_schema": "ok",
       "instruments.views": "ok"

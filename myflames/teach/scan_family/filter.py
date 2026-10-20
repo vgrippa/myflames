@@ -80,7 +80,7 @@ def render() -> str:
 """
     return _html.render_page(
         lesson_id="filter",
-        title="Filter operator — WHERE predicate row-by-row",
+        title="Filter operator: WHERE predicate row-by-row",
         subtitle="Understand the internal execution loop of a Filter stage: evaluate every input row, then keep or discard.",
         version_chip="MySQL 8.4 • MariaDB 11.4",
         controls_html=controls_html,

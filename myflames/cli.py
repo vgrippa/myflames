@@ -11,7 +11,7 @@ from .parser import (
     format_sql,
     build_flame_entries,
     flatten_nodes,
-    enhance_tooltip_flame,
+    enhance_flame_titles,
     analyze_plan,
     render_info_panel,
 )
@@ -159,7 +159,25 @@ def _write_output(content, output_path, quiet=False):
         if not quiet:
             sys.stderr.write("Written to %s\n" % output_path)
     else:
-        sys.stdout.write(content)
+        try:
+            sys.stdout.write(content)
+            sys.stdout.flush()
+        except OSError as e:
+            # A closed pipe (BrokenPipeError) or a full disk: an output
+            # failure under the 0/1/2 contract, exit 2 with a diagnostic.
+            _discard_stdout()
+            _fail("Cannot write to standard output: %s" % (e.strerror or e))
+
+
+def _discard_stdout():
+    """Point stdout at the null device after a failed write, so the
+    interpreter's final flush cannot raise a second, unhandled error."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 def _add_quiet_flag(parser):
@@ -278,17 +296,13 @@ def _maybe_write_sidecar(args, root, analysis, json_text, live_artifacts, query_
             engine = "mariadb"
         elif version_str:
             engine = "mysql"
+        else:
+            engine = _plan_engine(root, live_artifacts.get("capture"))
         if version_str:
             engine_version = version_str
     elif args.input and args.input != "-":
         fixture_path = args.input
-        # Detect engine from the top-level JSON shape
-        try:
-            from .parser import load_explain_json, _is_mariadb_format
-            data = load_explain_json(json_text or "")
-            engine = "mariadb" if _is_mariadb_format(data) else "mysql"
-        except Exception:
-            engine = "unknown"
+        engine = _plan_engine(root)
     else:
         source_type = "stdin"
 
@@ -470,6 +484,17 @@ def _cmd_compare(argv, alias_warning=None):
     _write_output(html, args.output, quiet=args.quiet)
 
 
+def _plan_engine(root, capture=None):
+    """The plan's engine: the one a capture recorded from the server, else
+    the canonical parser's (``parse_explain`` tells a MySQL format-1
+    query_block plan from a MariaDB one). Never detected again from the
+    JSON envelope."""
+    recorded = (capture or {}).get("engine")
+    if recorded in ("mysql", "mariadb"):
+        return recorded
+    return (root or {}).get("engine") or "unknown"
+
+
 def _read_plan_source(input_path, quiet=False):
     """Read a plan file, stdin, a ``capture-1.0`` file, or a MySQL Shell
     diagnostics bundle.
@@ -574,17 +599,14 @@ def _sidecar_from_input(input_path, quiet=False):
         advise(analysis, schema=artifacts["schema"], stats=artifacts["stats"],
                variables=artifacts["variables"], freshness=artifacts["freshness"],
                capture=artifacts["capture"])
-    engine = "unknown"
-    try:
-        from .parser import load_explain_json, _is_mariadb_format
-        engine = "mariadb" if _is_mariadb_format(load_explain_json(raw_text)) else "mysql"
-    except Exception:
-        pass
+    engine = _plan_engine(root, capture)
+    version = (capture or {}).get("server_version")
     from .output_sidecar import build_sidecar
     payload = build_sidecar(
         root, analysis,
         source_type="stdin" if input_path == "-" else "file",
         engine=engine,
+        engine_version=version if isinstance(version, str) and version else None,
         fixture_path=input_path if input_path != "-" else None,
     )
     return raw_text, payload
@@ -929,11 +951,11 @@ def main():
             from .sql_cli import cmd_sql
             cmd_sql(sys.argv[2:])
             return
-        if sys.argv[1] in ("capture", "explore", "top", "sessions", "running", "locks", "innodb", "health",
+        if sys.argv[1] in ("capture", "explore", "top", "sessions", "running", "locks", "innodb", "error-log", "health",
                            "waits", "indexes", "tables", "io", "config", "instruments", "report", "profiles",
                            "audit", "replication"):
             from . import workspace_cli
-            command = getattr(workspace_cli, "cmd_" + sys.argv[1])
+            command = getattr(workspace_cli, "cmd_" + sys.argv[1].replace("-", "_"))
             command(sys.argv[2:])
             return
         if sys.argv[1] in ("privileges", "accounts"):
@@ -987,13 +1009,14 @@ def main():
         add_help=False,
         epilog="""\
 Examples:
-  myflames ui                                           # local browser workspace
+  myflames ui                                           # local browser workspace (deprecated; use desktop app)
   myflames explore explain.json -o explore.html         # interactive branch exploration
   myflames capture -h localhost -u admin -p -e 'SELECT 1' # capture estimates as JSON
   myflames top -h localhost -u admin -p --order avg     # heaviest statements (P_S)
   myflames sessions -h localhost -u admin -p            # connections, idle-in-trx, lock waits
   myflames sessions -h localhost -u admin -p --explain 42 | myflames - > plan.svg
   myflames innodb -h localhost -u admin -p --fail-on problem # SHOW ENGINE INNODB STATUS, parsed
+  myflames error-log -h localhost -u admin -p --fail-on watch # Recent error log entries
   myflames locks -h localhost -u admin -p --waits-only   # who blocks whom (read-only)
   myflames locks -h localhost -u admin -p --kill 42      # end one blocker after you confirm
   myflames health -h localhost -u admin -p --interval 10 # server rates + statuses (no P_S)
@@ -1032,7 +1055,8 @@ Examples:
   myflames teach btree -o btree.html                    # interactive lesson
 
 Subcommands:
-  ui        Open the local Performance workspace in your browser
+  ui        Open the local Performance workspace in a browser (deprecated; use desktop app)
+  sql       Run SQL from -e, -f or stdin in one Query editor session (--format, --yes)
   capture   Capture a live plan and server evidence as JSON (--mode analyze executes)
   explore   Export interactive HTML with branch focus and operator metrics
   top       List the heaviest statements from Performance Schema digests
@@ -1040,6 +1064,7 @@ Subcommands:
   running   Deprecated alias of sessions (statements running now; --explain ID)
   locks     Blocking tree, waiting DDL, transactions, row/metadata locks, deadlock; --kill ID
   innodb    SHOW ENGINE INNODB STATUS parsed: purge, redo, buffer pool, deadlock (--fail-on)
+  error-log Recent error log entries and current-run counts (--level, --limit, --fail-on)
   health    Sample global status twice: diagnostics and rates, ok/watch/problem (--fail-on)
   waits     Top wait events over a window, by class, since start; uninstrumented classes
   indexes   Unused and redundant indexes, tables read mostly by full scans (--schema)
@@ -1381,14 +1406,9 @@ Subcommands:
             family_by_folded=_family_by_folded or None,
         )
         if not args.no_enhance:
-            from .parser import xml_escape
-            op_details = {n["folded_label"]: n["details"] for n in flatten_nodes(root)}
-            import re
-            def repl(m):
-                original = m.group(1).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", '"')
-                enhanced = enhance_tooltip_flame(original, op_details)
-                return "<title>" + xml_escape(enhanced).replace("\n", "&#10;") + "</title>"
-            svg = re.sub(r"<title>([^<]+)</title>", repl, svg)
+            # Each frame's tooltip gets its own operator's details
+            # (parser.enhance_flame_titles: exact lookup, linear in frames).
+            svg = enhance_flame_titles(svg, root)
         # Inject consolidated info panel (How to read + Query Analysis) into flamegraph SVG
         import re as _re
         m_height = _re.search(r'<svg[^>]+height="(\d+)"', svg)

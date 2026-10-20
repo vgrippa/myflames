@@ -42,8 +42,7 @@ def _attr_escape(s):
     # an attribute is ever single-quoted.
     if s is None:
         return ""
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            .replace('"', "&quot;").replace("'", "&#39;")
+    return (xml_escape(s).replace("'", "&#39;")
             .replace("\n", "&#10;").replace("\r", ""))
 
 
@@ -62,7 +61,12 @@ def _row_info(node, root_total, unit_display):
     if abs(total_t - self_t) > 0.001:
         parts.append(f"Total: {_format_time(total_t)}")
     rows = node.get("rows")
-    if rows is not None:
+    if details.get("actual_rows") is None:
+        # No row counter: "not measured", never 0; a MySQL operator that
+        # never ran (null rows and loops): "not executed" (charts/tree.ts).
+        parts.append("Rows: not executed" if details.get("actual_loops") is None
+                     else "Rows: not measured")
+    elif rows is not None:
         parts.append(f"Rows: {float(rows):.0f}")
     loops = node.get("loops")
     if loops and loops > 1:

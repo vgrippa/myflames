@@ -408,6 +408,18 @@ class AccountsTest(unittest.TestCase):
         for name, host in [('x\0y', '%'), ('x', 'bad@host'), ('x', ' host'), ('x', '\n'), (' x', '%')]:
             with self.subTest(name=name, host=host), self.assertRaises(ValueError):
                 a.plan_lock(self.conn, name, host)
+
+    def test_regression_random_password_replace_uses_literal_mode(self):
+        # MySQL alone supports RANDOM PASSWORD ... REPLACE.
+        self.conn = FakeConn(name='admin', host='localhost')
+        password = "current'\\"
+        plan = self.plan('password', random_password=True, current_password=password)
+        sql = plan._statements[0]
+        self.assertEqual(sql, a._with_password_mode(
+            "ALTER USER `admin`@`localhost` IDENTIFIED BY RANDOM PASSWORD REPLACE " + a._password(password)))
+        self.assertIn('NO_BACKSLASH_ESCAPES', sql)
+        self.assertNotIn(password, json.dumps(plan))
+        self.assertIn("REPLACE '[redacted]'", plan['statements'][0])
         with self.assertRaisesRegex(ValueError, 'empty host'):
             a.plan_lock(FakeConn('mariadb'), 'app', '')
         for bad in ('', 'NONE', 'r '):

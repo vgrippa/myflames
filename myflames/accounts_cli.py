@@ -152,9 +152,35 @@ def format_list(report):
     return text
 
 
+def _role_hint(conn, name, host, role):
+    """Diagnose a MariaDB role only after the requested user was not found.
+
+    MySQL roles share the user namespace. Denied role reads cannot prove
+    that a role exists, so keep the original missing-account diagnostic.
+    """
+    if role or not conn.is_mariadb():
+        return None
+    try:
+        candidate = accounts.read_account(conn, name, host, True, include_catalog=False)
+    except (ConnectorError, ValueError):
+        return None
+    if candidate.get("engine") == "mariadb" and candidate.get("exists"):
+        return "%s is a role; repeat the command with --role." % name
+    return None
+
+
+def _read_account(conn, name, host, role):
+    report = accounts.read_account(conn, name, host, role)
+    if not report["exists"]:
+        hint = _role_hint(conn, name, host, role)
+        if hint:
+            report["role_hint"] = hint
+    return report
+
+
 def format_account(a):
     if not a['exists']:
-        return 'No such account.\n'
+        return (a.get('role_hint') or 'No such account.') + '\n'
     name = a['name'] + ('' if a.get('role') and a['engine'] == 'mariadb' else '@' + a['host'])
     lines = [name + (' (role)' if a.get('role') else '')]
     attrs = a.get('attributes') or {}
@@ -219,22 +245,30 @@ def _target(text, columns=None, pattern=False, proxy=None):
 
 def _new_password(args, label):
     """The new password from --password-stdin or a prompt; never argv."""
-    if getattr(args, 'random_password', False):
+    random = getattr(args, 'random_password', False)
+    if random and not getattr(args, 'current_password', False):
         return None, None
     if getattr(args, 'password_stdin', False):
         lines = sys.stdin.read().split('\n')
         password = lines[0].rstrip('\r')
         current = lines[1].rstrip('\r') if getattr(args, 'current_password', False) and len(lines) > 1 else None
-        if not password:
+        if not password and not random:
             raise ValueError('--password-stdin read an empty first line.')
         if getattr(args, 'current_password', False) and not current:
             raise ValueError('--current-password with --password-stdin reads the current password from the second '
                              'line.')
-        return password, current
+        return None if random else password, current
     if not sys.stdin.isatty():
+        if random:
+            raise ValueError('No terminal to ask for the current password: use --password-stdin with the current '
+                             'password on the second line.')
         raise ValueError('No terminal to ask for the new password: pipe it with --password-stdin, or use '
                          '--random-password.')
     current = getpass.getpass('Current password of %s: ' % label) if getattr(args, 'current_password', False) else None
+    if random:
+        if not current:
+            raise ValueError('An empty current password was given; nothing was sent.')
+        return None, current
     first = getpass.getpass('New password for %s: ' % label)
     second = getpass.getpass('Again: ')
     if first != second:
@@ -364,8 +398,15 @@ def _write(args, operation, name, host, role, options, label):
         identity = {k: v for k, v in planned.items() if k != 'password'}
         identity.update({k: settings.get(k) for k in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')})
         with conn:
-            plan = accounts.plan_change(conn, operation, name, host, role, connection=identity, profile=profile,
-                                        **dict(options, **secrets))
+            try:
+                plan = accounts.plan_change(conn, operation, name, host, role, connection=identity, profile=profile,
+                                            **dict(options, **secrets))
+            except ValueError as exc:
+                if str(exc) == 'That account does not exist.':
+                    hint = _role_hint(conn, name, host, role)
+                    if hint:
+                        raise ValueError(hint) from None
+                raise
             refusal = _confirm(plan, args)
             typed = ''
             if not refusal:
@@ -447,7 +488,7 @@ def cmd_accounts(argv):
             name, host = accounts.parse_account(args.account)
         except ValueError as exc:
             _fail(exc)
-        report = _read(args, lambda conn: accounts.read_account(conn, name, host, args.role))
+        report = _read(args, lambda conn: _read_account(conn, name, host, args.role))
         _emit_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n' if args.json else format_account(report),
                    args.output, quiet=args.quiet)
         if not args.quiet:
@@ -475,7 +516,7 @@ def cmd_accounts(argv):
     _account_args(parser)
     options = {}
     if sub in ('create', 'password'):
-        source = parser.add_mutually_exclusive_group()
+        source = parser.add_argument_group('Password input')
         source.add_argument('--password-stdin', action='store_true', help='Read the new password from the first line '
                                                                           'of stdin.')
         source.add_argument('--random-password', action='store_true', help='Generate the password (MySQL: the server, '
@@ -485,7 +526,8 @@ def cmd_accounts(argv):
     if sub == 'password':
         parser.add_argument('--current-password', action='store_true', help='Also give your current password (MySQL '
                                                                             'REPLACE), prompted or as the second stdin '
-                                                                            'line.')
+                                                                            'line (leave the first line empty with '
+                                                                            '--random-password).')
     if sub == 'rename':
         parser.add_argument('new_account', metavar='NEW_ACCOUNT', help='The new user@host.')
     if sub in ('grant', 'revoke'):
@@ -509,6 +551,9 @@ def cmd_accounts(argv):
     _write_flags(parser)
     args = parser.parse_args(rest)
     try:
+        if (getattr(args, 'random_password', False) and getattr(args, 'password_stdin', False)
+                and not getattr(args, 'current_password', False)):
+            raise ValueError('--random-password with --password-stdin requires --current-password.')
         name, host = accounts.parse_account(args.account)
         role = bool(args.role)
         if role and '@' not in args.account:

@@ -1,6 +1,6 @@
 // The Server place's shell: the grouped sub-navigation (arrow keys, badges from
-// data already loaded), the inspector (toggle, ⌥⌘I, Escape, resizing, width
-// remembered, bottom sheet on narrow layouts), ⓘ popovers, prerequisite
+// data already loaded), full-width details (Back, Escape, selection and focus
+// restored on desktop and narrow layouts), ⓘ popovers, prerequisite
 // gates, the pushed list at phone width, and session restore of the view and
 // the inspector, including view names saved by earlier versions.
 import assert from "node:assert/strict";
@@ -24,24 +24,22 @@ const h = await open("/api/live/config", "server-nav", { "/api/live/waits": { st
     if (!body.schemas?.length && !body.all_schemas) return { status: 400, body: { error: "explicit all_schemas required" } };
     return { status: 200, body: tableReport };
   },
-  "/api/accounts/list": { status: 200, body: accounts } });
+  "/api/accounts/list": { status: 200, body: accounts },
+  "/api/lifecycle/tools": { status: 400, body: { error: "Not mocked in this suite." } },
+  "/api/schema-diagram/read": { status: 400, body: { error: "Not mocked in this suite." } } });
 const { page, state, text, texts } = h;
 state.fallback = { status: 200, body: config };
-const live = () => [...state.seen, ...state.other.filter((o) => o.path.startsWith("/api/live/"))];
+// state.seen holds this suite's own endpoint (/api/live/config) without a path.
+const live = () => [...state.seen.map((body) => ({ path: "/api/live/config", body })), ...state.other.filter((o) => o.path.startsWith("/api/live/"))];
 const current = () => page.$eval(".source-list [aria-current=page]", (e) => e.dataset.view);
-const inspectorWidth = () => page.$eval(".view-inspector", (e) => Math.round(e.getBoundingClientRect().width));
-/** Wait for the inspector to reach a width (renders follow key presses). */
-const widthIs = async (want, message) => {
-  for (let i = 0; i < 50 && (await inspectorWidth()) !== want; i++) await pause(100);
-  assert.equal(await inspectorWidth(), want, message);
-};
 try {
   await h.server();
   // Groups by job, each item with its own icon, one item current.
-  assert.deepEqual(await texts(".source-list .source-group h3"), ["Overview", "Workload", "Contention", "Schema", "Setup", "Security"]);
+  // Replication and Tuning are places of their own, not Server views.
+  assert.deepEqual(await texts(".source-list .source-group h3"), ["Overview", "Contention", "Schema", "Setup", "Security"]);
   const items = await page.$$eval(".source-list .source-item", (els) => els.map((e) => [e.dataset.view, e.querySelector("svg path, svg rect, svg circle")?.outerHTML]));
   assert.deepEqual(items.map((i) => i[0]),
-    ["health", "innodb", "report", "top", "sessions", "replication", "waits", "io", "locks", "indexes", "tables", "diagram", "config", "instruments", "maintenance", "accounts"]);
+    ["health", "innodb", "errorlog", "locks", "indexes", "tables", "diagram", "config", "instruments", "maintenance", "accounts"]);
   assert.equal(new Set(items.map((i) => i[1])).size, items.length, "one glyph per view");
   assert.equal((await page.$$(".source-list [aria-current=page]")).length, 1);
   assert.equal(await current(), "health");
@@ -62,14 +60,24 @@ try {
   assert.equal(await current(), "maintenance");
   await page.keyboard.press("Home");
   assert.equal(await current(), "health");
-  // Opening views reads nothing, and no badge appears without data.
-  for (const view of ["innodb", "report", "top", "sessions", "replication", "waits", "io", "locks", "indexes", "tables", "diagram", "config", "instruments", "maintenance", "accounts"]) await h.view(view);
-  assert.deepEqual(live().filter((c) => c.path !== "/api/live/schemas" && c.path !== "/api/live/privileges"), [], "no view is read just by opening it");
-  assert.equal(await page.$$eval(".source-list .count-badge, .source-list .status-dot", (els) => els.length), 0);
+  // A view reads when it is opened on screen (Parameters and Instruments
+  // read their catalogs once); views never opened read nothing, and nothing
+  // was read before Server was opened (Server and Replication mount on their
+  // first visit). No badge appears without data.
+  const onOpen = ["/api/live/config", "/api/live/instruments"];
+  for (const view of ["innodb", "errorlog", "locks", "indexes", "tables", "diagram", "config", "instruments", "maintenance", "accounts"]) await h.view(view);
+  const opened = ["/api/live/health", "/api/live/innodb", "/api/live/error-log", "/api/live/locks", "/api/live/indexes", "/api/live/tables", ...onOpen];
+  assert.deepEqual(live().filter((c) => c.path !== "/api/live/schemas" && c.path !== "/api/live/privileges" && !opened.includes(c.path)), [],
+    "only views opened on screen read (never Top statements, Processlist, Waits, I/O, Replication or the Full analysis)");
+  for (const path of onOpen) assert.equal(live().filter((c) => c.path === path).length, 1, `${path} is read once on open`);
+  // Only the views that read on open can show a badge: here Parameters (Instruments is not mocked).
+  assert.deepEqual(await page.$$eval(".source-list .count-badge, .source-list .status-dot", (els) => els.map((e) => e.closest("[id^=server-nav-]")?.id)), ["server-nav-config"]);
 
   // The shared database chooser participates in the kit's one-popover and
   // focus-return contract. Dismissing it does not navigate or load a report.
   await h.view("indexes");
+  await page.waitForFunction(() => !document.querySelector('.server-view[data-view="indexes"] .spinner'));
+  const readsBefore = live().length;
   await page.click("#indexes-schemas");
   await page.waitForSelector('[role=dialog][aria-label="Choose databases"]');
   // Focus moves to the search once the popover is placed (the next frame).
@@ -79,7 +87,7 @@ try {
   assert.ok(await page.$('[role=dialog][aria-label="About Indexes"]'));
   await page.keyboard.press("Escape");
   assert.equal(await current(), "indexes");
-  assert.deepEqual(live().filter((c) => c.path !== "/api/live/schemas" && c.path !== "/api/live/privileges"), []);
+  assert.deepEqual(live().slice(readsBefore).filter((c) => c.path !== "/api/live/schemas" && c.path !== "/api/live/privileges"), [], "the chooser reads nothing");
 
   // A badge from data the user loaded.
   await h.view("config");
@@ -89,68 +97,47 @@ try {
   assert.match(await text("#server-nav-config .visually-hidden"), /Watch/);
   assert.equal(await page.$$eval(".source-list .status-dot", (els) => els.length), 1, "only the loaded view has a badge");
 
-  // The inspector: closed at first; the toolbar toggle shows it with a placeholder.
+  // Details only open for a selected object. There is no empty side panel.
   assert.equal(await page.$(".view-inspector"), null);
-  const toggle = ".server-view .inspector-toggle";
-  assert.equal(await page.$eval(toggle, (e) => e.getAttribute("aria-pressed")), "false");
-  await page.click(toggle);
-  await page.waitForSelector(".view-inspector .inspector-placeholder");
-  assert.equal(await page.$eval(toggle, (e) => e.getAttribute("aria-pressed")), "true");
-  assert.match(await text(".view-inspector"), /Select a setting/);
-  // ⌥⌘I hides and shows it.
-  await page.keyboard.down("Alt");
-  await page.keyboard.down("Meta");
-  await page.keyboard.press("KeyI");
-  await page.keyboard.up("Meta");
-  await page.keyboard.up("Alt");
-  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  assert.equal(await page.$(".server-view .inspector-toggle"), null);
   // Selecting a row opens it; Enter on a row too; Escape closes it and returns focus to the row.
-  await h.select('.server-view li[data-check="buffer_pool"]');
-  await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "Buffer pool size");
+  // Parameters rows are table rows keyed by parameter name.
+  await h.select('.server-view tr[data-row-key="innodb_buffer_pool_size"]');
+  await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "innodb_buffer_pool_size");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
-  await page.waitForFunction(() => document.activeElement?.closest("li")?.dataset.check === "buffer_pool");
+  await page.waitForFunction(() => document.activeElement?.closest("tr")?.dataset.rowKey === "innodb_buffer_pool_size");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
-  await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "Sort buffer");
+  await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "innodb_dedicated_server");
 
-  // Resizing: the separator takes the arrow keys within limits, and the width is remembered.
-  const start = await inspectorWidth();
-  assert.equal(start, 340, "the default width");
-  const separator = ".view-inspector [role=separator]";
-  assert.equal(await page.$eval(separator, (e) => [e.getAttribute("aria-valuemin"), e.getAttribute("aria-valuemax")].join("-")), "280-560");
-  await page.focus(separator);
-  await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("ArrowLeft");
-  await widthIs(start + 32);
-  await page.keyboard.press("Home");
-  await widthIs(280, "never narrower than 280 px");
-  await page.keyboard.press("ArrowLeft");
-  await widthIs(296);
-  assert.equal(await page.evaluate(() => localStorage.getItem("myflames.inspector.width")), "296");
-  // Dragging works too.
-  const box = await page.$eval(separator, (e) => { const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + 40 }; });
-  await page.mouse.move(box.x, box.y);
-  await page.mouse.down();
-  await page.mouse.move(box.x - 60, box.y, { steps: 4 });
-  await page.mouse.up();
-  await widthIs(356);
-
+  // The selected object owns the full work area, with an explicit way back.
+  assert.equal(await page.$eval(".view-main", element => element.hidden), true);
+  assert.ok(await page.$(".view-inspector.is-detail .detail-back"));
+  assert.equal(await page.$(".view-inspector [role=separator]"), null);
+  const geometry = await page.$eval(".view-inspector", element => {
+    const parent = element.parentElement.getBoundingClientRect();
+    const detail = element.getBoundingClientRect();
+    return { detail: detail.width, parent: parent.width };
+  });
+  assert.equal(geometry.detail, geometry.parent, "details use the available width");
   // ⓘ popovers: one at a time, Escape returns focus, a click outside closes.
   await page.click('button[aria-label="About Server"]');
   assert.equal(await page.$eval('button[aria-label="About Server"]', (e) => e.getAttribute("aria-expanded")), "true");
   const pop = await page.$eval('[role=dialog][aria-label="About Server"]', (e) => { const r = e.getBoundingClientRect(); return [r.width, r.right]; });
   assert.ok(pop[0] <= 320 && pop[1] <= 1440, `popover fits (${pop})`);
   // (The open popover may cover the other button, so it is activated directly.)
-  await page.$eval('button[aria-label="About Configuration"]', (e) => e.click());
+  await page.$eval('button[aria-label="About Parameters"]', (e) => e.click());
   await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="About Server"]'));
-  assert.ok(await page.$('[role=dialog][aria-label="About Configuration"]'));
+  assert.ok(await page.$('[role=dialog][aria-label="About Parameters"]'));
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "About Configuration");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "About Parameters");
   assert.ok(await page.$(".view-inspector"), "Escape in a popover leaves the inspector open");
-  await page.click('button[aria-label="About Configuration"]');
+  await page.click('button[aria-label="About Parameters"]');
   await page.mouse.click(700, 20);
-  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="About Configuration"]'));
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="About Parameters"]'));
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   // Notes: one button with a count.
   assert.match(await text(".server-view .notes-button"), /^\d+ notes?$/);
 
@@ -161,25 +148,22 @@ try {
   const gate = await page.$eval(".server-view .gate", (e) => [e.querySelectorAll("p").length, e.querySelectorAll("button, a").length]);
   assert.deepEqual(gate, [1, 1]);
 
-  // Session restore: the view and the open inspector; the width is a browser preference.
+  // Session restore keeps the view, but does not restore private detail data.
   await h.view("config");
+  await h.select('.server-view tr[data-row-key="innodb_buffer_pool_size"]');
   const saved = await h.savedSlow((s) => s.kind === "config" && s.inspector === true);
   assert.equal(saved.state.query_lab.slow.inspector, true);
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   await page.reload({ waitUntil: "networkidle0" });
   await h.server();
   await page.waitForSelector("#server-nav-config[aria-current=page]");
-  await page.waitForSelector(".view-inspector .inspector-placeholder");
-  await widthIs(356, "the width came back from this browser's storage");
-  // Storage that throws does not break the page.
-  await page.evaluate(() => {
-    Storage.prototype.setItem = () => {
-      throw new Error("blocked");
-    };
-  });
-  await page.focus(".view-inspector [role=separator]");
-  await page.keyboard.press("ArrowRight");
-  await widthIs(340);
+  assert.equal(await page.$(".view-inspector"), null, "no empty detail screen after reload");
+  await h.refresh();
+  await h.select('.server-view tr[data-row-key="innodb_buffer_pool_size"]');
+  // Storage failures cannot prevent the local Back action.
+  await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("blocked"); }; });
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
 
   // A view saved by an earlier version under its old name opens as its new view.
   const token = await page.evaluate(async () => (await (await fetch("/api/auth/session", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" }, body: "{}" })).json()).token);
@@ -193,7 +177,7 @@ try {
     await call("/api/session/save", { revision: stored.revision, client_id: "an-earlier-version", seq: 1, state });
   }, token);
   await page.reload({ waitUntil: "networkidle0" });
-  await h.server();
+  await h.workload();
   await page.waitForSelector("#server-nav-sessions[aria-current=page]");
   assert.equal(await page.$(".view-inspector"), null, "no inspector state saved: closed");
   // The next save writes the new names and the defaults for the new fields.
@@ -243,8 +227,8 @@ try {
   assert.equal(tableReads.at(-1).fresh, true);
   const beforeRefresh = tableReads.length;
   await page.click('.server-place [data-action="refresh-all"]');
-  // One loaded view: "1 of 1 view refreshed" (singular).
-  await page.waitForFunction(() => /\b1 of 1 view refreshed/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
+  // Unopened sections refresh too; unsupported mocks fail independently.
+  await page.waitForFunction(() => !document.querySelector(".refresh-all-stop"));
   assert.equal(tableReads.length, beforeRefresh + 1);
   assert.equal(tableReads.at(-1).all_schemas, true, "Refresh all keeps explicit consent");
   assert.equal(tableReads.at(-1).fresh, true, "the :all suffix does not turn fresh off");
@@ -275,50 +259,36 @@ try {
   assert.ok(await phone.$eval(".source-list", (e) => e.classList.contains("is-pushed")));
   assert.equal(await phone.$eval(".server-content", (e) => getComputedStyle(e).display), "none");
   await phone.screenshot({ path: path.join(h.shots, "server-list-390.png") });
-  await phone.focus("#server-nav-sessions");
+  await phone.focus("#server-nav-locks");
   await phone.keyboard.press("ArrowDown");
-  await phone.waitForFunction(() => document.activeElement?.id === "server-nav-replication");
+  await phone.waitForFunction(() => document.activeElement?.id === "server-nav-indexes");
   assert.ok(await phone.$(".server-layout.show-list"), "arrows only move focus in the pushed list");
-  // Sessions to Configuration: Replication, Waits, I/O, Locks, Indexes, Tables, Database diagram, Configuration.
-  for (const id of ["waits", "io", "locks", "indexes", "tables", "diagram", "config"]) {
+  // Locks to Parameters: Indexes, Tables, Database diagram, Parameters.
+  for (const id of ["tables", "diagram", "config"]) {
     await phone.keyboard.press("ArrowDown");
     await phone.waitForFunction((target) => document.activeElement?.id === `server-nav-${target}`, {}, id);
   }
   await phone.keyboard.press("Enter");
   await phone.waitForSelector(".server-layout:not(.show-list) .server-view[data-view=config]");
   await phone.waitForFunction(() => document.activeElement?.id === "config-title");
-  await phone.locator(".server-view button ::-p-text(Load configuration)").click();
-  await phone.waitForSelector(".server-view li[data-check]");
-  // The inspector is a bottom sheet: focus moves in, Tab stays in, Escape closes it.
+  // Parameters reads on open.
+  await phone.waitForSelector(".server-view tr[data-row-key]");
+  // Narrow details occupy the full work area; Back receives focus, Escape returns it.
   // The last rows can sit under the fixed status bar until the page scrolls.
-  await phone.$eval('.server-view li[data-check="slow_log"] button', (e) => e.scrollIntoView({ block: "center" }));
-  await phone.click('.server-view li[data-check="slow_log"] button');
-  await phone.waitForSelector(".view-inspector.is-sheet");
-  const sheet = await phone.$eval(".view-inspector.is-sheet", (el) => {
-    const animation = el.getAnimations()[0];
-    animation?.pause();
-    if (animation) animation.currentTime = 90;
-    const css = getComputedStyle(el);
-    const result = { opacity: css.opacity, background: css.backgroundColor, fades: animation?.effect.getKeyframes().some((frame) => frame.opacity !== undefined) || false };
-    animation?.finish();
-    return result;
-  });
-  assert.equal(sheet.opacity, "1", "the sheet stays opaque halfway through its slide");
-  assert.equal(sheet.background, "rgb(255, 255, 255)");
-  assert.equal(sheet.fades, false);
-  await phone.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
-  assert.equal(await phone.$eval(".view-inspector.is-sheet", (el) => getComputedStyle(el).animationName), "none");
-  await phone.emulateMediaFeatures([]);
-  await phone.waitForFunction(() => document.activeElement?.classList.contains("inspector-close"));
-  for (let i = 0; i < 12; i++) await phone.keyboard.press("Tab");
-  assert.ok(await phone.evaluate(() => !!document.activeElement?.closest(".view-inspector")), "focus stays in the sheet");
+  await phone.$eval('.server-view tr[data-row-key="slow_query_log"]', (e) => e.scrollIntoView({ block: "center" }));
+  await phone.click('.server-view tr[data-row-key="slow_query_log"] td');
+  await phone.waitForSelector(".view-inspector.is-detail");
+  assert.equal(await phone.$(".view-inspector.is-sheet"), null);
+  assert.equal(await phone.$eval(".view-main", element => element.hidden), true);
+  await phone.waitForFunction(() => document.activeElement?.classList.contains("detail-back"));
   assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await phone.screenshot({ path: path.join(h.shots, "server-sheet-390.png") });
+  await phone.screenshot({ path: path.join(h.shots, "server-detail-390.png") });
   await phone.keyboard.press("Escape");
   await phone.waitForFunction(() => !document.querySelector(".view-inspector"));
-  await phone.waitForFunction(() => document.activeElement?.closest("li")?.dataset.check === "slow_log");
+  await phone.waitForFunction(() => document.activeElement?.closest("tr")?.dataset.rowKey === "slow_query_log");
   // Back returns to the list with focus on the view it came from.
-  await phone.click(".server-back");
+  await phone.$eval(".server-view[data-view=config] .server-back", e => e.scrollIntoView({block: "center"}));
+  await phone.click(".server-view[data-view=config] .server-back");
   await phone.waitForSelector(".server-layout.show-list");
   await phone.waitForFunction(() => document.activeElement?.id === "server-nav-config");
   await phone.close();

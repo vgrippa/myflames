@@ -2,19 +2,24 @@
 // and one status indicator with Settings (which also opens About myflames).
 // Below 650 px it becomes a compact top bar whose places and open plans open
 // in a drawer.
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import type { ReactNode } from "react";
 import { AboutDialog } from "./About";
 import { time, type Plan } from "./api";
 import { Icon, type IconName } from "./components";
 import { Checkbox, useFocusScope } from "./kit";
 import type { SaveStatus } from "./session";
+import type { AppUpdateInfo } from "./api";
 
-export type Place = "home" | "plans" | "query" | "server" | "investigations" | "learn";
+export type Place = "home" | "server" | "workload" | "replication" | "tuning" | "query" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "home", label: "Home", icon: "home" },
-  { key: "plans", label: "Plans", icon: "plan" },
-  { key: "query", label: "Query editor", icon: "query" },
   { key: "server", label: "Server", icon: "server" },
+  { key: "workload", label: "Workload", icon: "statements" },
+  { key: "replication", label: "Replication", icon: "replication" },
+  { key: "tuning", label: "Tuning", icon: "tuning" },
+  { key: "query", label: "Query editor", icon: "query" },
+  { key: "plans", label: "Plans", icon: "plan" },
   { key: "investigations", label: "Investigations", icon: "investigation" },
   { key: "learn", label: "Learn", icon: "learn" },
 ];
@@ -51,8 +56,17 @@ export function Sidebar({
   onRemovePlan,
   onToggleRestore,
   onAuditLog,
+  queries = [],
+  activeQueryId,
+  onOpenQuery,
+  onRemoveQuery,
   expanded,
   onExpandedChange,
+  version,
+  updateInfo,
+  onOpenUpdate,
+  onNewSession,
+  placeBadges,
 }: {
   /** Optional shell-controlled sidebar/drawer; legacy callers remain uncontrolled. */
   expanded?: boolean;
@@ -74,6 +88,15 @@ export function Sidebar({
   onToggleRestore: (on: boolean) => void;
   /** Open the Audit log (writes sent through myflames, kept on this computer). */
   onAuditLog: () => void;
+  queries?: { id: string; name: string }[];
+  activeQueryId?: string;
+  onOpenQuery?: (id: string) => void;
+  onRemoveQuery?: (id: string) => void;
+  version?: string;
+  updateInfo?: AppUpdateInfo | null;
+  onOpenUpdate?: () => void;
+  onNewSession?: () => void;
+  placeBadges?: Partial<Record<Place, ReactNode>>;
 }) {
   const [localOpen, setLocalOpen] = useState(false);
   const drawerOpen = expanded ?? localOpen;
@@ -88,6 +111,34 @@ export function Sidebar({
   const drawer = useRef<HTMLDivElement>(null);
   const settingsButton = useRef<HTMLButtonElement>(null);
   const settings = useRef<HTMLDivElement>(null);
+  const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
+    try {
+      const saved = localStorage.getItem("myflames.theme");
+      if (saved === "light" || saved === "dark" || saved === "system") return saved;
+    } catch {}
+    return "system";
+  });
+  const selectTheme = (next: "system" | "light" | "dark") => {
+    setTheme(next);
+    try {
+      localStorage.setItem("myflames.theme", next);
+    } catch {}
+    if (next === "system") {
+      delete document.documentElement.dataset.theme;
+    } else {
+      document.documentElement.dataset.theme = next;
+    }
+  };
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("myflames.theme");
+      if (saved === "light" || saved === "dark") {
+        document.documentElement.dataset.theme = saved;
+      } else {
+        delete document.documentElement.dataset.theme;
+      }
+    } catch {}
+  }, []);
   const [narrow, setNarrow] = useState(() => window.innerWidth <= 650);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 650px)");
@@ -131,9 +182,6 @@ export function Sidebar({
     return () => document.removeEventListener("mousedown", outside);
   }, [drawerOpen]);
 
-  function closeSettings() {
-    setSettingsOpen(false);
-  }
   /** About replaces the Settings menu, like a desktop app's About window;
    * closing it returns focus to Settings. */
   function openAbout() {
@@ -165,12 +213,24 @@ export function Sidebar({
   return (
     <aside ref={sidebar} id="workspace-sidebar" className="sidebar" aria-label="Workspace" tabIndex={-1}>
       <div className="sidebar-head">
-        <button className="brand" onClick={() => go("home")} aria-label="myflames Home">
-          <img src={logo} alt="" width="22" height="22" />
-          <span>
-            myflames
-          </span>
-        </button>
+        <div className="brand-group">
+          <button className="brand" onClick={() => go("home")} aria-label="myflames Home">
+            <img src={logo} alt="" width="22" height="22" />
+            <span className="brand-name">myflames</span>
+            <span className="brand-version" title={`myflames v${version || "3.0.0"}`}>v{version || "3.0.0"}</span>
+          </button>
+          {updateInfo?.update_available && (
+            <button
+              type="button"
+              className="icon-button update-badge-button"
+              title={`Update available: v${updateInfo.latest_version}. Click to update.`}
+              aria-label={`Update available: v${updateInfo.latest_version}`}
+              onClick={onOpenUpdate}
+            >
+              <Icon name="import" size={15} />
+            </button>
+          )}
+        </div>
         <button
           ref={menuButton}
           className="icon-button menu-toggle"
@@ -190,9 +250,13 @@ export function Sidebar({
       >
         <nav className="main-nav" aria-label="Places">
           {PLACES.map(({ key, label, icon }, index) => (
+            <Fragment key={key}>
+            {key === "query" && <h2 className="nav-group-label">SQL workspace</h2>}
+            {key === "investigations" && <h2 className="nav-group-label">Library</h2>}
             <button
               key={key}
               ref={(el) => (navRefs.current[index] = el)}
+              data-place={key}
               className={place === key ? "active" : ""}
               aria-current={place === key ? "page" : undefined}
               onKeyDown={(e) => onNavKey(e, index)}
@@ -200,7 +264,9 @@ export function Sidebar({
             >
               <Icon name={icon} />
               {label}
+              {placeBadges?.[key]}
             </button>
+            </Fragment>
           ))}
         </nav>
         <section className="open-plans" aria-labelledby="open-plans-label">
@@ -249,6 +315,33 @@ export function Sidebar({
             })}
           </ul>
         </section>
+        {queries.length > 0 && <section className="open-queries" aria-labelledby="open-queries-label">
+          <h2 className="section-label" id="open-queries-label">Open queries <span className="count">{queries.length}</span></h2>
+          <ul className="query-document-list">
+            {queries.map(query => {
+              const current = place === "query" && query.id === activeQueryId;
+              return (
+                <li key={query.id} className={`query-item${current ? " selected" : ""}`}>
+                  <button type="button" className="query-document" aria-current={current ? "true" : undefined}
+                    onClick={() => { setDrawerOpen(false); onOpenQuery?.(query.id); }}>
+                    <Icon name="query" /><span title={query.name}>{query.name}</span>
+                  </button>
+                  {onRemoveQuery && (
+                    <button
+                      type="button"
+                      className="icon-button remove"
+                      aria-label={`Close ${query.name}`}
+                      title={`Close ${query.name}`}
+                      onClick={() => onRemoveQuery(query.id)}
+                    >
+                      <Icon name="close" size={12} />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>}
       </div>
       <div className="sidebar-footer">
         <p
@@ -282,15 +375,36 @@ export function Sidebar({
             aria-labelledby="settings-title"
 
           >
-            <div className="settings-heading">
-              <h2 id="settings-title">Settings</h2>
-              <button
-                className="icon-button"
-                aria-label="Close settings"
-                onClick={closeSettings}
-              >
-                <Icon name="close" size={12} />
-              </button>
+            {/* A menu-style popover: Escape and a click outside close it. */}
+            <h2 id="settings-title" className="visually-hidden">Settings</h2>
+            <div className="settings-theme-group">
+              <span className="section-label">Appearance</span>
+              <div className="segmented theme-segmented" role="group" aria-label="Appearance theme">
+                <button
+                  type="button"
+                  className={theme === "system" ? "active" : ""}
+                  aria-pressed={theme === "system"}
+                  onClick={() => selectTheme("system")}
+                >
+                  System
+                </button>
+                <button
+                  type="button"
+                  className={theme === "light" ? "active" : ""}
+                  aria-pressed={theme === "light"}
+                  onClick={() => selectTheme("light")}
+                >
+                  Light
+                </button>
+                <button
+                  type="button"
+                  className={theme === "dark" ? "active" : ""}
+                  aria-pressed={theme === "dark"}
+                  onClick={() => selectTheme("dark")}
+                >
+                  Dark
+                </button>
+              </div>
             </div>
             <Checkbox
               className="check-field session-toggle"
@@ -304,9 +418,23 @@ export function Sidebar({
             <p className="hint" id="session-toggle-hint">
               {skipRestore
                 ? "Started with --no-restore. The saved workspace is kept for the next launch."
-                : "Reopens open plans, query tabs, the connection in use, and where you were. Saved on this computer only; passwords are never saved. Turning it off stops autosave and clears the saved workspace."}
+                : "Off clears the saved workspace; passwords are never saved."}
             </p>
             <div className="settings-menu">
+              {onNewSession && (
+                <button
+                  type="button"
+                  className="settings-item"
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    setDrawerOpen(false);
+                    onNewSession();
+                  }}
+                >
+                  <Icon name="refresh" size={16} />
+                  New session
+                </button>
+              )}
               <button
                 type="button"
                 className="settings-item"
@@ -319,6 +447,20 @@ export function Sidebar({
                 <Icon name="audit" size={16} />
                 Audit log
               </button>
+              {onOpenUpdate && (
+                <button
+                  type="button"
+                  className="settings-item"
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    setDrawerOpen(false);
+                    onOpenUpdate();
+                  }}
+                >
+                  <Icon name="import" size={16} />
+                  Check for updates…
+                </button>
+              )}
               <button type="button" className="settings-item" aria-haspopup="dialog" onClick={openAbout}>
                 <Icon name="info" size={16} />
                 About myflames

@@ -7,6 +7,8 @@
 import {
   forwardRef,
   useImperativeHandle,
+  useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -14,6 +16,10 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
+import type { Connection } from "./api";
+import { useSqlCompletion } from "./useSqlCompletion";
+import "./completion.css";
 import { HIGHLIGHT_LIMIT, matchAt, tokenize, type Token } from "./sqlHighlight";
 
 export type Range = { start: number; end: number };
@@ -89,11 +95,14 @@ export type SqlEditorProps = {
   /** Editor height in px (the splitter below sets it). */
   height?: number;
   placeholder?: string;
+  completionConnection?: Connection;
+  completionScope?: string;
+  backslashEscapes?: boolean;
 };
 
 /** The textarea and its layers; the ref is the textarea itself. */
 export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(function SqlEditor(
-  { value, onChange, onSelect, onKeyDown, caret, statement, flash, error, describedBy, height, placeholder },
+  { value, onChange, onSelect, onKeyDown, caret, statement, flash, error, describedBy, height, placeholder, completionConnection, completionScope = "", backslashEscapes = true },
   ref,
 ) {
   const area = useRef<HTMLTextAreaElement>(null);
@@ -102,6 +111,83 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
   const gutter = useRef<HTMLDivElement>(null);
   const backdrop = useRef<HTMLDivElement>(null);
   const [composing, setComposing] = useState(false);
+  const focusState = useRef(false);
+  const focused = focusState.current;
+  const [completionMode, setCompletionMode] = useState<false | "auto" | "manual">(false);
+  const [choice, setChoice] = useState(0);
+  const [completionRequest, setCompletionRequest] = useState(0);
+  const listId = useId();
+  const completion = useSqlCompletion(completionConnection, value, caret.start, caret.end,
+    focused && !composing && !!completionMode, completionMode === "manual", completionScope, backslashEscapes, completionRequest);
+  const showing = focused && !composing && !!completionMode &&
+    (completion.items.length > 0 || completion.loading || !!completion.note);
+  const selected = Math.min(choice, Math.max(0, completion.items.length - 1));
+  const popup = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  useEffect(() => { setCompletionMode(false); }, [completionScope]);
+  useEffect(() => { setChoice(0); }, [completion.key]);
+  useLayoutEffect(() => {
+    if (showing) document.getElementById(`${listId}-${selected}`)?.scrollIntoView({ block: "nearest" });
+  }, [selected, showing, completion.items]);
+  function positionCompletion() {
+    const el = area.current;
+    if (!showing || !el) return;
+    // Measure a plain-text mirror, including tabs and non-ASCII names. The
+    // popup is a portal so editor splitters and overflow never clip it.
+    const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+    const mirror = document.createElement("div");
+    Object.assign(mirror.style, { position: "fixed", left: "0", top: "0", visibility: "hidden",
+      whiteSpace: "pre", font: style.font, lineHeight: style.lineHeight, tabSize: style.tabSize,
+      letterSpacing: style.letterSpacing, fontVariantLigatures: "none", padding: style.padding });
+    mirror.textContent = value.slice(0, caret.start);
+    const marker = document.createElement("span"); marker.textContent = "\u200b";
+    mirror.append(marker); document.body.append(mirror);
+    const point = marker.getBoundingClientRect(); mirror.remove();
+    const width = popup.current?.offsetWidth || 320;
+    const height = popup.current?.offsetHeight || 180;
+    const line = parseFloat(style.lineHeight) || 20;
+    const x = rect.left + point.left - el.scrollLeft;
+    const y = rect.top + point.top - el.scrollTop;
+    const left = Math.max(8, Math.min(x, window.innerWidth - width - 8));
+    const top = Math.max(8, Math.min(y + line + height > window.innerHeight - 8 ? y - height : y + line, window.innerHeight - height - 8));
+    setPosition(previous => previous.left === left && previous.top === top ? previous : { left, top });
+  }
+  useLayoutEffect(positionCompletion);
+  useEffect(() => {
+    if (!showing) return;
+    window.addEventListener("resize", positionCompletion);
+    return () => window.removeEventListener("resize", positionCompletion);
+  }, [showing, value, caret.start]);
+  function acceptCompletion(index: number) {
+    const el = area.current, item = completion.items[index], context = completion.context;
+    if (!el || !item || !context || el.value !== value || el.selectionStart !== caret.start || el.selectionEnd !== caret.end) return;
+    el.focus();
+    el.setSelectionRange(context.start, context.end);
+    // Native insertText joins the browser's undo stack. Never replace .value
+    // or synthesize a React edit, which discards native undo history.
+    if (!document.execCommand("insertText", false, item.insert)) el.setSelectionRange(caret.start, caret.end);
+    setCompletionMode(false);
+    onSelect?.();
+  }
+  function completionKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (composing || e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (e.ctrlKey && !e.metaKey && !e.altKey && (e.code === "Space" || e.key === " ")) {
+      e.preventDefault(); e.stopPropagation(); setCompletionMode("manual"); setCompletionRequest(n => n + 1); setChoice(0); return;
+    }
+    if (showing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setCompletionMode(false); return; }
+      if (completion.items.length && !e.shiftKey && ["ArrowDown", "ArrowUp", "Enter", "Tab"].includes(e.key)) {
+        e.preventDefault(); e.stopPropagation();
+        if (e.key === "ArrowDown") setChoice((selected + 1) % completion.items.length);
+        else if (e.key === "ArrowUp") setChoice((selected + completion.items.length - 1) % completion.items.length);
+        else acceptCompletion(selected);
+        return;
+      }
+    }
+    if (["ArrowLeft", "ArrowRight", "Home", "End", "Tab"].includes(e.key) || e.ctrlKey || e.metaKey) setCompletionMode(false);
+    onKeyDown?.(e);
+  }
+
   const colored = value.length <= HIGHLIGHT_LIMIT;
   const tokens = useMemo(() => (colored ? tokenize(value) : []), [value, colored]);
   const match = colored && caret.start === caret.end ? matchAt(value, tokens, caret.start) : null;
@@ -192,6 +278,12 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
           ref={area}
           aria-label="SQL editor"
           aria-describedby={describedBy}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-haspopup="listbox"
+          aria-expanded={showing}
+          aria-controls={showing ? listId : undefined}
+          aria-activedescendant={showing && completion.items.length ? `${listId}-${selected}` : undefined}
           className="sql-editor"
           spellCheck={false}
           autoCapitalize="off"
@@ -200,13 +292,39 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
           wrap="off"
           placeholder={placeholder}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            const input = e.nativeEvent as InputEvent;
+            setCompletionMode(composing || input.isComposing || input.inputType?.startsWith("history") ? false : "auto");
+            onChange(e.target.value);
+          }}
+          onFocus={() => { focusState.current = true; }}
+          onBlur={() => { focusState.current = false; setCompletionMode(false); }}
+          onPointerDown={() => setCompletionMode(false)}
           onSelect={onSelect}
-          onScroll={follow}
-          onKeyDown={onKeyDown}
-          onCompositionStart={() => setComposing(true)}
-          onCompositionEnd={() => setComposing(false)}
+          onScroll={() => { follow(); positionCompletion(); }}
+          onKeyDown={completionKeyDown}
+          onCompositionStart={() => { setComposing(true); setCompletionMode(false); }}
+          onCompositionEnd={() => { setComposing(false); setCompletionMode(false); }}
         />
+        {showing && createPortal(
+          <div ref={popup} className="sql-completion" style={position}>
+            <div id={listId} role="listbox" aria-label="SQL suggestions" className="sql-completion-list">
+              {completion.items.map((item, index) => (
+                <div key={`${item.kind}:${item.insert}`} id={`${listId}-${index}`} role="option"
+                  aria-selected={index === selected} className="sql-completion-option"
+                  onMouseDown={(e) => { e.preventDefault(); acceptCompletion(index); }}
+                  onMouseMove={() => setChoice(index)}>
+                  <span className="sql-completion-label">{item.label}</span>
+                  <span className="sql-completion-kind">{item.kind}</span>
+                  <span className="sql-completion-detail">{item.detail}</span>
+                </div>
+              ))}
+            </div>
+            <div className="sql-completion-hint" role="status">
+              {completion.loading ? "Reading catalog…" : completion.note || "Enter or Tab to insert · Esc to dismiss"}
+            </div>
+          </div>, document.body,
+        )}
       </div>
     </div>
   );

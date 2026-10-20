@@ -3,6 +3,7 @@
 // confirmed action; Python owns the statements, the final re-read, the
 // connection's write policy and the audit record.
 import { useEffect, useRef, useState } from "react";
+import { useViewOnScreen } from "./viewOnScreen";
 import type { ActionPrivilege } from "./accountsApi";
 import { privilegeResult, usePrivilege } from "./privileges";
 import { recordDeclined, type Connection } from "./api";
@@ -11,10 +12,11 @@ import { useWritePolicy } from "./Connections";
 import { InstrumentsLink } from "./Instruments";
 import {
   Checkbox, ConfirmSheet, DataTable, EmptyState, Fields,
-  InspectorSection, NumberField, PrerequisiteGate, StatusPill, SummaryLine,
+  InspectorSection, NumberField, PrerequisiteGate, Segmented, StatusPill, SummaryLine,
   ToolbarButton, ViewLayout, ViewStatus, worstTone,
   type Column, type InspectorContent, type Selection, type Tone,
 } from "./kit";
+import { Icon } from "./components";
 import { Commands, FactsList, channelCell, channelPhrase, engineName, plural } from "./OpsShared";
 import {
   factText, loopActive, readReplication, readSkipLoops, skipTransaction,
@@ -23,7 +25,9 @@ import {
   type ReplicationReport, type SkipLoop, type SkipPlan, type SkipResult,
 } from "./opsApi";
 import { VisiblePrivilegeGate, VisiblePrivilegeConfirmLabel } from "./Locks";
+import { ReplicationTopology } from "./ReplicationTopology";
 import "./ops.css";
+import "./replication.css";
 
 const SKIP_TAG = "/*myflames:replication-skip*/ ";
 /** A confirmation older than this is planned again before anything is sent. */
@@ -93,7 +97,9 @@ type Confirmation = {
   engine: string; plan: SkipPlan; at: number; options: LoopOptions;
 };
 
-export function ReplicationView({ connection, disabled, onBack, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {} }: {
+export type ReplicationSubTab = "topology" | "channels" | "lag" | "gtid" | "recovery";
+
+export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   report: Bound<ReplicationReport> | null; onReport: (report: Bound<ReplicationReport>) => void;
   /** Memory only, owned by Server. Keep this view mounted while hidden. */
@@ -101,6 +107,8 @@ export function ReplicationView({ connection, disabled, onBack, selection, repor
   /** The only loop state a restored workspace may retain is this warning flag. */
   restoredLoop?: boolean; onLoopActivity?: (active: boolean) => void;
   missingPrivileges?: MissingPrivileges;
+  activeTab?: ReplicationSubTab;
+  onTabChange?: (tab: ReplicationSubTab) => void;
 }) {
   const reads = useConnectionReads(connection);
   const captureScope = useOpsScope(connection);
@@ -211,8 +219,29 @@ export function ReplicationView({ connection, disabled, onBack, selection, repor
     if (disabled || sending.current) return;
     await reads.run("replication", "Reading replication…", readReplication, onReport);
   }
+
+  const onScreen = useViewOnScreen();
+  // Reads when the view opens on screen: with no report yet (once per
+  // connection), or, whatever was read before, when the report shown is from
+  // another connection (the place stays mounted, hidden, while another
+  // connection is chosen, or Refresh all read one). Choosing another
+  // connection while the view stays on screen keeps the old report greyed
+  // until Refresh, like the Server views.
+  const autoLoaded = useRef<string | null>(null);
+  const openedRead = useRef(false);
+  useEffect(() => {
+    if (!onScreen) { openedRead.current = false; return; }
+    if (disabled || !reads.key) return;
+    const staleOnOpen = !openedRead.current && !!bound && bound.key !== reads.key;
+    openedRead.current = true;
+    if (staleOnOpen || (!report && autoLoaded.current !== reads.key)) {
+      if (reads.loading || sending.current) return;
+      autoLoaded.current = reads.key;
+      void load();
+    }
+  }, [reads.key, report, bound?.key, reads.loading, disabled, onScreen]);
   async function open(kind: Confirmation["kind"], channel: ReplicationChannel) {
-    if (disabled || other || sending.current || policy?.blocked || connection.read_only || loopFailure === key || loopChecked !== key || actionBlock(kind, channel.skip_plan)) return;
+    if (disabled || other || sending.current || loops.some((l) => l.channel === channel.name && loopActive(l)) || policy?.blocked || connection.read_only || loopFailure === key || loopChecked !== key || actionBlock(kind, channel.skip_plan)) return;
     // Read again so the sheet shows the failure as it is now.
     const current = await reads.run("replication", "Checking the failed transaction…", readReplication, onReport, { force: true });
     if (!current) return;
@@ -359,7 +388,7 @@ export function ReplicationView({ connection, disabled, onBack, selection, repor
       <details className="ops-raw"><summary>Raw channel status</summary><pre className="ops-pre">{JSON.stringify(chosen, null, 2)}</pre></details>
     </>,
   } : null;
-  const columns: Column<ReplicationChannel>[] = [
+  const channelColumns: Column<ReplicationChannel>[] = [
     { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
     { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
     { key: "source", label: "Source", sort: (r) => r.source.host, render: (r) => `${r.source.host || "Unknown"}:${r.source.port ?? "?"}` },
@@ -368,6 +397,57 @@ export function ReplicationView({ connection, disabled, onBack, selection, repor
     { key: "lag", label: "Lag (s)", num: true, title: "Seconds behind the source; see the inspector for the clock, receiver and delay caveats.", sort: (r) => r.lag_s, render: (r) => <abbr title={r.lag_notes.join(" ") || "Seconds behind the source alone does not show that the replica is caught up."}>{r.lag_s === null ? "Unknown" : r.lag_s.toLocaleString()}</abbr> },
     { key: "error", label: "Error", num: true, sort: (r) => r.sql.error.errno || r.io.error.errno, render: (r) => r.sql.error.errno || r.io.error.errno || "None" },
   ];
+  const lagColumns: Column<ReplicationChannel>[] = [
+    { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
+    { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
+    { key: "lag", label: "Lag (s)", num: true, title: "Seconds behind the source", sort: (r) => r.lag_s, render: (r) => <abbr title={r.lag_notes.join(" ") || undefined}>{r.lag_s === null ? "Unknown" : `${r.lag_s.toLocaleString()} s`}</abbr> },
+    { key: "delay", label: "Configured delay", num: true, sort: (r) => r.sql.delay_s, render: (r) => r.sql.delay_s ? `${r.sql.delay_s} s` : "None" },
+    { key: "remaining_delay", label: "Remaining delay", num: true, sort: (r) => r.sql.remaining_delay_s, render: (r) => r.sql.remaining_delay_s ? `${r.sql.remaining_delay_s} s` : "None" },
+    { key: "signals", label: "Worker signals", render: (r) => Object.keys(r.lag_signals || {}).length ? Object.entries(r.lag_signals).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(", ") : "Normal" },
+    { key: "notes", label: "Lag caveats", render: (r) => r.lag_notes?.length ? r.lag_notes.join("; ") : "No delay caveats" },
+  ];
+  const gtidColumns: Column<ReplicationChannel>[] = [
+    { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
+    { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
+    { key: "failing_gtid", label: "Failing GTID", render: (r) => r.failing_gtid ? <code className="ops-wrap">{r.failing_gtid}</code> : "None" },
+    { key: "read_pos", label: "Source Position", render: (r) => {
+        const file = (r.position?.Master_Log_File ?? r.position?.Relay_Source_Log_File ?? "") as string;
+        const pos = (r.position?.Read_Master_Log_Pos ?? "") as string | number;
+        return file ? `${file}:${pos}` : "Unknown";
+      }
+    },
+    { key: "exec_pos", label: "Executed Position", render: (r) => {
+        const file = (r.position?.Relay_Master_Log_File ?? "") as string;
+        const pos = (r.position?.Exec_Master_Log_Pos ?? "") as string | number;
+        return file ? `${file}:${pos}` : "Unknown";
+      }
+    },
+    { key: "agat", label: "AGAT", render: (r) => r.agat || "OFF" },
+  ];
+  const recoveryColumns: Column<ReplicationChannel>[] = [
+    { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
+    { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
+    { key: "error", label: "Last Error", flex: true, sort: (r) => r.sql.error.errno || r.io.error.errno, render: (r) => {
+        const err = r.sql.error.errno ? r.sql.error : r.io.error;
+        return err.errno ? <span className="error-text" title={err.message || undefined}>Error {err.errno}{err.table ? ` on ${err.table}` : ""}: {err.message ? (err.message.length > 55 ? err.message.slice(0, 55) + "…" : err.message) : ""}</span> : "No errors reported";
+      }
+    },
+    { key: "skip_plan", label: "Skip plan", render: (r) => r.skip_plan?.available ? <StatusPill tone="ok" label={r.skip_plan.method === "empty_gtid_transaction" ? "Empty GTID" : "Skip counter"} /> : r.sql.error.errno ? <StatusPill tone="problem" label="Not available" /> : "—" },
+    { key: "actions", label: "Action", render: (r) => r.skip_plan?.available ? (
+        <span onClick={(e) => e.stopPropagation()}>
+          <VisiblePrivilegeGate action={r.skip_plan.method === "empty_gtid_transaction" ? "skip_gtid" : "skip_counter"} gate={skipGate(r.skip_plan)}
+            blocked={blocked || loopGate || actionBlock("one", r.skip_plan)}
+            disabled={disabled || !!other || busy || loops.some((l) => l.channel === r.name && loopActive(l))}
+            onClick={() => { void open("one", r); }}>Skip…</VisiblePrivilegeGate>
+        </span>
+      ) : "—"
+    },
+  ];
+  const columns: Column<ReplicationChannel>[] =
+    activeTab === "lag" ? lagColumns :
+    activeTab === "gtid" ? gtidColumns :
+    activeTab === "recovery" ? recoveryColumns :
+    channelColumns;
   const error = failure?.key === key ? failure.text : reads.error;
   const result = outcome?.key === key ? outcome.report : null;
   const resultTone = result ? SKIP_STATUS[result.status] || (["unknown", result.status] as [Tone, string]) : null;
@@ -392,25 +472,126 @@ export function ReplicationView({ connection, disabled, onBack, selection, repor
   const loopsShown = loops;
   // The restored flag belongs to the connection the workspace was saved with.
   const restartNote = restoredLoop && key === restoredKey && loopChecked === key && !loops.length;
+  // Only the backend's judged channels contribute a health status. Group
+  // Replication channels have a different contract and remain unjudged here.
+  const replicaFailed = judged.some(ch => ch.status === "problem" && !!(ch.io.error.errno || ch.sql.error.errno));
+  const replicaProblem = judged.some(ch => ch.status === "problem");
+  const replicaStopped = judged.some(ch => ch.status === "problem" && (ch.io.running === "No" || ch.sql.running === "No"));
+  const replicaWatch = judged.some(ch => ch.status === "watch");
+  const unjudged = (report?.channels.length || 0) - judged.length;
+  const replicaUnknown = !judged.length || unjudged > 0 || judged.some(ch => ch.status === "unknown");
+  const replicaTone: Tone = !report?.replica ? "unknown" : replicaProblem ? "problem" : replicaWatch ? "watch" : replicaUnknown ? "unknown" : "ok";
+  const replicaLabel = !report?.replica ? "Standalone" : replicaFailed ? "Failing" : replicaStopped ? "Stopped" : replicaProblem ? "Problem" : replicaWatch ? "Needs attention" : !judged.length ? "Not judged" : replicaUnknown ? "Unknown" : "Running";
+  const measuredLag = judged.filter(ch => ch.lag_s != null).length;
+  const unknownLag = judged.length - measuredLag;
+  const gtidMode = String(report?.gtid?.mode ?? report?.gtid?.gtid_mode ?? "Not available");
+  const topologyReport = report && replicaProblem
+    ? {
+        ...report,
+        summary: { ...report.summary, lag_max_s: null },
+        channels: report.channels.map((ch) =>
+          ch.status === "problem" || Boolean(ch.io.error.errno || ch.sql.error.errno) || ch.io.running !== "Yes" || ch.sql.running !== "Yes"
+            ? { ...ch, lag_s: null }
+            : ch,
+        ),
+      }
+    : report;
   return <>
-    <ViewLayout id="replication" title="Replication" className="ops-view" onBack={onBack} onRefresh={() => { void load(); }} refreshDisabled={disabled || busy} loading={!!reads.loading} otherConnection={other} inspector={inspector}
+    <ViewLayout id="replication" title="Replication" className="ops-view" onRefresh={() => { void load(); }} refreshDisabled={disabled || busy} loading={!!reads.loading} otherConnection={other} inspector={inspector}
       inspectorEmpty={<p>Select a {word} to see its threads, last error, lag signals and recovery.</p>}
+      controls={onTabChange ? (
+        <Segmented<ReplicationSubTab>
+          label="Replication sub-tabs"
+          value={activeTab}
+          onChange={onTabChange}
+          options={[
+            { value: "topology", label: "Topology Map" },
+            { value: "channels", label: "Channels & Status" },
+            { value: "lag", label: "Lag & Heartbeats" },
+            { value: "gtid", label: "GTID Coordinates" },
+            { value: "recovery", label: "Recovery & Skip", count: report?.summary?.failed || undefined },
+          ]}
+        />
+      ) : undefined}
       info={<><p>Each replication channel (MySQL) or connection (MariaDB) of the connection in use: thread states, the last error, lag signals and positions. Reading changes nothing.</p><p>Skip this transaction and Skip until stopped are changes: each asks first, shows the exact statements, and is recorded in the Audit log. A skipped transaction is missing on the replica.</p></>}
-      status={<ViewStatus loading={reads.loading} error={error}>{failure?.key === key && failure.loop && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>}>
-      {loopsShown.length > 0 && <ReplicationLoopBanner loops={loopsShown} stopping={stopping} onStop={(l) => { void stop(l); }} />}
-      {restartNote && <p className="ops-note" role="status">Stopped when myflames restarted. Skip loops never resume from a restored workspace.</p>}
-      {report ? <>
-        <SummaryLine tone={!report.available || !report.replica ? "unknown" : judged.length ? worstTone(judged.map((r) => r.status)) : "unknown"} toneLabel={judged.length || !report.replica ? undefined : "Not judged"} notes={report.notes.length ? report.notes : undefined}>
-          {summary}
-        </SummaryLine>
-        {!report.available || !report.replica ? <PrerequisiteGate>{report.message || "Replication status is not available for this connection."}</PrerequisiteGate> : <DataTable id="replication.channels" label={engine === "mariadb" ? "Replication connections" : "Replication channels"} columns={columns} rows={report.channels} rowKey={channelKey} selection={selection} />}
-        {result && resultTone && <section className="ops-result" aria-label="Skip result" role="status" data-status={result.status}>
+      status={<><ViewStatus loading={reads.loading} error={error}>{failure?.key === key && failure.loop && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>{loopsShown.length > 0 && <ReplicationLoopBanner loops={loopsShown} stopping={stopping} onStop={(l) => { void stop(l); }} />}{result && resultTone && <section className="ops-result" aria-label="Skip result" role="status" data-status={result.status}>
           <div className="ops-result-head"><StatusPill tone={resultTone[0]} label={resultTone[1]} /><strong>{channelPhrase(engine, result.channel)}</strong></div>
           <p>{result.message}</p>
           {result.policy?.text && <p>{result.policy.text}</p>}
           {result.after && <p className="hint">{result.after.passed ? "Checked after: the applier moved past the skipped transaction." : "Checked after: the applier did not move past it. Read the status again."}</p>}
           {result.status === "skipped" && result.plan && <details><summary>What to do next</summary><p>{result.plan.drift_warning}</p><ul>{result.plan.after.map((s, i) => <li key={i}>{s}</li>)}</ul></details>}
-        </section>}
+        </section>}</>}>
+
+      {restartNote && <p className="ops-note" role="status">Stopped when myflames restarted. Skip loops never resume from a restored workspace.</p>}
+      {report && report.available && (
+        <div className="replication-overview-cards">
+          <div className="replication-stat-card">
+            <div className="stat-label">Replica State</div>
+            <div className="stat-value">
+              <StatusPill
+                tone={replicaTone}
+                label={replicaLabel}
+              />
+            </div>
+            <div className="stat-hint">{engineName(report.engine, report.server_version)}</div>
+          </div>
+          <div className="replication-stat-card">
+            <div className="stat-label">Channels</div>
+            <div className="stat-value">{report.summary.channels}</div>
+            <div className="stat-hint">{report.summary.channels === 1 ? "1 channel" : `${report.summary.channels} channels`} · {report.summary.ok} ok</div>
+          </div>
+          <div className="replication-stat-card">
+            <div className="stat-label">Max Measured Applier Lag</div>
+            <div className="stat-value">{lag(report.summary.lag_max_s)}</div>
+            <div className="stat-hint">
+              {`${measuredLag} measured · ${unknownLag} unknown${unjudged ? ` · ${unjudged} not judged` : ""}. Check receiver and worker lag.`}
+            </div>
+          </div>
+          <div className="replication-stat-card">
+            <div className="stat-label">GTID Mode</div>
+            <div className="stat-value">{gtidMode}</div>
+            <div className="stat-hint">{report.channels.some((ch) => ch.failing_gtid) ? "Failing GTID detected" : "Replication coordinates"}</div>
+          </div>
+        </div>
+      )}
+      {report && report.available && activeTab === "lag" && (
+        <div className="replication-tab-banner">
+          <Icon name="history" size={14} />
+          <span><strong>Lag analysis:</strong> Seconds_Behind_Source alone does not guarantee a replica is caught up. Network heartbeats, clock skew, and worker queues must be evaluated.</span>
+        </div>
+      )}
+      {report && report.available && activeTab === "gtid" && report.gtid && (
+        <div className="ops-gtid-overview">
+          <Fields rows={[
+            ["GTID Mode", gtidMode],
+            ["Executed GTID Set", <code className="ops-wrap">{String(report.gtid.executed_gtid_set || "None")}</code>],
+            ["Purged GTID Set", <code className="ops-wrap">{String(report.gtid.gtid_purged || "None")}</code>],
+          ]} />
+        </div>
+      )}
+      {report && report.available && activeTab === "recovery" && (
+        <div className="replication-tab-banner">
+          <Icon name="warning" size={14} />
+          <span><strong>Recovery & Skip:</strong> Skipping a transaction advances replication past a failure, but creates data drift. Each skip is verified, executed with write policy confirmation, and audited.</span>
+        </div>
+      )}
+      {report ? <>
+        <SummaryLine tone={!report.available || !report.replica ? "unknown" : judged.length ? worstTone(judged.map((r) => r.status)) : "unknown"} toneLabel={judged.length || !report.replica ? undefined : "Not judged"} notes={report.notes.length ? report.notes : undefined}>
+          {summary}
+        </SummaryLine>
+        {!report.available || !report.replica ? (
+          <PrerequisiteGate>{report.message || "Replication status is not available for this connection."}</PrerequisiteGate>
+        ) : activeTab === "topology" ? (
+          <ReplicationTopology
+            report={topologyReport!}
+            connection={connection}
+            selection={selection}
+            onSelectChannel={(name) => selection.select(channelKey({ name } as any))}
+          />
+        ) : (
+          <DataTable id="replication.channels" label={engine === "mariadb" ? "Replication connections" : "Replication channels"} columns={columns} rows={report.channels} rowKey={channelKey} selection={selection} />
+        )}
+
       </> : <EmptyState icon="replication" title="Read replication status" action={<ToolbarButton primary disabled={disabled || !!reads.loading} onClick={() => { void load(); }}>Load</ToolbarButton>}>Channels, thread states, the last error and lag signals of the connection in use. It only reads.</EmptyState>}
     </ViewLayout>
     {c && <ConfirmSheet className="ops-confirm" eyebrow={c.kind === "one" ? "SKIP TRANSACTION" : "SKIP UNTIL STOPPED"}

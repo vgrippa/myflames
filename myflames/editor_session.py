@@ -2142,6 +2142,18 @@ def _session_for(registry, tab_id, identity):
     return session
 
 
+def _owned_session(registry, tab_id, identity):
+    """The tab's session when it belongs to the same saved connection endpoint,
+    whatever the policy (type, read-only) is now. Status, Close, Stop and
+    Rollback use this so a policy change never strands a running query or an
+    open transaction; writes and runs keep the strict :func:`_session_for`."""
+    from . import dbops
+    session = registry.get(tab_id)
+    if session is not None and dbops.identity_endpoint(session.identity) != dbops.identity_endpoint(identity):
+        raise EditorError(_MISMATCH, "identity_mismatch")
+    return session
+
+
 def _digest(tab_id, identity, statements, operation):
     """What a confirmation covers: the tab, the connection, the operation and
     the exact statements."""
@@ -2655,14 +2667,16 @@ def _start_preference(payload):
     return value
 
 
-def _open_session(registry, tab_id, options, identity, safety, name, payload, defer_safe_updates=False):
+def _open_session(registry, tab_id, options, identity, safety, name, payload, defer_safe_updates=False,
+                  created=None):
     """The tab's session, started if needed. It starts with sql_safe_updates
     on for Production (or when the request asks for it); turning it off goes
-    through _lower_safe_updates."""
+    through _lower_safe_updates. *created*, a dict, gets ``session`` when
+    this call started a new session."""
     wanted = _start_preference(payload)
     idle = int(_number(payload, "idle_minutes", DEFAULT_IDLE_SECONDS // 60, 1, MAX_IDLE_SECONDS // 60,
                        "idle_minutes") * 60)
-    created = {}
+    created = {} if created is None else created
 
     def make():
         session = EditorSession(tab_id, identity, options, safety["type"], safety["read_only"],
@@ -2773,6 +2787,18 @@ def _history_recorder(store, session, password):
     return record
 
 
+def _requested_review(decision, payload):
+    """Dedicated Server actions always review, including Development writes.
+
+    This can only tighten policy. Refusals and stronger risky-write reviews
+    retain their original reasons and target requirements.
+    """
+    if payload.get("require_confirmation") is True and decision["action"] == "allow":
+        return dict(decision, action="confirm", title="Review server change", tone="danger",
+                    text="Review the exact statements and connection before applying this change.")
+    return decision
+
+
 def _run_api(payload, workspace, fill_password):
     store = workspace.store
     registry = _registry(workspace)
@@ -2801,7 +2827,7 @@ def _run_api(payload, workspace, fill_password):
     # which can persist a refused or declined attempt without password lookup.
     password = (session._conn.password if session is not None and session._conn is not None
                 else typed_password)
-    decision = _decision(plan, safety, session)
+    decision = _requested_review(_decision(plan, safety, session), payload)
     filled = None
     if _alter_unit(plan) is not None and decision["action"] != "refuse" and payload.get("decline") is not True:
         audit = _audit_trail(store, "editor_run", safety, options, password, decision)
@@ -2816,7 +2842,7 @@ def _run_api(payload, workspace, fill_password):
         if session is None:
             session = _open_session(registry, tab_id, full_options, identity, safety, name, payload)
         plan = _plan_run(payload, session)
-        decision = _decision(plan, safety, session)
+        decision = _requested_review(_decision(plan, safety, session), payload)
         if decision["action"] != "refuse":
             review = _alter_review(plan, session)
             decision["alter_preflight"] = review
@@ -2860,7 +2886,7 @@ def _run_api(payload, workspace, fill_password):
             plan = _plan_run(payload, session)
         except EditorError as exc:
             return {"status": "invalid", "code": exc.code, "message": str(exc), "session": session.status()}
-        decision = _decision(plan, safety, session)
+        decision = _requested_review(_decision(plan, safety, session), payload)
         again = [u["send"] for u in plan["units"]]
         if (decision["action"] == "refuse" or again != statements
                 or decision["action"] != initial_decision["action"]
@@ -2897,7 +2923,8 @@ def _action_api(payload, workspace, action):
     registry = _registry(workspace)
     tab_id = _tab_id(payload)
     options, identity, safety, name = _connection_facts(payload, store)
-    session = _session_for(registry, tab_id, identity)
+    lookup = _owned_session if action == "ROLLBACK" else _session_for
+    session = lookup(registry, tab_id, identity)
     if session is None:
         raise EditorError("This tab has no session, so there is nothing to %s." % action.lower(), "no_session")
     if session.ended:
@@ -2980,16 +3007,37 @@ def _open_api(payload, workspace, fill_password):
     full = connection_options(filled.get("connection"))
     if audit is not None:
         audit.password = full.get("password") or audit.password
+    if lower:
+        # Same re-read as a run: a policy changed during the password lookup
+        # must not send the statement that lowers a protection.
+        changed = _policy_changed(payload, store, identity, safety, audit, [SAFE_UPDATES_OFF])
+        if changed:
+            changed["session"] = session.status() if session else None
+            return changed
+    started = {}
     try:
         # Apply explicit preferences only below, through the audited helper.
         session = _open_session(registry, tab_id, full, identity, safety, name, payload,
-                                defer_safe_updates=wanted is not None)
+                                defer_safe_updates=wanted is not None, created=started)
     except ConnectorError as exc:
         message = str(exc)
         if full.get("password"):
             message = message.replace(full["password"], "[redacted]")
         raise ConnectorError(message)
     if lower:
+        # Again right before sending: connecting takes time, and a policy
+        # changed meanwhile must not see the protection lowered. A session
+        # this request started (safe updates deferred, under the old policy)
+        # is ended instead of being left open; nothing was sent to it.
+        changed = _policy_changed(payload, store, identity, safety, audit, [SAFE_UPDATES_OFF])
+        if changed:
+            if started.get("session") is session:
+                registry.remove(tab_id, session)
+                session.end("policy_changed", quiet=True)
+                changed["session"] = None
+            else:
+                changed["session"] = session.status()
+            return changed
         _set_safe_updates(session, SAFE_UPDATES_OFF, audit)
     elif wanted is True:
         _set_safe_updates(session, SAFE_UPDATES_ON, audit)
@@ -3040,7 +3088,7 @@ def api_response(path, payload, workspace, fill_password=None):
         if isinstance(payload.get("connection"), dict):
             options, identity, safety, name = _connection_facts(payload, store)
             try:
-                session = _session_for(registry, tab_id, identity)
+                session = _owned_session(registry, tab_id, identity)
             except EditorError as exc:
                 if exc.code != "identity_mismatch":
                     raise
@@ -3067,7 +3115,7 @@ def api_response(path, payload, workspace, fill_password=None):
         return {"closed": True, "session": session.status()}
     options, identity, safety, name = _connection_facts(payload, store)
     if path == "/api/editor/stop":
-        session = _session_for(registry, tab_id, identity)
+        session = _owned_session(registry, tab_id, identity)
         if session is None:
             return {"stopped": False, "message": "This tab has no session.", "session": None}
         filled = fill_password(payload)

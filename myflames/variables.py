@@ -1,6 +1,6 @@
 """Change server variables: SET GLOBAL, SET PERSIST, SET PERSIST_ONLY, RESET PERSIST and SET SESSION.
 
-The write side of the Configuration view and ``myflames config set`` /
+The write side of the Parameters view and ``myflames config set`` /
 ``myflames config reset-persist``. Every change follows the write contract
 in the db-operations skill (docs/DEVELOPER_REFERENCE.md, "Write safety and
 audit"), reusing :mod:`myflames.dbops`:
@@ -45,9 +45,12 @@ tag, Ma/ = mariadb-server 13.0 and the 10.11 and 11.4 tags):
   NON_PERSIST, PERSIST_AS_READONLY, GLOBAL_VAR / SESSION_VAR / SESSION_ONLY)
   and M/storage/innobase/handler/ha_innodb.cc (PLUGIN_VAR_READONLY,
   PLUGIN_VAR_NOPERSIST, PLUGIN_VAR_PERSIST_AS_READ_ONLY), identical at the
-  8.4.10 tag and 9.7 for every entry. A MySQL variable outside the map has
-  ``dynamic: None``: the UI offers no change, the CLI tries and the server
-  decides (1238 when it is read-only).
+  8.4.10 tag and 9.7 for every entry. The generated
+  :mod:`mysql_sysvars` catalog supplements this authoritative hand map;
+  ``scripts/gen_mysql_sysvars.py`` extracts both tags, including plugin
+  declarations and constructor flags. Conflicting facts stay unknown.
+  A MySQL variable outside both maps has ``dynamic: None``: the UI offers
+  no change, the CLI tries and the server decides (1238 when read-only).
 * ``performance_schema.global_variables`` lists global and both-scope
   variables; ``session_variables`` (like SHOW SESSION VARIABLES) also lists
   global-only ones (non-strict scope, M/storage/perfschema/pfs_variable.cc:
@@ -100,7 +103,7 @@ import math
 import re
 from decimal import Decimal, DecimalException, localcontext
 
-from . import dbops
+from . import dbops, mysql_sysvars
 from .connector import ConnectorError, MySQLConnection
 from .perf_common import _bytes_text, _number, _version_tuple, literal, reason
 from .server_info import detect_flavor
@@ -317,7 +320,7 @@ for _privilege, _names in (
         MARIADB_GLOBAL_PRIVILEGE[_name] = _privilege
 #: Their constant is SUPER_ACL | BINLOG_ADMIN_ACL: either one is enough on every version.
 MARIADB_GLOBAL_OR_SUPER = frozenset(("binlog_legacy_event_pos", "binlog_do_db", "binlog_ignore_db"))
-#: MariaDB facts for the Configuration view's rows, so the inspector can label
+#: MariaDB facts for the Parameters view's rows, so the inspector can label
 #: Change before anything is read (Ma/sql/sys_vars.cc and ha_innodb.cc at the
 #: 10.11, 11.4 and 13.0 sources; the catalog decides when the sheet opens).
 MARIADB_READ_ONLY = frozenset(("innodb_buffer_pool_size_max", "innodb_buffer_pool_chunk_size", "innodb_flush_method",
@@ -355,27 +358,41 @@ def check_mode(mode):
 
 
 def _flags(name):
-    entry = MYSQL_VARIABLES.get(name)
-    return set(entry[2].split()) if entry else set()
+    entry = MYSQL_VARIABLES.get(name, mysql_sysvars.SYSVARS.get(name))
+    return set(entry[2].split()) if entry and entry[2] is not None else set()
 
 
 def static_dynamic(engine, name):
     """True, False or None (unknown) without reading the server: whether
-    *name* can change at runtime. For the Configuration view's labels; the
+    *name* can change at runtime. For the Parameters view's labels; the
     sheet reads the server before offering anything."""
     if engine == "mariadb":
         if name in MARIADB_READ_ONLY:
             return False
         return True if name in MARIADB_DYNAMIC else None
-    entry = MYSQL_VARIABLES.get(name)
-    if entry is None:
+    entry = MYSQL_VARIABLES.get(name, mysql_sysvars.SYSVARS.get(name)) if engine == "mysql" else None
+    if entry is None or entry[2] is None:
         return None
     return "ro" not in entry[2].split()
 
 
+#: Names the size heuristic would call bytes but that count rows, pages, entries,
+#: characters, threads or percent (sys_vars.cc and ha_innodb.cc help texts).
+_COUNT_NAMES = frozenset((
+    "innodb_page_size", "thread_pool_size", "histogram_size", "host_cache_size", "thread_cache_size",
+    "max_join_size", "innodb_purge_batch_size", "innodb_sync_array_size", "innodb_ft_min_token_size",
+    "innodb_ft_max_token_size", "ngram_token_size", "innodb_doublewrite_batch_size",
+    "innodb_change_buffer_max_size", "binlog_transaction_dependency_history_size"))
+
+
 def _is_bytes(name):
-    return name in _BYTE_NAMES or name.endswith(("_buffer_size", "_cache_size", "_size_max")) or \
-        (name.endswith("_size") and name not in ("innodb_page_size", "thread_pool_size", "histogram_size"))
+    if name in _BYTE_NAMES:
+        return True
+    # Performance Schema sizes and history sizes count rows, not bytes.
+    if name in _COUNT_NAMES or name.startswith("performance_schema_") or \
+            name.endswith(("_history_size", "_history_long_size")):
+        return False
+    return name.endswith(("_buffer_size", "_cache_size", "_size_max", "_size"))
 
 # ---- reading (talks to the server) -----------------------------------------------------------
 
@@ -479,11 +496,12 @@ def _read(conn, name):
             rows = _sections(conn.run(TAG + (
                 "SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, "
                 "VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, "
-                "GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = "
+                "GLOBAL_VALUE_PATH, VARIABLE_COMMENT, COMMAND_LINE_ARGUMENT FROM information_schema.SYSTEM_VARIABLES "
+                "WHERE VARIABLE_NAME = "
                 "%s" % _quote_name(name.upper())), extra_flags=["--comments"]))[""]
             if rows:
                 keys = ("name", "session_value", "global_value", "origin", "default", "scope", "type", "min", "max",
-                        "block", "values", "read_only", "path", "comment")
+                        "block", "values", "read_only", "path", "comment", "command_line_argument")
                 info["catalog"] = dict(zip(keys, rows[0]))
         else:
             statements = ["SELECT '%sinfo'" % _MARK,
@@ -526,6 +544,8 @@ def _scope(info):
             "performance_schema.variables_metadata"
     if info["engine"] == "mysql" and info["name"] in MYSQL_VARIABLES:
         return MYSQL_VARIABLES[info["name"]][0], "myflames map (sys_vars.cc)"
+    if info["engine"] == "mysql" and info["name"] in mysql_sysvars.SYSVARS:
+        return mysql_sysvars.SYSVARS[info["name"]][0], "myflames generated MySQL catalog"
     if info["in_session"] and not info["in_global"]:
         return "session", "SHOW SESSION VARIABLES"
     return None, None
@@ -535,8 +555,10 @@ def _type(info):
     """(type, values) where type is bytes, integer, double, boolean, enum, set, string or None."""
     name = info["name"]
     catalog, metadata = info.get("catalog"), info.get("metadata")
-    if name == "optimizer_switch":
-        # The live flag names account for version and engine differences.
+    known = MYSQL_VARIABLES.get(name) or mysql_sysvars.SYSVARS.get(name) if info["engine"] == "mysql" else None
+    if name == "optimizer_switch" or (known and known[1] == "flagset"):
+        # The live flag names account for version and engine differences
+        # (optimizer_switch, optimizer_trace, optimizer_trace_features).
         flags = _flag_values(info.get("global_value") or info.get("session_value"))
         return "flagset", list(flags) if flags else None
     if catalog and catalog.get("type"):
@@ -571,7 +593,14 @@ def _type(info):
                 "Boolean": "boolean", "Set": "set"}.get(metadata["type"])
         if kind == "integer" and _is_bytes(name):
             kind = "bytes"
-        return kind, (["OFF", "ON"] if kind == "boolean" else None)
+        values = mysql_sysvars.VALUES.get(name) if info["engine"] == "mysql" else None
+        return kind, (["OFF", "ON"] if kind == "boolean" else list(values) if values else None)
+    if info["engine"] == "mysql" and name in mysql_sysvars.SYSVARS:
+        kind = mysql_sysvars.SYSVARS[name][1]
+        if kind == "integer" and _is_bytes(name):
+            kind = "bytes"
+        values = mysql_sysvars.VALUES.get(name)
+        return kind, (["OFF", "ON"] if kind == "boolean" else list(values) if values else None)
     return None, None
 
 
@@ -594,8 +623,8 @@ def _dynamic(info):
     catalog = info.get("catalog")
     if catalog and catalog.get("read_only"):
         return catalog["read_only"].upper() != "YES"
-    if info["engine"] == "mysql" and info["name"] in MYSQL_VARIABLES:
-        return "ro" not in _flags(info["name"])
+    if info["engine"] == "mysql":
+        return static_dynamic("mysql", info["name"])
     return None
 
 
@@ -642,6 +671,27 @@ def _can_validate_persist_only(v):
     return False
 
 
+#: Set through separately named mysqld options although the variable itself has
+#: no startup option (M/sql/mysqld.cc:10979-11064; MariaDB uses the same names).
+SEPARATE_OPTIONS = frozenset(("core_file", "log_bin", "log_bin_index", "relay_log_index",
+                              "skip_external_locking", "locked_in_memory"))
+
+
+def startup_option(info):
+    """False when no startup option sets the variable (the server computes it:
+    MariaDB COMMAND_LINE_ARGUMENT is NULL, MySQL catalog flag nc), True when
+    one does, None when unknown. Hand-map MySQL entries stay None."""
+    name = info["name"]
+    if name in SEPARATE_OPTIONS:
+        return True
+    catalog = info.get("catalog")
+    if catalog is not None and "command_line_argument" in catalog:
+        return catalog["command_line_argument"] is not None
+    if info["engine"] == "mysql" and name not in MYSQL_VARIABLES and "nc" in _flags(name):
+        return False
+    return None
+
+
 def _default(info):
     if info.get("catalog"):
         return info["catalog"].get("default")
@@ -683,11 +733,12 @@ def describe(info):
                           supported=info["engine"] == "mysql",
                           load=None if load is None else load.upper() in ("ON", "1")),
         "non_persistent": "np" in flags, "persist_as_read_only": "pro" in flags,
-        "session_read_only": "sro" in flags,
+        "session_read_only": "sro" in flags, "startup_option": startup_option(info),
         "description": (description or "")[:600] or None,
         "notes": list(info.get("notes") or []),
     }
-    if info["engine"] == "mysql" and info["name"] not in MYSQL_VARIABLES and exists:
+    if (info["engine"] == "mysql" and info["name"] not in MYSQL_VARIABLES
+            and info["name"] not in mysql_sysvars.SYSVARS and exists):
         out["notes"].append("myflames has no source-verified record of whether %s can change while the server runs; "
                             "the server decides (error 1238 when it cannot)." % info["name"])
     if info["name"] == "innodb_buffer_pool_size":
@@ -729,10 +780,12 @@ def _modes(v):
             mode("persist_only", False, why)
         else:
             mode("persist", not read_only and not session_only,
-                 ("%s is read-only while the server runs: use After restart only (SET PERSIST_ONLY)." % name)
+                 ("%s is read-only while the server runs: use SET PERSIST_ONLY, then restart." % name)
                  if read_only else "%s has only a session value." % name)
             mode("persist_only", not session_only, "%s has only a session value." % name, recommended=read_only)
         mode("reset_persist", v["persisted"]["present"], "mysqld-auto.cnf has no value for %s." % name)
+        if v.get("startup_option") is False:
+            mode("persist_only", False, "The server sets %s; no option or statement changes it." % name)
         if not _can_validate_persist_only(v):
             mode("persist_only", False, "myflames cannot fully validate %s for SET PERSIST_ONLY; "
                  "its type, bounds or allowed values are unavailable." % name)
@@ -787,8 +840,8 @@ def normalize_value(v, raw):
         raise ValueError("Pass the new value as text.")
     if len(raw) > MAX_VALUE_LENGTH:
         raise ValueError("The value is limited to %d characters." % MAX_VALUE_LENGTH)
-    text = raw.strip()
     kind = v.get("type")
+    text = raw if kind == "string" else raw.strip()
     name = v["name"]
     out = {"literal": None, "value": text, "number": None, "display": text, "problems": [],
            "sql_null": False, "default": False}
@@ -841,7 +894,7 @@ def normalize_value(v, raw):
             return fail("out_of_range", "%s must be from %s to %s; %s is outside." % (name, low, high, text))
         with localcontext() as context:
             context.prec = len(text) + 32
-            literal_text = str(exact.normalize())
+            literal_text = format(exact.normalize(), "f")
         out.update(literal=literal_text, value=literal_text, number=number, display=literal_text)
         return out
     if kind == "boolean":
@@ -1115,6 +1168,9 @@ def _alternative(v, mode, line):
     name = v["name"]
     if not v["exists"]:
         return None
+    if v.get("startup_option") is False and v["dynamic"] is False:
+        return {"mode": None, "config_line": None,
+                "text": "The server sets %s; no option or statement changes it." % name}
     cnf = ("add %s under [mysqld] (or [mariadb]) in an option file" % line) if line else "set it in an option file"
     if v["engine"] == "mariadb" and v["dynamic"] is False:
         return {"mode": None, "config_line": line,
@@ -1123,14 +1179,14 @@ def _alternative(v, mode, line):
         now = v["modes"]["global"]["available"]
         return {"mode": "global" if now else None, "config_line": line,
                 "text": "%sTo keep it after a restart, %s; myflames never edits option files." % (
-                    "Change it now with Now only (SET GLOBAL). " if now else "", cnf)}
+                    "MariaDB has no SET PERSIST; use SET GLOBAL to change it now. " if now else "MariaDB has no SET PERSIST. ", cnf)}
     if v["engine"] == "mysql" and v["dynamic"] is False and v["modes"]["persist_only"]["available"]:
         return {"mode": "persist_only", "config_line": line,
-                "text": "Use After restart only (SET PERSIST_ONLY), then restart the server."}
+                "text": "Use SET PERSIST_ONLY, then restart the server."}
     for other in ("global", "session"):
         if other != mode and v["modes"][other]["available"] and mode in ("global", "session", "persist"):
             return {"mode": other, "config_line": line,
-                    "text": "Use %s instead." % MODE_LABELS[other]}
+                    "text": "Use %s instead." % {"global": "SET GLOBAL", "session": "SET SESSION"}[other]}
     return None
 
 
@@ -1188,7 +1244,7 @@ def build_plan(v, value, mode, grants=None):
     plan["caveats"] = _caveats(v, mode, normalized)
     if mode in ("global", "session") and v["dynamic"] is None and v["engine"] == "mysql":
         plan["caveats"].append("myflames does not know whether %s can change while the server runs; the server "
-                               "refuses with error 1238 when it cannot (try After restart only then)." % name)
+                               "refuses with error 1238 when it cannot (try SET PERSIST_ONLY then)." % name)
     plan["privileges"] = privileges(v, mode, grants)
     verdict = dbops.classify(statement)
     plan["classification"] = {"kind": verdict["kind"], "category": verdict["category"], "reasons": verdict["reasons"]}
@@ -1558,8 +1614,11 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     unverified = matched is None or not identity_matches or (
         mode == "persist" and not _persisted_matches_running(v, after)) or (
         mode == "persist_only" and matched is not True)
+    already_matched = matched is True and _matches(v, mode, normalized, fresh["before"]) is True
     if unverified:
         result["status"] = "applied_unverified"
+    elif already_matched:
+        result["status"] = "unchanged"
     elif mode == "reset_persist" and matched is False:
         result["status"] = "unchanged"
     elif after and matched is False and mode != "reset_persist" and _same(got, before) and \
@@ -1571,8 +1630,10 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     result["message"] = ("Sent %s, but could not verify the complete effect on this server. Read the variable "
                          "and its persisted state again before retrying." % statement if unverified else
                          _change_message(v, fresh, after, matched))
+    if already_matched and not unverified:
+        result["message"] = "%s is unchanged; the requested value was already set." % name
     if audit is not None:
-        audit.complete("unknown" if unverified else "ok" if result["status"] == "changed" else "error",
+        audit.complete("unknown" if unverified else "ok" if result["status"] == "changed" or already_matched else "error",
                        outcome=result["status"],
                        message=result["message"], after=after)
     return result
@@ -1583,7 +1644,9 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
 def describe_plan(plan, policy_text=None):
     """Lines that describe a planned change before confirming it (stderr)."""
     v = plan["variable"]
-    lines = ["%s on %s %s" % (plan["mode_label"], "MariaDB" if plan["engine"] == "mariadb" else "MySQL",
+    operation = {"global": "SET GLOBAL", "persist": "SET PERSIST", "persist_only": "SET PERSIST_ONLY",
+                 "session": "SET SESSION", "reset_persist": "RESET PERSIST"}[plan["mode"]]
+    lines = ["%s on %s %s" % (operation, "MariaDB" if plan["engine"] == "mariadb" else "MySQL",
                               plan["server_version"] or "?"),
              "  %s;" % plan["statement"]]
     if plan["mode"] != "reset_persist":
@@ -1649,7 +1712,7 @@ def change_cli(conn, name, value, mode, assume_yes=False, quiet=False, stdin=Non
                decision=None):
     """``myflames config set`` / ``reset-persist``: plan, describe, confirm, apply.
 
-    Returns ``(exit code, variable-change-1.0 result)``: 0 changed, 1
+    Returns ``(exit code, variable-change-1.0 result)``: 0 changed or already set, 1
     declined, refused (by myflames or the server), denied, not applied or
     ``applied_unverified`` (sent, but the full effect could not be verified).
     Do not automatically retry an unverified write. Bad
@@ -1683,4 +1746,7 @@ def change_cli(conn, name, value, mode, assume_yes=False, quiet=False, stdin=Non
     if problem:
         return 1, _unsent(plan, audit, problem[0], problem[1], problem[2], plan["expect"])
     result = apply_change(conn, plan, plan["expect"], decision=decision, confirmed=True, audit=audit)
-    return (0 if result["status"] == "changed" else 1), result
+    successful = result["status"] == "changed" or (
+        result["status"] == "unchanged" and _matches(plan["variable"], mode,
+            normalize_value(plan["variable"], value) if mode != "reset_persist" else {}, result["after"] or {}) is True)
+    return (0 if successful else 1), result

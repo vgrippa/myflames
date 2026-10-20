@@ -231,6 +231,8 @@ function ResultGrid({ result, label, onCopied }: { result: EditorRows; label: st
         rows={rows}
         rowKey={(r) => r.key}
         selection={{ key: selected, select: (key) => setSelected(key) }}
+        // ResultGrid draws its own Copy menu (value, row, column, all rows).
+        nativeRowMenu={false}
         className="result-table"
         rowAction={(r) => <button type="button" className="icon-button row-more" aria-label={`More actions for row ${r.i + 1}`}
           title="More actions" aria-haspopup="menu" aria-expanded={menu?.row === r.i}
@@ -250,7 +252,7 @@ function ResultGrid({ result, label, onCopied }: { result: EditorRows; label: st
           style={{ left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 140) }}
           tabIndex={-1}
         >
-          <button type="button" role="menuitem" onClick={() => void copy(tsv([[result.rows[menu.row][menu.col] ?? null]]), `Value of ${name(menu.col)} copied.`)}>
+          <button type="button" role="menuitem" onClick={() => void copy(result.rows[menu.row][menu.col] ?? "", `Value of ${name(menu.col)} copied.`)}>
             Copy value ({name(menu.col)})
           </button>
           <button type="button" role="menuitem" onClick={() => void copy(tsv([result.rows[menu.row]]), "Row copied as tab-separated text.")}>
@@ -588,17 +590,22 @@ function ResultView({
     <div className="result-view">
       <div className="result-bar">
         <span className="result-meta">
-          {cut ? (
-            <span className="result-cut">{result.label || `first ${rowsText(result.row_count)}`}</span>
-          ) : (
-            rowsText(result.row_count)
-          )}
-          {result.warnings ? ` · ${count(result.warnings)} ${result.warnings === 1 ? "warning" : "warnings"}` : ""}
-          {duration(result.duration_ms) ? ` · ${duration(result.duration_ms)}` : ""}
-          <span className="result-sortnote" title="Sorting a column orders the rows loaded here, not the whole table">
-            {" "}
-            · sorting orders loaded rows only
-          </span>
+          {[
+            cut ? <span key="cut" className="result-cut">{result.label || `first ${rowsText(result.row_count)}`}</span> : null,
+            result.warnings ? <span key="warn">{`${count(result.warnings)} ${result.warnings === 1 ? "warning" : "warnings"}`}</span> : null,
+            result.row_count > 1 ? (
+              <span key="sort" className="result-sortnote" title="Sorting a column orders the rows loaded here, not the whole table">
+                Sorting orders loaded rows only
+              </span>
+            ) : null,
+          ]
+            .filter(Boolean)
+            .map((item, i) => (
+              <span key={i}>
+                {i > 0 ? " · " : ""}
+                {item}
+              </span>
+            ))}
         </span>
         {reloaded[index] && <span className="result-note">{reloaded[index]}</span>}
         <span className="result-actions">

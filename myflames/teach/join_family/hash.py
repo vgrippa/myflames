@@ -131,7 +131,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="hash",
-        title="Hash join — build, probe, and grace-hash spill",
+        title="Hash join: build, probe, and grace-hash spill",
         subtitle=(
             "MySQL 8.4's default for non-indexed equi-joins. Watch real "
             "department rows hash into buckets, then see employees find "

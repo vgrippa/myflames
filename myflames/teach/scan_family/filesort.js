@@ -106,17 +106,17 @@ function addQsToTimeline(tl, slotGs, slotXs, orderIndices, fast) {
   var dur  = fast ? 200 : 350;
   var dly  = fast ? 120 : 200;
   var cmpD = fast ? 80  : 140;
-  var UNSORTED    = "#7c3aed";
-  var PIVOT_CLR   = "#ea580c";
-  var LESS_CLR    = "#16a34a";
-  var GREATER_CLR = "#dc2626";
-  var PLACED_CLR  = "#059669";
+  var UNSORTED    = "var(--svg-group)";
+  var PIVOT_CLR   = "var(--svg-build)";
+  var LESS_CLR    = "var(--svg-ok)";
+  var GREATER_CLR = "var(--svg-danger)";
+  var PLACED_CLR  = "var(--svg-ok)";
 
-  var ptrI = createQsPointer("i", "#2563eb");
-  var ptrJ = createQsPointer("j", "#d97706");
+  var ptrI = createQsPointer("i", "var(--svg-token)");
+  var ptrJ = createQsPointer("j", "var(--svg-build)");
   var bracket = anim.svgEl("line", {
     x1:0, y1:0, x2:0, y2:0,
-    stroke:"#9ca3af", "stroke-width":1, "stroke-dasharray":"3,3", opacity:0
+    stroke:"var(--svg-node-stroke)", "stroke-width":1, "stroke-dasharray":"3,3", opacity:0
   });
   stage.svg.appendChild(bracket);
   stage.tuples.push(bracket);
@@ -218,7 +218,7 @@ function addQsToTimeline(tl, slotGs, slotXs, orderIndices, fast) {
 // then slide all pills to their sorted positions (pass 2).
 // No external bucket DOM — everything stays in the buffer zone.
 var MONTH_NAMES = ["", "Jan", "Feb", "Mar", "Apr", "May"];
-var BUCKET_CLRS = ["#2563eb", "#7c3aed", "#db2777", "#ea580c", "#ca8a04", "#059669"];
+var BUCKET_CLRS = ["var(--svg-token)", "var(--svg-group)", "var(--svg-group-alt)", "var(--svg-build)", "var(--svg-probe)", "var(--svg-ok)"];
 
 // Radix sort uses its own dedicated SVG (radix-svg) so it doesn't
 // fight with the filesort stage's zones/arrows/z-order.
@@ -237,7 +237,7 @@ function buildRadixTimeline(orderIndices, fast) {
   var RW = 800, RH = 340;
   var dur = fast ? 250 : 420;
   var dly = fast ? 80 : 160;
-  var PLACED = "#059669";
+  var PLACED = "var(--svg-ok)";
   var ROW_Y = 40;       // unsorted row at top
   var BUCKET_Y = 140;   // bucket boxes in middle
   var BUCKET_H = 54;
@@ -278,23 +278,23 @@ function buildRadixTimeline(orderIndices, fast) {
 
   // ---- Draw static layout ----
   // Title: unsorted array
-  var titleTop = anim.svgEl("text", {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "#7c3aed"});
+  var titleTop = anim.svgEl("text", {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"});
   titleTop.textContent = "\u2460 Unsorted rows (sort key \u2264 16 B \u2192 radix sort)";
   rsvg.appendChild(titleTop);
 
   // Unsorted row background
   var topBg = anim.svgEl("rect", {x: 20, y: ROW_Y - 12, width: RW - 40, height: 36, rx: 8,
-    fill: "#f5f3ff", stroke: "#8b5cf6", "stroke-width": 1.5});
+    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5});
   rsvg.appendChild(topBg);
 
   // Arrow down
   var arrowD = anim.svgEl("text", {x: RW / 2, y: BUCKET_Y - 18, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#9ca3af"});
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ink-muted)"});
   arrowD.textContent = "\u2193 distribute by month digit (zero comparisons)";
   rsvg.appendChild(arrowD);
 
   // Title: buckets
-  var titleMid = anim.svgEl("text", {x: 20, y: BUCKET_Y - 4, "font-size": 13, "font-weight": 700, fill: "#0369a1"});
+  var titleMid = anim.svgEl("text", {x: 20, y: BUCKET_Y - 4, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"});
   titleMid.textContent = "\u2461 Month buckets";
   rsvg.appendChild(titleMid);
 
@@ -309,14 +309,14 @@ function buildRadixTimeline(orderIndices, fast) {
     var clr = BUCKET_CLRS[bk %% BUCKET_CLRS.length];
     var bgrp = anim.svgEl("g", {opacity: 0});
     var br = anim.svgEl("rect", {x: bp.x, y: BUCKET_Y, width: bw, height: BUCKET_H, rx: 8,
-      fill: "#f0f9ff", stroke: clr, "stroke-width": 2});
+      fill: "var(--svg-token-soft)", stroke: clr, "stroke-width": 2});
     bgrp.appendChild(br);
     var blbl = anim.svgEl("text", {x: bp.cx, y: BUCKET_Y + 20, "text-anchor": "middle",
       "font-size": 13, "font-weight": 700, fill: clr});
     blbl.textContent = MONTH_NAMES[m] || ("M" + m);
     bgrp.appendChild(blbl);
     var bcnt = anim.svgEl("text", {x: bp.cx, y: BUCKET_Y + BUCKET_H - 8, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 600, fill: "#64748b"});
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-ink-muted)"});
     bcnt.textContent = "0 rows";
     bgrp.appendChild(bcnt);
     rsvg.appendChild(bgrp);
@@ -328,29 +328,29 @@ function buildRadixTimeline(orderIndices, fast) {
 
   // Comparison counter (always shows 0 — the visual punchline of radix)
   var cmpCounter = anim.svgEl("text", {x: RW - 24, y: BUCKET_Y + BUCKET_H / 2 + 4,
-    "text-anchor": "end", "font-size": 12, "font-weight": 700, fill: "#059669", opacity: 0});
+    "text-anchor": "end", "font-size": 12, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0});
   cmpCounter.textContent = "Comparisons: 0";
   rsvg.appendChild(cmpCounter);
 
   // Arrow down
   var arrowD2 = anim.svgEl("text", {x: RW / 2, y: RESULT_Y - 18, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#9ca3af"});
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ink-muted)"});
   arrowD2.textContent = "\u2193 gather left-to-right into sorted order";
   rsvg.appendChild(arrowD2);
 
   // Title: sorted result
-  var titleBot = anim.svgEl("text", {x: 20, y: RESULT_Y - 4, "font-size": 13, "font-weight": 700, fill: "#047857"});
+  var titleBot = anim.svgEl("text", {x: 20, y: RESULT_Y - 4, "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"});
   titleBot.textContent = "\u2462 Sorted result";
   rsvg.appendChild(titleBot);
 
   // Sorted row background
   var botBg = anim.svgEl("rect", {x: 20, y: RESULT_Y, width: RW - 40, height: 36, rx: 8,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5, opacity: 0.3});
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5, opacity: 0.3});
   rsvg.appendChild(botBg);
 
   // Status label
   var statusLbl = anim.svgEl("text", {x: RW / 2, y: RH - 8, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 600, fill: "#1f2937"});
+    "font-size": 12, "font-weight": 600, fill: "var(--svg-ink)"});
   statusLbl.textContent = "";
   rsvg.appendChild(statusLbl);
 
@@ -370,10 +370,10 @@ function buildRadixTimeline(orderIndices, fast) {
         var tw = Math.max(70, label.length * 5.5 + 14);
         var g = anim.svgEl("g", {opacity: 0, transform: "translate(" + pillXs[idx] + "," + ROW_Y + ")"});
         var bg = anim.svgEl("rect", {x: -tw/2, y: -10, width: tw, height: 20, rx: 10,
-          fill: "#7c3aed", stroke: "#1f2937", "stroke-width": 1});
+          fill: "var(--svg-group)", stroke: "var(--svg-ink)", "stroke-width": 1});
         g.appendChild(bg);
         var txt = anim.svgEl("text", {x: 0, y: 4, "text-anchor": "middle",
-          "font-size": 7.5, "font-weight": 700, fill: "#fff"});
+          "font-size": 7.5, "font-weight": 700, fill: "var(--svg-on-solid)"});
         txt.textContent = label;
         g.appendChild(txt);
         rsvg.appendChild(g);
@@ -419,7 +419,7 @@ function buildRadixTimeline(orderIndices, fast) {
       // Staging: highlight pill before it moves (anticipation)
       tl.call(function() {
         var g = pills[idx];
-        g.firstChild.setAttribute("fill", "#fbbf24");  // flash yellow = "I'm being classified"
+        g.firstChild.setAttribute("fill", "var(--svg-build)");  // flash yellow = "I'm being classified"
         statusLbl.textContent = ORDERS[oi].customer + ": extracting month digit \u2192 " +
           (MONTH_NAMES[month] || month);
       });
@@ -450,7 +450,7 @@ function buildRadixTimeline(orderIndices, fast) {
         });
         // Tint bucket background slightly darker as it fills
         var fillIntensity = Math.min(0.3, bucketCounts[month] * 0.08);
-        br.setAttribute("fill", anim.lerpColor("#f0f9ff", "#dbeafe", fillIntensity));
+        br.setAttribute("fill", anim.lerpColor("var(--svg-token-soft)", "var(--svg-token-soft)", fillIntensity));
         bucketCounts[month]++;
         bucketCountLbls[month].textContent = bucketCounts[month] +
           " row" + (bucketCounts[month] === 1 ? "" : "s");
@@ -524,13 +524,13 @@ function cleanupRadix() {
 function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
   var n = slotGs.length;
   var dur  = 320;
-  var HEAP_CLR    = "#2563eb";
-  var EVICT_CLR   = "#dc2626";
-  var KEEP_CLR    = "#059669";
-  var INCOMING    = "#7c3aed";
-  var MAX_FLASH   = "#f59e0b";
-  var SEAT_EMPTY  = "#f1f5f9";
-  var SEAT_BORDER = "#94a3b8";
+  var HEAP_CLR    = "var(--svg-token)";
+  var EVICT_CLR   = "var(--svg-danger)";
+  var KEEP_CLR    = "var(--svg-ok)";
+  var INCOMING    = "var(--svg-group)";
+  var MAX_FLASH   = "var(--svg-highlight)";
+  var SEAT_EMPTY  = "var(--svg-node-muted)";
+  var SEAT_BORDER = "var(--svg-ink-muted)";
 
   // ---- Draw k seat boxes below the buffer ----
   var seatY = 115;
@@ -545,7 +545,7 @@ function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
     // Header for the heap section
     var hdr = anim.svgEl("text", {
       x: W / 2, y: seatY - 6, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 700, fill: "#475569"
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
     hdr.textContent = "Max-heap seats (" + limitK + " slots) \u2014 only smallest rows survive";
     stage.svg.appendChild(hdr);
@@ -562,7 +562,7 @@ function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
       stage.tuples.push(rect);
       var lbl = anim.svgEl("text", {
         x: sx + sw / 2, y: seatY + seatH / 2 + 4, "text-anchor": "middle",
-        "font-size": 8, "font-weight": 600, fill: "#94a3b8", opacity: 0
+        "font-size": 8, "font-weight": 600, fill: "var(--svg-ink-muted)", opacity: 0
       });
       lbl.textContent = "empty";
       stage.svg.appendChild(lbl);
@@ -628,9 +628,9 @@ function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
             }
           });
           g.firstChild.setAttribute("fill", HEAP_CLR);
-          seat.rect.setAttribute("fill", "#dbeafe");
+          seat.rect.setAttribute("fill", "var(--svg-token-soft)");
           seat.lbl.textContent = order.customer.substring(0, 5);
-          seat.lbl.setAttribute("fill", "#1e40af");
+          seat.lbl.setAttribute("fill", "var(--svg-token)");
           seat.occupant = {pos: p, key: key, oi: orderIndices[p]};
           seat.key = key;
           heapCount++;
@@ -646,12 +646,12 @@ function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
           // Flash the max seat to show the comparison target
           anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
             onUpdate: function(t) {
-              maxSeat.rect.setAttribute("fill", anim.lerpColor("#dbeafe", MAX_FLASH, t));
+              maxSeat.rect.setAttribute("fill", anim.lerpColor("var(--svg-token-soft)", MAX_FLASH, t));
             },
             onComplete: function() {
               anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeInCubic,
                 onUpdate: function(t) {
-                  maxSeat.rect.setAttribute("fill", anim.lerpColor(MAX_FLASH, "#dbeafe", t));
+                  maxSeat.rect.setAttribute("fill", anim.lerpColor(MAX_FLASH, "var(--svg-token-soft)", t));
                 }
               });
             }
@@ -682,9 +682,9 @@ function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
               }
             });
             g2.firstChild.setAttribute("fill", KEEP_CLR);
-            maxSeat.rect.setAttribute("fill", "#dcfce7");
+            maxSeat.rect.setAttribute("fill", "var(--svg-ok-soft)");
             maxSeat.lbl.textContent = order.customer.substring(0, 5);
-            maxSeat.lbl.setAttribute("fill", "#166534");
+            maxSeat.lbl.setAttribute("fill", "var(--svg-ok)");
             maxSeat.occupant = {pos: p, key: key, oi: orderIndices[p]};
             maxSeat.key = key;
             stage.bufContent.textContent = order.customer + " (" + order.date +
@@ -715,7 +715,7 @@ function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
   tl.call(function() {
     for (var fsi = 0; fsi < limitK; fsi++) {
       if (seatEls[fsi].occupant) {
-        seatEls[fsi].rect.setAttribute("fill", "#bbf7d0");
+        seatEls[fsi].rect.setAttribute("fill", "var(--svg-ok-soft)");
         seatEls[fsi].rect.setAttribute("stroke", KEEP_CLR);
         var surv = slotGs[seatEls[fsi].occupant.pos];
         surv.firstChild.setAttribute("fill", KEEP_CLR);
@@ -734,20 +734,20 @@ function buildStage(numRuns) {
 
   // ---- Zone 1: Sort buffer (top) ----
   var bufLbl = anim.svgEl("text", {
-    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "#7c3aed"
+    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"
   });
   bufLbl.textContent = "\u2460 sort_buffer_size \u2014 in-memory sort area";
   svg.appendChild(bufLbl);
 
   var bufRect = anim.svgEl("rect", {
     x: 20, y: 40, width: W - 40, height: 70, rx: 8, ry: 8,
-    fill: "#f5f3ff", stroke: "#8b5cf6", "stroke-width": 1.5
+    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5
   });
   svg.appendChild(bufRect);
 
   var bufContent = anim.svgEl("text", {
     x: W / 2, y: 80, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#5b21b6"
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-group)"
   });
   bufContent.textContent = "(rows fill here, get sorted, then spill to disk)";
   svg.appendChild(bufContent);
@@ -762,11 +762,11 @@ function buildStage(numRuns) {
     d: "M" + (W/2) + "," + arrow1Y + " L" + (W/2) + "," + (arrow1Y + 24) +
        " M" + (W/2 - 6) + "," + (arrow1Y + 18) + " L" + (W/2) + "," + (arrow1Y + 24) +
        " L" + (W/2 + 6) + "," + (arrow1Y + 18),
-    stroke: "#9ca3af", "stroke-width": 2, fill: "none"
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2, fill: "none"
   });
   spillGroup.appendChild(arrow1);
   var arrow1Lbl = anim.svgEl("text", {
-    x: W/2 + 16, y: arrow1Y + 16, "font-size": 10, fill: "#9ca3af", "font-weight": 600
+    x: W/2 + 16, y: arrow1Y + 16, "font-size": 10, fill: "var(--svg-ink-muted)", "font-weight": 600
   });
   arrow1Lbl.textContent = "spill sorted run";
   spillGroup.appendChild(arrow1Lbl);
@@ -774,7 +774,7 @@ function buildStage(numRuns) {
   // ---- Zone 2: Sorted runs on disk (middle) ----
   var diskY = 152;
   var diskLbl = anim.svgEl("text", {
-    x: 20, y: diskY, "font-size": 13, "font-weight": 700, fill: "#b45309"
+    x: 20, y: diskY, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   diskLbl.textContent = "\u2461 tmpdir \u2014 sorted runs on disk";
   spillGroup.appendChild(diskLbl);
@@ -793,12 +793,12 @@ function buildStage(numRuns) {
     var x = startX + i * (rw + gap);
     var rect = anim.svgEl("rect", {
       x: x, y: diskY + 12, width: rw, height: 50, rx: 6, ry: 6,
-      fill: "#fffbeb", stroke: "#d1d5db", "stroke-width": 1.5, opacity: 0.3
+      fill: "var(--svg-build-soft)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5, opacity: 0.3
     });
     spillGroup.appendChild(rect);
     var lbl = anim.svgEl("text", {
       x: x + rw / 2, y: diskY + 42, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 700, fill: "#92400e", opacity: 0.3
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-build-ink)", opacity: 0.3
     });
     lbl.textContent = "Run " + (i + 1);
     spillGroup.appendChild(lbl);
@@ -808,12 +808,12 @@ function buildStage(numRuns) {
     var moreX = startX + cap * (rw + gap) + 8;
     var more = anim.svgEl("text", {
       x: moreX, y: diskY + 32, "font-size": 12, "font-weight": 600,
-      fill: "#92400e", "font-style": "italic"
+      fill: "var(--svg-build-ink)", "font-style": "italic"
     });
     more.textContent = "\u2026 + " + (numRuns - cap) + " more run" + (numRuns - cap === 1 ? "" : "s");
     spillGroup.appendChild(more);
     var moreSub = anim.svgEl("text", {
-      x: moreX, y: diskY + 48, "font-size": 10, fill: "#9ca3af"
+      x: moreX, y: diskY + 48, "font-size": 10, fill: "var(--svg-ink-muted)"
     });
     moreSub.textContent = "(each is another buffer-fill \u2192 sort \u2192 flush cycle)";
     spillGroup.appendChild(moreSub);
@@ -825,11 +825,11 @@ function buildStage(numRuns) {
     d: "M" + (W/2) + "," + arrow2Y + " L" + (W/2) + "," + (arrow2Y + 24) +
        " M" + (W/2 - 6) + "," + (arrow2Y + 18) + " L" + (W/2) + "," + (arrow2Y + 24) +
        " L" + (W/2 + 6) + "," + (arrow2Y + 18),
-    stroke: "#9ca3af", "stroke-width": 2, fill: "none"
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2, fill: "none"
   });
   spillGroup.appendChild(arrow2);
   var arrow2Lbl = anim.svgEl("text", {
-    x: W/2 + 16, y: arrow2Y + 16, "font-size": 10, fill: "#9ca3af", "font-weight": 600
+    x: W/2 + 16, y: arrow2Y + 16, "font-size": 10, fill: "var(--svg-ink-muted)", "font-weight": 600
   });
   arrow2Lbl.textContent = "k-way merge";
   spillGroup.appendChild(arrow2Lbl);
@@ -837,27 +837,27 @@ function buildStage(numRuns) {
   // ---- Zone 3: Merge output (bottom) ----
   var mergeY = arrow2Y + 32;
   var mergeLbl = anim.svgEl("text", {
-    x: 20, y: mergeY, "font-size": 13, "font-weight": 700, fill: "#047857"
+    x: 20, y: mergeY, "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"
   });
   mergeLbl.textContent = "\u2462 final sorted output";
   spillGroup.appendChild(mergeLbl);
 
   var mergeRect = anim.svgEl("rect", {
     x: 20, y: mergeY + 12, width: W - 40, height: 50, rx: 8, ry: 8,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5, opacity: 0.3
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5, opacity: 0.3
   });
   spillGroup.appendChild(mergeRect);
 
   var mergeContent = anim.svgEl("text", {
     x: W / 2, y: mergeY + 42, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#065f46", opacity: 0.3
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)", opacity: 0.3
   });
   mergeContent.textContent = "";
   spillGroup.appendChild(mergeContent);
 
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 16, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#1f2937"
+    "font-size": 13, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -872,12 +872,12 @@ function buildStage(numRuns) {
 
 function resetStage() {
   if (!stage) return;
-  stage.bufRect.setAttribute("fill", "#f5f3ff");
+  stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
   stage.bufContent.textContent = "(rows fill here, get sorted, then spill to disk)";
   stage.spillGroup.setAttribute("opacity", "1");
   stage.runRects.forEach(function(r) {
     r.rect.setAttribute("opacity", 0.3);
-    r.rect.setAttribute("fill", "#fffbeb");
+    r.rect.setAttribute("fill", "var(--svg-build-soft)");
     r.label.setAttribute("opacity", 0.3);
   });
   stage.mergeRect.setAttribute("opacity", 0.3);
@@ -893,12 +893,12 @@ function spawnTuple(text, color, cx, cy) {
   var tw = Math.max(70, text.length * 5.5 + 14);
   var bg = anim.svgEl("rect", {
     x: -tw/2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
-    fill: color, stroke: "#1f2937", "stroke-width": 1
+    fill: color, stroke: "var(--svg-ink)", "stroke-width": 1
   });
   g.appendChild(bg);
   var lbl = anim.svgEl("text", {
     x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 8, "font-weight": 700, fill: "#ffffff"
+    "font-size": 8, "font-weight": 700, fill: "var(--svg-on-solid)"
   });
   lbl.textContent = text;
   g.appendChild(lbl);
@@ -934,14 +934,14 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
     tl.mark("Load rows");
     tl.call(function() {
       phase.textContent = "Priority queue \u2014 ORDER BY \u2026 LIMIT " + pqSize + " (bounded max-heap)";
-      stage.bufRect.setAttribute("fill", "#dbeafe");
+      stage.bufRect.setAttribute("fill", "var(--svg-token-soft)");
     });
     for (var pr = 0; pr < PQ_N; pr++) {
       (function(idx) {
         tl.call(function() {
           var o = ORDERS[idx];
           var label = o.customer + " " + o.date;
-          var tuple = spawnTuple(label, "#7c3aed", pqXs[idx], 75);
+          var tuple = spawnTuple(label, "var(--svg-group)", pqXs[idx], 75);
           pqGs[idx] = tuple;
           anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
             onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
@@ -954,7 +954,7 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
     tl.mark("Heap push/pop");
     tl.call(function() {
       phase.textContent = "Push each row into max-heap of size " + pqSize + " \u2014 evict largest if full";
-      stage.bufRect.setAttribute("fill", "#bfdbfe");
+      stage.bufRect.setAttribute("fill", "var(--svg-token-soft)");
     });
     addPQToTimeline(tl, pqGs, pqXs, pqIndices, Math.min(pqSize, PQ_N - 1));
 
@@ -981,14 +981,14 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
     tl.mark("Fill sort buffer");
     tl.call(function() {
       phase.textContent = "Phase 1/2 \u2014 loading rows into sort_buffer";
-      stage.bufRect.setAttribute("fill", "#ddd6fe");
+      stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
     });
     for (var r = 0; r < QS_N; r++) {
       (function(idx) {
         tl.call(function() {
           var o = ORDERS[idx];
           var label = o.customer + " " + o.date;
-          var tuple = spawnTuple(label, "#7c3aed", qsXs[idx], 75);
+          var tuple = spawnTuple(label, "var(--svg-group)", qsXs[idx], 75);
           qsGs[idx] = tuple;
           anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
             onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
@@ -1002,7 +1002,7 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
     tl.mark("Introsort: partitioning");
     tl.call(function() {
       phase.textContent = "Phase 2/2 \u2014 introsort (quicksort + heapsort fallback after O(log n) depth)";
-      stage.bufRect.setAttribute("fill", "#c4b5fd");
+      stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
     });
     tl.delay(200);
     addQsToTimeline(tl, qsGs, qsXs, qsIndices, false);
@@ -1036,7 +1036,7 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
       tl.call(function() {
         phase.textContent = "Phase 1/" + (numRuns > 1 ? "2" : "1") +
           " \u2014 filling sort_buffer, run " + (runIdx + 1) + " of " + numRuns;
-        stage.bufRect.setAttribute("fill", "#ddd6fe");
+        stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
         stage.bufContent.textContent = "Filling with rows\u2026";
       });
       for (var ci = 0; ci < 4; ci++) {
@@ -1044,7 +1044,7 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
           tl.call(function() {
             var order = ORDERS[chunkIndices[c]];
             var label = order.customer + " " + order.date;
-            var tuple = spawnTuple(label, "#7c3aed", chunkXs[c], 75);
+            var tuple = spawnTuple(label, "var(--svg-group)", chunkXs[c], 75);
             chunkGs[c] = tuple;
             anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
               onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
@@ -1058,7 +1058,7 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
       // radix in-memory path is handled by buildRadixTimeline above)
       tl.mark("Run " + (runIdx + 1) + ": introsort");
       tl.call(function() {
-        stage.bufRect.setAttribute("fill", "#c4b5fd");
+        stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
       });
       addQsToTimeline(tl, chunkGs, chunkXs, chunkIndices, true);
 
@@ -1066,16 +1066,16 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
       tl.mark("Run " + (runIdx + 1) + ": flush");
       tl.call(function() {
         stage.bufContent.textContent = "Flushing sorted run to tmpdir\u2026";
-        stage.bufRect.setAttribute("fill", "#fde68a");
+        stage.bufRect.setAttribute("fill", "var(--svg-highlight)");
         if (runIdx < shown) {
           stage.runRects[runIdx].rect.setAttribute("opacity", 1);
-          stage.runRects[runIdx].rect.setAttribute("fill", "#fde68a");
+          stage.runRects[runIdx].rect.setAttribute("fill", "var(--svg-highlight)");
           stage.runRects[runIdx].label.setAttribute("opacity", 1);
           anim.tween({
             from: 0, to: 1, duration: 400, ease: anim.easeOutCubic,
             onUpdate: function(v) {
               stage.runRects[runIdx].rect.setAttribute("fill",
-                anim.lerpColor("#fde68a", "#fbbf24", v));
+                anim.lerpColor("var(--svg-highlight)", "var(--svg-build-soft)", v));
             }
           });
         }
@@ -1087,7 +1087,7 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
       });
       tl.delay(500);
       tl.call(function() {
-        stage.bufRect.setAttribute("fill", "#f5f3ff");
+        stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
         stage.bufContent.textContent = "(buffer cleared for next chunk)";
         stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
         stage.tuples = [];
@@ -1174,10 +1174,10 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
       tl.call(function() {
         stage.mergeContent.textContent = "Pick: " + label + " (smallest head across runs)";
         if (runRect) {
-          runRect.rect.setAttribute("stroke", "#f59e0b");
+          runRect.rect.setAttribute("stroke", "var(--svg-build)");
           runRect.rect.setAttribute("stroke-width", "2.5");
         }
-        pill = spawnTuple(label, "#059669", srcX, srcY);
+        pill = spawnTuple(label, "var(--svg-ok)", srcX, srcY);
         pill.setAttribute("opacity", "1");
       });
       // Timeline-owned tween — scrubbable, no standalone RAF
@@ -1190,7 +1190,7 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
         },
         onComplete: function() {
           if (runRect) {
-            runRect.rect.setAttribute("stroke", "#d1d5db");
+            runRect.rect.setAttribute("stroke", "var(--svg-node-stroke)");
             runRect.rect.setAttribute("stroke-width", "1.5");
           }
         }
@@ -1212,7 +1212,7 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
 
   tl.mark("Done");
   tl.call(function() {
-    stage.mergeRect.setAttribute("fill", "#a7f3d0");
+    stage.mergeRect.setAttribute("fill", "var(--svg-ok-soft)");
     stage.mergeContent.textContent = "All " + numRuns + " runs merged \u2192 final sorted result";
     phase.textContent = "\u2713 Filesort complete \u2014 " + numRuns + " sorted runs merged via k-way merge";
     stage.statusLbl.textContent = numRuns + " disk spills + merge = significant I/O. Bigger sort_buffer_size would help.";
@@ -1240,9 +1240,9 @@ function renderChart(rowSize, sbs, currentRows) {
     xMin: 100, xMax: 1e7,
     xLabel: "Row count to sort", yLabel: "Total I/O rows (read+write)",
     curves: [
-      { label: "Filesort (this algorithm)", color: "#7c3aed",
+      { label: "Filesort (this algorithm)", color: "var(--svg-group)",
         fn: function(n) { return filesortCost(n, rowSize, sbs).ioRows; } },
-      { label: "Index-ordered scan (0 I/O)", color: "#059669",
+      { label: "Index-ordered scan (0 I/O)", color: "var(--svg-ok)",
         fn: function(n) { return n; } }
     ],
     current: { x: currentRows },

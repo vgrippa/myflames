@@ -133,9 +133,10 @@ try {
     console.log(`${scheme} 390x844 ${JSON.stringify(phone)}`);
     await page.screenshot({ path: path.join(directory, `home-${scheme}-390.png`) });
     await connectionAction(page, 'Connection 03', 'Edit');
-    await page.waitForSelector('.connections .view-inspector.is-sheet');
+    await page.waitForSelector('.connections .view-inspector.is-detail');
     await noBulkDelete();
-    assert.equal(await page.$eval('.connections .view-inspector', el => el.getAttribute('aria-modal')), 'true');
+    assert.equal(await page.$eval('.connections .view-inspector', el => el.getAttribute('role')), 'region');
+    assert.equal(await page.$eval('.connections .view-inspector', el => el.getAttribute('aria-modal')), null, 'focused details remain part of the page');
     await noOverflow();
     await page.keyboard.press('Tab');
     assert.ok(await page.evaluate(() => !!document.activeElement.closest('.view-inspector')));

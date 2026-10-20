@@ -267,7 +267,7 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
   }, container);
   svg(doc, "title", undefined, root, (data.title ? `${data.title}: ` : "") + "Flame graph");
   svg(doc, "style", undefined, root, FLAME_CSS);
-  svg(doc, "rect", { x: 0, y: 0, width: "100%", height: "100%", fill: BACKGROUND }, root);
+  svg(doc, "rect", { x: 0, y: 0, width: "100%", height: "100%", class: "mfc-background", fill: BACKGROUND }, root);
   if (!workspace) {
     svg(doc, "text", { class: "fg-title", x: px(width / 2), y: TITLE_Y, "text-anchor": "middle" }, root,
       fitLine(data.title || "", Math.max(0, width - 240), 17 * CHAR_RATIO));

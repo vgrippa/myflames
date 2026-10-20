@@ -2337,6 +2337,11 @@ def format_text(report):
         out.append("  receiver %s, applier %s, lag %s" % (
             _yes(channel["io"]["running"]), _yes(channel["sql"]["running"]),
             "NULL" if channel["lag_s"] is None else _duration_text(channel["lag_s"])))
+        position = channel.get("position") or {}
+        received_key, received_label = ("gtid_io_pos", "Gtid_IO_Pos") if report.get("engine") == "mariadb" else \
+            ("retrieved_gtid_set", "Retrieved_Gtid_Set")
+        if position.get(received_key):
+            out.append("  %s: %s" % (received_label, position[received_key]))
         for why in channel["status_why"]:
             out.append("  - " + why)
         for note in channel["lag_notes"]:

@@ -1,14 +1,16 @@
 // Home is a launcher: the shell owns its title and toolbar, Connections owns
 // server settings, and recent work uses the same compact rows as other places.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, time, type Bundle, type Plan } from "./api";
+import { api, appVersion, time, type Bundle, type Plan } from "./api";
 import { Icon } from "./components";
 
 import { defaultLab, relativeTime, type QueryTab } from "./session";
+import "./home.css";
 
 export function Home({
   busy, plans, connections, onImport, onDropFile, onSample,
   onOpenPlan, onOpenBundle, onInvestigations, queryTabs = [], onOpenQuery,
+  onQuery, onServer, onDiagram,
 }: {
   logo?: string;
   busy: boolean;
@@ -24,6 +26,9 @@ export function Home({
   /** Supply App's current tabs, rather than reading a possibly stale saved session. */
   queryTabs?: QueryTab[];
   onOpenQuery?: (id: string) => void;
+  onQuery: () => void;
+  onServer: () => void;
+  onDiagram: () => void;
 }) {
   const [saved, setSaved] = useState<Bundle[] | null>(null);
   const [error, setError] = useState("");
@@ -65,10 +70,17 @@ export function Home({
         onDropFile(e.dataTransfer.files[0]);
       }}>
       <h1 id="home-title" className="visually-hidden">Home</h1>
+      <nav className="home-workflows" aria-label="Start working">
+        <button onClick={onQuery}><Icon name="query" /><span><strong>Write SQL</strong><small>Queries, completion, and table data</small></span><Icon name="disclosure" size={14} /></button>
+        <button onClick={onServer}><Icon name="server" /><span><strong>Inspect server</strong><small>Activity, performance, and configuration</small></span><Icon name="disclosure" size={14} /></button>
+        <button onClick={onDiagram}><Icon name="plan" /><span><strong>Database diagram</strong><small>Live schemas and Mermaid diagrams</small></span><Icon name="disclosure" size={14} /></button>
+      </nav>
       <div className="home-launcher">
         {connections}
         <section className="home-pane recent-work" aria-labelledby="recent-title">
-          <div className="pane-head"><h2 id="recent-title">Recent work</h2></div>
+          <div className="pane-head">
+            <h2 id="recent-title">Recent work</h2>
+          </div>
           {error && <div className="home-load-error"><p role="alert" className="error">{error}</p>
             <button className="text-button" onClick={() => setRetry((n) => n + 1)}>Retry investigations</button></div>}
           {saved === null && !error && <p className="empty-small" role="status">Loading investigations…</p>}
@@ -116,6 +128,11 @@ export function Home({
           {!!saved?.length && <button className="text-button recent-more" onClick={onInvestigations}>All investigations</button>}
         </section>
       </div>
+      <footer className="home-version" aria-label="Application version">
+        <strong>myflames {appVersion() || "development"}</strong>
+        <span>Updates not checked</span>
+        <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+      </footer>
     </section>
   );
 }

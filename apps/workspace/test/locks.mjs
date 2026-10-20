@@ -159,36 +159,39 @@ try {
   };
   /** Select a row (tree row, table row, or grouped row) and wait for the inspector. */
   const select = async (selector) => {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
     const row = await page.waitForSelector(selector);
     const target = (await row.$("[data-row-key]")) || row;
     await target.click();
     await page.waitForSelector(".view-inspector .inspector-title");
   };
   const treeRow = (id) => `${view} .lock-tree tr[data-connection="${id}"]`;
-  const show = (name) => page.click(`${view} .segmented button[data-value=${name}]`);
+  const show = async (name) => {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.click(`${view} .segmented button[data-value=${name}]`);
+  };
 
   await button("Server", ".main-nav ");
   await page.waitForSelector(".server-place .source-list");
 
   // Keyboard: the sub-navigation moves with the arrow keys; End reaches the last view.
-  await page.focus("#server-nav-top");
+  await page.focus("#server-nav-health");
   await page.keyboard.press("End");
   await page.waitForFunction(() => {
     const items = document.querySelectorAll(".source-list .source-item");
     return items.length > 0 && document.activeElement === items[items.length - 1];
   });
-  await page.focus("#server-nav-io");
+  await page.focus("#server-nav-errorlog");
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(() => document.activeElement?.id === "server-nav-locks");
   assert.equal(await page.$eval("#server-nav-locks", (e) => e.getAttribute("aria-current")), "page");
-  assert.match(await text(`${view} .view-empty`), /Which sessions are waiting, who blocks them/);
-  assert.equal(lockCalls().length, 0, "nothing is read until asked");
-  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.disabled), true);
+  // A view reads once when it first appears on screen (AGENTS: reads on screen, once per connection).
+  await page.waitForSelector(`${view} .lock-tree`);
+  assert.equal(lockCalls().length, 1, "opening the view reads once on its own");
+  assert.equal(await page.$(`${view} .view-empty`), null, "no Load button once the automatic read answered");
   assert.match(await text(`${view} .view-toolbar`), /Waits only/);
 
-  // Load: summary, blocking tree with root blockers first.
-  await button("Load locks", view + " ");
-  await page.waitForSelector(`${view} .lock-tree`);
+  // The automatic read: summary, blocking tree with root blockers first.
   assert.deepEqual(
     { limit: lockCalls().at(-1).limit, waits_only: lockCalls().at(-1).waits_only, host: lockCalls().at(-1).connection.host },
     { limit: 500, waits_only: false, host: "127.0.0.1" },
@@ -231,16 +234,19 @@ try {
   // The root blocker in the inspector: its last statement, no plan, and KILL to copy (never sent).
   await select(treeRow(23));
   assert.deepEqual(await page.$$eval(`${view} table[aria-label="Transactions"] th[data-col]`, (els) => els.map((e) => e.dataset.col)),
-    ["conn", "stmt", "age"], "the transaction list keeps connection, statement and age beside the inspector");
+    ["trx", "conn", "stmt", "state", "age", "session", "locked", "structs", "iso"], "full-width lists retain their columns");
   assert.match(await text(`${view} th[data-col=age]`), /Open \(s\)/);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
   await page.click('.popover input[data-col=iso]');
   await page.keyboard.press("Escape");
-  assert.ok(await page.$(`${view} th[data-col=iso]`), "isolation remains available through Columns");
+  assert.equal(await page.$(`${view} th[data-col=iso]`), null, "Columns can hide isolation explicitly");
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
   await page.click('.popover .columns-reset');
   await page.keyboard.press("Escape");
 
+  await select(treeRow(23));
   await inspectorHas(/Connection 23/);
   const rootText = await inspector();
   assert.match(rootText, /Last statement\s*SELECT id FROM t WHERE k BETWEEN 50 AND 70 FOR UPDATE/);
@@ -298,6 +304,7 @@ try {
   await page.locator(".view-inspector button ::-p-text(Show raw output)").click();
   assert.match(await text(".view-inspector .deadlock-raw"), /WE ROLL BACK TRANSACTION \(2\)/);
   // Notes are one control.
+  await page.click(`${view} .detail-back`);
   await page.click(`${view} .notes-button`);
   assert.match(await text(".popover"), /implicit locks/);
   await page.keyboard.press("Escape");
@@ -318,6 +325,7 @@ try {
   await button("Server", ".main-nav ");
   await page.waitForSelector("#server-nav-locks[aria-current=page]");
   assert.ok(await page.$(`${view} .lock-tree`), "the report stays while the workspace is open");
+  await page.click(`${view} .detail-back`);
   mocks["/api/live/locks"] = { status: 200, body: { ...mysql, scope: "waits", deadlock: null,
     capabilities: { ...mysql.capabilities, deadlock: false } } };
   await page.locator(`${view} .lock-check input`).click();
@@ -657,13 +665,15 @@ try {
   assert.match(likely, /ALTER TABLE on lk\.t waits for a metadata lock/);
   await select(`${view} li[data-blocker="165"]`);
   await page.waitForSelector('.view-inspector [aria-label="Kill blocker: connection 165"]');
+  await page.click(`${view} .detail-back`);
   await page.click(`${view} .notes-button`);
   assert.match(await text(".popover"), /INSTALL SONAME 'metadata_lock_info'/);
   await page.keyboard.press("Escape");
+  await select(`${view} li[data-blocker="165"]`);
 
-  // The sheet fits a phone screen (the inspector itself is a bottom sheet there).
+  // The sheet fits a phone screen (the detail view uses the full work area there).
   await page.setViewport({ width: 390, height: 700 });
-  await page.waitForSelector(".view-inspector.is-sheet");
+  await page.waitForSelector(".view-inspector.is-detail");
   await page.locator('.view-inspector [aria-label="Kill blocker: connection 165"]').click();
   await page.waitForSelector("dialog.kill-dialog[open]");
   assert.equal(await page.$eval("dialog.kill-dialog", (e) => e.scrollWidth <= e.clientWidth), true);
@@ -697,11 +707,14 @@ try {
 
   // The Locks view is part of the restored workspace (the report is not).
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const callsBeforeReload = lockCalls().length;
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
   if (!(await page.$("#server-nav-locks"))) await button("Server", ".main-nav ");
   await page.waitForSelector("#server-nav-locks[aria-current=page]");
-  assert.match(await text(`${view} .view-empty`), /Which sessions are waiting/, "reports are never restored");
+  // The view reads once on screen, so the report is read again rather than restored.
+  await page.waitForSelector(`${view} .lock-tree`);
+  assert.equal(lockCalls().length, callsBeforeReload + 1, "reports are never restored: the view reads once more on open");
 
   // A target allowance beats generic kill denial; an unknown target stays
   // enabled and annotated rather than inheriting that denial.

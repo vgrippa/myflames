@@ -46,9 +46,13 @@ const assertRefreshBlocked = async () => {
 try {
   await h.server();
   // Tables follows Indexes in the Schema group.
-  assert.deepEqual(await texts(".source-list .source-group:nth-child(4) .source-label"), ["Indexes", "Tables", "Database diagram"]);
+  assert.deepEqual(await texts(".source-list .source-group:nth-child(3) .source-label"), ["Indexes", "Tables", "Database diagram"]);
   await h.view("tables");
-  assert.match(await text(`${view} .view-empty`), /all user databases by default/);
+  // A small server reads on open, because the view is on screen.
+  await page.waitForSelector(`${view} .fact-strip`);
+  await h.idle(view);
+  assert.equal(state.seen.length, 1, "opening reads once");
+  state.seen.length = 0;
   assert.equal(await text(`${view} .perf-picker-summary`), "All user databases");
 
   // The picker: user databases with table counts, system ones hidden until asked, search, typed names.
@@ -94,17 +98,12 @@ try {
   await reloadCatalog(largeCatalog, true);
   assert.match(await text("#tables-load-hint"), /2,000 table limit; choose fewer databases/);
   await assertRefreshBlocked();
-  assert.equal(await page.$eval(`${view} .view-empty button`, (e) => e.disabled), true);
-  await page.$eval(`${view} .view-empty button`, (e) => e.click());
-  await pause(100);
-  assert.equal(state.seen.length, 0, "gated Load table health sends no un-overridden read");
   await reloadCatalog(catalog, false);
   assert.equal(await page.$eval(`${view} [data-action=refresh]`, (e) => e.disabled), false);
-  assert.equal(await page.$eval(`${view} .view-empty button`, (e) => e.disabled), false);
 
   // Load: the chosen databases, fresh off by default.
   state.delay = 300;
-  await button("Load table health", view + " ");
+  await h.refresh();
   await page.waitForSelector(`${view} .capture-status`);
   assert.match(await text(`${view} .capture-status`), /Reading tables in mftab, archive_db/);
   await page.waitForSelector(`${view} .fact-strip`);
@@ -114,7 +113,7 @@ try {
   assert.equal(state.seen.at(-1).fresh, false);
   assert.match(await text(`${view} .fact-strip`), /Statistics\s*fresh from InnoDB/);
   assert.match(await text(`${view} .perf-summary-line`),
-    /^10 tables without a usable key, 2 with only a unique NOT NULL key · free space: 0 problems, 1 to watch$/);
+    /^10 tables without a usable key, 2 with only a unique NOT NULL key · 2 tables with reusable free space$/);
   assert.ok((await text(`${view} .summary-line p`)).length <= 120, "one summary line, at most 120 characters");
   assert.deepEqual(await page.$$eval(`${view} .segmented button`, (els) => els.map((e) => e.dataset.value)), ["missing", "free"]);
   assert.equal(await page.$eval("#server-nav-tables .status-dot", (e) => e.className), "status-dot is-problem");
@@ -136,17 +135,23 @@ try {
   // With the inspector open the table scrolls sideways inside its frame, and
   // Size sits under the sticky Columns cell: scroll it into view first.
   await page.$eval(size, (e) => e.scrollIntoView({ block: "nearest", inline: "center" }));
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${size} button`);
   assert.equal(await page.$eval(size, (e) => e.getAttribute("aria-sort")), "descending");
   assert.equal((await rows(missingLabel))[0], "mftab.two_uk", "largest first");
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${size} button`);
   assert.equal(await page.$eval(size, (e) => e.getAttribute("aria-sort")), "ascending");
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .tables-pk-status select`, "watch");
   assert.deepEqual((await rows(missingLabel)).sort(), ["mftab.notnull_uk", "mftab.two_uk"]);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .tables-pk-status select`, "all");
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .tables-engine select`, "other");
   assert.deepEqual(await rows(missingLabel), ["mftab.myisam_nopk"]);
   assert.match(await text(`${view} tr[data-table="mftab.myisam_nopk"]`), /not InnoDB/);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .tables-engine select`, "all");
   await page.type(`${view} input[aria-label="Filter tables"]`, "uk");
   assert.ok((await rows(missingLabel)).every((t) => t.includes("uk")));
@@ -176,16 +181,18 @@ try {
   await inspectorHas(/uk_b/);
   assert.match(await text(`${view} .tables-gipk`), /mftab\.gipk_t/);
 
-  // Free space: watch-or-worse by default; shared tablespaces listed apart.
+  // Free space is informational; positive reusable extents are listed by default.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=free]`);
-  assert.deepEqual(await rows(freeLabel), ["mftab.frag_fpt"]);
+  assert.deepEqual(await rows(freeLabel), ["mftab.frag_fpt", "mftab.ae_t"]);
   const fpt = `${view} tr[data-table="mftab.frag_fpt"]`;
-  assert.match(await text(fpt), /Watch/);
+  assert.match(await text(fpt), /Reusable space/);
   assert.match(await text(fpt), /275\.0 MiB/);
   await h.select(fpt);
   await inspectorHas(/OPTIMIZE TABLE `mftab`\.`frag_fpt`;/);
   assert.match(await h.inspector(), /ALTER TABLE `mftab`\.`frag_fpt` FORCE, ALGORITHM=INPLACE, LOCK=NONE;/);
-  assert.match(await h.inspector(), /Never run by myflames/);
+  assert.match(await h.inspector(), /Optional maintenance; review and confirm/);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .tables-free-show select`, "shared");
   assert.deepEqual((await rows(freeLabel)).sort(), ["mftab.frag_gen", "mftab.gen_small", "mftab.sys_small"]);
   await h.select(`${view} tr[data-table="mftab.frag_gen"]`);
@@ -193,11 +200,13 @@ try {
   assert.equal(await page.$(".view-inspector .perf-sql"), null, "no per-table fix");
   assert.match(await text(`${view} .tables-shared`), /mf_gen \(general\)/);
   assert.match(await text(`${view} .tables-shared`), /the file does not shrink/);
-  await page.select(`${view} .tables-free-show select`, "flagged");
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.select(`${view} .tables-free-show select`, "info");
   // The tables scroll inside their region with the header in view.
   const overflow = await page.$eval(`${view} [aria-label="${freeLabel}"]`, (e) => getComputedStyle(e).overflowY);
   assert.equal(overflow, "auto");
   assert.equal(await page.$eval(`${view} [aria-label="${freeLabel}"] th`, (e) => getComputedStyle(e).position), "sticky");
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=missing]`);
   await (await page.$(".server-place")).screenshot({ path: path.join(h.shots, "tables.png") });
 
@@ -227,9 +236,9 @@ try {
   assert.deepEqual(state.seen.at(-1).schemas, ["mftab", "archive_db"], "override preserves the selected databases");
   await assertRefreshBlocked();
   await (await page.$(".server-place")).screenshot({ path: path.join(h.shots, "tables-gate.png") });
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=free]`);
-  assert.equal((await page.$$(`${view} [aria-label="${freeLabel}"] tbody tr`)).length, 0, "the cached numbers predate the deletes");
-  assert.match(await text(`${view} .table-empty`), /No table at the watch level/);
+  assert.deepEqual(await rows(freeLabel), ["mftab.ae_t", "mftab.frag_fpt"], "cached positive free space remains informational");
   assert.match(await h.notes(), /information_schema_stats_expiry/);
 
   // Narrowing below the cap enables normal reads again.
@@ -242,10 +251,12 @@ try {
   assert.equal(state.seen.at(-1).all_schemas, undefined, "a normal refresh restores the limit");
   assert.equal(await page.$(`${view} .tables-fresh`), null);
   assert.match(await text(`${view} .fact-strip`), /read now \(MariaDB has no cache\)/);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=missing]`);
   await whyPk();
   await inspectorHas(/Galera/);
   assert.match(await h.inspector(), /until it finds the row/);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=free]`);
   assert.match(await text(`${view} .tables-shared`), /innodb_system \(system\)/);
 
@@ -260,8 +271,9 @@ try {
   // Tables -> Indexes for one table: the Indexes view reads that database and shows only that table.
   state.queue.push({ status: 200, body: fresh });
   await h.refresh();
-  await page.waitForFunction(() => !document.querySelector(".server-view [role=alert]"));
+  await page.waitForFunction(() => !document.querySelector(".server-view[data-view=tables] [role=alert]"));
   await h.idle(view);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=missing]`);
   await h.select(`${view} tr[data-table="mftab.no_key"]`);
   await page.locator(".view-inspector button ::-p-text(Indexes)").click();
@@ -287,7 +299,6 @@ try {
   await h.server();
   await page.waitForSelector("#server-nav-tables[aria-current=page]");
   assert.equal(await text(`${view} .perf-picker-summary`), "mftab, archive_db");
-  assert.match(await text(`${view} .view-empty`), /all user databases by default/);
   await h.view("indexes");
   assert.equal(await text(".server-view .perf-picker-summary"), "mftab");
 

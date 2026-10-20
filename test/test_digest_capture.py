@@ -103,10 +103,37 @@ class TestCaptureProblem(unittest.TestCase):
         ])
         rows = discover.top_statements(conn)
         self.assertIsNone(rows[0]['capture_problem'])
-        self.assertIn('one SELECT', rows[1]['capture_problem'])
+        self.assertIsNone(rows[1]['capture_problem'])
+        self.assertEqual(rows[1]['analysis_sql'], 'SELECT * FROM orders')
+        self.assertIn('original statement can change data', rows[1]['analysis_warning'])
+        self.assertEqual(rows[1]['sample_text'], "UPDATE orders SET status = 'x'")
         self.assertIn('locking clauses', rows[2]['capture_problem'])
         maria = maria_conn([digest_row('SELECT * FROM `t` WHERE `id` = ? ', with_sample=False)])
         self.assertIsNone(discover.top_statements(maria)[0]['capture_problem'])
+
+
+class TestDigestTextAggregates(unittest.TestCase):
+    """Digest text prints keyword tokens with a trailing space (MariaDB and
+    MySQL gen_lex_token.cc), so built-in aggregates read ``SUM (``. A stored
+    function is an identifier token and prints quoted."""
+    MARIADB_TEXT = ('SELECT `p` . `name` , SUM ( `oi` . `quantity` ) `q` FROM `testdb` . `products` `p` '
+                    'JOIN `testdb` . `order_items` `oi` ON `oi` . `product_id` = `p` . `id` '
+                    'GROUP BY `p` . `id` ORDER BY `q` DESC LIMIT ?')
+
+    def test_built_in_aggregates_in_digest_text_are_capturable(self):
+        for text in (self.MARIADB_TEXT, 'SELECT COUNT ( * ) FROM `t`',
+                     'SELECT `u` . `country` , COUNT ( DISTINCTROW `o` . `id` ) FROM `u` GROUP BY `u` . `country`'):
+            with self.subTest(text=text):
+                query = discover.digest_query({'digest_text': text})
+                self.assertIsNone(discover.digest_capture_problem(query))
+                self.assertIsNone(discover.top_statements(maria_conn([digest_row(text, with_sample=False)]))[0]['capture_problem'])
+
+    def test_raw_sql_and_quoted_functions_stay_refused(self):
+        self.assertIn('not a verified native reader', capture_problem('SELECT SUM (x) FROM t'))
+        query = discover.digest_query({'digest_text': 'SELECT `sum` ( ? ) FROM `t`'})
+        self.assertIn('not a verified native reader', discover.digest_capture_problem(query))
+        query = discover.digest_query({'digest_text': 'SELECT `db` . SUM ( ? ) FROM `t`'})
+        self.assertIn('not a verified native reader', discover.digest_capture_problem(query))
 
 
 class TestFindStatement(unittest.TestCase):

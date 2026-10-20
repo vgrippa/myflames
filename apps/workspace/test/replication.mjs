@@ -110,8 +110,29 @@ const h = await open("/api/live/replication", "replication", {
     void request.continue();
     return null;
   },
+}, { fallback: { status: 200, body: denied } });
+// The view reads once on its own at start-up (auto-load); later reads are queued per step.
+const { page, state, texts } = h;
+/** A channel row in the visible copy of the view (a hidden copy is retained). */
+const waitRow = (name) => page.waitForFunction((v, key) => [...document.querySelectorAll(v)].some((e) => e.offsetParent && e.querySelector(`[data-row-key="channel:${key}"]`)), {}, view, name);
+// A new connection mounts the view again on its default Topology Map tab; the
+// table-based checks below use Channels & Status.
+const channelsTab = () => page.evaluate(() => {
+  const tab = [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')].find((b) => b.offsetParent && b.textContent.startsWith("Channels"));
+  if (tab) tab.click();
 });
-const { page, state, text, texts } = h;
+// The workspace retains a hidden copy of the view: read the visible match.
+const text = (selector) => page.evaluate((q, v) => {
+  if (q.startsWith(v)) {
+    const all = [...document.querySelectorAll(v)];
+    const live = all.find((e) => e.offsetParent) || all[0];
+    const rest = q.slice(v.length).trim();
+    return (rest ? live.querySelector(rest) : live).textContent;
+  }
+  return document.querySelector(q).textContent;
+}, selector, view);
+state.fallback = null;
+state.seen.length = 0;
 const view = '.server-view[data-view="replication"]';
 const sheet = "dialog.ops-confirm[open]";
 const confirmButton = `${sheet} .sheet-actions button:last-of-type`;
@@ -179,26 +200,24 @@ try {
   await api("/api/profiles/save", {
     value: { name: "Archive", host: "archive.test", port: 3307, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" },
   });
+  state.queue.push({ status: 200, body: denied });
   await page.reload({ waitUntil: "networkidle0" });
-  await h.server();
-  // Replication sits in Workload, right after Sessions.
-  assert.deepEqual(
-    await page.$$eval(".source-list .source-group", (groups) => groups.find((g) => g.querySelector("h3").textContent === "Workload").querySelectorAll(".source-label").length),
-    5,
-  );
+  // Replication sits in its own top-level place in the main navigation.
+  await page.waitForSelector('.main-nav button[data-place="replication"]');
+  // A view that is not on screen reads nothing at startup (ViewOnScreenContext, viewOnScreen.ts).
+  await pause(500);
+  assert.equal(state.seen.length, 0, "Replication reads nothing while its place is not on screen");
+  // Opening the view reads once (auto-load); the first answer is the denied one.
   await h.view("replication");
-  assert.match(await text(`${view} .view-empty`), /Read replication status.*It only reads\./);
-  assert.match(await h.popover("About Replication"), /Audit log/);
-  assert.equal(state.seen.length, 0, "nothing is read until asked");
-  assert.equal(calls(STATUS).length, 0, "no loop status before a replica is shown");
-
+  // The Topology Map tab is the default; the table-based checks below use Channels & Status.
+  await page.locator('[aria-label="Replication sub-tabs"] button ::-p-text(Channels & Status)').click();
   // No privilege: one sentence from the server, no table, no loop status.
-  state.queue.push({ status: 200, body: denied }, { status: 200, body: source });
-  await page.locator(`${view} button ::-p-text(Load)`).click();
   await page.waitForSelector(`${view} .gate`);
+  assert.equal(state.seen.length, 1, "one read when the view opens");
   assert.match(await text(`${view} .gate`), /REPLICATION CLIENT or SUPER/);
   assert.match(await text(`${view} .summary-line`), /Replication status not available/);
-  // Not a replica.
+  assert.match(await h.popover("About Replication"), /Audit log/);
+  state.queue.push({ status: 200, body: source });
   await h.refresh();
   await page.waitForFunction((v) => /not a replica/.test(document.querySelector(`${v} .gate`)?.textContent || ""), {}, view);
   assert.match(await text(`${view} .summary-line`), /Not a replica/);
@@ -207,16 +226,56 @@ try {
   // The recorded duplicate key failure on the default channel.
   state.fallback = { status: 200, body: error };
   await h.refresh();
-  await page.waitForSelector(row(""));
+  await waitRow("");
   await h.idle(view);
   assert.equal(await text(`${view} .summary-text`), "MySQL 8.4.11 · 1 channel · 1 failed · lag unknown");
   const cells = await page.$eval(row(""), (e) => [...e.querySelectorAll("td")].map((td) => td.textContent));
   assert.deepEqual(cells.slice(0, 7), ["(default)", "Problem", "mf-repl-g-src:3306", "Yes", "No", "Unknown", "1062"]);
-  await page.waitForSelector("#server-nav-replication .count-badge");
-  assert.equal(await text("#server-nav-replication .count-badge"), "1");
+  await page.waitForSelector('.main-nav button[data-place="replication"] .count-badge');
+  assert.equal(await text('.main-nav button[data-place="replication"] .count-badge'), "1");
   await settle(STATUS, 1, "loop status is read once the replica is shown");
   await pause(2500);
   assert.equal(calls(STATUS).length, 1, "no polling while no loop runs");
+
+  // Topology Map: a static diagram. State is a line style plus a text label; nothing loops.
+  const topology = ".replication-topology-container";
+  const tab = (label) => page.evaluate((l) => {
+    [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')].find((b) => b.offsetParent && b.textContent.startsWith(l)).click();
+  }, label);
+  const infinite = () => page.evaluate((q) => {
+    const root = [...document.querySelectorAll(q)].find((e) => e.offsetParent);
+    return document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations === Infinity && root.contains(a.effect.target)).length;
+  }, topology);
+  await tab("Topology Map");
+  await page.waitForFunction((q) => [...document.querySelectorAll(q)].some((e) => e.offsetParent && e.querySelector(".topology-link")), {}, topology);
+  const label = () => page.evaluate((q) => {
+    const root = [...document.querySelectorAll(q)].find((e) => e.offsetParent);
+    const link = root.querySelector(".topology-link");
+    const box = link.querySelector(".topology-link-state").getBoundingClientRect();
+    return { text: link.querySelector(".topology-link-state").textContent, cls: link.className, visible: box.width > 0 && box.height > 0 };
+  }, topology);
+  const failing = await label();
+  assert.equal(failing.text, "Error 1062", "the error state shows a visible text label");
+  assert.ok(failing.visible && failing.cls.includes("is-error"));
+  assert.equal(await infinite(), 0, "no endless animation while a channel has an error");
+  assert.equal(await page.evaluate((q) => [...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelectorAll(".topology-map svg, [class*=packet], [class*=radar]").length, topology), 0, "no packets or radar pulses");
+  assert.equal(await page.evaluate((q) => [...document.querySelectorAll(`${q} button`)].filter((b) => /pause|play|speed|0\.5|2×|1×/i.test(b.textContent + (b.getAttribute("aria-label") || ""))).length, topology), 0, "no play, pause or speed control");
+  // A stopped thread without an error: dashed line, the stopped thread named.
+  const stopped = structuredClone(error);
+  stopped.channels[0].sql.error = { ...stopped.channels[0].sql.error, errno: 0, message: null };
+  stopped.channels[0].io.running = "No";
+  stopped.channels[0].sql.running = "Yes";
+  state.queue.push({ status: 200, body: stopped });
+  await h.refresh();
+  await page.waitForFunction((q) => [...document.querySelectorAll(q)].some((e) => e.offsetParent && /IO thread stopped/.test(e.textContent)), {}, topology);
+  const idle = await label();
+  assert.ok(idle.cls.includes("is-stopped") && idle.visible, "stopped thread drawn as a dashed connector with its label");
+  assert.equal(await page.evaluate((q) => getComputedStyle([...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelector(".topology-link.is-stopped .topology-line")).borderTopStyle, topology), "dashed");
+  assert.equal(await infinite(), 0, "no endless animation while a thread is stopped");
+  await tab("Channels & Status");
+  state.queue.push({ status: 200, body: error });
+  await h.refresh();
+  await waitRow("");
 
   // The inspector: threads, the error once, lag signals and positions in words.
   await h.select(row(""));
@@ -289,7 +348,7 @@ try {
   assert.match(result, /Skipped transaction 7256d98a-c8b1-11f1-be59-aa9276ea306a:13/);
   assert.match(result, /moved past the skipped transaction/);
   await page.waitForFunction((r) => /OK/.test(document.querySelector(r)?.textContent || ""), {}, row(""));
-  assert.equal(await page.$("#server-nav-replication .count-badge"), null, "the badge follows the new report");
+  assert.equal(await page.$('.main-nav button[data-place="replication"] .count-badge'), null, "the badge follows the new report");
 
   // An expired plan (older than a minute) is read and shown again before anything is sent.
   state.fallback = { status: 200, body: error };
@@ -394,8 +453,11 @@ try {
   await h.server();
   await page.waitForSelector(`${view} .ops-note`);
   assert.equal(await text(`${view} .ops-note`), "Stopped when myflames restarted. Skip loops never resume from a restored workspace.");
-  assert.ok(await page.$(`${view} .view-empty`), "the report is not restored");
-  assert.equal(state.seen.length, reads, "nothing is read from the server");
+  // The view reads once on its own when it opens; no skip is sent.
+  await h.view("replication");
+  await page.locator('[aria-label="Replication sub-tabs"] button ::-p-text(Channels & Status)').click();
+  await waitRow("");
+  assert.equal(state.seen.length, reads + 1, "one automatic read, nothing more");
   assert.equal(calls(START).length, 2, "a restored workspace never starts a loop");
   await h.savedSlow((s) => s.replication_loop_active !== true);
 
@@ -404,7 +466,7 @@ try {
   await chooseConnection(page, replicaOption);
   await page.waitForFunction(() => /replica\.test/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
   await h.refresh();
-  await page.waitForSelector(row(""));
+  await waitRow("");
   await h.select(row(""));
   await openSheet("Skip until stopped");
   await page.click(`${sheet} .ops-loop-options label:first-of-type input`);
@@ -417,37 +479,55 @@ try {
     value: { name: "Replica", host: "replica.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production" },
   });
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await page.waitForSelector(".safety-strip.is-production");
+  await page.waitForSelector('.window-statusbar [data-status="safety"].is-production');
   // The report is from the earlier key: greyed until refreshed; the loop is read again and stays stoppable.
-  await page.waitForSelector(`${view}[data-other-connection]`);
+  await page.waitForFunction((v) => [...document.querySelectorAll(v)].some((e) => e.offsetParent && e.hasAttribute("data-other-connection")), {}, view);
   await page.waitForSelector(`${view} .ops-loop[data-loop=running] button`);
   const stops = calls(STOP).length;
-  await page.locator(`${view} .ops-loop button ::-p-text(Stop)`).click();
+  await page.$$eval(`${view} .ops-loop button`, (bs) => bs.find((b) => b.offsetParent && b.textContent === "Stop").click());
   await settle(STOP, stops + 1);
   assert.equal(calls(STOP).at(-1).body.connection.type, "production");
   await page.waitForSelector(`${view} .ops-loop[data-loop=stopped]`);
 
   // Another connection: the report stays greyed with every skip action off.
   await h.refresh();
-  await page.waitForFunction((v) => !document.querySelector(`${v}[data-other-connection]`), {}, view);
+  await channelsTab();
+  await page.waitForFunction((v) => ![...document.querySelectorAll(v)].some((e) => e.offsetParent && e.hasAttribute("data-other-connection")), {}, view);
   const archiveOption = await connectionOption(page, "Archive");
   await chooseConnection(page, archiveOption);
-  await page.waitForSelector(`${view}[data-other-connection]`);
+  await page.waitForFunction((v) => [...document.querySelectorAll(v)].some((e) => e.offsetParent && e.hasAttribute("data-other-connection")), {}, view);
   assert.equal(await page.$(`${view} .ops-loop`), null, "the Replica loops are not shown for Archive");
   assert.match(await text(`${view} .other-connection`), /From .*refresh to load this server/);
   await h.select(row(""));
   assert.equal(await actionDisabled("Skip this transaction"), true);
   assert.equal(await actionDisabled("Skip until stopped"), true);
-  assert.equal(await page.$("#server-nav-replication .count-badge, #server-nav-replication .status-dot"), null, "no badge from another connection");
+  assert.equal(await page.$('.main-nav button[data-place="replication"] .count-badge, .main-nav button[data-place="replication"] .status-dot'), null, "no badge from another connection");
+
+  // Server's Refresh all reads replication once and the Replication place
+  // shows that answer (it is one report, not one per place): back on
+  // Replication nothing is greyed and nothing is read again.
+  const beforeAll = state.seen.length;
+  await h.server();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.click(".server-place [data-action=refresh-all]");
+  await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /views? refreshed|refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  assert.equal(state.seen.length, beforeAll + 1, "Refresh all sends one replication read");
+  await h.view("replication");
+  await channelsTab();
+  await page.waitForFunction((v) => ![...document.querySelectorAll(v)].some((e) => e.offsetParent && e.hasAttribute("data-other-connection")), {}, view);
+  await pause(300);
+  assert.equal(state.seen.length, beforeAll + 1, "opening Replication after Refresh all reads nothing more");
 
   // Two channels; MariaDB names connections.
   state.fallback = { status: 200, body: multi };
   await h.refresh();
-  await page.waitForSelector(row("ch80"));
+  await channelsTab();
+  await waitRow("ch80");
   assert.equal(await text(`${view} .summary-text`), "MySQL 8.4.11 · 2 channels · 1 failed · max lag 0 s");
   state.fallback = { status: 200, body: maria };
   await h.refresh();
-  await page.waitForSelector(row("src1"));
+  await channelsTab();
+  await waitRow("src1");
   assert.equal(await text(`${view} .summary-text`), "MariaDB 11.4.13 · 1 connection · 1 failed · lag unknown");
   assert.equal(await text(`${view} thead th:first-child`).then((t) => t.trim()), "Connection");
   await h.select(row("src1"));
@@ -460,7 +540,8 @@ try {
   // A worker stopped behind a failure (3030): the earlier failure is the one shown and skipped.
   state.fallback = { status: 200, body: behind };
   await h.refresh();
-  await page.waitForSelector(row(""));
+  await channelsTab();
+  await waitRow("");
   await h.select(row(""));
   const behindInspector = await h.inspector();
   assert.match(behindInspector, /SQL threadError 3030/);
@@ -508,7 +589,8 @@ try {
   // MariaDB's counter method must not accidentally use the MySQL GTID key.
   await h.setPrivileges({ skip_gtid: privilegeAnswer("allowed"), skip_counter: privilegeAnswer("denied", "REPLICATION SLAVE ADMIN") });
   state.fallback = { status: 200, body: maria };
-  await h.refresh(); await h.idle(view); await h.select(row("src1"));
+  await h.refresh();
+  await channelsTab(); await h.idle(view); await h.select(row("src1"));
   await assertPrivilege(page, '.view-inspector [data-privilege-action="skip_counter"]', "denied", "REPLICATION SLAVE ADMIN");
   await h.setPrivileges({});
   await assertPrivilege(page, '.view-inspector [data-privilege-action="skip_counter"]', "unknown");
@@ -524,12 +606,36 @@ try {
   await page.click(`${sheet} [data-instruments-row="feature:replication_receiver"]`);
   await closedSheet();
   await settle(DECLINED, declinesBeforeLink + 1);
-  await page.waitForSelector('.server-view[data-view="instruments"] [data-row-key="feature:replication_receiver"][aria-current="true"]');
+  assert.equal(calls(START).length, startsBeforeLink);
+  // The link opens the Server place on its Instruments row (main.tsx passes
+  // onOpenInstruments); it never starts anything.
+  await page.waitForSelector("#server-nav-instruments[aria-current=page]");
+  await page.waitForFunction(() => [...document.querySelectorAll('.server-view[data-view="instruments"] .view-inspector .inspector-title')]
+    .some((e) => !!e.offsetParent && /Replication: receiver reconnect guard/.test(e.textContent || "")));
   assert.equal(calls(START).length, startsBeforeLink);
   await h.view("replication");
 
   // Phone width: no page scroll.
-  await h.narrow("replication-390.png");
+  // Replication is a place of its own: no list of views to go back to, so the
+  // open view fills the window with no horizontal scroll.
+  await page.setViewport({ width: 390, height: 844 });
+  await pause(250);
+  const phone = await page.evaluate(() => {
+    // Server can keep its own hidden copy of the view mounted; judge the one on screen.
+    const views = [...document.querySelectorAll('.server-view[data-view="replication"]')].filter((e) => !e.closest("[hidden]") && e.offsetParent);
+    return {
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      count: views.length,
+      back: !!views[0]?.querySelector(".server-back"),
+      list: !!document.querySelector(".server-layout.show-list"),
+      placeNav: document.querySelector(".main-nav [aria-current=page]")?.textContent?.startsWith("Replication") === true,
+    };
+  });
+  assert.ok(phone.overflow <= 0, `horizontal scroll of ${phone.overflow}px at 390 px`);
+  assert.deepEqual({ count: phone.count, back: phone.back, list: phone.list, placeNav: phone.placeNav }, { count: 1, back: false, list: false, placeNav: true });
+  await page.screenshot({ path: path.join(h.shots, "replication-390.png"), fullPage: true });
+  await page.setViewport({ width: 1440, height: 1000 });
+  await pause(150);
   await page.screenshot({ path: path.join(h.shots, "replication-1440.png") });
   assert.deepEqual(h.errors, []);
   console.log("replication: ok");

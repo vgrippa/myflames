@@ -3,6 +3,8 @@
 .diagram-source { margin-block-end: var(--space-3); }
 .diagram-source label { display: flex; align-items: center; gap: var(--space-2); color: var(--ink-muted); font-size: var(--text-sm); }
 .diagram-source input { width: 180px; min-width: 0; }
+.diagram-source select { max-width: 280px; min-width: 0; }
+.diagram-source-note { margin-block: 0 var(--space-2); color: var(--ink-muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .diagram-tools { justify-content: space-between; margin-block: var(--space-3); }
 .diagram-tools .search-field { flex: 1 1 180px; max-width: 320px; }
 .diagram-zoom output { min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; color: var(--ink-muted); font-size: var(--text-sm); }
@@ -24,10 +26,10 @@
 .diagram-table ul { list-style: none; padding: var(--space-1) 0; margin: 0; }
 .diagram-table li { display: grid; grid-template-columns: 38px minmax(0,1fr) 90px; align-items: center; gap: var(--space-1); padding-inline: var(--space-2); box-sizing: border-box; font-size: var(--text-sm); }
 .diagram-table li:nth-child(even) { background: var(--surface-pane); }
-.diagram-key { font-size: var(--text-sm); font-weight: 600; color: var(--accent); }
+.diagram-key { font-size: var(--text-sm); font-weight: 600; color: var(--accent-text); }
 .diagram-column-name, .diagram-table code { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .diagram-table code { color: var(--ink-muted); text-align: right; font-size: var(--text-sm); }
-.diagram-caption { display: flex; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; color: var(--ink-muted); font-size: var(--text-sm); margin-block-start: var(--space-2); }
+.diagram-caption { display: flex; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; color: var(--ink-muted); font-size: var(--text-sm); margin-block-start: var(--space-2); padding-bottom: var(--space-4); scroll-margin-bottom: calc(var(--statusbar-h) + var(--space-4)); }
 .diagram-no-matches { padding: var(--space-4); color: var(--ink-muted); font-size: var(--text-md); }
 .diagram-column-details, .diagram-relationship-details { list-style: none; margin: 0; padding: 0; display: grid; }
 .diagram-column-details li, .diagram-relationship-details li { display: grid; gap: var(--space-1); padding-block: var(--space-2); border-bottom: 1px solid var(--line); overflow-wrap: anywhere; font-size: var(--text-sm); }
@@ -44,7 +46,30 @@
   .diagram-source { align-items: end; }
   .diagram-source label { display: grid; flex: 1; }
   .diagram-source input { width: 100%; box-sizing: border-box; }
+  .diagram-source select { max-width: 100%; width: 100%; }
+  .diagram-source > label { min-width: 160px; }
   .diagram-tools .search-field { max-width: none; flex-basis: 100%; }
   .diagram-canvas { min-height: 340px; height: 55vh; }
-  .diagram-caption span:first-child { display: none; }
+}
+ .diagram-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); }
+
+/* The rendered preview leads and takes most of the width; the code sits beside it. */
+.diagram-mermaid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: var(--space-3); margin-block-start: var(--space-3); min-width: 0; }
+.diagram-mermaid-panel { min-width: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); }
+.diagram-mermaid-toolbar, .diagram-mermaid-toolbar > div { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.diagram-mermaid-toolbar { justify-content: space-between; padding: var(--space-2); border-bottom: 1px solid var(--line); font-size: var(--text-md); }
+.diagram-mermaid-code, .diagram-mermaid-preview { box-sizing: border-box; height: min(60vh, 640px); min-height: 320px; max-width: 100%; margin: 0; background: var(--surface-pane); }
+.diagram-mermaid-code { padding: var(--space-3); overflow: auto; font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre; }
+.diagram-mermaid-preview { position: relative; overflow: hidden; padding: 0; background-image: radial-gradient(var(--line-strong) 1px, transparent 1px); background-size: 20px 20px; cursor: grab; user-select: none; touch-action: none; }
+.diagram-mermaid-preview:active, .diagram-mermaid-preview.is-dragging { cursor: grabbing; }
+.diagram-mermaid-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.diagram-mermaid-panel > .disclosure, .diagram-mermaid-panel > .hint { margin: var(--space-2); }
+.diagram-mermaid-panel li, .diagram-mermaid-error { overflow-wrap: anywhere; font-size: var(--text-sm); }
+.diagram-mermaid-error { color: var(--danger); white-space: pre-wrap; padding: var(--space-3); }
+.diagram-mermaid-world { position: absolute; top: 0; left: 0; pointer-events: none; }
+.diagram-mermaid-world > svg { display: block; }
+@media (max-width: 1040px) {
+  .diagram-mermaid { grid-template-columns: minmax(0, 1fr); }
+  .diagram-mermaid-code { height: 280px; min-height: 0; }
+  .diagram-mermaid-preview { height: 55vh; }
 }

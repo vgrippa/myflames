@@ -112,13 +112,77 @@ def _rule_buffer_pool_vs_data_size(analysis, schema, stats, variables):
     return (warn, sug)
 
 
-def _rule_sort_buffer_vs_filesort(analysis, schema, stats, variables):
-    """Identify a small sort buffer as a tuning candidate, not a proven spill."""
-    if not analysis or not variables:
+def _captured_sort_merge_passes(context):
+    """Sort merge passes a capture measured for the statement, or None:
+    ``statistics.sort_merge_passes`` (events_statements_history), else the
+    ``Sort_merge_passes`` session status delta; the largest over its runs."""
+    capture = (context or {}).get("capture") or {}
+    # An estimated capture (EXPLAIN) never runs the statement: its status
+    # deltas are the EXPLAIN's own, so they prove nothing about the sorts.
+    if capture.get("mode") != "analyze":
+        return None
+    measured = []
+    for run in capture.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        value = (run.get("statistics") or {}).get("sort_merge_passes")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            value = (run.get("session_status_delta") or {}).get("Sort_merge_passes")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            measured.append(value)
+    return max(measured) if measured else None
+
+
+def _sort_merge_passes(analysis, context):
+    """Merge passes measured for this query's sorts, or None when unknown.
+
+    A sort that does not fit in sort_buffer_size writes sorted chunks to a
+    temporary file and merges them; every merge pass increments
+    Sort_merge_passes (MySQL filesort.cc merge_buffers; MariaDB
+    filesort.cc), and a sort that fits in memory makes none (MySQL
+    filesort.cc: "The whole set is in memory"). Evidence, in order: the
+    capture's per-statement Performance Schema counter
+    (``statistics.sort_merge_passes``), its session status delta, then
+    MariaDB ANALYZE ``r_sort_passes`` kept on the plan's sorts.
+    """
+    captured = _captured_sort_merge_passes(context)
+    if captured is not None:
+        return captured
+    plan = [f.get("merge_passes") for f in (analysis or {}).get("filesorts") or []]
+    if plan and all(isinstance(p, (int, float)) for p in plan):
+        return sum(plan)
+    return None
+
+
+def _rule_sort_buffer_vs_filesort(analysis, schema, stats, variables, context=None):
+    """A small sort buffer is a tuning candidate, not a proven spill.
+
+    With measured merge passes (:func:`_sort_merge_passes`) the rule says
+    what happened: passes mean the sort merged runs from disk; none mean it
+    fit in memory, so there is nothing to tune. Without them it only notes
+    the buffer size.
+    """
+    if not analysis or not analysis.get("filesorts"):
         return (None, None)
-    if not analysis.get("filesorts"):
+    passes = _sort_merge_passes(analysis, context)
+    sb = _to_int((variables or {}).get("sort_buffer_size"))
+    if passes is not None and passes > 0:
+        warn = (
+            "Filesort merged sorted runs from disk: {:,} sort merge pass(es) "
+            "for this query{}."
+        ).format(int(passes), "; sort_buffer_size is {}".format(_human_bytes(sb)) if sb > 0 else "")
+        sug = (
+            "Test a larger sort_buffer_size for this session and compare "
+            "Sort_merge_passes, or add an index that returns rows in ORDER BY "
+            "order. Why: the rows to sort did not fit in the sort buffer, so "
+            "the server wrote sorted runs to a temporary file and merged them "
+            "back. Account for concurrent sorting sessions before changing the "
+            "global default."
+        )
+        return (warn, sug)
+    if passes == 0 or not variables:
+        # Measured: the sort fit in memory. Or nothing to compare against.
         return (None, None)
-    sb = _to_int(variables.get("sort_buffer_size"))
     if sb <= 0 or sb >= 2 * 1024 * 1024:
         return (None, None)
     warn = (
@@ -149,6 +213,25 @@ def _rule_join_buffer_vs_hash_or_bnl(analysis, schema, stats, variables):
     if jb <= 0 or jb >= 2 * 1024 * 1024:
         return (None, None)
     kind = "Hash join" if has_hash else "Block Nested-Loop"
+    if detect_flavor(variables.get("version"), variables.get("version_comment")) == "mariadb":
+        # MariaDB BNL and BNLH keep the join buffer in memory: when it is
+        # full the inner table is read for the buffered rows and the buffer
+        # is refilled (one r_scans per refill, join_matching_records in
+        # sql/sql_join_cache.cc). Nothing spills to tmpdir.
+        warn = (
+            "{} detected with join_buffer_size={}. MariaDB reads the inner "
+            "table once per join-buffer refill."
+        ).format(kind, _human_bytes(jb))
+        sug = (
+            "Raise join_buffer_size per-session to 2M–8M "
+            "(SET SESSION join_buffer_size = 8*1024*1024) if the inner "
+            "table's r_loops shows many refills. Why: MariaDB fills the join "
+            "buffer with outer rows (hashed for BNLH) and reads the inner "
+            "table once per refill, so a larger buffer means fewer reads of "
+            "the inner table. Bigger win: add an index on the join column so "
+            "the join becomes an indexed lookup."
+        )
+        return (warn, sug)
     warn = (
         "{} detected but join_buffer_size is only {}. Build/batch phase may "
         "spill to tmpdir."
@@ -195,7 +278,10 @@ def _rule_tmp_table_size_vs_materialize(analysis, schema, stats, variables):
     limit = min(present) if present else 0
     if limit <= 0 or limit >= 32 * 1024 * 1024:
         return (None, None)
-    setting = "tmp_table_size/max_heap_table_size" if uses_memory else "tmp_table_size"
+    # MEMORY (and MariaDB's in-memory internal tables) use the smaller of
+    # the two limits; MySQL TempTable uses tmp_table_size only.
+    setting = ("the smaller of tmp_table_size and max_heap_table_size" if uses_memory
+               else "tmp_table_size")
     warn = (
         "Query materializes {} temp table(s); {} is {}. "
         "This limit alone does not show whether a table spilled to disk."
@@ -732,7 +818,6 @@ def _rule_cold_cache(analysis, schema, stats, variables, context):
 #: both shapes.
 _RULES = (
     _rule_buffer_pool_vs_data_size,
-    _rule_sort_buffer_vs_filesort,
     _rule_join_buffer_vs_hash_or_bnl,
     _rule_tmp_table_size_vs_materialize,
     _rule_optimizer_switch_disables,
@@ -743,6 +828,7 @@ _RULES = (
 
 #: Rules that also read live-capture context (``freshness``, ``capture``).
 _CONTEXT_RULES = (
+    _rule_sort_buffer_vs_filesort,
     _rule_stale_statistics,
     _rule_redundant_indexes,
     _rule_cold_cache,
@@ -812,6 +898,25 @@ def advise(analysis, schema=None, stats=None, variables=None, freshness=None, ca
     context = {"freshness": freshness or {}, "capture": capture or {}}
     results = [rule(analysis, schema, stats, variables) for rule in _RULES]
     results += [rule(analysis, schema, stats, variables, context) for rule in _CONTEXT_RULES]
+    # Sort merge passes the capture measured restate the plan's sort warning
+    # and advice (0: sorted in memory; more: the advisor's advice replaces
+    # the plan's).
+    from .parser import restate_sorts
+    restate_sorts(analysis, _captured_sort_merge_passes(context))
+    sort_result = results[len(_RULES) + _CONTEXT_RULES.index(_rule_sort_buffer_vs_filesort)]
+    if analysis is not None and isinstance(sort_result, tuple) and len(sort_result) == 2 \
+            and sort_result[1] and sort_result[0] and sort_result[0].startswith("Filesort merged"):
+        # Measured merge passes: the advisor's sort advice replaces the plan's.
+        from .parser import SORT_SUGGESTION
+        analysis["suggestions"] = [s for s in analysis.get("suggestions") or []
+                                   if s != SORT_SUGGESTION]
+    tmp = results[_RULES.index(_rule_tmp_table_size_vs_materialize)]
+    if analysis is not None and isinstance(tmp, tuple) and len(tmp) == 2 and tmp[1]:
+        # The server-aware temporary-table advice replaces the plan-only one.
+        from .parser import TEMP_TABLE_SUGGESTION_MARIADB, TEMP_TABLE_SUGGESTION_MYSQL
+        plan_only = (TEMP_TABLE_SUGGESTION_MARIADB, TEMP_TABLE_SUGGESTION_MYSQL)
+        analysis["suggestions"] = [s for s in analysis.get("suggestions") or []
+                                   if s not in plan_only]
     for result in results:
         for rule_id, severity, w, s in _normalize_rule_output(result):
             if w:

@@ -153,7 +153,7 @@
         }
       ],
       "recommendation": {
-        "text": "Look for queries that scan large tables first (Top statements). If the reads are data the workload really needs, a larger innodb_buffer_pool_size keeps more of it in memory; the Config tab shows how this server can resize it.",
+        "text": "Look for queries that scan large tables first (Top statements). If the reads are data the workload really needs, a larger innodb_buffer_pool_size keeps more of it in memory; the Parameters view (myflames config) shows how this server can resize it.",
         "caveat": "Leave memory for connections, the operating system and other processes: a buffer pool that makes the server swap is far worse than disk reads. One window can catch a one-off scan, so watch the trend over several refreshes before changing anything."
       },
       "sources": [

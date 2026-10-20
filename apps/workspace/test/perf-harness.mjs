@@ -1,5 +1,5 @@
 // Shared harness for the Server place's view suites (Waits, Indexes, Tables,
-// I/O, Configuration, Instruments, Sessions, InnoDB, the sub-navigation):
+// I/O, Parameters, Instruments, Sessions, InnoDB, the sub-navigation):
 // the real Python server on a temporary workspace database (session autosave,
 // the rest of the API), with one live endpoint mocked from fixtures captured
 // on throwaway MySQL and MariaDB servers.
@@ -20,14 +20,18 @@ export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 /** The Server sub-navigation labels by group, in order (SERVER_VIEWS in
  * Server.tsx). The one place suites learn the list: update it with a new view. */
 export const SERVER_GROUPS = {
-  Overview: ["Health", "InnoDB", "Full analysis"],
-  Workload: ["Top statements", "Sessions", "Replication", "Waits", "I/O"],
+  Overview: ["Health", "InnoDB", "Error log"],
   Contention: ["Locks"],
   Schema: ["Indexes", "Tables", "Database diagram"],
-  Setup: ["Configuration", "Instruments", "Maintenance"],
+  Setup: ["Parameters", "Instruments", "Maintenance"],
   Security: ["Users and roles"],
 };
+export const WORKLOAD_GROUPS = {
+  Queries: ["Top statements", "Processlist"],
+  Resources: ["Waits", "I/O"],
+};
 export const SERVER_VIEW_LABELS = Object.values(SERVER_GROUPS).flat();
+export const WORKLOAD_VIEW_LABELS = Object.values(WORKLOAD_GROUPS).flat();
 /** The Server state a session saves when nothing was changed (normalizeLab in
  * session.ts). Suites spread it under the values they set, so an exact
  * comparison stays exact when a view adds a saved key: update it here. */
@@ -42,14 +46,14 @@ export const privilegeAnswer = (state, need = "CONNECTION_ADMIN or SUPER", extra
   missing: state === "denied" ? [need] : [], need, reason: state === "denied" ? `Needs ${need}.` : "",
   grey_out: state === "denied", available: true, ...extra,
 });
-export async function assertPrivilege(page, selector, state, need) {
+export async function assertPrivilege(page, selector, state, need, { unverifiedBadge = state === "unknown" } = {}) {
   await page.waitForFunction((s, expected) => document.querySelector(s)?.dataset.privilegeState === expected, {}, selector, state);
   const actual = await page.$eval(selector, e => ({ disabled: e.disabled, aria: e.getAttribute("aria-disabled"), title: e.title,
     described: (e.getAttribute("aria-describedby") || "").split(" ").map(id => document.getElementById(id)?.textContent || "").join(" "),
     unverified: !!e.querySelector(".privilege-unverified") }));
   assert.equal(actual.disabled, false, "privilege denial never removes the button from keyboard focus");
   assert.equal(actual.aria, String(state === "denied"));
-  assert.equal(actual.unverified, state === "unknown");
+  assert.equal(actual.unverified, unverifiedBadge);
   if (need) { assert.ok(actual.title.includes(need), actual.title); assert.ok(actual.described.includes(need), actual.described); }
   await page.focus(selector);
   assert.equal(await page.$eval(selector, e => document.activeElement === e), true);
@@ -60,12 +64,12 @@ export async function assertPrivilege(page, selector, state, need) {
  * example the database picker's /api/live/schemas, or to a function
  * (body, request) returning one, or null when it answers the request itself
  * later (request.respond). Returns helpers; call close() in a finally block. */
-export async function open(endpoint, name, extra = {}) {
+export async function open(endpoint, name, extra = {}, { fallback = null } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), `myflames-${name}-`));
   const store = path.join(directory, "workspace.sqlite3");
   const proc = spawn(
     process.env.PYTHON || "python3",
-    ["-c", "from myflames.ui import WorkspaceServer; import sys; s=WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()", store],
+    ["-c", "import os,sys; from pathlib import Path; import myflames.ui as u; u.ASSET_DIR=Path(os.environ.get('MYFLAMES_TEST_ASSETS',u.ASSET_DIR)); s=u.WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()", store],
     // A throwaway HOME and the vault backend: never ~/.myflames or the OS keychain.
     { cwd: root, env: { ...process.env, HOME: directory, USERPROFILE: directory, MYFLAMES_SECRET_BACKEND: "vault" } },
   );
@@ -86,7 +90,7 @@ export async function open(endpoint, name, extra = {}) {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  const state = { queue: [], fallback: null, delay: 0, seen: [], other: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
+  const state = { queue: [], fallback, delay: 0, seen: [], other: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
@@ -107,7 +111,8 @@ export async function open(endpoint, name, extra = {}) {
     }
     if (pathname !== endpoint) {
       // Other live views are recorded and refused, so a test never reaches a real server.
-      if ((pathname.startsWith("/api/live/") && pathname !== "/api/live/kill/prepare") || pathname.startsWith("/api/connection/")) {
+      if ((pathname.startsWith("/api/live/") && pathname !== "/api/live/kill/prepare") || pathname.startsWith("/api/connection/") ||
+          ["/api/lifecycle/tools", "/api/accounts/list", "/api/schema-diagram/read"].includes(pathname)) {
         state.other.push({ path: pathname, body: JSON.parse(request.postData() || "{}") });
         return request.respond({ status: 400, contentType: "application/json",
           body: JSON.stringify({ error: "Not mocked in this suite." }) });
@@ -157,21 +162,63 @@ export async function open(endpoint, name, extra = {}) {
       await helpers.button("Server", ".main-nav ");
       await page.waitForSelector(".server-place .source-list");
     },
-    /** Open a Server view from the sub-navigation and wait for it. */
+    async workload() {
+      await helpers.button("Workload", ".main-nav ");
+      await page.waitForSelector(".server-place .source-list");
+    },
+    /** Open a Server or Workload view from the sub-navigation and wait for it. */
     async view(kind) {
+      if (kind === "replication") {
+        await helpers.button("Replication", ".main-nav ");
+        await page.waitForSelector('.server-view[data-view="replication"]');
+        return;
+      }
+      const isWorkload = ["top", "sessions", "waits", "io"].includes(kind);
+      const place = isWorkload ? "Workload" : "Server";
+      const navItem = await page.$(`#server-nav-${kind}`);
+      const isVisible = navItem && await navItem.evaluate((el) => !el.closest("[hidden]") && el.offsetParent !== null);
+      if (!isVisible) {
+        await helpers.button(place, ".main-nav ");
+        await page.waitForSelector(".server-place .source-list");
+      }
       await page.click(`#server-nav-${kind}`);
       await page.waitForSelector(`#server-nav-${kind}[aria-current=page]`);
       await page.waitForSelector(`.server-view[data-view="${kind}"]`);
     },
+    /** Open the Full analysis: the second tab of the Tuning place. */
+    async fullAnalysis() {
+      if (!(await page.$(".main-nav button[data-place=tuning].active"))) {
+        await page.waitForSelector('.main-nav button[data-place="tuning"]');
+        await page.click('.main-nav button[data-place="tuning"]');
+      }
+      await page.waitForSelector("#tuning-tab-analysis", { visible: true });
+      if (!(await page.$("#tuning-tab-analysis[aria-selected=true]"))) await page.click("#tuning-tab-analysis");
+      await page.waitForSelector("#tuning-tab-analysis[aria-selected=true]");
+      // The panel is hidden while a full-width detail is open; h.select() goes back.
+      await page.waitForSelector("#tuning-panel-analysis");
+    },
     /** The toolbar Refresh of the open view (the one place it lives). */
     async refresh() {
-      await page.click(".server-view [data-action=refresh]");
+      const buttons = await page.$$("[data-action=refresh]");
+      for (const btn of buttons) {
+        if (await btn.evaluate((el) => !el.closest("[hidden]") && el.offsetParent !== null)) {
+          await btn.click();
+          return;
+        }
+      }
+      throw new Error("No visible refresh button found");
     },
-    /** Click a row (a table row, a grouped row or a tile) and wait for the inspector to show it. */
+    /** Return to the list, select an object, and open its full-width details. */
     async select(selector) {
-      const row = await page.waitForSelector(selector);
-      const target = (await row.$("[data-row-key]")) || row;
-      await target.click();
+      const back = await page.$(".view-inspector.is-detail .detail-back");
+      if (back) {
+        await back.click();
+        await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
+      }
+      const row = await page.waitForSelector(selector, { visible: true });
+      // Locator waits for a stable box after Back restores list scroll/focus.
+      const target = (await row.$("[data-row-key]")) ? `${selector} [data-row-key]` : selector;
+      await page.locator(target).click();
       await page.waitForSelector(".view-inspector .inspector-title");
     },
     /** The inspector's text (title, meta, actions and body). */
@@ -206,18 +253,26 @@ export async function open(endpoint, name, extra = {}) {
       assert.fail("the session never saved the expected Server state");
     },
     /** No horizontal page scroll at 390 px: the open view is pushed on screen
-     * with a back button, the inspector is a sheet; restores the desktop size. */
-    async narrow(file) {
+     * with a back button, the inspector is a sheet; restores the desktop size.
+     * *place* is the selector of a place that shows its one view without a
+     * list (for example ".replication-place"). */
+    async narrow(file, { place = "" } = {}) {
       await page.setViewport({ width: 390, height: 844 });
       await pause(250);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.ok(overflow <= 0, `horizontal scroll of ${overflow}px at 390 px`);
-      const layout = await page.evaluate(() => ({
+      const layout = await page.evaluate((place) => ({
         list: !!document.querySelector(".server-layout.show-list"),
         back: !!document.querySelector(".server-view .server-back"),
-        view: !!document.querySelector(".server-view")?.offsetParent,
-      }));
-      assert.ok(layout.list || (layout.back && layout.view), `narrow layout: ${JSON.stringify(layout)}`);
+        view: [...document.querySelectorAll(".server-view")].some(view => !!view.offsetParent),
+        // A place of its own (Replication) has no list of views to go back to:
+        // its one view fills the page.
+        own: !!place && [...document.querySelectorAll(`${place} .server-view`)].some(view => !!view.offsetParent),
+        // Tuning is one view, full width: no list of views to go back to.
+        single: !!document.querySelector(".server-place.is-tuning-place"),
+      }), place);
+      assert.ok(layout.own || layout.list || (layout.back && layout.view) || (layout.single && layout.view && !layout.back),
+        `narrow layout: ${JSON.stringify(layout)}`);
       if (file) await page.screenshot({ path: path.join(shots, file), fullPage: true });
       await page.setViewport({ width: 1440, height: 1000 });
       await pause(150);

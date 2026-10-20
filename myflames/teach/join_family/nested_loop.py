@@ -149,7 +149,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="nested_loop",
-        title="Nested Loop Join — outer row drives inner probe",
+        title="Nested Loop Join: outer row drives inner probe",
         subtitle=(
             "Dedicated operator view for EXPLAIN's Nested loop nodes. "
             "Watch each driver fire match pills into the probe panel — "

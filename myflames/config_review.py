@@ -2,7 +2,7 @@
 source-verified defaults and rules of thumb.
 
 :func:`config_report` returns the ``config-1.0`` envelope shared by ``myflames
-config`` and the workspace's Server > Config tab. It reads the running values
+config`` and the workspace's Server > Parameters view. It reads the running values
 with ``SHOW GLOBAL VARIABLES WHERE Variable_name IN (...)`` (a removed or
 engine-specific name is simply absent; ``SELECT @@x`` would fail), a few
 ``SHOW GLOBAL STATUS`` counters since startup, where each value came from
@@ -54,12 +54,16 @@ long_query_time                 10 s                        10 s, alias of
 * MySQL can lower max_connections and table_open_cache at startup to fit
   open_files_limit (M/sql/mysqld.cc:10786-10809), so the running value is
   what is checked.
-* MySQL TempTable limits each internal temporary table to tmp_table_size
-  (M/storage/temptable/src/handler.cc:185) and all of them to
+* MySQL 8.0.28+ TempTable limits each internal temporary table to tmp_table_size
+  (mysql-8.0.28 storage/temptable/src/handler.cc:132; absent in 8.0.27) and all of them to
   temptable_max_ram; the MEMORY engine and MariaDB's HEAP use the smaller of
   tmp_table_size and max_heap_table_size (M/sql/sql_tmp_table.cc:2235-2241,
   Ma/sql/sql_select.cc:22662-22668). Configuration alone does not prove a
   spill, so the check uses Created_tmp_disk_tables.
+* MariaDB innodb_log_file_size is read-only before 10.9.1
+  (mariadb-10.6.25 storage/innobase/handler/ha_innodb.cc:19357-19361,
+  10.8.8:19301-19304); 10.9.1 adds innodb_log_file_size_update. From
+  10.5 there is one redo file, so its option-file size is the total capacity.
 * MariaDB counts a temporary table that moves to disk twice in
   Created_tmp_tables (see health.py), so its on-disk share is understated.
 * ``Innodb_redo_log_capacity_resized`` is MySQL's redo capacity in use
@@ -86,7 +90,7 @@ long_query_time                 10 s                        10 s, alias of
 from .advisor import buffer_pool_coverage, flush_log_durability
 from .connector import ConnectorError
 from .health import SEVERITY
-from .perf_common import (Reader, _bytes_text, _count_text, _duration_text, _number, _round, base_report, denied,
+from .perf_common import (Reader, _bytes_text, _count_text, _duration_text, _number, _round, _version_tuple, base_report, denied,
                           preflight, reason, show_variables)
 from .variables import static_dynamic
 
@@ -168,8 +172,8 @@ RULES = {
 # ---- sampling (talks to the server) ------------------------------------------
 
 
-def config_report(conn):
-    """Return the ``config-1.0`` report. Read-only; see the module docstring."""
+def config_report(conn, parameters=False):
+    """Return ``config-1.0``, optionally with the bulk parameter catalog. Reads only."""
     reader = Reader(conn, CONFIG_TAG)
     notes = []
     raw = {"sources": None, "tablespaces": None}
@@ -201,7 +205,11 @@ def config_report(conn):
             raw["tablespaces_error"] = reason(exc)
     except ConnectorError as exc:
         raise ValueError("Could not read the configuration: " + reason(exc))
-    return compute_config(server, status, raw, notes)
+    report = compute_config(server, status, raw, notes)
+    if parameters:
+        from .parameters import read_parameters
+        report["parameters"] = read_parameters(reader, server, report["notes"], report["checks"])
+    return report
 
 # ---- arithmetic (pure) ----------------------------------------------------------
 
@@ -365,11 +373,16 @@ def tmp_table_limit(engine, variables):
     if engine == "mysql":
         storage = variables.get("internal_tmp_mem_storage_engine") or "TempTable"
         if storage.lower() == "temptable":
-            limit = ("TempTable keeps each internal temporary table in memory up to tmp_table_size (%s), and all of "
-                     "them up to temptable_max_ram (%s) together" % (
-                         _display("tmp_table_size", variables.get("tmp_table_size")) or "?",
-                         _display("temptable_max_ram", variables.get("temptable_max_ram")) or "?"))
-            names = ["internal_tmp_mem_storage_engine", "tmp_table_size", "temptable_max_ram", "temptable_max_mmap"]
+            if _version_tuple(variables.get("version") or "") < (8, 0, 28):
+                limit = ("Before MySQL 8.0.28 TempTable has no per-table limit; temptable_max_ram (global) decides "
+                         "when its tables move to disk")
+                names = ["internal_tmp_mem_storage_engine", "temptable_max_ram", "temptable_max_mmap"]
+            else:
+                limit = ("TempTable keeps each internal temporary table in memory up to tmp_table_size (%s), and all of "
+                         "them up to temptable_max_ram (%s) together" % (
+                             _display("tmp_table_size", variables.get("tmp_table_size")) or "?",
+                             _display("temptable_max_ram", variables.get("temptable_max_ram")) or "?"))
+                names = ["internal_tmp_mem_storage_engine", "tmp_table_size", "temptable_max_ram", "temptable_max_mmap"]
         else:
             limit = ("The MEMORY engine keeps each internal temporary table in memory up to the smaller of "
                      "tmp_table_size and max_heap_table_size (%s)" % _bytes_text(min(
@@ -429,15 +442,22 @@ def _tmp_tables(c):
         _count_text(disk), _count_text(created), pct)
     status = "watch" if created >= MIN_TMP_TABLES and pct >= TMP_DISK_PCT else "ok"
     action = None
+    caveat = ("Each concurrent temporary table can use up to the limit, so a large global value risks "
+              "memory pressure. Tables too big for any sensible limit go to disk regardless.")
     if status == "watch":
+        limit_text = ("Then raise the per-table limit for the sessions that need it "
+                      "(SET SESSION tmp_table_size = <bytes>%s)." % (
+                          "; max_heap_table_size too" if c.engine == "mariadb" or "max_heap_table_size" in names
+                          else ""))
+        if c.engine == "mysql" and "tmp_table_size" not in names:
+            limit_text = "Then review temptable_max_ram (global), increasing it only if memory headroom permits."
         action = {"text": "Find the statements in Top statements with the temporary-table-on-disk flag first; an "
-                          "index that avoids the temporary table beats a bigger limit. Then raise the per-table "
-                          "limit for the sessions that need it (SET SESSION tmp_table_size = <bytes>%s)." % (
-                              "; max_heap_table_size too" if c.engine == "mariadb" or "max_heap_table_size" in names
-                              else "")}
+                          "index that avoids the temporary table beats a bigger limit. " + limit_text}
+    if c.engine == "mysql" and "tmp_table_size" not in names:
+        caveat = ("The limit is global: all TempTable tables share temptable_max_ram, so raising it increases "
+                  "the server-wide memory budget. Tables too big for any sensible limit go to disk regardless.")
     return _check("tmp_tables", "memory", "Temporary tables", explain, status, observation, "tmp_tables",
-                  caveat=("Each concurrent temporary table can use up to the limit, so a large global value risks "
-                          "memory pressure. Tables too big for any sensible limit go to disk regardless."),
+                  caveat=caveat,
                   action=action, settings=settings, sources=sources, value="%.1f%% on disk" % pct)
 
 
@@ -555,11 +575,24 @@ def _redo(c):
     if status == "watch":
         target = int(rate * 3600 * REDO_HOURS)
         target = ((target + 256 * MIB - 1) // (256 * MIB)) * 256 * MIB
-        if c.engine == "mysql":
+        if c.engine == "mysql" and "innodb_redo_log_capacity" not in c.v:
+            files = int(c.num("innodb_log_files_in_group") or 2)
+            file_size = (target + files - 1) // files
+            action = {"config": ("innodb_log_file_size = %d\ninnodb_log_files_in_group = %d  # under [mysqld]"
+                                 % (file_size, files)),
+                      "text": "About an hour of redo at the average rate, rounded up to 256 MiB (%s total). "
+                              "Set innodb_log_file_size and innodb_log_files_in_group in the configuration "
+                              "file and restart." % _bytes_text(target)}
+        elif c.engine == "mysql":
             action = {"sql": "SET GLOBAL innodb_redo_log_capacity = %d;" % target,
                       "config": "innodb_redo_log_capacity = %d  # under [mysqld]" % target,
                       "text": "About an hour of redo at the average rate, rounded up to 256 MiB (%s). It resizes "
                               "online." % _bytes_text(target)}
+        elif c.server.version_tuple < (10, 9, 1):
+            action = {"config": "innodb_log_file_size = %d  # under [mysqld]" % target,
+                      "text": "About an hour of redo at the average rate, rounded up to 256 MiB (%s total). "
+                              "Set this option-file line and restart; innodb_log_file_size is read-only before "
+                              "MariaDB 10.9.1." % _bytes_text(target)}
         else:
             action = {"sql": "SET GLOBAL innodb_log_file_size = %d;" % target,
                       "config": "innodb_log_file_size = %d  # under [mysqld]" % target,

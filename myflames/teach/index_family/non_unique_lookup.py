@@ -95,7 +95,7 @@ def render() -> str:
 """
     return _html.render_page(
         lesson_id="non_unique_lookup",
-        title="Non-Unique Key Lookup — index hits that return many rows",
+        title="Non-Unique Key Lookup: index hits that return many rows",
         subtitle="Understand how B+tree traversal, leaf-range scanning, and row-id fetches compose the real work of this operator.",
         version_chip="MySQL 8.4 • MariaDB 11.4",
         controls_html=controls_html,

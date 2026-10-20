@@ -82,9 +82,11 @@ try {
   const nameBefore = await width("table", scans);
   await h.select(`${scans} tr[data-table="orders"]`);
   assert.match(await h.inspector(), /158,955,464,549/);
-  // With the inspector open the frame is narrower, but the name column keeps
-  // 220 px of text beside its flags (or its whole width when that is less),
-  // and the number columns scroll sideways inside the frame instead.
+  // Return to the list before measuring its columns. Names keep 220 px
+  // beside flags (or their whole width when less); number columns scroll
+  // sideways inside the frame instead.
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   const named = await page.$eval(scans, (t) => {
     let flags = 0;
     for (const cell of t.querySelectorAll('tbody td[data-col="table"]')) {
@@ -126,7 +128,7 @@ try {
   // Every header has a resize handle with its value, minimum and maximum.
   const handles = await page.$$eval(`${unused} thead [role=separator]`, (els) =>
     els.map((e) => [e.getAttribute("aria-label"), +e.getAttribute("aria-valuenow"), +e.getAttribute("aria-valuemin"), +e.getAttribute("aria-valuemax"), e.tabIndex]));
-  assert.deepEqual(handles.map((x) => x[0]), ["Width of Verdict", "Width of Table", "Width of Index"]);
+  assert.deepEqual(handles.map((x) => x[0]), ["Width of Verdict", "Width of Table", "Width of Index", "Width of Actions"]);
   for (const [label, now, min, max, tab] of handles)
     assert.ok(min <= now && now <= max && tab === 0, `${label}: ${now} in [${min}, ${max}]`);
 
@@ -164,24 +166,25 @@ try {
   const sorted = await order();
   await menu();
   const names = await page.$$eval(`${dialog} label`, (els) => els.map((e) => e.textContent.trim()));
-  assert.deepEqual(names, ["Verdict", "Table", "Index"]);
+  assert.deepEqual(names, ["Verdict", "Table", "Index", "Actions"]);
   await toggle("table");
-  assert.deepEqual(await visibleKeys(), ["verdict", "index"]);
+  assert.deepEqual(await visibleKeys(), ["verdict", "index", "actions"]);
   assert.deepEqual(await order(), sorted, "hiding the sorted column keeps the order");
   // The hidden column is still in the menu, unchecked, and comes back.
   assert.equal(await page.$eval(`${dialog} input[data-col="table"]`, (e) => e.checked), false);
   await toggle("table");
-  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index"]);
+  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index", "actions"]);
   // The last visible column cannot be hidden.
   await toggle("table");
   await toggle("index");
+  await toggle("actions");
   assert.deepEqual(await visibleKeys(), ["verdict"]);
   assert.equal(await page.$eval(`${dialog} input[data-col="verdict"]`, (e) => e.disabled), true);
   await page.$eval(`${dialog} input[data-col="verdict"]`, (e) => e.click());
   assert.deepEqual(await visibleKeys(), ["verdict"], "the last column stays");
   await closeMenu();
-  const hiddenSaved = await h.savedSlow((s) => (s.columns_v1?.["indexes.unused"]?.hidden || []).length === 2);
-  assert.deepEqual(hiddenSaved.state.query_lab.slow.columns_v1["indexes.unused"].hidden.sort(), ["index", "table"]);
+  const hiddenSaved = await h.savedSlow((s) => (s.columns_v1?.["indexes.unused"]?.hidden || []).length === 3);
+  assert.deepEqual(hiddenSaved.state.query_lab.slow.columns_v1["indexes.unused"].hidden.sort(), ["actions", "index", "table"]);
 
   // Kept across a reload: the hidden columns and the Verdict width come back.
   await page.reload({ waitUntil: "networkidle0" });
@@ -190,7 +193,8 @@ try {
   await menu();
   await toggle("table");
   await toggle("index");
-  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index"]);
+  await toggle("actions");
+  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index", "actions"]);
   assert.equal(await width("verdict"), min + 16);
   // Reset: default widths and every column, and the stored entry is gone.
   await page.click(`${dialog} .columns-reset`);
@@ -208,7 +212,7 @@ try {
     const s = loaded.state;
     s.query_lab.slow.kind = "indexes";
     s.query_lab.slow.columns_v1 = {
-      "indexes.unused": { widths: { verdict: 99999, table: "wide", nope: 300, index: -5 }, hidden: ["verdict", "table", "index", "ghost"] },
+      "indexes.unused": { widths: { verdict: 99999, table: "wide", nope: 300, index: -5 }, hidden: ["verdict", "table", "index", "actions", "ghost"] },
       "not.a.table": { widths: { a: 100 } },
       constructor: { hidden: ["table"] },
     };
@@ -216,7 +220,7 @@ try {
   }, token);
   await page.reload({ waitUntil: "networkidle0" });
   await loadIndexes();
-  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index"], "zero visible columns is never restored");
+  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index", "actions"], "zero visible columns is never restored");
   assert.equal(await page.$eval(separator("verdict"), (e) => +e.getAttribute("aria-valuenow")), 1200, "clamped to the maximum");
   // The table scrolls sideways inside its frame; the page never does.
   assert.ok(await page.$eval(`${view} .data-table-wrap[aria-label="Unused indexes"]`, (e) => e.scrollWidth > e.clientWidth));
@@ -244,14 +248,19 @@ try {
   const first = await page.$eval(`${sv} tbody tr[data-session]`, (e) => e.dataset.session);
   await page.click(`${sv} tbody tr[data-session="${first}"]`);
   await page.waitForSelector(".view-inspector .inspector-title");
+  await page.click(".detail-back");
   await page.focus(`${sv} tbody tr[data-session="${first}"]`);
   await page.keyboard.press("End");
-  await page.waitForFunction((s) => document.activeElement?.closest?.(s) && document.activeElement.matches("tr[data-session]"), {}, sv);
-  const lastKey = await page.evaluate(() => document.activeElement.dataset.session);
   const ids = many.sessions.map((s) => s.id).sort((a, b) => a - b);
-  assert.ok([String(ids[0]), String(ids.at(-1))].includes(lastKey), `End reaches the last row (${lastKey})`);
+  const expectedLast = first === String(ids[0]) ? String(ids.at(-1)) : String(ids[0]);
+  await page.waitForFunction((k) => document.activeElement?.dataset?.session === k, {}, expectedLast);
+  const lastKey = await page.evaluate(() => document.activeElement.dataset.session);
+  assert.equal(lastKey, expectedLast, `End reaches the opposite end (${lastKey})`);
   assert.equal(await page.evaluate(() => document.activeElement.getAttribute("aria-current")), "true", "selection follows focus");
+  await page.keyboard.press("Enter");
   assert.match(await h.inspector(), new RegExp(`Connection ${lastKey}`));
+  await page.click(".detail-back");
+  await page.waitForFunction((k) => document.activeElement?.dataset?.session === k, {}, lastKey);
   await page.keyboard.press("Home");
   await page.waitForFunction((k) => document.activeElement?.dataset?.session === k, {}, first);
   // PageDown and ArrowDown move through rows that were not drawn a moment ago.

@@ -27,7 +27,8 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { Icon, type IconName } from "./components";
+import { Icon, isIconName, type IconName } from "./components";
+import { createPortal } from "react-dom";
 import "./kit.css";
 
 // Only the innermost open surface owns keyboard navigation. A drawer may
@@ -141,8 +142,19 @@ export function StatusDot({ tone, label }: { tone: Tone; label?: string }) {
   );
 }
 
-/** A dot and a short word (OK, Watch, Problem, Off…). */
-export function StatusPill({ tone, label, title }: { tone: Tone; label?: string; title?: string }) {
+/** A dot and a short word (OK, Watch, Problem, Off…). In a status column
+ * (`quiet`), the normal states step back so only the others draw the eye: OK
+ * draws nothing and No threshold a faint dash, while the word stays for
+ * screen readers, hover and text search. A custom label is always shown. */
+export function StatusPill({ tone, label, title, quiet = false }: { tone: Tone; label?: string; title?: string; quiet?: boolean }) {
+  const word = label || TONE_TEXT[tone];
+  if (quiet && (tone === "ok" || tone === "info") && word === TONE_TEXT[tone]) {
+    return (
+      <span className={`status-pill is-${tone} is-quiet`} title={title || word}>
+        <span className="visually-hidden">{word}</span>
+      </span>
+    );
+  }
   return (
     <span className={`status-pill is-${tone}`} title={title}>
       <span className="status-dot" aria-hidden="true" />
@@ -158,6 +170,32 @@ export function CountBadge({ count, tone = "neutral", label }: { count: number; 
       {count.toLocaleString()}
     </span>
   );
+}
+
+/** The marker beside a navigation row (Server and Workload views, sidebar
+ * places): one system everywhere. A status dot carries state (problem red,
+ * watch amber, unknown and off a gray ring; OK draws nothing), and a count is
+ * always a neutral pill beside it, so color means state and only state. The
+ * words reach screen readers through `text` (or the row's own hidden text). */
+export function NavMarker({ tone, count, countTone = "neutral", text }: {
+  tone?: Tone;
+  count?: number;
+  countTone?: BadgeTone;
+  text?: string;
+}) {
+  return (
+    <>
+      <span className="nav-marker" aria-hidden="true">
+        {tone && <span className={`status-dot is-${tone}`} />}
+        {count !== undefined && <CountBadge count={count} tone={countTone} />}
+      </span>
+      {text && <span className="visually-hidden">, {text}</span>}
+    </>
+  );
+}
+/** The state a count stands for in a navigation marker. */
+export function countState(tone: BadgeTone): Tone | undefined {
+  return tone === "danger" ? "problem" : tone === "warn" ? "watch" : undefined;
 }
 
 /** A small flag in a row (≤ 3 per row); the meaning is on hover and for screen readers. */
@@ -750,7 +788,10 @@ export function useWindowStatus(scope: string, value: WindowStatus) {
     return () => publish?.(scope, null);
   }, [publish, scope, engineVersion, connectionState, transaction, refreshedAt, refreshing, sessionState, lastRunAt, durationMs, rows]);
 }
-export function WindowStatusBar({ scope, fallback = {} }: { scope: string; fallback?: WindowStatus }) {
+/** The window footer. *lead* comes first, left-aligned: the shell puts the
+ * write safety of the connection in use there (Connections.tsx SafetyStatus)
+ * on the places that send to it. */
+export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string; fallback?: WindowStatus; lead?: ReactNode }) {
   const store = useContext(WindowStatusContext);
   const value = { ...fallback, ...store?.values[scope] };
   const stamp = (at: number | null | undefined) => {
@@ -763,6 +804,7 @@ export function WindowStatusBar({ scope, fallback = {} }: { scope: string; fallb
   const ran = stamp(value.lastRunAt);
   const knownNumber = (n: number | null | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
   return <footer className="window-statusbar" aria-label="Workspace status" tabIndex={0}>
+    {lead}
     {value.engineVersion && <span data-status="engine">{value.engineVersion}</span>}
     {value.connectionState && <span data-status="connection">{value.connectionState}</span>}
     {value.sessionState && <span data-status="session">{value.sessionState}</span>}
@@ -844,7 +886,8 @@ export type Column<T> = {
   primary?: boolean;
   /** Starting width in px; otherwise measured from the header and the rows. */
   width?: number;
-  /** Never narrower than this (a status word that must stay whole). */
+  /** Never narrower than this (a status word that must stay whole). On the
+   * flexible column it replaces the 260 px SQL-text minimum. */
   minWidth?: number;
 };
 export type SortState = { key: string; dir: "asc" | "desc" };
@@ -875,7 +918,7 @@ export const ColumnStoreContext = createContext<ColumnStore | null>(null);
 export const COLUMN_MIN = 48;
 export const COLUMN_MAX = 1200;
 /** The flexible column never gets narrower than this. */
-const FLEX_MIN = 160;
+const FLEX_MIN = 260;
 /** Measured text columns start at most this wide (wider content truncates). */
 const AUTO_MAX = 360;
 /** A text column wider than this may give up room when the frame is narrow. */
@@ -897,6 +940,77 @@ function columnName<T>(c: Column<T>) {
 }
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+export async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
+}
+
+export type TableContextAction =
+  | {
+      label: string;
+      icon?: ReactNode;
+      shortcut?: string;
+      danger?: boolean;
+      disabled?: boolean;
+      onClick: () => void;
+    }
+  | { divider: true };
+
+/** Marks *marker* with data-more-left / data-more-right while *scroller* has
+ * content scrolled out of view past that edge, for an edge shadow (overlay
+ * scroll bars stay hidden until the pointer scrolls, so a column cut at the
+ * edge would otherwise look covered). Attributes are set on the element, so
+ * scrolling never re-renders. */
+export function useScrollEdges(scroller: RefObject<HTMLElement>, marker: RefObject<HTMLElement>) {
+  const mark = useCallback(() => {
+    const el = scroller.current;
+    const box = marker.current;
+    if (!el || !box) return;
+    const end = el.scrollWidth - el.clientWidth;
+    box.toggleAttribute("data-more-left", end > 1 && el.scrollLeft > 1);
+    box.toggleAttribute("data-more-right", end > 1 && el.scrollLeft < end - 1);
+  }, [scroller, marker]);
+  useLayoutEffect(mark);
+  // The scroller can mount later (a table that had no rows): attach to
+  // whichever element is current after each render, once.
+  const attached = useRef<{ el: HTMLElement; detach: () => void } | null>(null);
+  useEffect(() => {
+    const el = scroller.current;
+    if (attached.current?.el === el) return;
+    attached.current?.detach();
+    attached.current = null;
+    if (!el) return;
+    el.addEventListener("scroll", mark, { passive: true });
+    const observer = new ResizeObserver(mark);
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    attached.current = {
+      el,
+      detach: () => {
+        el.removeEventListener("scroll", mark);
+        observer.disconnect();
+      },
+    };
+  });
+  useEffect(() => () => {
+    attached.current?.detach();
+    attached.current = null;
+  }, []);
+}
+
 /** A dense, sortable, selectable table (Activity Monitor): sticky header,
  * right-aligned tabular numbers, row focus with the arrow keys, Enter opens
  * the inspector. Every column can be resized (pointer or keyboard) and
@@ -912,6 +1026,8 @@ export function DataTable<T>({
   selection,
   selectionHighlight = "always",
   defaultSort = null,
+  sort: controlledSort,
+  onSortChange,
   rowAttrs,
   rowAction,
   rowClass,
@@ -922,6 +1038,8 @@ export function DataTable<T>({
   density = "default",
   multiSelection,
   onActivate,
+  rowContextMenu,
+  nativeRowMenu = true,
 }: {
   /** Stable id of the table ("indexes.unused"), for the stored column layout. */
   id?: string;
@@ -933,6 +1051,9 @@ export function DataTable<T>({
   /** Active-only fill follows the inspector or table focus; the cursor stays put. */
   selectionHighlight?: "always" | "active";
   defaultSort?: SortState | null;
+  /** Controlled sorting lets paginated callers sort the complete collection first. */
+  sort?: SortState | null;
+  onSortChange?: (sort: SortState) => void;
   rowAttrs?: (row: T) => Record<string, string | undefined>;
   /** Optional visible action in the existing trailing column. */
   rowAction?: (row: T) => ReactNode;
@@ -948,6 +1069,20 @@ export function DataTable<T>({
   multiSelection?: { keys: string[]; select: (keys: string[]) => void };
   /** Collections can select with one click and activate with Enter/double click. */
   onActivate?: (row: T) => void;
+  /** Custom context menu actions for a row (shown above standard Excel-style copy actions). */
+  rowContextMenu?: (
+    row: T,
+    helpers: {
+      col?: Column<T>;
+      cellText?: string;
+      copy: (text: string, msg?: string) => Promise<void>;
+      close: () => void;
+    }
+  ) => TableContextAction[];
+  /** False when the caller draws its own row menu (the Query editor results):
+   * the table then opens no "Row actions" menu on right click, Shift+F10 or
+   * the ContextMenu key, so only one menu ever opens. */
+  nativeRowMenu?: boolean;
 }) {
   const rangeAnchor = useRef<string>("");
   const inspector = useInspector();
@@ -982,7 +1117,8 @@ export function DataTable<T>({
 
   // Sorting: the accessor is looked up among all columns (hidden ones too),
   // so hiding, showing or resizing never changes the order.
-  const [sort, setSort] = useState<SortState | null>(defaultSort);
+  const [localSort, setLocalSort] = useState<SortState | null>(defaultSort);
+  const sort = controlledSort === undefined ? localSort : controlledSort;
   const latestColumns = useRef(columns);
   latestColumns.current = columns;
   const sorted = useMemo(() => {
@@ -993,7 +1129,9 @@ export function DataTable<T>({
   latestRowKey.current = rowKey;
   const rowKeys = useMemo(() => sorted.map((r) => latestRowKey.current(r)), [sorted]);
   function onSort(c: Column<T>) {
-    setSort((s) => (s?.key === c.key ? { key: c.key, dir: s.dir === "asc" ? "desc" : "asc" } : { key: c.key, dir: c.num ? "desc" : "asc" }));
+    const next: SortState = sort?.key === c.key ? { key: c.key, dir: sort.dir === "asc" ? "desc" : "asc" } : { key: c.key, dir: c.num ? "desc" : "asc" };
+    if (onSortChange) onSortChange(next);
+    else setLocalSort(next);
   }
 
   // Widths: measured from the header and the rows drawn (grow only while the
@@ -1014,13 +1152,61 @@ export function DataTable<T>({
     min: {},
     flags: {},
   });
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    row: T;
+    key: string;
+    col?: Column<T>;
+    cellText?: string;
+    rowCells: string[];
+  } | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = (msg: string) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast(msg);
+    toastTimer.current = window.setTimeout(() => setToast(null), 1800);
+  };
+
+  const copyWithFeedback = async (text: string, msg?: string) => {
+    setContextMenu(null);
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      showToast(msg || "Copied to clipboard");
+    } else {
+      showToast("Could not copy to clipboard");
+    }
+  };
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest(".context-menu")) {
+        setContextMenu(null);
+      }
+    };
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("mousedown", handleOutside);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handleOutside);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [contextMenu]);
   const natural = measured.sig === signature ? measured.natural : {};
   const mins = measured.sig === signature ? measured.min : {};
   const flagWidths = measured.sig === signature ? measured.flags : {};
-  const trailing = (c: Column<T>) => c === visible[visible.length - 1] ? MENU_COLUMN : 0;
-  const minOf = (c: Column<T>) => Math.min(COLUMN_MAX, trailing(c) + Math.max(mins[c.key] || COLUMN_MIN, c.flex ? FLEX_MIN : COLUMN_MIN, c.minWidth || 0));
+  // A flexible column keeps FLEX_MIN (SQL text) unless it names its own
+  // minimum (a connection or table name needs less).
+  const minOf = (c: Column<T>) =>
+    Math.min(COLUMN_MAX, Math.max(mins[c.key] || COLUMN_MIN, c.flex ? c.minWidth ?? FLEX_MIN : COLUMN_MIN, c.minWidth || 0));
   const baseOf = (c: Column<T>) =>
-    clamp(userWidths[c.key] ?? ((c.width ?? natural[c.key] ?? (c.flex ? FLEX_MIN : c.num ? 96 : 140)) + trailing(c)), minOf(c), COLUMN_MAX);
+    clamp(userWidths[c.key] ?? (c.width ?? natural[c.key] ?? (c.flex ? FLEX_MIN : c.num ? 96 : 140)), minOf(c), COLUMN_MAX);
   // A drag shows its width live and is stored when the pointer is released.
   const [dragging, setDragging] = useState<{ key: string; width: number } | null>(null);
   let base = visible.map((c) => (dragging?.key === c.key ? clamp(dragging.width, minOf(c), COLUMN_MAX) : baseOf(c)));
@@ -1033,10 +1219,25 @@ export function DataTable<T>({
   const needed = base.reduce((a, b) => a + b, 0) + MENU_COLUMN;
   if (frame > 0 && needed > frame) {
     const primary = visible.findIndex((c) => c.primary);
-    const name = primary >= 0 ? primary : visible.findIndex((c) => !c.num);
+    const flex = visible.findIndex((c) => c.flex);
+    const name = primary >= 0 ? primary : flex >= 0 ? flex : visible.findIndex((c) => !c.num);
     const floorOf = (c: Column<T>, i: number) =>
       i === name ? Math.max(minOf(c), Math.min(base[i], NAME_FLOOR + (flagWidths[c.key] || 0))) : Math.max(minOf(c), SHRINK_FLOOR);
     let over = needed - frame;
+    // First, columns that start from a fixed width wider than their widest
+    // value and label give the spare room back: nothing truncates, and a
+    // table that fits no longer scrolls a column under the Columns menu.
+    const slack = visible.map((c, i) =>
+      c.width !== undefined && !c.flex && userWidths[c.key] === undefined && dragging?.key !== c.key && natural[c.key] !== undefined
+        ? Math.max(0, base[i] - Math.max(natural[c.key], minOf(c)))
+        : 0,
+    );
+    const spare = slack.reduce((a, b) => a + b, 0);
+    if (spare > 0) {
+      const cut = Math.min(over, spare);
+      base = base.map((w, i) => w - (cut * slack[i]) / spare);
+      over -= cut;
+    }
     for (const nameNow of [false, true]) {
       const room = visible.map((c, i) =>
         !c.num && userWidths[c.key] === undefined && dragging?.key !== c.key && (i === name) === nameNow
@@ -1051,6 +1252,9 @@ export function DataTable<T>({
       }
     }
   }
+  // Whole pixels, so the columns add up to the frame exactly (a fractional
+  // total scrolled the table by a pixel).
+  base = base.map((w) => Math.floor(w));
   // One column takes the room the others leave: the flexible one, else the
   // last text column, else the last one. The Columns menu has its own narrow
   // column at the right end, which stays in view.
@@ -1064,12 +1268,20 @@ export function DataTable<T>({
   useLayoutEffect(() => {
     const el = wrap.current;
     if (!el) return;
-    const update = () => setFrame(el.clientWidth);
+    // Full-width details keep this list mounted but hidden. Preserve its last
+    // usable measurements until it is visible again.
+    const update = () => { if (el.clientWidth > 0) setFrame(el.clientWidth); };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(el);
     return () => observer.disconnect();
   }, [rows.length > 0]);
+
+  // Columns scrolled out of view sideways: the frame marks each edge with
+  // more columns beyond it, so the column under the Columns menu reads as
+  // scrolled (a shadow on that edge) rather than covered.
+  const frameEl = useRef<HTMLDivElement>(null);
+  useScrollEdges(wrap, frameEl);
 
   // Long tables: draw the rows in view only, with spacers above and below.
   const windowed = sorted.length > WINDOW_ROWS;
@@ -1086,7 +1298,7 @@ export function DataTable<T>({
   useLayoutEffect(() => {
     const t = table.current;
     const el = wrap.current;
-    if (!t || !el || !t.tHead) return;
+    if (!t || !el || !t.tHead || el.clientWidth === 0) return;
     const left = el.scrollLeft;
     t.classList.add("is-measuring");
     const next: Record<string, number> = measured.sig === signature ? { ...measured.natural } : {};
@@ -1101,7 +1313,7 @@ export function DataTable<T>({
       // The table is laid out at max-content here, so the label's box is its full width.
       const labelWidth = head && !c.hiddenLabel ? head.getBoundingClientRect().width : 0;
       let min = Math.max(COLUMN_MIN, Math.ceil(labelWidth) + CELL_PAD + (c.sort ? SORT_MARK : 0));
-      const full = Math.ceil(th.getBoundingClientRect().width) - trailing(c);
+      const full = Math.ceil(th.getBoundingClientRect().width);
       // Numbers never truncate: their widest value is part of the minimum.
       if (c.num) min = Math.max(min, full);
       // Neither do flags: a cell's pills keep their size (a name beside them truncates).
@@ -1139,7 +1351,7 @@ export function DataTable<T>({
     const t = table.current;
     if (!t || !t.tHead) return;
     const sample = [...t.tBodies[0].rows].find((r) => r.dataset.rowKey !== undefined);
-    if (sample && Math.abs(sample.offsetHeight - rowHeight) > 0.5) setRowHeight(sample.offsetHeight);
+    if (sample && sample.offsetHeight > 0 && Math.abs(sample.offsetHeight - rowHeight) > 0.5) setRowHeight(sample.offsetHeight);
     const head = t.tHead.offsetHeight;
     if (head && Math.abs(head - headHeight) > 0.5) setHeadHeight(head);
   });
@@ -1191,6 +1403,28 @@ export function DataTable<T>({
   }
   function onRowKey(e: KeyboardEvent<HTMLTableRowElement>, key: string) {
     if (!selection || e.target !== e.currentTarget) return;
+    if (nativeRowMenu && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) {
+      e.preventDefault();
+      const rect = e.currentTarget.getBoundingClientRect();
+      const tr = e.currentTarget;
+      const row = sorted[rowKeys.indexOf(key)];
+      if (!row) return;
+      const rowCells = visible.map((c) => {
+        const cellTd = tr.querySelector(`td[data-col="${CSS.escape(c.key)}"]`);
+        if (cellTd) return (cellTd.textContent || "").trim();
+        return c.sort && typeof c.sort === "function" ? String(c.sort(row) ?? "") : "";
+      });
+      setContextMenu({
+        x: Math.min(rect.left + 40, window.innerWidth - 260),
+        y: Math.min(rect.bottom + 4, window.innerHeight - 340),
+        row,
+        key,
+        col: visible[0],
+        cellText: rowCells[0],
+        rowCells,
+      });
+      return;
+    }
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       if (e.key === " " && multiSelection) selectRange(key, e.shiftKey, true);
@@ -1281,7 +1515,7 @@ export function DataTable<T>({
   const focusShown = rowKeys.slice(first, first + shown.length).includes(focusKey);
   const cellClass = (c: Column<T>) => [c.num ? "num" : "", c.flex ? "cell-flex" : "", c.className || ""].join(" ").trim() || undefined;
   return (
-    <div className={`data-table-frame density-${density} ${className}`.trim()} data-density={density}>
+    <div ref={frameEl} className={`data-table-frame density-${density} ${className}`.trim()} data-density={density}>
       <div
         ref={wrap}
         className="data-table-wrap"
@@ -1293,7 +1527,10 @@ export function DataTable<T>({
         onBlurCapture={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
         }}
-        onScroll={windowed ? (e) => setView({ top: e.currentTarget.scrollTop, height: e.currentTarget.clientHeight }) : undefined}
+        onScroll={windowed ? (e) => {
+          if (e.currentTarget.clientHeight > 0)
+            setView({ top: e.currentTarget.scrollTop, height: e.currentTarget.clientHeight });
+        } : undefined}
       >
         <table
           ref={table}
@@ -1454,6 +1691,41 @@ export function DataTable<T>({
                     if (!(e.target as HTMLElement).closest("button, label, input, select, a, [role=menu]")) onActivate(row);
                   } : undefined}
                   onKeyDown={selection ? (e) => onRowKey(e, key) : undefined}
+                  onContextMenu={nativeRowMenu ? (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const td = (e.target as HTMLElement).closest("td[data-col]");
+                    const colKey = td?.getAttribute("data-col") || undefined;
+                    const col = visible.find((c) => c.key === colKey);
+                    const cellText = td ? (td.textContent || "").trim() : undefined;
+
+                    const tr = e.currentTarget;
+                    const rowCells = visible.map((c) => {
+                      const cellTd = tr.querySelector(`td[data-col="${CSS.escape(c.key)}"]`);
+                      if (cellTd) return (cellTd.textContent || "").trim();
+                      return c.sort && typeof c.sort === "function" ? String(c.sort(row) ?? "") : "";
+                    });
+
+                    if (selection) {
+                      selectRange(key, e.shiftKey, e.metaKey || e.ctrlKey);
+                      selection.select(key, false);
+                    }
+
+                    const menuW = 260;
+                    const menuH = 340;
+                    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - menuW - 16));
+                    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 16));
+
+                    setContextMenu({
+                      x,
+                      y,
+                      row,
+                      key,
+                      col,
+                      cellText,
+                      rowCells,
+                    });
+                  } : undefined}
                   {...(rowAttrs ? rowAttrs(row) : {})}
                 >
                   {visible.map((c) => (
@@ -1473,6 +1745,77 @@ export function DataTable<T>({
           </tbody>
         </table>
       </div>
+      {contextMenu && (
+        <div
+          className="context-menu"
+          role="menu"
+          aria-label="Row actions"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          tabIndex={-1}
+        >
+          {(() => {
+            const customActions = rowContextMenu
+              ? rowContextMenu(contextMenu.row, {
+                  col: contextMenu.col,
+                  cellText: contextMenu.cellText,
+                  copy: copyWithFeedback,
+                  close: () => setContextMenu(null),
+                })
+              : [];
+
+            if (customActions.length === 0) {
+              return (
+                contextMenu.cellText ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void copyWithFeedback(contextMenu.cellText!, "Cell value copied")}
+                  >
+                    <span className="context-menu-icon"><Icon name="copy" /></span>
+                    <span>Copy "{contextMenu.cellText.length > 24 ? contextMenu.cellText.slice(0, 24) + "…" : contextMenu.cellText}"</span>
+                  </button>
+                ) : null
+              );
+            }
+
+            return (
+              <>
+                {customActions.map((action, idx) => {
+                  if ("divider" in action && action.divider) {
+                    return <div key={`div-${idx}`} className="context-menu-divider" />;
+                  }
+                  const a = action as {
+                    label: string;
+                    icon?: ReactNode;
+                    shortcut?: string;
+                    danger?: boolean;
+                    disabled?: boolean;
+                    onClick: () => void;
+                  };
+                  return (
+                    <button
+                      key={a.label}
+                      type="button"
+                      role="menuitem"
+                      className={a.danger ? "is-danger" : ""}
+                      disabled={a.disabled}
+                      onClick={() => {
+                        setContextMenu(null);
+                        a.onClick();
+                      }}
+                    >
+                      {a.icon && <span className="context-menu-icon">{typeof a.icon === "string" && isIconName(a.icon) ? <Icon name={a.icon} /> : a.icon}</span>}
+                      <span>{a.label}</span>
+                      {a.shortcut && <span className="context-menu-shortcut">{a.shortcut}</span>}
+                    </button>
+                  );
+                })}
+              </>
+            );
+          })()}
+        </div>
+      )}
+      {toast && <div className="table-copy-toast" role="status">{toast}</div>}
     </div>
   );
 }
@@ -1553,7 +1896,7 @@ export function GroupedRow({
   const selected = !!selection && selection.key === rowKey;
   const body = (
     <>
-      {tone && <StatusPill tone={tone} label={toneLabel} />}
+      {tone && <StatusPill tone={tone} label={toneLabel} quiet />}
       <span className="row-label">
         <span className="row-title">{label}</span>
         {detail && <span className="row-detail">{detail}</span>}
@@ -1623,7 +1966,7 @@ export function MetricTile({
         {unit && <span className="tile-unit">{unit === "%" || unit.startsWith("/") ? unit : ` ${unit}`}</span>}
       </span>
       <span className="tile-foot">
-        {tone && <StatusPill tone={tone} label={toneLabel} />}
+        {tone && <StatusPill tone={tone} label={toneLabel} quiet />}
         {trend}
       </span>
     </>
@@ -1652,11 +1995,20 @@ export function MetricTile({
   );
 }
 
+/** Equal-width tiles: every tile in a grid has the same width. The frame is a
+ * size container, so kit.css picks the column count from the tile count and
+ * the room the grid has: up to six in one row, seven or eight as rows of
+ * four, and balanced rows (three, then two) when a row does not fit. */
 export function TileGrid({ label, children }: { label: string; children: ReactNode }) {
+  const tiles = Children.toArray(children).length;
+  const columns = tiles <= 6 ? Math.max(1, tiles) : tiles <= 8 ? 4 : 6;
   return (
-    <ul className="tile-grid" aria-label={label}>
-      {children}
-    </ul>
+    <div className="tile-grid-frame">
+      <ul className="tile-grid" aria-label={label} data-tiles={tiles > 8 ? "many" : tiles}
+        style={{ "--tiles": columns } as CSSProperties}>
+        {children}
+      </ul>
+    </div>
   );
 }
 
@@ -1859,7 +2211,10 @@ export function ConfirmSheet({
   const titleId = useId();
   const descId = useId();
   useFocusScope(dialog, { open: true, onClose: () => { if (!busy) onCancel(); }, initialFocus: () => cancel.current });
-  return (
+  // Retained list views can be hidden while their selected detail is open.
+  // Keep consequential reviews outside those layout ancestors so the native
+  // dialog remains visible and Cancel can receive focus.
+  return createPortal(
     <dialog
       ref={dialog}
       className={`confirm-sheet ${className}`}
@@ -1902,7 +2257,7 @@ export function ConfirmSheet({
           {confirmLabel}
         </button>
       </div>
-    </dialog>
+    </dialog>, document.body
   );
 }
 
@@ -2002,19 +2357,22 @@ function Inspector({
   content,
   empty,
   onClose,
+  detailBackLabel,
 }: {
   content: InspectorContent | null;
   empty: ReactNode;
   onClose: () => void;
+  detailBackLabel?: string;
 }) {
   const shared = useInspector();
   const titleId = useId();
   const body = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLElement>(null);
-  const sheet = !!shared?.sheet;
+  const sheet = !detailBackLabel && !!shared?.sheet;
   const width = shared?.width ?? INSPECTOR_DEFAULT;
   useEffect(() => {
     body.current?.scrollTo?.({ top: 0 });
+    if(detailBackLabel)root.current?.querySelector<HTMLButtonElement>(".detail-back")?.focus();
   }, [content?.key]);
   // Shared scopes let nested row menus and confirmation dialogs own focus
   // without the sheet trapping their keys or closing underneath them.
@@ -2034,14 +2392,14 @@ function Inspector({
       {sheet && <div className="sheet-scrim" aria-hidden="true" onClick={onClose} />}
       <aside
         ref={root}
-        className={`view-inspector${sheet ? " is-sheet" : ""}`}
+        className={`view-inspector${detailBackLabel ? " is-detail" : sheet ? " is-sheet" : ""}`}
         aria-labelledby={titleId}
-        role={sheet ? "dialog" : "complementary"}
+        role={detailBackLabel ? "region" : sheet ? "dialog" : "complementary"}
         aria-modal={sheet ? true : undefined}
-        style={sheet ? undefined : { width }}
+        style={sheet || detailBackLabel ? undefined : { width }}
         tabIndex={sheet ? -1 : undefined}
       >
-        {!sheet && (
+        {!sheet && !detailBackLabel && (
           <div
             className="inspector-resize"
             role="separator"
@@ -2074,11 +2432,12 @@ function Inspector({
           />
         )}
         <header className="inspector-head">
+          {detailBackLabel&&<button type="button" className="button ghost detail-back inspector-close" onClick={onClose}><Icon name="back" size={14}/>{detailBackLabel}</button>}
           <div className="inspector-title">
             <h3 id={titleId}>{content ? content.title : "Inspector"}</h3>
             {content?.meta && <div className="inspector-meta">{content.meta}</div>}
           </div>
-          <IconButton icon="close" size={15} className="inspector-close" label="Close inspector" title="Close inspector (Escape)" onClick={onClose} />
+          {!detailBackLabel&&<IconButton icon="close" size={15} className="inspector-close" label="Close inspector" title="Close inspector (Escape)" onClick={onClose} />}
         </header>
         {content?.actions && <div className="inspector-actions-bar">{content.actions}</div>}
         <div className="inspector-scroll" ref={body}>
@@ -2106,6 +2465,7 @@ export function ViewLayout({
   onBack,
   inspector,
   inspectorEmpty,
+  detailBackLabel = `Back to ${title.toLocaleLowerCase()}`,
   status,
   children,
   className = "",
@@ -2124,6 +2484,8 @@ export function ViewLayout({
   onBack?: () => void;
   inspector?: InspectorContent | null;
   inspectorEmpty?: ReactNode;
+  /** Show selected content in the full view, retaining the list underneath. */
+  detailBackLabel?: string;
   /** Loading line and errors, under the toolbar. */
   status?: ReactNode;
   children: ReactNode;
@@ -2139,7 +2501,8 @@ export function ViewLayout({
   }, [reportActivity, id, loading]);
   const shared = useInspector();
   const main = useRef<HTMLDivElement>(null);
-  const open = !!shared?.open && (!shared.sheet || !!inspector);
+  const open = !!shared?.open && ((!shared.sheet && !detailBackLabel) || !!inspector);
+  const detailOpen = !!detailBackLabel && open;
   function close() {
     shared?.setOpen(false);
     // Return focus to the selected row once the inspector is gone, unless it
@@ -2181,7 +2544,7 @@ export function ViewLayout({
           </h2>
           {info && <InfoPopover label={`About ${title}`}>{info}</InfoPopover>}
         </div>
-        <div className="toolbar-controls">{controls}</div>
+        <div className="toolbar-controls" hidden={detailOpen}>{controls}</div>
         <div className="toolbar-end">
           {onRefresh && (
             <ToolbarButton
@@ -2195,7 +2558,7 @@ export function ViewLayout({
               <span className="toolbar-refresh-label">Refresh</span>
             </ToolbarButton>
           )}
-          {shared && !shared.sheet && (
+          {shared && !shared.sheet && !detailBackLabel && (
             <IconButton
               icon="inspector"
               className="inspector-toggle"
@@ -2208,11 +2571,12 @@ export function ViewLayout({
         </div>
       </header>
       {status}
+      {detailOpen&&otherConnection&&<div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}, refresh to load this server.</p></div>}
       <div
-        className={`view-split${open && !shared?.sheet ? " has-inspector" : ""}`}
-        style={open && !shared?.sheet ? ({ "--inspector-w": `${shared?.width ?? INSPECTOR_DEFAULT}px` } as CSSProperties) : undefined}
+        className={`view-split${open && !shared?.sheet && !detailOpen ? " has-inspector" : ""}`}
+        style={open && !shared?.sheet && !detailOpen ? ({ "--inspector-w": `${shared?.width ?? INSPECTOR_DEFAULT}px` } as CSSProperties) : undefined}
       >
-        <div className="view-main" ref={main}>
+        <div className="view-main" ref={main} hidden={detailOpen}>
           {otherConnection && (
             <div className="gate other-connection" role="note">
               <Icon name="connection" size={18} />
@@ -2233,6 +2597,7 @@ export function ViewLayout({
             content={inspector || null}
             empty={inspectorEmpty || <p>Select a row to see its details here.</p>}
             onClose={close}
+            detailBackLabel={detailBackLabel}
           />
         )}
       </div>

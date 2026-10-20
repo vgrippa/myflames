@@ -28,15 +28,15 @@ var ORDERS_BY_CUSTOMER = {
 };
 
 // --- palette (unified across lessons) ---------------------------------
-var OUTER_BG_REST   = "#ffedd5";   // cool orange when idle
-var OUTER_BG_DRIVE  = "#fde68a";   // warmer when this row is the driver
-var OUTER_STROKE    = "#fdba74";
-var OUTER_STROKE_DR = "#f59e0b";
-var PROBE_BG        = "#eff6ff";
-var PROBE_STROKE    = "#7dd3fc";
-var PILL_FILL       = "#bae6fd";
-var PILL_STROKE     = "#0284c7";
-var MATCH_TEXT      = "#0c4a6e";
+var OUTER_BG_REST   = "var(--svg-build-soft)";   // cool orange when idle
+var OUTER_BG_DRIVE  = "var(--svg-highlight)";   // warmer when this row is the driver
+var OUTER_STROKE    = "var(--svg-build-soft)";
+var OUTER_STROKE_DR = "var(--svg-build)";
+var PROBE_BG        = "var(--svg-token-soft)";
+var PROBE_STROKE    = "var(--svg-token-soft)";
+var PILL_FILL       = "var(--svg-token-soft)";
+var PILL_STROKE     = "var(--svg-token)";
+var MATCH_TEXT      = "var(--svg-token)";
 
 function buildStage() {
   var svg = document.getElementById("nlj-svg");
@@ -47,13 +47,13 @@ function buildStage() {
   var rowH = 48;
 
   var outerLbl = anim.svgEl("text", {
-    x: leftX, y: 26, "font-size": 13, "font-weight": 700, fill: "#7c2d12"
+    x: leftX, y: 26, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   outerLbl.textContent = "Outer input (driving): customers";
   svg.appendChild(outerLbl);
 
   var innerLbl = anim.svgEl("text", {
-    x: rightX, y: 26, "font-size": 13, "font-weight": 700, fill: "#0c4a6e"
+    x: rightX, y: 26, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   innerLbl.textContent = "Inner probe: orders matching current customer";
   svg.appendChild(innerLbl);
@@ -69,7 +69,7 @@ function buildStage() {
     svg.appendChild(bg);
     var txt = anim.svgEl("text", {
       x: leftX + 12, y: y + 24, "font-size": 11, "font-weight": 600,
-      fill: "#7c2d12"
+      fill: "var(--svg-build-ink)"
     });
     txt.textContent = "customer_id=" + CUSTOMERS[i].id + " " + CUSTOMERS[i].name;
     svg.appendChild(txt);
@@ -88,7 +88,7 @@ function buildStage() {
 
   var probeTitle = anim.svgEl("text", {
     x: rightX + 12, y: topY + 22, "font-size": 11.5, "font-weight": 700,
-    fill: "#0c4a6e"
+    fill: "var(--svg-token-ink)"
   });
   probeTitle.textContent = "Probe panel";
   svg.appendChild(probeTitle);
@@ -107,7 +107,7 @@ function buildStage() {
 
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 14, "text-anchor": "middle",
-    "font-size": 12.5, "font-weight": 600, fill: "#111827"
+    "font-size": 12.5, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -321,9 +321,9 @@ function renderChart(innerProbeRows, currentOuterRows) {
     xMin: 100, xMax: 1e7,
     xLabel: "Outer (driving) rows", yLabel: "Row-pair comparisons",
     curves: [
-      { label: "Nested loop: O(n · m)", color: "#b45309",
+      { label: "Nested loop: O(n · m)", color: "var(--svg-build)",
         fn: function(n) { return n * innerProbeRows; } },
-      { label: "Linear baseline: O(n)", color: "#0284c7",
+      { label: "Linear baseline: O(n)", color: "var(--svg-token)",
         fn: function(n) { return n; } }
     ],
     current: { x: currentOuterRows },

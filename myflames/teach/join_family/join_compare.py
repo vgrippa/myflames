@@ -77,14 +77,14 @@ def render() -> str:
   <div class="stage-with-phases">
     <div style="flex:1;min-width:0;display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
       <div>
-        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#92400e;letter-spacing:0.4px;text-transform:uppercase">MariaDB 11.x BNL</p>
+        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:var(--svg-build);letter-spacing:0.4px;text-transform:uppercase">MariaDB 11.x BNL</p>
         <svg id="svg-bnl" viewBox="0 0 400 240" xmlns="http://www.w3.org/2000/svg"></svg>
-        <p style="margin:4px 0 0;font-size:11px;color:#6b7280" id="bnl-phase">Idle</p>
+        <p style="margin:4px 0 0;font-size:11px;color:var(--svg-ink-muted)" id="bnl-phase">Idle</p>
       </div>
       <div>
-        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#1e40af;letter-spacing:0.4px;text-transform:uppercase">MySQL 8.4 hash join</p>
+        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:var(--svg-token);letter-spacing:0.4px;text-transform:uppercase">MySQL 8.4 hash join</p>
         <svg id="svg-hash" viewBox="0 0 400 240" xmlns="http://www.w3.org/2000/svg"></svg>
-        <p style="margin:4px 0 0;font-size:11px;color:#6b7280" id="hash-phase">Idle</p>
+        <p style="margin:4px 0 0;font-size:11px;color:var(--svg-ink-muted)" id="hash-phase">Idle</p>
       </div>
     </div>
     {_html.phase_nav()}
@@ -143,7 +143,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="join",
-        title="BNL vs hash join — side by side",
+        title="BNL vs hash join: side by side",
         subtitle=(
             "Move the sliders and feel the asymptotic difference between "
             "MariaDB's Block Nested Loop and MySQL 8.4's hash join."

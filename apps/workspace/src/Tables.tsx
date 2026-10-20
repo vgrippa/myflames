@@ -1,16 +1,16 @@
 // Server > Tables: tables without a primary key or a usable unique key, and
-// InnoDB free space (schema-1.0 from myflames/schema_health.py). One read per
+// InnoDB free space (schema-2.0 from myflames/schema_health.py). One read per
 // click over the chosen databases (all user databases by default); myflames
-// never runs the ALTER or OPTIMIZE statements it shows. One sortable list at a
+// runs an optional OPTIMIZE only after a separate SQL review. One sortable list at a
 // time; the why, the checks and the fix statements are in the inspector.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport } from "./api";
+import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
+import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport, type TableInventoryRow } from "./api";
 import { CompactNumber, CopySql, SchemaPicker, bytes, count, engineLabel, useSchemaCatalog } from "./PerfShared";
 import { uptime } from "./Health";
 import { useConnectionReads, type Bound } from "./binding";
 import {
   Checkbox,
-  DataTable,
   closePopovers,
   EmptyState,
   FactStrip,
@@ -32,20 +32,26 @@ import {
   type InspectorContent,
   type Selection,
   type Tone,
+  copyToClipboard,
 } from "./kit";
 import "./tables.css";
+import { PaginatedReportTable } from "./PaginatedReportTable";
+import { ReviewedSqlAction, ReviewedSqlBridger, ReviewedSqlProvider, ReviewedSqlStatus, useReviewedSql } from "./ReviewedSqlAction";
+import { Icon } from "./components";
+import { AddColumnDialog, RemoveColumnDialog } from "./TableAlterDialog";
 
 export type TableFocus = { schema: string; table: string } | null;
-const STATUS_RANK: Record<string, number> = { problem: 0, watch: 1, ok: 2, shared: 3, unknown: 4 };
+const STATUS_RANK: Record<string, number> = { problem: 0, watch: 1, info: 2, ok: 3, shared: 4, unknown: 5 };
 const STATUS_LABEL: Record<string, string> = {
   problem: "Problem",
   watch: "Watch",
+  info: "Reusable space",
   ok: "OK",
   shared: "Shared tablespace",
   unknown: "Not judged",
 };
 function statusTone(status: string): Tone {
-  return status === "problem" || status === "watch" || status === "ok" ? status : status === "shared" ? "info" : "unknown";
+  return status === "problem" || status === "watch" || status === "ok" ? status : (status === "shared" || status === "info") ? "info" : "unknown";
 }
 function Status({ status }: { status: string }) {
   return (
@@ -75,7 +81,168 @@ function scopeLabel(schemas: string[] | null) {
   return schemas.length <= 3 ? schemas.join(", ") : `${schemas.length} databases`;
 }
 
-type List = "missing" | "free";
+type List = "all" | "missing" | "free";
+
+function TableRowActions({
+  schema,
+  table,
+  onAddColumn,
+  onRemoveColumn,
+  onIndexes,
+  disabled,
+}: {
+  schema: string;
+  table: string;
+  onAddColumn: () => void;
+  onRemoveColumn: () => void;
+  onIndexes: () => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const reviewedSql = useReviewedSql();
+
+  useEffect(() => {
+    if (!open) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handleOutside);
+    return () => window.removeEventListener("mousedown", handleOutside);
+  }, [open]);
+
+  return (
+    <div className="table-row-actions-wrap" ref={ref} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="button small table-actions-trigger"
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+        title={`Actions for ${schema}.${table}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        Actions ▾
+      </button>
+      {open && (
+        <div className="table-actions-menu" role="menu">
+          <button
+            type="button"
+            className="table-action-item"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onAddColumn();
+            }}
+          >
+            <Icon name="plus" /> Add Column
+          </button>
+          <button
+            type="button"
+            className="table-action-item"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onRemoveColumn();
+            }}
+          >
+            <Icon name="close" /> Remove Column
+          </button>
+          <div className="table-action-divider" />
+          <button
+            type="button"
+            className="table-action-item"
+            role="menuitem"
+            disabled={reviewedSql?.blocked}
+            onClick={() => {
+              setOpen(false);
+              reviewedSql?.start(`OPTIMIZE TABLE \`${schema}\`.\`${table}\``, `Optimize ${table}`);
+            }}
+          >
+            <Icon name="optimize" /> Optimize Table
+          </button>
+          <button
+            type="button"
+            className="table-action-item"
+            role="menuitem"
+            disabled={reviewedSql?.blocked}
+            onClick={() => {
+              setOpen(false);
+              reviewedSql?.start(`ANALYZE TABLE \`${schema}\`.\`${table}\``, `Analyze ${table}`);
+            }}
+          >
+            <Icon name="statements" /> Analyze Table
+          </button>
+          <button
+            type="button"
+            className="table-action-item"
+            role="menuitem"
+            disabled={reviewedSql?.blocked}
+            onClick={() => {
+              setOpen(false);
+              reviewedSql?.start(`CHECK TABLE \`${schema}\`.\`${table}\``, `Check ${table}`);
+            }}
+          >
+            <Icon name="shield" /> Check Table
+          </button>
+          <div className="table-action-divider" />
+          <button
+            type="button"
+            className="table-action-item"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onIndexes();
+            }}
+          >
+            <Icon name="index" /> View Indexes
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TableAlterRunner({
+  alter,
+  connection,
+  onClose,
+}: {
+  alter: { mode: "add" | "remove"; schema: string; table: string } | null;
+  connection: Connection;
+  onClose: () => void;
+}) {
+  const reviewedSql = useReviewedSql();
+  if (!alter) return null;
+
+  if (alter.mode === "add") {
+    return (
+      <AddColumnDialog
+        connection={connection}
+        schema={alter.schema}
+        table={alter.table}
+        onClose={onClose}
+        onSubmit={(sql, label) => {
+          reviewedSql?.start(sql, label);
+        }}
+      />
+    );
+  }
+
+  return (
+    <RemoveColumnDialog
+      connection={connection}
+      schema={alter.schema}
+      table={alter.table}
+      onClose={onClose}
+      onSubmit={(sql, label) => {
+        reviewedSql?.start(sql, label);
+      }}
+    />
+  );
+}
 
 export function TablesView({
   connection,
@@ -91,6 +258,7 @@ export function TablesView({
   focus,
   onFocusChange,
   onOpenIndexes,
+  onOpenSql,
 }: {
   connection: Connection;
   disabled: boolean;
@@ -109,6 +277,8 @@ export function TablesView({
   onFocusChange: (focus: TableFocus) => void;
   /** Reads Indexes for this report's table; *from* is the report's connection key. */
   onOpenIndexes: (schema: string, table: string, from: string) => void;
+  /** Put a statement in the Query editor's current tab, without running it. */
+  onOpenSql?: (sql: string) => void;
 }) {
   const reads = useConnectionReads(connection);
   const loading = !!reads.loading;
@@ -117,11 +287,141 @@ export function TablesView({
   const other = bound && bound.key !== reads.key ? bound.label : null;
   const [fresh, setFresh] = useState(false);
   const [filter, setFilter] = useState("");
-  const [list, setList] = useState<List>("missing");
+  const [list, setList] = useState<List>("all");
+  const [tableAlter, setTableAlter] = useState<{ mode: "add" | "remove"; schema: string; table: string } | null>(null);
+  const reviewedSqlRef = useRef<ReturnType<typeof useReviewedSql>>(null);
+  const currentList = list === "all" && !report?.tables ? "missing" : list;
+
+  const getTableRowContextMenu = (schema: string, table: string) => {
+    const runner = reviewedSqlRef.current;
+    const qTable = `\`${schema}\`.\`${table}\``;
+    return [
+      ...(onOpenSql
+        ? [
+            {
+              label: "Open in Query Editor",
+              icon: "query",
+              onClick: () => {
+                onOpenSql(`SELECT * FROM ${qTable} LIMIT 100;`);
+              },
+            },
+            {
+              label: "Show CREATE TABLE (DDL)",
+              icon: "table",
+              onClick: () => {
+                onOpenSql(`SHOW CREATE TABLE ${qTable};`);
+              },
+            },
+            { divider: true as const },
+          ]
+        : []),
+      {
+        label: "Optimize table",
+        icon: "optimize",
+        disabled: runner?.blocked,
+        onClick: () => {
+          runner?.start(`OPTIMIZE TABLE ${qTable}`, `Optimize ${table}`);
+        },
+      },
+      {
+        label: "Analyze table",
+        icon: "statements",
+        disabled: runner?.blocked,
+        onClick: () => {
+          runner?.start(`ANALYZE TABLE ${qTable}`, `Analyze ${table}`);
+        },
+      },
+      {
+        label: "Check table",
+        icon: "shield",
+        disabled: runner?.blocked,
+        onClick: () => {
+          runner?.start(`CHECK TABLE ${qTable}`, `Check ${table}`);
+        },
+      },
+      {
+        label: "Checksum table",
+        icon: "check",
+        disabled: runner?.blocked,
+        onClick: () => {
+          runner?.start(`CHECKSUM TABLE ${qTable} EXTENDED`, `Checksum ${table}`);
+        },
+      },
+      { divider: true as const },
+      {
+        label: "Add column",
+        icon: "plus",
+        disabled: runner?.blocked,
+        onClick: () => {
+          setTableAlter({ mode: "add", schema, table });
+        },
+      },
+      {
+        label: "Remove column",
+        icon: "minus",
+        disabled: runner?.blocked,
+        onClick: () => {
+          setTableAlter({ mode: "remove", schema, table });
+        },
+      },
+      {
+        label: "View indexes",
+        icon: "index",
+        onClick: () => {
+          if (bound) onOpenIndexes(schema, table, bound.key);
+        },
+      },
+      { divider: true as const },
+      {
+        label: `Copy table name (${qTable})`,
+        icon: "copy",
+        onClick: () => void copyToClipboard(qTable),
+      },
+      {
+        label: "Copy SELECT query",
+        icon: "copy",
+        onClick: () => void copyToClipboard(`SELECT * FROM ${qTable} LIMIT 100;`),
+      },
+      {
+        label: "Copy SELECT COUNT(*)",
+        icon: "copy",
+        onClick: () => void copyToClipboard(`SELECT COUNT(*) AS total_rows FROM ${qTable};`),
+      },
+      { divider: true as const },
+      {
+        label: "Truncate table…",
+        icon: "clean",
+        danger: true,
+        disabled: runner?.blocked,
+        onClick: () => {
+          runner?.start(
+            `SET SESSION lock_wait_timeout = 5;\nTRUNCATE TABLE ${qTable}`,
+            `Truncate ${table}`,
+            `Warning: All data in ${table} will be permanently deleted. This operation cannot be rolled back.`
+          );
+        },
+      },
+      {
+        label: "Drop table…",
+        icon: "trash",
+        danger: true,
+        disabled: runner?.blocked,
+        onClick: () => {
+          runner?.start(
+            `SET SESSION lock_wait_timeout = 5;\nDROP TABLE ${qTable}`,
+            `Drop ${table}`,
+            `Danger: Table ${table} and all its data, indexes, and triggers will be permanently deleted.`
+          );
+        },
+      },
+    ];
+  };
+  const [minimumFree, setMinimumFree] = useState(0);
   const [pkStatus, setPkStatus] = useState("all");
   const [engine, setEngine] = useState("all");
-  const [freeStatus, setFreeStatus] = useState("flagged");
-  const catalog = useSchemaCatalog(connection);
+  const [freeStatus, setFreeStatus] = useState("info");
+  const onScreen = useViewOnScreen();
+  const catalog = useSchemaCatalog(connection, onScreen);
   const engineName = report?.engine || catalog.catalog?.engine || "";
   // The backend gates the selected scope, including cached MySQL reads.
   const inScope = catalog.catalog
@@ -156,6 +456,8 @@ export function TablesView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadRequest]);
 
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled && !gated, busy: !!loading || reads.running(), read: () => { void load(); } });
+
   const needle = filter.trim().toLowerCase();
   const visible = (r: { schema: string; table: string }) =>
     (!focus || (r.schema === focus.schema && r.table === focus.table)) &&
@@ -176,12 +478,16 @@ export function TablesView({
       (report?.fragmentation || []).filter(
         (f) =>
           visible(f) &&
+          (!minimumFree || (f.status !== "shared" && f.status !== "unknown" && f.free_pct !== null && f.free_pct >= minimumFree)) &&
           (freeStatus === "all" ||
-            (freeStatus === "flagged" ? f.status === "watch" || f.status === "problem" : f.status === freeStatus)),
+            f.status === freeStatus),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [report, needle, focus, freeStatus],
+    [report, needle, focus, freeStatus, minimumFree],
   );
+  const inventory = (report?.tables || []).filter(visible);
+  const exportContext = `${bound?.label || ""} · ${scopeLabel(report?.scope.schemas || null)} · ${report?.taken_at || ""}`;
+  const resetKey = `${reads.key}:${filter}:${JSON.stringify(focus)}:${pkStatus}:${engine}:${freeStatus}:${minimumFree}`;
   const gipk = (report?.generated_primary_keys || []).filter(visible);
 
   const s = report?.summary;
@@ -202,6 +508,29 @@ export function TablesView({
       {r.partitioned && <Pill>partitioned</Pill>}
     </span>
   );
+  const makeActionsCol = <T extends { schema: string; table: string }>(): Column<T> => ({
+    key: "actions",
+    label: "Actions",
+    width: 96,
+    render: (r) => (
+      <TableRowActions
+        schema={r.schema}
+        table={r.table}
+        disabled={!!other}
+        onAddColumn={() => setTableAlter({ mode: "add", schema: r.schema, table: r.table })}
+        onRemoveColumn={() => setTableAlter({ mode: "remove", schema: r.schema, table: r.table })}
+        onIndexes={() => bound && onOpenIndexes(r.schema, r.table, bound.key)}
+      />
+    ),
+  });
+  const inventoryColumns: Column<TableInventoryRow>[] = [
+    { key: "table", label: "Table", sort: r => `${r.schema}.${r.table}`, render: tableCell },
+    { key: "engine", label: "Engine", sort: r => r.engine, render: r => r.engine || "Unknown" },
+    { key: "rows", label: "Rows (est.)", num: true, sort: r => r.rows, render: r => <CompactNumber value={r.rows} /> },
+    { key: "data", label: "Data", num: true, sort: r => r.data_bytes, render: r => bytes(r.data_bytes) },
+    { key: "indexes", label: "Indexes", num: true, sort: r => r.index_bytes, render: r => bytes(r.index_bytes) },
+    makeActionsCol<TableInventoryRow>(),
+  ];
   const missingColumns: Column<MissingPrimaryKey>[] = [
     {
       key: "status",
@@ -229,13 +558,14 @@ export function TablesView({
       sort: (m) => (m.clustered_on || "").toLowerCase(),
       render: (m) =>
         m.clustered_on === "hidden row ID" ? (
-          <Pill tone="warn">hidden row ID</Pill>
+          <span className="cell-muted">hidden row ID</span>
         ) : m.clustered_on ? (
           <code>{m.clustered_on}</code>
         ) : (
           <span className="cell-muted">no clustered index</span>
         ),
     },
+    makeActionsCol<MissingPrimaryKey>(),
   ];
   const freeColumns: Column<FreeSpaceRow>[] = [
     {
@@ -261,16 +591,55 @@ export function TablesView({
       num: true,
       width: 96,
       sort: (f) => f.free_pct,
-      render: (f) => (f.status === "shared" ? "—" : `${Math.round(f.free_pct)}%`),
+      render: (f) => (f.status === "shared" || f.status === "unknown" || f.free_pct === null ? "Unknown" : `${Math.round(f.free_pct)}%`),
     },
+    makeActionsCol<FreeSpaceRow>(),
   ];
 
   let inspector: InspectorContent | null = null;
   const [type, name] = selection.key.split(/:(.*)/s);
-  const indexesButton = (r: { schema: string; table: string }) => (
-    <button type="button" className="button" disabled={!!other} onClick={() => bound && onOpenIndexes(r.schema, r.table, bound.key)}>
-      Indexes
-    </button>
+  const tableInspectorActions = (r: { schema: string; table: string }) => (
+    <div className="table-inspector-actions" style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
+      <ReviewedSqlAction
+        action="optimize_table"
+        sql={`OPTIMIZE TABLE \`${r.schema}\`.\`${r.table}\``}
+        label={`Optimize ${r.table}`}
+      />
+      <ReviewedSqlAction
+        action="analyze_table"
+        sql={`ANALYZE TABLE \`${r.schema}\`.\`${r.table}\``}
+        label={`Analyze ${r.table}`}
+      />
+      <ReviewedSqlAction
+        action="check_table"
+        sql={`CHECK TABLE \`${r.schema}\`.\`${r.table}\``}
+        label={`Check ${r.table}`}
+      />
+      <button
+        type="button"
+        className="button small"
+        disabled={!!other}
+        onClick={() => bound && onOpenIndexes(r.schema, r.table, bound.key)}
+      >
+        Indexes
+      </button>
+      <button
+        type="button"
+        className="button small"
+        disabled={!!other}
+        onClick={() => setTableAlter({ mode: "add", schema: r.schema, table: r.table })}
+      >
+        Add column
+      </button>
+      <button
+        type="button"
+        className="button small"
+        disabled={!!other}
+        onClick={() => setTableAlter({ mode: "remove", schema: r.schema, table: r.table })}
+      >
+        Remove column
+      </button>
+    </div>
   );
   if (report && selection.key === "topic:why-pk") {
     inspector = {
@@ -287,6 +656,10 @@ export function TablesView({
         </dl>
       ),
     };
+  } else if (report && type === "table") {
+    const t = report.tables?.find(x => `${x.schema}.${x.table}` === name);
+    if (t) inspector = { key: selection.key, title: `${t.schema}.${t.table}`, actions: tableInspectorActions(t), body:
+      <InspectorSection title="Table"><Fields rows={[["Engine", t.engine || "Unknown"], ["Rows (estimated)", count(t.rows)], ["Data", bytes(t.data_bytes)], ["Indexes", bytes(t.index_bytes)]]} /></InspectorSection> };
   } else if (report && type === "missing") {
     const m = report.missing_primary_keys.find((x) => `${x.schema}.${x.table}` === name);
     if (m)
@@ -299,7 +672,7 @@ export function TablesView({
             <span>{m.engine || "—"}</span>
           </>
         ),
-        actions: indexesButton(m),
+        actions: tableInspectorActions(m),
         body: (
           <>
             <InspectorSection title="Why">
@@ -331,7 +704,7 @@ export function TablesView({
         key: selection.key,
         title: `${f.schema}.${f.table}`,
         meta: <StatusPill tone={statusTone(f.status)} label={STATUS_LABEL[f.status]} />,
-        actions: indexesButton(f),
+        actions: tableInspectorActions(f),
         body: (
           <>
             <InspectorSection title="Why">
@@ -342,7 +715,7 @@ export function TablesView({
                 rows={[
                   ["Data", bytes(f.data_bytes)],
                   ["Indexes", bytes(f.index_bytes)],
-                  ["Free", `${bytes(f.free_bytes)}${f.status === "shared" ? "" : ` (${Math.round(f.free_pct)}%)`}`],
+                  ["Free", `${bytes(f.free_bytes)}${f.status === "shared" || f.status === "unknown" || f.free_pct === null ? "" : ` (${Math.round(f.free_pct)}%)`}`],
                   ["Tablespace", f.tablespace_name || f.tablespace || "—"],
                 ]}
               />
@@ -350,6 +723,7 @@ export function TablesView({
             {f.fix_sql && (
               <InspectorSection title="What to do">
                 <CopySql sql={f.fix_sql} label={`Rebuild ${f.table}`} />
+                <ReviewedSqlAction action="optimize_table" sql={f.fix_sql} label={`Optimize ${f.table}`} warning={f.caveat} />
                 <p className="hint">The same rebuild, refused instead of blocking writes when it cannot run online:</p>
                 <CopySql sql={f.online_sql || ""} label={`Rebuild ${f.table} online`} />
                 <p className="hint perf-caveat">{f.caveat}</p>
@@ -375,6 +749,9 @@ export function TablesView({
     </button>
   );
   return (
+    <ReviewedSqlProvider connection={connection} disabled={disabled || !!other} onComplete={() => void load()}>
+    <ReviewedSqlBridger bridgerRef={reviewedSqlRef} />
+    <TableAlterRunner alter={tableAlter} connection={connection} onClose={() => setTableAlter(null)} />
     <ViewLayout
       id="tables"
       title="Tables"
@@ -386,7 +763,7 @@ export function TablesView({
             Tables without a primary key (or a unique key InnoDB can use instead) and InnoDB tables with free space a
             rebuild could return. It reads information_schema for the chosen databases.
           </p>
-          <p>One read when you click. Nothing is changed: the fix statements are for you to copy.</p>
+          <p>Refresh only reads. Optional Optimize actions show the exact SQL and require confirmation.</p>
           {report && <p>{whyButton}</p>}
         </>
       }
@@ -429,7 +806,7 @@ export function TablesView({
           {report && <p>{whyButton}</p>}
         </>
       }
-      status={<ViewStatus loading={reads.loading} error={error} />}
+      status={<><ViewStatus loading={reads.loading} error={error} /><ReviewedSqlStatus /></>}
     >
       {gated && (
         <PrerequisiteGate action={
@@ -476,8 +853,7 @@ export function TablesView({
           >
             <span className="perf-summary-line">
               {s.no_usable_key} {s.no_usable_key === 1 ? "table" : "tables"} without a usable key, {s.not_null_unique} with only a
-              unique NOT NULL key · free space: {s.free_problem} {s.free_problem === 1 ? "problem" : "problems"}, {s.free_watch} to
-              watch
+              unique NOT NULL key · {s.free_info ?? report.fragmentation.filter(row => row.status === "info").length} tables with reusable free space
             </span>
           </SummaryLine>
           <FactStrip
@@ -490,104 +866,129 @@ export function TablesView({
             ]}
           />
           <section className="view-section" aria-labelledby="tables-list-h">
-            <div className="view-section-head">
-              <h3 id="tables-list-h" className="visually-hidden">
-                Table lists
-              </h3>
-              <Segmented<List>
-                label="List"
-                value={list}
-                onChange={setList}
-                options={[
-                  { value: "missing", label: "Missing primary keys", count: missing.length },
-                  { value: "free", label: "Free space", count: free.length },
-                ]}
-              />
-              {list === "missing" ? (
+            <h3 id="tables-list-h" className="visually-hidden">
+              Table lists
+            </h3>
+            {(() => {
+              const listFilters = (
                 <>
-                  <ToolbarSelect
-                    label="Status"
-                    className="tables-pk-status"
-                    value={pkStatus}
-                    onChange={setPkStatus}
+                  <Segmented<List>
+                    label="List"
+                    value={currentList}
+                    onChange={setList}
                     options={[
-                      ["all", "All"],
-                      ["problem", "Problem"],
-                      ["watch", "Watch"],
+                      ...(report.tables ? [{ value: "all" as List, label: "All tables", count: inventory.length }] : []),
+                      { value: "missing", label: "Missing primary keys", count: missing.length },
+                      { value: "free", label: "Free space", count: free.length },
                     ]}
                   />
-                  <ToolbarSelect
-                    label="Engine"
-                    className="tables-engine"
-                    value={engine}
-                    onChange={setEngine}
-                    options={[
-                      ["all", "All"],
-                      ["innodb", "InnoDB"],
-                      ["other", "Other engines"],
-                    ]}
+                  {currentList === "missing" ? (
+                    <>
+                      <ToolbarSelect
+                        label="Status"
+                        className="tables-pk-status"
+                        value={pkStatus}
+                        onChange={setPkStatus}
+                        options={[
+                          ["all", "All"],
+                          ["problem", "Problem"],
+                          ["watch", "Watch"],
+                        ]}
+                      />
+                      <ToolbarSelect
+                        label="Engine"
+                        className="tables-engine"
+                        value={engine}
+                        onChange={setEngine}
+                        options={[
+                          ["all", "All"],
+                          ["innodb", "InnoDB"],
+                          ["other", "Other engines"],
+                        ]}
+                      />
+                    </>
+                  ) : currentList === "free" ? (
+                    <>
+                      <ToolbarSelect
+                        label="Show"
+                        className="tables-free-show"
+                        value={freeStatus}
+                        onChange={setFreeStatus}
+                        options={[
+                          ["info", "With reusable free space"],
+                          ["all", "All InnoDB tables"],
+                          ["shared", "In a shared tablespace"],
+                          ["unknown", "Not judged"],
+                        ]}
+                      />
+                      <label className="tables-min-free">Minimum reusable space % <input type="number" aria-label="Minimum reusable table space percent" min="0" max="100" step="1" value={minimumFree} onChange={e => setMinimumFree(Math.min(100, Math.max(0, Number(e.target.value) || 0)))} /></label>
+                    </>
+                  ) : null}
+                </>
+              );
+              return currentList === "all" ? (
+                <PaginatedReportTable id="tables.inventory" label="All tables" columns={inventoryColumns} rows={inventory}
+                  filters={listFilters}
+                  rowKey={r => `table:${r.schema}.${r.table}`} selection={selection} defaultSort={{key:"table",dir:"asc"}}
+                  rowAttrs={r => ({"data-table": `${r.schema}.${r.table}`})} empty="No tables match these filters."
+                  rowContextMenu={r => getTableRowContextMenu(r.schema, r.table)}
+                  exportContext={exportContext} resetKey={resetKey} exportColumns={[
+                    {label:"Database",value:r=>r.schema},{label:"Table",value:r=>r.table},{label:"Engine",value:r=>r.engine},
+                    {label:"Rows (estimated)",value:r=>r.rows},{label:"Data bytes",value:r=>r.data_bytes},{label:"Index bytes",value:r=>r.index_bytes},
+                  ]} />
+              ) : currentList === "missing" ? (
+                <>
+                  <PaginatedReportTable
+                    filters={listFilters}
+                    exportContext={exportContext} resetKey={resetKey}
+                    exportColumns={[{label:"Database",value:m=>m.schema},{label:"Table",value:m=>m.table},{label:"Status",value:m=>STATUS_LABEL[m.status] || m.status},{label:"Engine",value:m=>m.engine},{label:"Rows (estimated)",value:m=>m.rows},{label:"Size bytes",value:m=>m.size_bytes},{label:"Clustered on",value:m=>m.clustered_on}]}
+                    id="tables.missing"
+                    label="Tables without a primary key"
+                    columns={missingColumns}
+                    rows={missing}
+                    rowKey={(m) => `missing:${m.schema}.${m.table}`}
+                    selection={selection}
+                    defaultSort={{ key: "status", dir: "asc" }}
+                    rowAttrs={(m) => ({ "data-table": `${m.schema}.${m.table}` })}
+                    rowContextMenu={m => getTableRowContextMenu(m.schema, m.table)}
+                    empty={
+                      report.missing_primary_keys.length
+                        ? "No table matches these filters."
+                        : `Every table in ${scopeLabel(report.scope.schemas).toLowerCase()} has a primary key.`
+                    }
                   />
+                  {report.more.missing_primary_keys > 0 && <p className="hint table-more">{report.more.missing_primary_keys} more not shown.</p>}
+                  {gipk.length > 0 && (
+                    <p className="grouped-footer tables-gipk">
+                      Generated invisible primary key (my_row_id), nothing to fix:{" "}
+                      {gipk.map((g, i) => (
+                        <span key={`${g.schema}.${g.table}`}>
+                          {i > 0 && ", "}
+                          <code>
+                            {g.schema}.{g.table}
+                          </code>
+                        </span>
+                      ))}
+                    </p>
+                  )}
                 </>
               ) : (
-                <ToolbarSelect
-                  label="Show"
-                  className="tables-free-show"
-                  value={freeStatus}
-                  onChange={setFreeStatus}
-                  options={[
-                    ["flagged", "Watch or problem"],
-                    ["all", "All InnoDB tables"],
-                    ["shared", "In a shared tablespace"],
-                    ["unknown", "Not judged"],
-                  ]}
-                />
-              )}
-            </div>
-            {list === "missing" ? (
-              <>
-                <DataTable
-                  id="tables.missing"
-                  label="Tables without a primary key"
-                  columns={missingColumns}
-                  rows={missing}
-                  rowKey={(m) => `missing:${m.schema}.${m.table}`}
-                  selection={selection}
-                  defaultSort={{ key: "status", dir: "asc" }}
-                  rowAttrs={(m) => ({ "data-table": `${m.schema}.${m.table}` })}
-                  empty={
-                    report.missing_primary_keys.length
-                      ? "No table matches these filters."
-                      : `Every table in ${scopeLabel(report.scope.schemas).toLowerCase()} has a primary key.`
-                  }
-                />
-                {report.more.missing_primary_keys > 0 && <p className="hint table-more">{report.more.missing_primary_keys} more not shown.</p>}
-                {gipk.length > 0 && (
-                  <p className="grouped-footer tables-gipk">
-                    Generated invisible primary key (my_row_id), nothing to fix:{" "}
-                    {gipk.map((g, i) => (
-                      <span key={`${g.schema}.${g.table}`}>
-                        {i > 0 && ", "}
-                        <code>
-                          {g.schema}.{g.table}
-                        </code>
-                      </span>
-                    ))}
-                  </p>
-                )}
-              </>
-            ) : (
-              <>
-                <DataTable
-                  id="tables.free"
-                  label="Free space by table"
-                  columns={freeColumns}
-                  rows={free}
-                  rowKey={(f) => `free:${f.schema}.${f.table}`}
-                  selection={selection}
-                  defaultSort={{ key: "status", dir: "asc" }}
-                  rowAttrs={(f) => ({ "data-table": `${f.schema}.${f.table}` })}
-                  empty={freeStatus === "flagged" ? "No table at the watch level." : "No table matches these filters."}
-                />
+                <>
+                  <PaginatedReportTable
+                    filters={listFilters}
+                    exportContext={exportContext} resetKey={resetKey}
+                    exportColumns={[{label:"Database",value:f=>f.schema},{label:"Table",value:f=>f.table},{label:"Status",value:f=>STATUS_LABEL[f.status] || f.status},{label:"Rows (estimated)",value:f=>f.rows},{label:"Data bytes",value:f=>f.data_bytes},{label:"Index bytes",value:f=>f.index_bytes},{label:"Reusable bytes",value:f=>f.free_bytes},{label:"Reusable space %",value:f=>f.status === "shared" || f.status === "unknown" ? null : f.free_pct}]}
+                    id="tables.free"
+                    label="Free space by table"
+                    columns={freeColumns}
+                    rows={free}
+                    rowKey={(f) => `free:${f.schema}.${f.table}`}
+                    selection={selection}
+                    defaultSort={{ key: "status", dir: "asc" }}
+                    rowAttrs={(f) => ({ "data-table": `${f.schema}.${f.table}` })}
+                    rowContextMenu={f => getTableRowContextMenu(f.schema, f.table)}
+                    empty={freeStatus === "info" ? "No reusable free space reported for individual tables." : "No table matches these filters."}
+                  />
                 {report.more.fragmentation > 0 && <p className="hint table-more">{report.more.fragmentation} more not shown.</p>}
                 <p className="grouped-footer">Rule of thumb: {report.rules.free}.</p>
                 {report.shared_tablespaces.length > 0 && (
@@ -614,10 +1015,12 @@ export function TablesView({
                   </GroupedList>
                 )}
               </>
-            )}
+              );
+            })()}
           </section>
         </>
       )}
     </ViewLayout>
+    </ReviewedSqlProvider>
   );
 }

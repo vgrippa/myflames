@@ -338,7 +338,7 @@ with sqlite3.connect(sys.argv[1]) as db:
   assert.equal(await page.$$eval('[role=dialog][aria-label="Filter audit records"] select', (els) => els.length), 3);
   await page.keyboard.press("Escape");
 
-  // 8. 390 px: no horizontal page scroll; the inspector is a sheet.
+  // 8. 390 px: no horizontal page scroll; details use the full work area.
   await page.setViewport({ width: 390, height: 844 });
   await new Promise((r) => setTimeout(r, 300));
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
@@ -358,7 +358,7 @@ with sqlite3.connect(sys.argv[1]) as db:
   await idle();
   await page.keyboard.press("Escape");
   await page.click(`${table} tbody tr[data-row-key]`);
-  await page.waitForSelector(".view-inspector.is-sheet");
+  await page.waitForSelector(".view-inspector.is-detail");
   await page.screenshot({ path: path.join(directory, "audit-mobile.png") });
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));

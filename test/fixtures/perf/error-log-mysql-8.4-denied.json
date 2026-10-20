@@ -1,0 +1,73 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('datadir', 'hostname', 'log_error', 'log_error_services', 'log_error_verbosity', 'log_warnings', 'performance_schema', 'port', 'userstat', 'version', 'version_comment')",
+   "datadir\t/var/lib/mysql/\nhostname\tf1f5efe23d86\nlog_error\t/var/lib/mysql/mysqld.err\nlog_error_services\tlog_filter_internal; log_sink_internal\nlog_error_verbosity\t2\nperformance_schema\tON\nport\t3306\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t2066\n"
+  ],
+  [
+   "/*myflames:error-log*/ SELECT g.VARIABLE_NAME, g.VARIABLE_VALUE, s.start_epoch, FROM_UNIXTIME(s.start_epoch) FROM performance_schema.global_status g CROSS JOIN (SELECT UNIX_TIMESTAMP() - CAST(VARIABLE_VALUE AS UNSIGNED) AS start_epoch FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime') s WHERE g.VARIABLE_NAME IN ('Error_log_buffered_bytes', 'Error_log_buffered_events', 'Error_log_expired_events', 'Error_log_latest_write', 'Uptime')",
+   "Error_log_buffered_bytes\t7824\t1792441763\t2026-10-19 20:29:23\nError_log_buffered_events\t48\t1792441763\t2026-10-19 20:29:23\nError_log_expired_events\t0\t1792441763\t2026-10-19 20:29:23\nError_log_latest_write\t1792441764279123\t1792441763\t2026-10-19 20:29:23\nUptime\t2066\t1792441763\t2026-10-19 20:29:23\n"
+  ],
+  [
+   "/*myflames:error-log*/ SELECT PRIO, COUNT(*), SUM(UNIX_TIMESTAMP(LOGGED) >= 1792441763) FROM performance_schema.error_log GROUP BY PRIO",
+   null,
+   "mysql client exited 1: ERROR 1142 (42000) at line 1: SELECT command denied to user 'noperf'@'172.17.0.1' for table 'error_log'"
+  ]
+ ],
+ "report": {
+  "available": false,
+  "buffer": null,
+  "codes": [],
+  "counts": {
+   "error": 0,
+   "note": 0,
+   "system": 0,
+   "warning": 0
+  },
+  "counts_current_run": {
+   "error": 0,
+   "note": 0,
+   "system": 0,
+   "warning": 0
+  },
+  "engine": "mysql",
+  "entries": [],
+  "entries_total": 0,
+  "file": null,
+  "how_to_view": null,
+  "levels": [
+   "System",
+   "Error",
+   "Warning",
+   "Note"
+  ],
+  "limit": 200,
+  "notes": [],
+  "performance_schema": true,
+  "reason": "denied",
+  "reason_text": "The server denied an error log read; MySQL needs SELECT on performance_schema.error_log.",
+  "schema_version": "error-log-1.0",
+  "server_started": "2026-10-19 20:29:23",
+  "server_version": "8.4.11",
+  "settings": {
+   "datadir": null,
+   "log_error": "/var/lib/mysql/mysqld.err",
+   "log_error_services": "log_filter_internal; log_sink_internal",
+   "log_error_verbosity": 2,
+   "log_warnings": null
+  },
+  "source": null,
+  "summary": {
+   "status": "unknown",
+   "text": "The server denied an error log read; MySQL needs SELECT on performance_schema.error_log."
+  },
+  "taken_at": "2026-10-19T21:03:49.829655+00:00",
+  "uptime_s": 2066
+ },
+ "server": "mysql-8.4-denied"
+}

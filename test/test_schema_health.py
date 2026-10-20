@@ -108,8 +108,41 @@ class TestLiveReplay(unittest.TestCase):
         result = schema_health.table_report(conn, **data['args'])
         assert_read_only(self, conn)
         json.dumps(result, allow_nan=False)
-        self.assertEqual(result['schema_version'], 'schema-1.0')
+        self.assertEqual(result['schema_version'], 'schema-2.0')
         return result, conn
+
+    def test_workspace_inventory_and_lists_retain_every_scoped_table(self):
+        for engine in ('mysql', 'mariadb'):
+            raw = {'tables': [table('t%03d' % i, engine='InnoDB' if i % 2 else 'MyISAM') for i in range(251)],
+                   'keys': [], 'columns': [], 'spaces': None}
+            report = schema_health.compute_tables(server(engine), raw, ['shop'], limit=None)
+            self.assertEqual(len(report['tables']), 251)
+            self.assertEqual(len(report['missing_primary_keys']), 251)
+            self.assertEqual(report['more']['tables'], 0)
+            self.assertEqual({r['engine'] for r in report['tables']}, {'InnoDB', 'MyISAM'})
+            self.assertEqual(report['tables'][0]['table'], 't000')
+            limited = schema_health.compute_tables(server(engine), raw, ['shop'], limit=200)
+            self.assertEqual((len(limited['tables']), limited['more']['tables']), (200, 51))
+
+    def test_missing_space_measurements_remain_unknown(self):
+        for engine in ('mysql', 'mariadb'):
+            for data, index, free in ((None, None, 100), (100, None, 100), (None, 100, 100), (100, 100, None)):
+                raw = {'tables': [table('t', data=data, index=index, free=free)], 'keys': [], 'columns': [],
+                       'spaces': [['shop/t', 'Single', '0']]}
+                result = schema_health.compute_tables(server(engine), raw)
+                row = result['fragmentation'][0]
+                self.assertEqual(result['schema_version'], 'schema-2.0')
+                self.assertIsNone(row['free_pct'])
+                if free is None:
+                    self.assertEqual(row['status'], 'unknown')
+                    self.assertNotIn('DATA_FREE is 0', row['why'])
+                schema_health.format_text(result)
+
+    def test_workspace_browse_ceiling_refuses_instead_of_truncating(self):
+        self.assertEqual(schema_health.MAX_BROWSE_ROWS, 100000)
+        with mock.patch.object(schema_health, 'MAX_BROWSE_ROWS', 2):
+            with self.assertRaisesRegex(ValueError, 'Choose fewer databases'):
+                schema_health.compute_tables(server(), {'tables': [table('t%d' % i) for i in range(3)]}, limit=None)
 
     def test_primary_keys_on_every_server(self):
         for name in SERVERS:
@@ -145,12 +178,12 @@ class TestLiveReplay(unittest.TestCase):
                 myisam = missing['myisam_nopk']
                 self.assertEqual((myisam['engine'], myisam['clustered_on']), ('MyISAM', None))
                 self.assertTrue(all('ALGORITHM' not in f['sql'] for f in myisam['fixes']))
-                self.assertIn('writes wait for the whole copy', myisam['caveat'])
                 if name.startswith('mariadb'):
-                    # MariaDB 11.2+ copies online, except when adding an AUTO_INCREMENT column.
-                    self.assertIn('Writes continue during the copy', myisam['caveat'])
+                    self.assertIn('UPDATE and DELETE wait for the whole copy', myisam['caveat'])
+                    self.assertIn('only concurrent inserts continue', myisam['caveat'])
                 else:
                     self.assertIn('MyISAM has no online ALTER', myisam['caveat'])
+                    self.assertIn('writes wait for the whole copy', myisam['caveat'])
                 self.assertNotIn('v_nopk', missing, 'views are not tables')
                 self.assertNotIn('with_pk', missing)
                 if mysql:
@@ -178,13 +211,13 @@ class TestLiveReplay(unittest.TestCase):
                 self.assertEqual(fpt['tablespace'], 'file_per_table')
                 if name == 'mysql-8.4-cached':
                     # The cache still holds the numbers from before the deletes.
-                    self.assertEqual(fpt['status'], 'ok')
+                    self.assertEqual(fpt['status'], 'info')
                     self.assertLess(fpt['free_bytes'], 100 * MIB)
                     self.assertTrue(result['statistics']['cached'])
                     self.assertTrue(any('information_schema_stats_expiry' in n and '1 d 0 h' in n
                                         for n in result['notes']))
                 else:
-                    self.assertEqual(fpt['status'], 'watch')
+                    self.assertEqual(fpt['status'], 'info')
                     self.assertGreater(fpt['free_bytes'], 200 * MIB)
                     self.assertGreater(fpt['free_pct'], 80)
                     self.assertEqual(fpt['fix_sql'], 'OPTIMIZE TABLE `mftab`.`frag_fpt`;')
@@ -201,7 +234,7 @@ class TestLiveReplay(unittest.TestCase):
                     self.assertTrue(any(s[0].endswith('SHOW CREATE TABLE `mftab`.`frag_gen`') for s in conn.calls))
                     self.assertNotIn('fix_sql', free['frag_gen'], 'no per-table fix in a shared tablespace')
                     # AUTOEXTEND_SIZE=256M: the unused tail is expected, so 250 MiB free is not flagged.
-                    self.assertEqual((free['ae_t']['autoextend_bytes'], free['ae_t']['status']), (256 * MIB, 'ok'))
+                    self.assertEqual((free['ae_t']['autoextend_bytes'], free['ae_t']['status']), (256 * MIB, 'info'))
                     self.assertGreater(free['ae_t']['free_bytes'], 200 * MIB)
                     self.assertIn('AUTOEXTEND_SIZE 256.0 MiB', free['ae_t']['why'])
                     self.assertIn('the file does not shrink', shared['mf_gen']['why'])
@@ -240,6 +273,18 @@ class TestLiveReplay(unittest.TestCase):
 
 
 class TestRules(unittest.TestCase):
+    def test_correctness_regression_myisam_copy_lock(self):
+        for version in ('11.2.0-MariaDB', '11.4.13-MariaDB', '13.0.1-MariaDB'):
+            with self.subTest(version=version):
+                report = schema_health.compute_tables(server('mariadb', version),
+                                                      raw([table('m', engine='MyISAM'), table('i')]))
+                missing = by_table(report['missing_primary_keys'])
+                self.assertIn('For a MyISAM table the copy holds a table read lock, so UPDATE and DELETE wait '
+                              'for the whole copy; only concurrent inserts continue.', missing['m']['caveat'])
+                self.assertNotIn('Writes continue during the copy', missing['m']['caveat'])
+                self.assertIn('ALGORITHM=INPLACE, LOCK=NONE', missing['i']['caveat'])
+                self.assertIn('always blocks writes (LOCK=SHARED)', missing['i']['caveat'])
+
     def test_gipk_needs_invisible_auto_increment(self):
         rows = [table('g'), table('fake')]
         keys = [key('g', 'PRIMARY', 1, 'my_row_id'), key('fake', 'PRIMARY', 1, 'my_row_id')]
@@ -282,25 +327,31 @@ class TestRules(unittest.TestCase):
         maria = {w['key']: w for w in schema_health.why_texts(server('mariadb'))}
         self.assertIn('a generated column or a long hash key', maria['clustering']['text'])
 
-    def test_free_space_thresholds(self):
-        cases = [
-            ('ok_small', 50 * MIB, 50 * MIB, 'ok'),            # 50%, below 100 MiB
-            ('ok_share', 1000 * MIB, 105 * MIB, 'ok'),         # 9.5%
-            ('watch', 900 * MIB, 100 * MIB, 'watch'),          # exactly 10% and 100 MiB
-            ('watch_big', 9 * GIB, 2 * GIB, 'watch'),          # 18%
-            ('watch_pct', 100 * MIB, 500 * MIB, 'watch'),      # 83% but under 1 GiB
-            ('problem', 3 * GIB, 1 * GIB, 'problem'),          # exactly 25% and 1 GiB
-        ]
-        rows = [table(n, data=d, free=f) for n, d, f, _ in cases]
-        keys = [key(n, 'PRIMARY', 1, 'id') for n, _, _, _ in cases]
-        spaces = [['shop/%s' % n, 'Single'] for n, _, _, _ in cases]
-        report = schema_health.compute_tables(server(), raw(rows, keys, spaces=spaces))
-        got = {f['table']: f['status'] for f in report['fragmentation']}
-        self.assertEqual(got, {n: s for n, _, _, s in cases})
-        self.assertEqual(report['summary']['free_watch'], 3)
-        self.assertEqual(report['summary']['free_problem'], 1)
-        self.assertEqual([f['table'] for f in report['fragmentation']][:4], ['problem', 'watch_big', 'watch_pct', 'watch'],
-                         'worst first, then the most free space')
+    def test_reusable_space_is_informational_at_every_size(self):
+        # DATA_FREE alone cannot establish exhaustion or the value of rebuilding.
+        cases = [('small', 50 * MIB, 50 * MIB), ('share', 1000 * MIB, 105 * MIB),
+                 ('old_watch', 900 * MIB, 100 * MIB), ('big', 9 * GIB, 2 * GIB),
+                 ('mostly_free', 100 * MIB, 500 * MIB), ('old_problem', 3 * GIB, GIB),
+                 ('user_example', 1762 * GIB, 238 * GIB)]
+        rows = [table(n, data=d, free=f) for n, d, f in cases]
+        keys = [key(n, 'PRIMARY', 1, 'id') for n, _, _ in cases]
+        spaces = [['shop/%s' % n, 'Single'] for n, _, _ in cases]
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                report = schema_health.compute_tables(server(engine), raw(rows, keys, spaces=spaces))
+                self.assertEqual({f['status'] for f in report['fragmentation']}, {'info'})
+                self.assertEqual(report['summary']['free_watch'], 0)
+                self.assertEqual(report['summary']['free_problem'], 0)
+                self.assertEqual(report['summary']['free_info'], len(cases))
+                self.assertEqual(report['summary']['status'], 'ok')
+                self.assertEqual(schema_health.at_or_worse(report, 'watch'), [])
+                self.assertEqual(report['thresholds'], {})
+                self.assertEqual(report['fragmentation'][0]['table'], 'user_example')
+                for item in report['fragmentation']:
+                    self.assertIn('reusable space', item['why'])
+                    self.assertIn('not measured', item['why'])
+                    self.assertIn('Optional maintenance', item['caveat'])
+                    self.assertIn('OPTIMIZE TABLE', item['fix_sql'])
 
     def test_tablespace_classification(self):
         rows = [table('fpt', free=200 * MIB), table('gen', free=300 * MIB), table('sysx', free=50 * MIB),
@@ -312,8 +363,8 @@ class TestRules(unittest.TestCase):
         report = schema_health.compute_tables(server(), raw(rows, spaces=mysql_spaces))
         f = by_table(report['fragmentation'])
         self.assertEqual({t: (f[t]['tablespace'], f[t]['status']) for t in f}, {
-            'fpt': ('file_per_table', 'watch'), 'gen': ('system', 'shared'), 'sysx': ('system', 'shared'),
-            'odd$name': ('file_per_table', 'ok'), 'part': ('file_per_table', 'watch'),
+            'fpt': ('file_per_table', 'info'), 'gen': ('system', 'shared'), 'sysx': ('system', 'shared'),
+            'odd$name': ('file_per_table', 'info'), 'part': ('file_per_table', 'info'),
             'missing': ('system', 'shared'), 'empty': (None, 'ok')})
         # With a general tablespace, SHOW CREATE TABLE names it; past the cap it stays unnamed.
         spaces = mysql_spaces + [['g1', 'General']]
@@ -344,8 +395,8 @@ class TestRules(unittest.TestCase):
         rows = [table('big', data=16384, free=3 * GIB), table('ae', data=16384, free=3 * GIB), table('z', free=0)]
         spaces = [['shop/big', 'Single', '0'], ['shop/ae', 'Single', str(4 * GIB)], ['shop/z', 'Single', None]]
         f = by_table(schema_health.compute_tables(server(), raw(rows, spaces=spaces))['fragmentation'])
-        self.assertEqual(f['big']['status'], 'problem')
-        self.assertEqual((f['ae']['status'], f['ae']['autoextend_bytes']), ('ok', 4 * GIB))
+        self.assertEqual(f['big']['status'], 'info')
+        self.assertEqual((f['ae']['status'], f['ae']['autoextend_bytes']), ('info', 4 * GIB))
         self.assertIn('no free space beyond what InnoDB holds back', f['z']['why'])
 
     def test_lower_case_table_names_folds(self):
@@ -593,7 +644,7 @@ class TestTablesCLI(unittest.TestCase):
                                                   '-u', 'app', '-p' + PASSWORD)
         self.assertEqual((code, err), (0, ''))
         data = json.loads(out)
-        self.assertEqual(data['schema_version'], 'schema-1.0')
+        self.assertEqual(data['schema_version'], 'schema-2.0')
         self.assertEqual(data['scope']['schemas'], ['mftab', 'mfother'])
         self.assertEqual(factory.options['query_timeout'], 60)
         assert_read_only(self, conn)
@@ -636,7 +687,7 @@ class TestTablesCLI(unittest.TestCase):
             self.assertEqual((code, out), (0, ''))
             self.assertIn('Written to', err)
             with open(path, encoding='utf-8') as handle:
-                self.assertEqual(json.load(handle)['schema_version'], 'schema-1.0')
+                self.assertEqual(json.load(handle)['schema_version'], 'schema-2.0')
 
     def test_bad_arguments_and_failures_exit_2(self):
         for argv in (['--limit', '0'], ['--fail-on', 'bad'], ['--schema', 'x' * 65]):
@@ -673,7 +724,7 @@ class TestTablesAPI(unittest.TestCase):
     def test_tables_endpoint(self):
         conn, _ = replay('mariadb-13.0')
         result, factory = self.call('/api/live/tables', {'schemas': ['mftab', 'mfother']}, conn)
-        self.assertEqual(result['schema_version'], 'schema-1.0')
+        self.assertEqual(result['schema_version'], 'schema-2.0')
         self.assertEqual(factory.options['query_timeout'], 60)
         assert_read_only(self, conn)
         conn, _ = replay('mysql-8.4')

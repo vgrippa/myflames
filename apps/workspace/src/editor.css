@@ -31,8 +31,46 @@
   display: flex;
   align-items: center;
   min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
   border-bottom: 1px solid var(--line);
   background: var(--surface-pane);
+}
+.query-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface);
+  padding: 2px 3px;
+  margin: 4px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.query-mode-switch .mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.query-mode-switch .mode-tab:hover {
+  color: var(--fg);
+}
+.query-mode-switch .mode-tab.is-active {
+  color: var(--fg);
+  background: var(--surface-pane);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 .query-tablist {
   display: flex;
@@ -43,6 +81,45 @@
 .query-tab {
   display: flex;
   flex: none;
+  align-items: center;
+  border-right: 1px solid var(--line);
+}
+.query-tab:has(> [role="tab"][aria-selected="true"]) {
+  background: var(--surface);
+  box-shadow: inset 0 2px var(--accent);
+}
+.query-tab:has(> .query-tab-close) > [role="tab"] {
+  padding-right: var(--space-1);
+}
+/* Shown on the active tab and the tab being pointed at; touch screens
+   always show it. Hidden keeps its space, so tabs never shift. */
+.query-tab-close {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-right: var(--space-2);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-faint);
+  visibility: hidden;
+}
+.query-tab:is(:hover, :focus-within, :has(> [aria-selected="true"])) > .query-tab-close {
+  visibility: visible;
+}
+.query-tab-close:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.query-tab-close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+@media (hover: none) {
+  .query-tab-close { visibility: visible; }
 }
 .query-tab-name {
   width: 160px;
@@ -67,14 +144,13 @@
   flex: none;
   flex-wrap: nowrap;
 }
-.query-tab > button,
+.query-tab > button[role="tab"],
 .query-tabs > button {
   flex: none;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
   border: 0;
-  border-right: 1px solid var(--line);
   background: none;
   padding: 0 var(--space-4);
   min-height: var(--control-h);
@@ -82,10 +158,11 @@
   color: var(--ink-muted);
   white-space: nowrap;
 }
+.query-tabs > button {
+  border-right: 1px solid var(--line);
+}
 .query-tab > button[aria-selected="true"] {
-  background: var(--surface);
-  color: var(--accent);
-  box-shadow: inset 0 2px var(--accent);
+  color: var(--accent-text);
 }
 .tab-dot {
   width: var(--space-2);
@@ -148,7 +225,7 @@
 }
 .icon-button[aria-pressed="true"] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .inline-field {
   display: inline-flex;
@@ -220,7 +297,7 @@
 }
 .run-scope.is-lit {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* ---- The SQL text area and its layers ------------------------------------ */
@@ -259,7 +336,7 @@
   padding-right: 2px;
 }
 .sql-gutter-lines > .is-current {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 .sql-gutter-lines > .is-error {
@@ -412,7 +489,7 @@
 }
 .editor-options-trigger[aria-expanded="true"] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .editor-options-popover {
   overflow: auto;
@@ -452,7 +529,7 @@
   min-height: var(--control-h);
   display: inline-flex;
   align-items: center;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .editor-parameters > .field {
   margin-top: var(--space-2);
@@ -897,7 +974,8 @@
 .tree-row.kind-index {
   /* Names take their natural width before metadata receives the remainder. */
   display: grid;
-  grid-template-columns: var(--space-3) minmax(0, max-content) minmax(0, 1fr);
+  /* The fourth track holds the row's actions button on the same line. */
+  grid-template-columns: var(--space-3) minmax(0, max-content) minmax(0, 1fr) auto;
   column-gap: var(--space-1);
 }
 .tree-row.kind-column .tree-label,
@@ -1128,14 +1206,27 @@
   }
 }
 
-/* Keep actions visible for pointer, touch and keyboards without F10. */
+/* Actions show on the row being pointed at, the focused (selected) row and
+   the row whose menu is open, so keyboards need no F10. Touch screens have
+   no hover, so they always show it. Hidden keeps its space: no reflow. */
 .row-more {
   flex: none;
   min-width: var(--space-5);
   min-height: var(--space-5);
   color: var(--ink-muted);
 }
-.tree-row .row-more { margin-left: auto; }
+.tree-row .row-more {
+  margin-left: auto;
+  min-height: 22px;
+  visibility: hidden;
+}
+.tree-row:is(:hover, :focus-within, [aria-selected="true"]) .row-more,
+.tree-row .row-more[aria-expanded="true"] {
+  visibility: visible;
+}
+@media (hover: none) {
+  .tree-row .row-more { visibility: visible; }
+}
 .browser-resize::after {
   content: "";
   position: absolute;
@@ -1155,3 +1246,6 @@
   height: var(--space-5);
   transform: translateY(-50%);
 }
+
+/* A table document replaces the editor work area without losing its session. */
+.editor-workbench[hidden] { display: none; }

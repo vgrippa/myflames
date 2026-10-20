@@ -108,6 +108,7 @@
   margin-left: auto;
   color: var(--warn);
 }
+.source-item .nav-marker + .source-stale,
 .source-item .status-dot + .source-stale,
 .source-item .count-badge + .source-stale {
   margin-left: 0;

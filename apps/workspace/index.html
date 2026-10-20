@@ -8,9 +8,15 @@
     <link
       rel="icon"
       type="image/png"
-      href="../../docs/brand/myflames-icon-v2.png?v=2"
+      href="../../docs/brand/myflames-icon-v3.png?v=3"
     />
     <title>myflames · Performance workspace</title>
+    <script>
+      try {
+        var t = localStorage.getItem("myflames.theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

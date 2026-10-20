@@ -73,6 +73,23 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestLiveReplay(unittest.TestCase):
+    def test_show_processlist_accepts_mariadb_progress_column(self):
+        # MariaDB adds Progress; MySQL's SHOW has only the first eight columns.
+        for server in ('mariadb-11.4', 'mysql-8.4'):
+            with self.subTest(server=server):
+                conn = replay(server)
+                row = ['420', 'app', 'localhost', 'shop', 'Query', '12', 'executing', 'SELECT 1']
+                if server.startswith('mariadb'):
+                    row.append('12.5')
+                conn.answers[sessions.SESSIONS_TAG + 'SHOW FULL PROCESSLIST'] = [batch([row])]
+                if server.startswith('mysql'):
+                    sql = sessions.SESSIONS_TAG + "SHOW GLOBAL VARIABLES LIKE 'performance_schema_show_processlist'"
+                    conn.answers[sql] = [batch([['performance_schema_show_processlist', 'ON']])]
+                result = sessions_report(conn, source_mode='show_processlist', active_only=False)
+                self.assertEqual(result['source_mode'], 'show_processlist')
+                self.assertEqual([s['id'] for s in result['sessions']], [420])
+                self.assertEqual(result['sessions'][0]['time_s'], 12)
+
     def test_report_captures_server_identity_once_for_both_engines(self):
         for server, expected in (
                 ('mysql-8.4', {'server_uuid': 'server-uuid-1'}),
@@ -229,15 +246,19 @@ def processlist_row(id_, user='app', host='10.0.0.5:5000', db='shop', command='Q
     return [id_, user, host, db, command, seconds, state, info, length if length is not None else len(info or '')]
 
 
-def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12', events=''):
+def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12', events='',
+              ps_show_processlist='ON', pl_rows=None):
     status = status or [['Max_used_connections', '9'], ['Threads_connected', '8'], ['Threads_running', '3'],
                         ['Uptime', '1000']]
+    pl_rows = pl_rows if pl_rows is not None else rows
     answers = [('SELECT @@server_uuid', batch([['server-uuid-1']])),
                ('SELECT @@server_id, @@hostname, @@version', batch([['1', 'server-one', version]])),
                ('events_statements_current', events),
+               ('performance_schema_show_processlist', batch([['performance_schema_show_processlist', ps_show_processlist]])),
                ('SHOW GLOBAL VARIABLES', batch([['max_connections', '10'], ['performance_schema', ps],
                                                 ['version', version], ['version_comment', 'MySQL']])),
                ('SHOW GLOBAL STATUS', batch(status)),
+               ('SHOW FULL PROCESSLIST', batch(pl_rows)),
                ('processlist', batch(rows)), ('PROCESSLIST', batch(rows)),
                ('INNODB_TRX', batch(trx)),
                ('INNODB_METRICS', batch([[history, 'enabled']]))]
@@ -245,6 +266,12 @@ def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12'
     class Conn(object):
         def __init__(self):
             self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
 
         def run(self, sql, extra_flags=None, timeout=None):
             self.calls.append(sql)
@@ -255,9 +282,10 @@ def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12'
     return Conn()
 
 
-def trx_row(conn_id, age, state='RUNNING', wait=None):
+def trx_row(conn_id, age, state='RUNNING', wait=None, rows_locked=1):
     return [conn_id, '100%d' % conn_id, state, '2026-10-14 10:00:00', age, '2026-10-14 10:00:00' if wait else None,
-            wait, 1, 1, 2, 1, 'REPEATABLE READ', '0', None]
+            wait, rows_locked, 1, 2, 1, 'REPEATABLE READ', '0', None]
+
 
 
 class TestRules(unittest.TestCase):
@@ -313,6 +341,32 @@ class TestRules(unittest.TestCase):
         self.assertEqual(next(s for s in report['sessions'] if s['id'] == 1)['why'],
                          'Waiting for an InnoDB lock (row or table) for 3 s.')
         self.assertTrue(sessions._TRX_SQL.startswith(sessions.SYSTEM_TIME_ZONE))
+
+    def test_locked_transaction_classification(self):
+        conn = synthetic([processlist_row(1, seconds=3, state='updating', info='UPDATE t SET a = 2'),
+                          processlist_row(2, seconds=10, state='updating', info='UPDATE t SET b = 1'),
+                          processlist_row(3, seconds=1, state='Sleep', info=None)],
+                         trx=[trx_row(1, 3, state='LOCK WAIT', wait=3),
+                              trx_row(2, 10, rows_locked=5)])
+        report = sessions_report(conn, active_only=False)
+        by_id = {s['id']: s for s in report['sessions']}
+        self.assertTrue(by_id[1]['is_locked'])
+        self.assertEqual(by_id[1]['lock_status'], 'waiting')
+        self.assertIn('Waiting for InnoDB lock', by_id[1]['lock_detail'])
+
+
+        self.assertTrue(by_id[2]['is_locked'])
+        self.assertEqual(by_id[2]['lock_status'], 'holding')
+        self.assertIn('5 rows locked', by_id[2]['lock_detail'])
+
+        self.assertFalse(by_id[3]['is_locked'])
+        self.assertIsNone(by_id[3]['lock_status'])
+
+        # Filter locked_only
+        locked_report = sessions_report(conn, active_only=False, locked_only=True)
+        self.assertEqual([s['id'] for s in locked_report['sessions']], [2, 1])
+        self.assertEqual(locked_report['summary']['locked'], 2)
+
 
     def test_connections_and_history_list_grades(self):
         conn = synthetic([processlist_row(1)], history='2000000',
@@ -595,12 +649,24 @@ class TestAPI(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.call(replay('mysql-26.7'), payload)
 
+    def test_show_processlist_source_and_locked_only_filters(self):
+        row = processlist_row(101, user='app', host='localhost:1234', db='test', command='Query',
+                              seconds=15, state='updating', info='UPDATE orders SET x=1')
+        raw_pl_row = [101, 'app', 'localhost:1234', 'test', 'Query', 15, 'updating', 'UPDATE orders SET x=1']
+        conn = synthetic([row], version='8.4.11', ps_show_processlist='ON', pl_rows=[raw_pl_row])
+        report = self.call(conn, {'source_mode': 'show_processlist', 'locked_only': False})
+        self.assertEqual(report['source_mode'], 'show_processlist')
+        self.assertEqual(report['ps_show_processlist'], 'ON')
+        self.assertEqual(len(report['sessions']), 1)
+        self.assertEqual(report['sessions'][0]['id'], 101)
+
     def test_route_is_allowed_and_running_still_works(self):
         import inspect
         source = inspect.getsource(ui.WorkspaceHandler.do_POST)
         for path in ('/api/live/sessions', '/api/live/running'):
             self.assertIn(path, ui._SERVER_VIEW_PATHS)
             self.assertIn('"%s"' % path, source)
+
 
 
 if __name__ == '__main__':

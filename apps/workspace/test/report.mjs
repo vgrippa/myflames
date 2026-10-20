@@ -10,8 +10,8 @@ import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
 // to copy, the statements behind a number with Explain and Run analysis), the
 // notes, export through /api/report/export with a download, links to Top
 // statements, the report greyed after a connection switch, session restore
-// (that it ran, never the report), 390 px; and Refresh all: only views already
-// loaded for the connection in use, never the analysis, at most three reads
+// (that it ran, never the report), 390 px; and Refresh all: unopened views
+// included, analysis in its own final phase, at most three view reads
 // at once with the sampling views first, single flight (⌥⌘R while running does
 // nothing), a view's own Refresh joined, failures per view (badge, list, note
 // above the view, previous report kept), Escape stops, a connection switch
@@ -63,7 +63,17 @@ rich.header.failures = [{ view: "tables", label: "Tables", status: "failed",
 rich.header.views.find((v) => v.key === "tables").status = "failed";
 
 // Other live views: answered from fixtures, or held until the test lets them go.
+const extraFixtures = Object.fromEntries(await Promise.all([
+  ["/api/live/io", "io-mysql-8.4.json"], ["/api/live/innodb", "innodb-mysql-8.4.json"],
+  ["/api/live/error-log", "errorlog-mysql-8.4.json"],
+  ["/api/live/sessions", "sessions-mysql-8.4.json"], ["/api/live/indexes", "indexes-mysql-8.4.json"],
+  ["/api/live/tables", "tables-mysql-8.4.json"], ["/api/live/instruments", "instruments-mysql-8.4.json"],
+  ["/api/live/replication", "replication-mysql-8.4-healthy.json"], ["/api/lifecycle/tools", "lifecycle-tools-mysql.json"],
+].map(async ([endpoint, fixture]) => [endpoint, await load(fixture)])));
 const replies = {
+  ...Object.fromEntries(Object.entries(extraFixtures).map(([endpoint, fixture]) => [endpoint, () => fixture])),
+  "/api/accounts/list": () => ({schema_version:"accounts-1.0", engine:"mysql", version:"8.4.11", complete:true,
+    warnings:[], accounts:[], role_grants:[], default_roles:[]}),
   "/api/live/health": () => health,
   "/api/live/config": () => config,
   "/api/live/waits": () => waits,
@@ -106,7 +116,17 @@ function release(p, override) {
 const exports = [];
 // passExport: the real server generates the file (the downloaded content is checked).
 const flags = { passExport: false, capturing: false };
+let holdDiagram = false, pendingDiagram = null;
+const diagramReply = (body, expanded = false) => ({schema_version: "schema-diagram-1.0", tables: [
+  {id: "shop.orders", schema: body.database, name: "orders", columns: [{name: "id", data_type: "bigint", nullable: false, primary_key: true}]},
+  ...(expanded ? [{id: "shop.shipments", schema: body.database, name: "shipments", columns: [{name: "id", data_type: "bigint", nullable: false, primary_key: true}]}] : []),
+], relationships: [], warnings: []});
 const extra = {
+  "/api/live/schemas": {status: 200, body: {schema_version: "schemas-1.0", schemas: [{name: "shop", tables: 1, system: false}], user_tables: 1, all_limit: 2000}},
+  "/api/schema-diagram/read": (body, request) => {
+    if (holdDiagram) { pendingDiagram = {body, request}; return null; }
+    return {status: 200, body: diagramReply(body)};
+  },
   ...Object.fromEntries(Object.keys(replies).map((p) => [p, responder(p)])),
   // A capture in the Query editor: running while flags.capturing, then cancelled.
   "/api/live/start": (body) => (flags.capturing
@@ -128,7 +148,7 @@ const extra = {
 const h = await open("/api/live/report", "report", extra);
 const { page, state, text, texts } = h;
 state.fallback = { status: 200, body: rich };
-const view = ".server-view[data-view=report]";
+const view = ".server-view[data-view=tuning]";
 const inspectorTitle = (title) => page.waitForFunction((t) => document.querySelector(".view-inspector h3")?.textContent === t, {}, title);
 const calls = (p) => state.other.filter((o) => o.path === p);
 const until = async (check, message) => {
@@ -167,12 +187,13 @@ try {
 
   // Full analysis sits in Overview after Health and InnoDB; nothing is read until asked.
   await h.server();
-  assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Full analysis"]);
-  assert.equal(await page.$eval(refreshAll, (e) => e.disabled), true, "Refresh all waits for a loaded view");
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Load a view first/);
-  await h.view("report");
+  assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Error log"]);
+  assert.equal(await page.$("#server-nav-report"), null, "the Full analysis is no Server view");
+  assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false, "Refresh all works before any view is loaded");
+  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 16 Server sections/);
+  await h.fullAnalysis();
   assert.match(await text(`${view} .view-empty`), /Runs every Server view once and ranks what to look at first, about 10 to 20 s\. It only reads\./);
-  assert.match(await h.popover("About Full analysis"), /never applies them/);
+  assert.match(await h.popover("About Tuning"), /never applies them/);
   assert.equal(state.seen.length, 0, "nothing runs until asked");
   assert.equal(await page.$(`${view} .report-export`), null, "no export before a report");
 
@@ -196,7 +217,13 @@ try {
   assert.match(facts, /Taken.*, in 10\.8 s/);
   assert.match(facts, /Databasesevery user schema/);
   assert.match(facts, /Views read9 of 10/);
-  assert.equal(await page.$eval("#server-nav-report .status-dot", (e) => e.className), "status-dot is-problem");
+  // The Full analysis status surfaces on the Tuning scorecard (the place has no Server list badge).
+  assert.equal(await page.$("#server-nav-report"), null);
+  await page.click("#tuning-tab-scorecard");
+  await page.waitForSelector("#tuning-panel-scorecard .tuning-score");
+  assert.match(await text(".tuning-score-coverage"), /1 problem/);
+  assert.ok(await page.$(".tuning-score .status-dot.is-problem"), "the scorecard shows the bound report's problem status");
+  await h.fullAnalysis();
 
   // Look at first, then the findings to look at, ranked as the report ranks them.
   assert.deepEqual(await page.$$eval(`${view} .report-first li`, (els) => els.map((e) => e.dataset.finding)), ["health.select_full_join"]);
@@ -254,7 +281,7 @@ try {
   await until(() => calls("/api/live/start").length === 1, "Run analysis reaches the capture engine");
   const start = calls("/api/live/start")[0].body;
   assert.deepEqual([start.mode, start.query, start.source?.kind, start.source?.digest], ["analyze", "SELECT * FROM orders o JOIN customers c ON c.note = o.note", "digest", A]);
-  await h.server();
+  await h.fullAnalysis();
   await page.waitForSelector(`${view} .summary-line`);
 
   // A watched setting: what to do, the statement and the my.cnf line to copy (never applied), the caveat.
@@ -269,8 +296,12 @@ try {
   assert.match(body, /Suggested only: myflames never runs or applies it\./);
   assert.match(body, /Caveat: The data on disk includes cold rows and free space/);
   assert.equal(await page.$$eval(".view-inspector .perf-sql button", (els) => els.map((e) => e.textContent)).then((t) => t.length), 2, "both are copyable");
-  // Keyboard: Down moves to the next finding and the inspector follows.
+  // Keyboard: Down moves to the next finding and details open on Enter.
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  await page.waitForFunction(() => document.activeElement?.matches('.report-look [data-finding="config.buffer_pool"] .grouped-row'));
   await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
   await inspectorTitle("Redundant indexes");
   // Not judged: the reason is the verdict; a failed view says why it failed.
   await h.select(`${view} .report-unknown li[data-finding="checks.no_password"]`);
@@ -297,6 +328,7 @@ try {
 
   // Export: generated on the server from the report JSON, saved as a download.
   await page.evaluate(() => window.scrollTo(0, 0));
+  await page.click(`${view} .detail-back`);
   await page.click(`${view} .report-export button.button`);
   await page.waitForSelector(".popover .report-export-formats");
   assert.deepEqual(await page.$$eval(".popover .report-export-formats button", (els) => els.map((e) => e.textContent)), ["HTML", "Markdown", "JSON", "Text"]);
@@ -321,7 +353,7 @@ try {
   await page.locator(".editor-actions button ::-p-text(Explain)").click();
   await until(() => calls("/api/live/status").length > 0, "the capture runs");
   await h.server();
-  await h.view("report");
+  await h.fullAnalysis();
   await h.select(`${view} .report-first li`);
   await inspectorTitle("Joins without an index");
   const topLink = ".view-inspector .inspector-actions-bar button[title='Open Top statements by joins without an index']";
@@ -349,32 +381,47 @@ try {
   assert.match(topNotes, /Server uptime 2 d 5 h; the oldest statement listed was first seen 2026-10-12 10:00:00\./);
 
   // ---- Refresh all -------------------------------------------------------------
-  // Load Health, Waits, Locks and Configuration (Top statements is loaded already).
-  for (const [kind, label] of [["health", "Load health"], ["waits", "Load wait events"], ["locks", "Load locks"], ["config", "Load configuration"]]) {
+  // Load Health, Waits, Locks and Parameters (Top statements is loaded already;
+  // Parameters reads on open, so it has no Load button).
+  for (const [kind, label] of [["health", "Load health"], ["waits", "Load wait events"], ["locks", "Load locks"], ["config", ""]]) {
     await h.view(kind);
-    await page.locator(`.server-view[data-view=${kind}] .view-empty button ::-p-text(${label})`).click();
+    // A view reads once on its own when it first appears on screen (Health after the Tuning
+    // place, Waits, Locks), so its Load button may be gone or vanish while we look: the
+    // summary line below is the check that the report arrived.
+    if (label) {
+      await page.locator(`.server-view[data-view=${kind}] .view-empty button ::-p-text(${label})`).setTimeout(1500).click().catch(() => {});
+    }
     await page.waitForFunction((k) => !!document.querySelector(`.server-view[data-view=${k}] .summary-line`), {}, kind);
     await h.idle(`.server-view[data-view=${kind}]`);
   }
-  const loaded = ["/api/live/health", "/api/live/waits", "/api/live/top", "/api/live/locks", "/api/live/config"];
+  const refreshed = Object.keys(replies);
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false);
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh the 5 views loaded for this connection \(⌥⌘R\)/);
+  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 16 Server sections for this connection \(⌥⌘R\)/);
   // Hold every read: three start (the sampling views first), the rest wait.
-  for (const p of loaded) hold.add(p);
+  for (const p of refreshed) hold.add(p);
   const before = state.other.length;
   const reportRuns = state.seen.length;
   traffic.inflight = 0;
   traffic.peak = 0;
+  state.delay = 1000;
   await clickRefreshAll();
   await until(() => held.length === 3, "three reads start");
   await pause(300);
   assert.equal(held.length, 3, "never more than three at once");
-  assert.deepEqual(held.map((e) => e.path), ["/api/live/health", "/api/live/waits", "/api/live/top"]);
+  assert.equal(state.seen.length, reportRuns, "analysis must not overlap the per-view reads");
+  assert.deepEqual(held.map((e) => e.path), ["/api/live/health", "/api/live/waits", "/api/live/io"]);
   assert.equal(held[0].body.interval, 5, "Health keeps its window");
-  assert.equal(held[2].body.order, "full_join", "Top statements keeps its order");
-  assert.match(await statusText(), /^Refreshing 1 of 5…$/);
-  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 5);
+  assert.equal(held[2].body.interval, 10, "unopened I/O uses its configured window");
+  assert.match(await statusText(), /^Refreshing 1 of 16…$/);
+  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 10); // the Server list: 11 views, the diagram waits for a database, the Full analysis is in Tuning
+  await h.workload();
+  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 4);
+  await h.server();
   assert.ok(await page.$(".server-place .refresh-all-stop"), "the button becomes Stop");
+  await h.fullAnalysis();
+  assert.equal(await page.$eval('.server-view[data-view="tuning"] .toolbar-refresh', e => e.disabled), true,
+    "Full analysis cannot start its own worker pool beside the global view queue");
+  await h.view("config");
   // Single flight: ⌥⌘R while it runs starts nothing.
   await page.keyboard.down("Alt");
   await page.keyboard.down("Meta");
@@ -386,26 +433,37 @@ try {
   // Locks fails; the others answer.
   fail.set("/api/live/locks", "Could not read locks: ERROR 2013 (HY000): Lost connection to MySQL server during query");
   release("/api/live/health");
-  await until(() => held.length === 3 && held.some((e) => e.path === "/api/live/locks"), "the next view starts");
-  while (held.length || state.other.length - before < 5) {
+  await until(() => held.length === 3 && held.some((e) => e.path === "/api/live/innodb"), "the next view starts");
+  while (held.length || state.other.length - before < refreshed.length) {
     if (held.length) release();
     await pause(30);
   }
+  await until(() => state.seen.length === reportRuns + 1, "the final analysis phase starts");
+  assert.equal(await page.$eval('.server-view[data-view="config"] .toolbar-refresh', e => e.disabled), true,
+    "individual reads cannot overlap the final analysis worker pool");
+  state.delay = 0;
   await page.waitForSelector(`${refreshAll}`);
   const run = state.other.slice(before).map((o) => o.path);
-  assert.deepEqual([...run].sort(), [...loaded].sort(), "only the views already loaded, once each");
-  assert.equal(state.seen.length, reportRuns, "Refresh all never runs the analysis");
+  assert.deepEqual([...run].sort(), [...refreshed].sort(), "every section is read once, including unopened sections");
+  assert.equal(state.seen.length, reportRuns + 1, "Full analysis refreshes in the final phase");
+  assert.equal(calls("/api/live/top").at(-1).body.order, "full_join", "Top statements keeps its order");
+  assert.equal(calls("/api/live/error-log").at(-1).body.limit, 200, "Error log uses the same bounded read as its own Refresh");
+  assert.equal(calls("/api/live/indexes").at(-1).body.all_schemas, undefined, "unopened Indexes never grants large-schema consent");
+  assert.equal(calls("/api/live/tables").at(-1).body.all_schemas, undefined, "unopened Tables never grants large-schema consent");
   assert.equal(traffic.peak, 3, "at most three reads at once");
-  await page.waitForFunction(() => /^4 of 5 views refreshed; Locks failed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^15 of 16 views refreshed; Locks failed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   // The failure, per view: a mark in the list of views, the list, a note above the view.
   assert.ok(await page.$("#server-nav-locks .source-stale[data-refresh=failed]"));
   assert.match(await text("#server-nav-locks .visually-hidden"), /not refreshed: Could not read locks/);
   assert.equal(await page.$("#server-nav-health .source-stale"), null);
   await page.click(".server-place .refresh-all-status");
   const list = await page.$$eval(".popover .refresh-all-list li", (els) => els.map((e) => [e.dataset.view, e.dataset.state, e.textContent]));
-  assert.deepEqual(list.map((x) => [x[0], x[1]]), [["health", "ok"], ["waits", "ok"], ["top", "ok"], ["locks", "failed"], ["config", "ok"]]);
+  assert.equal(list.length, 16);
+  assert.equal(list.findIndex(x => x[0] === "errorlog"), list.findIndex(x => x[0] === "innodb") + 1);
+  assert.deepEqual(list.filter(x => x[1] !== "ok").map(x => [x[0], x[1]]), [["locks", "failed"]]);
+  assert.equal(list.at(-1)[0], "report", "analysis is scheduled after individual sections");
   assert.match(list[0][2], /Refreshed\s*Health\s*\d+:\d+:\d+.*, \d+ s ago/);
-  assert.match(list[3][2], /Failed\s*Locks\s*Could not read locks: ERROR 2013.* The previous report stays\./);
+  assert.match(list.find(x => x[0] === "locks")[2], /Failed\s*Locks\s*Could not read locks: ERROR 2013.* The previous report stays\./);
   await page.keyboard.press("Escape");
   await h.view("locks");
   assert.match(await text(".refresh-note[data-view=locks]"), /Refresh all could not refresh Locks: Could not read locks: ERROR 2013.*This is the previous report\./);
@@ -430,14 +488,16 @@ try {
   await refreshView();
   await until(() => held.length === 1, "Locks' own read starts");
   assert.equal(held[0].body.waits_only, true);
+  traffic.peak = traffic.inflight;
   await clickRefreshAll();
   await page.waitForFunction(() => /^Refreshing/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   await until(() => calls("/api/live/config").length >= 3, "the other views refresh");
   await pause(200);
   assert.equal(calls("/api/live/locks").length, locksBefore + 1, "one Locks read for both, with Waits only");
+  assert.ok(traffic.peak <= 3, "already running individual reads occupy refresh worker slots");
   release("/api/live/locks");
   hold.clear();
-  await page.waitForFunction(() => /^5 of 5 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^16 of 16 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   await page.click(".server-view[data-view=locks] .lock-check input");
 
   // A newer read of a view that fails, then the older Refresh all answer: not counted as refreshed.
@@ -451,7 +511,7 @@ try {
   await refreshView();
   await page.waitForSelector(".server-view[data-view=health] [role=alert]");
   release("/api/live/health");
-  await page.waitForFunction(() => /^4 of 5 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^15 of 16 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   await page.click(".server-place .refresh-all-status");
   assert.match(await page.$eval('.popover .refresh-all-list li[data-view="health"]', (e) => `${e.dataset.state} ${e.textContent}`),
     /^replaced Replaced\s*Health\s*A newer read of this view was asked for/);
@@ -476,12 +536,12 @@ try {
   await pause(200);
   assert.equal(calls("/api/live/health").length, healthBefore + 1, "one Health read for both");
   release("/api/live/health");
-  await page.waitForFunction(() => /^5 of 5 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^16 of 16 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(await page.$$eval(".source-list .source-stale", (els) => els.length), 0, "no view is marked any more");
   assert.equal(await page.$(".refresh-note"), null);
 
   // Escape stops it: queued views are never read and keep their reports.
-  for (const p of loaded) hold.add(p);
+  for (const p of refreshed) hold.add(p);
   const stopBefore = state.other.length;
   await clickRefreshAll();
   await until(() => held.length === 3, "three reads start");
@@ -491,8 +551,11 @@ try {
   while (held.length) release();
   await pause(300);
   assert.equal(state.other.length - stopBefore, 3, "nothing more starts after Escape");
-  await page.waitForFunction(() => /^0 of 5 views refreshed; stopped$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
-  assert.equal(await page.$$eval(".source-list .source-stale[data-refresh=stopped]", (els) => els.length), 5);
+  await page.waitForFunction(() => /^0 of 16 views refreshed; stopped$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  assert.equal(await page.$$eval(".source-list .source-stale[data-refresh=stopped]", (els) => els.length), 10);
+  await h.workload();
+  assert.equal(await page.$$eval(".source-list .source-stale[data-refresh=stopped]", (els) => els.length), 4);
+  await h.server();
   assert.ok(await page.$(".server-view[data-view=health] .summary-line"), "Health keeps its report");
 
   // A connection switch stops a run and drops its late answers.
@@ -510,14 +573,17 @@ try {
   // The switch also reads the new connection's privileges once (not a view).
   assert.equal(state.other.slice(switchBefore).filter((o) => o.path !== "/api/live/privileges").length, 3, "nothing more starts after the switch");
   assert.doesNotMatch(await text(".server-view[data-view=health] .fact-strip"), /8\.4\.99/, "a late answer for the old connection is dropped");
-  assert.equal(await page.$eval(refreshAll, (e) => e.disabled), true, "nothing is loaded for Staging");
+  assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false, "new connection can refresh without opening each section");
   assert.equal(await page.$(".server-place .refresh-all-status"), null, "the run belongs to the other connection");
   hold.clear();
 
   // The Full analysis from the other connection: greyed, server actions off, export still offered.
-  await h.view("report");
+  await h.fullAnalysis();
   assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\), refresh to load this server\./);
-  assert.equal(await page.$("#server-nav-report .status-dot"), null, "no badge from another connection");
+  await page.click("#tuning-tab-scorecard");
+  await page.waitForSelector("#tuning-panel-scorecard .tuning-score");
+  assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\), refresh to load this server\./, "the scorecard names the server the report came from");
+  await h.fullAnalysis();
   await h.select(`${view} .report-first li`);
   await inspectorTitle("Joins without an index");
   assert.equal(await page.$eval('.view-inspector [aria-label="Explain statement 1 with joins without an index"]', (e) => e.disabled), true);
@@ -527,6 +593,7 @@ try {
   flags.passExport = true;
   for (const f of await fs.readdir(downloads)) await fs.rm(path.join(downloads, f));
   await page.evaluate(() => window.scrollTo(0, 0));
+  await page.click(`${view} .detail-back`);
   await page.click(`${view} .report-export button.button`);
   await page.click('.popover .report-export-formats button[data-format="markdown"]');
   await until(async () => (await fs.readdir(downloads)).some((f) => f.endsWith(".md")), "the Markdown file is downloaded");
@@ -536,17 +603,18 @@ try {
   flags.passExport = false;
   await page.keyboard.press("Escape");
 
-  // Session restore keeps the view and that the analysis ran, never the report.
-  const saved = await h.savedSlow((s) => s.kind === "report" && s.report_run === true);
+  // Session restore keeps that the analysis ran, never the report. The place is
+  // Tuning, not a Server view: the saved Server view stays a list view, never "report" or "tuning".
+  const saved = await h.savedSlow((s) => s.report_run === true);
+  assert.ok(saved.state.query_lab.slow.kind !== "report" && saved.state.query_lab.slow.kind !== "tuning", "the Full analysis is never the saved Server view");
   assert.equal(saved.state.query_lab.slow.order, "full_join");
   assert.equal(JSON.stringify(saved.state).includes("report-1.0"), false, "the report is not saved");
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   await page.reload({ waitUntil: "networkidle0" });
-  await h.server();
-  await page.waitForSelector("#server-nav-report[aria-current=page]");
+  await h.fullAnalysis();
   assert.match(await text(`${view} .view-empty`), /A full analysis ran in your last session\. Reports are not saved: run it again, about 10 to 20 s\./);
 
-  // 390 px: no horizontal page scroll; the inspector is a sheet.
+  // 390 px: no horizontal page scroll; details use the full work area.
   await chooseConnection(page, staging);
   await page.locator(`${view} .view-empty button ::-p-text(Run full analysis)`).click();
   await page.waitForSelector(`${view} .summary-line`);
@@ -554,30 +622,29 @@ try {
   await h.narrow("report-390.png");
   await page.setViewport({ width: 390, height: 844 });
   await pause(250);
-  if (await page.$(".server-layout.show-list")) await page.click("#server-nav-report");
   await page.waitForSelector(`${view} .report-first li`, { visible: true });
   await page.screenshot({ path: path.join(h.shots, "report-view-390.png") });
-  // The new run starts on its Look at first pick and the inspector was restored
-  // open: at this width that is a modal sheet over the list (its scrim takes a
-  // click on the row and closes it). Escape closes it; choosing the row opens it.
-  await page.waitForSelector(".view-inspector.is-sheet");
+  // Open the first recommendation in the full work area. Escape returns to
+  // the retained list; choosing the row again preserves the recommendation.
+  await h.select(`${view} .report-first li`);
+  await page.waitForSelector(".view-inspector.is-detail");
   await inspectorTitle("Joins without an index");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   await h.select(`${view} .report-first li`);
-  await page.waitForSelector(".view-inspector.is-sheet");
+  await page.waitForSelector(".view-inspector.is-detail");
   await page.screenshot({ path: path.join(h.shots, "report-inspector-390.png") });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(overflow <= 0, `horizontal scroll of ${overflow}px at 390 px`);
-  // Sheet width: Enter on a finding inside a section moves focus to its title in the sheet.
+  // Enter on a finding inside a section moves focus to its detail title.
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   await h.select(`${view} .report-sections li[data-section="indexes"]`);
-  await page.waitForSelector(".view-inspector.is-sheet li[data-finding] button");
+  await page.waitForSelector(".view-inspector.is-detail li[data-finding] button");
   await page.focus('.view-inspector li[data-finding="indexes.redundant"] button');
   await page.keyboard.press("Enter");
   await inspectorTitle("Redundant indexes");
-  await page.waitForFunction(() => document.activeElement?.matches(".view-inspector.is-sheet .inspector-title h3"));
+  await page.waitForFunction(() => document.activeElement?.matches(".view-inspector.is-detail .inspector-title h3"));
   await page.keyboard.press("Escape");
   await page.setViewport({ width: 1440, height: 1000 });
   await pause(200);
@@ -599,6 +666,43 @@ try {
   state.delay = 0;
   assert.doesNotMatch(await text(`${view} .summary-line`), /Late answer/);
   assert.equal(await page.$(`${view} .capture-status`), null, "nothing is loading any more");
+
+  // A database chosen in the diagram picker participates before any diagram
+  // exists. Switching views preserves that choice for the global refresh.
+  await h.view("diagram");
+  // The Database field is a combobox (input + datalist) since the diagram picker change.
+  await page.waitForFunction(() => Array.from(document.querySelectorAll("#diagram-databases option")).some(e => e.value === "shop"));
+  await page.click('.diagram-source input[aria-label="Database"]', { clickCount: 3 });
+  await page.type('.diagram-source input[aria-label="Database"]', "shop");
+  await h.view("health");
+  await h.view("diagram");
+  await page.waitForFunction(() => document.querySelector('.diagram-source input[aria-label="Database"]')?.value === "shop");
+  const diagramReads = calls("/api/schema-diagram/read").length;
+  await clickRefreshAll();
+  await page.waitForFunction(() => /^17 of 17 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
+  assert.equal(calls("/api/schema-diagram/read").length, diagramReads + 1);
+  assert.equal(calls("/api/schema-diagram/read").at(-1).body.database, "shop");
+  await page.waitForSelector('.diagram-table[aria-label="Table shop.orders"]');
+
+  // Move the arrangement while global metadata refresh is still reading.
+  // Its response must retain that new position and place new tables below it.
+  holdDiagram = true;
+  await clickRefreshAll();
+  await until(() => !!pendingDiagram, "global diagram read is held");
+  await page.focus('[data-table-id="shop.orders"]');
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
+  const moved = await page.$eval('.diagram-table[aria-label="Table shop.orders"]', e => ({x: e.style.left, y: e.style.top}));
+  const pending = pendingDiagram; pendingDiagram = null; holdDiagram = false;
+  await pending.request.respond({status: 200, contentType: "application/json", body: JSON.stringify(diagramReply(pending.body, true))});
+  await page.waitForFunction(() => /^17 of 17 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
+  await page.waitForSelector('.diagram-table[aria-label="Table shop.shipments"]');
+  assert.deepEqual(await page.$eval('.diagram-table[aria-label="Table shop.orders"]', e => ({x: e.style.left, y: e.style.top})), moved);
+  assert.equal(await page.evaluate(() => {
+    const existing = document.querySelector('.diagram-table[aria-label="Table shop.orders"]');
+    const added = document.querySelector('.diagram-table[aria-label="Table shop.shipments"]');
+    return parseFloat(added.style.top) >= parseFloat(existing.style.top) + parseFloat(existing.style.height);
+  }), true, "global refresh places new tables below the latest arrangement");
 
   assert.deepEqual(h.errors, []);
   console.log("full analysis and refresh all: ok");

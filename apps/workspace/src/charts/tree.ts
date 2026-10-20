@@ -53,7 +53,10 @@ export function rowInfo(node: ChartNode, rootTotal: number): string {
   parts.push("Self: " + treeTime(self) + " (" + pyFixed(pct, 1) + "%)");
   if (Math.abs(total - self) > 0.001) parts.push("Total: " + treeTime(total));
   const rows = node.actual_rows ?? 0;
-  parts.push("Rows: " + pyFixed(rows, 0));
+  // No row counter reads "not measured", never 0; null rows and loops (a
+  // MySQL operator that never ran) read "not executed" (output_tree._row_info).
+  parts.push(node.actual_rows !== null ? "Rows: " + pyFixed(rows, 0)
+    : node.loops === null ? "Rows: not executed" : "Rows: not measured");
   const loops = node.loops || 1;
   if (loops > 1) parts.push("Loops: " + Math.trunc(loops));
   if (node.table) parts.push("Table: " + node.table);
@@ -101,7 +104,7 @@ export function renderTree(context: ViewContext): ViewInstance {
   }, container);
   svg(doc, "title", undefined, root, (data.title ? `${data.title}: ` : "") + "Execution tree");
   svg(doc, "style", undefined, root, TREE_CSS);
-  svg(doc, "rect", { width: "100%", height: "100%", fill: "#fafafa" }, root);
+  svg(doc, "rect", { width: "100%", height: "100%", class: "mfc-background", fill: "#fafafa" }, root);
   if (!workspace) {
     svg(doc, "text", { x: width / 2, y: 26, "text-anchor": "middle", class: "title" }, root, data.title || "");
     // An unmeasured plan reads "—", not the 0.001 ms floor used for scaling.
@@ -117,7 +120,7 @@ export function renderTree(context: ViewContext): ViewInstance {
   const expandLink = workspace ? link(LEFT, "start", "Expand All") : link(width - LEFT - 80, "end", "Expand All");
   const collapseLink = workspace ? link(LEFT + 72, "start", "Collapse All") : link(width - LEFT, "end", "Collapse All");
   const rule = (y: number, stroke: string) =>
-    svg(doc, "line", { x1: LEFT, y1: y, x2: width - LEFT, y2: y, stroke, "stroke-width": 1 }, root);
+    svg(doc, "line", { class: "mfc-rule", x1: LEFT, y1: y, x2: width - LEFT, y2: y, stroke, "stroke-width": 1 }, root);
   if (!workspace) rule(52, "#ddd");
   const hdrY = workspace ? 20 : 65;
   svg(doc, "text", { x: selfX + SELF_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "SELF");
@@ -149,7 +152,7 @@ export function renderTree(context: ViewContext): ViewInstance {
     svg(doc, "rect", { class: "row-bg", x: LEFT, y, width: width - 2 * LEFT, height: ROW_H, fill: "transparent", "data-info": info }, group);
     if (warn) svg(doc, "rect", { x: LEFT, y, width: 4, height: ROW_H, fill: "#e65100", "pointer-events": "none" }, group);
     if (idx % 2 === 1) {
-      svg(doc, "rect", { x: LEFT, y, width: width - 2 * LEFT, height: ROW_H, fill: "rgba(0,0,0,0.018)", "pointer-events": "none" }, group);
+      svg(doc, "rect", { x: LEFT, y, width: width - 2 * LEFT, height: ROW_H, class: "mfc-stripe", fill: "rgba(0,0,0,0.018)", "pointer-events": "none" }, group);
     }
     const toggle = hasChildren
       ? svg(doc, "text", { class: "toggle", x: indentX + 2, y: textY, "data-idx": idx }, group, "▾")
@@ -173,7 +176,7 @@ export function renderTree(context: ViewContext): ViewInstance {
     if (selfBar > 0.5) {
       svg(doc, "rect", { x: barX, y: y + 5, width: pyFixed(selfBar, 1), height: ROW_H - 10, fill: rowColor(self, rootTotal), rx: 2, "pointer-events": "none" }, group);
     }
-    svg(doc, "line", { x1: LEFT, y1: y + ROW_H, x2: width - LEFT, y2: y + ROW_H, stroke: "#eeeeee", "stroke-width": 1 }, group);
+    svg(doc, "line", { x1: LEFT, y1: y + ROW_H, x2: width - LEFT, y2: y + ROW_H, class: "mfc-rule", stroke: "#eeeeee", "stroke-width": 1 }, group);
     rows.push({ node, element: group, toggle, depth, info, hasChildren, hidden: false, collapsed: false });
   });
 
@@ -181,7 +184,7 @@ export function renderTree(context: ViewContext): ViewInstance {
   if (!workspace) {
     const sepY = bottomY + 4;
     rule(sepY, "#e0e0e0");
-    svg(doc, "rect", { x: LEFT, y: sepY + 4, width: width - 2 * LEFT, height: DETAILS_H, fill: "#eeeeee", rx: 4 }, root);
+    svg(doc, "rect", { x: LEFT, y: sepY + 4, width: width - 2 * LEFT, height: DETAILS_H, class: "mfc-pane", fill: "#eeeeee", rx: 4 }, root);
     for (let i = 0; i < DETAIL_LINES; i++) {
       lines.push(svg(doc, "text", { x: LEFT + 10, y: sepY + 20 + i * DETAIL_LINE_H, class: "details-line" }, root, i === 0 ? HINT : ""));
     }

@@ -1,0 +1,24 @@
+{
+  "name": "myflames-desktop",
+  "productName": "myflames",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Local desktop launcher for the myflames workspace",
+  "license": "Apache-2.0",
+  "main": "main.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "smoke": "node scripts/smoke.cjs",
+    "build:backend": "python3 scripts/build-backend.py",
+    "package:dir": "electron-builder --dir --config electron-builder.json",
+    "package:mac": "electron-builder --mac dir --arm64 --config electron-builder.json"
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "electron-builder": "26.15.3"
+  }
+}

@@ -11,6 +11,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 from collections import namedtuple
 
 from .connector import ConnectorError
@@ -875,8 +876,33 @@ _LEFT_CARD = {'|o': 'zero-or-one', '||': 'one', '}o': 'zero-or-many', '}|': 'one
 _RIGHT_CARD = {'o|': 'zero-or-one', '||': 'one', 'o{': 'zero-or-many', '|{': 'one-or-many'}
 
 
+_MERMAID_TEXT_ENTITY = re.compile(r'(?:#\d+|#[A-Za-z]+|&#[0-9]+|&#[xX][0-9A-Fa-f]+|&[A-Za-z]+);')
+_MERMAID_METADATA = re.compile(r'(?:^|;\s*)(Original name|SQL type|Nullability):\s*("(?:[^"\\]|\\.)*")')
+
+
+def _mermaid_unescape(text):
+    def decode(match):
+        token = match.group(0)
+        if token.startswith('#'):
+            token = '&' + token if token[1].isdigit() else '&' + token[1:]
+        return html.unescape(token)
+    return _MERMAID_TEXT_ENTITY.sub(decode, text)
+
+
 def _mermaid_name(token):
-    return html.unescape(token[1:-1] if token.startswith('"') else token)
+    return _mermaid_unescape(token[1:-1] if token.startswith('"') else token)
+
+
+def _mermaid_comment_metadata(comment):
+    metadata = {}
+    for match in _MERMAID_METADATA.finditer(comment):
+        try:
+            value = json.loads(match.group(2))
+        except ValueError:
+            continue
+        if isinstance(value, str):
+            metadata[match.group(1)] = value
+    return metadata
 
 
 def import_mermaid(text):
@@ -899,14 +925,44 @@ def import_mermaid(text):
         match = re.fullmatch(r'([\w][\w()\[\],.?-]*)\s+(\*?[\w][\w()\[\]-]*)(?:\s+((?:PK|FK|UK)(?:\s*,\s*(?:PK|FK|UK))*))?(?:\s+"([^"\n]*)")?', line)
         if not match:
             _warn(out, 'Unsupported Mermaid attribute syntax was ignored.'); return
-        dtype, name, keys, _comment = match.groups()
+        dtype, name, keys, comment = match.groups()
         keys = {k.strip() for k in (keys or '').split(',')}
         pk = 'PK' in keys or name.startswith('*')
+        # Legacy exports started with a labeled JSON string. New comments
+        # escape colons inside values, so literal metadata-looking text cannot
+        # be mistaken for the old format.
+        legacy = re.match(r'^(Original name|SQL type|Nullability):', comment or '')
+        metadata = _mermaid_comment_metadata(_mermaid_unescape(comment or '')) if legacy else {}
+        nullable = False if pk or not dtype.endswith('?') else True
+        sql_type = _mermaid_sql_type(dtype.rstrip('?'))
+        if not metadata and comment is not None:
+            parts, start = [], 0
+            # Entity terminators may also be followed by a space. Only split
+            # separators outside an encoded entity.
+            for delimiter in re.finditer(_MERMAID_TEXT_ENTITY.pattern + r'|(; )', comment):
+                if delimiter.group(1):
+                    parts.append(comment[start:delimiter.start()]); start = delimiter.end()
+            parts.append(comment[start:])
+            if dtype.rstrip('?').lower() in ('enum', 'set'):
+                values = [_mermaid_unescape(v) for v in parts.pop(0).split(', ')]
+                sql_type = dtype.rstrip('?') + '(' + ','.join("'" + v.replace("'", "''") + "'" for v in values) + ')'
+            for part in parts:
+                if part == 'nullability unknown':
+                    nullable = None
+                elif part.startswith('name: '):
+                    metadata['Original name'] = _mermaid_unescape(part[6:])
+        name = metadata.get('Original name', name.lstrip('*'))
+        if metadata.get('Nullability') == 'unknown':
+            nullable = None
+        elif metadata.get('Nullability') == 'NULL':
+            nullable = True
+        elif metadata.get('Nullability') == 'NOT NULL':
+            nullable = False
         total_columns += 1
         if total_columns > MAX_COLUMNS:
             raise ValueError('Diagram exceeds 10000 columns.')
-        table['columns'].append(dict(name=name.lstrip('*'), data_type=dtype.rstrip('?'),
-                                     nullable=False if pk else True if dtype.endswith('?') else None, primary_key=pk))
+        table['columns'].append(dict(name=name, data_type=metadata.get('SQL type', sql_type),
+                                     nullable=nullable, primary_key=pk))
         if 'FK' in keys:
             _warn(out, 'Mermaid FK markers do not identify referenced columns; no SQL foreign key was inferred.')
         if 'UK' in keys:
@@ -930,7 +986,7 @@ def import_mermaid(text):
             left, lc, kind, rc, right, quoted_label, label = relation.groups()
             a, b = entity(left), entity(right)
             out['relationships'].append(dict(id=_id(a['id'], b['id'], len(out['relationships'])),
-                name=html.unescape(quoted_label if quoted_label is not None else label.strip()),
+                name=_mermaid_unescape(quoted_label if quoted_label is not None else label.strip()),
                 from_table=a['id'], from_columns=[], to_table=b['id'], to_columns=[],
                 cardinality={'from': _LEFT_CARD[lc], 'to': _RIGHT_CARD[rc]}, identifying=kind == '--'))
             continue
@@ -954,7 +1010,87 @@ def import_mermaid(text):
 
 
 def _mermaid_escape(text):
-    return html.escape(text, quote=True).replace('\n', '&#10;').replace('\r', '&#13;')
+    escapes = {'#': '#35;', '&': '#amp;', '"': '#quot;', "'": '#39;',
+               '<': '#lt;', '>': '#gt;', '\n': '#10;', '\r': '#13;'}
+    return ''.join(escapes.get(c, '#%d;' % ord(c) if ord(c) < 32 or 127 <= ord(c) <= 159 else c)
+                   for c in text)
+
+
+def _mermaid_attribute_type(dtype):
+    if re.fullmatch(r'[A-Za-z][A-Za-z0-9_()\[\]-]*', dtype):
+        return dtype
+    value = re.sub(r'\s*([(),])\s*', r'\1', dtype.strip())
+    value = re.sub(r'\s+', '_', value).replace(',', '-').replace("'", '').replace('"', '')
+    value = re.sub(r'[^A-Za-z0-9_()\[\]-]+', '_', value)
+    value = re.sub(r'_+', '_', value)
+    if not value:
+        value = 'string'
+    if not re.match(r'[A-Za-z]', value):
+        value = 'type_' + value
+    return value
+
+
+def _mermaid_attribute_name(name, index, occupied):
+    if re.fullmatch(r'[^\W\d][\w-]*', name):
+        candidate = name
+    else:
+        candidate = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
+        candidate = re.sub(r'[^A-Za-z0-9_-]+', '_', candidate)
+        candidate = re.sub(r'_+', '_', candidate)
+        if not candidate:
+            candidate = 'column_%d' % (index + 1)
+        if not re.match(r'[A-Za-z_]', candidate):
+            candidate = '_' + candidate
+    base, suffix = candidate, 2
+    while candidate in occupied:
+        candidate = '%s_%d' % (base, suffix)
+        suffix += 1
+    occupied.add(candidate)
+    return candidate
+
+
+def _mermaid_sql_type(dtype):
+    # Reverse only known SQL spellings whose display forms cannot be SQL types.
+    numeric = re.fullmatch(r'(decimal|numeric|float|double)\((\d+)-(\d+)\)', dtype, re.I)
+    if numeric:
+        return '%s(%s,%s)' % numeric.groups()
+    if re.fullmatch(r'(?:tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real)'
+                    r'(?:\(\d+(?:-\d+)?\))?(?:_unsigned(?:_zerofill)?|_zerofill)', dtype, re.I):
+        return dtype.replace('_', ' ').replace('-', ',')
+    return dtype
+
+
+def _mermaid_enum_values(dtype):
+    if not re.match(r'^(enum|set)\s*\(', dtype, re.I):
+        return None
+    try:
+        tokens = _tokens(dtype)
+        if len(tokens) >= 4 and tokens[1].value == '(' and tokens[-1].value == ')':
+            body = tokens[2:-1]
+            if all(t.kind in ('string', 'quoted') if i % 2 == 0 else t.value == ','
+                   for i, t in enumerate(body)) and len(body) % 2:
+                return [t.value for t in body[::2]]
+    except ValueError:
+        pass
+    return None
+
+
+def _mermaid_comment_value(value):
+    # Escape separators before joining so names and enum values round-trip even
+    # when their rendered text contains the delimiters used by these comments.
+    return ''.join(
+        '#59;' if c == ';' else '#44;' if c == ',' else '#58;' if c == ':' else _mermaid_escape(c) for c in value)
+
+
+def _mermaid_attribute_comment(col, name, values):
+    parts = []
+    if values is not None:
+        parts.append(', '.join(_mermaid_comment_value(v) for v in values))
+    if col['nullable'] is None:
+        parts.append('nullability unknown')
+    if name != col['name']:
+        parts.append('name: ' + _mermaid_comment_value(col['name']))
+    return ' "' + '; '.join(parts) + '"' if parts else ''
 
 
 def export_mermaid(diagram):
@@ -962,30 +1098,47 @@ def export_mermaid(diagram):
     ids = {t['id']: 'T%d' % (i + 1) for i, t in enumerate(diagram['tables'])}
     tables = {t['id']: t for t in diagram['tables']}
     lines, warnings = ['erDiagram'], list(diagram['warnings'])
+    simplified_types = aliased_names = unknown_nullability = composite_unique = False
     if diagram.get('incomplete'):
         warnings.append('The diagram is marked incomplete; Mermaid export may omit schema objects.')
     for table in diagram['tables']:
         label = (table['schema'] + '.' if table['schema'] else '') + table['name']
         lines.append('    %s["%s"] {' % (ids[table['id']], _mermaid_escape(label)))
-        occupied = {c['name'] for c in table['columns']
-                    if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_()\[\]-]*', c['name'])}
+        occupied = set()
+        foreign = {name for rel in diagram['relationships'] if rel['from_table'] == table['id']
+                   for name in rel['from_columns']}
+        unique_single = set()
+        for index in table['indexes']:
+            if index['unique'] and not index.get('primary'):
+                if len(index['columns']) == 1:
+                    unique_single.add(index['columns'][0])
+                else:
+                    composite_unique = True
         for i, col in enumerate(table['columns']):
-            dtype = col['data_type']
-            if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_()\[\]-]*', dtype):
-                dtype = 'string'
-                warnings.append('Types outside Mermaid attribute syntax use string for display; JSON retains the SQL type.')
-            name = col['name']
-            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_()\[\]-]*', name):
-                suffix = i + 1
-                name = 'column_%d' % suffix
-                while name in occupied:
-                    suffix += 1; name = 'column_%d' % suffix
-                occupied.add(name)
-                warnings.append('Column names outside Mermaid attribute syntax use aliases with the original name in a comment.')
-            comment = ' "%s"' % _mermaid_escape(col['name'] + ': ' + col['data_type']) if name != col['name'] or dtype != col['data_type'] else ''
+            values = _mermaid_enum_values(col['data_type'])
+            dtype = col['data_type'].split('(', 1)[0].strip() if values is not None else _mermaid_attribute_type(col['data_type'])
+            name = _mermaid_attribute_name(col['name'], i, occupied)
+            simplified_types = simplified_types or dtype != col['data_type']
+            aliased_names = aliased_names or name != col['name']
+            unknown_nullability = unknown_nullability or col['nullable'] is None
+            keys = []
+            if col['primary_key']:
+                keys.append('PK')
+            if col['name'] in foreign:
+                keys.append('FK')
+            if col['name'] in unique_single:
+                keys.append('UK')
             lines.append('        %s%s %s%s%s' % (dtype, '?' if col['nullable'] is True else '', name,
-                                                 ' PK' if col['primary_key'] else '', comment))
+                ' ' + ', '.join(keys) if keys else '', _mermaid_attribute_comment(col, name, values)))
         lines.append('    }')
+    if simplified_types:
+        warnings.append('SQL types are simplified for display; enum and set values appear in comments. JSON retains exact types.')
+    if aliased_names:
+        warnings.append('Aliased column names appear in comments.')
+    if unknown_nullability:
+        warnings.append('Unknown nullability appears in comments.')
+    if composite_unique:
+        warnings.append('Composite unique keys are not marked as UK in Mermaid; JSON retains the key definitions.')
     left = {v: k for k, v in _LEFT_CARD.items()}; right = {v: k for k, v in _RIGHT_CARD.items()}
     for rel in diagram['relationships']:
         card = rel.get('cardinality')

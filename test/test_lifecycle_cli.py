@@ -142,6 +142,35 @@ class WriteCommandsCli(Isolated):
     def audit(self):
         return [(r['operation'], r['status'], r['outcome']) for r in self.store().audit_records()]
 
+    def test_missing_schema_dump_failure_is_one_reason_line(self):
+        reason = "Tool exited 2: mysqldump: Unknown database 'missing'"
+        def fail(job):
+            raise lc.LifecycleError(reason)
+        job = lc.LifecycleJob('dump', fail)
+        with mock.patch.object(lc, 'prepare_dump', return_value=fake_plan('dump')), \
+                mock.patch.object(lc, 'dump_job', return_value=job):
+            code, out, err, unused = self.run_cli(
+                ['dump', self.out_dir, '--schema', 'missing', '--no-shell', '--yes'], ReplayConnection())
+        self.assertEqual(code, 1, err)
+        self.assertEqual(out.splitlines()[0], 'Dump: failed: ' + reason)
+        self.assertIn(job.partial_state, out)
+        self.assertEqual((out + err).count(reason), 1)
+        self.assertNotIn('operation:', out)
+        self.assertNotIn('(failed)', out)
+
+    def test_failure_format_keeps_distinct_verification_and_partial_state(self):
+        snapshot = {'operation': 'dump', 'state': 'failed', 'error': 'Unknown database',
+                    'result': {'status': 'failed', 'partial_state': 'Partial files remain.',
+                               'verification': [
+                                   {'check': 'operation', 'status': 'not_checked', 'reason': ''},
+                                   {'check': 'operation', 'status': 'not_checked', 'reason': 'Unknown database'},
+                                   {'check': 'manifest', 'status': 'failed', 'reason': 'Incomplete'}]}}
+        text = lcli.format_job(snapshot)
+        self.assertEqual(text.count('Unknown database'), 1)
+        self.assertNotIn('operation:', text)
+        self.assertIn('manifest: Incomplete', text)
+        self.assertIn('Partial files remain.', text)
+
     def test_dump_without_terminal_needs_yes(self):
         code, out, err, unused = self.run_cli(['dump', self.out_dir, '--schema', 'app', '-p' + PASSWORD],
                                               ReplayConnection())

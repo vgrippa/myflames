@@ -83,14 +83,11 @@ export function AboutDialog({
         <img className="about-mark" src={logo} alt="" width="48" height="48" />
         <h2 id={titleId}>myflames</h2>
         <p className="about-subtitle">Performance workspace</p>
-        <div className="about-badges">
-          {version && <span className="badge about-version">Version {version}</span>}
-          <span className="badge">Apache-2.0</span>
-        </div>
         <p className="about-tagline" id={taglineId}>
           MySQL and MariaDB performance workspace
         </p>
         <div className="about-facts"><Fields label="Application details" rows={[
+          Boolean(version) && ["Version", <span key="version" className="about-version">{version}</span>],
           ["Workspace", "Runs on this computer"],
           ["Databases", "MySQL and MariaDB"],
           ["License", "Apache-2.0"],
@@ -120,12 +117,22 @@ export function AboutDialog({
           </p>
         </section>
         <section className="about-section about-license">
-          <p className="about-license-name">License: Apache-2.0</p>
           <p>Releases up to and including 2.3.0 remain available under CDDL 1.0 (see NOTICE).</p>
         </section>
-        <button ref={closeButton} type="button" className="button about-close" onClick={onClose}>
-          Close
-        </button>
+        <div className="about-actions" style={{ display: "flex", gap: "var(--space-2)", marginTop: "var(--space-5)", justifyContent: "center" }}>
+          <a
+            href="https://github.com/myflames/myflames/issues/new"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="button ghost"
+            style={{ textDecoration: "none" }}
+          >
+            Report a bug
+          </a>
+          <button ref={closeButton} type="button" className="button" style={{ minWidth: 96 }} onClick={onClose}>
+            Close
+          </button>
+        </div>
       </div>
     </dialog>
   );

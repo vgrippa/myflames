@@ -79,6 +79,18 @@ def mariadb_variable(name, **catalog):
 
 
 class TestNamesAndValues(unittest.TestCase):
+    def test_regression_string_value_preserves_surrounding_spaces(self):
+        for engine in ('mysql', 'mariadb'):
+            for raw in (' +-><()~*:""&|', ' +-><()~*:""&| ', ' ', ' DEFAULT '):
+                with self.subTest(engine=engine, raw=raw):
+                    variable = {'name': 'ft_boolean_syntax', 'type': 'string', 'engine': engine}
+                    value = V.normalize_value(variable, raw)
+                    self.assertEqual(value['problems'], [])
+                    self.assertEqual(value['value'], raw)
+                    self.assertEqual(value['display'], raw)
+                    self.assertEqual(value['literal'], V._text_literal(raw))
+                    self.assertFalse(value['default'])
+
     def test_names(self):
         self.assertEqual(V.check_name('Max_Connections'), 'max_connections')
         self.assertEqual(V.check_name('@@GLOBAL.sort_buffer_size'), 'sort_buffer_size')
@@ -376,8 +388,14 @@ class TestModesAndPlans(unittest.TestCase):
         self.assertEqual(plan['status'], 'refused')
         self.assertIn('no variable named no_such_variable', plan['problems'][0]['message'])
 
-    def test_mysql_variable_outside_the_map_lets_the_server_decide(self):
+    def test_generated_catalog_refuses_static_but_unknown_still_lets_server_decide(self):
         _conn, plan, _data = plan_from('mysql-8.4', 'server-refused')
+        self.assertEqual(plan['status'], 'refused')
+        self.assertIs(plan['variable']['dynamic'], False)
+        # This recording used to exercise a name outside the hand map. Remove
+        # the generated facts to keep coverage of an unrecognized server name.
+        with mock.patch.dict(V.mysql_sysvars.SYSVARS, clear=True):
+            _conn, plan, _data = plan_from('mysql-8.4', 'server-refused')
         self.assertEqual(plan['status'], 'ready')
         self.assertIsNone(plan['variable']['dynamic'])
         self.assertTrue(any('error 1238' in c for c in plan['caveats']))
@@ -516,7 +534,7 @@ class TestModesAndPlans(unittest.TestCase):
         self.assertIs(V.static_dynamic('mysql', 'performance_schema'), False)
         self.assertIs(V.static_dynamic('mysql', 'max_connections'), True)
         self.assertIs(V.static_dynamic('mariadb', 'innodb_log_file_size'), True)
-        self.assertIsNone(V.static_dynamic('mysql', 'validate_password.length'))
+        self.assertIs(V.static_dynamic('mysql', 'validate_password.length'), True)
 
 
 class TestReadStates(unittest.TestCase):
@@ -697,7 +715,10 @@ class TestApply(unittest.TestCase):
                                                                                             'FILE,TABLE'))
 
     def test_server_refusals(self):
-        conn, _plan, result = self.apply('mysql-8.4', 'server-refused')
+        # Simulate a variable absent from the catalog; known datadir now
+        # refuses before sending. The recorded 1238 response still maps/audits.
+        with mock.patch.dict(V.mysql_sysvars.SYSVARS, clear=True):
+            conn, _plan, result = self.apply('mysql-8.4', 'server-refused')
         self.assertEqual(result['status'], 'refused_by_server')
         self.assertIn("Variable 'datadir' is a read only variable", result['message'])
         self.assertIn('SET PERSIST_ONLY', result['message'])
@@ -1073,7 +1094,8 @@ class TestCli(unittest.TestCase):
         self.assertEqual(self.audit()[0]['statements'], [TAG + 'SET PERSIST max_connections = 300'])
 
     def test_server_refusal_and_denial_exit_1(self):
-        code, out, _err, _conn = self.cli('mysql-8.4', 'server-refused', ['set', 'datadir', '/tmp', '--yes'])
+        with mock.patch.dict(V.mysql_sysvars.SYSVARS, clear=True):
+            code, out, _err, _conn = self.cli('mysql-8.4', 'server-refused', ['set', 'datadir', '/tmp', '--yes'])
         self.assertEqual(code, 1)
         self.assertIn('read only variable', out)
         code, out, _err, _conn = self.cli('mysql-8.4', 'denied', ['set', 'max_connections', '260', '--yes'])
@@ -1317,3 +1339,68 @@ class TestEndpoints(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestGeneratedCatalogTypes(unittest.TestCase):
+    """Facts the generated catalog adds on top of the hand-verified map."""
+
+    def test_generated_flagsets_take_their_flags_from_the_live_value(self):
+        from myflames import variables as V
+        info = {"name": "optimizer_trace", "engine": "mysql", "global_value": "enabled=off,one_line=off",
+                "session_value": None, "catalog": None, "metadata": None, "platform": None}
+        self.assertEqual(V._type(info), ("flagset", ["enabled", "one_line"]))
+        info = dict(info, name="optimizer_trace_features",
+                    global_value="greedy_search=on,range_optimizer=on,dynamic_range=on,repeated_subselect=on")
+        self.assertEqual(V._type(info)[1], ["greedy_search", "range_optimizer", "dynamic_range", "repeated_subselect"])
+
+    def test_count_sizes_are_not_bytes(self):
+        from myflames import variables as V
+        for name in ("host_cache_size", "thread_cache_size", "performance_schema_accounts_size",
+                     "performance_schema_events_waits_history_size", "binlog_transaction_dependency_history_size",
+                     "max_join_size", "innodb_purge_batch_size", "ngram_token_size"):
+            self.assertFalse(V._is_bytes(name), name)
+        for name in ("sort_buffer_size", "binlog_cache_size", "innodb_log_write_ahead_size",
+                     "replica_pending_jobs_size_max", "key_buffer_size"):
+            self.assertTrue(V._is_bytes(name), name)
+
+
+class TestServerSetValues(unittest.TestCase):
+    """A value no startup option sets: no PERSIST_ONLY and no option file line."""
+
+    def info(self, engine, name, catalog=None):
+        return {"name": name, "engine": engine, "server_version": "11.4.13" if engine == "mariadb" else "8.4.10",
+                "server_identity": None, "platform": "Linux", "read_at": "2026-10-18T00:00:00+00:00",
+                "version_tuple": (11, 4, 13) if engine == "mariadb" else (8, 4, 10), "in_global": True,
+                "in_session": False, "global_value": "db-host", "session_value": None,
+                "persisted_globals_load": "ON", "related": {}, "catalog": catalog, "info": None,
+                "persisted": {"present": False, "value": None, "read": True}, "metadata": None, "notes": []}
+
+    def test_mariadb_hostname_offers_no_option_file_line(self):
+        from myflames import variables as V
+        catalog = {"name": "HOSTNAME", "session_value": None, "global_value": "db-host", "origin": "COMPILE-TIME",
+                   "default": "", "scope": "GLOBAL", "type": "VARCHAR", "min": None, "max": None, "block": None,
+                   "values": None, "read_only": "YES", "path": None, "comment": "Server host name",
+                   "command_line_argument": None}
+        v = V.describe(self.info("mariadb", "hostname", catalog))
+        self.assertIs(v["startup_option"], False)
+        plan = V.build_plan(v, "other-host", "global")
+        self.assertEqual(plan["status"], "refused")
+        self.assertIsNone(plan["alternative"]["config_line"])
+        self.assertIn("The server sets hostname", plan["alternative"]["text"])
+
+    def test_mariadb_static_with_option_keeps_its_option_file_line(self):
+        from myflames import variables as V
+        catalog = {"name": "PORT", "session_value": None, "global_value": "3306", "origin": "CONFIG",
+                   "default": "3306", "scope": "GLOBAL", "type": "INT UNSIGNED", "min": "0", "max": "65535",
+                   "block": "1", "values": None, "read_only": "YES", "path": None, "comment": "Port",
+                   "command_line_argument": "REQUIRED"}
+        v = V.describe(dict(self.info("mariadb", "port", catalog), global_value="3306"))
+        self.assertIs(v["startup_option"], True)
+        self.assertTrue(V.build_plan(v, "3307", "global")["alternative"]["config_line"])
+
+    def test_mysql_catalog_no_option_variable_has_no_persist_only(self):
+        from myflames import variables as V
+        v = V.describe(dict(self.info("mysql", "version"), global_value="8.4.10"))
+        self.assertIs(v["startup_option"], False)
+        self.assertFalse(v["modes"]["persist_only"]["available"])
+        self.assertIn("The server sets version", V.build_plan(v, "9.0", "global")["alternative"]["text"])

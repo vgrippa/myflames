@@ -28,7 +28,7 @@ from _perf_replay import (PASSWORD, FakeFactory, FakeTime, ReplayConn, _Refused,
                           run_main)
 from myflames import discover, report, server_checks, ui
 from myflames.connector import ConnectorError, MySQLConnection
-from myflames.perf_common import Server
+from myflames.perf_common import Server, _table_count_sql, scope_sql
 from test_connector import option_file_client
 
 RECORDINGS = ('mysql-8.4-replica', 'mysql-8.0', 'mariadb-11.4', 'mariadb-11.4-default', 'mysql-8.0-limited')
@@ -58,9 +58,8 @@ def replay(view, name, **kwargs):
             if name.startswith('mariadb'):
                 where = where.split(' AND ', 1)[1]
             count = batch([[len(answers[0].splitlines())]])
-            for tag in ('tables', 'indexes', 'report'):
-                conn.answers.setdefault('/*myflames:%s*/ SELECT COUNT(*) FROM information_schema.TABLES WHERE %s'
-                                        % (tag, where), [count])
+            conn.answers.setdefault('/*myflames:report*/ SELECT COUNT(*) FROM information_schema.TABLES WHERE %s'
+                                    % where, [count])
         if sql.startswith('/*myflames:io*/ SELECT ') and any(source in sql for source in (
                 ' FROM performance_schema.table_io_waits_summary_by_table ',
                 ' FROM performance_schema.file_summary_by_instance ',
@@ -105,7 +104,8 @@ class ReportShape(unittest.TestCase):
         ids = [f['id'] for f in result['findings']]
         self.assertEqual(len(ids), len(set(ids)))
         for f in result['findings']:
-            self.assertEqual(set(f), FINDING_FIELDS, f['id'])
+            fields = FINDING_FIELDS | ({'state'} if (f.get('source') or {}).get('kind') == 'diagnostic' else set())
+            self.assertEqual(set(f), fields, f['id'])
             self.assertIn(f['status'], report.STATUS_RANK)
             self.assertIn(f['family'], report.SECTION_TITLES)
             self.assertTrue(f['title'] and (f['verdict'] or f['headline']), f['id'])
@@ -150,6 +150,71 @@ class ReportShape(unittest.TestCase):
             self.assertNotIn('Password', body)
 
 
+class TestServerViewRegressions(unittest.TestCase):
+    def test_health_diagnostic_state_survives_full_analysis(self):
+        """Both engines use the same state contract; absent legacy states stay null."""
+        for engine in ('mysql', 'mariadb'):
+            for key, state in (('buffer_pool', 'room'), ('thread_cache', 'not_applicable'),
+                               ('buffer_pool', None)):
+                with self.subTest(engine=engine, key=key, state=state):
+                    diagnostic = {'key': key, 'status': 'info', 'title': key}
+                    if state is not None:
+                        diagnostic['state'] = state
+                    result = report._health_findings({'engine': engine, 'diagnostics': [diagnostic]})
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0]['state'], state)
+                    self.assertEqual(json.loads(json.dumps(result))[0]['state'], state)
+                    self.assertEqual(result[0]['status'], 'info')
+
+    def test_io_hot_spots_report_untimed_read_and_written_rows(self):
+        # userstat is MariaDB-only; zero timed P_S activity must retain its units.
+        for timing in (None, 0):
+            with self.subTest(timing=timing):
+                row = {'schema': 'shop', 'table': 'orders', 'total_ms_per_s': timing,
+                       'ops': None if timing is None else 0, 'read_rows': 1234, 'write_rows': 0}
+                result = report._io_findings({'elapsed_s': 5, 'window': {'tables': [row]}})[0]
+                number = result['numbers'][0]
+                if timing is None:
+                    self.assertEqual(number['text'], '1,234 rows read, 0 rows written (timing unavailable)')
+                    self.assertNotIn('unit', number)
+                    self.assertNotIn('value', number)
+                else:
+                    self.assertEqual(number['text'], '0 per second, 0 rows')
+                    self.assertEqual((number['value'], number['unit']), (0, 'ms/s'))
+
+    def test_full_analysis_counts_table_scope_once(self):
+        for server in ('mysql-8.4-replica', 'mariadb-11.4-default'):
+            with self.subTest(server=server):
+                result, conn, _ = run_report(server)
+                counts = [sql for sql, _ in conn.calls if 'SELECT COUNT(*) FROM information_schema.TABLES' in sql]
+                self.assertEqual(len(counts), 1, counts)
+                self.assertTrue(counts[0].startswith(report.REPORT_TAG))
+                statuses = {v['key']: v['status'] for v in result['header']['views']}
+                self.assertNotIn(statuses['tables'], ('skipped', 'error'))
+                self.assertNotIn(statuses['indexes'], ('skipped', 'error'))
+
+    def test_full_analysis_gates_an_oversized_chosen_schema(self):
+        for version in ('8.4.11', '11.4.13-MariaDB'):
+            with self.subTest(version=version):
+                server = Server({'version': version}, {})
+                conn = mock.Mock(password=None)
+                conn.run.return_value = batch([[18]])
+                seen = []
+                def run_children(conn, jobs, *args):
+                    seen.extend(key for key, _ in jobs)
+                    return {}
+                with mock.patch.object(report, 'preflight', return_value=server), \
+                        mock.patch.object(report, '_run_all', side_effect=run_children), \
+                        mock.patch.object(report, '_attribution'), \
+                        mock.patch.object(report, 'compose_report') as compose:
+                    report.analysis_report(conn, 5, schemas=('shop',), require_choice_above=17)
+                self.assertNotIn('tables', seen)
+                self.assertNotIn('indexes', seen)
+                self.assertIn('18 tables, more than 17', compose.call_args[1]['schema_gate'])
+                conn.run.assert_called_once()
+                self.assertIn("TABLE_SCHEMA = CONVERT(X'73686f70' USING utf8mb4)", conn.run.call_args[0][0])
+
+
 class TestAdvisoryFeatures(unittest.TestCase):
     def test_an_advisory_feature_never_makes_views_not_ready(self):
         # The replication receiver guard is optional: off by default on both
@@ -181,6 +246,30 @@ class TestLiveRecordings(ReportShape):
                 self.assertEqual(result['header']['failures'], [])
                 for fmt in ('text', 'digest', 'markdown', 'html', 'json'):
                     self.assertTrue(report.export(result, fmt))
+
+    def test_health_metrics_keep_every_status(self):
+        """Findings drop ok, info and unknown Health metrics; health_metrics keeps
+        all of them, so the Tuning view never reads an absent finding as ok.
+        Both engines (MySQL 8.0 and 8.4, MariaDB 11.4 with and without P_S)."""
+        for name in RECORDINGS:
+            with self.subTest(server=name):
+                result = run_report(name)[0]
+                metrics = result['health_metrics']
+                keys = [m['key'] for m in metrics]
+                self.assertEqual(len(keys), len(set(keys)))
+                self.assertTrue({'bp_dirty', 'bp_wait_free', 'aborted_clients', 'connections_used',
+                                 'select_full_join'} <= set(keys))
+                findings = {f['id'] for f in result['findings']}
+                for m in metrics:
+                    self.assertEqual(set(m), set(report._HEALTH_METRIC_FIELDS))
+                    self.assertIn(m['status'], report.STATUSES)
+                    if m['status'] in ('watch', 'problem') and m['key'] in report._METRIC_FAMILY:
+                        self.assertIn('health.%s' % m['key'], findings)
+                # At least one measured metric exists only here, not as a finding.
+                self.assertTrue([m for m in metrics if m['status'] == 'ok' and 'health.%s' % m['key'] not in findings])
+        self.assertEqual(report.health_metrics(None), [])
+        self.assertEqual(report.health_metrics({'metrics': [{'key': 'x', 'status': 'ok', 'value': 1}]}),
+                         [dict({k: None for k in report._HEALTH_METRIC_FIELDS}, key='x', status='ok', value=1)])
 
     def test_bounded_replays_preserve_original_samples_and_reject_other_sql(self):
         for name in RECORDINGS:
@@ -1011,14 +1100,14 @@ class TestReportCLI(unittest.TestCase):
 
 
 class TestReportAPI(unittest.TestCase):
-    def test_analysis_forwards_the_scope_limit_to_both_children(self):
-        # Full analysis must not re-enable the child gate after the caller
-        # explicitly opted out; a custom cap must survive too.
+    def test_analysis_checks_scope_once_and_disables_both_child_gates(self):
+        # Full analysis owns the cap, including explicit opt-out and chosen
+        # schemas. Children must not repeat the expensive count query.
         for schemas in (None, ('shop',)):
             for limit in (None, 17, 2000):
                 with self.subTest(schemas=schemas, limit=limit), \
                         mock.patch('myflames.report.preflight', return_value=object()), \
-                        mock.patch('myflames.report.require_choice'), \
+                        mock.patch('myflames.report.require_choice') as gate, \
                         mock.patch('myflames.schema_health.table_report') as tables, \
                         mock.patch('myflames.indexes.index_report') as indexes, \
                         mock.patch('myflames.report._attribution'), \
@@ -1031,10 +1120,14 @@ class TestReportAPI(unittest.TestCase):
                     conn = mock.Mock(password=None)
                     with mock.patch('myflames.report._run_all', side_effect=run_children):
                         report.analysis_report(conn, 5, schemas=schemas, require_choice_above=limit)
+                    if limit is None:
+                        gate.assert_not_called()
+                    else:
+                        gate.assert_called_once_with(mock.ANY, mock.ANY, schemas, limit, 'the full analysis')
                     tables.assert_called_once_with(conn, schemas, False, report.LIST_LIMIT,
-                                                   require_choice_above=limit)
+                                                   require_choice_above=None)
                     indexes.assert_called_once_with(conn, schemas=schemas, limit=report.LIST_LIMIT,
-                                                    require_choice_above=limit)
+                                                    require_choice_above=None)
 
     def connection(self):
         return {'host': '127.0.0.1', 'port': 3306, 'user': 'app', 'password': PASSWORD}
@@ -1042,6 +1135,14 @@ class TestReportAPI(unittest.TestCase):
     def call(self, payload, name='mariadb-11.4'):
         clock = FakeTime()
         conn, _ = replay('report', name, clock=clock)
+        if payload.get('schemas'):
+            schemas = tuple(payload['schemas'])
+            server = mock.Mock(engine='mariadb' if name.startswith('mariadb') else 'mysql')
+            sql = report.REPORT_TAG + _table_count_sql(server, False, scope_sql('TABLE_SCHEMA', schemas))
+            inventory = next(answers[0] for query, answers in conn.answers.items()
+                             if query.startswith('/*myflames:tables*/ SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE,'))
+            count = sum(row.split('\t')[0] in schemas for row in inventory.splitlines())
+            conn.answers[sql] = [batch([[count]])]
         factory = FakeFactory(conn)
 
         def analysis(c, interval, **options):
@@ -1197,14 +1298,39 @@ class TestReviewGate(unittest.TestCase):
         frag = next(f for f in report._tables_findings(base) if f['id'] == 'tables.fragmentation')
         self.assertEqual(frag['status'], 'unknown')
         self.assertIn('2 tables could not be matched to a tablespace', frag['verdict'])
-        watch = dict(base, fragmentation=[{'schema': 's', 'table': 't', 'status': 'watch', 'free_bytes': 1 << 30,
+        observed = dict(base, fragmentation=[{'schema': 's', 'table': 't', 'status': 'info', 'free_bytes': 1 << 30,
                                            'free_pct': 40, 'caveat': 'c', 'online_sql': 'x'}])
-        frag = next(f for f in report._tables_findings(watch) if f['id'] == 'tables.fragmentation')
-        self.assertEqual(frag['status'], 'watch')
+        frag = next(f for f in report._tables_findings(observed) if f['id'] == 'tables.fragmentation')
+        self.assertEqual(frag['status'], 'unknown')
         self.assertIn('could not be matched', frag['verdict'])
         clean = dict(base, summary={'unknown_tablespace': 0})
         self.assertEqual(next(f for f in report._tables_findings(clean)
                               if f['id'] == 'tables.fragmentation')['status'], 'ok')
+
+    def test_reusable_allocation_remains_informational_in_full_report(self):
+        # Large allocation is evidence, not a capacity or rebuild threshold.
+        base = {'scope': {'schemas': ['app']}, 'summary': {'unknown_tablespace': 0},
+                'tablespaces_known': True, 'fragmentation': [
+                    {'schema': 'app', 'table': 'large', 'status': 'info',
+                     'free_bytes': 238 * (1 << 30), 'free_pct': 12,
+                     'fix_sql': 'OPTIMIZE TABLE `app`.`large`'}]}
+        item = next(f for f in report._tables_findings(base) if f['id'] == 'tables.fragmentation')
+        self.assertEqual(item['status'], 'info')
+        self.assertIn('238', item['headline'])
+        self.assertIn('reusable allocation', item['verdict'])
+        self.assertNotIn('sql', item['action'])
+        self.assertIn('Tables', item['action']['text'])
+
+    def test_unknown_reusable_space_ratio_does_not_print_none_percent(self):
+        base = {'scope': {'schemas': ['app']}, 'summary': {'unknown_tablespace': 0},
+                'tablespaces_known': True, 'fragmentation': [
+                    {'schema': 'app', 'table': 'partial', 'status': 'info',
+                     'free_bytes': 100, 'free_pct': None}]}
+        item = next(f for f in report._tables_findings(base) if f['id'] == 'tables.fragmentation')
+        text = json.dumps(item)
+        self.assertIn('percentage unknown', text)
+        self.assertNotIn('None%', text)
+        self.assertNotIn('null%', text)
 
     def test_statuses_keep_unknowns_visible(self):
         self.assertEqual([report._worst(x) for x in (['ok', 'unknown'], ['info', 'ok'], ['unknown', 'watch'],
@@ -1492,11 +1618,24 @@ class TestAdditionalCheckFamilies(ReportShape):
             self.assertEqual(check['value'], classification)
         self.assertEqual(server_checks.VERSION_SUPPORT['mysql'][(8, 0)][1], '2026-04-21')
 
+    def test_unknown_support_is_not_an_actionable_report_warning(self):
+        for version, expected in (('26.7.0', 'unknown'), ('12.3.2-MariaDB', 'unknown'),
+                                  ('13.0.2-MariaDB', 'unknown'), ('99.1.0', 'unknown'),
+                                  ('8.0.46', 'problem'), ('10.6.25-MariaDB', 'problem')):
+            with self.subTest(version=version):
+                check = ORIGINAL_VERSION_SUPPORT(Server({'version': version}, {}),
+                                                 datetime.date(2026, 10, 19))
+                finding = report._check_findings('checks', [check], {})[0]
+                self.assertEqual(finding['status'], expected)
+                if expected == 'unknown' and version != '99.1.0':
+                    self.assertIn('support unknown', finding['verdict'])
+                    self.assertIn('not been verified', finding['verdict'])
+
     def test_unproved_version_lifecycles_stay_unknown_with_source_notes(self):
         for version, engine, series, note in (
-                ('26.7.0', 'mysql', (26, 7), 'no mysql-26'),
-                ('13.0.2-MariaDB', 'mariadb', (13, 0), 'gamma'),
-                ('12.3.1-MariaDB', 'mariadb', (12, 3), 'gamma')):
+                ('26.7.0', 'mysql', (26, 7), 'not been verified'),
+                ('13.0.2-MariaDB', 'mariadb', (13, 0), 'not been verified'),
+                ('12.3.1-MariaDB', 'mariadb', (12, 3), 'not been verified')):
             with self.subTest(version=version):
                 self.assertIn(series, server_checks.VERSION_SUPPORT[engine])
                 check = ORIGINAL_VERSION_SUPPORT(Server({'version': version}, {}), datetime.date(2026, 10, 15))

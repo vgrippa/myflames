@@ -138,6 +138,56 @@ class TestDefaultsMatchLiveServers(unittest.TestCase):
         self.assertEqual(m.consumer_chain('events_stages_history'), ['events_stages_current', 'global_instrumentation'])
 
 
+class TestIndividualInstruments(unittest.TestCase):
+    def test_live_rows_and_defaults_for_both_engines(self):
+        for name in MYSQL + MARIADB_PS:
+            with self.subTest(server=name):
+                result, _ = report(name)
+                engine, raw = setup_rows(name)
+                rows = result['instruments']
+                self.assertEqual([r['name'] for r in rows], sorted(raw))
+                self.assertEqual(len(rows), len(raw))
+                for row in rows:
+                    enabled, timed, properties = raw[row['name']]
+                    defaults = m.default_state(engine, row['name'], properties)
+                    untimed = row['group'] in ('memory', 'error')
+                    self.assertEqual(row['group'], m._group_of(row['name']))
+                    self.assertEqual(row['enabled'], enabled)
+                    self.assertEqual(row['timed'], None if untimed else timed)
+                    self.assertEqual(row['timed_applies'], not untimed)
+                    self.assertEqual(row['properties'], properties)
+                    self.assertEqual(row['default_enabled'], defaults[0])
+                    self.assertEqual(row['default_timed'], defaults[1])
+                    self.assertEqual(row['builtin'], row['name'].startswith(m.BUILTIN_MEMORY))
+                builtins = [r for r in rows if r['builtin']]
+                self.assertTrue(builtins)
+                self.assertTrue(all(r['enabled'] and r['timed'] is None for r in builtins))
+
+    def test_unknown_defaults_and_untimed_server_flags(self):
+        server = Server({'version': '8.4.11', 'performance_schema': 'ON'}, {})
+        result = m.compute_instruments(server, {'instruments': [
+            ['meter/unknown', 'YES', 'NO'], ['memory/sql/example', 'NO', 'YES'],
+            ['error', 'YES', 'YES'], ['stage/sql/progress', 'YES', 'YES', 'progress'],
+        ]})
+        rows = by(result['instruments'], 'name')
+        self.assertIsNone(rows['meter/unknown']['default_enabled'])
+        self.assertIsNone(rows['meter/unknown']['default_timed'])
+        self.assertTrue(rows['meter/unknown']['timed_applies'])
+        self.assertIsNone(rows['memory/sql/example']['timed'])
+        self.assertIsNone(rows['error']['timed'])
+        self.assertTrue(rows['stage/sql/progress']['default_enabled'])
+        self.assertEqual(rows['stage/sql/progress']['properties'], 'progress')
+
+    def test_off_empty_and_unreadable_tables(self):
+        for name in MARIADB_OFF + ('mysql-8.4-denied',):
+            with self.subTest(server=name):
+                result, _ = report(name)
+                self.assertEqual(result['instruments'], [])
+        server = Server({'version': '8.4.11', 'performance_schema': 'ON'}, {})
+        for raw in ({}, {'instruments': []}):
+            self.assertEqual(m.compute_instruments(server, raw)['instruments'], [])
+
+
 class TestLiveReplay(unittest.TestCase):
     def test_read_only_and_shape(self):
         for name in MYSQL + MARIADB_PS + MARIADB_OFF + ('mysql-8.4-changed', 'mariadb-13.0-minimal'):
@@ -146,9 +196,34 @@ class TestLiveReplay(unittest.TestCase):
                 assert_read_only(self, conn, TAG)
                 self.assertEqual(result['schema_version'], 'instruments-1.0')
                 self.assertEqual([p['key'] for p in result['presets']], list(m.PRESET_KEYS))
-                self.assertIn('never runs them', result['read_only_note'])
+                self.assertIn('Collecting this report does not change settings', result['read_only_note'])
                 for preset in result['presets']:
                     self.assertNotIn('targets', preset)
+
+    def test_successful_instrument_fallback_clears_only_the_failed_read_note(self):
+        # Only MySQL requests PROPERTIES; the three-column fallback supports older versions.
+        for fallback_fails in (False, True):
+            with self.subTest(fallback_fails=fallback_fails):
+                def edit(sql, text, n):
+                    if 'SELECT NAME, ENABLED, TIMED, PROPERTIES' in sql:
+                        raise ConnectorError("ERROR 1054: Unknown column 'PROPERTIES'")
+                    if fallback_fails and 'SELECT NAME, ENABLED, TIMED FROM performance_schema.setup_instruments' in sql:
+                        raise ConnectorError('ERROR 1146: setup_instruments unavailable')
+                    if 'FROM performance_schema.setup_actors' in sql:
+                        raise ConnectorError('ERROR 1142: setup_actors denied')
+                    return text
+                data = fixture('instruments', 'mysql-8.4')
+                calls = list(data['calls'])
+                sql, text = next((s, t) for s, t in calls if 'FROM performance_schema.setup_instruments' in s)
+                fallback = '\n'.join('\t'.join(row.split('\t')[:3]) for row in text.splitlines()) + '\n'
+                calls.append((sql.replace(', PROPERTIES', ''), fallback))
+                result = m.instruments_report(ReplayConn(calls, edit=edit))
+                self.assertTrue(any('Could not read performance_schema.setup_actors:' in n for n in result['notes']))
+                failures = [n for n in result['notes'] if n.startswith('Could not read performance_schema.setup_instruments:')]
+                self.assertEqual(bool(failures), fallback_fails)
+                if not fallback_fails:
+                    self.assertTrue(result['available'])
+                    self.assertTrue(result['instruments'])
 
     def test_mysql_defaults(self):
         for name in MYSQL:
@@ -320,7 +395,7 @@ class TestLiveReplay(unittest.TestCase):
                         'PRESETS'):
             self.assertIn(heading, text)
         self.assertRegex(text, r'off\s+Locks: metadata locks\s+wait/lock/metadata/sql/mdl is off')
-        self.assertIn('never runs them', text)
+        self.assertIn('Collecting this report does not change settings', text)
         self.assertIn('GRANT UPDATE ON performance_schema.setup_instruments', text)
 
 
@@ -419,7 +494,7 @@ CONSUMER_LITERAL = re.compile(r"\b(global_instrumentation|thread_instrumentation
                               r"events_(?:statements|stages|transactions|waits)_(?:current|history_long|history|cpu))\b")
 TABLE_LITERAL = re.compile(r"performance_schema\.([a-z_]+)")
 VIEW_MODULES = ('discover', 'live', 'locks', 'waits', 'indexes', 'io_stats', 'perf_common', 'config_review', 'health',
-                'report', 'server_checks', 'replication', 'variables')
+                'report', 'server_checks', 'replication', 'variables', 'error_log')
 
 
 class TestReplicationReceiverFeature(unittest.TestCase):

@@ -42,6 +42,7 @@ export function SchemaBrowser({
   onInsert,
   onQuery,
   onOpenTable,
+  onOpenData,
 }: {
   connection: Connection;
   width: number;
@@ -52,6 +53,7 @@ export function SchemaBrowser({
   /** Add a statement to the editor and run it. */
   onQuery: (sql: string) => void;
   /** Open a Server view on one table (from: the connection key the name was read from). */
+  onOpenData?: (schema: string, table: string, from: string) => void;
   onOpenTable?: (view: "indexes" | "tables", schema: string, table: string, from: string) => void;
 }) {
   const key = connectionKey(connection);
@@ -476,6 +478,8 @@ export function SchemaBrowser({
               >
                 Show CREATE {menuNode.kind === "view" ? "VIEW" : "TABLE"}
               </button>
+              {onOpenData && menuNode.kind === "table" && <button type="button" role="menuitem"
+                onClick={() => act(() => onOpenData(menuNode.schema!, menuNode.table!, key))}>Edit table data…</button>}
               {onOpenTable && menuNode.kind === "table" && (
                 <>
                   <button type="button" role="menuitem" onClick={() => act(() => onOpenTable("indexes", menuNode.schema!, menuNode.table!, key))}>

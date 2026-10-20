@@ -1,5 +1,5 @@
 import { PrivilegesProvider } from "./privileges";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import {
   api,
@@ -19,18 +19,22 @@ import {
   type View,
 } from "./api";
 import { Icon, ImportDialog } from "./components";
+import { CommandPalette, type WorkspaceCommand } from "./CommandPalette";
 import { Teach } from "./Teach";
 import { QueryLab, type EditorState, type QueryLabHandle } from "./QueryLab";
 import { Library } from "./Library";
 import { Home } from "./Home";
-import { Server, SERVER_VIEWS } from "./Server";
-import { connectionKey } from "./binding";
+import { Server, SERVER_VIEWS, WORKLOAD_VIEWS, SERVER_GROUPS, WORKLOAD_GROUPS, WORKLOAD_KINDS } from "./Server";
+import { ReplicationPlace } from "./ReplicationPlace";
+import { connectionKey, connectionLabel, type Bound } from "./binding";
+import type { ReplicationReport, SkipLoop } from "./opsApi";
 import { WindowStatusBar, WindowStatusProvider } from "./kit";
+import { ViewOnScreenContext } from "./viewOnScreen";
 import { PLACES, Sidebar, type Place } from "./Sidebar";
 import {
   ConnectionPicker,
   Connections,
-  SafetyStrip,
+  SafetyStatus,
   WritePolicyContext,
   connectionFields,
   connectionSafety,
@@ -59,6 +63,7 @@ import {
   type LabState,
   type SessionPlan,
   type SaveStatus,
+  type ServerKind,
   type SessionConnection,
   type SlowState,
 } from "./session";
@@ -82,8 +87,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "server" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "server" | "workload" | "replication" | "tuning" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "workload", "replication", "tuning", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -103,6 +108,9 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   home: "home",
   query: "query",
   server: "server",
+  workload: "workload",
+  replication: "replication",
+  tuning: "tuning",
   investigations: "library",
   learn: "teach",
 };
@@ -174,6 +182,8 @@ function App() {
   }, []);
   const chrome = useRef<HTMLDivElement>(null);
   const [placeActionsWidth, setPlaceActionsWidth] = useState(0);
+  const [replicationBadge, setReplicationBadge] = useState<ReactNode>(null);
+  const [replicationLoops, setReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
   const [plans, setPlans] = useState<(Plan & { origin?: "sample" })[]>([]);
   const [activeId, setActiveId] = useState("");
   const active = plans.find((p) => p.id === activeId);
@@ -237,6 +247,16 @@ function App() {
   // stored session has been read, so the Query editor, Server, and Learn mount restored.
   const [ready, setReady] = useState(false);
   const [resetKey, setResetKey] = useState(0);
+  // One Replication report for the Replication place and Server's Refresh all
+  // (a reset, such as Start fresh, drops it like it drops Server's own state).
+  const [replicationShared, setReplicationShared] = useState<{ reset: number; report: Bound<ReplicationReport> | null }>({ reset: 0, report: null });
+  const resetKeyRef = useRef(resetKey);
+  resetKeyRef.current = resetKey;
+  const replicationReport = replicationShared.reset === resetKey ? replicationShared.report : null;
+  const shareReplication = useCallback(
+    (report: Bound<ReplicationReport>) => setReplicationShared({ reset: resetKeyRef.current, report }),
+    [],
+  );
   const [labInitial, setLabInitial] = useState<LabState | undefined>();
   const [labState, setLabState] = useState<LabState>(defaultLab);
   const [teachLesson, setTeachLesson] = useState("");
@@ -763,6 +783,10 @@ function App() {
     setConnectionNote("");
     setTeachLesson("");
     setResetKey((k) => k + 1);
+    // Server mounts again on its next visit: it must not replay an old link.
+    setServerNavigation(undefined);
+    setServerLink(null);
+    setInstrumentsLink(null);
     setError("");
     setNotice("");
   }
@@ -950,6 +974,9 @@ function App() {
     setActivePassword("");
     setConnectionNote("");
     setResetKey((k) => k + 1);
+    setServerNavigation(undefined);
+    setServerLink(null);
+    setInstrumentsLink(null);
     const snapshotText = serializeSession(
       {
         mode: nextMode,
@@ -1202,6 +1229,38 @@ function App() {
       ),
     [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known],
   );
+  const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
+  // The places that send to the connection in use (the footer names its
+  // write safety there, and only there).
+  const connectionPlace = mode === "query" || mode === "server" || mode === "workload" || mode === "replication" || mode === "tuning";
+  // Server renders Server, Workload and Tuning. While another place is on
+  // screen it keeps the one shown last, so leaving it never swaps (and
+  // mounts) a different view in the hidden place.
+  const serverPlaceRef = useRef<"server" | "workload" | "tuning">(mode === "workload" || mode === "tuning" ? mode : "server");
+  if (mode === "server" || mode === "workload" || mode === "tuning") serverPlaceRef.current = mode;
+  const serverPlace = serverPlaceRef.current;
+  const serverOnScreen = ready && mode === serverPlace;
+  // Server and Replication mount on their first visit and stay mounted,
+  // hidden, after it, so nothing reads a server before its place is opened
+  // (views read on open only while on screen, viewOnScreen.ts). A restored
+  // skip loop mounts both at once so its status is found again (that status
+  // reads no database). Start fresh and reopening a snapshot start over.
+  const visited = useRef({ key: resetKey, server: false, replication: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false };
+  if (serverOnScreen) visited.current.server = true;
+  if (ready && mode === "replication") visited.current.replication = true;
+  const restoredLoop = labInitial?.slow?.replication_loop_active === true;
+  const mountServer = visited.current.server || restoredLoop;
+  const mountReplication = visited.current.replication || restoredLoop;
+  // Replication's "How to turn it on" opens Server > Instruments at that row.
+  const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
+  const openInstrumentsRow = useCallback((row: string) => {
+    setInstrumentsLink((l) => ({ row, n: (l?.n || 0) + 1 }));
+    setMode("server");
+    setError("");
+    setNotice("");
+  }, []);
+
   function go(next: Place) {
     if (next === "learn") {
       setLesson("");
@@ -1221,18 +1280,17 @@ function App() {
     setRestored(null);
     setConfirmFresh(false);
   }
-  // Production and Read-only connections are named across the Query editor
-  // and Server (the places that send to the connection in use).
-  // Unknown (not loaded, or the read failed) is shown as Production assumed.
-  const strip =
-    ready && (mode === "query" || mode === "server") && (!safety.known || safety.read_only || safety.type === "production") ? (
-      <SafetyStrip
-        safety={safety}
-        name={labState.connection.name || connectionTarget(labState.connection)}
-        unknown={profilesFailed || "loading"}
-        onRetry={() => void refreshProfiles().catch(() => {})}
-      />
-    ) : null;
+  // The write safety of the connection in use, first in the window footer of
+  // the places that send to it (Query editor, Server, Workload, Replication,
+  // Tuning). Unknown (not loaded, or the read failed) is Production assumed.
+  const safetyStatus = ready && connectionPlace ? (
+    <SafetyStatus
+      safety={safety}
+      name={labState.connection.name || connectionTarget(labState.connection)}
+      unknown={profilesFailed || "loading"}
+      onRetry={() => void refreshProfiles().catch(() => {})}
+    />
+  ) : null;
   function manageConnections() {
     go("home");
     window.setTimeout(() => {
@@ -1295,7 +1353,7 @@ function App() {
   // the progress menu. This adapter leaves Server's operation lifecycle intact.
   useLayoutEffect(() => {
     const actions = chrome.current?.querySelector<HTMLElement>(".server-place > .place-toolbar");
-    if (!actions || mode !== "server") { setPlaceActionsWidth(0); return; }
+    if (!actions || (mode !== "server" && mode !== "workload")) { setPlaceActionsWidth(0); return; }
     const measure = () => setPlaceActionsWidth(actions.getBoundingClientRect().width);
     measure();
     const observer = new ResizeObserver(measure);
@@ -1303,10 +1361,81 @@ function App() {
     return () => observer.disconnect();
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : mode === "server" ? `server:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "server" || mode === "workload" || mode === "replication" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
+
+  const [serverNavCollapsed, setServerNavCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("myflames.serverNavCollapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const toggleServerNavCollapsed = useCallback(() => {
+    setServerNavCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("myflames.serverNavCollapsed", String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+  const isWorkload = mode === "workload";
+  const activeViewList = isWorkload ? WORKLOAD_VIEWS : SERVER_VIEWS;
+  const currentView = activeViewList.find((v) => v.id === labState.slow.kind) || activeViewList[0];
+  function chooseServerView(viewId: ServerKind) {
+    if (WORKLOAD_KINDS.includes(viewId)) {
+      if (mode !== "workload") go("workload");
+    } else {
+      if (mode !== "server") go("server");
+    }
+    setServerNavigation((n) => ({ view: viewId, n: (n?.n || 0) + 1 }));
+  }
+
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCommandPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const workspaceCommands = useMemo<WorkspaceCommand[]>(() => [
+    { id: "place-home", label: "Home", group: "Places", icon: "home", run: () => go("home") },
+    { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
+    { id: "place-server", label: "Server", group: "Places", icon: "server", keywords: "database status", run: () => go("server") },
+    { id: "place-workload", label: "Workload", group: "Places", icon: "statements", keywords: "queries top processes waits io", run: () => go("workload") },
+    { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
+    { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
+    // The Full analysis is the Tuning place's second tab (Server.tsx choose).
+    { id: "tuning-report", label: "Full analysis", group: "Tuning", icon: "analysis", keywords: "full analysis report findings tuner", run: () => { go("tuning"); setServerNavigation((n) => ({ view: "report", n: (n?.n || 0) + 1 })); } },
+    { id: "place-compare", label: "Compare plans", group: "Places", icon: "compare", keywords: "diff compare plans", run: () => setMode("compare") },
+    ...SERVER_VIEWS.map((v) => ({
+      id: `server-${v.id}`,
+      label: v.label,
+      group: `Server · ${v.group}`,
+      icon: v.icon,
+      keywords: `${v.label} ${v.group} server`,
+      run: () => { go("server"); chooseServerView(v.id); },
+    })),
+    ...WORKLOAD_VIEWS.map((v) => ({
+      id: `workload-${v.id}`,
+      label: v.label,
+      group: `Workload · ${v.group}`,
+      icon: v.icon,
+      keywords: `${v.label} ${v.group} workload`,
+      run: () => { go("workload"); chooseServerView(v.id); },
+    })),
+    { id: "action-import", label: "Import plan", group: "Actions", icon: "import", keywords: "open json explain analyze", run: openImport },
+    { id: "action-audit", label: "Audit log", group: "Actions", icon: "history", keywords: "history writes log", run: openAuditLog },
+  ], [go]);
+
   return (
     <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} connected={ready && safety.known && !!request.host}>
     <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
@@ -1330,28 +1459,169 @@ function App() {
         onRemovePlan={removePlan}
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
+        placeBadges={{ replication: replicationBadge }}
       />
-      <div ref={chrome} data-place={place || "audit"} className={`workspace${strip ? " has-safety-strip" : ""}`} style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
+      <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
           <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebarOpen((open) => !open)}><Icon name="browser" /></button>
           <div className="topbar-title">
-            <strong>{placeLabel}</strong>
-            {mode === "server" && <><Icon name="chevron" size={12} /><span>{SERVER_VIEWS.find((v) => v.id === labState.slow.kind)?.label || "Health"}</span></>}
-            {mode === "inspect" && active && (
+            {mode === "server" || mode === "workload" ? (
+              <div className="topbar-breadcrumb">
+                <Popover
+                  label="Switch place"
+                  buttonClassName="topbar-crumb-btn is-place"
+                  trigger={
+                    <>
+                      <strong>{placeLabel}</strong>
+                      <Icon name="chevron-down" size={10} />
+                    </>
+                  }
+                >
+                  <div className="topbar-menu-dropdown">
+                    <div className="topbar-menu-section-title">Places</div>
+                    <button
+                      type="button"
+                      className={`topbar-menu-item${mode === "server" ? " is-active" : ""}`}
+                      onClick={() => {
+                        closePopovers();
+                        go("server");
+                      }}
+                    >
+                      <Icon name="server" size={14} />
+                      <span>Server</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`topbar-menu-item${mode === "workload" ? " is-active" : ""}`}
+                      onClick={() => {
+                        closePopovers();
+                        go("workload");
+                      }}
+                    >
+                      <Icon name="statements" size={14} />
+                      <span>Workload</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-menu-item"
+                      onClick={() => {
+                        closePopovers();
+                        go("query");
+                      }}
+                    >
+                      <Icon name="query" size={14} />
+                      <span>Query editor</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-menu-item"
+                      onClick={() => {
+                        closePopovers();
+                        go("replication");
+                      }}
+                    >
+                      <Icon name="replication" size={14} />
+                      <span>Replication</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-menu-item"
+                      onClick={() => {
+                        closePopovers();
+                        go("tuning");
+                      }}
+                    >
+                      <Icon name="tuning" size={14} />
+                      <span>Tuning</span>
+                    </button>
+                  </div>
+                </Popover>
+
+                <span className="topbar-crumb-separator" aria-hidden="true">
+                  <Icon name="chevron" size={12} />
+                </span>
+
+                <Popover
+                  label={`Select ${placeLabel} view`}
+                  buttonClassName="topbar-crumb-btn is-view"
+                  trigger={
+                    <>
+                      <span>{currentView.label}</span>
+                      <Icon name="chevron-down" size={10} />
+                    </>
+                  }
+                >
+                  <div className="topbar-menu-dropdown views-dropdown">
+                    {(isWorkload ? WORKLOAD_GROUPS : SERVER_GROUPS).map((group) => {
+                      const groupViews = activeViewList.filter((v) => v.group === group);
+                      if (!groupViews.length) return null;
+                      return (
+                        <div key={group} className="topbar-menu-group">
+                          <div className="topbar-menu-section-title">{group}</div>
+                          {groupViews.map((v) => (
+                            <button
+                              key={v.id}
+                              type="button"
+                              className={`topbar-menu-item${currentView.id === v.id ? " is-active" : ""}`}
+                              onClick={() => {
+                                closePopovers();
+                                chooseServerView(v.id);
+                              }}
+                            >
+                              <Icon name={v.icon} size={14} />
+                              <span>{v.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })}
+                    <div className="topbar-menu-divider" />
+                    <div className="topbar-menu-footer">
+                      <button
+                        type="button"
+                        className="topbar-menu-switch-place"
+                        onClick={() => {
+                          closePopovers();
+                          go(isWorkload ? "server" : "workload");
+                        }}
+                      >
+                        <span>Switch to {isWorkload ? "Server" : "Workload"} views</span>
+                        <Icon name="chevron" size={12} />
+                      </button>
+                    </div>
+                  </div>
+                </Popover>
+
+                <button
+                  type="button"
+                  className={`icon-button topbar-secondary-toggle${serverNavCollapsed ? " is-collapsed" : ""}`}
+                  aria-label={serverNavCollapsed ? "Expand views sidebar (dock menu)" : "Collapse views sidebar (float menu)"}
+                  title={serverNavCollapsed ? "Expand views sidebar (dock menu)" : "Collapse views sidebar (float menu)"}
+                  onClick={toggleServerNavCollapsed}
+                >
+                  <Icon name={serverNavCollapsed ? "browser" : "split-pane"} size={14} />
+                </button>
+              </div>
+            ) : (
               <>
-                <Icon name="chevron" size={12} />
-                <span>{active.name}</span>
-              </>
-            )}
-            {mode === "compare" && (
-              <>
-                <Icon name="chevron" size={12} />
-                <span>Compare</span>
+                <strong>{placeLabel}</strong>
+                {mode === "inspect" && active && (
+                  <>
+                    <Icon name="chevron" size={12} />
+                    <span>{active.name}</span>
+                  </>
+                )}
+                {mode === "compare" && (
+                  <>
+                    <Icon name="chevron" size={12} />
+                    <span>Compare</span>
+                  </>
+                )}
               </>
             )}
           </div>
-          {ready && (mode === "query" || mode === "server") && picker}
+          {ready && connectionPlace && picker}
           <div className="topbar-actions">
             {/* ui-architecture: actions stay with the object they act on;
                 workspace autosave and investigation edits have distinct names. */}
@@ -1365,9 +1635,9 @@ function App() {
                 </button>
               </>
             )}
-            {ready && (mode === "home" || mode === "inspect" || mode === "compare") && (
+            {ready && mode === "home" && (
               <button
-                className={`button small${mode === "home" && !plans.length ? " primary" : ""}`}
+                className={`button small${!plans.length ? " primary" : ""}`}
                 aria-label="Import plan"
                 title="Import plan"
                 onClick={openImport}
@@ -1376,6 +1646,17 @@ function App() {
                 <span className="topbar-label">Import plan</span>
               </button>
             )}
+            <button
+              type="button"
+              className="button small ghost command-trigger"
+              aria-label="Search or jump to (Cmd+K)"
+              title="Search or jump to (Cmd+K)"
+              onClick={() => setCommandPaletteOpen(true)}
+            >
+              <Icon name="search" size={13} />
+              <span>Search…</span>
+              <kbd>⌘K</kbd>
+            </button>
             <span
               className="local-badge"
               title="Runs on this computer. Nothing is sent to an external service."
@@ -1384,7 +1665,6 @@ function App() {
             </span>
           </div>
         </header>
-        {strip}
         </div>
         <main
           id="main"
@@ -1392,6 +1672,9 @@ function App() {
             mode === "inspect" ||
             mode === "compare" ||
             mode === "server" ||
+            mode === "workload" ||
+            mode === "replication" ||
+            mode === "tuning" ||
             mode === "query" ||
             mode === "audit" ||
             mode === "home"
@@ -1544,6 +1827,9 @@ function App() {
               onOpenPlan={openPlan}
               onOpenBundle={openBundle}
               onInvestigations={() => go("investigations")}
+              onQuery={() => go("query")}
+              onServer={() => go("server")}
+              onDiagram={() => chooseServerView("diagram")}
               queryTabs={labState.tabs}
               onOpenQuery={(id) => {
                 labRef.current?.openTab(id);
@@ -1573,14 +1859,25 @@ function App() {
               </WritePolicyContext.Provider>
             </div>
           )}
-          {ready && (
-            <div hidden={mode !== "server"}>
+          {ready && mountServer && (
+            <div hidden={!serverOnScreen}>
               <WritePolicyContext.Provider value={writePolicy}>
+              <ViewOnScreenContext.Provider value={serverOnScreen}>
               <Server
                 key={resetKey}
+                place={serverPlace}
+                onScreen={serverOnScreen}
+                onNavigatePlace={(targetPlace, targetView) => {
+                  go(targetPlace);
+                  // Tuning shows its one view; Server and Workload choose theirs.
+                  if (targetPlace !== "tuning") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
+                }}
+                navCollapsed={serverNavCollapsed}
+                onToggleNavCollapsed={toggleServerNavCollapsed}
                 picker={null}
                 connection={request}
                 disabled={labBusy}
+                navigation={serverNavigation}
                 settings={{
                   timeout: labState.timeout,
                   repeat: labState.repeat,
@@ -1588,12 +1885,17 @@ function App() {
                 }}
                 initial={labInitial?.slow}
                 onStateChange={reportSlow}
+                replicationLoops={replicationLoops}
+                onReplicationLoops={setReplicationLoops}
+                replication={replicationReport}
+                onReplication={shareReplication}
                 onDigest={openDigest}
                 onShowPlan={showPlan}
                 onAddPlan={addPlan}
                 onOpenPlan={openPlan}
                 onBatchChange={setBatchRunning}
                 link={serverLink}
+                instrumentsLink={instrumentsLink}
                 onOpenLesson={(key) => {
                   go("learn");
                   setLesson(key);
@@ -1604,6 +1906,33 @@ function App() {
                   window.setTimeout(() => labRef.current?.openSql(sql));
                 }}
               />
+              </ViewOnScreenContext.Provider>
+              </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountReplication && (
+            <div hidden={mode !== "replication"}>
+              <WritePolicyContext.Provider value={writePolicy}>
+              <ViewOnScreenContext.Provider value={mode === "replication"}>
+                <ReplicationPlace
+                  connection={request}
+                  disabled={labBusy}
+                  onBadgeChange={setReplicationBadge}
+                  onOpenInstruments={openInstrumentsRow}
+                  loops={replicationLoops}
+                  onLoops={setReplicationLoops}
+                  report={replicationReport}
+                  onReport={shareReplication}
+                  onLoopActivity={(active) => {
+                    patchLab({
+                      slow: {
+                        ...(labState.slow || { kind: "health" }),
+                        replication_loop_active: active,
+                      },
+                    });
+                  }}
+                />
+              </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
             </div>
           )}
@@ -2105,12 +2434,12 @@ function App() {
             </section>
           )}
         </main>
-        {ready && (plansStatus || mode === "query" || mode === "server") && <WindowStatusBar scope={statusScope}
+        {ready && (plansStatus || connectionPlace) && <WindowStatusBar scope={statusScope} lead={safetyStatus}
           fallback={plansStatus ? {
             engineVersion: mode === "inspect" && active?.capture?.server_version ? `${engineName(active.capture.engine)} ${active.capture.server_version}` : undefined,
             connectionState: mode === "compare" ? "Compared plans" : active?.capture ? "Captured plan" : active?.origin === "sample" ? "Sample plan" : active ? "Imported plan" : "No plan selected",
             transaction: "No live session",
-          } : { connectionState: `${labState.connection.name || connectionTarget(labState.connection)} selected` }} />}
+          } : { connectionState: request.host ? connectionLabel(request) : "No connection" }} />}
       </div>
       <input
         ref={file}
@@ -2137,6 +2466,12 @@ function App() {
           onPaste={(raw, n) => {
             importPlan(raw, n).catch(() => {});
           }}
+        />
+      )}
+      {commandPaletteOpen && (
+        <CommandPalette
+          commands={workspaceCommands}
+          onClose={() => setCommandPaletteOpen(false)}
         />
       )}
     </div>

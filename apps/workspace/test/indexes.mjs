@@ -53,13 +53,19 @@ const { page, state, button, text } = h;
 state.fallback = { status: 200, body: mysql };
 const view = ".server-view[data-view=indexes]";
 const refresh = `${view} [data-action=refresh]`;
-const list = (name) => page.click(`${view} .segmented button[data-value=${name}]`);
+const list = async (name) => {
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.click(`${view} .segmented button[data-value=${name}]`);
+};
 const ids = (label) => page.$$eval(`${view} [aria-label="${label}"] tbody tr`, (els) => els.map((e) => e.dataset.index || e.dataset.table));
 try {
   await h.server();
   await h.view("indexes");
-  assert.match(await text(`${view} .view-empty`), /all user databases by default/);
-  // A small server: all user databases is allowed as is.
+  // A small server reads on open, because the view is on screen.
+  await page.waitForSelector(`${view} .fact-strip`);
+  await h.idle(view);
+  assert.equal(state.seen.length, 1, "opening reads once");
+  state.seen.length = 0;
   assert.equal(await text(`${view} .perf-picker-summary`), "All user databases");
   assert.equal(await page.$eval(refresh, (e) => e.disabled), false);
   assert.equal(await page.$(`${view} .auto-refresh`), null, "no automatic refresh");
@@ -74,7 +80,6 @@ try {
   await page.locator("#indexes-schemas-panel button ::-p-text(Reload list)").click();
   await page.waitForFunction((sel) => document.querySelector(sel).disabled, {}, refresh);
   assert.match(await text(`${view} .gate #indexes-load-hint`), /12,345 tables in user databases, more than 2,000: choose databases/);
-  assert.equal(await page.$eval(`${view} .view-empty button`, (e) => e.disabled), true);
   await page.click("#indexes-schemas-panel .perf-picker-list input");
   assert.equal(await text(`${view} .perf-picker-summary`), "mfshop");
   assert.equal(await page.$eval(refresh, (e) => e.disabled), false);
@@ -92,7 +97,7 @@ try {
   schemasMock.body = small;
 
   state.delay = 300;
-  await button("Load index health", view + " ");
+  await h.refresh();
   await page.waitForSelector(`${view} .capture-status`);
   assert.match(await text(`${view} .capture-status`), /Reading index usage for mfshop/);
   await page.waitForSelector(`${view} .fact-strip`);
@@ -118,10 +123,16 @@ try {
   await h.select(`${view} tr[data-index="orders.k_customer"]`);
   await page.waitForFunction(() => /backs a foreign key \(child side of fk_orders_customer/.test(document.querySelector(".view-inspector")?.textContent || ""));
   assert.equal(await page.$(".view-inspector .perf-sql"), null, "no drop statement for an index to keep");
-  // Keyboard: Up moves to the candidate above; the inspector follows with the statements.
+  // Keyboard: Up moves to the candidate above; details open on Enter with the statements.
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector") && document.activeElement?.matches("[data-row-key]"));
   await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "k_status_dup");
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector") && document.activeElement?.matches("[data-row-key]"));
   await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "k_status");
   const why = await h.inspector();
   assert.match(why, /COUNT_STAR = 0/);
@@ -206,8 +217,13 @@ try {
   await page.waitForFunction(() => !/naming/.test(document.querySelector(".server-view[data-view=top] .summary-line")?.textContent || "naming"));
   await page.type("#top-schema", "mfshop");
 
-  // Back in Indexes: the list read earlier is kept; Explain opens the Query editor through the digest path.
+  // Back in Indexes: the report is kept (no second read) and the list tab starts again at its
+  // default; the statements read earlier are kept, so opening the table shows them without a read.
   await h.view("indexes");
+  await page.waitForSelector(`${view} .fact-strip`);
+  assert.equal(state.seen.length, 1, "returning keeps the report");
+  await list("scans");
+  await h.select(scan);
   await page.waitForSelector(".view-inspector .statements-behind-list li");
   assert.equal(topCalls().length, 3, "returning shows the statements read before");
   await page.click('.view-inspector [aria-label="Explain statement 1 that names mfshop.orders"]');
@@ -295,6 +311,7 @@ try {
   await h.view("tables");
   await h.view("indexes");
   assert.equal(state.seen.length, reads, "returning to the view does not read again");
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.locator(`${view} .perf-focus button ::-p-text(Show all tables)`).click();
   assert.ok((await page.$$(`${view} tbody tr`)).length > 0);
 
@@ -313,7 +330,10 @@ try {
   await h.server();
   await page.waitForSelector("#server-nav-indexes[aria-current=page]");
   assert.equal(await text(`${view} .perf-picker-summary`), "shop9");
-  assert.match(await text(`${view} .view-empty`), /all user databases by default/);
+  // The report is not restored: the view reads again on open, for the restored databases.
+  await page.waitForSelector(`${view} .fact-strip`);
+  await h.idle(view);
+  assert.deepEqual(state.seen.at(-1).schemas, ["shop9"], "the read on open uses the restored databases");
   await h.view("top");
   assert.equal(await page.$eval("#top-schema", (e) => e.value), "mfshop",
     "Top statements keeps its own schema (from the earlier link), not the Indexes choice");

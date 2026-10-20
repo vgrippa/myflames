@@ -1,4 +1,4 @@
-"""Configuration review: ``myflames config``, the Config tab API, and the rules.
+"""Configuration review: ``myflames config``, the Parameters view API, and the rules.
 
 Replays live captures (see _perf_replay) of default-configured servers, then
 checks each rule with edited variables and status counters.
@@ -216,6 +216,55 @@ class TestRules(ConfigCase):
         self.assertIn('SET GLOBAL innodb_log_file_size', mariadb['action']['sql'])
         self.assertIn('the checkpoint age is 48.0 MiB now', mariadb['why'])
 
+    def test_legacy_mysql_redo_watch_recommends_configuration_and_restart(self):
+        # Only MySQL has the legacy two-variable capacity; MariaDB uses one file.
+        result = check(compute({'version': '8.0.29', 'innodb_redo_log_capacity': None,
+                                'innodb_log_file_size': str(48 * MIB), 'innodb_log_files_in_group': '2'},
+                               status={'Innodb_os_log_written': str(8640 * MIB)}), 'redo')
+        self.assertEqual(result['status'], 'watch')
+        action = result['action']
+        self.assertNotIn('sql', action)
+        self.assertNotIn('innodb_redo_log_capacity', action['config'])
+        self.assertIn('innodb_log_file_size = 268435456', action['config'])
+        self.assertIn('innodb_log_files_in_group = 2', action['config'])
+        self.assertIn('restart', action['text'])
+
+    def test_correctness_regression_mariadb_redo_resize_version(self):
+        # MariaDB has one redo file; MySQL's legacy multi-file path is separate.
+        for version in ('10.6.25', '10.8.8', '10.9.0', '10.9.1', '10.11.19', '11.4.13'):
+            with self.subTest(version=version):
+                result = check(compute({'version': version + '-MariaDB'}, engine='mariadb',
+                                       status={'Innodb_os_log_written': str(8640 * MIB)}), 'redo')
+                self.assertEqual(result['status'], 'watch')
+                action = result['action']
+                # An hour at 0.1 MiB/s rounds up to 512 MiB total, in one file.
+                self.assertEqual(action['config'], 'innodb_log_file_size = 536870912  # under [mysqld]')
+                if version in ('10.6.25', '10.8.8', '10.9.0'):
+                    self.assertNotIn('sql', action)
+                    self.assertNotIn('SET ', json.dumps(action))
+                    self.assertIn('restart', action['text'])
+                else:
+                    self.assertEqual(action['sql'], 'SET GLOBAL innodb_log_file_size = 536870912;')
+
+    def test_correctness_regression_temptable_per_table_version(self):
+        # The 8.0.28 boundary affects TempTable, never the MEMORY engine or MariaDB.
+        for version in ('8.0.27', '8.0.28', '8.4.11'):
+            for storage in ('TempTable', 'MEMORY'):
+                with self.subTest(version=version, storage=storage):
+                    result = check(compute({'version': version, 'internal_tmp_mem_storage_engine': storage},
+                                           status={'Created_tmp_disk_tables': '300'}), 'tmp_tables')
+                    self.assertEqual(result['status'], 'watch')
+                    text = result['explain'] + json.dumps(result['action'])
+                    if version == '8.0.27' and storage == 'TempTable':
+                        self.assertIn('Before MySQL 8.0.28 TempTable has no per-table limit', result['explain'])
+                        self.assertNotIn('tmp_table_size', text)
+                        self.assertIn('temptable_max_ram (global)', text)
+                        self.assertIn('all TempTable tables share', result['caveat'])
+                        self.assertNotIn('tmp_table_size', [v['name'] for v in result['settings']])
+                    else:
+                        self.assertIn('tmp_table_size', result['explain'])
+                        self.assertIn('SET SESSION tmp_table_size', result['action']['text'])
+
     def test_connections_and_table_cache(self):
         self.assertEqual(check(compute(status={'Max_used_connections': '119'}), 'max_connections')['status'], 'ok')
         self.assertEqual(check(compute(status={'Max_used_connections': '121'}), 'max_connections')['status'], 'watch')
@@ -330,12 +379,15 @@ class TestConfigCLIAndAPI(ConfigCase):
         self.assertIn('1 a check reached the --fail-on level', ' '.join(out.split()))
 
     def test_api(self):
-        conn, _ = replay('config', 'mariadb-11.4')
+        from myflames.parameters import MARIADB_SQL
+        _, recording = replay('config', 'mariadb-11.4')
+        conn = ReplayConn(recording['calls'] + [[TAG + MARIADB_SQL, '']])
         factory = FakeFactory(conn)
         with mock.patch('myflames.connector.MySQLConnection', factory):
             result = ui.api_response('/api/live/config', {'connection': {'host': '127.0.0.1', 'password': PASSWORD}},
                                      workspace=object())
         self.assertEqual(result['schema_version'], 'config-1.0')
+        self.assertTrue(result['parameters']['complete'])
         assert_read_only(self, conn, TAG)
         self.assertIn('"/api/live/config"', inspect.getsource(ui.WorkspaceHandler.do_POST))
         self.assertIn('/api/live/config', ui._CONNECTION_PATHS)

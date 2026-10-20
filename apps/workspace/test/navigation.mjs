@@ -130,12 +130,12 @@ try {
   const last = (pathname) => seen[pathname].at(-1);
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
-  // 1. Places: six, in order, each with its own icon.
-  const places = ["Home", "Plans", "Query editor", "Server", "Investigations", "Learn"];
+  // 1. Places: nine, in order, each with its own icon.
+  const places = ["Home", "Server", "Workload", "Replication", "Tuning", "Query editor", "Plans", "Investigations", "Learn"];
   assert.deepEqual(await texts(".main-nav button"), places);
   const icons = await page.$$eval(".main-nav button svg", (els) => els.map((e) => e.innerHTML));
-  assert.equal(icons.length, 6);
-  assert.equal(new Set(icons).size, 6, "every place has a distinct icon");
+  assert.equal(icons.length, 9);
+  assert.equal(new Set(icons).size, 9, "every place has a distinct icon");
   assert.equal(await page.$eval(".brand", (e) => e.getAttribute("aria-label")), "myflames Home");
   assert.equal(await page.title(), "myflames · Performance workspace");
 
@@ -157,6 +157,9 @@ try {
     Plans: ".plans-empty",
     "Query editor": ".query-lab",
     Server: ".server-place",
+    Workload: ".server-place",
+    Replication: ".replication-place",
+    Tuning: ".server-place.is-tuning-place .server-view[data-view=tuning]",
     Investigations: '[aria-label="Search investigations"]',
     Learn: ".teach-workspace",
     Home: ".home",
@@ -171,7 +174,45 @@ try {
     assert.deepEqual(await active(), [label], `${label} is the only active place`);
     assert.deepEqual(await current(), [label]);
     assert.match(await text(".topbar-title"), new RegExp("^" + label));
+    // Exactly one place looks selected: the current one has the selection
+    // fill, every other place (a badge dot included) keeps a clear background.
+    // (Hover and selection fade in 120 ms; the mouse moves off the list first.)
+    await page.mouse.move(900, 600);
+    const filled = () => page.$$eval(".main-nav button", (els) => els
+      .filter((e) => !["rgba(0, 0, 0, 0)", "transparent"].includes(getComputedStyle(e).backgroundColor)).map((e) => e.textContent));
+    await page.waitForFunction((l) => {
+      const on = [...document.querySelectorAll(".main-nav button")].filter((e) => !["rgba(0, 0, 0, 0)", "transparent"].includes(getComputedStyle(e).backgroundColor));
+      return on.length === 1 && on[0].textContent === l;
+    }, { timeout: 3000 }, label).catch(() => {});
+    assert.deepEqual(await filled(), [label], `${label}: one place has the selection fill`);
+    // A mouse click leaves no focus ring on the place.
+    assert.equal(await page.$eval(".main-nav button.active", (e) => e.matches(":focus-visible") || getComputedStyle(e).outlineStyle !== "none"), false,
+      `${label}: no focus ring after a click`);
+    // Tuning is a place of its own: no Server list of views, no Server toolbar.
+    if (label === "Tuning") {
+      assert.equal(await page.$eval(".server-place.is-tuning-place", (e) => !!e.querySelector(".source-list, .place-toolbar")), false,
+        "Tuning shows no Server navigation");
+      assert.equal(await page.$eval(".topbar-title", (e) => !!e.querySelector(".topbar-breadcrumb")), false, "Tuning has no Server breadcrumb");
+      assert.ok(await page.$('.window-statusbar[aria-label="Workspace status"] [data-status="safety"]'), "Tuning has the window footer");
+    }
   }
+  // The keyboard focus ring is visible and is not the selection fill.
+  await page.focus('.main-nav button[data-place="server"]');
+  await page.keyboard.press("ArrowDown");
+  const ring = await page.$eval('.main-nav button[data-place="workload"]', (e) => ({
+    focused: document.activeElement === e && e.matches(":focus-visible"),
+    outline: getComputedStyle(e).outlineStyle,
+    active: e.classList.contains("active"),
+  }));
+  assert.deepEqual(ring, { focused: true, outline: "solid", active: false }, "keyboard focus draws a ring on a place that is not selected");
+  // Server never shows the Tuning view: Server opens its own last view.
+  await go("Tuning");
+  await page.waitForSelector(".server-place.is-tuning-place .server-view[data-view=tuning]");
+  await go("Server");
+  await page.waitForSelector(".server-place:not(.is-tuning-place) .source-list [aria-current=page]");
+  assert.equal(await page.$(".server-place:not(.is-tuning-place) .server-view[data-view=tuning]"), null, "Server does not embed Tuning");
+  assert.equal(await page.$$eval(".source-list .source-item", (els) => els.some((e) => e.dataset.view === "tuning")), false, "Tuning is not a Server view");
+  await go("Home");
   assert.equal(await page.$(".welcome") !== null, true);
   // Plans has its own empty state, with Import plan once (in its bar).
   await go("Plans");
@@ -252,7 +293,8 @@ try {
   assert.match(aboutText, /MySQL and MariaDB performance workspace/);
   const version = await page.$eval('meta[name="myflames-version"]', (e) => e.content);
   assert.match(version, /^\d+\.\d+/, "the server fills in the package version");
-  assert.equal(await text(about + " .about-version"), `Version ${version}`);
+  // About lists the version as a labelled field ("Version" row), the span holds the number.
+  assert.equal(await text(about + " .about-version"), version);
   assert.equal(
     await text(about + " .about-credits p"),
     "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs.",
@@ -271,7 +313,7 @@ try {
       ],
     ],
   );
-  assert.match(aboutText, /License: Apache-2\.0/);
+  assert.match(aboutText, /LicenseApache-2\.0/); // a labelled field row since the About redesign
   assert.match(aboutText, /CDDL 1\.0 \(see NOTICE\)/);
   // Focus starts on Close and stays inside: Tab wraps to the first link,
   // Shift+Tab wraps back.
@@ -312,33 +354,44 @@ try {
   assert.deepEqual(await active(), []);
   assert.deepEqual(await current(), []);
   assert.match(await text(".topbar-title"), /^Audit log/);
-  assert.equal(await page.$(".safety-strip"), null, "the Audit log reads no server: no strip");
+  assert.equal(await page.$('.window-statusbar [data-status="safety"]'), null, "the Audit log reads no server: no safety state");
   await go("Home");
   assert.deepEqual(await active(), ["Home"]);
 
-  // 4d. The connection in use (the unsaved default) is Production: a red strip
-  // across the Query editor and Server, under the top bar, and none on Home.
-  assert.equal(await page.$(".safety-strip"), null, "no strip on Home");
-  for (const label of ["Query editor", "Server"]) {
+  // 4d. The connection in use (the unsaved default) is Production: the window
+  // footer of every place that sends to it starts with that state (a dot and
+  // words, named for screen readers); Home, Plans and Learn have none, and
+  // nothing is drawn over the top bar.
+  assert.equal(await page.$('[data-status="safety"]'), null, "no safety state on Home");
+  assert.equal(await page.$(".safety-strip"), null, "no strip under the top bar");
+  const safety = '.window-statusbar[aria-label="Workspace status"] > [data-status="safety"]:first-child';
+  for (const label of ["Query editor", "Server", "Workload", "Replication", "Tuning"]) {
     await go(label);
-    await page.waitForSelector(".topbar-stack .safety-strip.is-production");
-    assert.match(await text(".safety-strip"), /^Production\s*every change on Local MySQL asks first$/);
-    assert.ok(await page.$eval(".workspace", (e) => e.classList.contains("has-safety-strip")));
-    // The strip remains a semantic warning below the one window toolbar.
+    await page.waitForSelector(`${safety}.is-production`);
+    assert.equal(await text(`${safety} strong`), "Production");
+    assert.match(await text(safety), /^Production\s*· changes ask first$/);
+    assert.equal(await page.$eval(safety, (e) => e.getAttribute("aria-label")), "Production: every change on Local MySQL asks first");
+    assert.equal(await page.$eval(safety, (e) => e.getAttribute("data-safety")), "production");
     assert.equal(await page.$$eval(".window-toolbar", (els) => els.length), 1);
-    assert.equal(await page.$eval(".safety-strip", (e) => e.getAttribute("data-safety")), "production");
-    assert.ok(await page.$('.window-statusbar[aria-label="Workspace status"]'));
+    assert.equal(await page.$eval(".workspace", (e) => e.classList.contains("has-safety-strip")), false);
+    // The footer sits below the views: it never covers the top bar.
+    const box = await page.$eval(".window-statusbar", (e) => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; });
+    const topbar = await page.$eval(".window-toolbar", (e) => e.getBoundingClientRect().bottom);
+    assert.ok(box.top > topbar && Math.round(box.bottom) <= 1000, `${label}: the footer is at the bottom (${JSON.stringify(box)})`);
     // Real values only: the connection in use; nothing read yet, so no
     // server version and no refresh time. Unknown fields are hidden.
     await page.waitForFunction(() => document.querySelector('.window-statusbar [data-status="connection"]')?.textContent === "Local MySQL (127.0.0.1:3306)");
     if (label === "Query editor")
       await page.waitForFunction(() => document.querySelector('.window-statusbar [data-status="session"]')?.textContent === "No session");
     const fields = await page.$$eval(".window-statusbar [data-status]", (els) => els.map((e) => e.dataset.status));
-    assert.deepEqual(fields, label === "Query editor" ? ["connection", "session"] : ["connection"], `${label} status fields`);
+    assert.deepEqual(fields, label === "Query editor" ? ["safety", "connection", "session"] : ["safety", "connection"], `${label} status fields`);
     assert.doesNotMatch(await text(".window-statusbar"), /unknown|not checked|not refreshed/i, "unknown fields are hidden");
     assert.equal(await page.$eval(".connection-picker .type-dot", (e) => e.getAttribute("aria-label")), "Production");
   }
-  await go("Home");
+  for (const label of ["Plans", "Learn", "Investigations", "Home"]) {
+    await go(label);
+    assert.equal(await page.$('[data-status="safety"]'), null, `no safety state on ${label}`);
+  }
 
   // 5. Open plans: a quiet list with a count; Baseline only with 2+ plans.
   assert.match(await text(".open-plans .section-label"), /Open plans\s*0/i);
@@ -387,7 +440,7 @@ try {
   // Save investigation lives in the top bar with its own status words.
   assert.equal(await page.$(".topbar .save-state"), null, "viewing and importing plans does not edit an investigation");
   assert.match(await text(".window-statusbar"), /Sample plan/);
-  for (const place of ["Query editor", "Server", "Investigations", "Learn"]) {
+  for (const place of ["Query editor", "Server", "Workload", "Investigations", "Learn"]) {
     await go(place);
     assert.equal(await page.$('.topbar [aria-label="Save investigation"]'), null, place + " has no investigation action");
     assert.equal(await page.$('.topbar .save-state'), null, place + " has no investigation status");
@@ -519,6 +572,9 @@ try {
   await page.waitForFunction((s) => document.querySelector(".connection-panel .row-test")?.textContent === "Connected · 8.4.3", {}, prodRow);
   assert.equal(last("/api/connection/test").connection.profile_id, "p1");
   assert.equal(last("/api/connection/test").connection.password, "");
+  // Testing opens the focused connection details. Return to the retained
+  // list before choosing its row action again.
+  await page.click(".connections .detail-back");
   // Use: Prod becomes the connection in use.
   await connectionAction(page, "Prod", "Use");
   await page.waitForFunction(() => /Prod/.test(document.querySelector(".connection-row.is-active")?.textContent || ""));
@@ -556,6 +612,7 @@ try {
   assert.equal(last("/api/profiles/save").value.host, "db.reports");
   assert.deepEqual(await rows(), ["Prod", "Reporting", "Staging"]);
   assert.match(await text(".connection-row.is-active"), /Prod/, "adding does not change the connection in use");
+  await page.click(".connections .detail-back");
   // Edit: change a saved connection's schema.
   await connectionAction(page, "Staging", "Edit");
   await page.waitForFunction(() => document.querySelector("#connection-form-title")?.textContent === "Edit “Staging”");
@@ -584,7 +641,8 @@ try {
   assert.equal(await page.$(picker + " select"), null, "connection options start closed");
   await openConnectionPicker(page);
   assert.equal(await page.$eval(picker + " select", (e) => e.selectedOptions[0].textContent), "Prod");
-  assert.match(await text(".safety-strip.is-production"), /every change on Prod asks first/);
+  assert.equal(await page.$eval('.window-statusbar [data-status="safety"]', (e) => [e.dataset.safety, e.getAttribute("aria-label")].join(" ")),
+    "production Production: every change on Prod asks first");
   assert.match(await text(picker), /analyst@db\.prod:3306 · shop/);
   assert.match(await text(picker + " .picker-state"), /Password saved in macOS Keychain/);
   assert.equal(await page.$(picker + " .picker-password"), null, "no password field when one is saved");
@@ -594,12 +652,12 @@ try {
   await page.select(picker + " select", "p2");
   await page.waitForFunction((s) => /dev@db\.staging:3307/.test(document.querySelector(s).textContent), {}, picker);
   assert.match(await text(picker + " .picker-state"), /No password entered/);
-  // Staging is Development: no strip, a green dot in the picker.
-  await page.waitForFunction(() => !document.querySelector(".safety-strip"));
-  assert.equal(await page.$eval(".workspace", (e) => e.classList.contains("has-safety-strip")), false);
+  // Staging is Development: the footer says so (risky changes ask), a green dot in the picker.
+  await page.waitForFunction(() => document.querySelector('.window-statusbar [data-status="safety"]')?.dataset.safety === "development");
+  assert.match(await text('.window-statusbar [data-status="safety"]'), /^Development\s*· risky changes ask first$/);
   assert.equal(await page.$eval(picker + " .type-dot", (e) => [e.className, e.getAttribute("aria-label")].join(" ")), "type-dot is-development Development");
   await page.locator(picker + " .picker-password").fill("typed-secret");
-  await go("Server");
+  await go("Workload");
   const serverPicker = ".window-toolbar .connection-picker";
   await openConnectionPicker(page);
   assert.equal(await page.$eval(serverPicker + " select", (e) => e.value), "p2");
@@ -612,7 +670,7 @@ try {
   // Requests carry the type they are judged by (part of the connection key).
   assert.equal(last("/api/live/top").connection.type, "development");
   assert.equal(last("/api/live/top").connection.read_only, false);
-  assert.equal(await page.$(".safety-strip"), null, "Development: no strip on Server either");
+  assert.equal(await page.$eval('.window-statusbar [data-status="safety"]', (e) => e.dataset.safety), "development", "Development on Workload too");
   assert.equal(last("/api/live/top").connection.database, "reports");
   // The connection in use is part of the restorable session; its password is not.
   // A connection switch is navigation: it is saved silently after the
@@ -632,7 +690,7 @@ try {
     stored = await loadStored();
   }
   assert.equal(stored.state.query_lab.profile_id, "p2");
-  assert.equal(stored.state.mode, "server");
+  assert.equal(stored.state.mode, "workload");
   assert.equal(JSON.stringify(stored).includes("typed-secret"), false);
   // Manage connections goes to Home, where Staging is in use.
   await openConnectionPicker(page);
@@ -654,13 +712,16 @@ try {
   // 8. Keyboard: arrows move between places, Enter opens one.
   await page.focus(".main-nav button.active");
   await page.keyboard.press("ArrowDown");
-  assert.equal(await page.evaluate(() => document.activeElement.textContent), "Plans");
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), "Server");
   await page.keyboard.press("End");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Learn");
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("ArrowUp");
-  assert.equal(await page.evaluate(() => document.activeElement.textContent), "Server");
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), "Plans");
   await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
@@ -671,6 +732,22 @@ try {
 
   // 9. Narrow layout: a compact bar with status and a drawer behind Menu.
   await page.setViewport({ width: 390, height: 844 });
+  // Resizing resolves before the media-query listener's React update. Wait
+  // for that state transition, then verify that the drawer really is hidden.
+  await page.waitForFunction(() => document.querySelector("#window-sidebar-toggle")?.getAttribute("aria-expanded") === "false");
+  const overflown = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll('*'))
+      .filter(el => el.scrollWidth > window.innerWidth)
+      .map(el => ({
+        tag: el.tagName,
+        className: el.className,
+        id: el.id,
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+        innerWidth: window.innerWidth,
+      }));
+  });
+  console.log("OVERFLOWN ELEMENTS:", JSON.stringify(overflown, null, 2));
   assert.equal(await overflow(), false);
   const menu = "#window-sidebar-toggle";
   assert.ok(await visible(menu));

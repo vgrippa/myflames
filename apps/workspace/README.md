@@ -1,11 +1,13 @@
 # myflames Performance workspace
 
 Local React + TypeScript interface (`myflames ui`) for the existing myflames
-Python engine. The shell is `src/main.tsx` with `src/Sidebar.tsx`; the places
-are Home (`Home.tsx`, with `Connections.tsx`), Plans, Query editor
-(`QueryLab.tsx`), Server (`Server.tsx` and `SlowQueries.tsx`), Investigations
-(`Library.tsx`), and Learn (`Teach.tsx`). Design tokens are on `:root` in
-`src/style.css`.
+Python engine. The shell is `src/main.tsx` with `src/Sidebar.tsx`; the nine
+places are Home (`Home.tsx`, with `Connections.tsx`), Server (`Server.tsx`),
+Workload (`Server.tsx` with `place="workload"` and `SlowQueries.tsx`),
+Replication (`ReplicationPlace.tsx` and `Replication.tsx`), Tuning
+(`Server.tsx` with `place="tuning"`, `Tuning.tsx`, and `Report.tsx`), Query
+editor (`QueryLab.tsx`), Plans, Investigations (`Library.tsx`), and Learn
+(`Teach.tsx`). Design tokens are on `:root` in `src/style.css`.
 
 ```bash
 npm ci
@@ -72,7 +74,7 @@ The API and command-line regressions run with the repository's Python suite.
 
 ## Navigation checks
 
-`npm run test:navigation` checks the six places and their active state, the
+`npm run test:navigation` checks the nine places and their active state, the
 Open plans list, the status indicator and Settings popover, Home's
 Connections (add, edit, test, use, forget, delete), the connection picker in
 the Query editor and Server, keyboard movement between places, and the

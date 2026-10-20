@@ -97,6 +97,12 @@ test("table column layouts are validated on restore", () => {
   for (const id of TABLE_IDS) assert.match(id, /^[a-z]+\.[a-z]+$/);
 });
 
+test("inventory table column layouts survive session restore", () => {
+  const layouts = {"tables.inventory": {widths:{table:280},hidden:["rows"]}, "indexes.inventory": {widths:{index:200},hidden:["unique"]}};
+  assert.deepEqual(columnLayouts(layouts), layouts);
+  assert.deepEqual(normalizeLab({slow:{columns_v1:layouts}}).slow.columns_v1, layouts);
+});
+
 test("unconfirmed changes over the keepalive limit are at risk on unload", () => {
   const saver = new SessionSaver(() => {}, () => {});
   saver.enable("{}");

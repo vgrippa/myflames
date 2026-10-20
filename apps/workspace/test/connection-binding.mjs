@@ -8,7 +8,7 @@ import { chooseConnection } from "./chrome-helpers.mjs";
 // still running; Explain top N keeps its connection when the picker changes
 // mid-batch; a Run analysis confirmation closes when its statement or
 // connection changes; Locks stops polling while Server is hidden; the
-// inspector sheet keeps focus across refreshes; Compare never shows the
+// full-width detail keeps focus across refreshes; Compare never shows the
 // previous pair's result; Cancel capture works while the start is pending;
 // Save connection is single flight and a test result belongs to its draft.
 // The live/*, connection/* and profiles/* endpoints are mocked (requests can
@@ -198,17 +198,41 @@ try {
     if (await page.$(".window-toolbar .connection-pill")) return chooseConnection(page, id);
     // Home has the connection list; exercise its Use action in place.
     const name = id === "p1" ? "Prod" : "Staging";
+    await backToList("connections");
     await connectionAction(page, name, "Use");
   };
   const view = (kind) => `.server-view[data-view=${kind}]`;
+  const WORKLOAD_VIEWS = ["top", "sessions", "waits", "io"];
   const openView = async (kind) => {
+    if (WORKLOAD_VIEWS.includes(kind)) {
+      await nav("Workload");
+    } else {
+      await nav("Server");
+    }
     await page.click(`#server-nav-${kind}`);
     await page.waitForSelector(view(kind));
   };
   const disabled = (selector) => page.$eval(selector, (e) => e.disabled);
   const other = (kind) => page.$eval(view(kind), (e) => e.dataset.otherConnection === "true");
   const rowIds = (kind) => page.$$eval(`${view(kind)} tbody tr[data-session]`, (els) => els.map((e) => +e.dataset.session));
+  async function backToList(kind) {
+    const back = await page.$(`${view(kind)} .detail-back`);
+    if (back) {
+      await back.click();
+      await page.waitForFunction((v) => !document.querySelector(`${v} .view-inspector.is-detail`), {}, view(kind));
+    }
+  }
+  /** A view reads when it is opened on screen; the empty state's Load is
+   * only there when that read has not started (or failed). */
+  async function load(kind, label) {
+    // The automatic read may replace the empty state between the two steps.
+    await page.evaluate((v, l) => {
+      const button = document.querySelector(`${v} .view-empty button`);
+      if (button && button.textContent.trim() === l) button.click();
+    }, view(kind), label);
+  }
   async function selectSession(id) {
+    await backToList("sessions");
     await page.click(`${view("sessions")} tbody tr[data-session="${id}"]`);
     await page.waitForFunction((i) => document.querySelector(".view-inspector h3")?.textContent === `Connection ${i}`, {}, id);
   }
@@ -227,11 +251,11 @@ try {
   }
 
   // 1. Sessions read on Prod: Kill and Show plan are offered.
-  await nav("Server");
+  await nav("Workload");
   await page.waitForSelector(".server-place .source-list");
   await use("p1");
   await openView("sessions");
-  await page.locator(`${view("sessions")} button ::-p-text(Load sessions)`).click();
+  await load("sessions", "Load sessions");
   await page.waitForSelector(`${view("sessions")} tbody tr[data-session="93"]`);
   assert.equal(calls("/api/live/sessions").at(-1).body.connection.profile_id, "p1");
   assert.equal(await other("sessions"), false);
@@ -321,6 +345,7 @@ try {
   await page.waitForFunction((v) => document.querySelector(v)?.dataset.otherConnection !== "true", {}, view("sessions"));
 
   // 5. Latest wins: All while an Active read runs replaces it.
+  await backToList("sessions");
   hold.add("/api/live/sessions");
   await page.click(`${view("sessions")} [data-action=refresh]`);
   const activeRead = await held("/api/live/sessions");
@@ -338,13 +363,12 @@ try {
   await page.click(`${view("sessions")} .segmented button[data-value=active]`);
   await page.waitForFunction((v) => !document.querySelector(`${v} .spinner`), {}, view("sessions"));
 
-  // 6. The inspector sheet keeps focus on its action across automatic refreshes.
-  await page.evaluate(() => document.querySelector(".server-view .inspector-toggle[aria-pressed=true]")?.click());
-  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  // 6. Full-width details keep focus on their action across automatic refreshes.
+  await backToList("sessions");
   await page.setViewport({ width: 1150, height: 900 });
   await page.select(`${view("sessions")} .auto-refresh select`, "10");
   await page.click(`${view("sessions")} tbody tr[data-session="80"]`);
-  await page.waitForSelector(".view-inspector.is-sheet");
+  await page.waitForSelector(".view-inspector.is-detail");
   await page.waitForFunction(() => document.activeElement?.classList.contains("inspector-close"), {}, "focus moves in once");
   await page.locator(".view-inspector button ::-p-text(Open Locks to see who blocks it)").setTimeout(5000).wait();
   await page.evaluate(() =>
@@ -353,16 +377,16 @@ try {
   await until(() => calls("/api/live/sessions").length >= before + 3, "automatic refresh did not run");
   await pause(100);
   assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Open Locks to see who blocks it",
-    "a refresh does not move focus to Close inspector");
+    "a refresh does not move focus to Back");
   await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector(".view-inspector.is-sheet"));
+  await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
   await page.select(`${view("sessions")} .auto-refresh select`, "0");
   await page.setViewport({ width: 1440, height: 1000 });
   await pause(400);
 
   // 7. Locks polls only while it is on screen.
   await openView("locks");
-  await page.locator(`${view("locks")} button ::-p-text(Load locks)`).click();
+  await load("locks", "Load locks");
   await page.waitForSelector(`${view("locks")} .summary-line`);
   await page.select(`${view("locks")} .auto-refresh select`, "10");
   let count = calls("/api/live/locks").length;
@@ -380,7 +404,7 @@ try {
   // are off, and the handler refuses a stale click anyway.
   await use("p1");
   await openView("io");
-  await page.locator(`${view("io")} button ::-p-text(Load I/O)`).click();
+  await load("io", "Load I/O");
   await page.waitForSelector(`${view("io")} tr[data-table="orders"]`);
   await page.click(`${view("io")} tr[data-table="orders"]`);
   await page.locator(".view-inspector button ::-p-text(Index health)").setTimeout(5000).wait();
@@ -409,7 +433,7 @@ try {
   // its connection; rows are keyed by schema and digest, not rank.
   await use("p1");
   await openView("top");
-  await page.locator(`${view("top")} button ::-p-text(Load top statements)`).click();
+  await load("top", "Load top statements");
   await page.waitForSelector(`${view("top")} tbody tr[data-rank="1"]`);
   await page.click(`${view("top")} tbody tr[data-rank="1"]`);
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "Statement 1");
@@ -438,6 +462,8 @@ try {
   assert.equal(await other("top"), true);
   assert.equal(calls("/api/live/start").length, 0, "nothing ran");
 
+  // Return from the full-width statement before choosing a list action.
+  await page.locator('button ::-p-text(Back to statements)').click();
   // 9. Explain top N keeps the connection and settings it started with.
   await use("p1");
   await page.waitForFunction((v) => document.querySelector(v)?.dataset.otherConnection !== "true", {}, view("top"));
@@ -523,9 +549,9 @@ try {
   await nav("Query editor");
   await page.click('button[aria-label="New query tab"]');
   await page.click('button[aria-label="New query tab"]');
-  await page.waitForFunction(() => document.querySelectorAll(".query-tabs [role=tab]").length === 3);
+  await page.waitForFunction(() => document.querySelectorAll(".query-tabs [role=tab][id^=query-tab-]").length === 3);
   assert.equal(await page.$('[role=tablist] [aria-label="New query tab"]'), null);
-  const tabState = () => page.$$eval("[role=tablist] [role=tab]", (els) => ({
+  const tabState = () => page.$$eval("[role=tablist]:not(.query-mode-switch) [role=tab]", (els) => ({
     selected: els.findIndex((e) => e.getAttribute("aria-selected") === "true"),
     focused: els.indexOf(document.activeElement),
     stops: els.filter((e) => e.tabIndex === 0).length,
@@ -534,7 +560,7 @@ try {
       els.find((e) => e.getAttribute("aria-selected") === "true")?.id,
   }));
   assert.deepEqual(await tabState(), { selected: 2, focused: -1, stops: 1, controls: true, labelled: true });
-  await page.focus("[role=tablist] [role=tab][aria-selected=true]");
+  await page.focus("[role=tablist]:not(.query-mode-switch) [role=tab][aria-selected=true]");
   await page.keyboard.press("Home");
   assert.deepEqual(await tabState(), { selected: 0, focused: 0, stops: 1, controls: true, labelled: true });
   await page.keyboard.press("ArrowLeft");
@@ -664,12 +690,13 @@ try {
 
   // 13b. A save that answers after a newer Use keeps that newer choice (here
   // from an unsaved connection in use, which a first save would otherwise replace).
+  await backToList("connections");
   await page.locator("button ::-p-text(Add connection)").click();
   await setField("Connection name", "Zeta");
   await setField("Host", "db.zeta");
   await page.locator(".connection-panel button ::-p-text(Use without saving)").click();
-  // Columns are compact while the form is open: the connection in use is read
-  // from the autosaved workspace until the form closes.
+  // The list is hidden while the form is open: read the connection in use
+  // from the autosaved workspace until returning to the list.
   const inUse = async (pattern) => {
     for (let i = 0; i < 100; i++) {
       const host = await page.evaluate(async () => {
@@ -692,18 +719,19 @@ try {
   answer(lateSave);
   await page.waitForFunction(() => /Connection "Zeta" saved/.test(document.querySelector(".connections-status")?.textContent || ""));
   await pause(300);
-  await page.click(".connections .inspector-close");
+  await page.click(".connections .detail-back");
   await page.waitForSelector(".connection-row.is-active [data-col=endpoint]");
   assert.match(await text(".connection-row.is-active [data-col=endpoint]"), /db\.eta/, "the connection chosen later stays in use");
   hold.delete("/api/profiles/save");
   await use("p2");
 
   // 13c. A row's Test answer belongs to the settings it tested.
-  if (await page.$(".connections .inspector-close")) await page.click(".connections .inspector-close");
+  if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   hold.add("/api/connection/test");
   await connectionAction(page, "Prod", "Test");
   const rowTest = await held("/api/connection/test");
   assert.equal(rowTest.body.connection.host, "db.prod");
+  await backToList("connections");
   await connectionAction(page, "Prod", "Edit");
   await setField("Host", "db.prod2");
   await page.locator(".connection-panel button ::-p-text(Save connection)").click();
@@ -711,8 +739,8 @@ try {
   answer(rowTest);
   await pause(400);
   assert.doesNotMatch(await text(".connection-panel"), /Connected/, "db.prod's answer is not shown on db.prod2");
-  // The row shows the saved endpoint once the form (compact columns) closes.
-  await page.click(".connections .inspector-close");
+  // The row shows the saved endpoint once we return from the form.
+  await page.click(".connections .detail-back");
   await page.waitForSelector(".connection-row [data-col=endpoint]");
   const prodRow = () => page.$$eval(".connection-row", (rows) =>
     rows.find((r) => r.querySelector("strong")?.textContent === "Prod")?.textContent || "");
@@ -728,6 +756,7 @@ try {
   await until(() => calls("/api/live/schemas").some((c) => c.body.connection.profile_id === "p1" && !c.body.connection.ssl_ca),
     "the database list was not read");
   await nav("Home");
+  await backToList("connections");
   await connectionAction(page, "Prod", "Edit");
   await setField("CA file path", "/etc/ca-b.pem");
   await page.locator(".connection-panel button ::-p-text(Use)").click();

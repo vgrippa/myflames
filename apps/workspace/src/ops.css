@@ -139,3 +139,12 @@
   .ops-form details .ops-field { max-width: none; }
   .ops-target > strong { font-size: var(--text-md); }
 }
+
+.ops-folder-input { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.ops-folder-input input { flex: 1; min-width: 0; }
+.ops-folder-input button { flex: none; }
+.ops-tool-updates { padding: var(--space-2) var(--space-4); color: var(--warn); font-size: var(--text-sm); }
+.ops-tool-link { color: var(--accent-text); text-decoration: underline; text-underline-offset: var(--space-1); }
+.ops-dump-options[open] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.ops-dump-options > summary { grid-column: 1 / -1; }
+.ops-dump-options .ops-field label { display: flex; flex-direction: column; gap: var(--space-1); }

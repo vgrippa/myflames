@@ -189,20 +189,18 @@ VERSION_SUPPORT = {
 VERSION_CURRENT = {"mysql": (9, 7), "mariadb": None}
 VERSION_SUPPORT_NOTES = {
     "mysql": {
-        (26, 7): "The reviewed MYSQL_VERSION is 9.7 LTS with no mysql-26.x tags; "
-                 "the 26.7 live fixture proves a server version, not its support track or end date.",
+        (26, 7): "myflames has not been verified on this version yet; check its support period with the vendor.",
     },
     "mariadb": {
-        (11, 3): "Stable successor mariadb-11.4.2 exists, but its tag timestamp does not prove a maintenance end date.",
-        (11, 5): "Stable successor mariadb-11.6.2 exists, but its tag timestamp does not prove a maintenance end date.",
-        (11, 6): "Stable successor mariadb-11.7.2 exists, but its tag timestamp does not prove a maintenance end date.",
-        (11, 7): "Stable successor mariadb-11.8.2 exists, but its tag timestamp does not prove a maintenance end date.",
-        (12, 0): "Stable successor mariadb-12.1.2 exists, but its tag timestamp does not prove a maintenance end date.",
-        (12, 1): "Stable successor mariadb-12.2.2 exists, but its tag timestamp does not prove a maintenance end date.",
-        (12, 2): "Only gamma successor mariadb-12.3.1 exists in the reviewed tags; no maintenance end date is proved.",
-        (12, 3): "mariadb-12.3.1:VERSION is gamma; the reviewed tree does not establish an LTS lifecycle.",
-        (13, 0): "The reviewed VERSION is 13.0.1 gamma with no mariadb-13.0 tags; "
-                 "the 13.0 live fixture does not establish a maintenance end date.",
+        (11, 3): "myflames has no verified maintenance end date for this series.",
+        (11, 5): "myflames has no verified maintenance end date for this series.",
+        (11, 6): "myflames has no verified maintenance end date for this series.",
+        (11, 7): "myflames has no verified maintenance end date for this series.",
+        (12, 0): "myflames has no verified maintenance end date for this series.",
+        (12, 1): "myflames has no verified maintenance end date for this series.",
+        (12, 2): "myflames has no verified maintenance end date for this series.",
+        (12, 3): "myflames has not been verified on this version yet; check its support period with the vendor.",
+        (13, 0): "myflames has not been verified on this version yet; check its support period with the vendor.",
     },
 }
 # Operational review horizons, explicitly rules of thumb, not vendor limits.

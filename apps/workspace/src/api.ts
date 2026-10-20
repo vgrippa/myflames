@@ -18,9 +18,10 @@ export type Analysis = {
   schema_version: string;
   source: { engine?: string };
   plan_summary: {
-    total_time_ms: number;
-    rows_sent: number;
-    rows_examined_estimate: number;
+    /** Null when the plan carries no measurement (sidecar 1.4). */
+    total_time_ms: number | null;
+    rows_sent: number | null;
+    rows_examined_estimate: number | null;
     operator_count: number;
   };
   executive_summary: string;
@@ -122,6 +123,7 @@ export function authenticate(): Promise<string> {
 /** The installed myflames version, filled in by ui.py ("" under the Vite
  * dev server, where the placeholder is left as is). */
 export function appVersion() {
+  if (typeof document === "undefined") return "";
   const value =
     document.querySelector<HTMLMetaElement>('meta[name="myflames-version"]')
       ?.content || "";
@@ -169,13 +171,14 @@ export function download(text: string, filename: string, type: string) {
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-export function time(ms: number) {
-  if (!Number.isFinite(ms)) return "—";
+export function time(ms: number | null | undefined) {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return "—";
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s`;
   if (ms > 0 && ms < 1) return `${(ms * 1000).toFixed(1)} µs`;
   return `${ms.toLocaleString(undefined, { maximumFractionDigits: 2 })} ms`;
 }
-export function number(value: number) {
+export function number(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 export function safePreview(html: string) {
@@ -373,6 +376,8 @@ export type TopStatement = {
   no_index_used: number;
   no_good_index_used: number;
   tmp_disk_tables: number;
+  tmp_tables?: number;
+  lock_time_ms?: number;
   sort_merge_passes: number;
   sample_text: string | null;
   sample_truncated: boolean;
@@ -382,6 +387,8 @@ export type TopStatement = {
   /** Why Explain and Run analysis refuse this statement, or null. The
    * server applies capture's own SELECT-only rule. */
   capture_problem?: string | null;
+  analysis_sql?: string | null;
+  analysis_warning?: string | null;
   /** Workload attribution counters (absent in older replies): executions
    * that joined a later table with a full scan or a range check for each
    * row, and executions whose first table was scanned. */
@@ -390,6 +397,8 @@ export type TopStatement = {
   select_scan?: number;
   /** With a table filter: how the digest text names the table (a text match, not proof). */
   table_match?: { schema: string; table: string; kind: "qualified" | "unqualified"; label: string };
+  /** Origin source e.g. "mysql.slow_log" or "performance_schema" */
+  source?: string;
 };
 /** What a digest list covers: uptime, the oldest FIRST_SEEN listed, the
  * overflow row (DIGEST IS NULL) and Performance_schema_digest_lost. */
@@ -401,7 +410,20 @@ export type TopCoverage = {
 };
 /** Orders of Top statements: the four rankings plus the workload attribution
  * filters (only digests whose counter is above zero). */
-export type TopOrder = "total" | "avg" | "examined" | "count" | "full_join" | "scan" | "no_index";
+export type TopOrder =
+  | "total"
+  | "time"
+  | "avg"
+  | "examined"
+  | "rows"
+  | "count"
+  | "exec_count"
+  | "full_join"
+  | "scan"
+  | "scans"
+  | "no_index"
+  | "tmp_tables"
+  | "locks";
 export type TopTable = { schema: string; table: string };
 export type TopReport = {
   schema_version: "top-1.0";
@@ -417,6 +439,14 @@ export type TopReport = {
   coverage?: TopCoverage;
   /** With a table filter: the label, its caveats and how many digests were checked. */
   match?: { label: string; caveats: string[]; candidates: number; capped: boolean };
+};
+export type SlowQueriesReport = {
+  schema_version: "slow-queries-1.0";
+  engine: string;
+  server_version: string;
+  source: string;
+  min_seconds?: number;
+  statements: TopStatement[];
 };
 export type RunningStatement = {
   id: number;
@@ -745,6 +775,45 @@ export function prepareKill(connection: Connection, connection_id: number, mode:
 export function killLockSession(connection: Connection, connection_id: number, mode: "connection" | "query", expect: KillExpect, review_token: string) {
   return api<KillResult>("live/kill", { connection, connection_id, mode, confirmed: true, expect, review_token });
 }
+export type BulkKillTarget = {
+  connection_id: number;
+  mode: "connection" | "query";
+  expect: KillExpect;
+};
+export type BulkKillReview = {
+  review_token: string;
+  targets: BulkKillTarget[];
+  mode: "connection" | "query";
+  statements: string[];
+};
+export type BulkKillResult = {
+  schema_version: "kill-bulk-1.0";
+  total: number;
+  killed: number;
+  gone: number;
+  refused: number;
+  denied: number;
+  errors: number;
+  message: string;
+  results: Array<{ connection_id: number; status: string; message: string }>;
+};
+export function prepareBulkKill(connection: Connection, targets: BulkKillTarget[], signal?: AbortSignal) {
+  return api<BulkKillReview>("live/kill/bulk/prepare", { connection, targets, mode: targets[0]?.mode || "connection" }, signal);
+}
+export function killBulkSessions(connection: Connection, targets: BulkKillTarget[], review_token: string) {
+  return api<BulkKillResult>("live/kill/bulk", { connection, targets, mode: targets[0]?.mode || "connection", confirmed: true, review_token });
+}
+export type TableColumnInfo = {
+  name: string;
+  type: string;
+  nullable: boolean;
+  default: string | null;
+  key: string;
+  extra: string;
+};
+export function fetchTableColumns(connection: Connection, schema: string, table: string) {
+  return api<{ schema: string; table: string; columns: TableColumnInfo[] }>("live/table-columns", { connection, schema, table });
+}
 export type KillResult = {
   schema_version: "kill-1.0";
   status: "killed" | "refused" | "denied" | "gone";
@@ -961,7 +1030,9 @@ export type FullScanTable = {
   mostly: boolean;
   why: string;
 };
+export type IndexInventoryRow = { schema: string; table: string; index: string; columns: string; unique: boolean; type: string; visible: boolean };
 export type IndexesReport = PerfBase & {
+  indexes?: IndexInventoryRow[];
   schema_version: "indexes-1.0";
   scope: { schema: string | null; schemas?: string[] | null; server_wide: boolean };
   source: "performance_schema" | "userstat" | null;
@@ -982,7 +1053,7 @@ export type IndexesReport = PerfBase & {
     mostly_full_scans: number;
     no_data: number;
   };
-  more: { unused: number; redundant: number; full_scans: number; no_data: number };
+  more: { indexes?: number; unused: number; redundant: number; full_scans: number; no_data: number };
 };
 /** io-1.0: table and file I/O over a window and since server start. */
 export type IoTable = {
@@ -1069,6 +1140,7 @@ export type ConfigSetting = {
   default: string | null;
   set_by: string | null;
   alias?: string;
+  dynamic?: boolean | null;
 };
 export type ConfigCheck = {
   key: string;
@@ -1084,11 +1156,44 @@ export type ConfigCheck = {
   settings: ConfigSetting[];
   sources: string[];
 };
+/** parameters-1.0: catalog metadata; null preserves an unknown or SQL NULL. */
+export type ConfigParameter = {
+  name: string;
+  value: string | null;
+  truncated: boolean;
+  scope: "global" | "both" | null;
+  apply_type: "dynamic" | "static" | null;
+  /** none: set by the server; no option or statement changes it. */
+  modifiable: "now" | "restart" | "option_file" | "none" | null;
+  type: "bytes" | "integer" | "double" | "boolean" | "enum" | "set" | "flagset" | "string" | null;
+  values: string[] | null;
+  min: number | null;
+  max: number | null;
+  block_size: number | null;
+  default: string | null;
+  source: string | null;
+  source_label: string | null;
+  source_path: string | null;
+  set_time: string | null;
+  set_user: string | null;
+  set_host: string | null;
+  persisted: boolean | null;
+  modified: boolean | null;
+  description: string | null;
+  checks: string[];
+};
+export type ConfigParameters = {
+  schema_version: "parameters-1.0";
+  complete: boolean;
+  notes: string[];
+  items: ConfigParameter[];
+};
 export type ConfigReport = PerfBase & {
   schema_version: "config-1.0";
   summary: HealthReport["summary"];
   groups: { key: string; label: string }[];
   checks: ConfigCheck[];
+  parameters?: ConfigParameters;
 };
 /** instruments-1.0: Performance Schema setup with gain, loss, cost and the statements to run (ps_instruments.py). */
 export type InstrumentCost = { level: "low" | "moderate" | "high"; text: string };
@@ -1114,6 +1219,17 @@ export type InstrumentGroup = {
   cost: InstrumentCost | null;
   sql: InstrumentSql | null;
   features: InstrumentFeature[];
+};
+export type Instrument = {
+  name: string;
+  group: string;
+  enabled: boolean;
+  timed: boolean | null;
+  timed_applies: boolean;
+  default_enabled: boolean | null;
+  default_timed: boolean | null;
+  builtin: boolean;
+  properties: string;
 };
 export type InstrumentConsumer = {
   name: string;
@@ -1176,6 +1292,7 @@ export type InstrumentsReport = PerfBase & {
     optional_missing: string[];
     rows: string[];
   }[];
+  instruments: Instrument[];
   groups: InstrumentGroup[];
   consumers: InstrumentConsumer[];
   actors: InstrumentsSetup | null;
@@ -1197,7 +1314,7 @@ export type SchemaCatalog = PerfBase & {
   all_note: string;
   system: string[];
 };
-/** schema-1.0: tables without a primary key, and InnoDB free space. */
+/** schema-2.0: complete inventory, primary keys and nullable InnoDB free-space ratios. */
 export type TableStatement = { label: string; sql: string; template?: boolean };
 export type MissingPrimaryKey = {
   schema: string;
@@ -1223,18 +1340,24 @@ export type FreeSpaceRow = {
   data_bytes: number | null;
   index_bytes: number | null;
   free_bytes: number | null;
-  free_pct: number;
+  free_pct: number | null;
   partitioned: boolean;
   tablespace: "file_per_table" | "system" | "general" | null;
   tablespace_name: string | null;
-  status: "ok" | "watch" | "problem" | "shared" | "unknown";
+  status: "ok" | "watch" | "problem" | "shared" | "unknown" | "info";
   why: string;
   fix_sql?: string;
   online_sql?: string;
   caveat?: string;
 };
+export type TableInventoryRow = {
+  schema: string; table: string; engine: string | null; rows: number | null;
+  data_bytes: number | null; index_bytes: number | null; size_bytes: number | null; partitioned: boolean;
+};
 export type TablesReport = PerfBase & {
-  schema_version: "schema-1.0";
+  /** Complete scoped inventory on current servers; absent in older saved reports. */
+  tables?: TableInventoryRow[];
+  schema_version: "schema-1.0" | "schema-2.0";
   scope: { schemas: string[] | null; all_user_schemas: boolean; excluded: string[] };
   statistics: { fresh_requested: boolean; fresh: boolean; cache_expiry_s: number | null; cached: boolean };
   tablespaces_known: boolean;
@@ -1249,17 +1372,18 @@ export type TablesReport = PerfBase & {
     gipk: number;
     free_problem: number;
     free_watch: number;
+    free_info?: number;
     shared: number;
     unknown_tablespace: number;
   };
-  thresholds: Record<"watch" | "problem", { free_pct: number; free_bytes: number }>;
+  thresholds: Partial<Record<"watch" | "problem", { free_pct: number; free_bytes: number }>>;
   rules: Record<string, string>;
   why: { key: string; title: string; text: string }[];
   missing_primary_keys: MissingPrimaryKey[];
   generated_primary_keys: { schema: string; table: string; engine: string | null; rows: number | null; size_bytes: number | null }[];
   fragmentation: FreeSpaceRow[];
   shared_tablespaces: { name: string; type: string; free_bytes: number; tables: string[]; why: string }[];
-  more: { missing_primary_keys: number; generated_primary_keys: number; fragmentation: number };
+  more: { tables?: number; missing_primary_keys: number; generated_primary_keys: number; fragmentation: number };
 };
 /** sessions-1.0: the process list, post-processed (sessions.py). Replaces running-1.0. */
 export type SessionFlag = "long_running" | "idle_in_trx" | "lock_wait" | "system_thread" | "own_connection";
@@ -1304,6 +1428,9 @@ export type Session = {
   status: HealthStatus;
   why: string | null;
   active: boolean;
+  is_locked?: boolean;
+  lock_status?: "waiting" | "holding" | null;
+  lock_detail?: string | null;
 };
 export type SessionBreakdown = { key: string | null; count: number; other?: boolean }[];
 export type SessionsReport = PerfBase & {
@@ -1311,8 +1438,11 @@ export type SessionsReport = PerfBase & {
   server_identity?: KillServerIdentity;
   schema_version: "sessions-1.0";
   source: string;
+  source_mode?: "auto" | "show_processlist";
+  ps_show_processlist?: "ON" | "OFF" | null;
+  processlist_source?: string;
   capabilities: { process_privilege: boolean | null; transactions: boolean; history_list_length: boolean };
-  filters: { active_only: boolean; user: string | null; host: string | null; db: string | null; min_seconds: number };
+  filters: { active_only: boolean; user: string | null; host: string | null; db: string | null; min_seconds: number; locked_only?: boolean };
   limit: number;
   thresholds: { long_running_s: number[]; trx_age_s: number[] };
   rules: Record<string, string>;
@@ -1327,6 +1457,8 @@ export type SessionsReport = PerfBase & {
     long_running: { watch: number; problem: number };
     idle_in_trx: number;
     lock_wait: { innodb: number; metadata: number; table: number; total: number };
+    locked?: number;
+    waiting_locks?: number;
     connections: {
       current: number | null;
       max: number | null;
@@ -1400,6 +1532,53 @@ export type InnodbReport = PerfBase & {
   raw: { text: string; truncated: boolean } | null;
 };
 
+/** error-log-1.0: read-only server error log; messages are already decoded by the backend. */
+export type ErrorLogEntry = {
+  logged: string;
+  thread_id: number | null;
+  prio: "System" | "Error" | "Warning" | "Note";
+  error_code: string | null;
+  subsystem: string | null;
+  message: string;
+  previous_run: boolean;
+};
+export type ErrorLogCode = {
+  error_code: string | null;
+  prio: string;
+  subsystem: string | null;
+  count: number;
+  first_logged: string;
+  last_logged: string;
+  sample: string;
+};
+export type ErrorLogReport = PerfBase & {
+  schema_version: "error-log-1.0";
+  available: boolean;
+  reason: null | "performance_schema_off" | "denied" | "no_pfs_sink" | "log_to_stderr" | "remote"
+    | "other_host" | "not_found" | "not_readable" | "identity_mismatch" | "identity_unverified" | "unrecognized_format";
+  reason_text: string | null;
+  how_to_view: string | null;
+  source: null | "performance_schema.error_log" | "file";
+  settings: {
+    log_error: string | null;
+    log_error_verbosity: number | null;
+    log_error_services: string | null;
+    log_warnings: number | null;
+    datadir: string | null;
+  };
+  buffer: null | { bytes: number; events: number; expired_events: number; latest_write: string | null; capacity_bytes: 5242880 };
+  file: null | { path: string; size_bytes: number; read_bytes: number; truncated: boolean; banner_found: boolean };
+  server_started: string | null;
+  counts: { system: number; error: number; warning: number; note: number };
+  counts_current_run: { system: number; error: number; warning: number; note: number };
+  codes: ErrorLogCode[];
+  entries: ErrorLogEntry[];
+  entries_total: number;
+  limit: number;
+  levels: string[];
+  summary: { status: "ok" | "watch" | "unknown"; text: string };
+};
+
 /** report-1.0: the Full analysis (myflames/report.py), one read-only run of
  * every Server view composed into ranked findings, sections and the
  * statements behind the numbers. Recommendations are text, never applied. */
@@ -1415,6 +1594,8 @@ export type AnalysisLink = {
   table?: string;
 };
 export type AnalysisFinding = {
+  /** Health diagnostic state; absent in older report-1.0 payloads. */
+  state?: string | null;
   id: string;
   family: string;
   status: AnalysisStatus;
@@ -1705,3 +1886,28 @@ export type CatalogTable = {
   columns: CatalogColumn[];
   indexes: CatalogIndex[];
 };
+
+export type AppUpdateInfo = {
+  schema_version: "app-update-1.0";
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  release_title: string;
+  release_notes: string;
+  published_at: string;
+  html_url: string;
+  asset_name?: string | null;
+  asset_url?: string | null;
+  asset_size?: number | null;
+  error?: string;
+};
+
+export const checkAppUpdate = (force = false, signal?: AbortSignal) =>
+  api<AppUpdateInfo>("app/update/check", { force }, signal);
+
+export const downloadAppUpdate = (asset_url?: string | null, release_url?: string | null, signal?: AbortSignal) =>
+  api<{ status: string; download_path?: string; message: string; html_url?: string }>(
+    "app/update/download",
+    { asset_url, release_url },
+    signal
+  );

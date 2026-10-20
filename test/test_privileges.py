@@ -450,9 +450,21 @@ class Rules(unittest.TestCase):
     def test_aliases_resolve_to_report_keys(self):
         m = self.model(['GRANT PROCESS ON *.* TO u@h'])
         self.assertEqual(p.can(m, 'innodb'), p.can(m, 'innodb_status'))
+        self.assertIn(('error_log', 'read'), p.ACTION_KEYS)
+        self.assertEqual(p.can(m, 'error-log'), p.can(m, 'error_log'))
         self.assertEqual(p.can(m, 'write_when_read_only')['need'], p.can(m, 'read_only_bypass')['need'])
         for alias, key in p.ALIASES.items():
             self.assertIn(key, p.ACTIONS, alias)
+
+    def test_error_log_uses_table_select_on_mysql_and_no_privilege_on_mariadb(self):
+        spec = p.requirements('error-log', 'mysql')
+        self.assertEqual(spec['alternatives'], [[{'privilege': 'SELECT', 'level': 'table',
+                                                 'database': 'performance_schema', 'table': 'error_log'}]])
+        for grants in (['GRANT SELECT ON `performance_schema`.`error_log` TO u@h'],
+                       ['GRANT SELECT ON `performance_schema`.* TO u@h']):
+            self.assertTrue(p.can(self.model(grants), 'error_log')['allowed'])
+        self.assertEqual(p.requirements('error_log', 'mariadb')['alternatives'], [[]])
+        self.assertTrue(p.can(self.model([], 'mariadb', '11.4.13-MariaDB'), 'error_log')['allowed'])
 
     def test_python37_syntax(self):
         for path in (Path(p.__file__), Path(__file__), Path(replay.__file__)):

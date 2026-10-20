@@ -109,10 +109,43 @@ class TestCaptureCLI(unittest.TestCase):
         self.assertEqual(self.err.getvalue(), 'myflames: Use a read-only SELECT.\n')
 
 
+class TestVersionNote(unittest.TestCase):
+    def test_discover_uses_report_version_without_extra_queries(self):
+        from types import SimpleNamespace
+        cases = [('mysql', '8.0.46', False, 1), ('mysql', '8.4.11', False, 0),
+                 ('mysql', '8.0.46', True, 0), ('mariadb', '10.6.25', False, 1),
+                 ('mariadb', '10.11.16-MariaDB', False, 0)]
+        for engine, version, quiet, count in cases:
+            with self.subTest(engine=engine, version=version, quiet=quiet):
+                conn = mock.Mock(spec=['__enter__', '__exit__', 'run'])
+                conn.__enter__ = mock.Mock(return_value=conn)
+                conn.__exit__ = mock.Mock(return_value=False)
+                result = {'engine': engine, 'server_version': version}
+                args = SimpleNamespace(password=None, quiet=quiet)
+                err = io.StringIO()
+                with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                        mock.patch.object(workspace_cli, '_resolve_connection', return_value={}), \
+                        contextlib.redirect_stderr(err):
+                    self.assertIs(workspace_cli._discover_run(args, lambda unused: result), result)
+                self.assertEqual(err.getvalue().count('note: myflames supports'), count)
+                if count:
+                    self.assertIn('MariaDB' if engine == 'mariadb' else 'MySQL', err.getvalue())
+                conn.run.assert_not_called()
+
+    def test_cached_version_prints_once_and_privileges_version_is_used(self):
+        from types import SimpleNamespace
+        for cached in (None, '8.0.46'):
+            conn = SimpleNamespace(_version_cache=cached)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                workspace_cli._version_note(conn, False, {'engine': 'mysql', 'version': '8.0.46'})
+            self.assertEqual(err.getvalue().count('note: myflames supports'), 1)
+
+
 class TestServerFailureContract(unittest.TestCase):
     def test_json_connection_errors_are_stderr_only_even_when_quiet(self):
         from myflames.connector import ConnectorError
-        commands = [(name, []) for name in ('top', 'sessions', 'running', 'locks', 'innodb',
+        commands = [(name, []) for name in ('top', 'sessions', 'running', 'locks', 'innodb', 'error-log',
                     'health', 'waits', 'indexes', 'tables', 'io', 'config', 'instruments', 'report', 'replication')]
         commands += [('replication', ['skip', '--channel', '', '--yes']),
                      ('replication', ['skip-loop', '--channel', '', '--errors', '1062', '--yes']),
@@ -132,7 +165,7 @@ class TestServerFailureContract(unittest.TestCase):
                             mock.patch.object(workspace_cli, '_resolve_connection',
                                               side_effect=ConnectorError('Connection failed for secret')):
                         with self.assertRaises(SystemExit) as error:
-                            getattr(workspace_cli, 'cmd_' + name)(args)
+                            getattr(workspace_cli, 'cmd_' + name.replace('-', '_'))(args)
                         self.assertEqual(error.exception.code, 2)
                         self.assertEqual(out.getvalue(), '')
                         self.assertIn('Connection failed for [redacted]', err.getvalue())

@@ -6,11 +6,13 @@
 // plan and Kill are in the inspector. Kill asks for confirmation (Cancel is
 // the default) and is never offered for server threads.
 import { useEffect, useRef, useState } from "react";
+import { useOpenRead } from "./viewOnScreen";
 import { api, number, type Connection, type Session, type SessionBreakdown, type SessionFlag, type SessionsReport } from "./api";
 import type { ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
 import { PriorityTable, CompactNumber, engineLabel } from "./PerfShared";
 import { KillDialog, KillResultNote, killVia, useKillPrivilege, seconds, sendKill, type KillNote, type KillTarget } from "./Locks";
+import { MassKillDialog } from "./MassKillDialog";
 import { PrivilegeGate, privilegeResult, useLoginUser, usePrivilege } from "./privileges";
 import { useWritePolicy } from "./Connections";
 import {
@@ -35,6 +37,7 @@ import {
   type Tone,
 } from "./kit";
 import "./sessions.css";
+import { Icon } from "./components";
 
 const AUTO_INTERVALS = [10, 30, 60];
 const FLAGS: Record<SessionFlag, [string, "warn" | "danger" | "neutral" | "info"]> = {
@@ -111,6 +114,7 @@ export function SessionsView({
   onMinSecondsChange,
   onShowPlan,
   onOpenView,
+  onOpenSql,
 }: {
   connection: Connection;
   disabled: boolean;
@@ -118,14 +122,18 @@ export function SessionsView({
   selection: Selection;
   report: Bound<SessionsReport> | null;
   onReport: (report: Bound<SessionsReport>) => void;
-  scope: "active" | "all";
-  onScopeChange: (scope: "active" | "all") => void;
+  scope: "active" | "all" | "locked";
+  onScopeChange: (scope: "active" | "all" | "locked") => void;
   minSeconds: number;
   onMinSecondsChange: (seconds: number) => void;
   /** Opens the plan of a connection's statement, read on *from*. */
   onShowPlan: (id: number, from: Connection) => Promise<void>;
   onOpenView: (view: ServerKind) => void;
+  /** Put a statement in the Query editor's current tab, without running it. */
+  onOpenSql?: (sql: string) => void;
 }) {
+  const [sourceMode, setSourceMode] = useState<"auto" | "show_processlist">("show_processlist");
+  const [massKillOpen, setMassKillOpen] = useState(false);
   const [planLoading, setPlanLoading] = useState("");
   const [planError, setPlanError] = useState("");
   const [auto, setAuto] = useState(0);
@@ -148,23 +156,44 @@ export function SessionsView({
   const actionsOff = busy || !!other;
 
   /** Read the sessions; a newer scope or filter replaces a read still running. */
-  async function load(activeOnly = scope === "active", force = false) {
+  async function load(
+    activeOnly = scope === "active",
+    force = false,
+    source = sourceMode,
+    lockedOnly = scope === "locked",
+  ) {
     setPlanError("");
     return reads.run(
-      `sessions:${activeOnly}:${minSeconds}`,
+      `sessions:${activeOnly}:${minSeconds}:${source}:${lockedOnly}`,
       "Reading the sessions…",
-      (c) => api<SessionsReport>("live/sessions", { connection: c, active_only: activeOnly, min_seconds: minSeconds }),
+      (c) =>
+        api<SessionsReport>("live/sessions", {
+          connection: c,
+          active_only: activeOnly,
+          min_seconds: minSeconds,
+          source_mode: source,
+          locked_only: lockedOnly,
+        }),
       onReport,
       { force, onError: () => setAuto(0) },
     );
   }
+
   const loadRef = useRef(load);
   loadRef.current = load;
+
+  // A bulk kill sheet holds the sessions and review of the connection it was
+  // opened on: close it when the connection in use changes.
+  useEffect(() => { setMassKillOpen(false); }, [reads.key]);
+
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!loading || reads.running(), read: () => { void load(); } });
+
   const running = reads.running;
   useEffect(() => {
     if (!auto) return;
     const timer = window.setInterval(() => {
-      const visible = !!root.current && root.current.offsetParent !== null;
+      const view = root.current?.closest<HTMLElement>(".server-view");
+      const visible = !!view && view.offsetParent !== null;
       if (!document.hidden && visible && !disabled && !running() && !target) loadRef.current();
     }, auto * 1000);
     return () => window.clearInterval(timer);
@@ -216,7 +245,10 @@ export function SessionsView({
       key: "status",
       label: <span className="visually-hidden">Status</span>,
       sort: (x) => ({ problem: 0, watch: 1 } as Record<string, number>)[x.status] ?? 2,
-      render: (x) => <StatusDot tone={tone(x.status)} label={x.status === "ok" ? "OK" : x.status === "watch" ? "Watch" : x.status === "problem" ? "Problem" : "No threshold"} />,
+      render: (x) =>
+        x.status === "problem" || x.status === "watch" ? (
+          <StatusDot tone={tone(x.status)} label={x.status === "watch" ? "Watch" : "Problem"} />
+        ) : null,
       className: "cell-dot",
     },
     { key: "id", label: "ID", num: true, width: 96, sort: (x) => x.id, render: (x) => x.id },
@@ -258,6 +290,32 @@ export function SessionsView({
         ),
     },
     {
+      key: "lock",
+      label: "Lock / Trx",
+      width: 140,
+      sort: (x) => (x.lock_status === "waiting" ? 0 : x.lock_status === "holding" ? 1 : 2),
+      render: (x) => {
+        if (x.lock_status === "waiting") {
+          return (
+            <span className="pill is-danger" title={x.lock_detail || "Waiting on lock"}>
+              <Icon name="lock" size={12} /> Wait {x.lock_wait?.wait_s != null ? `(${x.lock_wait.wait_s}s)` : ""}
+            </span>
+          );
+        }
+        if (x.lock_status === "holding") {
+          return (
+            <span className="pill is-warn" title={x.lock_detail || "Holding locks"}>
+              <Icon name="key" size={12} /> Locks ({x.trx?.rows_locked ?? 0} rows)
+            </span>
+          );
+        }
+        if (x.trx) {
+          return <span className="cell-muted" title={`Trx ${x.trx.id}: ${x.trx.state || "active"}`}>Trx {x.trx.id}</span>;
+        }
+        return <span className="cell-muted">—</span>;
+      },
+    },
+    {
       key: "flags",
       label: "Flags",
       sort: (x) => x.flags.length,
@@ -271,6 +329,48 @@ export function SessionsView({
             ))}
           </ul>
         ) : null,
+    },
+    {
+      key: "actions",
+      label: "Actions",
+      width: 110,
+      render: (x) => {
+        const system = x.thread_kind !== "client";
+        const own = x.flags.includes("own_connection");
+        return (
+          <div className="session-row-actions" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="button small danger"
+              disabled={actionsOff || system || own}
+              title={system ? "Server thread" : own ? "myflames connection" : `Kill connection ${x.id}`}
+              onClick={(e) => {
+                if (other) return;
+                trigger.current = e.currentTarget;
+                setNote(null);
+                setTarget({
+                  ...killTarget(x),
+                  via: killVia(connection),
+                  server_identity: report?.server_identity ? { ...report.server_identity } : undefined,
+                });
+              }}
+            >
+              Kill
+            </button>
+            {x.explainable && (
+              <button
+                type="button"
+                className="button small"
+                disabled={actionsOff}
+                title={`Show plan for connection ${x.id}`}
+                onClick={() => void showPlan(x.id)}
+              >
+                Plan
+              </button>
+            )}
+          </div>
+        );
+      },
     },
   ];
 
@@ -290,7 +390,7 @@ export function SessionsView({
       title: `Connection ${x.id}`,
       meta: (
         <>
-          <StatusPill tone={tone(x.status)} />
+          {x.status !== "ok" && <StatusPill tone={tone(x.status)} />}
           <span>{x.user || "?"}@{x.client_host || "?"}</span>
         </>
       ),
@@ -311,7 +411,7 @@ export function SessionsView({
               trigger.current = e.currentTarget;
               setNote(null);
               setTarget({ ...killTarget(x), via: killVia(connection), server_identity: report?.server_identity ? { ...report.server_identity } : undefined });
-            }}>Kill…</PrivilegeGate>
+            }}>Kill</PrivilegeGate>
         </>
       ),
       body: (
@@ -405,6 +505,7 @@ export function SessionsView({
   const summaryParts = s
     ? [
         `${s.active} active`,
+        s.locked ? `${s.locked} locked` : "",
         s.idle_in_trx ? `${s.idle_in_trx} idle in transaction` : "",
         s.lock_wait.total ? `${s.lock_wait.total} waiting for a lock` : "",
         s.long_running.watch + s.long_running.problem
@@ -419,7 +520,7 @@ export function SessionsView({
   return (
     <ViewLayout
       id="sessions"
-      title="Sessions"
+      title="Processlist"
       className="sessions-panel"
       onBack={onBack}
       info={
@@ -437,15 +538,33 @@ export function SessionsView({
             label="Sessions to list"
             value={scope}
             onChange={(v) => {
-              onScopeChange(v);
+              const next = v as "active" | "all" | "locked";
+              onScopeChange(next);
               // Latest wins: a read still running for the other scope is replaced.
-              if (report) void load(v === "active");
+              if (report) void load(next === "active", false, sourceMode, next === "locked");
             }}
             options={[
               { value: "active", label: "Active" },
               { value: "all", label: "All" },
+              { value: "locked", label: s?.locked ? `Locked (${s.locked})` : "Locked" },
             ]}
           />
+          <label className="toolbar-field">
+            <span>Source</span>
+            <select
+              className="toolbar-select"
+              aria-label="Processlist source"
+              value={sourceMode}
+              onChange={(e) => {
+                const mode = e.target.value as "auto" | "show_processlist";
+                setSourceMode(mode);
+                if (report) void load(scope === "active", true, mode, scope === "locked");
+              }}
+            >
+              <option value="auto">Auto (P_S / I_S)</option>
+              <option value="show_processlist">SHOW PROCESSLIST</option>
+            </select>
+          </label>
           <label className="toolbar-field">
             <span>Running at least</span>
             <NumberField
@@ -457,6 +576,14 @@ export function SessionsView({
               onChange={(v) => onMinSecondsChange(Math.max(0, Math.round(+v) || 0))}
             />
           </label>
+          <button
+            type="button"
+            className="button"
+            disabled={busy || !report || !report.sessions.length}
+            onClick={() => setMassKillOpen(true)}
+          >
+            Mass kill
+          </button>
           {report && <SearchField label="Filter sessions" value={search} onChange={setSearch} placeholder="Filter" />}
           <AutoRefresh value={auto} options={AUTO_INTERVALS} disabled={!report} onChange={setAuto} />
         </>
@@ -467,10 +594,10 @@ export function SessionsView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a session to see its statement, its transaction, Show plan and Kill.</p>}
-      status={<ViewStatus loading={loading} error={error} />}
+      status={<><ViewStatus loading={loading} error={error} />{note && <KillResultNote note={note} noteRef={noteRef} onDismiss={() => setNote(null)} onRefresh={() => void load(scope === "active", true)} />}</>}
     >
       <div ref={root}>
-        {note && <KillResultNote note={note} noteRef={noteRef} onDismiss={() => setNote(null)} onRefresh={() => void load(scope === "active", true)} />}
+
         {target && (
           <KillDialog
             target={target}
@@ -480,6 +607,19 @@ export function SessionsView({
               window.setTimeout(() => trigger.current?.focus(), 0);
             }}
             onConfirm={(mode, token) => void confirmKill(mode, token)}
+          />
+        )}
+        {massKillOpen && report && (
+          <MassKillDialog
+            sessions={report.sessions}
+            connection={connection}
+            serverIdentity={report.server_identity}
+            onClose={() => setMassKillOpen(false)}
+            onSuccess={(n) => {
+              setMassKillOpen(false);
+              setNote(n);
+              void load(scope === "active", true);
+            }}
           />
         )}
         {!report && !loading && !error && (
@@ -514,6 +654,9 @@ export function SessionsView({
                 ["Running", c?.running != null ? number(c.running) : "—"],
                 ...(hll && hll.value !== null ? ([["History list", number(hll.value)]] as [string, string][]) : []),
                 ["Server", engineLabel(report)],
+                ...(report.ps_show_processlist != null
+                  ? ([["P_S processlist", report.ps_show_processlist]] as [string, string][])
+                  : []),
               ]}
             />
             <Disclosure title="Breakdown" className="sessions-breakdown">
@@ -528,13 +671,165 @@ export function SessionsView({
             <section className="view-section" aria-label="Sessions">
               <PriorityTable
                 id="sessions.sessions"
-                detailColumns={["user", "db", "command", "flags"]}
+                detailColumns={["user", "db", "command", "statement", "lock", "flags", "actions"]}
                 label="Sessions"
                 columns={columns}
                 rows={rows}
                 rowKey={(v) => String(v.id)}
                 selection={selection}
-                rowAttrs={(v) => ({ "data-session": String(v.id), "data-status": v.status })}
+                rowAttrs={(v) => ({
+                  "data-session": String(v.id),
+                  "data-status": v.status,
+                  "data-locked": v.is_locked ? "true" : "false",
+                  "data-lock-wait": v.lock_status === "waiting" ? "true" : "false",
+                })}
+                // A class from rowAttrs would replace the selection class; rowClass joins it.
+                rowClass={(v) => (v.lock_status === "waiting" ? "row-lock-wait" : v.lock_status === "holding" ? "row-lock-holding" : "")}
+                rowContextMenu={(v, { copy, close }) => {
+                  const system = v.flags.includes("system_thread");
+                  const own = v.flags.includes("own_connection");
+                  const canKill = !system && !own && !connection.read_only && !other;
+                  const isRunningQuery = v.command !== "Sleep" && !!v.info;
+                  return [
+                    ...(v.explainable
+                      ? [
+                          {
+                            label: `Explain active query (ID #${v.id})`,
+                            icon: "search",
+                            onClick: () => {
+                              close();
+                              void showPlan(v.id);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...((v.info || v.last_statement) && onOpenSql
+                      ? [
+                          {
+                            label: "Open in Query Editor",
+                            icon: "query",
+                            onClick: () => {
+                              close();
+                              onOpenSql(v.info || v.last_statement || "");
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(v.is_locked || v.lock_status === "waiting" || v.lock_status === "holding" || v.trx
+                      ? [
+                          {
+                            label: "View locks and blockers",
+                            icon: "lock",
+                            onClick: () => {
+                              close();
+                              onOpenView("locks");
+                            },
+                          },
+                        ]
+                      : []),
+                    { divider: true as const },
+                    ...(v.user
+                      ? [
+                          {
+                            label: `Filter by user "${v.user}"`,
+                            icon: "users",
+                            onClick: () => {
+                              close();
+                              setSearch(v.user || "");
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(v.db
+                      ? [
+                          {
+                            label: `Filter by database "${v.db}"`,
+                            icon: "database",
+                            onClick: () => {
+                              close();
+                              setSearch(v.db || "");
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(v.client_host
+                      ? [
+                          {
+                            label: `Filter by host "${v.client_host}"`,
+                            icon: "globe",
+                            onClick: () => {
+                              close();
+                              setSearch(v.client_host || "");
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(v.command
+                      ? [
+                          {
+                            label: `Filter by command "${v.command}"`,
+                            icon: "run",
+                            onClick: () => {
+                              close();
+                              setSearch(v.command || "");
+                            },
+                          },
+                        ]
+                      : []),
+                    { divider: true as const },
+                    ...(v.info
+                      ? [
+                          {
+                            label: "Copy SQL query",
+                            icon: "copy",
+                            onClick: () => void copy(v.info || "", "SQL query copied"),
+                          },
+                        ]
+                      : []),
+                    {
+                      label: `Copy connection ID (#${v.id})`,
+                      icon: "copy",
+                      onClick: () => void copy(String(v.id), "Connection ID copied"),
+                    },
+                    { divider: true as const },
+                    ...(canKill && isRunningQuery
+                      ? [
+                          {
+                            label: "Kill query",
+                            icon: "stop",
+                            danger: true,
+                            onClick: () => {
+                              close();
+                              setNote(null);
+                              setTarget({
+                                ...killTarget(v),
+                                via: killVia(connection),
+                                server_identity: report?.server_identity ? { ...report.server_identity } : undefined,
+                              });
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(canKill
+                      ? [
+                          {
+                            label: "Kill connection",
+                            icon: "block",
+                            danger: true,
+                            onClick: () => {
+                              close();
+                              setNote(null);
+                              setTarget({
+                                ...killTarget(v),
+                                via: killVia(connection),
+                                server_identity: report?.server_identity ? { ...report.server_identity } : undefined,
+                              });
+                            },
+                          },
+                        ]
+                      : []),
+                  ];
+                }}
                 empty={
                   needle
                     ? `No session matches “${search.trim()}”.`
@@ -542,7 +837,9 @@ export function SessionsView({
                       ? `No session has been in its state for ${minSeconds} seconds or longer.`
                       : scope === "active"
                         ? "No active sessions right now."
-                        : "No sessions."
+                        : scope === "locked"
+                          ? "No locked transactions right now."
+                          : "No sessions."
                 }
               />
               {report.truncated && (

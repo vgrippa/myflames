@@ -9,7 +9,7 @@ export default defineConfig({
       output: {
         // Keep the logo address valid for tabs left open during a rebuild.
         assetFileNames: (asset) =>
-          asset.name === "myflames-icon-v2.png"
+          asset.name === "myflames-icon-v3.png"
             ? "assets/myflames-logo[extname]"
             : "assets/[name]-[hash][extname]",
       },

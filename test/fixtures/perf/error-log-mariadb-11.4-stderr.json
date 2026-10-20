@@ -1,0 +1,68 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('datadir', 'hostname', 'log_error', 'log_error_services', 'log_error_verbosity', 'log_warnings', 'performance_schema', 'port', 'userstat', 'version', 'version_comment')",
+   "datadir\t/var/lib/mysql/\nhostname\t1d56087ee617\nlog_error\t\nlog_warnings\t2\nperformance_schema\tOFF\nport\t3306\nuserstat\tOFF\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t2256\n"
+  ],
+  [
+   "/*myflames:error-log*/ SELECT VARIABLE_VALUE, CONVERT_TZ(UTC_TIMESTAMP() - INTERVAL CAST(VARIABLE_VALUE AS UNSIGNED) SECOND, '+00:00', 'SYSTEM') FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Uptime'",
+   "2256\t2026-10-19 20:26:13\n"
+  ]
+ ],
+ "report": {
+  "available": false,
+  "buffer": null,
+  "codes": [],
+  "counts": {
+   "error": 0,
+   "note": 0,
+   "system": 0,
+   "warning": 0
+  },
+  "counts_current_run": {
+   "error": 0,
+   "note": 0,
+   "system": 0,
+   "warning": 0
+  },
+  "engine": "mariadb",
+  "entries": [],
+  "entries_total": 0,
+  "file": null,
+  "how_to_view": "Read it where the service manager keeps the server's standard error, for example journalctl -u mariadb under systemd, or docker logs <container> in Docker.",
+  "levels": [
+   "System",
+   "Error",
+   "Warning",
+   "Note"
+  ],
+  "limit": 200,
+  "notes": [],
+  "performance_schema": false,
+  "reason": "log_to_stderr",
+  "reason_text": "log_error is empty, so the server writes its error log to standard error and there is no file to read.",
+  "schema_version": "error-log-1.0",
+  "server_started": "2026-10-19 20:26:13",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "settings": {
+   "datadir": "/var/lib/mysql/",
+   "log_error": "",
+   "log_error_services": null,
+   "log_error_verbosity": null,
+   "log_warnings": 2
+  },
+  "source": null,
+  "summary": {
+   "status": "unknown",
+   "text": "log_error is empty, so the server writes its error log to standard error and there is no file to read."
+  },
+  "taken_at": "2026-10-19T21:03:49.715116+00:00",
+  "uptime_s": 2256
+ },
+ "server": "mariadb-11.4-stderr"
+}

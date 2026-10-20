@@ -121,6 +121,9 @@ KILL_TAG = "/*myflames:kill*/ "
 LARGE_ROLLBACK_ROWS = 10000
 #: Lock statements carry the capture-tag prefix so ``top`` excludes them.
 LOCKS_TAG = "/*myflames:locks*/ "
+#: INNODB_TRX timestamps use the OS zone, while NOW() uses the session zone.
+# Keep local: sessions.py imports this module, so importing its constant cycles.
+SYSTEM_TIME_ZONE = "SET SESSION time_zone = 'SYSTEM'; "
 MAX_LIMIT = 5000
 MAX_MDL_EDGES = 5000
 MAX_TREE_DEPTH = 128
@@ -280,6 +283,11 @@ def _q(conn, sql):
     """Run tagged SQL; return rows of unescaped strings with NULL as None."""
     reader = getattr(conn, "query_lock_rows", None)
     if reader is not None:
+        # ALTER review shares the editor's session: preserve its time_zone.
+        prefix = SYSTEM_TIME_ZONE + LOCKS_TAG
+        if sql.startswith(prefix):
+            sql = sql[len(prefix):].replace(
+                "NOW()", "CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')")
         return reader(LOCKS_TAG + sql)
     text = conn.run(LOCKS_TAG + sql, extra_flags=["--comments"])
     rows = []
@@ -515,7 +523,8 @@ def alter_table_preflight(conn, schema, table, engine, version, ps_on, limit=500
 
 
 def _read_transactions(conn, r):
-    sql = ("SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), "
+    sql = (SYSTEM_TIME_ZONE + LOCKS_TAG +
+           "SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), "
            "trx_requested_lock_id, trx_wait_started, TIMESTAMPDIFF(SECOND, trx_wait_started, NOW()), "
            "trx_mysql_thread_id, LEFT(trx_query, %d), trx_operation_state, trx_tables_in_use, "
            "trx_tables_locked, trx_lock_structs, trx_rows_locked, trx_rows_modified, "
@@ -2412,7 +2421,8 @@ def read_target(conn, engine, ps_on, connection_id):
     own = _int(rows[0][9]) if len(rows[0]) > 9 else None
     session["trx"], session["trx_checked"] = None, False
     try:
-        trx = _q(conn, "SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), "
+        trx = _q(conn, SYSTEM_TIME_ZONE + LOCKS_TAG +
+                       "SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), "
                        "trx_rows_locked, trx_rows_modified FROM information_schema.INNODB_TRX "
                        "WHERE trx_mysql_thread_id = %d LIMIT 1" % connection_id)
         session["trx_checked"] = True

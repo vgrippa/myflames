@@ -254,7 +254,7 @@
       ],
       "recommendation": {
         "text": "If this rate is typical of busy periods, about an hour of redo at it is 256.0 MiB (rounded up to 256 MiB): SET GLOBAL innodb_log_file_size = 268435456; resizes it online (the statement waits until the resize finishes); also set it in the configuration file so a restart keeps it.",
-        "caveat": "One short window may be a burst or a lull: compare several refreshes, or the Config tab's average since startup. A larger redo log uses more disk and makes crash recovery longer."
+        "caveat": "One short window may be a burst or a lull: compare several refreshes, or the Parameters view's average since startup. A larger redo log uses more disk and makes crash recovery longer."
       },
       "sources": [
         "Innodb_os_log_written",

@@ -6,6 +6,7 @@
 // the sparklines lives in memory only; the view and the sampling window are
 // restored with the workspace.
 import { useEffect, useRef, useState } from "react";
+import { useOpenRead } from "./viewOnScreen";
 import {
   api,
   type Connection,
@@ -268,11 +269,14 @@ export function HealthView({
   useEffect(() => {
     if (!auto) return;
     const timer = window.setInterval(() => {
-      const visible = !!root.current && root.current.offsetParent !== null;
+      const view = root.current?.closest<HTMLElement>(".server-view");
+      const visible = !!view && view.offsetParent !== null;
       if (!document.hidden && visible && !disabled && !reads.running()) loadRef.current();
     }, auto * 1000);
     return () => window.clearInterval(timer);
   }, [auto, disabled]);
+
+  useOpenRead({ key: reads.key, reportKey: memory.report ? memory.key : null, ready: !disabled, busy: !!loading || reads.running(), read: () => { void loadRef.current(); } });
 
   const stale = !!report && memory.key !== key;
   const history = memory.key === key ? memory.history : [];

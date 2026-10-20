@@ -34,6 +34,8 @@ sets widths only: tooltips print each time in a readable unit
 import math
 import re
 
+from .parser import xml_escape
+
 __all__ = [
     "folded_to_svg", "frame_color", "label_hash", "fit_frame_label",
     "flame_scale", "flame_units", "plan_folded", "flame_value_text", "flame_header", "NO_TIME",
@@ -361,14 +363,11 @@ def _place(top, span):
 # Output helpers
 # ---------------------------------------------------------------------------
 
-_XML_INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")
-
-
 def _esc(value):
-    """XML-escape text or an attribute value (``& < > "``)."""
-    text = _XML_INVALID.sub("�", "" if value is None else str(value))
-    return (text.replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;").replace('"', "&quot;"))
+    """XML-escape text or an attribute value: the shared
+    :func:`myflames.parser.xml_escape`, which also replaces XML-invalid
+    characters with U+FFFD."""
+    return xml_escape(value)
 
 
 def _count(value):

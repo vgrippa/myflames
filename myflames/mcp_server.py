@@ -54,10 +54,29 @@ def analyze_plan_tool(plan_json, detail="full"):
     ``collected``/``query``/``teach_hooks`` blocks and hand the agent the
     token-cheap decision-grade subset by default.
     """
-    root = parse_explain(plan_json)
+    from .parser import load_explain_json
+    from .live import normalize_capture
+    from .plan_input import _plan
+    data = load_explain_json(plan_json)
+    capture = None
+    if isinstance(data, dict) and data.get("schema_version") == "capture-1.0":
+        capture = normalize_capture(data)
+        if not capture.get("raw"):
+            raise ValueError("Capture contains no plan.")
+        plan_json = capture["raw"]
+    _, root, _, engine = _plan({"plan": plan_json})
     analysis = analyze_plan(root)
+    if capture:
+        # Reuse the CLI's advisor inputs and recorded-engine precedence so a
+        # capture has the same findings on both entry points.
+        from .cli import _capture_artifacts, _plan_engine
+        from .advisor import advise
+        advise(analysis, **_capture_artifacts(capture))
+        engine = _plan_engine(root, capture)
+    version = (capture or {}).get("server_version")
     return build_sidecar(
-        root, analysis, source_type="stdin", engine=_engine_of(plan_json),
+        root, analysis, source_type="stdin", engine=engine,
+        engine_version=version if isinstance(version, str) and version else None,
         detail=detail,
     )
 
@@ -98,6 +117,9 @@ def explain_query_tool(query, host, port=3306, user=None, password=None,
     (``digest=False``). Requires network access to the server; raises on failure.
     """
     from .connector import MySQLConnection
+    from .live import bind_query
+    # EXPLAIN ANALYZE runs the statement, so only one SELECT may reach it.
+    query = bind_query(query)
     conn = MySQLConnection(
         host=host, port=port, user=user, password=password, database=database,
     )
@@ -109,7 +131,7 @@ def explain_query_tool(query, host, port=3306, user=None, password=None,
 
 
 def _read_sql(sql):
-    """Adapt the two SYSTEM-zone transaction reads without issuing SET.
+    """Adapt the SYSTEM-zone transaction reads (Sessions, InnoDB, Locks) without issuing SET.
 
     INNODB_TRX dates use the server's OS zone; the client session can inherit
     a different global zone. Convert NOW() in the SELECT instead of changing
@@ -117,7 +139,7 @@ def _read_sql(sql):
     daylight-saving transition. Only exact module-owned prefixes are rewritten.
     """
     from .live import TOKEN
-    for tag in ("/*myflames:sessions*/ ", "/*myflames:innodb*/ "):
+    for tag in ("/*myflames:sessions*/ ", "/*myflames:innodb*/ ", "/*myflames:locks*/ "):
         prefix = tag + "SET SESSION time_zone = 'SYSTEM'; "
         if sql.startswith(prefix):
             sql = sql[len(prefix):].replace("NOW()", "CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')")

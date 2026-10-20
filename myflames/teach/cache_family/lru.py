@@ -83,11 +83,11 @@ def render() -> str:
   <div class="stage-with-phases">
     <div style="flex:1;min-width:0;display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <div>
-        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#1e40af;letter-spacing:0.4px;text-transform:uppercase">InnoDB midpoint-insertion LRU</p>
+        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:var(--svg-token);letter-spacing:0.4px;text-transform:uppercase">InnoDB midpoint-insertion LRU</p>
         <svg id="svg-innodb" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg"></svg>
       </div>
       <div>
-        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#6b7280;letter-spacing:0.4px;text-transform:uppercase">Textbook single-list LRU</p>
+        <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:var(--svg-ink-muted);letter-spacing:0.4px;text-transform:uppercase">Textbook single-list LRU</p>
         <svg id="svg-classic" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg"></svg>
       </div>
     </div>
@@ -146,7 +146,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="lru",
-        title="InnoDB buffer pool — midpoint-insertion LRU",
+        title="InnoDB buffer pool: midpoint-insertion LRU",
         subtitle=(
             "A 3-act story: your hot pages, a full-table scan, and the "
             "moment you discover whether the scan wiped your cache."

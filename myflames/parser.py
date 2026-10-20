@@ -329,10 +329,22 @@ def _suggest_sort_indexes(root, seen_ddl):
     return out
 
 
+#: Characters XML 1.0 forbids even when escaped (Char production): C0
+#: controls other than tab, LF and CR, lone surrogates, U+FFFE and U+FFFF.
+#: Plan text (conditions, names) can carry them; a single one makes the whole
+#: SVG malformed, so every renderer replaces them with U+FFFD.
+_XML_INVALID_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
 def xml_escape(s):
+    """Escape text or a double-quoted attribute value for XML and SVG.
+
+    Replaces XML-invalid characters with U+FFFD, then escapes ``& < > "``.
+    This is the one escape helper; renderer attribute helpers build on it.
+    """
     if s is None:
         return ""
-    s = str(s)
+    s = _XML_INVALID_RE.sub("\ufffd", str(s))
     s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
     return s
 
@@ -598,7 +610,14 @@ def parse_node(node):
         "actual_rows": node.get("actual_rows"),
         "rows_measured": node.get("rows_measured", node.get("actual_rows") is not None),
         "actual_loops": node.get("actual_loops", 1),
+        # MariaDB tables: measured rows per loop that passed the attached
+        # condition (actual_rows is rows read before it); None elsewhere.
+        "rows_returned": node.get("rows_returned"),
         "estimated_rows": node.get("estimated_rows"),
+        # MariaDB / MySQL format-1 tables: estimated rows per loop after the
+        # attached condition (rows x filtered), and MariaDB's estimated loops.
+        "estimated_rows_out": node.get("estimated_rows_out"),
+        "estimated_loops": node.get("estimated_loops"),
         "actual_last_row_ms": node.get("actual_last_row_ms"),
         "actual_first_row_ms": node.get("actual_first_row_ms"),
         "estimated_total_cost": node.get("estimated_total_cost"),
@@ -608,6 +627,10 @@ def parse_node(node):
         "schema_name": node.get("schema_name") or "",
         "join_algorithm": node.get("join_algorithm") or "",
         "join_type": node.get("join_type") or "",
+        # MySQL labels a child "heading" in JSON v2 (AddChildrenToObject in
+        # sql/join_optimizer/explain_access_path.cc); a hash join's build
+        # input is the child with heading "Hash".
+        "heading": node.get("heading") or "",
         "pushed_index_condition": bool(node.get("pushed_index_condition")),
         "using_join_buffer": (node.get("using_join_buffer") or "").strip(),
         # Fields used by optimizer_switch detection (see _detect_optimizer_switches).
@@ -626,6 +649,10 @@ def parse_node(node):
         # "sort_key" string into the same "sort_fields" list. Empty for
         # non-sort nodes.
         "sort_fields": list(node.get("sort_fields") or []),
+        # MariaDB ANALYZE filesort merge passes (_sort_merge_passes): None
+        # when the plan does not say; MySQL plans never do.
+        "sort_merge_passes": node.get("sort_merge_passes"),
+        "sort_merge_passes_approx": bool(node.get("sort_merge_passes_approx")),
     }
     result = {
         "short_label": short,
@@ -647,6 +674,48 @@ def parse_node(node):
     return result
 
 
+#: Keys MariaDB writes for one member of a join: Explain_table_access::
+#: print_explain_json opens "read_sorted_file", "block-nl-join",
+#: "range-checked-for-each-record" or "full-scan-on-null_key" around the
+#: "table", and Explain_basic_join wraps a DuplicateWeedout range in
+#: "duplicates_removal" (sql/sql_explain.cc).
+_JOIN_MEMBER_KEYS = frozenset({
+    "table", "read_sorted_file", "block-nl-join", "range-checked-for-each-record",
+    "full-scan-on-null_key", "duplicates_removal",
+})
+
+
+def _join_members_hook(pairs):
+    """``json`` object_pairs_hook that keeps every member of a MariaDB join.
+
+    MariaDB 10.7 and earlier wrote the members of a join one after another
+    into the enclosing object (Explain_basic_join::print_explain_json_interns,
+    sql/sql_explain.cc on the 10.6 branch), so ``"table"`` repeats and
+    ``json.loads`` would keep only the last table. 10.8.1 and later
+    (MDEV-27036, commit 73df7a30094) write them as a ``"nested_loop"``
+    array. An object with more than one member key becomes that array, in
+    the order written, at the first member's position; every other object
+    is built exactly as ``json.loads`` builds it.
+    """
+    members = sum(1 for key, _ in pairs if key in _JOIN_MEMBER_KEYS)
+    if members < 2 or any(key == "nested_loop" for key, _ in pairs):
+        return dict(pairs)
+    out = {}
+    loop = []
+    for key, value in pairs:
+        if key in _JOIN_MEMBER_KEYS:
+            if "nested_loop" not in out:
+                out["nested_loop"] = loop
+            loop.append({key: value})
+        else:
+            out[key] = value
+    return out
+
+
+def _loads(text):
+    return json.loads(text, object_pairs_hook=_join_members_hook)
+
+
 def load_explain_json(text):
     """Load EXPLAIN JSON, tolerating common MySQL CLI output quirks.
 
@@ -656,6 +725,8 @@ def load_explain_json(text):
     - Table-formatted output (``+---+`` borders and ``| ... |`` rows)
     - Escaped newlines/tabs (from ``mysql -e`` without ``-r``)
     - UTF-8 BOM
+    - MariaDB 10.6 joins with repeated ``"table"`` keys
+      (:func:`_join_members_hook`)
     """
     # Strip UTF-8 BOM
     text = text.lstrip("\ufeff")
@@ -665,7 +736,7 @@ def load_explain_json(text):
     # when the text does not parse as is, so a query or condition inside the
     # plan that contains "EXPLAIN:" or a "|" is never touched.
     try:
-        return json.loads(text)
+        return _loads(text)
     except json.JSONDecodeError:
         pass
 
@@ -693,7 +764,7 @@ def load_explain_json(text):
     # Try parsing as-is first
     text = text.strip()
     try:
-        return json.loads(text)
+        return _loads(text)
     except json.JSONDecodeError:
         pass
 
@@ -704,7 +775,7 @@ def load_explain_json(text):
     if "\n" not in text.strip() and "\\n" in text:
         unescaped = text.replace("\\n", "\n").replace("\\t", "\t")
         try:
-            return json.loads(unescaped)
+            return _loads(unescaped)
         except json.JSONDecodeError:
             pass
 
@@ -713,7 +784,7 @@ def load_explain_json(text):
     json_start = re.search(r'[{\[]', text)
     if json_start and json_start.start() > 0:
         try:
-            return json.loads(text[json_start.start():])
+            return _loads(text[json_start.start():])
         except json.JSONDecodeError:
             pass
 
@@ -936,6 +1007,46 @@ def _ms_total(node):
     return float(node.get("actual_last_row_ms") or 0) * (node.get("actual_loops") or 1)
 
 
+def _number_text(value):
+    """A number written as text ("100.00", MySQL format 1 ``filtered``) as a
+    float; anything else unchanged."""
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return value
+
+
+def _first_number(*values):
+    """The first value that is a number, as a float; None when there is none.
+
+    Counters MariaDB prints as null (never executed) or leaves out stay
+    unknown instead of becoming a measured 0."""
+    for value in values:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
+def _sort_merge_passes(filesort):
+    """``(total merge passes, approximate)`` of a MariaDB ANALYZE filesort;
+    ``(None, False)`` when unknown.
+
+    Filesort_tracker::print_json_members (sql/sql_analyze_stmt.cc) prints
+    ``r_sort_passes`` only when the total is nonzero, as the total divided
+    by r_loops and rounded, so the total is about r_sort_passes x r_loops
+    (at least 1). filesort.cc counts each pass with Sort_merge_passes. A
+    sort that ran (r_loops) without it sorted in memory. EXPLAIN without
+    ANALYZE: unknown.
+    """
+    loops = _first_number(filesort.get("r_loops"))
+    passes = _first_number(filesort.get("r_sort_passes"))
+    if passes is not None:
+        return max(passes * (loops or 1), 1.0), bool(loops and loops > 1)
+    return (0.0 if loops else None), False
+
+
 def _add_ms(node, ms):
     """Add *ms* (total across loops, may be negative) to a normalized node's
     elapsed time, which is stored per loop."""
@@ -1049,8 +1160,26 @@ def _normalize_mariadb_table(tbl, ctx=None):
     r_other_time = tbl.get("r_other_time_ms") or 0
     total_ms = r_table_time + r_other_time
 
+    # ANALYZE counters (sql/sql_explain.cc Explain_table_access::print_explain_json,
+    # sql/sql_analyze_stmt.h Table_access_tracker): r_loops is the number of
+    # scans of this table, r_rows the average rows read per scan (before the
+    # attached condition), printed as null when the table was never scanned
+    # (r_loops 0, e.g. a const table read during optimization). A null is not
+    # a measured zero: keep it unknown.
     r_rows = tbl.get("r_rows")
-    r_loops = tbl.get("r_loops") or tbl.get("loops") or 1
+    # r_loops is measured, 0 included (never scanned during execution). The
+    # "loops" member is the optimizer's estimate (POSITION::loops, printed
+    # from 11.0.1, MDEV-30032), kept apart as estimated_loops.
+    measured_loops = _first_number(tbl.get("r_loops"))
+    r_loops = measured_loops or 1
+    # Rows per scan that pass the attached condition: r_filtered is
+    # r_rows_after_where / r_rows (Table_access_tracker, printed by
+    # Explain_table_access::print_explain_json); r_rows counts rows before it
+    # (evaluate_join_record, sql_select.cc). Null when never scanned.
+    r_filtered = _first_number(tbl.get("r_filtered"))
+    rows_returned = (float(r_rows) * r_filtered / 100.0
+                     if r_rows is not None and r_filtered is not None else None)
+    est_filtered = _first_number(_number_text(tbl.get("filtered")))
 
     # MariaDB r_table_time_ms is TOTAL across all loops.  parse_node()
     # multiplies actual_last_row_ms * actual_loops, so store per-loop time.
@@ -1096,11 +1225,14 @@ def _normalize_mariadb_table(tbl, ctx=None):
         "table_name": table_name,
         "index_name": key,
         "access_type": mysql_access_type,
-        "actual_rows": float(r_rows) if r_rows is not None else 0.0,
+        "actual_rows": float(r_rows) if r_rows is not None else None,
         "rows_measured": r_rows is not None,
-        "actual_loops": int(r_loops),
+        "rows_returned": rows_returned,
         "actual_last_row_ms": per_loop_ms,
         "estimated_rows": float(est_rows) if est_rows is not None else None,
+        "estimated_rows_out": (float(est_rows) * est_filtered / 100.0
+                               if est_rows is not None and est_filtered is not None else None),
+        "estimated_loops": _first_number(tbl.get("loops")),
         "estimated_total_cost": float(cost) if cost is not None else None,
         "condition": condition,
         "covering": using_index,
@@ -1116,6 +1248,8 @@ def _normalize_mariadb_table(tbl, ctx=None):
         "pushed_index_condition": has_pushed_index_cond,
     }
 
+    if measured_loops is not None:
+        node["actual_loops"] = int(measured_loops)
     # WHERE subqueries attached to a MySQL format-1 table; derived tables and
     # materialized semijoins (MariaDB "materialized", MySQL format-1
     # "materialized_from_subquery").
@@ -1157,6 +1291,10 @@ def _normalize_join_entry(entry, ctx, _depth=0):
             "join_type": join_type,
             "buffer_type": buffer_type,
             "buffer_size": bnl_wrapper.get("buffer_size") or "",
+            # One per row put in the join buffer, summed over refills
+            # (jbuf_loops_tracker->on_scan_init in sub_select_cache,
+            # sql/sql_select.cc; printed since MDEV-30806, 10.6.13).
+            "r_loops": _first_number(bnl_wrapper.get("r_loops")),
         }
         # Preserve the BNL wrapper's attached_condition (the real ON
         # predicate) so the advisor's non-sargable detection rule can
@@ -1228,7 +1366,10 @@ def _normalize_join_entry(entry, ctx, _depth=0):
                 "access_type": "semijoin",
                 "actual_last_row_ms": inner.get("actual_last_row_ms") or 0,
                 "actual_loops": inner.get("actual_loops", 1),
-                "actual_rows": inner.get("actual_rows") or 0,
+                # No counter of its own: the semi-join range's output is
+                # not reported.
+                "actual_rows": None,
+                "rows_measured": False,
                 "inputs": [inner],
             }
     if isinstance(entry.get("nested_loop"), list):
@@ -1242,13 +1383,46 @@ def _normalize_join_entry(entry, ctx, _depth=0):
     return None
 
 
+def _entry_in_loops(entry, _depth=0):
+    """Rows that reached one member of a MariaDB join, or None.
+
+    MariaDB calls sub_select() for a table once per row of the join before
+    it (including null-complemented outer-join rows), and each call counts
+    one r_scans, printed as the table's r_loops (sql/sql_select.cc
+    sub_select; Table_access_tracker). A table under a join buffer is read
+    once per buffer refill instead; there each incoming row counts one
+    jbuf_loops_tracker loop, printed as the block-nl-join r_loops
+    (sub_select_cache; Explain_table_access::print_explain_json, since
+    MDEV-30806, 10.6.13). A wrapper's first table is the member's entry.
+    """
+    if not isinstance(entry, dict) or _depth > _MAX_WRAPPER_DEPTH:
+        return None
+    if isinstance(entry.get("block-nl-join"), dict):
+        return _first_number(entry["block-nl-join"].get("r_loops"))
+    if isinstance(entry.get("table"), dict):
+        return _first_number(entry["table"].get("r_loops"))
+    for key in ("range-checked-for-each-record", "full-scan-on-null_key"):
+        if isinstance(entry.get(key), dict):
+            return _entry_in_loops(entry[key], _depth + 1)
+    for key in ("duplicates_removal", "firstmatch", "loosescan", "nested_loop"):
+        value = entry.get(key)
+        if isinstance(value, list) and value:
+            return _entry_in_loops(value[0], _depth + 1)
+        if isinstance(value, dict):
+            return _entry_in_loops(value, _depth + 1)
+    return None
+
+
 def _weedout_node(inner):
     return {
         "operation": "Remove duplicates using temporary table (weedout)",
         "access_type": "weedout",
         "actual_last_row_ms": inner.get("actual_last_row_ms") or 0,
         "actual_loops": inner.get("actual_loops", 1),
-        "actual_rows": inner.get("actual_rows") or 0,
+        # The weedout prints no counter, and removing duplicates means its
+        # output is not its input's: unknown.
+        "actual_rows": None,
+        "rows_measured": False,
         "inputs": [inner],
     }
 
@@ -1268,10 +1442,13 @@ def _normalize_mariadb_nested_loop(nested_loop, ctx=None):
         return None
     ctx = ctx or _NormContext()
     table_nodes = []
+    # Rows that reached each member (_entry_in_loops), in member order.
+    reached = []
     for entry in nested_loop:
         node = _normalize_join_entry(entry, ctx)
         if node:
             table_nodes.append(node)
+            reached.append(_entry_in_loops(entry))
 
     if not table_nodes:
         return None
@@ -1302,7 +1479,12 @@ def _normalize_mariadb_nested_loop(nested_loop, ctx=None):
             # r_total_time_ms instead (_normalize_mariadb_query_block).
             "actual_last_row_ms": _ms_total(result) + _ms_total(inner) + jbuf[i],
             "actual_loops": 1,
-            "actual_rows": float(inner.get("actual_rows") or 0),
+            # MariaDB has no counter on the join itself. The rows this join
+            # returns are the rows that reached the next member: its r_loops,
+            # or block-nl-join r_loops when it uses a join buffer
+            # (_entry_in_loops), totals over every run of the select. The
+            # last join of the list has no next member and is not measured.
+            "actual_rows": reached[i + 1] if i + 1 < len(reached) else None,
             "inputs": [result, inner],
         }
         result = join_node
@@ -1359,7 +1541,9 @@ def _normalize_mariadb_read_sorted_file(rsf, ctx=None):
 
     sort_key = filesort.get("sort_key") or ""
     r_time = float(filesort.get("r_total_time_ms") or 0)
-    r_output_rows = filesort.get("r_output_rows") or rsf.get("r_rows") or 0
+    # Filesort_tracker::print_json_members: r_output_rows per loop, null when
+    # the sort never ran; read_sorted_file r_rows: rows read back per scan.
+    r_output_rows = _first_number(filesort.get("r_output_rows"), rsf.get("r_rows"))
 
     # The filesort time covers reading the table and sorting, with the
     # table's WHERE (and any subquery in it); the table's own time covers
@@ -1375,7 +1559,10 @@ def _normalize_mariadb_read_sorted_file(rsf, ctx=None):
         "access_type": "sort",
         "actual_last_row_ms": 0.0,
         "actual_loops": filesort.get("r_loops") or 1,
-        "actual_rows": float(r_output_rows),
+        "actual_rows": r_output_rows,
+        "rows_measured": r_output_rows is not None,
+        "sort_merge_passes": _sort_merge_passes(filesort)[0],
+        "sort_merge_passes_approx": _sort_merge_passes(filesort)[1],
         "sort_fields": _mariadb_sort_key_to_fields(sort_key),
         "inputs": [child] if child else [],
         "_overlap_ms": min(r_time, table_ms + ctx.subquery_ms),
@@ -1396,14 +1583,17 @@ def _normalize_mariadb_filesort(filesort, ctx=None):
 
     sort_key = filesort.get("sort_key") or ""
     r_time = filesort.get("r_total_time_ms") or 0
-    r_output_rows = filesort.get("r_output_rows") or 0
+    r_output_rows = _first_number(filesort.get("r_output_rows"))
 
     node = {
         "operation": "Sort: {}".format(sort_key) if sort_key else "Sort",
         "access_type": "sort",
         "actual_last_row_ms": 0.0,
         "actual_loops": filesort.get("r_loops") or 1,
-        "actual_rows": float(r_output_rows),
+        "actual_rows": r_output_rows,
+        "rows_measured": r_output_rows is not None,
+        "sort_merge_passes": _sort_merge_passes(filesort)[0],
+        "sort_merge_passes_approx": _sort_merge_passes(filesort)[1],
         "sort_fields": _mariadb_sort_key_to_fields(sort_key),
         "inputs": [child] if child else [],
         # HAVING over the grouped rows is the filesort's condition, so a
@@ -1522,14 +1712,38 @@ def _normalize_setop(result, key, default, ctx, qb_time, qb_loops):
         return None
     # The union query_block often lacks r_total_time_ms; use the members'.
     union_time = qb_time or sum(_ms_total(c) for c in children)
+    loops = qb_loops
+    if table_name:
+        # Explain_union::print_explain_json_regular: with a result table,
+        # r_loops/r_rows are the scans of that table by the fake select and
+        # the rows read per scan (fake_select_lex_tracker, attached to its
+        # join_tab in sql_select.cc), after INTERSECT/EXCEPT removed rows
+        # from it (select_unit::send_data/send_eof in sql_union.cc). So they
+        # are the set operation's measured result. Null (never read, or a
+        # recursive CTE's working table) stays unknown; summing the members
+        # would ignore deduplication, INTERSECT and EXCEPT. Rows skipped by
+        # an OFFSET on the whole unit are read here and dropped when sent
+        # (select_result_sink::send_data_with_check, sql/sql_class.cc), and
+        # the plan does not show the OFFSET.
+        rows = _first_number(result.get("r_rows"))
+        if result.get("r_loops"):
+            loops = result["r_loops"]
+    else:
+        # UNION ALL without a result table streams member rows to the client
+        # (select_union_direct), which applies a LIMIT/OFFSET on the whole
+        # unit there (send_data, sql/sql_union.cc). The plan does not show
+        # that limit (union_needs_tmp_table, sql/sql_lex.cc, needs no table
+        # for it), and a table member's r_rows counts rows before its WHERE,
+        # so the members' rows do not give the output: unknown.
+        rows = None
     node = {
         "operation": _setop_operation(key, default, result, blocks),
         "access_type": "union",
         # The set operation's result table (<union1,2>, <intersect1,2>, ...).
         "table_name": table_name,
         "actual_last_row_ms": 0.0,
-        "actual_loops": qb_loops,
-        "actual_rows": float(sum((c.get("actual_rows") or 0) for c in children)),
+        "actual_loops": loops,
+        "actual_rows": rows,
         "inputs": children,
     }
     # qb_time and the members' times are totals across loops.
@@ -1592,7 +1806,8 @@ def _normalize_block(obj, ctx, top=False, qb_time=0, qb_loops=1):
             "access_type": "sort",
             "actual_last_row_ms": 0.0,
             "actual_loops": qb_loops if top else 1,
-            "actual_rows": float((child or {}).get("actual_rows") or 0),
+            # Window functions return one row per input row.
+            "actual_rows": _first_number((child or {}).get("actual_rows")),
             "inputs": [child] if child else [],
         }
         if top and qb_time:
@@ -1985,24 +2200,76 @@ def build_diagram_steps(node):
     return result
 
 
+_FLAME_ROWS_RE = re.compile(r"rows[=:]?\s*(\d+)\b", re.I)
+_FLAME_STARTS_RE = re.compile(r"starts[=:]?\s*(\d+)\b", re.I)
+# One flame graph frame as flamegraph.folded_to_svg writes it: the frame's
+# <g> (with data-node-id / data-label naming its operator) and its <title>.
+_FLAME_FRAME_RE = re.compile(r"<g ([^>]*)>\n<title>([^<]*)</title>")
+_FLAME_ATTR_RE = re.compile(r'\b(data-node-id|data-label)="([^"]*)"')
+
+
+def enhance_flame_titles(svg, root):
+    """Add operator details to every frame tooltip of a plan flame graph.
+
+    Each frame names its operator exactly: ``data-node-id`` when the graph
+    was drawn with node identity, otherwise ``data-label`` (the folded
+    label; the first operator in plan order with that label). The details
+    come from that one operator, as in ``chart_data._flame_details``, so a
+    frame never borrows another operator's details through a similar label
+    and the work is linear in the number of frames.
+    """
+    from html import unescape
+    by_id = {}
+    by_label = {}
+    for node in flatten_nodes(root):
+        by_id.setdefault(node.get("node_id"), node)
+        # Keyed as the label appears in the SVG (XML-invalid characters
+        # replaced), so such labels still find their operator.
+        by_label.setdefault(_XML_INVALID_RE.sub("\ufffd", node.get("folded_label") or ""), node)
+
+    def repl(match):
+        attrs = dict(_FLAME_ATTR_RE.findall(match.group(1)))
+        node = None
+        if "data-node-id" in attrs:
+            node = by_id.get(unescape(attrs["data-node-id"]))
+        if node is None and "data-label" in attrs:
+            node = by_label.get(unescape(attrs["data-label"]))
+        if node is None:
+            return match.group(0)
+        original = unescape(match.group(2))
+        label = _XML_INVALID_RE.sub("\ufffd", node.get("folded_label") or "")
+        enhanced = enhance_tooltip_flame(original, {label: node.get("details") or {}})
+        return ("<g " + match.group(1) + ">\n<title>"
+                + xml_escape(enhanced).replace("\n", "&#10;") + "</title>")
+
+    return _FLAME_FRAME_RE.sub(repl, svg)
+
+
 def enhance_tooltip_flame(original, op_details):
-    """Enhance tooltip using op_details { folded_label -> details }."""
+    """Enhance tooltip using op_details { folded_label -> details }.
+
+    With several entries the best match is chosen by label, index, table,
+    rows and loops. Renderers pass a one-entry map for the frame's own
+    operator (:func:`enhance_flame_titles`, ``chart_data._flame_details``).
+    """
     best = None
     best_score = 0
+    text = original or ""
+    lowered = text.lower()
+    rows_match = _FLAME_ROWS_RE.search(text)
+    starts_match = _FLAME_STARTS_RE.search(text)
     for label, d in op_details.items():
         score = 0
-        if label.lower() in (original or "").lower():
+        if label.lower() in lowered:
             score += 20
-        if d.get("index_name") and (d["index_name"] in (original or "") or f"using {d['index_name']}" in (original or "").lower()):
+        if d.get("index_name") and (d["index_name"] in text or f"using {d['index_name']}" in lowered):
             score += 10
-        if d.get("table_name") and d["table_name"] in (original or ""):
+        if d.get("table_name") and d["table_name"] in text:
             score += 3
         if d.get("actual_rows") is not None:
-            m = re.search(r"rows[=:]?\s*(\d+)\b", (original or ""), re.I)
-            if m and int(float(d["actual_rows"]) + 0.5) == int(m.group(1)):
+            if rows_match and int(float(d["actual_rows"]) + 0.5) == int(rows_match.group(1)):
                 score += 5
-        m = re.search(r"starts[=:]?\s*(\d+)\b", (original or ""), re.I)
-        if m and (d.get("actual_loops") or 1) == int(m.group(1)):
+        if starts_match and (d.get("actual_loops") or 1) == int(starts_match.group(1)):
             score += 3
         if score > best_score and score >= 5:
             best_score = score
@@ -2419,6 +2686,16 @@ def _detect_nonsargable_joins(root):
     We don't try to correlate across multiple nodes in the same plan —
     one match per node is enough to flag the issue, and the downstream
     advisor rule only ever reports the first hit anyway.
+
+    A hash join on an equality key is skipped. MySQL hashes each input row's
+    key expression once (HASH_JOIN writes the equijoin conditions as
+    ``hash_condition``, explain_access_path.cc) and MariaDB uses BNLH only
+    with a ref or hash key (check_join_cache_usage, sql/sql_select.cc), so a
+    function in that key costs O(outer + inner), not
+    a comparison of every row pair, and removing it would change what the
+    join matches. A MySQL hash join without equijoin conditions ("no
+    condition", extra conditions only) does compare every pair, so it is
+    still checked.
     """
     results = []
     seen_predicates = set()
@@ -2434,7 +2711,12 @@ def _detect_nonsargable_joins(root):
             "join" in op.lower() or access == "join"
             or bool(join_algo) or ("block" in buf and "nested" in buf)
         )
-        if is_join:
+        hc_raw = details.get("hash_condition") or []
+        is_keyed_hash = (
+            (join_algo == "hash" or "hash join" in op.lower())
+            and (bool(hc_raw) or "BNLH" in ((details.get("mariadb_block_nl_join") or {}).get("join_type") or "").upper())
+        )
+        if is_join and not is_keyed_hash:
             # Build a single text blob from every field that could carry the
             # join predicate. MySQL hash joins put it on ``hash_condition``,
             # MySQL nested loops inline it in ``operation`` ("… (u.id = o.u_id)"),
@@ -2484,6 +2766,84 @@ _MISESTIMATE_MIN_ROWS = 1000
 # MySQL v2 names the CTE it materializes ("Materialize CTE x", "Materialize
 # recursive CTE x", "Materialize union CTE x"; explain_access_path.cc).
 _CTE_MATERIALIZE_RE = re.compile(r"^Materialize (?:recursive |union )?CTE `?([^`\s]+)`?", re.I)
+
+
+def _rows_measured(details):
+    """Whether an operator carries a measured row count."""
+    return bool(details.get("rows_measured")) and details.get("actual_rows") is not None
+
+
+def _estimated_output(node):
+    """Estimated rows one execution of *node* returns, or None.
+
+    MySQL writes each operator's output estimate as ``estimated_rows``.
+    MariaDB (and MySQL format 1) write a table's rows examined per scan,
+    before its condition; its output is rows x filtered
+    (``estimated_rows_out``; Explain_table_access, sql/sql_select.cc). A
+    MariaDB synthetic join returns the product of its members' outputs.
+    """
+    details = node.get("details") or {}
+    out = details.get("estimated_rows_out")
+    if isinstance(out, (int, float)):
+        return float(out)
+    if (details.get("access_type") == "join" and details.get("join_type") == "unknown"
+            and details.get("estimated_rows") is None):
+        product = 1.0
+        for child in _regular_inputs(node):
+            value = _estimated_output(child)
+            if value is None:
+                return None
+            product *= value
+        return product
+    est = details.get("estimated_rows")
+    return float(est) if isinstance(est, (int, float)) else None
+
+
+def _regular_inputs(node):
+    return [c for c in node.get("children") or []
+            if (c.get("details") or {}).get("input_kind") not in ("select_list", "subquery")]
+
+
+def _estimated_loops(root):
+    """Estimated reads of every operator, keyed by node id, for a plan
+    without row counters (EXPLAIN without ANALYZE).
+
+    A nested-loop join initializes its inner input once per outer row
+    (MySQL NestedLoopIterator::DoRead, sql/iterators/composite_iterators.cc;
+    MariaDB sub_select), so the inner side runs the join's loops times the
+    outer input's estimated output (:func:`_estimated_output`). MariaDB
+    11.0.1+ prints that count itself as "loops" (POSITION::loops =
+    record_count, sql/sql_select.cc; MDEV-30032), used when present. A
+    table under a MariaDB join buffer is read once per buffer refill, not
+    per outer row (sub_select_cache), and EXPLAIN does not print the refill
+    count, so it counts as read once per run of its join. Every other
+    operator reads its inputs once per its own execution. An unknown
+    estimate counts as one.
+    """
+    loops = {}
+    stack = [(root, 1.0)]
+    while stack:
+        node, count = stack.pop()
+        details = node.get("details") or {}
+        buffered = bool(details.get("mariadb_block_nl_join"))
+        printed = details.get("estimated_loops")
+        if (not buffered and isinstance(printed, (int, float))
+                and math.isfinite(printed) and printed > 0):
+            count = float(printed)
+        loops[node.get("node_id")] = count
+        regular = _regular_inputs(node)
+        inner_factor = 1.0
+        inner_ids = set()
+        if (details.get("join_algorithm") or "").lower() == "nested_loop" and len(regular) >= 2:
+            outer_rows = _estimated_output(regular[0])
+            if outer_rows is not None and math.isfinite(outer_rows) and outer_rows > 0:
+                inner_factor = outer_rows
+                inner_ids = set(id(c) for c in regular[1:]
+                                if not (c.get("details") or {}).get("mariadb_block_nl_join"))
+        for child in node.get("children") or []:
+            factor = inner_factor if id(child) in inner_ids else 1.0
+            stack.append((child, count * factor))
+    return loops
 
 
 def _cte_names(root):
@@ -2598,6 +2958,175 @@ def _row_misestimate(node, engine="mysql", early_stop=False, cte_names=frozenset
             "short_label": (node.get("short_label") or "").strip()}
 
 
+#: Plan-level temporary-table suggestions (engine from the plan only). The
+#: advisor replaces them with its own when it knows the server variables
+#: (advisor._rule_tmp_table_size_vs_materialize), so the advice is not
+#: given twice.
+TEMP_TABLE_SUGGESTION_MARIADB = (
+    "Check temporary-table disk usage before raising tmp_table_size "
+    "together with max_heap_table_size. Why: MariaDB keeps an internal "
+    "temporary table in memory only up to the smaller of the two, then "
+    "converts it to an on-disk Aria or MyISAM table. A temporary table "
+    "in the plan does not by itself show that it spilled to disk."
+)
+TEMP_TABLE_SUGGESTION_MYSQL = (
+    "Check internal_tmp_mem_storage_engine and temporary-table disk "
+    "usage before raising tmp_table_size. Why: the default TempTable "
+    "engine limits each in-memory internal temporary table by "
+    "tmp_table_size, and max_heap_table_size does not apply to it; only "
+    "the MEMORY engine also uses max_heap_table_size, taking the smaller "
+    "of the two. A temporary table in the plan does not by itself show "
+    "that it spilled to disk."
+)
+
+
+def _full_scan_text(scan):
+    """``t1 (5000 rows)``; an estimated plan's scan reads ``t1 (about 5000
+    rows, estimated)``, or ``t1 (rows not estimated)`` without an estimate."""
+    if not scan.get("estimated"):
+        return "{} ({} rows)".format(scan["table"], int(scan["rows"]))
+    if scan.get("rows") is None:
+        return "{} (rows not estimated)".format(scan["table"])
+    return "{} (about {} rows, estimated)".format(scan["table"], int(round(scan["rows"])))
+
+
+def _hash_build_rows(node):
+    """``(rows, kind)`` hashed by a join, or ``(None, None)``.
+
+    MySQL builds the hash table from the join's inner child, written second
+    with heading "Hash" (HASH_JOIN in explain_access_path.cc; HashJoinIterator
+    takes children[1] as build_input in join_optimizer/access_path.cc):
+    kind ``"build"``, its measured rows per loop. MariaDB BNLH hashes the
+    outer rows put in the join buffer, each counted once by
+    jbuf_loops_tracker (sub_select_cache, sql/sql_select.cc) and printed as
+    the block-nl-join r_loops (ANALYZE, 10.6.13+): kind ``"buffered"``, the
+    total over every buffer refill.
+    """
+    details = node.get("details") or {}
+    block = details.get("mariadb_block_nl_join") or {}
+    if block:
+        rows = block.get("r_loops")
+        if "BNLH" in (block.get("join_type") or "").upper() and isinstance(rows, (int, float)):
+            return float(rows), "buffered"
+        return None, None
+    children = _regular_inputs(node)
+    if len(children) < 2:
+        return None, None
+    build = children[1].get("details") or {}
+    if build.get("heading") != "Hash" or not _rows_measured(build):
+        return None, None
+    return float(build["actual_rows"]), "build"
+
+
+#: Plan-level sort advice. A sort that fits in sort_buffer_size makes no
+#: merge pass (MySQL filesort.cc: "The whole set is in memory"; passes are
+#: counted only in merge_buffers), so a bigger buffer can avoid the merge,
+#: never the sort.
+SORT_SUGGESTION = (
+    "Add an index that returns rows in ORDER BY order to avoid the sort. "
+    "Raise sort_buffer_size only if Sort_merge_passes shows the sort merged "
+    "runs from disk."
+)
+SORT_SUGGESTION_IN_MEMORY = "Add an index that returns rows in ORDER BY order to avoid the sort."
+
+
+def _filesort_text(filesorts, measured=None):
+    """The sort warning. Whether a sort used disk is stated only from
+    measured merge passes: *measured* (a capture's Sort_merge_passes for the
+    statement), else MariaDB ANALYZE ``r_sort_passes`` (_sort_merge_passes).
+    MySQL plans never carry them, so they keep "may use disk-based
+    filesort"."""
+    max_rows = max(f["rows"] for f in filesorts)
+    passes = [f.get("merge_passes") for f in filesorts]
+    if measured is not None:
+        tail = ("sorted in memory (0 sort merge passes measured)" if not measured
+                else "merged sorted runs from disk ({:,} sort merge passes measured)".format(int(measured)))
+    elif any(p for p in passes):
+        about = "about " if any(f.get("merge_passes_approx") for f in filesorts) else ""
+        tail = "merged sorted runs from disk ({}{:,} sort merge passes)".format(
+            about, int(round(sum(p or 0 for p in passes))))
+    elif passes and all(p == 0 for p in passes):
+        tail = "sorted in memory (0 sort merge passes measured)"
+    else:
+        tail = "may use disk-based filesort"
+    return (f"{len(filesorts)} sort operation(s)"
+            + (f" — {int(max_rows)} rows; {tail}" if max_rows > 0 else f" — {tail}"))
+
+
+def restate_sorts(analysis, passes):
+    """Restate the plan's sort warning and advice from merge passes measured
+    outside the plan (a capture's Sort_merge_passes for the statement).
+
+    0 passes: the sorts fit in memory, so the warning says so and the advice
+    keeps only the index. More: the warning gives the count and the plan
+    advice is dropped, because the caller (advisor) adds its own.
+    """
+    filesorts = (analysis or {}).get("filesorts") or []
+    if not filesorts or passes is None:
+        return
+    old = _filesort_text(filesorts)
+    new = _filesort_text(filesorts, measured=passes)
+    analysis["warnings"] = [new if w == old else w for w in analysis.get("warnings") or []]
+    for item in analysis.get("node_highlights") or []:
+        if item.get("message") == old:
+            item["message"] = new
+    suggestions = []
+    for text in analysis.get("suggestions") or []:
+        if text == SORT_SUGGESTION:
+            if passes == 0:
+                suggestions.append(SORT_SUGGESTION_IN_MEMORY)
+            continue
+        suggestions.append(text)
+    analysis["suggestions"] = suggestions
+
+
+def _materialized_rows(node):
+    """Most rows one materialization can write: the measured rows per loop
+    its input returns, or None.
+
+    A Materialize operator's own rows are rows read back from the table
+    (MySQL's profiler counts the iterator's output; MariaDB's
+    ``<subqueryN>`` table counts lookups into it), not the table's size.
+    Its input writes at most its output into the table; deduplication or
+    grouping can leave fewer, so this is an upper bound.
+    """
+    children = _regular_inputs(node)
+    # Several inputs (a UNION, a recursive CTE's anchor and recursive parts
+    # run once per iteration) each write into the same table: one input's
+    # rows are no bound, so the size stays unknown.
+    if len(children) != 1:
+        return None
+    details = children[0].get("details") or {}
+    value = details.get("rows_returned")
+    if value is None and _rows_measured(details):
+        value = details.get("actual_rows")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _temp_table_text(temp_tables):
+    """The temporary-table warning. No plan format reports whether an
+    internal temporary table moved to disk (MariaDB "temporary_table" has
+    no counters, Explain_aggr_tmp_table in sql/sql_explain.h; MySQL's
+    MATERIALIZE JSON has no disk field), so it never claims a spill."""
+    known = [t["rows"] for t in temp_tables if t.get("rows") is not None]
+    top = int(round(max(known))) if known else 0
+    size = f" — up to {top} rows written" if top > 0 else ""
+    return (f"{len(temp_tables)} temp table(s) (Materialize){size}; "
+            "the plan does not show whether they spilled to disk")
+
+
+def _hash_join_text(hash_joins):
+    known = [h for h in hash_joins if h.get("rows") is not None]
+    top = max(known, key=lambda h: h["rows"]) if known else None
+    if not top or top["rows"] <= 0:
+        return f"{len(hash_joins)} hash join(s) — uses join_buffer_size"
+    if top.get("build") == "buffered":
+        what = "rows put in the join buffer, over all refills"
+    else:
+        what = "rows in build phase"
+    return f"{len(hash_joins)} hash join(s) — uses join_buffer_size (~{int(top['rows'])} {what})"
+
+
 def analyze_plan(root):
     """Scan parsed EXPLAIN tree and return analysis dict.
 
@@ -2625,6 +3154,14 @@ def analyze_plan(root):
     bnl_nodes = []   # list of {short_label, rows} for BNL-affected nodes
     misestimates = []  # see _row_misestimate
     has_covering = False
+    # A plan with any measured row counter was executed (ANALYZE); its
+    # operators without a counter never ran (MySQL writes null actual_rows
+    # for an iterator with no Init call, explain_access_path.cc; MariaDB a
+    # null r_rows for a table with no scan). A plan with none is estimated
+    # only, so its scans are judged by the optimizer's estimates instead.
+    all_nodes = list(flatten_nodes(root))
+    rows_counted = any(_rows_measured(n.get("details") or {}) for n in all_nodes)
+    est_loops = {} if rows_counted else _estimated_loops(root)
 
     def _scan(node):
         nonlocal has_icp, has_bka, has_semijoin, has_antijoin, has_nested_loop, has_bnl, has_covering
@@ -2649,8 +3186,20 @@ def analyze_plan(root):
             is_materialized = any(
                 (c.get("details") or {}).get("input_kind") not in ("select_list", "subquery")
                 for c in node.get("children") or []) or table_name.startswith("<")
-            scan_rows = float(details.get("actual_rows") or 0)
-            scan_loops = int(details.get("actual_loops") or 1)
+            estimated_scan = False
+            if _rows_measured(details):
+                scan_rows = float(details.get("actual_rows"))
+                scan_loops = int(details.get("actual_loops") or 1)
+            elif rows_counted:
+                # Executed plan, but this table was never read.
+                scan_rows, scan_loops = 0.0, 1
+            else:
+                # Estimated plan: judge the scan by the optimizer's estimate.
+                # An unknown estimate keeps the structural finding.
+                estimated_scan = True
+                est = details.get("estimated_rows")
+                scan_rows = float(est) if isinstance(est, (int, float)) and est >= 0 else None
+                scan_loops = est_loops.get(node.get("node_id"), 1.0)
             # Skip trivial scans. An index can only beat a full scan when the
             # scan reads enough rows that random index seeks cost less than a
             # sequential page scan. A scan that touches very few rows TOTAL
@@ -2661,23 +3210,30 @@ def analyze_plan(root):
             # touches 500k rows and IS worth flagging, so we gate on the product,
             # not the row count. Threshold is intentionally low (one page of a
             # narrow row ≈ 100+ rows) to only drop the clearly-trivial case.
-            is_trivial = scan_rows * scan_loops < _TRIVIAL_SCAN_ROWS
+            is_trivial = scan_rows is not None and scan_rows * scan_loops < _TRIVIAL_SCAN_ROWS
             if not is_materialized and not is_trivial:
-                full_scans.append({
+                entry = {
                     "table": table_name,
                     "rows": scan_rows,
                     "loops": scan_loops,
                     "short_label": short_label,
-                })
+                }
+                if estimated_scan:
+                    # rows/loops are optimizer estimates, not measurements.
+                    entry["estimated"] = True
+                full_scans.append(entry)
 
         if join_algo == "hash" or "hash join" in op:
-            hash_joins.append({"rows": rows, "short_label": short_label})
+            build_rows, build_kind = _hash_build_rows(node)
+            hash_joins.append({"rows": build_rows, "build": build_kind, "short_label": short_label})
 
         if access_type == "materialize" or op.startswith("materialize"):
-            temp_tables.append({"rows": rows, "short_label": short_label})
+            temp_tables.append({"rows": _materialized_rows(node), "short_label": short_label})
 
         if access_type == "sort":
-            filesorts.append({"rows": rows, "short_label": short_label})
+            filesorts.append({"rows": rows, "short_label": short_label,
+                              "merge_passes": details.get("sort_merge_passes"),
+                              "merge_passes_approx": details.get("sort_merge_passes_approx", False)})
 
         # Secondary-index range scan: the optimizer only considers MRR for
         # range access over a non-primary key.
@@ -2848,57 +3404,49 @@ def analyze_plan(root):
                 "FOR.".format(", ".join(tables), first, first)
             )
 
+    full_scan_msg = None
     if full_scans:
-        parts = [f"{s['table']} ({int(s['rows'])} rows)" for s in full_scans]
-        warnings.append("Full table scan: " + ", ".join(parts))
+        full_scan_msg = "Full table scan: " + ", ".join(_full_scan_text(s) for s in full_scans)
+        warnings.append(full_scan_msg)
         suggestions.append("Add indexes on filter/join columns to avoid full table scans")
 
+    hash_join_msg = None
     if hash_joins:
-        max_rows = max(h["rows"] for h in hash_joins)
-        warnings.append(
-            f"{len(hash_joins)} hash join(s) — uses join_buffer_size"
-            + (f" (~{int(max_rows)} rows in build phase)" if max_rows > 0 else "")
-        )
-        suggestions.append("Increase join_buffer_size if hash joins are slow or spill to disk")
+        hash_join_msg = _hash_join_text(hash_joins)
+        warnings.append(hash_join_msg)
+        if root.get("engine") == "mariadb":
+            # MariaDB BNLH refills the join buffer in memory and reads the
+            # inner table once per refill (r_scans in join_matching_records,
+            # sql/sql_join_cache.cc); it does not spill.
+            suggestions.append(
+                "Increase join_buffer_size if the hash join's inner table is read many "
+                "times (its r_loops). Why: MariaDB fills the join buffer with outer rows "
+                "and reads the inner table once per refill, so a larger buffer means "
+                "fewer refills and fewer reads.")
+        else:
+            suggestions.append("Increase join_buffer_size if hash joins are slow or spill to disk")
 
+    temp_table_msg = None
     if temp_tables:
-        max_rows = max(t["rows"] for t in temp_tables)
-        warnings.append(
-            f"{len(temp_tables)} temp table(s) (Materialize)"
-            + (f" — up to {int(max_rows)} rows; may spill to disk" if max_rows > 0 else " — may spill to disk")
-        )
+        temp_table_msg = _temp_table_text(temp_tables)
+        warnings.append(temp_table_msg)
         if root.get("engine") == "mariadb":
             # sql_select.cc: an in-memory (heap) internal temporary table holds
             # MY_MIN(tmp_memory_table_size, max_heap_table_size); tmp_table_size
             # is an alias of tmp_memory_table_size (sys_vars.cc).
-            suggestions.append(
-                "Check temporary-table disk usage before raising tmp_table_size "
-                "together with max_heap_table_size. Why: MariaDB keeps an internal "
-                "temporary table in memory only up to the smaller of the two, then "
-                "converts it to an on-disk Aria or MyISAM table. A temporary table "
-                "in the plan does not by itself show that it spilled to disk."
-            )
+            suggestions.append(TEMP_TABLE_SUGGESTION_MARIADB)
         else:
             # sql_tmp_table.cc: min(tmp_table_size, max_heap_table_size) applies
             # only to MEMORY (heap) tables; TempTable takes tmp_table_size as its
             # per-table limit (storage/temptable/src/handler.cc).
-            suggestions.append(
-                "Check internal_tmp_mem_storage_engine and temporary-table disk "
-                "usage before raising tmp_table_size. Why: the default TempTable "
-                "engine limits each in-memory internal temporary table by "
-                "tmp_table_size, and max_heap_table_size does not apply to it; only "
-                "the MEMORY engine also uses max_heap_table_size, taking the smaller "
-                "of the two. A temporary table in the plan does not by itself show "
-                "that it spilled to disk."
-            )
+            suggestions.append(TEMP_TABLE_SUGGESTION_MYSQL)
 
+    filesort_msg = None
     if filesorts:
-        max_rows = max(f["rows"] for f in filesorts)
-        warnings.append(
-            f"{len(filesorts)} sort operation(s)"
-            + (f" — {int(max_rows)} rows; may use disk-based filesort" if max_rows > 0 else " — may use disk-based filesort")
-        )
-        suggestions.append("Increase sort_buffer_size or add an ordered index to avoid filesort")
+        filesort_msg = _filesort_text(filesorts)
+        warnings.append(filesort_msg)
+        in_memory = all(f.get("merge_passes") == 0 for f in filesorts)
+        suggestions.append(SORT_SUGGESTION_IN_MEMORY if in_memory else SORT_SUGGESTION)
 
     # BNL (Block Nested-Loop): per MySQL docs, signified by Extra="Using join buffer (Block Nested Loop)"
     # and type ALL/index/range. block_nested_loop optimizer_switch controls hash joins in MySQL 8.0.20+.
@@ -2915,37 +3463,21 @@ def analyze_plan(root):
     # Map each warning to the plan node(s) it refers to (for "where" hints and hover highlight)
     node_highlights = []  # list of {"short_label": str, "message": str}
     if full_scans:
-        msg = "Full table scan: " + ", ".join(f"{s['table']} ({int(s['rows'])} rows)" for s in full_scans)
         for s in full_scans:
             lbl = s.get("short_label") or ("Table scan [" + s["table"] + "]")
-            node_highlights.append({"short_label": lbl, "message": msg})
+            node_highlights.append({"short_label": lbl, "message": full_scan_msg})
     if hash_joins:
-        max_rows = max(h["rows"] for h in hash_joins)
-        msg = (
-            f"{len(hash_joins)} hash join(s) — uses join_buffer_size"
-            + (f" (~{int(max_rows)} rows in build phase)" if max_rows > 0 else "")
-        )
         for h in hash_joins:
             lbl = h.get("short_label") or "Nested loop inner join"
-            node_highlights.append({"short_label": lbl, "message": msg})
+            node_highlights.append({"short_label": lbl, "message": hash_join_msg})
     if temp_tables:
-        max_rows = max(t["rows"] for t in temp_tables)
-        msg = (
-            f"{len(temp_tables)} temp table(s) (Materialize)"
-            + (f" — up to {int(max_rows)} rows; may spill to disk" if max_rows > 0 else " — may spill to disk")
-        )
         for t in temp_tables:
             lbl = t.get("short_label") or "Materialize"
-            node_highlights.append({"short_label": lbl, "message": msg})
+            node_highlights.append({"short_label": lbl, "message": temp_table_msg})
     if filesorts:
-        max_rows = max(f["rows"] for f in filesorts)
-        msg = (
-            f"{len(filesorts)} sort operation(s)"
-            + (f" — {int(max_rows)} rows; may use disk-based filesort" if max_rows > 0 else " — may use disk-based filesort")
-        )
         for f in filesorts:
             lbl = f.get("short_label") or "Sort"
-            node_highlights.append({"short_label": lbl, "message": msg})
+            node_highlights.append({"short_label": lbl, "message": filesort_msg})
 
     if misestimate_msg:
         for m in misestimates:

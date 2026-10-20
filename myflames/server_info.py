@@ -39,3 +39,27 @@ def server_version_tuple(text):
 def tool_version_tuple(text):
     """Compatibility adapter for server strings and external tool banners."""
     return parse_version_tuple(str(text or ""), prefer_mariadb=True)
+
+
+#: Oldest releases myflames documents support for (README, AGENTS.md).
+SUPPORTED_MINIMUM = {"mysql": (8, 4), "mariadb": (10, 11)}
+
+
+def unsupported_version_note(version, version_comment=""):
+    """One stderr line for a server below the documented floor, else None.
+
+    MySQL below 8.4 and MariaDB below 10.11 can still answer many reads, but
+    plan formats, Performance Schema columns and variables differ, so results
+    may be missing or wrong. An unreadable version returns None. A leading
+    "5.5.5-" (the handshake version some MariaDB builds send for old
+    replication clients) is ignored.
+    """
+    text = re.sub(r"^\s*5\.5\.5-", "", str(version or ""))
+    engine = detect_flavor(text, version_comment)
+    found = parse_version_tuple(text, leading=True, components=2, default=None)
+    if found is None or found >= SUPPORTED_MINIMUM[engine]:
+        return None
+    name = "MariaDB" if engine == "mariadb" else "MySQL"
+    floor = SUPPORTED_MINIMUM[engine]
+    return ("myflames supports %s %d.%d or later; this server is %s %s, so some results "
+            "may be missing or wrong." % (name, floor[0], floor[1], name, text.strip().split("-")[0]))

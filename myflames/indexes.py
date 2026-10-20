@@ -71,6 +71,7 @@ from .perf_common import (Reader, _count_text, _duration_text, _number, _round, 
 SCHEMA_VERSION = "indexes-1.0"
 INDEXES_TAG = "/*myflames:indexes*/ "
 DEFAULT_LIMIT = 200
+MAX_BROWSE_ROWS = 100000
 #: A server younger than this has seen too little of its workload.
 SHORT_UPTIME_S = 7 * 86400
 #: A table counts as read mostly by full scans from this share of fetch time.
@@ -129,7 +130,7 @@ def index_report(conn, schema=None, limit=DEFAULT_LIMIT, schemas=None, require_c
     if single and single not in chosen:
         chosen.insert(0, single)
     schema = check_schemas(chosen)
-    limit = check_limit(limit, 5000)
+    limit = check_limit(limit, 5000) if limit is not None else None
     reader = Reader(conn, INDEXES_TAG)
     notes = []
     raw = {"statistics": [], "foreign_keys": [], "usage": None, "instrument": None, "consumers": None,
@@ -384,7 +385,18 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
         "redundant": len(redundant), "full_scans": len(full_scans),
         "mostly_full_scans": sum(1 for f in full_scans if f["mostly"]), "no_data": len(no_data),
     }
-    report["more"] = {"unused": max(0, len(unused) - limit), "redundant": max(0, len(redundant) - limit),
+    inventory = [{"schema": schema_name, "table": table_name, "index": index["name"],
+                  "columns": _columns_text(index), "unique": index["unique"],
+                  "type": index["type"], "visible": index["visible"]}
+                 for (schema_name, table_name), entries in sorted(tables.items())
+                 for index in _ordered(entries)]
+    # Workspace browsing keeps every collected row. CLI callers retain their limit.
+    if limit is None:
+        limit = max(len(inventory), len(unused), len(redundant), len(full_scans), len(no_data))
+        if limit > MAX_BROWSE_ROWS:
+            raise ValueError("Index results exceed 100,000 rows. Choose fewer databases.")
+    report["indexes"] = inventory[:limit]
+    report["more"] = {"indexes": max(0, len(inventory) - limit), "unused": max(0, len(unused) - limit), "redundant": max(0, len(redundant) - limit),
                       "full_scans": max(0, len(full_scans) - limit), "no_data": max(0, len(no_data) - limit)}
     report["unused"] = unused[:limit]
     report["redundant"] = redundant[:limit]

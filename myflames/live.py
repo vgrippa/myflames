@@ -13,10 +13,10 @@ import threading
 import time
 import uuid
 
-from .connector import MySQLConnection, ConnectorError, client_environment
+from .connector import MySQLConnection, ConnectorError, client_environment, MAX_STDOUT_BYTES, MAX_STDERR_BYTES
 from .collectors import collect_schema, collect_stats, collect_stats_freshness, collect_session_variables, extract_table_names
 from .parser import parse_explain
-from .server_info import parse_version_tuple
+from .server_info import parse_version_tuple, unsupported_version_note
 
 #: Comments and quoted strings as the server and the mysql client read them by
 #: default: a backslash escapes the next character inside '...' and "...".
@@ -172,6 +172,28 @@ def _version_at_least(version, minimum):
     or when it cannot be read."""
     parsed = parse_version_tuple(version, leading=True, components=2, default=None)
     return parsed is None or parsed >= minimum
+
+
+ANALYZE_JSON_NEEDS_84 = 'EXPLAIN ANALYZE FORMAT=JSON needs MySQL 8.4 or later'
+
+
+def client_error_text(text, mode='explain', version='', maria=False):
+    """Make mysql client diagnostics readable for a capture.
+
+    The client numbers lines of the script myflames wraps around the user's
+    statement ("at line 8"), which means nothing to the user, so the
+    position is dropped. Error 1235 (ER_NOT_SUPPORTED_YET) for EXPLAIN
+    ANALYZE on MySQL before 8.4 becomes a plain version message. Source:
+    MySQL sql/opt_explain.cc:2296-2302 raises ER_NOT_SUPPORTED_YET for an
+    EXPLAIN ANALYZE format the server cannot run; the 8.0 server reported
+    it for the JSON format (seen live on 8.0), and the hierarchical JSON
+    format with ANALYZE is what 8.4 and later accept.
+    """
+    text = re.sub(r'(ERROR \d+ \([0-9A-Za-z]+\)) at line \d+:', r'\1:', text or '')
+    if mode == 'analyze' and not maria and 'ERROR 1235' in text and not _version_at_least(version, (8, 4)):
+        return (ANALYZE_JSON_NEEDS_84 + ' (this server is %s); '
+                'capture with --mode explain instead.' % (str(version).split('-')[0] or 'older'))
+    return text
 
 
 def capture_problem(query):
@@ -381,32 +403,63 @@ class LiveJob:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, env=env)
         self.process = proc
-        lines = []
-        def read_output():
-            section = ''
-            for line in iter(proc.stdout.readline, b''):
-                text = line.decode('utf-8', errors='replace')
-                lines.append(text)
-                if text.strip() == marker + ':connection': section = 'connection'
-                elif section == 'connection':
-                    if text.strip().isdigit(): self.connection_id = int(text.strip())
-                    section = ''
-        reader = threading.Thread(target=read_output, daemon=True)
-        reader.start()
+        out, err, failed = bytearray(), bytearray(), []
+        def drain(pipe, buffer, limit, label, watch):
+            # Bounded chunks with a cumulative limit, like the connector's own
+            # reader: a huge plan or trace must not exhaust memory.
+            tail, section = b'', ''
+            try:
+                while True:
+                    chunk = pipe.read1(65536)
+                    if not chunk: break
+                    if len(buffer) + len(chunk) > limit:
+                        failed.append(ConnectorError(
+                            'Lost connection to the MySQL client: %s response exceeds the %d-byte limit; '
+                            'the client was stopped and the outcome is unknown.' % (label, limit)))
+                        proc.kill()
+                        break
+                    buffer.extend(chunk)
+                    if not watch: continue
+                    # Only the short marker lines matter; never keep a long partial line.
+                    pieces = (tail + chunk).split(b'\n')
+                    tail = pieces.pop()[-512:]
+                    for piece in pieces:
+                        text = piece.decode('utf-8', errors='replace').strip()
+                        if text == marker + ':connection': section = 'connection'
+                        elif section == 'connection':
+                            if text.isdigit(): self.connection_id = int(text)
+                            section = ''
+            except (OSError, ValueError):
+                if not failed:
+                    failed.append(ConnectorError('Lost connection to the MySQL client while reading; '
+                                                 'the outcome is unknown.'))
+            finally:
+                pipe.close()
+        readers = [threading.Thread(target=drain, args=(proc.stdout, out, MAX_STDOUT_BYTES, 'stdout', True),
+                                    daemon=True),
+                   threading.Thread(target=drain, args=(proc.stderr, err, MAX_STDERR_BYTES, 'stderr', False),
+                                    daemon=True)]
         timer = threading.Timer(self.timeout, self.cancel)
         timer.daemon = True
         timer.start()
         try:
-            proc.stdin.write(sql.encode('utf-8'))
-            proc.stdin.close()
-            stderr = proc.stderr.read().decode('utf-8', errors='replace')
+            for reader in readers: reader.start()
+            try:
+                proc.stdin.write(sql.encode('utf-8'))
+                proc.stdin.close()
+            except OSError:
+                if not failed: raise
+            for reader in readers: reader.join()
             proc.wait()
-            reader.join(timeout=5)
+            if failed:
+                raise failed[0]
+            stderr = err.decode('utf-8', errors='replace')
+            output = out.decode('utf-8', errors='replace')
             if self.cancelled.is_set():
                 raise ConnectorError('Capture cancelled or its time limit was reached.')
-            if proc.returncode != 0 and not lines:
-                raise ConnectorError('MySQL client failed: ' + stderr[:1500])
-            return ''.join(lines), stderr
+            if proc.returncode != 0 and not output:
+                raise ConnectorError('MySQL client failed: ' + client_error_text(stderr)[:1500])
+            return output, stderr
         except KeyboardInterrupt:
             # Ctrl+C: stop the statement on the server while the connection ID
             # and the password are still known. Ending only the local client
@@ -417,6 +470,7 @@ class LiveJob:
             timer.cancel()
             if proc.poll() is None:
                 proc.kill(); proc.wait()
+            for reader in readers: reader.join(timeout=5)
             self.process = None
             self.connection_id = None
 
@@ -427,6 +481,8 @@ class LiveJob:
                 version = conn.server_version()
                 maria = conn.is_mariadb()
                 runs, warnings, raw, trace_data = [], [], '', None
+                note = unsupported_version_note(version, 'mariadb' if maria else '')
+                if note: warnings.append(note)
                 for index in range(self.repeat):
                     if self.cancelled.is_set(): raise ConnectorError('Capture cancelled.')
                     marker = '__myflames_' + uuid.uuid4().hex
@@ -458,7 +514,9 @@ class LiveJob:
                         from .plan_input import _plan
                         _, root, _, _ = _plan({'plan': raw})
                     except (ValueError, TypeError, KeyError) as exc:
-                        raise ConnectorError('The server did not return a supported JSON plan. ' + diagnostics[:1500]) from exc
+                        cleaned = client_error_text(diagnostics, self.mode, version, maria)[:1500]
+                        raise ConnectorError(cleaned if cleaned.startswith(ANALYZE_JSON_NEEDS_84) else
+                                             'The server did not return a supported JSON plan. ' + cleaned) from exc
                     total = root['total_time'] if self.mode == 'analyze' and (root.get('details') or {}).get('actual_last_row_ms') is not None else None
                     before, after = _status(sections.get('before', '')), _status(sections.get('after', ''))
                     stats = None
@@ -471,6 +529,7 @@ class LiveJob:
                             trace_data = {'data': json.loads(body), 'missing_bytes': int(missing), 'insufficient_privileges': int(denied)}
                         except (ValueError, TypeError): warnings.append('Optimizer trace was not available for this capture.')
                     if diagnostics:
+                        diagnostics = client_error_text(diagnostics, self.mode, version, maria)
                         if self.options.get('password'): diagnostics = diagnostics.replace(self.options['password'], '[redacted]')
                         warnings.append(diagnostics.strip()[:2000])
                     runs.append({'total_time_ms': total, 'statistics': stats,

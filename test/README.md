@@ -1,6 +1,6 @@
 # Test data
 
-Sample JSON files used to verify the [unified CLI](../README.md#quick-start-file-mode)
+Sample JSON files used to verify the [unified CLI](../README.md#quick-start)
 and all output types (flame graph, bar chart, diagram, tree).
 
 ## MySQL EXPLAIN fixtures
@@ -57,3 +57,23 @@ captured server output; they do not open a live connection themselves.
 The September 2026 review used MySQL 26.7.0 from a freshly pulled `mysql:latest`
 image. See [review results](../docs/reviews/2026-09-15.md) for the tested scope and
 remaining limitations.
+
+## GA version matrix (live servers)
+
+`scripts/ga-matrix.sh` starts every GA MySQL (8.0, 8.4, 9.7, 26.7) and MariaDB
+(10.6, 10.11, 11.4, 11.8, 12.3, 13.0) image in Docker on 127.0.0.1 (ports 33080
+to 33130), plus a GTID replica for MySQL 9.7 and MariaDB 11.8 (the latter left
+with a duplicate-key SQL thread error). Each primary gets the `testdb` seed from
+`generate-fixtures.sh`, a `review` schema (no primary key, redundant index,
+foreign key, reusable free space, view, procedure), a warm-up workload and one
+deadlock. Accounts: `root`, `mf_admin` (ALL), `mf_read` (read only); passwords
+are random, in `local/ga-matrix/credentials.env`. `up`, `down`, `status`,
+`seed`, `workload`, `locks|idle-trx|mdl NAME SECONDS`, `profiles` (saved
+connections in an isolated `$MYFLAMES_HOME`, never `~/.myflames`: before it
+creates anything, `profiles` and `env` resolve `MYFLAMES_HOME` physically
+(`cd -P`, so `$HOME/.`, `..` after a symlink and symlinks count; a relative
+value is made absolute) and refuse your home or a directory containing it,
+anything inside `~/.myflames`, and a `$MYFLAMES_HOME/.myflames` that is the
+real store; `test/test_ga_matrix.py`) and `env`
+(JSON) are the subcommands. Run myflames against a profile with
+`HOME=$MYFLAMES_HOME MYFLAMES_SECRET_BACKEND=vault python3 -m myflames health --profile ga-mysql-8.4`.

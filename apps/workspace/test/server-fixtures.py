@@ -1,4 +1,4 @@
-"""Write the sessions-1.0 and innodb-1.0 fixtures the browser suites replay.
+"""Write the sessions-1.0, innodb-1.0 and other fixtures the browser suites replay.
 
 They are computed by the real backend (myflames/sessions.py and
 myflames/innodb_status.py) from the statement-by-statement recordings in
@@ -78,3 +78,32 @@ write("config-mariadb-11.4.json", config("mariadb-11.4"))
 for server, scenario in (("mysql-8.4", "global"), ("mysql-8.4", "persist-only"), ("mariadb-11.4", "global"),
                          ("mariadb-11.4", "persist"), ("mariadb-11.4", "readonly")):
     write("variable-%s-%s.json" % (server, scenario), variable(server, scenario))
+
+# Error log (error_log.py) from the live recordings in
+# test/fixtures/perf/error-log-*.json; the MariaDB file is rebuilt from the
+# recorded log text, as test/test_error_log.py does.
+import tempfile  # noqa: E402
+from unittest import mock  # noqa: E402
+
+from myflames import error_log  # noqa: E402
+
+
+def errorlog(server):
+    data = fixture("error-log", server)
+    conn = ReplayConn(data["calls"])
+    conn.host = "127.0.0.1"
+    if "file_text" not in data:
+        return error_log.error_log_report(conn, **data["args"])
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "mariadb.err")
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(data["file_text"])
+        with mock.patch.object(error_log, "resolve_path", return_value=path), \
+                mock.patch.object(error_log.socket, "gethostname", return_value=data["local_hostname"]):
+            report = error_log.error_log_report(conn, **data["args"])
+    report["file"]["path"] = data["report"]["file"]["path"]
+    return report
+
+
+write("errorlog-live-mysql-8.4.json", errorlog("mysql-8.4"))
+write("errorlog-live-mariadb-11.4.json", errorlog("mariadb-11.4"))

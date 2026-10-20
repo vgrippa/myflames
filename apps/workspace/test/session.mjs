@@ -124,7 +124,9 @@ try {
     );
   }
   async function importPlan(p) {
-    await p.click('.topbar [aria-label="Import plan"]');
+    // Home and Plans place this action beside their respective content.
+    // Repeated imports stay in Plans rather than navigating away to Home.
+    await p.locator('.topbar [aria-label="Import plan"], .plans-bar .plans-import').click();
     await p.waitForSelector('dialog[open] input[type="file"]');
     const input = await p.$('dialog[open] input[type="file"]');
     await input.uploadFile(path.join(root, "test/mysql-explain-json-sample.json"));
@@ -236,9 +238,9 @@ try {
   // The sticky top bar can cover the tab strip once the page has scrolled.
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.locator('button[aria-label="New query tab"]').click();
-  await page.waitForFunction(() => document.querySelectorAll(".query-tabs [role=tab]").length === 2);
+  await page.waitForFunction(() => document.querySelectorAll(".query-tabs [role=tab][id^=query-tab-]").length === 2);
   // Tabs rename inline: F2 on the selected tab, Enter keeps the name.
-  await page.focus(".query-tabs [role=tab][aria-selected=true]");
+  await page.focus(".query-tabs [role=tab][id^=query-tab-][aria-selected=true]");
   await page.keyboard.press("F2");
   await page.locator('[aria-label="Query name"]').fill("Orders by customer");
   await page.keyboard.press("Enter");
@@ -249,7 +251,7 @@ try {
   await page.locator('[aria-label="Query parameters"]').fill('{"c": 42}');
   await page.$eval(".execution-options input[type=checkbox]", (e) => e.click());
   await page.keyboard.press("Escape");
-  await place(page, "Server");
+  await place(page, "Workload");
   await page.click("#server-nav-sessions");
   await place(page, "Plans");
   await chart(page);
@@ -293,11 +295,11 @@ try {
     await place(p, "Query editor");
     await p.waitForSelector(".query-lab");
     assert.deepEqual(
-      await p.$$eval(".query-tabs [role=tab]", (els) => els.map((e) => e.textContent)),
+      await p.$$eval(".query-tabs [role=tab][id^=query-tab-]", (els) => els.map((e) => e.textContent)),
       ["Query 1", "Orders by customer"],
     );
     assert.equal(
-      await p.$eval(".query-tabs [aria-selected=true]", (e) => e.textContent),
+      await p.$eval(".query-tabs [id^=query-tab-][aria-selected=true]", (e) => e.textContent),
       "Orders by customer",
     );
     assert.equal(
@@ -316,7 +318,7 @@ try {
       "",
       "a typed password is never restored",
     );
-    await place(p, "Server");
+    await place(p, "Workload");
     assert.equal(
       await p.$eval("#server-nav-sessions", (e) => e.getAttribute("aria-current")),
       "page",
@@ -409,7 +411,7 @@ try {
   assert.equal(await page.$('.topbar [aria-label="New query tab"]'), null);
   await place(page, "Query editor");
   assert.deepEqual(
-    await page.$$eval(".query-tabs [role=tab]", (els) => els.map((e) => e.textContent)),
+    await page.$$eval(".query-tabs [role=tab][id^=query-tab-]", (els) => els.map((e) => e.textContent)),
     ["Query 1"],
   );
 

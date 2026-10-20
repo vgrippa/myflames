@@ -1,0 +1,414 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('datadir', 'hostname', 'log_error', 'log_error_services', 'log_error_verbosity', 'log_warnings', 'performance_schema', 'port', 'userstat', 'version', 'version_comment')",
+   "datadir\t/var/lib/mysql/\nhostname\t86919dc183af\nlog_error\tstderr\nlog_error_services\tlog_filter_internal; log_sink_json\nlog_error_verbosity\t3\nperformance_schema\tON\nport\t3306\nversion\t9.7.2\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t2254\n"
+  ],
+  [
+   "/*myflames:error-log*/ SELECT g.VARIABLE_NAME, g.VARIABLE_VALUE, s.start_epoch, FROM_UNIXTIME(s.start_epoch) FROM performance_schema.global_status g CROSS JOIN (SELECT UNIX_TIMESTAMP() - CAST(VARIABLE_VALUE AS UNSIGNED) AS start_epoch FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime') s WHERE g.VARIABLE_NAME IN ('Error_log_buffered_bytes', 'Error_log_buffered_events', 'Error_log_expired_events', 'Error_log_latest_write', 'Uptime')",
+   "Error_log_buffered_bytes\t5952\t1792441575\t2026-10-19 20:26:15\nError_log_buffered_events\t19\t1792441575\t2026-10-19 20:26:15\nError_log_expired_events\t0\t1792441575\t2026-10-19 20:26:15\nError_log_latest_write\t1792441772092355\t1792441575\t2026-10-19 20:26:15\nUptime\t2254\t1792441575\t2026-10-19 20:26:15\n"
+  ],
+  [
+   "/*myflames:error-log*/ SELECT PRIO, COUNT(*), SUM(UNIX_TIMESTAMP(LOGGED) >= 1792441575) FROM performance_schema.error_log GROUP BY PRIO",
+   "System\t10\t10\nWarning\t4\t4\nNote\t3\t3\nError\t2\t2\n"
+  ],
+  [
+   "/*myflames:error-log*/ SELECT ERROR_CODE, PRIO, SUBSYSTEM, COUNT(*), MIN(LOGGED), MAX(LOGGED), MAX(DATA) FROM performance_schema.error_log GROUP BY ERROR_CODE, PRIO, SUBSYSTEM ORDER BY COUNT(*) DESC LIMIT 20",
+   "MY-015603\tSystem\tServer\t2\t2026-10-19 20:26:15.360153\t2026-10-19 20:26:15.360162\tMySQL Server has access to 25160732672 bytes of physical memory.\nMY-010584\tError\tRepl\t2\t2026-10-19 20:29:31.085593\t2026-10-19 20:29:32.092316\t{ \"log_type\" : 1, \"subsystem\" : \"Repl\", \"prio\" : 1, \"err_code\" : 10584, \"subsystem\" : \"Repl\", \"msg\" : \"Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 2/2, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005\", \"time\" : \"2026-10-19T20:29:32.092316Z\", \"ts\" : 1792441772092, \"thread\" : 12, \"err_symbol\" : \"ER_RPL_REPLICA_ERROR_INFO_FROM_DA\", \"SQL_state\" : \"HY000\", \"label\" : \"Error\" }\nMY-011323\tSystem\tServer\t1\t2026-10-19 20:26:15.584235\t2026-10-19 20:26:15.584235\tX Plugin ready for connections. Bind-address: '::' port: 33060, socket: /var/run/mysqld/mysqlx.sock\nMY-010570\tNote\tRepl\t1\t2026-10-19 20:29:32.092355\t2026-10-19 20:29:32.092355\t{ \"prio\" : 3, \"err_code\" : 10570, \"subsystem\" : \"Repl\", \"SQL_state\" : \"HY000\", \"source_file\" : \"rpl_replica.cc\", \"function\" : \"handle_slave_io\", \"msg\" : \"Replica I/O thread exiting for channel '', read up to log 'FIRST', position 4\", \"time\" : \"2026-10-19T20:29:32.092355Z\", \"ts\" : 1792441772092, \"thread\" : 12, \"err_symbol\" : \"ER_RPL_REPLICA_IO_THREAD_EXITING\", \"label\" : \"Note\" }\nMY-010926\tNote\tServer\t1\t2026-10-19 20:29:31.131476\t2026-10-19 20:29:31.131476\t{ \"prio\" : 3, \"err_code\" : 10926, \"component\" : \"sha256_password\", \"subsystem\" : \"Server\", \"source_file\" : \"sql_authentication.cc\", \"function\" : \"login_failed_error\", \"msg\" : \"Access denied for user 'root'@'172.17.0.1' (using password: YES)\", \"time\" : \"2026-10-19T20:29:31.131476Z\", \"ts\" : 1792441771131, \"thread\" : 18, \"err_symbol\" : \"ER_ACCESS_DENIED_ERROR_WITH_PASSWORD\", \"SQL_state\" : \"HY000\", \"label\" : \"Note\" }\nMY-010581\tNote\tRepl\t1\t2026-10-19 20:29:31.081563\t2026-10-19 20:29:31.081563\t{ \"prio\" : 3, \"err_code\" : 10581, \"subsystem\" : \"Repl\", \"SQL_state\" : \"HY000\", \"source_file\" : \"rpl_replica.cc\", \"function\" : \"handle_slave_sql\", \"msg\" : \"Replica SQL thread for channel '' initialized, starting replication in log 'FIRST' at position 0, relay log './86919dc183af-relay-bin.000001' position: 4\", \"time\" : \"2026-10-19T20:29:31.081563Z\", \"ts\" : 1792441771081, \"thread\" : 13, \"err_symbol\" : \"ER_RPL_REPLICA_SQL_THREAD_STARTING\", \"label\" : \"Note\" }\nMY-010897\tWarning\tRepl\t1\t2026-10-19 20:29:31.072060\t2026-10-19 20:29:31.072060\t{ \"prio\" : 2, \"err_code\" : 10897, \"subsystem\" : \"Repl\", \"SQL_state\" : \"HY000\", \"source_file\" : \"rpl_replica.cc\", \"function\" : \"connect_to_master\", \"msg\" : \"Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.\", \"time\" : \"2026-10-19T20:29:31.072060Z\", \"ts\" : 1792441771072, \"thread\" : 12, \"err_symbol\" : \"ER_RPL_REPLICA_INSECURE_CHANGE_SOURCE\", \"label\" : \"Warning\" }\nMY-010597\tSystem\tRepl\t1\t2026-10-19 20:29:31.065652\t2026-10-19 20:29:31.065652\t{ \"prio\" : 0, \"err_code\" : 10597, \"subsystem\" : \"Repl\", \"source_line\" : 11015, \"source_file\" : \"rpl_replica.cc\", \"function\" : \"change_master\", \"msg\" : \"'CHANGE REPLICATION SOURCE TO FOR CHANNEL '' executed'. Previous state source_host='', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''. New state source_host='no-such-host.invalid', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''.\", \"time\" : \"2026-10-19T20:29:31.065652Z\", \"ts\" : 1792441771065, \"thread\" : 11, \"err_symbol\" : \"ER_REPLICA_CHANGE_SOURCE_TO_EXECUTED\", \"SQL_state\" : \"HY000\", \"label\" : \"System\" }\nMY-010604\tWarning\tRepl\t1\t2026-10-19 20:29:31.061078\t2026-10-19 20:29:31.061078\t{ \"prio\" : 2, \"err_code\" : 10604, \"subsystem\" : \"Repl\", \"SQL_state\" : \"HY000\", \"source_file\" : \"rpl_rli.cc\", \"function\" : \"rli_init_info\", \"msg\" : \"Neither --relay-log nor --relay-log-index were used; so replication may break when this MySQL server acts as a replica and has his hostname changed!! Please use '--relay-log=86919dc183af-relay-bin' to avoid this problem.\", \"time\" : \"2026-10-19T20:29:31.061078Z\", \"ts\" : 1792441771061, \"thread\" : 11, \"err_symbol\" : \"ER_RPL_PLEASE_USE_OPTION_RELAY_LOG\", \"label\" : \"Warning\" }\nMY-010931\tSystem\tServer\t1\t2026-10-19 20:26:15.584258\t2026-10-19 20:26:15.584258\t/usr/sbin/mysqld: ready for connections. Version: '9.7.2'  socket: '/var/run/mysqld/mysqld.sock'  port: 3306  MySQL Community Server - GPL.\nMY-015015\tSystem\tServer\t1\t2026-10-19 20:26:15.211171\t2026-10-19 20:26:15.211171\tMySQL Server - start.\nMY-011810\tWarning\tServer\t1\t2026-10-19 20:26:15.575925\t2026-10-19 20:26:15.575925\tInsecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users. Consider choosing a different directory.\nMY-013602\tSystem\tServer\t1\t2026-10-19 20:26:15.574812\t2026-10-19 20:26:15.574812\tChannel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.\nMY-010068\tWarning\tServer\t1\t2026-10-19 20:26:15.574789\t2026-10-19 20:26:15.574789\tCA certificate ca.pem is self signed.\nMY-013577\tSystem\tInnoDB\t1\t2026-10-19 20:26:15.449015\t2026-10-19 20:26:15.449015\tInnoDB initialization has ended.\nMY-013576\tSystem\tInnoDB\t1\t2026-10-19 20:26:15.362862\t2026-10-19 20:26:15.362862\tInnoDB initialization has started.\nMY-010116\tSystem\tServer\t1\t2026-10-19 20:26:15.360148\t2026-10-19 20:26:15.360148\t/usr/sbin/mysqld (mysqld 9.7.2) starting as process 1\n"
+  ],
+  [
+   "/*myflames:error-log*/ SELECT e.LOGGED, e.THREAD_ID, e.PRIO, e.ERROR_CODE, e.SUBSYSTEM, e.DATA, UNIX_TIMESTAMP(e.LOGGED), t.entries_total FROM (SELECT COUNT(*) AS entries_total FROM performance_schema.error_log WHERE PRIO IN ('System', 'Error', 'Warning', 'Note')) t LEFT JOIN (SELECT LOGGED, THREAD_ID, PRIO, ERROR_CODE, SUBSYSTEM, DATA FROM performance_schema.error_log WHERE PRIO IN ('System', 'Error', 'Warning', 'Note') ORDER BY LOGGED DESC LIMIT 200) e ON TRUE ORDER BY e.LOGGED DESC",
+   "2026-10-19 20:29:32.092355\t12\tNote\tMY-010570\tRepl\t{ \"prio\" : 3, \"err_code\" : 10570, \"subsystem\" : \"Repl\", \"SQL_state\" : \"HY000\", \"source_file\" : \"rpl_replica.cc\", \"function\" : \"handle_slave_io\", \"msg\" : \"Replica I/O thread exiting for channel '', read up to log 'FIRST', position 4\", \"time\" : \"2026-10-19T20:29:32.092355Z\", \"ts\" : 1792441772092, \"thread\" : 12, \"err_symbol\" : \"ER_RPL_REPLICA_IO_THREAD_EXITING\", \"label\" : \"Note\" }\t1792441772.092355\t19\n2026-10-19 20:29:32.092316\t12\tError\tMY-010584\tRepl\t{ \"log_type\" : 1, \"subsystem\" : \"Repl\", \"prio\" : 1, \"err_code\" : 10584, \"subsystem\" : \"Repl\", \"msg\" : \"Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 2/2, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005\", \"time\" : \"2026-10-19T20:29:32.092316Z\", \"ts\" : 1792441772092, \"thread\" : 12, \"err_symbol\" : \"ER_RPL_REPLICA_ERROR_INFO_FROM_DA\", \"SQL_state\" : \"HY000\", \"label\" : \"Error\" }\t1792441772.092316\t19\n2026-10-19 20:29:31.131476\t18\tNote\tMY-010926\tServer\t{ \"prio\" : 3, \"err_code\" : 10926, \"component\" : \"sha256_password\", \"subsystem\" : \"Server\", \"source_file\" : \"sql_authentication.cc\", \"function\" : \"login_failed_error\", \"msg\" : \"Access denied for user 'root'@'172.17.0.1' (using password: YES)\", \"time\" : \"2026-10-19T20:29:31.131476Z\", \"ts\" : 1792441771131, \"thread\" : 18, \"err_symbol\" : \"ER_ACCESS_DENIED_ERROR_WITH_PASSWORD\", \"SQL_state\" : \"HY000\", \"label\" : \"Note\" }\t1792441771.131476\t19\n2026-10-19 20:29:31.085593\t12\tError\tMY-010584\tRepl\t{ \"log_type\" : 1, \"subsystem\" : \"Repl\", \"prio\" : 1, \"err_code\" : 10584, \"subsystem\" : \"Repl\", \"msg\" : \"Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 1/2, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005\", \"time\" : \"2026-10-19T20:29:31.085593Z\", \"ts\" : 1792441771085, \"thread\" : 12, \"err_symbol\" : \"ER_RPL_REPLICA_ERROR_INFO_FROM_DA\", \"SQL_state\" : \"HY000\", \"label\" : \"Error\" }\t1792441771.085593\t19\n2026-10-19 20:29:31.081563\t13\tNote\tMY-010581\tRepl\t{ \"prio\" : 3, \"err_code\" : 10581, \"subsystem\" : \"Repl\", \"SQL_state\" : \"HY000\", \"source_file\" : \"rpl_replica.cc\", \"function\" : \"handle_slave_sql\", \"msg\" : \"Replica SQL thread for channel '' initialized, starting replication in log 'FIRST' at position 0, relay log './86919dc183af-relay-bin.000001' position: 4\", \"time\" : \"2026-10-19T20:29:31.081563Z\", \"ts\" : 1792441771081, \"thread\" : 13, \"err_symbol\" : \"ER_RPL_REPLICA_SQL_THREAD_STARTING\", \"label\" : \"Note\" }\t1792441771.081563\t19\n2026-10-19 20:29:31.072060\t12\tWarning\tMY-010897\tRepl\t{ \"prio\" : 2, \"err_code\" : 10897, \"subsystem\" : \"Repl\", \"SQL_state\" : \"HY000\", \"source_file\" : \"rpl_replica.cc\", \"function\" : \"connect_to_master\", \"msg\" : \"Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.\", \"time\" : \"2026-10-19T20:29:31.072060Z\", \"ts\" : 1792441771072, \"thread\" : 12, \"err_symbol\" : \"ER_RPL_REPLICA_INSECURE_CHANGE_SOURCE\", \"label\" : \"Warning\" }\t1792441771.072060\t19\n2026-10-19 20:29:31.065652\t11\tSystem\tMY-010597\tRepl\t{ \"prio\" : 0, \"err_code\" : 10597, \"subsystem\" : \"Repl\", \"source_line\" : 11015, \"source_file\" : \"rpl_replica.cc\", \"function\" : \"change_master\", \"msg\" : \"'CHANGE REPLICATION SOURCE TO FOR CHANNEL '' executed'. Previous state source_host='', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''. New state source_host='no-such-host.invalid', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''.\", \"time\" : \"2026-10-19T20:29:31.065652Z\", \"ts\" : 1792441771065, \"thread\" : 11, \"err_symbol\" : \"ER_REPLICA_CHANGE_SOURCE_TO_EXECUTED\", \"SQL_state\" : \"HY000\", \"label\" : \"System\" }\t1792441771.065652\t19\n2026-10-19 20:29:31.061078\t11\tWarning\tMY-010604\tRepl\t{ \"prio\" : 2, \"err_code\" : 10604, \"subsystem\" : \"Repl\", \"SQL_state\" : \"HY000\", \"source_file\" : \"rpl_rli.cc\", \"function\" : \"rli_init_info\", \"msg\" : \"Neither --relay-log nor --relay-log-index were used; so replication may break when this MySQL server acts as a replica and has his hostname changed!! Please use '--relay-log=86919dc183af-relay-bin' to avoid this problem.\", \"time\" : \"2026-10-19T20:29:31.061078Z\", \"ts\" : 1792441771061, \"thread\" : 11, \"err_symbol\" : \"ER_RPL_PLEASE_USE_OPTION_RELAY_LOG\", \"label\" : \"Warning\" }\t1792441771.061078\t19\n2026-10-19 20:26:15.584258\t0\tSystem\tMY-010931\tServer\t/usr/sbin/mysqld: ready for connections. Version: '9.7.2'  socket: '/var/run/mysqld/mysqld.sock'  port: 3306  MySQL Community Server - GPL.\t1792441575.584258\t19\n2026-10-19 20:26:15.584235\t0\tSystem\tMY-011323\tServer\tX Plugin ready for connections. Bind-address: '::' port: 33060, socket: /var/run/mysqld/mysqlx.sock\t1792441575.584235\t19\n2026-10-19 20:26:15.575925\t0\tWarning\tMY-011810\tServer\tInsecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users. Consider choosing a different directory.\t1792441575.575925\t19\n2026-10-19 20:26:15.574812\t0\tSystem\tMY-013602\tServer\tChannel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.\t1792441575.574812\t19\n2026-10-19 20:26:15.574789\t0\tWarning\tMY-010068\tServer\tCA certificate ca.pem is self signed.\t1792441575.574789\t19\n2026-10-19 20:26:15.449015\t1\tSystem\tMY-013577\tInnoDB\tInnoDB initialization has ended.\t1792441575.449015\t19\n2026-10-19 20:26:15.362862\t1\tSystem\tMY-013576\tInnoDB\tInnoDB initialization has started.\t1792441575.362862\t19\n2026-10-19 20:26:15.360162\t0\tSystem\tMY-015603\tServer\tMySQL Server has access to 25160732672 bytes of physical memory.\t1792441575.360162\t19\n2026-10-19 20:26:15.360153\t0\tSystem\tMY-015603\tServer\tMySQL Server has access to 16 logical CPUs.\t1792441575.360153\t19\n2026-10-19 20:26:15.360148\t0\tSystem\tMY-010116\tServer\t/usr/sbin/mysqld (mysqld 9.7.2) starting as process 1\t1792441575.360148\t19\n2026-10-19 20:26:15.211171\t0\tSystem\tMY-015015\tServer\tMySQL Server - start.\t1792441575.211171\t19\n"
+  ]
+ ],
+ "report": {
+  "available": true,
+  "buffer": {
+   "bytes": 5952,
+   "capacity_bytes": 5242880,
+   "events": 19,
+   "expired_events": 0,
+   "latest_write": "2026-10-19 20:29:32Z"
+  },
+  "codes": [
+   {
+    "count": 2,
+    "error_code": "MY-015603",
+    "first_logged": "2026-10-19 20:26:15.360153",
+    "last_logged": "2026-10-19 20:26:15.360162",
+    "prio": "System",
+    "sample": "MySQL Server has access to 25160732672 bytes of physical memory.",
+    "subsystem": "Server"
+   },
+   {
+    "count": 2,
+    "error_code": "MY-010584",
+    "first_logged": "2026-10-19 20:29:31.085593",
+    "last_logged": "2026-10-19 20:29:32.092316",
+    "prio": "Error",
+    "sample": "Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 2/2, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005",
+    "subsystem": "Repl"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-011323",
+    "first_logged": "2026-10-19 20:26:15.584235",
+    "last_logged": "2026-10-19 20:26:15.584235",
+    "prio": "System",
+    "sample": "X Plugin ready for connections. Bind-address: '::' port: 33060, socket: /var/run/mysqld/mysqlx.sock",
+    "subsystem": "Server"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010570",
+    "first_logged": "2026-10-19 20:29:32.092355",
+    "last_logged": "2026-10-19 20:29:32.092355",
+    "prio": "Note",
+    "sample": "Replica I/O thread exiting for channel '', read up to log 'FIRST', position 4",
+    "subsystem": "Repl"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010926",
+    "first_logged": "2026-10-19 20:29:31.131476",
+    "last_logged": "2026-10-19 20:29:31.131476",
+    "prio": "Note",
+    "sample": "Access denied for user 'root'@'172.17.0.1' (using password: YES)",
+    "subsystem": "Server"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010581",
+    "first_logged": "2026-10-19 20:29:31.081563",
+    "last_logged": "2026-10-19 20:29:31.081563",
+    "prio": "Note",
+    "sample": "Replica SQL thread for channel '' initialized, starting replication in log 'FIRST' at position 0, relay log './86919dc183af-relay-bin.000001' position: 4",
+    "subsystem": "Repl"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010897",
+    "first_logged": "2026-10-19 20:29:31.072060",
+    "last_logged": "2026-10-19 20:29:31.072060",
+    "prio": "Warning",
+    "sample": "Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.",
+    "subsystem": "Repl"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010597",
+    "first_logged": "2026-10-19 20:29:31.065652",
+    "last_logged": "2026-10-19 20:29:31.065652",
+    "prio": "System",
+    "sample": "'CHANGE REPLICATION SOURCE TO FOR CHANNEL '' executed'. Previous state source_host='', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''. New state source_host='no-such-host.invalid', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''.",
+    "subsystem": "Repl"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010604",
+    "first_logged": "2026-10-19 20:29:31.061078",
+    "last_logged": "2026-10-19 20:29:31.061078",
+    "prio": "Warning",
+    "sample": "Neither --relay-log nor --relay-log-index were used; so replication may break when this MySQL server acts as a replica and has his hostname changed!! Please use '--relay-log=86919dc183af-relay-bin' to avoid this problem.",
+    "subsystem": "Repl"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010931",
+    "first_logged": "2026-10-19 20:26:15.584258",
+    "last_logged": "2026-10-19 20:26:15.584258",
+    "prio": "System",
+    "sample": "/usr/sbin/mysqld: ready for connections. Version: '9.7.2'  socket: '/var/run/mysqld/mysqld.sock'  port: 3306  MySQL Community Server - GPL.",
+    "subsystem": "Server"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-015015",
+    "first_logged": "2026-10-19 20:26:15.211171",
+    "last_logged": "2026-10-19 20:26:15.211171",
+    "prio": "System",
+    "sample": "MySQL Server - start.",
+    "subsystem": "Server"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-011810",
+    "first_logged": "2026-10-19 20:26:15.575925",
+    "last_logged": "2026-10-19 20:26:15.575925",
+    "prio": "Warning",
+    "sample": "Insecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users. Consider choosing a different directory.",
+    "subsystem": "Server"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-013602",
+    "first_logged": "2026-10-19 20:26:15.574812",
+    "last_logged": "2026-10-19 20:26:15.574812",
+    "prio": "System",
+    "sample": "Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.",
+    "subsystem": "Server"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010068",
+    "first_logged": "2026-10-19 20:26:15.574789",
+    "last_logged": "2026-10-19 20:26:15.574789",
+    "prio": "Warning",
+    "sample": "CA certificate ca.pem is self signed.",
+    "subsystem": "Server"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-013577",
+    "first_logged": "2026-10-19 20:26:15.449015",
+    "last_logged": "2026-10-19 20:26:15.449015",
+    "prio": "System",
+    "sample": "InnoDB initialization has ended.",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-013576",
+    "first_logged": "2026-10-19 20:26:15.362862",
+    "last_logged": "2026-10-19 20:26:15.362862",
+    "prio": "System",
+    "sample": "InnoDB initialization has started.",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 1,
+    "error_code": "MY-010116",
+    "first_logged": "2026-10-19 20:26:15.360148",
+    "last_logged": "2026-10-19 20:26:15.360148",
+    "prio": "System",
+    "sample": "/usr/sbin/mysqld (mysqld 9.7.2) starting as process 1",
+    "subsystem": "Server"
+   }
+  ],
+  "counts": {
+   "error": 2,
+   "note": 3,
+   "system": 10,
+   "warning": 4
+  },
+  "counts_current_run": {
+   "error": 2,
+   "note": 3,
+   "system": 10,
+   "warning": 4
+  },
+  "engine": "mysql",
+  "entries": [
+   {
+    "error_code": "MY-010570",
+    "logged": "2026-10-19 20:29:32.092355",
+    "message": "Replica I/O thread exiting for channel '', read up to log 'FIRST', position 4",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "Repl",
+    "thread_id": 12
+   },
+   {
+    "error_code": "MY-010584",
+    "logged": "2026-10-19 20:29:32.092316",
+    "message": "Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 2/2, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005",
+    "previous_run": false,
+    "prio": "Error",
+    "subsystem": "Repl",
+    "thread_id": 12
+   },
+   {
+    "error_code": "MY-010926",
+    "logged": "2026-10-19 20:29:31.131476",
+    "message": "Access denied for user 'root'@'172.17.0.1' (using password: YES)",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "Server",
+    "thread_id": 18
+   },
+   {
+    "error_code": "MY-010584",
+    "logged": "2026-10-19 20:29:31.085593",
+    "message": "Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 1/2, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005",
+    "previous_run": false,
+    "prio": "Error",
+    "subsystem": "Repl",
+    "thread_id": 12
+   },
+   {
+    "error_code": "MY-010581",
+    "logged": "2026-10-19 20:29:31.081563",
+    "message": "Replica SQL thread for channel '' initialized, starting replication in log 'FIRST' at position 0, relay log './86919dc183af-relay-bin.000001' position: 4",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "Repl",
+    "thread_id": 13
+   },
+   {
+    "error_code": "MY-010897",
+    "logged": "2026-10-19 20:29:31.072060",
+    "message": "Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.",
+    "previous_run": false,
+    "prio": "Warning",
+    "subsystem": "Repl",
+    "thread_id": 12
+   },
+   {
+    "error_code": "MY-010597",
+    "logged": "2026-10-19 20:29:31.065652",
+    "message": "'CHANGE REPLICATION SOURCE TO FOR CHANNEL '' executed'. Previous state source_host='', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''. New state source_host='no-such-host.invalid', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''.",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "Repl",
+    "thread_id": 11
+   },
+   {
+    "error_code": "MY-010604",
+    "logged": "2026-10-19 20:29:31.061078",
+    "message": "Neither --relay-log nor --relay-log-index were used; so replication may break when this MySQL server acts as a replica and has his hostname changed!! Please use '--relay-log=86919dc183af-relay-bin' to avoid this problem.",
+    "previous_run": false,
+    "prio": "Warning",
+    "subsystem": "Repl",
+    "thread_id": 11
+   },
+   {
+    "error_code": "MY-010931",
+    "logged": "2026-10-19 20:26:15.584258",
+    "message": "/usr/sbin/mysqld: ready for connections. Version: '9.7.2'  socket: '/var/run/mysqld/mysqld.sock'  port: 3306  MySQL Community Server - GPL.",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "Server",
+    "thread_id": 0
+   },
+   {
+    "error_code": "MY-011323",
+    "logged": "2026-10-19 20:26:15.584235",
+    "message": "X Plugin ready for connections. Bind-address: '::' port: 33060, socket: /var/run/mysqld/mysqlx.sock",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "Server",
+    "thread_id": 0
+   },
+   {
+    "error_code": "MY-011810",
+    "logged": "2026-10-19 20:26:15.575925",
+    "message": "Insecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users. Consider choosing a different directory.",
+    "previous_run": false,
+    "prio": "Warning",
+    "subsystem": "Server",
+    "thread_id": 0
+   },
+   {
+    "error_code": "MY-013602",
+    "logged": "2026-10-19 20:26:15.574812",
+    "message": "Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "Server",
+    "thread_id": 0
+   },
+   {
+    "error_code": "MY-010068",
+    "logged": "2026-10-19 20:26:15.574789",
+    "message": "CA certificate ca.pem is self signed.",
+    "previous_run": false,
+    "prio": "Warning",
+    "subsystem": "Server",
+    "thread_id": 0
+   },
+   {
+    "error_code": "MY-013577",
+    "logged": "2026-10-19 20:26:15.449015",
+    "message": "InnoDB initialization has ended.",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "InnoDB",
+    "thread_id": 1
+   },
+   {
+    "error_code": "MY-013576",
+    "logged": "2026-10-19 20:26:15.362862",
+    "message": "InnoDB initialization has started.",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "InnoDB",
+    "thread_id": 1
+   },
+   {
+    "error_code": "MY-015603",
+    "logged": "2026-10-19 20:26:15.360162",
+    "message": "MySQL Server has access to 25160732672 bytes of physical memory.",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "Server",
+    "thread_id": 0
+   },
+   {
+    "error_code": "MY-015603",
+    "logged": "2026-10-19 20:26:15.360153",
+    "message": "MySQL Server has access to 16 logical CPUs.",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "Server",
+    "thread_id": 0
+   },
+   {
+    "error_code": "MY-010116",
+    "logged": "2026-10-19 20:26:15.360148",
+    "message": "/usr/sbin/mysqld (mysqld 9.7.2) starting as process 1",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "Server",
+    "thread_id": 0
+   },
+   {
+    "error_code": "MY-015015",
+    "logged": "2026-10-19 20:26:15.211171",
+    "message": "MySQL Server - start.",
+    "previous_run": false,
+    "prio": "System",
+    "subsystem": "Server",
+    "thread_id": 0
+   }
+  ],
+  "entries_total": 19,
+  "file": null,
+  "how_to_view": null,
+  "levels": [
+   "System",
+   "Error",
+   "Warning",
+   "Note"
+  ],
+  "limit": 200,
+  "notes": [
+   "Counts, code groups and entries are separate reads of a changing buffer and may differ slightly."
+  ],
+  "performance_schema": true,
+  "reason": null,
+  "reason_text": null,
+  "schema_version": "error-log-1.0",
+  "server_started": "2026-10-19 20:26:15",
+  "server_version": "9.7.2",
+  "settings": {
+   "datadir": null,
+   "log_error": "stderr",
+   "log_error_services": "log_filter_internal; log_sink_json",
+   "log_error_verbosity": 3,
+   "log_warnings": null
+  },
+  "source": "performance_schema.error_log",
+  "summary": {
+   "status": "watch",
+   "text": "2 errors and 4 warnings recorded since the server started at 2026-10-19 20:26:15."
+  },
+  "taken_at": "2026-10-19T21:03:49.385231+00:00",
+  "uptime_s": 2254
+ },
+ "server": "mysql-9.7"
+}

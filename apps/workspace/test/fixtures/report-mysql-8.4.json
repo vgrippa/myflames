@@ -71,7 +71,7 @@
       },
       {
         "key": "config",
-        "label": "Configuration",
+        "label": "Parameters",
         "status": "ok",
         "schema_version": "config-1.0",
         "started_at": "2026-10-15T01:07:19.442936+00:00",
@@ -211,7 +211,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "buffer_pool"
         }
       ],
@@ -301,7 +301,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "slow_log"
         }
       ],
@@ -427,7 +427,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "flush_method"
         }
       ],
@@ -461,7 +461,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "dedicated_server"
         }
       ],
@@ -495,7 +495,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "thread_handling"
         }
       ],
@@ -798,7 +798,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "io_capacity"
         }
       ],
@@ -983,7 +983,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "flush_log"
         }
       ],
@@ -1025,7 +1025,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "redo"
         }
       ],
@@ -1059,7 +1059,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "sync_binlog"
         }
       ],
@@ -1321,7 +1321,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "join_buffer_size"
         }
       ],
@@ -1355,7 +1355,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "sort_buffer_size"
         }
       ],
@@ -1582,7 +1582,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "max_connections"
         }
       ],
@@ -1971,7 +1971,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "tmp_tables"
         }
       ],
@@ -2194,7 +2194,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "table_open_cache"
         }
       ],
@@ -2383,7 +2383,7 @@
       "links": [
         {
           "view": "config",
-          "label": "Open Configuration",
+          "label": "Open Parameters",
           "key": "performance_schema"
         }
       ],

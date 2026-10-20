@@ -1,7 +1,7 @@
 """Table health: tables without a primary key or a usable unique key, and
 InnoDB free space (fragmentation), for chosen schemas or every user schema.
 
-:func:`table_report` returns the ``schema-1.0`` envelope shared by ``myflames
+:func:`table_report` returns the ``schema-2.0`` envelope shared by ``myflames
 tables`` and the workspace's Server > Tables tab. It is read-only: it reads
 information_schema once per run, and every statement it suggests is text for
 the user to run (OPTIMIZE TABLE and ALTER TABLE are never sent).
@@ -48,7 +48,7 @@ mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
 * The row-ID counter: one global counter on MySQL, under the dict_sys mutex
   for every ID through 9.5 (8.4 included), atomic with the mutex every 256th
   ID from 9.6 (M/storage/innobase/include/dict0boot.ic:36-63); one atomic
-  counter on MariaDB 10.11; per table on MariaDB 11.0 and later (MDEV-19506,
+  counter on MariaDB 10.6 to 10.11; per table on MariaDB 11.0 and later (MDEV-19506,
   Ma/storage/innobase/include/dict0mem.h:2449, btr/btr0cur.cc:465-476).
 * Replica apply (row events): MySQL 8.3 removed
   replica_rows_search_algorithms; a primary key or unique NOT NULL key gives
@@ -95,7 +95,7 @@ mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
   statistics (M/sql/dd/info_schema/table_stats.cc:187, 458-460); MariaDB
   reads it every time. A file grows by one extent up to 32 MiB, then by four
   (fsp0fsp.cc:1400-1425), or by AUTOEXTEND_SIZE (MySQL, up to 4 GiB,
-  fsp0fsp.cc:1329-1342), whose unused tail is subtracted before judging. A partitioned table sums its
+  fsp0fsp.cc:1329-1342), whose unused tail is expected allocation. Free space alone is not a health warning. A partitioned table sums its
   partitions (M/storage/innobase/handler/ha_innopart.cc:3591-3621;
   Ma/sql/ha_partition.cc:8957-8972).
 * OPTIMIZE TABLE on InnoDB is "recreate + analyze"
@@ -111,8 +111,11 @@ mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
   (M/.../handler0alter.cc:1325-1346, Ma/.../handler0alter.cc:2729-2757).
   MariaDB 10.11 with innodb_defragment=ON defragments instead of rebuilding
   (removed in 11.1). MariaDB 11.2+ copies other engines' tables online except
-  when adding an AUTO_INCREMENT column (Ma/sql/sql_table.cc:10650-10732), and
-  its system tablespace shrinks only with :autoshrink
+  when adding an AUTO_INCREMENT column (Ma/sql/sql_table.cc:10650-10732).
+  MyISAM holds TL_READ until the copy ends (Ma/sql/sql_table.cc:10913-10916,
+  13150-13153), so UPDATE and DELETE wait for the read lock; only concurrent
+  inserts continue (Ma/mysys/thr_lock.c:866-869). MariaDB's
+  system tablespace shrinks only with :autoshrink
   (Ma/storage/innobase/fsp/fsp0sysspace.cc:151-153); a MariaDB rebuild with
   innodb_file_per_table=ON moves a table out of the system tablespace
   (Ma/storage/innobase/handler/ha_innodb.cc:11962-11969).
@@ -132,19 +135,14 @@ from .perf_common import (Reader, _bytes_text, _count_text, _duration_text, _num
                           check_schemas, denied, ident, preflight, reason, scope_sql, scope_text, table_text,
                           TABLE_TYPES_SQL, ALL_SCHEMAS_TABLE_LIMIT, require_choice)
 
-SCHEMA_VERSION = "schema-1.0"
+SCHEMA_VERSION = "schema-2.0"
 TABLES_TAG = "/*myflames:tables*/ "
 DEFAULT_LIMIT = 200
+MAX_BROWSE_ROWS = 100000
 MIB = 1 << 20
 GIB = 1 << 30
-#: Rules of thumb for free space in a file-per-table tablespace; both the
-#: share and the size must hold. A few MiB free is normal (InnoDB extends a
-#: file by whole extents and keeps some reserved: a freshly filled 128 MiB
-#: test table showed 7 MiB), so small tables are never flagged.
-FREE_WATCH_PCT = 10.0
-FREE_WATCH_BYTES = 100 * MIB
-FREE_PROBLEM_PCT = 25.0
-FREE_PROBLEM_BYTES = 1 * GIB
+# DATA_FREE describes reusable allocation, not exhaustion or wasted space.
+# Capacity warnings require a measured file limit or filesystem headroom.
 GIPK_COLUMN = "my_row_id"
 #: Names tried, in order, for a new surrogate key column.
 SURROGATE_NAMES = ("id", "row_id", "pk_id")
@@ -156,13 +154,13 @@ VARIABLES = ("information_schema_stats_expiry", "show_gipk_in_create_table_and_i
              "sql_generate_invisible_primary_key", "sql_require_primary_key", "innodb_force_primary_key",
              "innodb_file_per_table", "innodb_defragment", "innodb_optimize_fulltext_only",
              "lower_case_table_names", "wsrep_on", "group_replication_group_name")
-STATUS_ORDER = {"problem": 0, "watch": 1, "ok": 2, "shared": 3, "unknown": 4}
+STATUS_ORDER = {"problem": 0, "watch": 1, "ok": 2, "info": 2, "shared": 3, "unknown": 4}
 RULES = {
     "no_usable_key": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
     "not_null_unique": "watch: no PRIMARY KEY, but a UNIQUE key on NOT NULL columns stands in for it",
-    "free": ("watch when free space is at least %g%% of the tablespace file and at least %s; problem at %g%% "
-             "and %s" % (FREE_WATCH_PCT, _bytes_text(FREE_WATCH_BYTES), FREE_PROBLEM_PCT,
-                         _bytes_text(FREE_PROBLEM_BYTES))),
+    "free": ("Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage "
+             "alone does not establish a problem or a need to rebuild. File capacity and filesystem "
+             "headroom are not measured by this report."),
 }
 
 # ---- sampling (talks to the server) ------------------------------------------
@@ -214,7 +212,7 @@ _SPACES_SQL = {
 
 def table_report(conn, schemas=None, fresh=False, limit=DEFAULT_LIMIT,
                  require_choice_above=ALL_SCHEMAS_TABLE_LIMIT):
-    """Return the ``schema-1.0`` report. Read-only; see the module docstring.
+    """Return the ``schema-2.0`` report. Read-only; see the module docstring.
 
     *schemas* (a list of names) limits the read; None reads every schema
     except mysql, sys, performance_schema and information_schema. *fresh*
@@ -225,7 +223,7 @@ def table_report(conn, schemas=None, fresh=False, limit=DEFAULT_LIMIT,
     METADATA_DEADLINE_S deadline; unresolved spaces are unknown.
     """
     schemas = check_schemas(schemas)
-    limit = check_limit(limit, 5000)
+    limit = check_limit(limit, 5000) if limit is not None else None
     if not isinstance(fresh, bool):
         raise ValueError("Pass fresh as true or false.")
     reader = Reader(conn, TABLES_TAG)
@@ -492,7 +490,7 @@ def _tablespace(server, raw, key, fold, singles):
 
 
 def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, notes=None):
-    """The ``schema-1.0`` report from the raw rows. Pure."""
+    """The ``schema-2.0`` report from the raw rows. Pure."""
     notes = list(notes or [])
     schemas = check_schemas(list(schemas) if schemas else None)
     tables = _table_rows(raw.get("tables"))
@@ -522,6 +520,7 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
         "gipk": len(gipk),
         "free_problem": sum(1 for f in fragmentation if f["status"] == "problem"),
         "free_watch": sum(1 for f in fragmentation if f["status"] == "watch"),
+        "free_info": sum(1 for f in fragmentation if f["status"] == "info"),
         "shared": sum(1 for f in fragmentation if f["status"] == "shared"),
         "unknown_tablespace": sum(1 for f in fragmentation if f["status"] == "unknown"),
     }
@@ -537,6 +536,14 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
     statuses = [m["status"] for m in missing] + [f["status"] for f in fragmentation]
     summary["status"] = "problem" if "problem" in statuses else "watch" if "watch" in statuses else "ok"
     report = base_report(SCHEMA_VERSION, server)
+    if limit is None:
+        limit = max(len(tables), len(missing), len(gipk), len(fragmentation))
+        if limit > MAX_BROWSE_ROWS:
+            raise ValueError("Table results exceed 100,000 rows. Choose fewer databases.")
+    inventory = [{"schema": t["schema"], "table": t["table"], "engine": t["engine"],
+                  "rows": t["rows"], "data_bytes": t["data"], "index_bytes": t["index"],
+                  "size_bytes": _size(t), "partitioned": t["partitioned"]}
+                 for _, t in sorted(tables.items())]
     expiry = _number(server.var("information_schema_stats_expiry"))
     report.update({
         "scope": {"schemas": list(schemas) if schemas else None, "all_user_schemas": schemas is None,
@@ -550,15 +557,15 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
         "tablespace_collection": {"show_create_limit": MAX_SHOW_CREATE, "deadline_s": METADATA_DEADLINE_S,
                                   "unresolved": len(raw.get("spaces_unresolved", ()))},
         "summary": summary,
-        "thresholds": {"watch": {"free_pct": FREE_WATCH_PCT, "free_bytes": FREE_WATCH_BYTES},
-                       "problem": {"free_pct": FREE_PROBLEM_PCT, "free_bytes": FREE_PROBLEM_BYTES}},
+        "thresholds": {},
         "rules": dict(RULES),
         "why": why_texts(server),
+        "tables": inventory[:limit],
         "missing_primary_keys": missing[:limit],
         "generated_primary_keys": gipk[:limit],
         "fragmentation": fragmentation[:limit],
         "shared_tablespaces": shared,
-        "more": {"missing_primary_keys": max(0, len(missing) - limit),
+        "more": {"tables": max(0, len(inventory) - limit), "missing_primary_keys": max(0, len(missing) - limit),
                  "generated_primary_keys": max(0, len(gipk) - limit),
                  "fragmentation": max(0, len(fragmentation) - limit)},
         "notes": notes,
@@ -674,9 +681,14 @@ def _missing_entry(server, t, indexes, columns):
                    % (", or when columns must become NOT NULL outside strict SQL mode"
                       if server.engine == "mysql" else ""))
     elif server.engine == "mariadb" and (server.version_tuple or (0,)) >= (11, 2, 0):
-        caveat += ("%s cannot change the table in place, so the table is copied. Writes continue during the copy "
-                   "and are applied at the end, except when the ALTER adds an AUTO_INCREMENT column; then writes "
-                   "wait for the whole copy. " % (t["engine"] or "This engine"))
+        if (t["engine"] or "").lower() == "myisam":
+            caveat += ("For a MyISAM table the copy holds a table read lock, so UPDATE and DELETE wait for the "
+                       "whole copy; only concurrent inserts continue. Adding an AUTO_INCREMENT column makes "
+                       "inserts wait too. ")
+        else:
+            caveat += ("%s cannot change the table in place, so the table is copied. Writes continue during the copy "
+                       "and are applied at the end, except when the ALTER adds an AUTO_INCREMENT column; then writes "
+                       "wait for the whole copy. " % (t["engine"] or "This engine"))
     else:
         caveat += "%s has no online ALTER: the table is copied and writes wait for the whole copy. " % (
             t["engine"] or "This engine")
@@ -699,23 +711,25 @@ def _fragmentation(server, raw, tables, fold):
             continue
         free = t["free"]
         used = _size(t)
+        complete = free is not None and t["data"] is not None and t["index"] is not None
         total = (used or 0) + (free or 0)
-        pct = 100.0 * free / total if free and total else 0.0
+        pct = (100.0 * free / total if total else 0.0) if complete else None
         entry = {"schema": t["schema"], "table": t["table"], "rows": t["rows"], "data_bytes": t["data"],
                  "index_bytes": t["index"], "free_bytes": free, "free_pct": _round(pct, 1),
                  "partitioned": t["partitioned"], "tablespace": None, "tablespace_name": None}
         found = _tablespace(server, raw, key, fold, singles) if free else None
-        if not free:
+        if free is None:
+            entry["status"] = "unknown"
+        elif not free:
             entry["status"] = "ok"
         elif found is None:
             entry["status"] = "unknown"
         elif found[0] == "file_per_table":
             entry["tablespace"] = "file_per_table"
             grow = _lookup(autoextend, key, fold) or 0
-            judged = max(0, free - grow)
             if grow:
                 entry["autoextend_bytes"] = grow
-            entry["status"] = _free_status(judged, 100.0 * judged / total if total else 0.0)
+            entry["status"] = "info"
         else:
             kind, name = found
             entry["tablespace"] = kind
@@ -726,7 +740,8 @@ def _fragmentation(server, raw, tables, fold):
             item["free_bytes"] = max(item["free_bytes"], free)
             item["tables"].append("%s.%s" % key)
         entry["why"] = _free_why(entry)
-        if entry["status"] in ("watch", "problem"):
+        # This is an optional operation, never a recommendation based on DATA_FREE.
+        if entry["status"] == "info":
             target = "%s.%s" % (ident(t["schema"]), ident(t["table"]))
             entry["fix_sql"] = "OPTIMIZE TABLE %s;" % target
             entry["online_sql"] = "ALTER TABLE %s FORCE, ALGORITHM=INPLACE, LOCK=NONE;" % target
@@ -755,30 +770,27 @@ def _shared_rebuild_text(server):
     return "Rebuilding a table there frees pages inside the tablespace for reuse; the file does not shrink."
 
 
-def _free_status(free, pct):
-    if pct >= FREE_PROBLEM_PCT and free >= FREE_PROBLEM_BYTES:
-        return "problem"
-    if pct >= FREE_WATCH_PCT and free >= FREE_WATCH_BYTES:
-        return "watch"
-    return "ok"
-
-
 def _free_why(f, server=None):
     if f["status"] == "shared":
         return ("In %s: DATA_FREE is that whole tablespace's free space, not this table's."
                 % ("the %s tablespace %s" % (f["tablespace"], f["tablespace_name"]) if f["tablespace_name"]
                    else "a shared tablespace"))
+    if f["free_bytes"] is None:
+        return "DATA_FREE is unavailable. Reusable space and its percentage are unknown."
     if f["status"] == "unknown":
         return "The tablespace of this table could not be read, so its free space is not judged."
     if not f["free_bytes"]:
-        return "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
-    text = "%s free, %.0f%% of its tablespace file" % (_bytes_text(f["free_bytes"]), f["free_pct"])
+        return ("DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). "
+                "This does not establish that the tablespace or disk is full.")
+    text = "%s reusable space" % _bytes_text(f["free_bytes"])
+    if f["free_pct"] is None:
+        text += "; its percentage is unknown because data or index bytes are unavailable"
+    else:
+        text += ", about %.0f%% of reported data, index and free bytes" % f["free_pct"]
     if f.get("autoextend_bytes"):
-        text += (" (AUTOEXTEND_SIZE %s: the file grows that much at once, so up to that much unused space at "
-                 "its end is expected and is not counted against the rule)" % _bytes_text(f["autoextend_bytes"]))
-    if f["status"] == "ok":
-        return text + ". Within the rule of thumb (%s)." % RULES["free"]
-    return text + ". Rule of thumb: %s." % RULES["free"]
+        text += (" (AUTOEXTEND_SIZE %s: allocation grows in steps, which can leave unused space)"
+                 % _bytes_text(f["autoextend_bytes"]))
+    return text + ". " + RULES["free"]
 
 
 def optimize_caveat(server):
@@ -791,7 +803,7 @@ def optimize_caveat(server):
 
 
 OPTIMIZE_CAVEAT = (
-    "Never run by myflames. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... "
+    "Optional maintenance; review and confirm before executing. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... "
     "FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with "
     "exclusive metadata locks at the start and the end; those wait for transactions that use the table, and "
     "queries on it queue behind them. With a FULLTEXT or SPATIAL index the rebuild blocks writes. It writes a "
@@ -886,7 +898,7 @@ def _notes(server, raw, report, schemas, fresh, notes):
     if _on(server.var("innodb_force_primary_key")):
         notes.append("innodb_force_primary_key is ON: InnoDB refuses to create a table without a primary key or a "
                      "unique key on NOT NULL columns.")
-    flagged = report["summary"]["free_watch"] + report["summary"]["free_problem"]
+    flagged = report["summary"]["free_info"]
     if _on(server.var("innodb_optimize_fulltext_only")) and flagged:
         notes.append("innodb_optimize_fulltext_only is ON: OPTIMIZE TABLE then only optimizes FULLTEXT indexes and "
                      "does not rebuild the table. To rebuild, use the ALTER TABLE ... FORCE statement instead.")
@@ -938,7 +950,7 @@ def at_or_worse(report, level):
 
 # ---- text output for the CLI -------------------------------------------------------
 
-_MARK = {"ok": "ok", "watch": "WATCH", "problem": "PROBLEM", "shared": "shared", "unknown": "?"}
+_MARK = {"ok": "ok", "info": "info", "watch": "WATCH", "problem": "PROBLEM", "shared": "shared", "unknown": "?"}
 
 
 def _rows_text(value):
@@ -956,8 +968,8 @@ def format_text(report):
         head += "; statistics %s" % ("fresh" if stats["fresh"] else "cached up to %s (--fresh reads them now)"
                                      % _duration_text(stats["cache_expiry_s"] or 0))
     lines = [head, "%d tables (%d InnoDB); %d without a usable key, %d with only a unique NOT NULL key; free space: "
-             "%d problem, %d watch" % (s["tables"], s["innodb"], s["no_usable_key"], s["not_null_unique"],
-                                       s["free_problem"], s["free_watch"]), ""]
+             "%d informational observations" % (s["tables"], s["innodb"], s["no_usable_key"], s["not_null_unique"],
+                                       s["free_info"]), ""]
     lines.append("TABLES WITHOUT A PRIMARY KEY")
     if not report["missing_primary_keys"]:
         lines.append("  None.")
@@ -976,13 +988,14 @@ def format_text(report):
             "%s.%s" % (g["schema"], g["table"]) for g in report["generated_primary_keys"]))
     lines.append("")
     lines.append("FREE SPACE (InnoDB, file-per-table tablespaces)")
-    flagged = [f for f in report["fragmentation"] if f["status"] in ("watch", "problem")]
+    flagged = [f for f in report["fragmentation"] if f["status"] == "info"]
+    lines.append("  " + RULES["free"])
     if not flagged:
-        lines.append("  No table at the watch level (%s)." % RULES["free"])
+        lines.append("  No file-per-table reusable space reported.")
     else:
         rows = [[_MARK[f["status"]], "%s.%s" % (f["schema"], f["table"]), _rows_text(f["rows"]),
                  _bytes_text((f["data_bytes"] or 0) + (f["index_bytes"] or 0)), _bytes_text(f["free_bytes"] or 0),
-                 "%.0f%%" % f["free_pct"]] for f in flagged]
+                 ("%.0f%%" % f["free_pct"] if f["free_pct"] is not None else "unknown")] for f in flagged]
         lines.extend("  " + l for l in table_text(
             ["STATUS", "TABLE", ">ROWS", ">DATA+INDEX", ">FREE", ">FREE %"], rows).split("\n"))
     if report["shared_tablespaces"]:

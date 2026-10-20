@@ -6,7 +6,7 @@ and the DBA, what it costs, and the statements that change it.
 reads ``setup_instruments``, ``setup_consumers``, ``setup_actors``,
 ``setup_objects``, a few variables and Performance Schema's own memory, and
 nothing else. Every UPDATE, INSERT or DELETE in the report is text for the
-user to run; myflames never runs one.
+user to review. The workspace can execute runtime SQL after explicit confirmation.
 
 :data:`FEATURES` maps each myflames view to the Performance Schema tables it
 reads and the instruments and consumers that fill them. The tests scan the
@@ -294,6 +294,8 @@ TABLES = {
     "threads": (), "processlist": (), "global_status": (), "global_variables": (), "variables_info": (),
     "setup_instruments": (), "setup_consumers": (), "setup_actors": (), "setup_objects": (),
     "memory_summary_global_by_event_name": (),
+    # Error log uses logging sinks, not Performance Schema instruments or consumers.
+    "error_log": (),
     # Replication (replication.py): filled whenever Performance Schema is on, no instrument or consumer.
     "replication_connection_configuration": (), "replication_connection_status": (),
     "replication_applier_configuration": (), "replication_applier_status_by_worker": (),
@@ -521,8 +523,8 @@ PRIVILEGES = ("myflames reads with SELECT on performance_schema only. Running th
 #: setup_objects removes the TABLE row with the same schema and name whatever
 #: the row's OBJECT_TYPE (Ma/storage/perfschema/table_setup_objects.cc:323-334,
 #: same at 10.11, 11.4 and 11.8), so the restore never uses DELETE.
-READ_ONLY_NOTE = ("myflames only shows these statements; it never runs them. Run them yourself in a SQL client, as "
-                  "a user with the privileges below.")
+READ_ONLY_NOTE = ("Collecting this report does not change settings. Copy the runtime SQL or use the workspace\'s "
+                  "reviewed Apply action. Execution requires the privileges below.")
 
 
 def _group_where(group):
@@ -798,9 +800,11 @@ def instruments_report(conn):
         server = preflight(reader, SIZE_VARIABLES)
         if server.ps_on:
             columns = "NAME, ENABLED, TIMED" + (", PROPERTIES" if server.engine == "mysql" else "")
+            instrument_notes = []
             raw["instruments"] = reader.optional("SELECT %s FROM performance_schema.setup_instruments" % columns,
-                                                 "performance_schema.setup_instruments", notes)
-            if raw["instruments"] is None and any("denied" in n for n in notes):
+                                                 "performance_schema.setup_instruments", instrument_notes)
+            if raw["instruments"] is None and any("denied" in n for n in instrument_notes):
+                notes.extend(instrument_notes)
                 notes.append("Grant SELECT on performance_schema to this user: GRANT SELECT ON "
                              "performance_schema.* TO <user>;")
                 return compute_instruments(server, raw, notes)
@@ -808,6 +812,8 @@ def instruments_report(conn):
                 raw["instruments"] = reader.optional(
                     "SELECT NAME, ENABLED, TIMED FROM performance_schema.setup_instruments",
                     "performance_schema.setup_instruments", [])
+            if raw["instruments"] is None:
+                notes.extend(instrument_notes)
             raw["consumers"] = reader.optional("SELECT NAME, ENABLED FROM performance_schema.setup_consumers",
                                                "performance_schema.setup_consumers", notes)
             raw["actors"] = reader.optional(
@@ -838,6 +844,21 @@ def _instrument_map(rows):
         if len(row) >= 3 and row[0]:
             props = row[3] if len(row) > 3 else ""
             out[row[0]] = (_yes(row[1]), None if row[2] is None else _yes(row[2]), props or "")
+    return out
+
+
+def _instrument_list(engine, instruments):
+    """Individual rows for selection, with untimed classes kept explicitly null."""
+    out = []
+    for name, (enabled, timed, properties) in sorted((instruments or {}).items()):
+        group = _group_of(name)
+        timed_applies = not _untimed({"key": group})
+        defaults = default_state(engine, name, properties)
+        out.append({"name": name, "group": group, "enabled": enabled,
+                    "timed": timed if timed_applies else None, "timed_applies": timed_applies,
+                    "default_enabled": defaults[0] if defaults is not None else None,
+                    "default_timed": defaults[1] if defaults is not None else None,
+                    "builtin": name.startswith(BUILTIN_MEMORY), "properties": properties})
     return out
 
 
@@ -1151,6 +1172,7 @@ def compute_instruments(server, raw, notes=None):
         "status": _status(server, raw, sizes),
         "features": _features(server, instruments, consumers, actors, objects),
         "groups": groups, "consumers": consumers, "actors": actors, "objects": objects,
+        "instruments": _instrument_list(server.engine, instruments) if server.ps_on else [],
         "presets": preset_list, "rules": list(RULES), "privileges": PRIVILEGES, "read_only_note": READ_ONLY_NOTE,
         "notes": notes,
     })
@@ -1250,7 +1272,7 @@ def preset_text(report, key):
         out.append("-- This server already matches this preset.")
     if not report["status"]["enabled"]:
         out.append("-- Performance Schema is off: turn it on in my.cnf and restart first (see below).")
-    out.append("-- Takes effect at once and lasts until the server restarts. myflames never runs it.")
+    out.append("-- Takes effect at once and lasts until the server restarts. Review and confirm before execution.")
     out.append(preset["runtime"])
     if preset.get("restore_setup"):
         out.append("-- setup_actors and setup_objects differ from the defaults; this restores them:")

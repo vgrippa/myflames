@@ -85,7 +85,14 @@ export const startSkipLoop = (connection: Connection, channel: string, options: 
 export const readSkipLoops = (connection: Connection, signal?: AbortSignal) => api<{ schema_version: string; loops: SkipLoop[] }>("live/replication/skip-loop/status", { connection }, signal);
 export const stopSkipLoop = (connection: Connection, job_id: string) => api<SkipLoop>("live/replication/skip-loop/stop", { connection, job_id });
 
-export type Tool = { available: boolean; deprecated: boolean; path?: string; version?: string; version_tuple?: number[]; engine?: string; error?: string; name?: string };
+export type ToolUpdate = {
+  status: "not_checked" | "available" | "current" | "unknown" | "not_installed" | "deprecated";
+  latest_version: string | null; checked_at: string | null; source_url: string; message: string;
+};
+export type DumpOption = {key: string; label: string; type: "boolean" | "choice" | "text" | "integer"; default: string | boolean | number | null; choices?: [string,string][]; min?: number; max?: number; hint?: string};
+export type DumpCapabilities = {options: DumpOption[]; encryption: {supported: boolean; message: string}};
+export type DumpOptions = Record<string, string | boolean | number>;
+export type Tool = { dump_capabilities?: DumpCapabilities; dump_table_capabilities?: DumpCapabilities; download_url?: string; update?: ToolUpdate; available: boolean; deprecated: boolean; path?: string; version?: string; version_tuple?: number[]; engine?: string; error?: string; name?: string };
 export type LifecycleServer = { engine: string; version: string; identity?: Facts; variables?: Facts };
 export type LifecycleTools = {
   schema_version: "lifecycle-tools-1.0"; tools: Record<string, Tool>;
@@ -105,7 +112,7 @@ export type UpgradeReport = {
 };
 export type LifecycleOperation = "dump" | "restore" | "clone";
 export type PrepareRequest =
-  | { operation: "dump"; directory: string; schemas: string[]; tables: string[]; threads: number; prefer_shell: boolean }
+  | { operation: "dump"; directory: string; schemas: string[]; tables: string[]; threads: number; prefer_shell: boolean; options?: DumpOptions }
   | { operation: "restore"; directory: string; schema: string; existing: "refuse" | "ignore" | "drop"; allow_source: boolean; resume: boolean; threads: number }
   | { operation: "clone"; donor: Connection; donor_address: string; data_directory: string; require_ssl: boolean };
 export type CloneEndpoint = { endpoint: string; connection_key: string; type: ConnectionType; read_only: boolean };
@@ -130,7 +137,7 @@ export type LifecycleJob = {
   result: LifecycleResult | null; error: string; policy?: OpsPolicy;
 };
 export function jobActive(job: LifecycleJob) { return job.state === "queued" || job.state === "running"; }
-export const readLifecycleTools = (connection: Connection, signal?: AbortSignal) => api<LifecycleTools>("lifecycle/tools", { connection }, signal);
+export const readLifecycleTools = (connection: Connection, signal?: AbortSignal) => api<LifecycleTools>("lifecycle/tools", { connection, check_updates: true }, signal);
 export const checkUpgrade = (connection: Connection, target_version: string, prefer_shell: boolean, signal?: AbortSignal) => api<UpgradeReport>("lifecycle/upgrade-check", { connection, target_version, prefer_shell }, signal);
 export const prepareLifecycle = (connection: Connection, request: PrepareRequest, signal?: AbortSignal) => api<LifecyclePlan>("lifecycle/prepare", { connection, ...request }, signal);
 export const startLifecycle = (connection: Connection, plan: LifecyclePlan, typed_target: string, donor?: Connection) => api<LifecycleJob>("lifecycle/start", { connection, operation: plan.operation, plan, typed_target, donor, confirmed: true });
@@ -166,3 +173,13 @@ export function documentationUrl(value: string): string | undefined {
   try { const u = new URL(value); return u.protocol === "https:" || u.protocol === "http:" ? u.href : undefined; }
   catch { return undefined; }
 }
+
+/** Only fixed official vendor destinations can become tool download links. */
+export function toolDownloadUrl(value?: string): string | undefined {
+  try {
+    const url = new URL(value || "");
+    return url.protocol === "https:" && !url.username && !url.password && !url.port &&
+      ["dev.mysql.com", "downloads.mysql.com", "mariadb.org", "mariadb.com"].includes(url.hostname) ? url.href : undefined;
+  } catch { return undefined; }
+}
+export const chooseBackupDirectory = () => api<{path: string | null; cancelled: boolean}>("lifecycle/choose-directory", {});

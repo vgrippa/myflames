@@ -14,11 +14,16 @@ export interface Toolbar {
   focus(): void;
 }
 
+/** Match the keyboard modifier accepted by bindKeys, in this document. */
+export function findShortcut(doc: Document): string {
+  return /Mac|iPhone|iPad/.test(doc.defaultView?.navigator.platform || "") ? "⌘F" : "Ctrl+F";
+}
+
 export function createToolbar(doc: Document, parent: HTMLElement, label: string,
                               withIgnoreCase = false): Toolbar {
   const element = html(doc, "div", { class: "mfc-toolbar", role: "search" }, parent);
   const input = html(doc, "input", {
-    type: "search", "aria-label": label, placeholder: label + " · Ctrl+F", spellcheck: "false",
+    type: "search", "aria-label": label, placeholder: label + " · " + findShortcut(doc), spellcheck: "false",
   }, element);
   let ignoreCase: HTMLInputElement | null = null;
   if (withIgnoreCase) {
@@ -62,7 +67,10 @@ export function bindKeys(container: HTMLElement, find: () => void,
   // the shortcuts a focus target.
   if (!container.hasAttribute("tabindex")) container.setAttribute("tabindex", "-1");
   const listener = (event: KeyboardEvent) => {
-    const findKey = (event.ctrlKey && !event.metaKey && !event.altKey && (event.key === "f" || event.key === "F"))
+    // Ctrl+F everywhere, Cmd+F on macOS (never both modifiers at once).
+    const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "");
+    const modifier = (event.ctrlKey && !event.metaKey) || (mac && event.metaKey && !event.ctrlKey);
+    const findKey = (modifier && !event.altKey && (event.key === "f" || event.key === "F"))
       || event.key === "F3";
     if (findKey) {
       event.preventDefault();

@@ -94,16 +94,22 @@ from .perf_common import _denied, _reason, _server, _version_tuple, text_rows
 
 ORDERS = {
     "total": "SUM_TIMER_WAIT",
+    "time": "SUM_TIMER_WAIT",
     "avg": "AVG_TIMER_WAIT",
     "examined": "SUM_ROWS_EXAMINED",
+    "rows": "SUM_ROWS_EXAMINED",
     "count": "COUNT_STAR",
+    "exec_count": "COUNT_STAR",
     # Workload attribution (see the module docstring): the statements behind
     # Health's "Joins without an index" (Select_full_join), "Full scans of the
     # first table" (Select_scan), and executions that read a table without an
     # index. Only digests whose counter is above zero are listed.
     "full_join": "SUM_SELECT_FULL_JOIN",
     "scan": "SUM_SELECT_SCAN",
+    "scans": "SUM_SELECT_SCAN",
     "no_index": "SUM_NO_INDEX_USED",
+    "tmp_tables": "SUM_CREATED_TMP_DISK_TABLES",
+    "locks": "SUM_LOCK_TIME",
 }
 #: The attribution orders list only digests whose counter is above zero.
 #: SUM_SELECT_RANGE_CHECK (a later table read with a range check for each
@@ -111,7 +117,10 @@ ORDERS = {
 ORDER_FILTERS = {
     "full_join": "(SUM_SELECT_FULL_JOIN > 0 OR SUM_SELECT_RANGE_CHECK > 0)",
     "scan": "SUM_SELECT_SCAN > 0",
+    "scans": "SUM_SELECT_SCAN > 0",
     "no_index": "SUM_NO_INDEX_USED > 0",
+    "tmp_tables": "SUM_CREATED_TMP_DISK_TABLES > 0",
+    "locks": "SUM_LOCK_TIME > 0",
 }
 ORDER_TIEBREAKS = {"full_join": "SUM_SELECT_RANGE_CHECK DESC, SUM_TIMER_WAIT DESC"}
 #: A table filter (top --table) lists digests that read some table without
@@ -344,13 +353,15 @@ def table_reference(digest_text, digest_schema, schema, table):
     return None
 
 
-def _top(conn, limit=20, schema=None, order="total", table=None):
+def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=False):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
         raise ValueError("Choose a limit from 1 to 200.")
     if order not in ORDERS:
         raise ValueError("Order by one of: " + ", ".join(ORDERS) + ".")
+    if order in ("locks", "tmp_tables"):
+        extra_metrics = True
     if schema is not None and (not isinstance(schema, str) or not schema or len(schema) > 64
-                               or "\x00" in schema):
+                                or "\x00" in schema):
         raise ValueError("Schema names are 1 to 64 characters.")
     if table is not None:
         table = parse_table_name(table)
@@ -375,7 +386,8 @@ def _top(conn, limit=20, schema=None, order="total", table=None):
     if order in ORDER_FILTERS:
         tail = "ORDER BY %s DESC, %s LIMIT %d" % (
             ORDERS[order], ORDER_TIEBREAKS.get(order, "SUM_TIMER_WAIT DESC"), fetch)
-    engine, version, has_sample, max_text, items = _digest_rows(conn, where, tail, exclude=True)
+    engine, version, has_sample, max_text, items = _digest_rows(
+        conn, where, tail, exclude=True, extra_metrics=extra_metrics)
     candidates = len(items)
     if table is not None:
         matched = []
@@ -387,7 +399,7 @@ def _top(conn, limit=20, schema=None, order="total", table=None):
                 matched.append(item)
         items = matched[:limit]
     notes = ["Counters accumulate since the server started or the digest table was last truncated."]
-    if order in ORDER_FILTERS and not (table is not None and order in ("no_index", "scan")):
+    if order in _ORDER_NOTES and not (table is not None and order in ("no_index", "scan", "scans")):
         notes.append(_ORDER_NOTES[order])
     if not has_sample:
         notes.append("This server keeps no sample statement text; digest text shows ? where "
@@ -425,9 +437,13 @@ _ORDER_NOTES = {
                   "these sums run since the digest was first seen."),
     "scan": ("Listed: statements whose first table was read with a full table or index scan (SUM_SELECT_SCAN, "
              "the per-statement form of Select_scan; MariaDB also counts a full index scan of any table here)."),
+    "scans": ("Listed: statements whose first table was read with a full table or index scan (SUM_SELECT_SCAN, "
+              "the per-statement form of Select_scan; MariaDB also counts a full index scan of any table here)."),
     "no_index": ("Listed: statements that read some table with a table scan (SUM_NO_INDEX_USED, once per "
                  "execution; MySQL also counts a range check, MariaDB a single-table UPDATE or DELETE without a "
                  "range)."),
+    "tmp_tables": ("Listed: statements that created on-disk temporary tables (SUM_CREATED_TMP_DISK_TABLES > 0)."),
+    "locks": ("Listed: statements with significant lock wait time (SUM_LOCK_TIME > 0)."),
 }
 
 
@@ -477,7 +493,7 @@ def _ms_text(ms):
     return "{:,.1f} ms".format(ms)
 
 
-def _digest_rows(conn, where, tail, exclude=False):
+def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False):
     """Read digest rows: (engine, version, has_sample, max_text, items).
 
     *where* adds conditions to the shared ones; *tail* is the ORDER BY/LIMIT.
@@ -507,7 +523,10 @@ def _digest_rows(conn, where, tail, exclude=False):
                               % CAPTURE_TAG)
     # Attribution counters come last, so rows read before they existed (and
     # replayed answers) keep their column positions.
-    columns += ", SUM_SELECT_FULL_JOIN, SUM_SELECT_RANGE_CHECK, SUM_SELECT_SCAN"
+    if extra_metrics:
+        columns += ", SUM_SELECT_FULL_JOIN, SUM_SELECT_RANGE_CHECK, SUM_SELECT_SCAN, SUM_LOCK_TIME, SUM_CREATED_TMP_TABLES"
+    else:
+        columns += ", SUM_SELECT_FULL_JOIN, SUM_SELECT_RANGE_CHECK, SUM_SELECT_SCAN"
     extra_at = 16 if has_sample else 15
     conditions.extend(where)
     sql = ("SELECT %s FROM performance_schema.events_statements_summary_by_digest WHERE %s %s"
@@ -521,12 +540,19 @@ def _digest_rows(conn, where, tail, exclude=False):
                 "Grant it with: GRANT SELECT ON performance_schema.* TO <user>;")
         raise ValueError("Could not read statement digests: " + _reason(exc))
     items = []
+    pad_len = (extra_at + 5) if extra_metrics else (extra_at + 3)
     for row in rows:
-        row = list(row) + [""] * (extra_at + 3 - len(row))
+        row = list(row) + [""] * (pad_len - len(row))
         digest_text = _null(row[2])
         sample = _null(row[15]) if has_sample else None
         if exclude and _excluded(digest_text, sample):
             continue
+        lock_ms = 0.0
+        tmp_tbls = 0
+        if extra_metrics and len(row) > extra_at + 3 and row[extra_at + 3] != "":
+            lock_ms = round(_int(row[extra_at + 3]) / _PICO_PER_MS, 3)
+        if extra_metrics and len(row) > extra_at + 4 and row[extra_at + 4] != "":
+            tmp_tbls = _int(row[extra_at + 4])
         item = {
             "digest": _null(row[1]),
             "digest_text": digest_text,
@@ -535,12 +561,14 @@ def _digest_rows(conn, where, tail, exclude=False):
             "total_ms": round(_int(row[4]) / _PICO_PER_MS, 3),
             "avg_ms": round(_int(row[5]) / _PICO_PER_MS, 3),
             "max_ms": round(_int(row[6]) / _PICO_PER_MS, 3),
+            "lock_time_ms": lock_ms,
             "rows_examined": _int(row[7]),
             "rows_sent": _int(row[8]),
             "examined_per_sent": None,
             "no_index_used": _int(row[9]),
             "no_good_index_used": _int(row[10]),
             "tmp_disk_tables": _int(row[11]),
+            "tmp_tables": tmp_tbls,
             "sort_merge_passes": _int(row[12]),
             "select_full_join": _int(row[extra_at]),
             "select_range_check": _int(row[extra_at + 1]),
@@ -553,7 +581,11 @@ def _digest_rows(conn, where, tail, exclude=False):
         if item["rows_sent"]:
             item["examined_per_sent"] = round(item["rows_examined"] / float(item["rows_sent"]), 2)
         item["flags"] = _statement_flags(item)
-        item["capture_problem"] = capture_problem(digest_query(item)["text"])
+        from .analysis_query import prepare
+        projection = prepare(digest_query(item)["sql"])
+        item["capture_problem"] = projection["problem"] or None
+        item["analysis_sql"] = projection["sql"] if projection["converted"] else None
+        item["analysis_warning"] = projection["warning"]
         items.append(item)
     return engine, version, has_sample, max_text, items
 
@@ -613,6 +645,22 @@ def parameterize(text):
             out.append(":" + name)
     out.append((text or "")[at:])
     return "".join(out), names, lists
+
+
+def digest_capture_problem(query):
+    """Why capture refuses a :func:`digest_query` result, or None.
+
+    The check reads ``query["sql"]``, not ``query["text"]``: digest text
+    writes every keyword token with a trailing space (MariaDB
+    sql/gen_lex_token.cc:81,103 sets m_append_space; MySQL
+    sql/gen_lex_token.cc:181), so a built-in aggregate prints as ``SUM (``.
+    A stored or user-defined function name is an identifier token, which
+    sql_digest.cc prints quoted (`name`, MariaDB sql_digest.cc:256-262),
+    so an unquoted ``SUM (`` in digest text can only be the built-in.
+    :func:`join_function_calls` therefore restores ``SUM(`` for statements
+    that came from digest text; raw SQL keeps the strict dbops check.
+    """
+    return capture_problem(query["sql"])
 
 
 def digest_query(item):
@@ -679,13 +727,119 @@ def find_statement(conn, digest, schema=None):
             "schemas": [item["schema"] for item in items]}
 
 
-def top_report(conn, limit=20, schema=None, order="total", table=None):
+def top_report(conn, limit=20, schema=None, order="total", table=None, extra_metrics=False):
     """The ``top-1.0`` JSON envelope shared by the CLI and the UI.
 
     *table* (``"schema.table"``, a pair, or ``{"schema", "table"}``) keeps
     only digests that read a table without an index and whose text names
     that table; each gets ``table_match`` (see :func:`table_reference`)."""
-    return _top(conn, limit, schema, order, table)
+    return _top(conn, limit, schema, order, table, extra_metrics=extra_metrics)
+
+
+def slow_queries_report(conn, min_seconds=1.0, limit=50, source="auto"):
+    """The ``slow-queries-1.0`` JSON envelope: reads from mysql.slow_log or performance_schema."""
+    engine, version, ver, enabled = _server(conn)
+    lim = min(max(int(limit), 1), 200)
+    actual_source = "mysql.slow_log"
+    statements = []
+
+    if source in ("auto", "slow_log"):
+        try:
+            sql = ("SELECT start_time, user_host, query_time, lock_time, rows_sent, "
+                   "rows_examined, db, sql_text FROM mysql.slow_log "
+                   "ORDER BY start_time DESC LIMIT %d" % lim)
+            raw_rows = _rows(conn, sql)
+            for i, r in enumerate(raw_rows):
+                r = list(r) + [""] * (8 - len(r))
+                start_time = _null(r[0])
+                user_host = _null(r[1])
+                qt_raw = _null(r[2])
+                lt_raw = _null(r[3])
+
+                def _parse_ms(val):
+                    if val is None:
+                        return 0.0
+                    try:
+                        return float(val) * 1000.0
+                    except (ValueError, TypeError):
+                        pass
+                    s = str(val).strip()
+                    if ":" in s:
+                        p = s.split(":")
+                        if len(p) == 3:
+                            try:
+                                return (float(p[0]) * 3600 + float(p[1]) * 60 + float(p[2])) * 1000.0
+                            except ValueError:
+                                pass
+                    return 0.0
+
+                total_ms = round(_parse_ms(qt_raw), 3)
+                lock_ms = round(_parse_ms(lt_raw), 3)
+                rows_sent = _int(r[4])
+                rows_examined = _int(r[5])
+                db_name = _null(r[6])
+                sql_text = _null(r[7]) or ""
+
+                if min_seconds and total_ms < (float(min_seconds) * 1000.0):
+                    continue
+
+                from .analysis_query import prepare
+                proj = prepare(sql_text)
+                statements.append({
+                    "digest": "slow_%d" % (i + 1),
+                    "digest_text": sql_text,
+                    "sample_text": sql_text,
+                    "schema": db_name,
+                    "count": 1,
+                    "total_ms": total_ms,
+                    "avg_ms": total_ms,
+                    "max_ms": total_ms,
+                    "lock_time_ms": lock_ms,
+                    "rows_examined": rows_examined,
+                    "rows_sent": rows_sent,
+                    "examined_per_sent": round(rows_examined / float(rows_sent), 2) if rows_sent > 0 else None,
+                    "no_index_used": 1 if rows_examined > 0 and rows_examined > rows_sent * 10 else 0,
+                    "no_good_index_used": 0,
+                    "tmp_disk_tables": 0,
+                    "tmp_tables": 0,
+                    "sort_merge_passes": 0,
+                    "select_full_join": 0,
+                    "select_range_check": 0,
+                    "select_scan": 1 if rows_examined > 1000 and rows_sent < 100 else 0,
+                    "sample_truncated": False,
+                    "first_seen": str(start_time) if start_time else None,
+                    "last_seen": str(start_time) if start_time else None,
+                    "flags": ["slow_query"] + (["low_selectivity"] if rows_examined > 100 and rows_sent / max(rows_examined, 1) < 0.1 else []),
+                    "capture_problem": proj["problem"] or None,
+                    "analysis_sql": proj["sql"] if proj["converted"] else None,
+                    "analysis_warning": proj["warning"],
+                    "source": "mysql.slow_log",
+                })
+        except Exception:
+            statements = []
+
+    if not statements and source in ("auto", "pfs", "performance_schema"):
+        actual_source = "performance_schema"
+        where = []
+        if min_seconds:
+            pico = int(float(min_seconds) * 1e12)
+            where.append("MAX_TIMER_WAIT >= %d" % pico)
+        try:
+            _, _, _, _, items = _digest_rows(
+                conn, where, "ORDER BY MAX_TIMER_WAIT DESC LIMIT %d" % lim, exclude=True
+            )
+            statements = items
+        except Exception:
+            statements = []
+
+    return {
+        "schema_version": "slow-queries-1.0",
+        "engine": engine,
+        "server_version": version,
+        "source": actual_source,
+        "min_seconds": min_seconds,
+        "statements": statements,
+    }
 
 
 def _processlist_source(engine, ver, enabled):

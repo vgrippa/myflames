@@ -165,7 +165,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="filesort",
-        title="Filesort — how MySQL sorts without an index",
+        title="Filesort: how MySQL sorts without an index",
         subtitle=(
             "Watch sort_buffer_size fill, spill sorted runs to tmpdir, "
             "and merge them back. Bigger buffer = fewer runs = less I/O."

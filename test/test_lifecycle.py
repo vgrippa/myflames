@@ -480,6 +480,58 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('0 when upgrade IS needed', report['limitations'][-1])
         self.assertFalse(self.calls())
 
+    def test_shell_older_than_server_is_named_and_points_to_no_shell(self):
+        # MySQL Shell dumper.cc:5311-5317 refuses a higher server major.
+        conn = ReplayConnection(server_variables(version='26.7.0'))
+        with self.assertRaises(lc.Refused) as caught:
+            lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=self.tools)
+        self.assertIn('MySQL Shell 9.6 is older than the server (26.7.0)', str(caught.exception))
+        self.assertIn('--no-shell', str(caught.exception))
+        self.assertFalse(self.calls())
+        # A higher minor only warns (dumper.cc:5319-5334).
+        conn = ReplayConnection(server_variables(version='9.7.2'))
+        plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=self.tools)
+        self.assertTrue(any('may fail on it' in w and '--no-shell' in w for w in plan['warnings']))
+
+    def test_tool_error_text_drops_colour_codes_notes_and_position(self):
+        shell = ('\x1b[36mNOTE: \x1b[0mdryRun enabled, no locks will be acquired.\n'
+                 'Unsupported MySQL Server 26.7.0 detected, please upgrade the MySQL Shell first '
+                 '(RuntimeError)  at STDIN:2\n')
+        self.assertEqual(lc.tool_error_line(shell),
+                         'Unsupported MySQL Server 26.7.0 detected, please upgrade the MySQL Shell first (RuntimeError)')
+        escaped = '\\u001b[36mNOTE: \\u001b[0mdry run\nmysqldump: Got error: 1049: Unknown database'
+        self.assertEqual(lc.tool_error_line(escaped), 'mysqldump: Got error: 1049: Unknown database')
+        self.assertEqual(lc.strip_ansi('\x1b[1;31mred\x1b[0m'), 'red')
+        self.assertEqual(lc.tool_error_line(''), '')
+
+    def test_failed_tool_reports_one_clean_error_line(self):
+        job = lc.LifecycleJob('dump', lambda job: None, CONNECTION)
+        code = ("import sys\nsys.stderr.write('\\x1b[36mNOTE: \\x1b[0mdryRun enabled\\n"
+                "Following schemas were not found: nosuch (ArgumentError)  at STDIN:2\\n')\nsys.exit(1)")
+        with self.assertRaises(lc.LifecycleError) as caught:
+            job.process_tool([sys.executable, '-c', code], dict(os.environ))
+        self.assertEqual(str(caught.exception),
+                         'Tool exited 1: Following schemas were not found: nosuch (ArgumentError)')
+
+    def test_mariadb_upgrade_target_must_be_a_mariadb_version_not_older(self):
+        conn = ReplayConnection(server_variables('mariadb', version='13.0.2-MariaDB-ubu2604-log'))
+        for target, words in (('12.3.0', 'is older'), ('8.4.0', 'not an upgrade path'),
+                              ('5.7.44', 'not an upgrade path')):
+            with self.subTest(target=target), self.assertRaises(lc.Refused) as caught:
+                lc.upgrade_check(conn, target, CONNECTION, self.tools)
+            self.assertIn(words, str(caught.exception))
+        report = lc.upgrade_check(conn, '13.1.0', CONNECTION, self.tools)
+        self.assertEqual(report['method'], 'mariadb_upgrade_guidance')
+
+    def test_server_below_the_supported_floor_adds_a_note_to_plans_not_upgrade_checks(self):
+        # upgrade-check exists to leave old servers, so it adds no floor note.
+        report = lc.upgrade_check(ReplayConnection(server_variables('mariadb', version='10.6.28-MariaDB')),
+                                  '11.8.0', CONNECTION, self.tools)
+        self.assertNotIn('supports MariaDB', ' '.join(report['limitations']))
+        conn = ReplayConnection(server_variables(version='8.0.36'))
+        plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=self.native_tools())
+        self.assertIn('supports MySQL 8.4 or later', plan['warnings'][0])
+
     def assert_secret_transport(self, call):
         self.assertEqual(call['cnf_mode'], 0o600)
         self.assertTrue(call['password_seen'])
@@ -504,6 +556,21 @@ class LifecycleTests(unittest.TestCase):
         self.assert_secret_transport(self.calls()[0])
         self.assertNotIn(PASSWORD, json.dumps(result) + json.dumps(self.store.audit_records()))
         self.assertIn('--set-gtid-purged=OFF', self.calls()[0]['argv'])
+
+    def test_regression_successful_dump_hashes_files_once(self):
+        for engine, shell in (('mysql', False), ('mariadb', False), ('mysql', True)):
+            with self.subTest(engine=engine, shell=shell):
+                self.output = str(self.root / ('backup-%s-%s' % (engine, shell)))
+                with mock.patch.object(lc, '_file_records', wraps=lc._file_records) as hashes:
+                    unused, result = self.make_dump(engine, shell)
+                self.assertEqual(hashes.call_count, 1)
+                manifest = result['result']['manifest']
+                self.assertTrue(manifest['complete'])
+                self.assertTrue(manifest['files'])
+                for record in manifest['files']:
+                    content = Path(self.output, record['path']).read_bytes()
+                    self.assertEqual(record['size_bytes'], len(content))
+                    self.assertEqual(record['sha256'], hashlib.sha256(content).hexdigest())
 
     def test_mariadb_dump_uses_mariadb_flags(self):
         self.make_dump('mariadb')
@@ -1438,13 +1505,11 @@ class LifecycleTests(unittest.TestCase):
         plan = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], tools=tools)
         owner = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
                             factory=lambda **kw: self.conn, start=False)
-        original, calls = lc._file_records, []
-        def cancel_last(directory, job=None):
-            calls.append(directory)
-            if len(calls) == 2:
-                owner.cancelled.set()
+        original = lc._file_records
+        def cancel_hash(directory, job=None):
+            owner.cancelled.set()
             return original(directory, job=job)
-        with mock.patch.object(lc, 'detect_tools', return_value=tools), mock.patch.object(lc, '_file_records', side_effect=cancel_last):
+        with mock.patch.object(lc, 'detect_tools', return_value=tools), mock.patch.object(lc, '_file_records', side_effect=cancel_hash):
             result = owner.run()
         self.assertEqual(result['state'], 'cancelled')
         self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text())['complete'])

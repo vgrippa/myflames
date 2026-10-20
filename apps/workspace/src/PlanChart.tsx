@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { api, safePreview, type Plan } from "./api";
 import { availableViews, mount, type ChartHandle } from "./charts";
 import type { MetricName } from "./charts/core/types";
+import { bindFrameAppearance, themeFrame } from "./charts/core/appearance";
 
 type Variant = "inspect" | "compare";
 
@@ -278,7 +279,7 @@ function FrameChart({
       controller.signal,
     )
       .then((r) => {
-        if (!controller.signal.aborted) setHtml(safePreview(r.html));
+        if (!controller.signal.aborted) setHtml(safePreview(themeFrame(r.html)));
       })
       .catch((e) => {
         if (!controller.signal.aborted) setError(e.message);
@@ -288,6 +289,9 @@ function FrameChart({
       });
     return () => controller.abort();
   }, [plan.raw, plan.id, view, metric, focusId, collapsedKey]);
+  useEffect(() => {
+    if (frame.current) return bindFrameAppearance(frame.current);
+  }, [html, loading]);
   const post = () =>
     frame.current?.contentWindow?.postMessage(
       { type: "myflames-select", node_id: selectedRef.current },

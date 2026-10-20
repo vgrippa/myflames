@@ -1,0 +1,828 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('datadir', 'hostname', 'log_error', 'log_error_services', 'log_error_verbosity', 'log_warnings', 'performance_schema', 'port', 'userstat', 'version', 'version_comment')",
+   "datadir\t/var/lib/mysql/\nhostname\tdev-mac\nlog_error\t/var/log/mysql/mariadb.err\nlog_warnings\t2\nperformance_schema\tOFF\nport\t3306\nuserstat\tOFF\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t2257\n"
+  ],
+  [
+   "/*myflames:error-log*/ SELECT VARIABLE_VALUE, CONVERT_TZ(UTC_TIMESTAMP() - INTERVAL CAST(VARIABLE_VALUE AS UNSIGNED) SECOND, '+00:00', 'SYSTEM') FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Uptime'",
+   "2257\t2026-10-19 20:26:12\n"
+  ]
+ ],
+ "file_text": "2026-10-19 20:26:10 0 [Warning] mariadbd: io_uring_queue_init() failed with EPERM: sysctl kernel.io_uring_disabled has the value 2, or 1 and the user of the process is not a member of sysctl kernel.io_uring_group. (see man 2 io_uring_setup).\ncreate_uring failed: falling back to libaio\n2026-10-19 20:26:11 0 [Note] Starting MariaDB 11.4.13-MariaDB-ubu2404 source revision 170b1d70737be6f134448f51713cdc1ae215b420 server_uid l1lipdFlEig6NCpdOC0y78dYK+g= as process 100\n2026-10-19 20:26:11 0 [Note] InnoDB: Compressed tables use zlib 1.3\n2026-10-19 20:26:11 0 [Note] InnoDB: Number of transaction pools: 1\n2026-10-19 20:26:11 0 [Note] InnoDB: Using ARMv8 crc32 + pmull instructions\n2026-10-19 20:26:11 0 [Warning] mariadbd: io_uring_queue_init() failed with EPERM: sysctl kernel.io_uring_disabled has the value 2, or 1 and the user of the process is not a member of sysctl kernel.io_uring_group. (see man 2 io_uring_setup).\ncreate_uring failed: falling back to libaio\n2026-10-19 20:26:11 0 [Note] InnoDB: Using Linux native AIO\n2026-10-19 20:26:11 0 [Note] InnoDB: innodb_buffer_pool_size_max=8388608m, innodb_buffer_pool_size=128m\n2026-10-19 20:26:11 0 [Note] InnoDB: Completed initialization of buffer pool\n2026-10-19 20:26:11 0 [Note] InnoDB: File system buffers for log disabled (block size=512 bytes)\n2026-10-19 20:26:11 0 [Note] InnoDB: End of log at LSN=45243\n2026-10-19 20:26:11 0 [Note] InnoDB: Opened 3 undo tablespaces\n2026-10-19 20:26:11 0 [Note] InnoDB: 128 rollback segments in 3 undo tablespaces are active.\n2026-10-19 20:26:11 0 [Note] InnoDB: Setting file './ibtmp1' size to 12.000MiB. Physically writing the file full; Please wait ...\n2026-10-19 20:26:11 0 [Note] InnoDB: File './ibtmp1' size is now 12.000MiB.\n2026-10-19 20:26:11 0 [Note] InnoDB: log sequence number 45243; transaction id 14\n2026-10-19 20:26:11 0 [Note] Plugin 'FEEDBACK' is disabled.\n2026-10-19 20:26:11 0 [Note] Plugin 'wsrep-provider' is disabled.\n2026-10-19 20:26:11 0 [Note] mariadbd: Event Scheduler: Loaded 0 events\n2026-10-19 20:26:11 0 [Note] mariadbd: ready for connections.\nVersion: '11.4.13-MariaDB-ubu2404'  socket: '/run/mysqld/mysqld.sock'  port: 0  mariadb.org binary distribution\n2026-10-19 20:26:12 0 [Note] mariadbd (initiated by: unknown): Normal shutdown\n2026-10-19 20:26:12 0 [Note] InnoDB: FTS optimize thread exiting.\n2026-10-19 20:26:12 0 [Note] InnoDB: Starting shutdown...\n2026-10-19 20:26:12 0 [Note] InnoDB: Dumping buffer pool(s) to /var/lib/mysql/ib_buffer_pool\n2026-10-19 20:26:12 0 [Note] InnoDB: Buffer pool(s) dump completed at 261019 20:26:12\n2026-10-19 20:26:12 0 [Note] InnoDB: Removed temporary tablespace data file: \"./ibtmp1\"\n2026-10-19 20:26:12 0 [Note] Shutdown completed; log sequence number 45600; transaction id 15\n2026-10-19 20:26:12 0 [Note] mariadbd: Shutdown complete\n2026-10-19 20:26:12 0 [Note] Starting MariaDB 11.4.13-MariaDB-ubu2404 source revision 170b1d70737be6f134448f51713cdc1ae215b420 server_uid l1lipdFlEig6NCpdOC0y78dYK+g= as process 1\n2026-10-19 20:26:12 0 [Note] InnoDB: Compressed tables use zlib 1.3\n2026-10-19 20:26:12 0 [Note] InnoDB: Number of transaction pools: 1\n2026-10-19 20:26:12 0 [Note] InnoDB: Using ARMv8 crc32 + pmull instructions\n2026-10-19 20:26:12 0 [Warning] mariadbd: io_uring_queue_init() failed with EPERM: sysctl kernel.io_uring_disabled has the value 2, or 1 and the user of the process is not a member of sysctl kernel.io_uring_group. (see man 2 io_uring_setup).\ncreate_uring failed: falling back to libaio\n2026-10-19 20:26:12 0 [Note] InnoDB: Using Linux native AIO\n2026-10-19 20:26:12 0 [Note] InnoDB: innodb_buffer_pool_size_max=8388608m, innodb_buffer_pool_size=128m\n2026-10-19 20:26:12 0 [Note] InnoDB: Completed initialization of buffer pool\n2026-10-19 20:26:12 0 [Note] InnoDB: File system buffers for log disabled (block size=512 bytes)\n2026-10-19 20:26:12 0 [Note] InnoDB: End of log at LSN=45600\n2026-10-19 20:26:12 0 [Note] InnoDB: Opened 3 undo tablespaces\n2026-10-19 20:26:12 0 [Note] InnoDB: 128 rollback segments in 3 undo tablespaces are active.\n2026-10-19 20:26:12 0 [Note] InnoDB: Setting file './ibtmp1' size to 12.000MiB. Physically writing the file full; Please wait ...\n2026-10-19 20:26:12 0 [Note] InnoDB: File './ibtmp1' size is now 12.000MiB.\n2026-10-19 20:26:12 0 [Note] InnoDB: log sequence number 45600; transaction id 15\n2026-10-19 20:26:12 0 [Note] InnoDB: Loading buffer pool(s) from /var/lib/mysql/ib_buffer_pool\n2026-10-19 20:26:12 0 [Note] Plugin 'FEEDBACK' is disabled.\n2026-10-19 20:26:12 0 [Note] Plugin 'wsrep-provider' is disabled.\n2026-10-19 20:26:12 0 [Note] InnoDB: Buffer pool(s) load completed at 261019 20:26:12\n2026-10-19 20:26:14 0 [Note] Server socket created on IP: '0.0.0.0', port: '3306'.\n2026-10-19 20:26:14 0 [Note] Server socket created on IP: '::', port: '3306'.\n2026-10-19 20:26:14 0 [Note] mariadbd: Event Scheduler: Loaded 0 events\n2026-10-19 20:26:14 0 [Note] mariadbd: ready for connections.\nVersion: '11.4.13-MariaDB-ubu2404'  socket: '/run/mysqld/mysqld.sock'  port: 3306  mariadb.org binary distribution\n2026-10-19 20:29:38 6 [Warning] Access denied for user 'root'@'172.17.0.1' (using password: YES)\n2026-10-19 20:29:43 7 [Note] Master connection name: 'src1'  Master_info_file: 'master-src1.info'  Relay_info_file: 'relay-log-src1.info'\n2026-10-19 20:29:43 7 [Warning] Neither --relay-log nor --relay-log-index were used; so replication may break when this MariaDB server acts as a slave and has its hostname changed. Please use '--log-basename=#' or '--relay-log=mysqld-relay-bin' to avoid this problem.\n2026-10-19 20:29:43 7 [Note] 'CHANGE MASTER TO executed'. Previous state master_host='', master_port='3306', master_log_file='', master_log_pos='4'. New state master_host='no-such-host.invalid', master_port='3306', master_log_file='', master_log_pos='4'.\n2026-10-19 20:29:43 7 [Note] Previous Using_Gtid=Slave_Pos. New Using_Gtid=Slave_Pos\n2026-10-19 20:29:43 8 [Note] Master 'src1': Slave I/O thread: Start asynchronous replication to master 'x@no-such-host.invalid:3306' in log '' at position 4\n2026-10-19 20:29:43 9 [Note] Master 'src1': Slave SQL thread initialized, starting replication in log 'FIRST' at position 4, relay log './mysqld-relay-bin-src1.000001' position: 4; GTID position ''\n2026-10-19 20:29:43 8 [ERROR] Master 'src1': Slave I/O: error connecting to master 'x@no-such-host.invalid:3306' - retry-time: 1  maximum-retries: 100000  message: Unknown server host 'no-such-host.invalid' (-2), Internal MariaDB error code: 2005\n2026-10-19 20:29:43 9 [Note] Master 'src1': Error reading relay log event: slave SQL thread was killed\n2026-10-19 20:29:43 9 [Note] Master 'src1': Slave SQL thread exiting, replication stopped in log 'FIRST' at position 4; GTID position '', master: no-such-host.invalid:3306\n2026-10-19 20:29:43 8 [Note] Master 'src1': Slave I/O thread killed while connecting to master\n2026-10-19 20:29:43 8 [Note] Master 'src1': Slave I/O thread exiting, read up to log 'FIRST', position 4; GTID position , master no-such-host.invalid:3306\n",
+ "local_hostname": "dev-mac",
+ "report": {
+  "available": true,
+  "buffer": null,
+  "codes": [
+   {
+    "count": 3,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:10",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Warning",
+    "sample": "mariadbd: io_uring_queue_init() failed with EPERM: sysctl kernel.io_uring_disabled has the value 2, or 1 and the user of the process is not a member of sysctl kernel.io_uring_group. (see man 2 io_uring_setup).\ncreate_uring failed: falling back to libaio",
+    "subsystem": null
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "Plugin 'FEEDBACK' is disabled.",
+    "subsystem": null
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "Plugin 'wsrep-provider' is disabled.",
+    "subsystem": null
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "Starting MariaDB 11.4.13-MariaDB-ubu2404 source revision 170b1d70737be6f134448f51713cdc1ae215b420 server_uid l1lipdFlEig6NCpdOC0y78dYK+g= as process 100",
+    "subsystem": null
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:14",
+    "prio": "Note",
+    "sample": "mariadbd: Event Scheduler: Loaded 0 events",
+    "subsystem": null
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:14",
+    "prio": "Note",
+    "sample": "mariadbd: ready for connections.\nVersion: '11.4.13-MariaDB-ubu2404'  socket: '/run/mysqld/mysqld.sock'  port: 0  mariadb.org binary distribution",
+    "subsystem": null
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: 128 rollback segments in 3 undo tablespaces are active.",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: Completed initialization of buffer pool",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: Compressed tables use zlib 1.3",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: File './ibtmp1' size is now 12.000MiB.",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: File system buffers for log disabled (block size=512 bytes)",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: Number of transaction pools: 1",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: Opened 3 undo tablespaces",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: Setting file './ibtmp1' size to 12.000MiB. Physically writing the file full; Please wait ...",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: Using ARMv8 crc32 + pmull instructions",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: Using Linux native AIO",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 2,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:26:11",
+    "last_logged": "2026-10-19 20:26:12",
+    "prio": "Note",
+    "sample": "InnoDB: innodb_buffer_pool_size_max=8388608m, innodb_buffer_pool_size=128m",
+    "subsystem": "InnoDB"
+   },
+   {
+    "count": 1,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:29:43",
+    "last_logged": "2026-10-19 20:29:43",
+    "prio": "Error",
+    "sample": "Master 'src1': Slave I/O: error connecting to master 'x@no-such-host.invalid:3306' - retry-time: 1  maximum-retries: 100000  message: Unknown server host 'no-such-host.invalid' (-2), Internal MariaDB error code: 2005",
+    "subsystem": null
+   },
+   {
+    "count": 1,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:29:43",
+    "last_logged": "2026-10-19 20:29:43",
+    "prio": "Note",
+    "sample": "'CHANGE MASTER TO executed'. Previous state master_host='', master_port='3306', master_log_file='', master_log_pos='4'. New state master_host='no-such-host.invalid', master_port='3306', master_log_file='', master_log_pos='4'.",
+    "subsystem": null
+   },
+   {
+    "count": 1,
+    "error_code": null,
+    "first_logged": "2026-10-19 20:29:43",
+    "last_logged": "2026-10-19 20:29:43",
+    "prio": "Note",
+    "sample": "Master 'src1': Error reading relay log event: slave SQL thread was killed",
+    "subsystem": null
+   }
+  ],
+  "counts": {
+   "error": 1,
+   "note": 57,
+   "system": 0,
+   "warning": 5
+  },
+  "counts_current_run": {
+   "error": 1,
+   "note": 39,
+   "system": 0,
+   "warning": 3
+  },
+  "engine": "mariadb",
+  "entries": [
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Master 'src1': Slave I/O thread exiting, read up to log 'FIRST', position 4; GTID position , master no-such-host.invalid:3306",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 8
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Master 'src1': Slave I/O thread killed while connecting to master",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 8
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Master 'src1': Slave SQL thread exiting, replication stopped in log 'FIRST' at position 4; GTID position '', master: no-such-host.invalid:3306",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 9
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Master 'src1': Error reading relay log event: slave SQL thread was killed",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 9
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Master 'src1': Slave I/O: error connecting to master 'x@no-such-host.invalid:3306' - retry-time: 1  maximum-retries: 100000  message: Unknown server host 'no-such-host.invalid' (-2), Internal MariaDB error code: 2005",
+    "previous_run": false,
+    "prio": "Error",
+    "subsystem": null,
+    "thread_id": 8
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Master 'src1': Slave SQL thread initialized, starting replication in log 'FIRST' at position 4, relay log './mysqld-relay-bin-src1.000001' position: 4; GTID position ''",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 9
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Master 'src1': Slave I/O thread: Start asynchronous replication to master 'x@no-such-host.invalid:3306' in log '' at position 4",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 8
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Previous Using_Gtid=Slave_Pos. New Using_Gtid=Slave_Pos",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 7
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "'CHANGE MASTER TO executed'. Previous state master_host='', master_port='3306', master_log_file='', master_log_pos='4'. New state master_host='no-such-host.invalid', master_port='3306', master_log_file='', master_log_pos='4'.",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 7
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Neither --relay-log nor --relay-log-index were used; so replication may break when this MariaDB server acts as a slave and has its hostname changed. Please use '--log-basename=#' or '--relay-log=mysqld-relay-bin' to avoid this problem.",
+    "previous_run": false,
+    "prio": "Warning",
+    "subsystem": null,
+    "thread_id": 7
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:43",
+    "message": "Master connection name: 'src1'  Master_info_file: 'master-src1.info'  Relay_info_file: 'relay-log-src1.info'",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 7
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:29:38",
+    "message": "Access denied for user 'root'@'172.17.0.1' (using password: YES)",
+    "previous_run": false,
+    "prio": "Warning",
+    "subsystem": null,
+    "thread_id": 6
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:14",
+    "message": "mariadbd: ready for connections.\nVersion: '11.4.13-MariaDB-ubu2404'  socket: '/run/mysqld/mysqld.sock'  port: 3306  mariadb.org binary distribution",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:14",
+    "message": "mariadbd: Event Scheduler: Loaded 0 events",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:14",
+    "message": "Server socket created on IP: '::', port: '3306'.",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:14",
+    "message": "Server socket created on IP: '0.0.0.0', port: '3306'.",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Buffer pool(s) load completed at 261019 20:26:12",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "Plugin 'wsrep-provider' is disabled.",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "Plugin 'FEEDBACK' is disabled.",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Loading buffer pool(s) from /var/lib/mysql/ib_buffer_pool",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: log sequence number 45600; transaction id 15",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: File './ibtmp1' size is now 12.000MiB.",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Setting file './ibtmp1' size to 12.000MiB. Physically writing the file full; Please wait ...",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: 128 rollback segments in 3 undo tablespaces are active.",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Opened 3 undo tablespaces",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: End of log at LSN=45600",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: File system buffers for log disabled (block size=512 bytes)",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Completed initialization of buffer pool",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: innodb_buffer_pool_size_max=8388608m, innodb_buffer_pool_size=128m",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Using Linux native AIO",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "mariadbd: io_uring_queue_init() failed with EPERM: sysctl kernel.io_uring_disabled has the value 2, or 1 and the user of the process is not a member of sysctl kernel.io_uring_group. (see man 2 io_uring_setup).\ncreate_uring failed: falling back to libaio",
+    "previous_run": false,
+    "prio": "Warning",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Using ARMv8 crc32 + pmull instructions",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Number of transaction pools: 1",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Compressed tables use zlib 1.3",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "Starting MariaDB 11.4.13-MariaDB-ubu2404 source revision 170b1d70737be6f134448f51713cdc1ae215b420 server_uid l1lipdFlEig6NCpdOC0y78dYK+g= as process 1",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "mariadbd: Shutdown complete",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "Shutdown completed; log sequence number 45600; transaction id 15",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Removed temporary tablespace data file: \"./ibtmp1\"",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Buffer pool(s) dump completed at 261019 20:26:12",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Dumping buffer pool(s) to /var/lib/mysql/ib_buffer_pool",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: Starting shutdown...",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "InnoDB: FTS optimize thread exiting.",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:12",
+    "message": "mariadbd (initiated by: unknown): Normal shutdown",
+    "previous_run": false,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "mariadbd: ready for connections.\nVersion: '11.4.13-MariaDB-ubu2404'  socket: '/run/mysqld/mysqld.sock'  port: 0  mariadb.org binary distribution",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "mariadbd: Event Scheduler: Loaded 0 events",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "Plugin 'wsrep-provider' is disabled.",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "Plugin 'FEEDBACK' is disabled.",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: log sequence number 45243; transaction id 14",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: File './ibtmp1' size is now 12.000MiB.",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: Setting file './ibtmp1' size to 12.000MiB. Physically writing the file full; Please wait ...",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: 128 rollback segments in 3 undo tablespaces are active.",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: Opened 3 undo tablespaces",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: End of log at LSN=45243",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: File system buffers for log disabled (block size=512 bytes)",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: Completed initialization of buffer pool",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: innodb_buffer_pool_size_max=8388608m, innodb_buffer_pool_size=128m",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: Using Linux native AIO",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "mariadbd: io_uring_queue_init() failed with EPERM: sysctl kernel.io_uring_disabled has the value 2, or 1 and the user of the process is not a member of sysctl kernel.io_uring_group. (see man 2 io_uring_setup).\ncreate_uring failed: falling back to libaio",
+    "previous_run": true,
+    "prio": "Warning",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: Using ARMv8 crc32 + pmull instructions",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: Number of transaction pools: 1",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "InnoDB: Compressed tables use zlib 1.3",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": "InnoDB",
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:11",
+    "message": "Starting MariaDB 11.4.13-MariaDB-ubu2404 source revision 170b1d70737be6f134448f51713cdc1ae215b420 server_uid l1lipdFlEig6NCpdOC0y78dYK+g= as process 100",
+    "previous_run": true,
+    "prio": "Note",
+    "subsystem": null,
+    "thread_id": 0
+   },
+   {
+    "error_code": null,
+    "logged": "2026-10-19 20:26:10",
+    "message": "mariadbd: io_uring_queue_init() failed with EPERM: sysctl kernel.io_uring_disabled has the value 2, or 1 and the user of the process is not a member of sysctl kernel.io_uring_group. (see man 2 io_uring_setup).\ncreate_uring failed: falling back to libaio",
+    "previous_run": true,
+    "prio": "Warning",
+    "subsystem": null,
+    "thread_id": 0
+   }
+  ],
+  "entries_total": 63,
+  "file": {
+   "banner_found": true,
+   "path": "/var/log/mysql/mariadb.err",
+   "read_bytes": 7010,
+   "size_bytes": 7010,
+   "truncated": false
+  },
+  "how_to_view": null,
+  "levels": [
+   "System",
+   "Error",
+   "Warning",
+   "Note"
+  ],
+  "limit": 200,
+  "notes": [
+   "Counts and code groups cover only the parsed file tail, not the whole log or rotated files.",
+   "MariaDB log_warnings=2 controls recording; absent events do not prove none happened."
+  ],
+  "performance_schema": false,
+  "reason": null,
+  "reason_text": null,
+  "schema_version": "error-log-1.0",
+  "server_started": "2026-10-19 20:26:12",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "settings": {
+   "datadir": "/var/lib/mysql/",
+   "log_error": "/var/log/mysql/mariadb.err",
+   "log_error_services": null,
+   "log_error_verbosity": null,
+   "log_warnings": 2
+  },
+  "source": "file",
+  "summary": {
+   "status": "watch",
+   "text": "1 error and 3 warnings recorded since the server started at 2026-10-19 20:26:12."
+  },
+  "taken_at": "2026-10-19T21:03:49.588205+00:00",
+  "uptime_s": 2257
+ },
+ "server": "mariadb-11.4"
+}

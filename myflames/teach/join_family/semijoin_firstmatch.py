@@ -189,7 +189,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="semijoin_firstmatch",
-        title="Semijoin FirstMatch — stop looking after the first match",
+        title="Semijoin FirstMatch: stop looking after the first match",
         subtitle=(
             "IN (subquery) asks does-it-exist, not how-many. Watch MySQL "
             "short-circuit the inner scan the moment one matching order "

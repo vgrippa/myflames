@@ -78,6 +78,8 @@ export function normalizeTarget(raw: unknown): TabTarget | undefined {
 export const SERVER_KINDS = [
   "health",
   "innodb",
+  "errorlog",
+  "tuning",
   "report",
   "top",
   "sessions",
@@ -130,7 +132,7 @@ export type SlowState = {
   /** The inspector pane is open (its width is a per-browser preference). */
   inspector: boolean;
   /** Sessions: active sessions only, or every connection. */
-  sessions_scope: "active" | "all";
+  sessions_scope: "active" | "all" | "locked";
   /** A Full analysis ran in this workspace (the report itself is never saved). */
   report_run?: boolean;
   /** Maintenance: the open task section. */
@@ -146,6 +148,8 @@ export type SlowState = {
 export type ColumnLayout = { widths?: Record<string, number>; hidden?: string[] };
 /** The Server tables that keep a column layout (DataTable id). */
 export const TABLE_IDS = [
+  "errorlog.entries",
+  "errorlog.codes",
   "top.statements",
   "sessions.sessions",
   "replication.channels",
@@ -157,10 +161,12 @@ export const TABLE_IDS = [
   "locks.transactions",
   "locks.rows",
   "locks.metadata",
+  "indexes.inventory",
   "indexes.unused",
   "indexes.redundant",
   "indexes.scans",
   "indexes.nodata",
+  "tables.inventory",
   "tables.missing",
   "tables.free",
   "maintenance.tools",
@@ -168,6 +174,8 @@ export const TABLE_IDS = [
   "maintenance.checks",
   "instruments.groups",
   "instruments.consumers",
+  "instruments.list",
+  "parameters.all",
 ] as const;
 /** Column widths a restore accepts (DataTable clamps again to each column's minimum). */
 export const COLUMN_WIDTH_MIN = 48;
@@ -439,7 +447,7 @@ export function normalizeLab(raw: unknown): LabState {
       ...(schemaList(s.indexes_schemas).length ? { indexes_schemas: schemaList(s.indexes_schemas) } : {}),
       ...(schemaList(s.tables_schemas).length ? { tables_schemas: schemaList(s.tables_schemas) } : {}),
       inspector: s.inspector === true,
-      sessions_scope: s.sessions_scope === "all" ? "all" : "active",
+      sessions_scope: s.sessions_scope === "all" ? "all" : s.sessions_scope === "locked" ? "locked" : "active",
       maintenance_section: (["tools", "upgrade", "dump", "restore", "clone"] as const).includes(
         s.maintenance_section as "tools" | "upgrade" | "dump" | "restore" | "clone",
       )

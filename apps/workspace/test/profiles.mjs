@@ -150,6 +150,7 @@ try {
   assert.ok(await page.$('.home [aria-labelledby="recent-title"]'));
   assert.ok(await page.$('.topbar button[aria-label="Import plan"]'));
   assert.equal(await page.$('.topbar button[aria-label="New query tab"]'), null);
+  if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   await button("Add connection");
   await page.waitForFunction(() =>
     document.querySelector(".connection-panel > .hint:last-child")?.textContent.includes("Save connection asks"),
@@ -203,7 +204,7 @@ try {
   assert.equal(last("/api/connection/test").connection.password, "");
   assert.equal(await page.$(".save-prompt"), null);
   // Server reads with the connection in use, by id, without a password.
-  await place("Server");
+  await place("Workload");
   await page.click("#server-nav-top");
   await button("Load top statements");
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
@@ -267,6 +268,7 @@ try {
   await (await page.$(".connection-panel")).screenshot({ path: path.join(directory, "profiles.png") });
 
   // "Settings only" saves a new connection without its password.
+  if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   await button("Add connection");
   await setName("Staging");
   await page.locator(password).fill("pw-3");
@@ -279,6 +281,7 @@ try {
   assert.equal(last("/api/profiles/save").id, undefined);
 
   // A new connection with an existing name asks to replace it; Escape cancels.
+  if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   await button("Add connection");
   await setName("prod");
   await button("Save connection");
@@ -303,18 +306,23 @@ try {
   const typeControl = ".connection-panel .type-control";
   const pressed = () => page.$eval(`${typeControl} button[aria-pressed=true]`, (e) => e.textContent);
   const readOnly = ".connection-panel .read-only-field input";
+  // The write safety of the connection in use: first in the window footer of
+  // the places that send to it; its accessible name is the full sentence.
+  const safety = '.window-statusbar [data-status="safety"]';
   const strip = async () => {
     await place("Query editor");
     await page.waitForSelector(".window-toolbar .connection-picker");
-    const result = await page.evaluate(() => ({
-      strip: document.querySelector(".safety-strip")?.textContent || "",
-      kind: document.querySelector(".safety-strip")?.dataset.safety || "",
+    await page.waitForSelector(safety);
+    const result = await page.evaluate((s) => ({
+      strip: document.querySelector(s)?.getAttribute("aria-label") || "",
+      kind: document.querySelector(s)?.dataset.safety || "",
       dot: document.querySelector(".window-toolbar .connection-picker .type-dot")?.getAttribute("aria-label") || "",
-    }));
+    }), safety);
     await place("Home");
     return result;
   };
   // A new connection is Production and read-write; the ⓘ says what each type confirms.
+  if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   await button("Add connection");
   await setName("Dev box");
   await setField("Host", "dev.local");
@@ -351,7 +359,7 @@ try {
   assert.equal(await text(connectionRow("Staging") + " [data-col=type]"), "Production");
   // The first saved connection is in use: Development, so no strip, a green dot.
   assert.match(await text(".connection-row.is-active"), /Dev box/);
-  assert.deepEqual(await strip(), { strip: "", kind: "", dot: "Development" });
+  assert.deepEqual(await strip(), { strip: "Development: changes on Dev box ask first only when risky", kind: "development", dot: "Development" });
 
   // Another host for a saved Development connection: warned, shown and
   // saved as Production unless Development is chosen again; used without
@@ -374,25 +382,26 @@ try {
   );
   assert.equal(await pressed(), "Production");
   await button("Use", ".connection-panel .button-row ");
-  assert.deepEqual(await strip(), { strip: "Productionevery change on Dev box asks first", kind: "production", dot: "Production" });
-  // The strip shows only in the Query editor and Server (strip() returns to Home).
+  assert.deepEqual(await strip(), { strip: "Production: every change on Dev box asks first", kind: "production", dot: "Production" });
+  // The state shows only where changes are sent (strip() returns to Home).
+  assert.equal(await page.$(safety), null, "no safety state on Home");
   await place("Query editor");
-  assert.deepEqual(await page.$eval(".safety-strip", (e) => {
-    const css = getComputedStyle(e);
-    return { background: css.backgroundColor, color: css.color, border: css.borderBottomStyle, bold: Number(getComputedStyle(e.querySelector("strong")).fontWeight) >= 600 };
-  }), {
-    // The soft danger treatment, whatever the token values are.
-    ...(await page.evaluate(() => {
+  assert.deepEqual(await page.$eval(safety, (e) => ({
+    text: e.textContent,
+    dot: getComputedStyle(e.querySelector(".safety-status-dot")).backgroundColor,
+    bold: Number(getComputedStyle(e.querySelector("strong")).fontWeight) >= 600,
+  })), {
+    // Words, not color alone: a danger dot plus "Production".
+    text: "Production· changes ask first",
+    dot: await page.evaluate(() => {
       const probe = document.createElement("div");
-      probe.style.background = "var(--danger-soft)";
-      probe.style.color = "var(--danger)";
+      probe.style.background = "var(--danger)";
       document.body.append(probe);
-      const css = getComputedStyle(probe);
-      const out = { background: css.backgroundColor, color: css.color };
+      const out = getComputedStyle(probe).backgroundColor;
       probe.remove();
       return out;
-    })),
-    border: "solid", bold: true,
+    }),
+    bold: true,
   });
   await place("Home");
   await editConnection("Dev box");
@@ -408,7 +417,7 @@ try {
   await button("Save connection");
   await page.waitForFunction((r) => document.querySelector(r + " .type-dot")?.getAttribute("aria-label") === "Development", {}, devRow);
   assert.equal(last("/api/profiles/save").value.type, "development");
-  assert.deepEqual(await strip(), { strip: "", kind: "", dot: "Development" });
+  assert.deepEqual(await strip(), { strip: "Development: changes on Dev box ask first only when risky", kind: "development", dot: "Development" });
 
   // Read-only: saved with the connection, shown in its row, a neutral strip.
   await editConnection("Dev box");
@@ -419,7 +428,7 @@ try {
   assert.equal(last("/api/profiles/save").value.type, "development");
   assert.equal(await rowType(devRow), "Development, read-only");
   assert.deepEqual(await strip(), {
-    strip: "Read-onlymyflames refuses every change on Dev box",
+    strip: "Read-only: myflames refuses every change on Dev box",
     kind: "read-only",
     dot: "Development, read-only",
   });
@@ -430,9 +439,10 @@ try {
   listFails = true;
   await place("Query editor");
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await page.waitForSelector('.safety-strip[data-safety="unknown"]');
-  assert.match(await text(".safety-strip"), /^Production assumedcould not read the settings of Dev box; changes stay off until they loadRetry$/);
-  await place("Server");
+  await page.waitForSelector(`${safety}[data-safety="unknown"]`);
+  assert.match(await text(safety), /^Production assumed· settings not loadedRetry$/);
+  assert.match(await page.$eval(safety, (e) => e.getAttribute("aria-label")), /^Production assumed: could not read the settings of Dev box \(.+\); changes stay off until they load$/);
+  await place("Workload");
   await page.click("#server-nav-sessions");
   await page.click(".server-view[data-view=sessions] [data-action=refresh]");
   await page.waitForSelector('.server-view[data-view=sessions] tbody tr[data-session="93"]');
@@ -446,9 +456,9 @@ try {
   // Meanwhile the CLI made Dev box Production and read-write.
   items = items.map((p) => (p.name === "Dev box" ? { ...p, type: "production", read_only: false } : p));
   listFails = false;
-  await page.locator(".safety-strip button ::-p-text(Retry)").click();
-  await page.waitForSelector('.safety-strip[data-safety="production"]');
-  assert.match(await text(".safety-strip"), /every change on Dev box asks first/);
+  await page.locator(`${safety} button ::-p-text(Retry)`).click();
+  await page.waitForSelector(`${safety}[data-safety="production"]`);
+  assert.match(await page.$eval(safety, (e) => e.getAttribute("aria-label")), /every change on Dev box asks first/);
   // The report was read under the old policy: it is greyed with its actions
   // off until it is read again.
   await page.waitForSelector('.server-view[data-view=sessions][data-other-connection="true"]');
@@ -471,7 +481,7 @@ try {
     await text(".server-view[data-view=sessions] .kill-result"),
     /Nothing was sent\. The connection's type or read-only setting changed after this dialog opened, so nothing was sent\./,
   );
-  await page.waitForFunction(() => !document.querySelector(".safety-strip"));
+  await page.waitForFunction((s) => document.querySelector(s)?.dataset.safety === "development", {}, safety);
   // Unchanged policy: the same Kill goes through.
   await page.locator(".server-view[data-view=sessions] .kill-result ::-p-text(Dismiss)").click();
   await page.click(".server-view[data-view=sessions] [data-action=refresh]");
@@ -487,21 +497,22 @@ try {
 
   // An unsaved connection is Production whatever the form says, and may
   // only choose Read-only; requests carry what it is judged by.
+  if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   await button("Add connection");
   await setName("Scratch");
   await setField("Host", "scratch.local");
   await page.click(`${typeControl} button[data-value=development]`);
   await button("Use without saving", ".connection-panel ");
   assert.equal(await rowType(".connection-row.is-active"), "Production");
-  assert.deepEqual(await strip(), { strip: "Productionevery change on Scratch asks first", kind: "production", dot: "Production" });
+  assert.deepEqual(await strip(), { strip: "Production: every change on Scratch asks first", kind: "production", dot: "Production" });
   await connectionAction(page, "Scratch", "Save");
   await page.waitForSelector(readOnly);
   assert.equal(await pressed(), "Production", "the unsaved connection opens as what it is");
   await page.click(readOnly);
   await button("Use without saving", ".connection-panel ");
   assert.equal(await rowType(".connection-row.is-active"), "Production, read-only");
-  assert.deepEqual(await strip(), { strip: "Read-onlymyflames refuses every change on Scratch", kind: "read-only", dot: "Production, read-only" });
-  await place("Server");
+  assert.deepEqual(await strip(), { strip: "Read-only: myflames refuses every change on Scratch", kind: "read-only", dot: "Production, read-only" });
+  await place("Workload");
   await page.click("#server-nav-top");
   await page.click(".server-view [data-action=refresh]");
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
@@ -515,6 +526,7 @@ try {
   store.label = "not saved";
   await page.reload({ waitUntil: "networkidle0" });
   await place("Home");
+  if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   await button("Add connection");
   await page.waitForFunction(() =>
     document.querySelector(".connection-panel > .hint:last-child")?.textContent.includes("stay in memory"),

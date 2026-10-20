@@ -101,6 +101,38 @@ export function diagramPositions(d: SchemaDiagram): Record<string, Point> {
 export function withDiagramLayout(d: SchemaDiagram, positions?: Record<string, Point>): SchemaDiagram {
   return { ...d, layout: { positions: diagramPositions({ ...d, layout: { positions: positions || d.layout?.positions || {} } }) } };
 }
+/** Keep the latest arrangement when metadata is rebuilt. Newly discovered
+ * tables go below retained tables, including when columns changed their height.
+ * At the coordinate boundary, find a free horizontal slot instead of clamping
+ * several new tables into the same position. */
+export function rebuildDiagramLayout(next: SchemaDiagram, previous?: SchemaDiagram): SchemaDiagram {
+  if (!previous) return withDiagramLayout(next);
+  const positions = diagramPositions(previous), oldIds = new Set(previous.tables.map(t => t.id));
+  const kept = next.tables.filter(t => oldIds.has(t.id)), added = next.tables.filter(t => !oldIds.has(t.id));
+  if (!kept.length) return withDiagramLayout(next);
+  const bottom = Math.max(...kept.map(t => positions[t.id].y + tableHeight(t))) + 48;
+  const fresh = autoLayout({ ...next, tables: added, relationships: [] });
+  const placed = [...kept];
+  for (const table of added) {
+    let candidate = { x: boundedCoordinate(fresh[table.id].x), y: boundedCoordinate(bottom + fresh[table.id].y) };
+    const overlaps = (p: Point) => placed.some(t => {
+      const other = positions[t.id];
+      return p.x < other.x + TABLE_WIDTH + 24 && p.x + TABLE_WIDTH + 24 > other.x &&
+        p.y < other.y + tableHeight(t) + 24 && p.y + tableHeight(table) + 24 > other.y;
+    });
+    if (overlaps(candidate)) {
+      // At most 200 tables exist. Across the bounded coordinate range there
+      // are over 600 slots, and each placed table can occupy at most two.
+      for (let x = -100000; x <= 100000; x += TABLE_WIDTH + 48) {
+        const available = { x, y: candidate.y };
+        if (!overlaps(available)) { candidate = available; break; }
+      }
+    }
+    positions[table.id] = candidate;
+    placed.push(table);
+  }
+  return withDiagramLayout(next, positions);
+}
 export function diagramBounds(tables: DiagramTable[], positions: Record<string, Point>) {
   if (!tables.length) return { x: 0, y: 0, width: TABLE_WIDTH + 80, height: 200 };
   const x = Math.min(...tables.map(t => positions[t.id].x)) - 40, y = Math.min(...tables.map(t => positions[t.id].y)) - 40;

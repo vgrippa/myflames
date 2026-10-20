@@ -70,6 +70,14 @@ class TestBackendReadLimits(unittest.TestCase):
                         scope = args[1] if route == 'tables' else kwargs['schemas']
                         self.assertEqual(scope, tuple(selected) if selected else None)
 
+    def test_workspace_table_and_index_lists_are_complete_by_default(self):
+        for route, target in (('tables', 'myflames.schema_health.table_report'),
+                              ('indexes', 'myflames.indexes.index_report')):
+            for payload, expected in (({}, None), ({'limit': 17}, 17)):
+                args, kwargs = self.call('/api/live/' + route, payload, target)
+                self.assertEqual(args[3] if route == 'tables' else kwargs['limit'], expected)
+                self.assertEqual(kwargs['require_choice_above'], 2000)
+
     def test_io_instance_override_and_scope(self):
         for override in (False, True):
             args, kwargs = self.call('/api/live/io', {'schema': 'shop', 'interval': 3, 'limit': 12,
@@ -450,6 +458,56 @@ class TestWorkspaceHTTP(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr(self):
+        import io
+        from myflames import ui
+        secret = 'hunter2-Pa55'
+        cases = (
+            ('/api/live/sessions', 'Could not read this from the server. Try Refresh or the CLI.'),
+            ('/api/live/replication', 'Could not read this from the server. Try Refresh or the CLI.'),
+            ('/api/analyze', 'Could not render this plan. Try another view or the CLI.'),
+            ('/api/profiles/list', 'Could not complete the request. Try again or use the CLI.'),
+        )
+        for path, message in cases:
+            with self.subTest(path=path):
+                err = io.StringIO()
+                with mock.patch.object(ui, 'api_response', side_effect=NameError('boom with ' + secret)), \
+                        mock.patch.object(ui.sys, 'stderr', err):
+                    status, body, _ = self.request('POST', path, {'connection': {'host': 'h', 'password': secret}})
+                self.assertEqual(status, 500)
+                self.assertEqual(json.loads(body), {'error': message})
+                self.assertNotIn('boom', body.decode())
+                logged = err.getvalue()
+                self.assertIn('unexpected error in POST ' + path, logged)
+                self.assertIn('Traceback (most recent call last)', logged)
+                self.assertIn('NameError: boom with [redacted]', logged)
+                self.assertNotIn(secret, logged)
+
+    def test_unexpected_error_log_redacts_every_password_form(self):
+        import io
+        from myflames import ui
+        saved = 'saved-Pa55"quote\\slash'
+        typed = "typed-Pa55'quote"
+        current = 'current-Pa55'
+        profile = self.server.store.save('profile', {'name': 'redact', 'host': 'db.internal', 'port': 3306,
+                                                     'user': 'app', 'ssl_mode': 'PREFERRED'},
+                                         password=saved, remember=True)
+        self.addCleanup(self.server.store.delete, 'profile', profile['id'])
+        payload = {'connection': {'host': 'db.internal', 'port': 3306, 'user': 'app', 'ssl_mode': 'PREFERRED',
+                                  'profile_id': profile['id']},
+                   'other': {'password': typed}, 'current_password': current}
+        err = io.StringIO()
+        message = 'saved=%s typed=%r json=%s current=%s' % (saved, typed, json.dumps(saved), current)
+        with mock.patch.object(ui, 'api_response', side_effect=RuntimeError(message)), \
+                mock.patch.object(ui.sys, 'stderr', err):
+            status, body, _ = self.request('POST', '/api/live/sessions', payload)
+        self.assertEqual(status, 500)
+        logged = err.getvalue()
+        self.assertIn('RuntimeError: saved=[redacted] typed=', logged)
+        for secret in (saved, typed, current, repr(saved)[1:-1], repr(typed)[1:-1], json.dumps(saved)[1:-1]):
+            self.assertNotIn(secret, logged)
+            self.assertNotIn(secret, body.decode())
+
     def test_packaged_index_and_bundles(self):
         status, body, headers = self.request('GET', '/')
         self.assertEqual(status, 200)
@@ -771,6 +829,27 @@ class TestProfilePasswordAPI(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'own host, port, user, and TLS settings'):
             self.call('/api/connection/test', {'connection': self.connect(profile_id, host='evil.example')})
 
+    def test_saved_password_binds_to_the_exact_tls_mode(self):
+        # A profile saved without ssl_mode means "the client's own default",
+        # which is not PREFERRED for every client (MariaDB 11.4+ verifies by
+        # default), so an explicit PREFERRED never receives its password, and
+        # a saved PREFERRED is never filled into a request that names none.
+        from unittest import mock
+        fake = _FakeDB()
+        no_mode = self.save()['id']
+        explicit = self.call('/api/profiles/save', {
+            'value': dict(self.settings, name='explicit', ssl_mode='PREFERRED'),
+            'password': self.PASSWORD, 'remember_password': True})['id']
+        with mock.patch('myflames.connector.MySQLConnection', fake):
+            for profile_id, mode in ((no_mode, ''), (no_mode, None), (explicit, 'PREFERRED')):
+                with self.subTest(profile=profile_id, ssl_mode=mode):
+                    self.call('/api/connection/test', {'connection': self.connect(profile_id, ssl_mode=mode)})
+                    self.assertEqual(fake.options['password'], self.PASSWORD)
+            for profile_id, mode in ((no_mode, 'PREFERRED'), (explicit, ''), (explicit, None), (explicit, 'REQUIRED')):
+                with self.subTest(profile=profile_id, refused=mode):
+                    with self.assertRaisesRegex(ValueError, 'own host, port, user, and TLS settings'):
+                        self.call('/api/connection/test', {'connection': self.connect(profile_id, ssl_mode=mode)})
+
     def test_connection_errors_redact_the_saved_password(self):
         from unittest import mock
         from myflames.connector import ConnectorError
@@ -837,3 +916,125 @@ class TestProfilePasswordAPI(unittest.TestCase):
         status, body = post('/api/profiles/save', {'value': self.settings, 'remember_password': True})
         self.assertEqual(status, 400)
         self.assertIn('Enter the password', json.loads(body)['error'])
+
+
+class TestLiveBulkKillAndTableColumns(unittest.TestCase):
+    def setUp(self):
+        from myflames.workspace_store import WorkspaceStore
+        from myflames.live import LiveJobs
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.store = WorkspaceStore(os.path.join(self.temp_dir.name, 'workspace.db'))
+        self.workspace = mock.Mock()
+        self.workspace.store = self.store
+        self.workspace.jobs = LiveJobs()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_bulk_kill_validation(self):
+        conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}
+        # targets missing or not a list
+        with self.assertRaisesRegex(ValueError, 'Choose between 1 and 200'):
+            api_response('/api/live/kill/bulk', {'connection': conn, 'targets': None}, self.workspace)
+        with self.assertRaisesRegex(ValueError, 'Choose between 1 and 200'):
+            api_response('/api/live/kill/bulk', {'connection': conn, 'targets': []}, self.workspace)
+        with self.assertRaisesRegex(ValueError, 'Choose between 1 and 200'):
+            api_response('/api/live/kill/bulk', {'connection': conn, 'targets': [{'connection_id': i} for i in range(201)]}, self.workspace)
+        # invalid mode
+        with self.assertRaisesRegex(ValueError, "mode must be 'connection' or 'query'"):
+            api_response('/api/live/kill/bulk', {'connection': conn, 'targets': [{'connection_id': 1}], 'mode': 'invalid'}, self.workspace)
+
+    def test_bulk_kill_unconfirmed_gate(self):
+        conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}
+        targets = [{'connection_id': 42, 'expect': {'connection_id': 42, 'command': 'Sleep', 'user': 'test'}}]
+        res = api_response('/api/live/kill/bulk', {'connection': conn, 'targets': targets, 'confirmed': False}, self.workspace)
+        self.assertEqual(res['schema_version'], 'kill-bulk-1.0')
+        self.assertEqual(res['total'], 1)
+        self.assertEqual(res['killed'], 0)
+        self.assertEqual(res['refused'], 1)
+
+    def test_bulk_kill_prepare_and_execute(self):
+        from myflames.review_tokens import ReviewTokens
+        from myflames import ui
+        self.workspace.review_tokens = ReviewTokens()
+        conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}
+        identity = ui._review_identity(conn, self.workspace)
+        targets = [
+            {'connection_id': 10, 'expect': {'connection_id': 10, 'command': 'Query', 'user': 'app', 'host': '127.0.0.1:1234', 'connection_identity': identity}},
+            {'connection_id': 20, 'expect': {'connection_id': 20, 'command': 'Sleep', 'user': 'app', 'host': '127.0.0.1:1235', 'connection_identity': identity}}
+        ]
+        prep = api_response('/api/live/kill/bulk/prepare', {'connection': conn, 'targets': targets}, self.workspace)
+        self.assertIn('review_token', prep)
+        self.assertEqual(len(prep['statements']), 2)
+
+        fake_conn = mock.MagicMock()
+        fake_conn.__enter__.return_value = fake_conn
+        fake_conn.__exit__.return_value = False
+
+        with mock.patch('myflames.connector.MySQLConnection', return_value=fake_conn), \
+             mock.patch('myflames.locks.kill_session') as mock_kill:
+            mock_kill.side_effect = [
+                {'status': 'killed', 'message': 'Killed connection 10.'},
+                {'status': 'gone', 'message': 'Connection 20 was already gone.'}
+            ]
+            res = api_response('/api/live/kill/bulk', {
+                'connection': conn,
+                'targets': targets,
+                'confirmed': True,
+                'review_token': prep['review_token']
+            }, self.workspace)
+            self.assertEqual(res['schema_version'], 'kill-bulk-1.0')
+            self.assertEqual(res['total'], 2)
+            self.assertEqual(res['killed'], 1)
+            self.assertEqual(res['gone'], 1)
+            self.assertEqual(res['refused'], 0)
+            self.assertEqual(len(res['results']), 2)
+
+    def test_table_columns_names_are_hex_encoded(self):
+        conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}
+        fake_conn = mock.MagicMock()
+        fake_conn.__enter__.return_value = fake_conn
+        fake_conn.__exit__.return_value = False
+        fake_conn.query_rows.return_value = []
+        schema = "x\\'' ; DROP TABLE t; -- "
+        with mock.patch('myflames.connector.MySQLConnection', return_value=fake_conn):
+            api_response('/api/live/table-columns',
+                         {'connection': conn, 'schema': schema, 'table': "t'\\"}, self.workspace)
+            sql = fake_conn.query_rows.call_args[0][0]
+            self.assertNotIn('DROP TABLE', sql)
+            self.assertNotIn("t'", sql)
+            self.assertNotIn(';', sql)
+            self.assertIn("X'%s'" % schema.encode().hex(), sql)
+            with self.assertRaisesRegex(ValueError, '1 to 64'):
+                api_response('/api/live/table-columns',
+                             {'connection': conn, 'schema': 'a' * 65, 'table': 't'}, self.workspace)
+
+    def test_table_columns_response(self):
+        conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}
+        with self.assertRaisesRegex(ValueError, 'schema and table are required'):
+            api_response('/api/live/table-columns', {'connection': conn}, self.workspace)
+        with self.assertRaisesRegex(ValueError, 'schema and table are required'):
+            api_response('/api/live/table-columns', {'connection': conn, 'schema': 'shop'}, self.workspace)
+
+        fake_conn = mock.MagicMock()
+        fake_conn.__enter__.return_value = fake_conn
+        fake_conn.__exit__.return_value = False
+        fake_conn.query_rows.return_value = [
+            ['id', 'bigint', 'NO', None, 'PRI', 'auto_increment'],
+            ['username', 'varchar(255)', 'YES', 'NULL', '', ''],
+        ]
+
+        with mock.patch('myflames.connector.MySQLConnection', return_value=fake_conn):
+            res = api_response('/api/live/table-columns', {'connection': conn, 'schema': 'shop', 'table': 'users'}, self.workspace)
+            self.assertEqual(res['schema'], 'shop')
+            self.assertEqual(res['table'], 'users')
+            self.assertEqual(len(res['columns']), 2)
+            self.assertEqual(res['columns'][0], {
+                'name': 'id',
+                'type': 'bigint',
+                'nullable': False,
+                'default': None,
+                'key': 'PRI',
+                'extra': 'auto_increment'
+            })
+            self.assertEqual(res['columns'][1]['nullable'], True)

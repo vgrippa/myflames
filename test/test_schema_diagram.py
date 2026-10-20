@@ -282,8 +282,10 @@ class TestMermaidDiagram(unittest.TestCase):
         self.assertTrue(rel['identifying'])
         self.assertNotIn('FOREIGN KEY', d.export_sql(model)['text'])
         result = d.export_mermaid(model)
-        self.assertIn('&lt;customer&gt;', result['text'])
+        self.assertIn('#lt;customer#gt;', result['text'])
         again = d.import_mermaid(result['text'])
+        self.assertEqual(again['tables'][0]['name'], 'The <customer>')
+        self.assertEqual(again['relationships'][0]['name'], 'owns & sees')
         self.assertEqual(again['relationships'][0]['cardinality'], rel['cardinality'])
 
     def test_cardinality_endpoints_and_nonidentifying(self):
@@ -295,21 +297,118 @@ class TestMermaidDiagram(unittest.TestCase):
                 self.assertFalse(rel['identifying'])
                 self.assertIn(left + '..' + right, d.export_mermaid(model)['text'])
 
-    def test_types_and_names_with_no_mermaid_equivalent_warn(self):
+    def test_readable_type_comments_and_names_roundtrip(self):
         model = d.import_sql("CREATE TABLE t(`two words` DECIMAL(10,2), e ENUM('x','y'));")
         result = d.export_mermaid(model)
-        self.assertIn('column_1', result['text'])
-        self.assertIn('string', result['text'])
-        self.assertTrue(result['warnings'])
-        self.assertEqual(len(d.import_mermaid(result['text'])['tables'][0]['columns']), 2)
+        self.assertIn('DECIMAL(10-2)? two_words', result['text'])
+        self.assertIn('ENUM? e "x, y"', result['text'])
+        self.assertIn('name: two words', result['text'])
+        self.assertNotIn('SQL type:', result['text'])
+        self.assertNotIn('#quot;', result['text'])
+        self.assertNotIn('string', result['text'])
+        self.assertTrue(any('JSON retains exact types' in w for w in result['warnings']))
+        again = d.import_mermaid(result['text'])
+        expected = [[c[k] for k in ('name', 'data_type', 'nullable', 'primary_key')]
+                    for c in model['tables'][0]['columns']]
+        actual = [[c[k] for k in ('name', 'data_type', 'nullable', 'primary_key')]
+                  for c in again['tables'][0]['columns']]
+        self.assertEqual(actual, expected)
 
-    def test_fallback_attribute_names_do_not_collide(self):
-        model = d.import_sql('CREATE TABLE t(`two words` INT, column_1 INT, column_2 INT, `more words` INT);')
-        result = d.import_mermaid(d.export_mermaid(model)['text'])
-        names = [c['name'] for c in result['tables'][0]['columns']]
-        self.assertEqual(len(names), len(set(names)))
-        self.assertIn('column_1', names)
-        self.assertIn('column_2', names)
+    def test_common_types_have_no_comments(self):
+        model = d.import_sql('CREATE TABLE t(a int unsigned NOT NULL, b decimal(15,5), c varchar(40));')
+        result = d.export_mermaid(model)
+        lines = [line.strip() for line in result['text'].splitlines()]
+        self.assertIn('int_unsigned a', lines)
+        self.assertIn('decimal(15-5)? b', lines)
+        self.assertIn('varchar(40)? c', lines)
+        again = d.import_mermaid(result['text'])
+        self.assertEqual([c['data_type'] for c in again['tables'][0]['columns']],
+                         ['int unsigned', 'decimal(15,5)', 'varchar(40)'])
+        # Conceptual types with underscores or dashes have no safe inverse.
+        self.assertEqual(d._mermaid_sql_type('custom_type'), 'custom_type')
+        self.assertEqual(d._mermaid_sql_type('custom(1-2)'), 'custom(1-2)')
+
+    def test_comment_separators_and_unknown_enum_roundtrip(self):
+        model = d.import_sql("CREATE TABLE t(`customer's note; nullability unknown` SET('SQL type: ''quoted''','a, b','semi; colon','it''s',''));")
+        col = model['tables'][0]['columns'][0]
+        col['nullable'] = None
+        text = d.export_mermaid(model)['text']
+        self.assertIn('SET customer_s_note_nullability_unknown', text)
+        self.assertNotIn('SQL type:', text)
+        self.assertNotIn('#quot;', text)
+        again = d.import_mermaid(text)['tables'][0]['columns'][0]
+        self.assertEqual(again, col)
+
+    def test_name_cannot_be_mistaken_for_legacy_metadata(self):
+        model = d.import_sql('CREATE TABLE t(`x; SQL type: "fake"` INT);')
+        again = d.import_mermaid(d.export_mermaid(model)['text'])
+        self.assertEqual(again['tables'][0]['columns'], model['tables'][0]['columns'])
+
+    def test_legacy_metadata_comments_still_import(self):
+        model = d.import_mermaid('erDiagram\nT {\n int alias "Original name: #quot;two words#quot;; SQL type: #quot;int unsigned#quot;; Nullability: #quot;unknown#quot;"\n}')
+        self.assertEqual(model['tables'][0]['columns'][0],
+                         dict(name='two words', data_type='int unsigned', nullable=None, primary_key=False))
+
+    def test_attribute_aliases_do_not_collide(self):
+        model = d.import_sql('CREATE TABLE t(`two words` INT, `two.words` INT, two_words INT, `9lives` INT, _9lives INT);')
+        result = d.export_mermaid(model)
+        self.assertIn('two_words_2', result['text'])
+        self.assertIn('two_words_3', result['text'])
+        self.assertIn('_9lives_2', result['text'])
+        again = d.import_mermaid(result['text'])
+        self.assertEqual([c['name'] for c in again['tables'][0]['columns']],
+                         ['two words', 'two.words', 'two_words', '9lives', '_9lives'])
+
+    def test_keys_nullability_and_unicode_names(self):
+        model = d.import_sql('''CREATE TABLE parent(tenant INT NOT NULL, id INT NOT NULL,
+          code VARCHAR(20), café INT, UNIQUE KEY uk_code(code), PRIMARY KEY(tenant,id));
+          CREATE TABLE child(id INT NOT NULL PRIMARY KEY, tenant INT NOT NULL, parent_id INT,
+          CONSTRAINT fk_parent FOREIGN KEY(tenant,parent_id) REFERENCES parent(tenant,id));''')
+        text = d.export_mermaid(model)['text']
+        lines = [line.strip() for line in text.splitlines()]
+        self.assertIn('VARCHAR(20)? code UK', lines)
+        self.assertIn('INT? café', lines)
+        self.assertIn('INT tenant FK', lines)
+        self.assertIn('INT? parent_id FK', lines)
+        again = d.import_mermaid(text)
+        child = again['tables'][1]
+        self.assertEqual([c['nullable'] for c in child['columns']], [False, False, True])
+        self.assertEqual([c['primary_key'] for c in child['columns']], [True, False, False])
+
+    def test_single_and_composite_unique_markers(self):
+        model = d.import_sql('CREATE TABLE t(a INT, b INT, c INT, UNIQUE KEY one(a), UNIQUE KEY pair(b,c));')
+        result = d.export_mermaid(model)
+        lines = [line.strip() for line in result['text'].splitlines()]
+        self.assertIn('INT? a UK', lines)
+        self.assertIn('INT? b', lines)
+        self.assertIn('INT? c', lines)
+        self.assertIn('Composite unique keys are not marked as UK in Mermaid; JSON retains the key definitions.',
+                      result['warnings'])
+
+    def test_unknown_nullability_is_explicit(self):
+        model = d.import_sql('CREATE TABLE t(x INT);')
+        model['tables'][0]['columns'][0]['nullable'] = None
+        result = d.export_mermaid(model)
+        self.assertIn('"nullability unknown"', result['text'])
+        self.assertTrue(any('Unknown nullability' in w for w in result['warnings']))
+        self.assertIsNone(d.import_mermaid(result['text'])['tables'][0]['columns'][0]['nullable'])
+
+    def test_mermaid_entities_roundtrip_without_double_decoding(self):
+        model = d.import_sql('''CREATE TABLE `order`.`123 weird.table-name` (`two words` INT PRIMARY KEY);
+          CREATE TABLE `order`.`child & co` (`parent key` INT,
+          CONSTRAINT `says "hi" & 'bye'` FOREIGN KEY(`parent key`)
+          REFERENCES `order`.`123 weird.table-name`(`two words`));''')
+        model['relationships'][0]['name'] += ' #quot; &quot;'
+        result = d.export_mermaid(model)
+        self.assertIn('#quot;', result['text'])
+        self.assertIn('#amp;', result['text'])
+        self.assertIn('#39;', result['text'])
+        self.assertNotIn('&#x27;', result['text'])
+        self.assertNotIn('&quot;', result['text'])
+        again = d.import_mermaid(result['text'])
+        self.assertEqual(again['relationships'][0]['name'], model['relationships'][0]['name'])
+        self.assertEqual(again['tables'][1]['name'], 'order.child & co')
+        self.assertEqual(again['tables'][1]['columns'][0]['name'], 'parent key')
 
     def test_unsupported_directives_and_empty_entity(self):
         model = d.import_mermaid('erDiagram\n%% ordinary\nEmpty {}\ndirection LR\nclassDef red fill:red;')

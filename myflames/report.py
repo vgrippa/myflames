@@ -5,7 +5,7 @@ findings, per-area sections, and the statements behind the numbers.
 ``myflames report`` and ``POST /api/live/report``. It runs the existing
 views once on one connection (each statement is its own short client call):
 Health, Waits and I/O first (they sample over a window, so the total time is
-the longest window, not the sum), then Configuration, InnoDB, Sessions,
+the longest window, not the sum), then Parameters, InnoDB, Sessions,
 Instruments, the server checks (server_checks.py), Tables and Indexes, at
 most :data:`MAX_WORKERS` at a time. Then the workload attribution reads the
 statement digests behind "Joins without an index" and behind the tables read
@@ -128,7 +128,7 @@ FAMILY_RANK = {key: i for i, key in enumerate((
     "replication", "redo", "memory", "connections", "innodb", "security", "temp_sorts", "caches", "schema",
     "indexes", "query_cache", "io", "waits", "observability"))}
 VIEW_LABELS = {
-    "health": "Health", "waits": "Waits", "io": "I/O", "config": "Configuration", "innodb": "InnoDB",
+    "health": "Health", "waits": "Waits", "io": "I/O", "config": "Parameters", "innodb": "InnoDB",
     "sessions": "Sessions", "instruments": "Instruments", "checks": "Server checks", "tables": "Tables",
     "indexes": "Indexes", "top": "Top statements",
 }
@@ -216,7 +216,7 @@ def _run_all(conn, jobs, workers, cancel, password):
     return results
 
 
-def _plan(server, interval, schemas, schema_gate, sleep, clock, require_choice_above=ALL_SCHEMAS_TABLE_LIMIT):
+def _plan(server, interval, schemas, schema_gate, sleep, clock):
     from . import config_review, health, indexes, innodb_status, io_stats, ps_instruments, schema_health, \
         server_checks, sessions, waits
     one = schemas[0] if schemas and len(schemas) == 1 else None
@@ -232,9 +232,9 @@ def _plan(server, interval, schemas, schema_gate, sleep, clock, require_choice_a
     ]
     if schema_gate is None:
         jobs.append(("tables", lambda c: schema_health.table_report(
-            c, schemas, False, LIST_LIMIT, require_choice_above=require_choice_above)))
+            c, schemas, False, LIST_LIMIT, require_choice_above=None)))
         jobs.append(("indexes", lambda c: indexes.index_report(
-            c, schemas=schemas, limit=LIST_LIMIT, require_choice_above=require_choice_above)))
+            c, schemas=schemas, limit=LIST_LIMIT, require_choice_above=None)))
     return jobs
 
 
@@ -243,9 +243,9 @@ def analysis_report(conn, interval=DEFAULT_INTERVAL, schemas=None, require_choic
     """Return the ``report-1.0`` report. Read-only; see the module docstring.
 
     *interval* (2 to 60 s) is the window of Health, Waits and I/O. *schemas*
-    limits Indexes and Tables; without it every user schema is read, unless
-    they hold more than *require_choice_above* tables (None: no limit), in
-    which case those two views are skipped with a note. *sleep* and *clock*
+    limits Indexes and Tables; without it every user schema is read. If the
+    selected scope holds more than *require_choice_above* tables (None: no
+    limit), those two views are skipped with a note. *sleep* and *clock*
     default to the time module's; *cancel* is a threading.Event.
     """
     interval = check_window(interval, MIN_INTERVAL, MAX_INTERVAL)
@@ -265,14 +265,14 @@ def analysis_report(conn, interval=DEFAULT_INTERVAL, schemas=None, require_choic
         # Read server identity before starting the views. Each subprocess
         # owns its option file, including calls on this shared connection.
         server = preflight(reader)
-        if not schemas and require_choice_above is not None:
+        if require_choice_above is not None:
             try:
-                require_choice(reader, server, None, require_choice_above, "the full analysis")
+                require_choice(reader, server, schemas, require_choice_above, "the full analysis")
             except ValueError as exc:
                 schema_gate = str(exc) + " Indexes and Tables were skipped; choose databases (or use --schema on the command line) to include them."
     except ConnectorError as exc:
         raise ValueError(_redact("Could not read the server: " + reason(exc), password))
-    runs = _run_all(conn, _plan(server, interval, schemas, schema_gate, sleep, clock, require_choice_above),
+    runs = _run_all(conn, _plan(server, interval, schemas, schema_gate, sleep, clock),
                     workers, cancel, password)
     attribution = _attribution(conn, server, runs, workers, cancel, password)
     return compose_report(server, runs, attribution, interval=interval, schemas=schemas, schema_gate=schema_gate,
@@ -397,6 +397,22 @@ _METRIC_FAMILY = {"connections_used": "connections", "threads_running": "connect
                   "select_full_join": "temp_sorts", "opened_tables": "caches", "log_waits": "redo"}
 #: Metrics shown even when ok: the anchors other findings and links use.
 _ALWAYS_METRICS = ("connections_used", "select_full_join")
+#: Fields of each Health metric kept in ``health_metrics`` (every status).
+_HEALTH_METRIC_FIELDS = ("key", "group", "label", "explain", "unit", "value", "delta", "rate", "max", "status",
+                         "why", "rule", "detail", "inputs")
+
+
+def health_metrics(rep):
+    """Every Health metric of the window with its status, ok, info and unknown
+    included. Findings keep only the watch and problem metrics (plus
+    _ALWAYS_METRICS), so a consumer that scores each metric (the workspace's
+    MySQL Tuning view) can tell "measured and ok" from "not measured" without
+    guessing from an absent finding. An empty list when Health did not run."""
+    out = []
+    for m in (rep or {}).get("metrics") or []:
+        if m.get("key") and m.get("status"):
+            out.append({k: m.get(k) for k in _HEALTH_METRIC_FIELDS})
+    return out
 
 
 def _health_findings(rep):
@@ -416,6 +432,8 @@ def _health_findings(rep):
             [_num(n["label"], n["text"], n.get("value"), n.get("unit")) for n in d.get("numbers") or []],
             d.get("settings") or [], links, {"view": "health", "kind": "diagnostic", "key": d["key"]},
             d.get("learn"), d.get("value")))
+        # Applicability and informational states must survive the projection.
+        out[-1]["state"] = d.get("state")
     for m in rep.get("metrics") or []:
         family = _METRIC_FAMILY.get(m["key"])
         if not family or (m["status"] not in ("watch", "problem") and m["key"] not in _ALWAYS_METRICS):
@@ -569,7 +587,7 @@ def _tables_findings(rep):
             if count else None, [_num("%s.%s" % (e["schema"], e["table"]), e.get("clustered_on") or e.get("kind"),
                                       e.get("size_bytes"), "B") for e in entries[:5]], (),
             [_view_link("tables", key)], {"view": "tables", "kind": "summary", "key": key}, impact=count))
-    frag = [f for f in rep.get("fragmentation") or [] if f.get("status") in ("watch", "problem")]
+    frag = [f for f in rep.get("fragmentation") or [] if f.get("status") in ("info", "watch", "problem")]
     frag.sort(key=lambda f: -(f.get("free_bytes") or 0))
     free_total = sum(f.get("free_bytes") or 0 for f in frag)
     # Tables whose tablespace could not be told apart (PROCESS denied, or a
@@ -583,26 +601,27 @@ def _tables_findings(rep):
             " %d table%s could not be matched to a tablespace, so %s not judged." % (
                 unjudged, "" if unjudged == 1 else "s", "it is" if unjudged == 1 else "they are"))
     if frag:
-        worst = "problem" if any(f["status"] == "problem" for f in frag) else "watch"
-        verdict = "%d file-per-table tablespace%s with free space a rebuild could return (%s in all)." % (
+        worst = "unknown" if unknown_text else "info"
+        verdict = "%d file-per-table tablespace%s report reusable allocation (%s in all)." % (
             len(frag), "" if len(frag) == 1 else "s", _bytes_text(free_total))
     elif unknown_text:
         worst = "unknown"
         verdict = "Free space was not judged."
     else:
         worst = "ok"
-        verdict = "No file-per-table tablespace has free space at the rule's level."
+        verdict = "No reusable allocation was reported for the file-per-table tablespaces read."
     out.append(_finding(
         "tables.fragmentation", "schema", worst, "Free space inside tablespaces",
         "%d table%s, %s free" % (len(frag), "" if len(frag) == 1 else "s", _bytes_text(free_total)) if frag else (
             "not judged" if worst == "unknown" else "none"),
         verdict + unknown_text,
-        "DATA_FREE against DATA_LENGTH + INDEX_LENGTH, judged only for file-per-table tablespaces.",
+        "DATA_FREE reports reusable allocation. Its amount does not establish a capacity problem or a need to rebuild.",
         rules.get("free"), frag[0].get("caveat") if frag else None,
-        {"text": "Rebuild only tables that will not grow back; myflames never runs it.",
-         "sql": frag[0].get("online_sql") or frag[0].get("fix_sql")} if frag else None,
-        [_num("%s.%s" % (f["schema"], f["table"]), "%s free (%s%%)" % (_bytes_text(f.get("free_bytes") or 0),
-                                                                       f.get("free_pct")), f.get("free_bytes"), "B")
+        {"text": "Review reusable allocation and optional maintenance in Tables."} if frag else None,
+        [_num("%s.%s" % (f["schema"], f["table"]), "%s free%s" % (
+            _bytes_text(f.get("free_bytes")) if f.get("free_bytes") is not None else "unknown",
+            " (%s%%)" % f["free_pct"] if f.get("free_pct") is not None else " (percentage unknown)"),
+            f.get("free_bytes"), "B")
          for f in frag[:5]], (), [_view_link("tables", "fragmentation")],
         {"view": "tables", "kind": "summary", "key": "fragmentation"}, impact=free_total))
     engines = s.get("engines") or []
@@ -742,8 +761,15 @@ def _io_findings(rep):
     window = rep.get("window") or {}
     tables = (window.get("tables") or [])[:3]
     files = (window.get("files") or [])[:3]
-    numbers = [_num("%s.%s" % (t["schema"], t["table"]), "%s per second, %s rows" % (
-        _ms(t.get("total_ms_per_s")), _count_text(t.get("ops"))), t.get("total_ms_per_s"), "ms/s") for t in tables]
+    numbers = []
+    for t in tables:
+        label = "%s.%s" % (t["schema"], t["table"])
+        if t.get("total_ms_per_s") is None:
+            numbers.append(_num(label, "%s rows read, %s rows written (timing unavailable)" % (
+                _count_text(t.get("read_rows")), _count_text(t.get("write_rows")))))
+        else:
+            numbers.append(_num(label, "%s per second, %s rows" % (
+                _ms(t["total_ms_per_s"]), _count_text(t.get("ops"))), t["total_ms_per_s"], "ms/s"))
     numbers += [_num(f.get("label") or f.get("kind"), "%s (%s read, %s written)" % (
         _ms(f.get("total_ms")), _bytes_text(f.get("read_bytes") or 0), _bytes_text(f.get("write_bytes") or 0)),
         f.get("total_ms"), "ms") for f in files]
@@ -1009,6 +1035,7 @@ def compose_report(server, runs, attribution, interval=DEFAULT_INTERVAL, schemas
         "sections": sections,
         "attribution": attribution,
         "checklist": {"covered": [{"key": k, "label": l} for k, l in COVERED], "not_checked": list(NOT_CHECKED)},
+        "health_metrics": health_metrics(health),
         "notes": notes,
     }
 

@@ -28,8 +28,8 @@ var stage = null;
 
 /* Distinct leading-column values displayed in the animation. */
 var GROUPS = [
-  {label: "gender = M", color: "#3b82f6", light: "#dbeafe"},
-  {label: "gender = F", color: "#ec4899", light: "#fce7f3"}
+  {label: "gender = M", color: "var(--svg-token)", light: "var(--svg-token-soft)"},
+  {label: "gender = F", color: "var(--svg-group-alt)", light: "var(--svg-group-alt-soft)"}
 ];
 
 /* We show a few sample B-values inside each group. */
@@ -59,14 +59,14 @@ function buildStage() {
   /* Title */
   var title = anim.svgEl("text", {
     x: W / 2, y: 24, "text-anchor": "middle",
-    "font-size": 14, "font-weight": 700, fill: "#1f2937"
+    "font-size": 14, "font-weight": 700, fill: "var(--svg-ink)"
   });
   title.textContent = "Composite Index (gender, age)";
   svg.appendChild(title);
 
   var subtitle = anim.svgEl("text", {
     x: W / 2, y: 44, "text-anchor": "middle",
-    "font-size": 11, fill: "#6b7280"
+    "font-size": 11, fill: "var(--svg-ink-muted)"
   });
   subtitle.textContent = "Skip Scan hops between distinct gender values, range-scanning age within each";
   svg.appendChild(subtitle);
@@ -102,19 +102,19 @@ function buildStage() {
 
       var cellBg = anim.svgEl("rect", {
         x: cx, y: cy, width: groupW - 30, height: cellH - 4,
-        rx: 4, ry: 4, fill: "#ffffff", stroke: "#e5e7eb", "stroke-width": 1
+        rx: 4, ry: 4, fill: "var(--svg-node-bg)", stroke: "var(--svg-edge)", "stroke-width": 1
       });
       svg.appendChild(cellBg);
 
       var cellText = anim.svgEl("text", {
-        x: cx + 8, y: cy + 17, "font-size": 11, fill: "#374151"
+        x: cx + 8, y: cy + 17, "font-size": 11, fill: "var(--svg-ink)"
       });
       cellText.textContent = "age = " + SAMPLE_ROWS[r].age;
       svg.appendChild(cellText);
 
       var cellIcon = anim.svgEl("text", {
         x: cx + groupW - 42, y: cy + 17, "text-anchor": "end",
-        "font-size": 10, "font-weight": 700, fill: "#9ca3af"
+        "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)"
       });
       cellIcon.textContent = "";
       svg.appendChild(cellIcon);
@@ -128,7 +128,7 @@ function buildStage() {
   /* Cursor pill that hops between groups */
   var cursor = anim.svgEl("rect", {
     x: 0, y: 0, width: 10, height: cellH - 4,
-    rx: 3, ry: 3, fill: "#f59e0b", opacity: 0
+    rx: 3, ry: 3, fill: "var(--svg-build)", opacity: 0
   });
   svg.appendChild(cursor);
 
@@ -136,12 +136,12 @@ function buildStage() {
   var summaryY = groupY + groupH + 16;
   var summaryBox = anim.svgEl("rect", {
     x: 20, y: summaryY, width: W - 40, height: 40, rx: 6, ry: 6,
-    fill: "#f0fdf4", stroke: "#86efac", "stroke-width": 1
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)", "stroke-width": 1
   });
   svg.appendChild(summaryBox);
   var summaryText = anim.svgEl("text", {
     x: W / 2, y: summaryY + 25, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#059669"
+    "font-size": 13, "font-weight": 600, fill: "var(--svg-ok)"
   });
   summaryText.textContent = "";
   svg.appendChild(summaryText);
@@ -158,8 +158,8 @@ function resetStage() {
   for (var g = 0; g < stage.groups.length; g++) {
     var cells = stage.groups[g].cells;
     for (var r = 0; r < cells.length; r++) {
-      cells[r].bg.setAttribute("fill", "#ffffff");
-      cells[r].bg.setAttribute("stroke", "#e5e7eb");
+      cells[r].bg.setAttribute("fill", "var(--svg-node-bg)");
+      cells[r].bg.setAttribute("stroke", "var(--svg-edge)");
       cells[r].icon.textContent = "";
     }
   }
@@ -222,24 +222,24 @@ function buildTimeline() {
             /* Move cursor alongside */
             stage.cursor.setAttribute("y", String(cy));
             /* Highlight current cell being examined */
-            cell.bg.setAttribute("fill", "#fffbeb");
-            cell.bg.setAttribute("stroke", "#f59e0b");
+            cell.bg.setAttribute("fill", "var(--svg-build-soft)");
+            cell.bg.setAttribute("stroke", "var(--svg-build)");
             phase.textContent = grp.label + " \u2014 checking age = " + cell.age + " (BETWEEN 25 AND 30?)";
           });
           tl.delay(250);
 
           tl.call(function() {
             if (cell.match) {
-              cell.bg.setAttribute("fill", "#dcfce7");
-              cell.bg.setAttribute("stroke", "#22c55e");
+              cell.bg.setAttribute("fill", "var(--svg-ok-soft)");
+              cell.bg.setAttribute("stroke", "var(--svg-ok)");
               cell.icon.textContent = "\u2714 match";
-              cell.icon.setAttribute("fill", "#16a34a");
+              cell.icon.setAttribute("fill", "var(--svg-ok)");
               totalMatch++;
             } else {
-              cell.bg.setAttribute("fill", "#f3f4f6");
-              cell.bg.setAttribute("stroke", "#d1d5db");
+              cell.bg.setAttribute("fill", "var(--svg-node-muted)");
+              cell.bg.setAttribute("stroke", "var(--svg-node-stroke)");
               cell.icon.textContent = "skip";
-              cell.icon.setAttribute("fill", "#9ca3af");
+              cell.icon.setAttribute("fill", "var(--svg-ink-muted)");
               totalSkip++;
             }
           });
@@ -280,11 +280,11 @@ function renderChart(tableRows) {
     xMin: 1000, xMax: 5e6,
     xLabel: "Table rows", yLabel: "Reads",
     curves: [
-      { label: "Full table scan", color: "#dc2626",
+      { label: "Full table scan", color: "var(--svg-danger)",
         fn: function(n) { return n; } },
-      { label: "Full index scan", color: "#f59e0b",
+      { label: "Full index scan", color: "var(--svg-build)",
         fn: function(n) { return n; } },
-      { label: "Skip Scan (NDV=" + c.ndv_leading + ", sel=" + c.selectivity + "%)", color: "#059669",
+      { label: "Skip Scan (NDV=" + c.ndv_leading + ", sel=" + c.selectivity + "%)", color: "var(--svg-ok)",
         fn: function(n) {
           var height = Math.max(2, Math.ceil(Math.log(n) / Math.log(500)));
           var rpg = n / c.ndv_leading;

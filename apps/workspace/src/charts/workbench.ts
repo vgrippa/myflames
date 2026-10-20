@@ -134,7 +134,7 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
   }, container);
   svg(doc, "title", undefined, root, (data.title ? `${data.title}: ` : "") + "Visual Explain");
   svg(doc, "style", undefined, root, WORKBENCH_CSS);
-  svg(doc, "rect", { width: "100%", height: "100%", fill: "#f8fafb" }, root);
+  svg(doc, "rect", { width: "100%", height: "100%", class: "mfc-background", fill: "#f8fafb" }, root);
   if (!workspace) {
     svg(doc, "text", { x: 20, y: 29, class: "wb-heading" }, root, title);
     svg(doc, "text", { x: 20, y: 50, class: "wb-caption" }, root,
@@ -185,8 +185,8 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
   const marker = svg(doc, "marker", {
     id: arrowId, markerWidth: 8, markerHeight: 8, refX: 7, refY: 4, orient: "auto", markerUnits: "userSpaceOnUse",
   }, svg(doc, "defs", undefined, viewport));
-  svg(doc, "path", { d: "M0 0 L8 4 L0 8 Z", fill: "#8795a1" }, marker);
-  svg(doc, "rect", { x: -100000, y: -100000, width: 200000, height: 200000, fill: "#f8fafb" }, viewport);
+  svg(doc, "path", { d: "M0 0 L8 4 L0 8 Z", class: "mfc-arrow-head", fill: "#8795a1" }, marker);
+  svg(doc, "rect", { x: -100000, y: -100000, width: 200000, height: 200000, class: "mfc-background", fill: "#f8fafb" }, viewport);
   const graph = svg(doc, "g", { class: "wb-graph" }, viewport);
 
   for (const edge of placed.edges) {
@@ -199,7 +199,7 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
     const bend = sy + V_GAP * 0.63;
     const child = source.node;
     svg(doc, "path", {
-      class: "wb-edge", "data-from": child.id, "data-to": target.node.id,
+      class: "wb-edge mfc-edge", "data-from": child.id, "data-to": target.node.id,
       d: "M" + f1(sx) + " " + f1(sy) + " V" + f1(bend) + " H" + f1(tx) + " V" + f1(ty - 5),
       fill: "none", stroke: "#8795a1", "stroke-width": child.arrow_width, "marker-end": "url(#" + arrowId + ")",
     }, graph);
@@ -239,7 +239,7 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
         ? label.slice(0, label.indexOf(" ["))
         : (!node.table && node.condition && label.startsWith("Filter: ") ? "Filter" : label);
       svg(doc, "path", { d: "M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0", fill: COLORS[node.wb_kind] || COLORS.unknown }, group);
-      svg(doc, "text", { x: 12, y: 23, class: "wb-title" }, group, fitLabel(heading, BOX_W - 24, 13));
+      svg(doc, "text", { x: 12, y: 23, class: "wb-title wb-band-title" }, group, fitLabel(heading, BOX_W - 24, 13));
       svg(doc, "text", { x: 12, y: 57 }, group, fitLabel(secondary, BOX_W - 24, 12));
     }
     const timing = "Self " + time(node.measured ? node.self_ms : null) + " · total " + time(node.measured ? node.total_ms : null);
@@ -252,8 +252,8 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
   const first = placed.nodes[0];
   const terminalX = first.x + BOX_W / 2;
   const terminalY = first.y + first.height;
-  svg(doc, "path", { d: "M" + f1(terminalX) + " " + f1(terminalY) + " v40", stroke: "#8795a1", "stroke-width": 2, "marker-end": "url(#" + arrowId + ")" }, graph);
-  svg(doc, "rect", { x: f1(terminalX - 80), y: f1(terminalY + 46), width: 160, height: 32, rx: 5, fill: "#dbe3e8" }, graph);
+  svg(doc, "path", { d: "M" + f1(terminalX) + " " + f1(terminalY) + " v40", class: "mfc-edge", stroke: "#8795a1", "stroke-width": 2, "marker-end": "url(#" + arrowId + ")" }, graph);
+  svg(doc, "rect", { x: f1(terminalX - 80), y: f1(terminalY + 46), width: 160, height: 32, rx: 5, class: "mfc-pane", fill: "#dbe3e8" }, graph);
   svg(doc, "text", { x: f1(terminalX), y: f1(terminalY + 67), "text-anchor": "middle" }, graph, "Plan output");
 
   let details: ReturnType<typeof createDetails> | null = null;

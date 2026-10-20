@@ -9,10 +9,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { SERVER_VIEW_LABELS } from "./perf-harness.mjs";
+import { SERVER_VIEW_LABELS, WORKLOAD_VIEW_LABELS } from "./perf-harness.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-discover-"));
+const shots = process.env.PERF_SHOTS || directory;
+await fs.mkdir(shots, {recursive:true});
 const server = spawn(
   process.env.PYTHON || "python3",
   [
@@ -166,9 +168,15 @@ try {
     await page.$$eval(".source-list .source-label", (els) => els.map((e) => e.textContent)),
     SERVER_VIEW_LABELS,
   );
-  // Health opens first (it needs no Performance Schema); Top statements is in Workload.
+  // Health opens first (it needs no Performance Schema)
   assert.equal(await page.$eval("#server-nav-health", (e) => e.getAttribute("aria-current")), "page");
-  await page.click("#server-nav-top");
+  await button("Workload", ".main-nav ");
+  await page.waitForSelector(".server-place .source-list");
+  assert.deepEqual(
+    await page.$$eval(".source-list .source-label", (els) => els.map((e) => e.textContent)),
+    WORKLOAD_VIEW_LABELS,
+  );
+  assert.equal(await page.$eval("#server-nav-top", (e) => e.getAttribute("aria-current")), "page");
   assert.match(await text(`${view} .view-empty`), /used the most server time/);
 
   // Top statements: one row per statement, flag pills with plain-English titles, notes behind a button.
@@ -196,13 +204,34 @@ try {
   assert.equal(await text(".view-inspector .perf-sql pre"), longSql);
   assert.match(await text(".view-inspector"), /No index used/);
   assert.match(await text(".view-inspector"), /Rows examined\s*113,992,796/);
-  // Arrow keys move to the next statement; the inspector follows.
+  assert.equal(await page.$eval(`${view} .view-main`,e=>e.hidden),true);
+  assert.equal(await page.$(".sheet-scrim"),null,"Statement details are a full view, not an overlay");
+  for(const theme of ["light","dark"]){
+    await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:theme}]);
+    for(const width of [1440,390]){
+      await page.setViewport({width,height:1000});
+      await page.waitForFunction(()=>document.querySelector(".view-inspector.is-detail"));
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false);
+      await page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
+      await page.screenshot({path:path.join(shots,`statement-details-${theme}-${width}.png`),fullPage:true});
+    }
+  }
+  await page.setViewport({width:1440,height:1000});
+  await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:"light"}]);
+  // Back restores the selected row and keyboard movement remains in the list.
+  await button("Back to statements", ".view-inspector ");
+  await page.waitForFunction(()=>document.activeElement?.getAttribute("data-rank")==="1");
   await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "Statement 2");
   await page.screenshot({ path: path.join(directory, "discover-top.png") });
-  assert.equal(await page.$(`${view} th[data-col=examined]`), null, "detail columns collapse beside the inspector");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(()=>!document.querySelector(".view-inspector.is-detail"));
+  assert.ok(await page.$(`${view} th[data-col=examined]`), "full-width list retains its detail columns");
   assert.match(await text(`${view} th[data-col=total]`), /Total \(ms\)/);
   await page.click(`${view} .table-columns-button`);
+  await page.click('.popover input[data-col=examined]');
+  assert.equal(await page.$(`${view} th[data-col=examined]`), null, "Columns can hide a detail column");
   await page.click('.popover input[data-col=examined]');
   await page.keyboard.press("Escape");
   // A column shown through Columns remains sortable on its original raw value.
@@ -227,11 +256,12 @@ try {
   await page.locator('[aria-label="Use statement 1 in the editor"]').click();
   await page.waitForSelector(".main-nav button.active ::-p-text(Query editor)");
   await page.waitForFunction((sql) => document.querySelector('[aria-label="SQL editor"]').value === sql, {}, longSql);
-  assert.equal(await text('.query-tabs [role="tab"][aria-selected="true"]'), "Top #1 · orders");
+  assert.equal(await text('.query-tablist [role="tab"][aria-selected="true"]'), "Top #1 · orders");
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "SQL editor");
   // Digest-only rows explain the ? placeholders in the inspector, and open
   // with :p1 parameters to fill in (see digest-actions.mjs for the details).
-  await button("Server", ".main-nav ");
+  await button("Workload", ".main-nav ");
+  await button("Back to statements", ".view-inspector ");
   await page.click(`${view} tbody tr[data-rank="2"]`);
   await inspectorHas(/\? marks each literal value/);
   await page.locator('[aria-label="Use statement 2 in the editor"]').click();
@@ -242,15 +272,24 @@ try {
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Query parameters");
 
   // Sessions (the old Running queries): Show plan only for statements that can be explained.
-  await button("Server", ".main-nav ");
+  await button("Workload", ".main-nav ");
   await page.focus("#server-nav-top");
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(() => document.activeElement?.id === "server-nav-sessions");
   assert.equal(await page.$eval("#server-nav-sessions", (e) => e.getAttribute("aria-current")), "page");
   const sv = ".server-view[data-view=sessions]";
-  await page.locator(`${sv} input[aria-label="Running at least (seconds)"]`).fill("2");
-  await button("Load sessions", sv + " ");
+  // The view reads once when it opens on screen, with the default filter.
   await page.waitForSelector(`${sv} tbody tr[data-session="42"]`);
+  assert.equal(seen.at(-1).path, "/api/live/sessions");
+  assert.equal(seen.at(-1).min_seconds, 0);
+  // Changing the filter reads again only on an explicit Refresh.
+  const readsBefore = seen.filter((x) => x.path === "/api/live/sessions").length;
+  await page.locator(`${sv} input[aria-label="Running at least (seconds)"]`).fill("2");
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(seen.filter((x) => x.path === "/api/live/sessions").length, readsBefore);
+  await page.click(`${sv} [data-action=refresh]`);
+  for (let i = 0; i < 100 && seen.filter((x) => x.path === "/api/live/sessions").length === readsBefore; i++) await new Promise((r) => setTimeout(r, 50));
+  await idle();
   assert.equal(seen.at(-1).path, "/api/live/sessions");
   assert.equal(seen.at(-1).min_seconds, 2);
   assert.equal(seen.at(-1).active_only, true);
@@ -282,7 +321,7 @@ try {
     status: 400,
     body: { error: "Could not complete the request: Performance Schema is off." },
   };
-  await button("Server", ".main-nav ");
+  await button("Workload", ".main-nav ");
   await page.click("#server-nav-top");
   await page.click(`${view} [data-action=refresh]`);
   await page.waitForSelector(`${view} .gate`);

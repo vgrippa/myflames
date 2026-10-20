@@ -5,9 +5,9 @@ This guide covers query investigations in the
 comparing plans, capturing queries from a database, and the Server views that
 find the statement to investigate. The workspace uses the same Python parser,
 analysis, renderers, and comparison engine as the CLI. Its places are **Home**
-(getting started, connections, recent work), **Plans**, **Query editor**,
-**Server**, **Investigations**, and **Learn**; see
-[Find your way around](LOCAL_UI.md#find-your-way-around). Its interface uses the
+(getting started, connections, recent work), **Server**, **Workload**,
+**Replication**, **Tuning**, **Query editor**, **Plans**, **Investigations**,
+and **Learn**; see [Find your way around](LOCAL_UI.md#find-your-way-around). Its interface uses the
 [stacked-flame app mark](brand/README.md), neutral surfaces, system typography,
 and a blue accent for selected items and primary actions. Layout and hierarchy
 follow [Apple's layout guidance](https://developer.apple.com/design/human-interface-guidelines/layout).
@@ -72,9 +72,9 @@ next time you open `myflames ui`, or reload the page, it restores:
   saved
 - the connection in use: its saved connection ID and its non-secret fields
   (name, host, port, user, schema, TLS mode, and CA path)
-- the Server view (Health, InnoDB, Full analysis, Top statements, Sessions,
-  Replication, Waits, I/O, Locks, Indexes, Tables, Configuration,
-  Instruments, Maintenance, or Users and roles), whether
+- the Server or Workload view (Health, InnoDB, Error log, Locks, Indexes,
+  Tables, Database diagram, Parameters, Instruments, Maintenance, Users and
+  roles, Top statements, Processlist, Waits, or I/O), whether
   its inspector is open, whether a Full analysis ran (`slow.report_run`; the
   report itself is never saved), Maintenance's task (`slow.maintenance_section`:
   tools, upgrade, dump, restore or clone), whether a skip loop was running
@@ -86,7 +86,8 @@ next time you open `myflames ui`, or reload the page, it restores:
   (`slow.columns_v1`, by table id; unknown tables and columns are dropped and
   widths clamped on restore), never the samples, the reports, or the selected
   rows. A
-  session saved with the old Running queries tab opens on Sessions. The
+  session saved with the old Running queries tab opens on Sessions, and a
+  session saved with Full analysis or Tuning as a Server view opens on Health. The
   inspector's width is a preference of this browser, not of the workspace
 
 A password is never saved in the session, whether you typed it or it is
@@ -166,7 +167,7 @@ says "connection"; the API and CLI call a saved connection a profile.
 
 Each saved connection also has a type and a read-only setting that decide how
 myflames guards statements that change the server (today, ending a session
-from Locks; see [Write safety](../README.md#write-safety)). **Production**, the
+from Locks; see [Write safety](../README.md#4-write-safety-model-and-audit-trail)). **Production**, the
 default for new and existing connections, asks before every write.
 **Development** asks only before risky writes, such as DDL, UPDATE or DELETE
 without a key in WHERE, KILL, SET GLOBAL, replication commands, and CLONE.
@@ -177,10 +178,12 @@ or `--read-only` / `--read-write`. A connection used without saving is
 Production and may only choose Read-only. A saved connection used with another
 host, port, user or TLS setting counts as Production; the form warns when you
 change them on a Development connection, and saves it as Production unless you
-choose Development again. While the connection in use is Production, a red
-strip under the top bar of the Query editor and Server says so ("Production:
-every change on NAME asks first"); read-only gets a neutral strip, Development
-none, and the connection picker shows a dot of the same color. Every write
+choose Development again. The window footer of the Query editor, Server,
+Workload, Replication and Tuning starts with the connection's write safety: a
+red dot and "Production · changes ask first" (accessible name "Production:
+every change on NAME asks first"), "Read-only · changes refused" with an
+outlined dot, or "Development · risky changes ask first" with a green dot; the
+connection picker shows a dot of the same color. Every write
 attempt, including declined and refused ones, is recorded in the local audit
 trail: **Settings > Audit log** in the workspace, or `myflames audit`.
 
@@ -245,7 +248,7 @@ MySQL 8.4 on `127.0.0.1:3406` with the `testdb` tables (users, orders,
 order_items, products, categories, reviews) and prints credentials for a
 read-only `demo` user.
 
-Use query tabs to keep drafts and name each query. Parameters are typed
+Use query tabs to keep drafts and name each query. Every tab has its own close button (shown on the active tab, on hover, and always on touch screens); a middle-click closes a tab, the tab on the left takes over, and the last tab stays. Parameters are typed
 values in a JSON object, referenced as `:name` outside SQL literals/comments:
 
 ```sql
@@ -302,6 +305,56 @@ Unclosed strings and comments are refused too.
 Draft tabs are kept by [session restore](#session-restore). Captured SQL is
 included when you save an investigation. At most two captures run concurrently. Finished captures are
 kept in server memory for up to one hour, with a maximum of 50 jobs.
+
+Explain and Run analysis can prepare a reviewed SELECT projection from supported DML. Conversion creates a new editor tab and keeps the original SQL unchanged. It does not start a capture: read the warning and select Explain or Run analysis again. Ordinary Run still executes the original statement under the existing write policy and confirmation rules.
+
+## SQL completion and table data
+
+The editor suggests SQL keywords and catalog names while you type. Press
+Ctrl+Space (or Ctrl+Shift+Space when macOS reserves that shortcut), use the arrow
+keys, and accept with Tab or Return. Escape dismisses suggestions. Execution
+keeps its existing shortcut. Suggestions do not run statements and stay off
+inside strings, comments and input-method composition.
+
+Catalog suggestions use the selected connection's configured database. They
+include schemas, tables, columns and simple aliases, with quoted identifiers.
+They do not represent temporary tables or a database selected by running `USE`
+in an editor session. Complex nested scopes and CTEs are deliberately limited.
+Metadata reads are bounded and cached briefly in memory. Switching connection,
+database or credentials discards that cache and cancels stale requests.
+
+Open a table's data from the schema browser to work in a dedicated full-width
+grid. Stage cell edits, inserted rows or deletions, then choose Review. The
+review shows the exact generated SQL and target. Apply always requires explicit
+confirmation, including on Development connections. Closing or replacing a grid
+with pending changes asks before discarding them. Arbitrary query result sets
+remain read-only.
+
+The first editor supports InnoDB base tables with a primary key or a full-column
+UNIQUE key whose columns are NOT NULL. Tables with triggers, foreign keys,
+CHECK constraints, expression defaults, automatic columns other than
+auto-increment, unsupported types or unsupported text character sets stay
+read-only. Views and tables with generated columns cannot be opened in this
+viewer; use the Query editor explicitly for them. Opening this viewer requires
+verified SELECT and LOCK TABLES authority.
+Editing additionally requires verified global SELECT and target TRIGGER
+authority so this initial implementation can prove that related metadata is
+visible. These are application limits, not general database requirements.
+Text editing supports UTF-8 and ASCII; integers and decimals remain exact
+strings, binary values use hexadecimal, and NULL is distinct from an empty
+value. Temporal values use UTC.
+
+A page contains at most 100 rows, with 20 changes per review. Snapshots expire
+after five minutes; cells are limited to 64 KiB and snapshots to 2 MiB.
+Loading briefly takes a table READ lock so its definition cannot change
+during capture. Applying takes a table WRITE lock and compares original values
+and the table definition before sending the reviewed changes. The review shows
+this lock explicitly: it temporarily blocks other sessions from reading or
+writing that table. Do not apply while that interruption is unacceptable.
+All row changes then commit together. A conflict or a rejected
+statement rolls back the batch. A lost commit reply is reported as an unknown
+outcome; inspect current data before retrying. Reload after success to see the
+current rows. Table snapshots and pending values are not saved with the workspace.
 
 ## Run SQL in the Query editor
 
@@ -394,7 +447,7 @@ UPDATE or DELETE without a key in WHERE or a LIMIT. Turning it off on a
 Production connection asks first and is audited.
 
 Statements that change the server follow the connection's write policy
-([Write safety](../README.md#write-safety)): a Production connection asks before
+([Write safety](../README.md#4-write-safety-model-and-audit-trail)): a Production connection asks before
 every write, a Development connection only before risky ones, and a read-only
 connection refuses them. The confirmation shows the exact statements, the
 reason, the connection and its transaction state, and warns about statements
@@ -433,7 +486,9 @@ and write policy:
 
 The **schema browser** reads nothing until you choose **Load schemas**. It
 lists the schemas of the connection in use, a schema's tables and views, and a
-table's columns (type, key, NULL) and indexes, each on demand. Double-click a
+table's columns (type, key, NULL) and indexes, each on demand. Column and index
+rows stay on one line, and the actions button shows only on the row being
+pointed at, the focused row, or on touch screens. Double-click a
 name to insert it at the cursor (`schema.table`, quoted with backticks only
 when needed). A table's menu (right-click or Shift+F10) has **Insert name**,
 **SELECT * … LIMIT 100** and **Show CREATE TABLE** (both added at the end of
@@ -458,32 +513,34 @@ run (statements, time and rows).
 | Run analysis | ⇧⌘E | Ctrl+Shift+E |
 | Stop | Escape | Escape |
 
-## Server: health, InnoDB, top statements, sessions, locks, waits, indexes, I/O, configuration, and security
+## Server: health, InnoDB, top statements, sessions, locks, waits, indexes, I/O, parameters, and security
 
-When you don't know which statement to capture yet, open **Server**. Its views
+When you don't know which statement to capture yet, open **Server** or **Workload**. Their views
 are of the connection in use and only read (the exceptions are a **Kill** you
-confirm in Locks or Sessions, a setting you **Change** in Configuration, a skip
+confirm in Locks or Sessions, parameter changes you review and apply in
+Parameters, runtime instrument or consumer changes in Instruments, a skip
 in Replication, a dump, restore or clone in Maintenance, and account changes in
 Users and roles, each confirmed on its own). The place's toolbar holds the same
-connection picker as the Query editor. A grouped sub-navigation lists the
-views: **Overview** (Health, InnoDB, Full analysis), **Workload** (Top statements, Sessions,
-Replication, Waits, I/O), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram),
-**Setup** (Configuration, Instruments, Maintenance), and **Security** (Users and roles),
-each with a status dot or a count from data you already loaded. Every view is a toolbar with **Refresh**, one summary
+connection picker as the Query editor. **Server** uses a grouped sub-navigation:
+**Overview** (Health, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram),
+**Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles).
+**Workload** is a place of its own with **Queries** (Top statements, Processlist) and
+**Resources** (Waits, I/O); **Replication** is a place of its own for replication channels;
+and **Tuning** is a place of its own with the **Scorecard** tab and the **Full analysis** tab.
+Each view in the sub-navigation shows a status dot or a count from data you already loaded. Every view has a toolbar with **Refresh**, one summary
 line with an **N notes** button, a table or one-line rows, and an inspector for
-the selected row; see [The Server place](LOCAL_UI.md#the-server-place). Nothing
-is read until you press a view's **Load** button or **Refresh**. **Refresh
-all** in the place's toolbar (⌥⌘R) reloads every view already loaded for the
-connection in use, three at a time, never a view you have not opened and never
-the Full analysis; see [The Server place](LOCAL_UI.md#the-server-place). See [Wait
+the selected row; see [The Server place](LOCAL_UI.md#the-server-place). A view reads when it is opened on screen, once per connection (**Refresh** retries); **Tables** and **Indexes** keep their schema-size consent, **Error log** waits for **Load**, and nothing reads off screen. **Refresh
+all** in the place's toolbar (⌥⌘R) reads all sections for the connection
+in use, including unopened sections, at most three at a time. Full analysis
+runs in its own phase; see [The Server place](LOCAL_UI.md#the-server-place). See [Wait
 events, index health, I/O, and
-configuration](#wait-events-index-health-io-and-configuration) for Waits to
-Configuration, and [Performance Schema
-instruments](#performance-schema-instruments) for the last view.
+parameters](#wait-events-index-health-io-and-parameters) for Waits to
+Parameters, and [Performance Schema
+instruments](#performance-schema-instruments) for Instruments.
 
-- **Health** (the first view, open by default) shows how the server is doing
+- **Health** (the first Server view, open by default) shows how the server is doing
   right now. See [Server health](#server-health).
-- **Replication** (`POST /api/live/replication`, the same report as
+- **Replication** (a standalone sidebar place; `POST /api/live/replication`, the same report as
   `myflames replication`) lists each channel or connection with its threads,
   lag and last error. **Skip this transaction…** and **Skip until stopped…**
   in the inspector are the changes, each confirmed with the exact statements
@@ -495,14 +552,14 @@ instruments](#performance-schema-instruments) for the last view.
   upgrade-check`, `dump`, `restore` and `clone`). Its badge counts running
   or failed jobs of the connection in use; see [The Server
   place](LOCAL_UI.md#the-server-place).
-- **Full analysis** runs every Server view once when you choose **Run full
+- **Full analysis** (the second tab in the **Tuning** place) runs every Server view once when you choose **Run full
   analysis** (about 10 to 20 seconds, read-only; `POST /api/live/report`, the
   same report as `myflames report`). It shows the summary and server facts,
   **Look at first**, the problem and watch findings as one-line rows in the
   report's ranking, **Not judged** (checks that could not run, with the
-  reason, and views that failed), and the sections. A finding's inspector has
+  reason, and views that failed), and the sections (including **Parameters**). A finding's inspector has
   the verdict, numbers, settings, rule, why, what to do with the statement and
-  my.cnf line to copy (never applied), the caveat, links to its view, and the
+  my.cnf line to copy (never applied), the caveat, links to its view (links that name a check open Parameters at that check's first parameter), and the
   statements behind its number with Explain and Run analysis. **Export** saves
   HTML, Markdown, JSON, or text made from the report JSON
   (`POST /api/report/export`). After a connection switch the report stays
@@ -514,7 +571,7 @@ instruments](#performance-schema-instruments) for the last view.
   its status and a one-line summary. The inspector has every value, the rules,
   the parsed numbers, the transaction holding purge back, and links: the
   deadlock to Locks, old transactions to Sessions, the buffer pool and redo
-  log to Health. **Show raw output** reads the raw text only when you ask, for
+  log to Health, and settings to **Open Parameters**. **Show raw output** reads the raw text only when you ask, for
   support. Without PROCESS, one sentence gives the GRANT to run.
 - **Top statements** ranks normalized statements from
   `performance_schema.events_statements_summary_by_digest` by total time, with
@@ -562,8 +619,7 @@ instruments](#performance-schema-instruments) for the last view.
 
 ### Explain a top statement
 
-The actions in a statement's inspector run the usual capture on the statement
-Performance Schema recorded, without copying SQL by hand:
+A selected Top statement opens in a detail view using the available width; Back restores the list's sorting, filters and scroll. Its actions use the statement Performance Schema recorded:
 
 - **Explain** and **Run analysis** switch to the Query editor, open the
   statement in a new tab named after its rank and first table (for example
@@ -577,9 +633,8 @@ Performance Schema recorded, without copying SQL by hand:
   number of runs, each stopped at the time limit. **Execute and analyze**
   starts it; **Cancel** or Escape closes the note.
 - **Use this query** opens the tab in the Query editor without running anything.
-- Rows that are not one read-only SELECT (or WITH … SELECT) have Explain and
-  Run analysis turned off, with the reason in the inspector. The server decides
-  this with the same rule capture enforces.
+- Supported single-table UPDATE and DELETE statements can be projected to `SELECT *` with the original target, WHERE, ORDER and LIMIT. INSERT and REPLACE with a SELECT source can use that source. Review the generated SELECT and warning before starting analysis. This measures target-row selection or source reading only. UPDATE assignments and their subqueries are omitted; write cost, triggers, constraints, locks and changed rows are not reproduced. Batch analysis skips converted rows so each receives its own review.
+- Other forms, ambiguous quoting, RETURNING, multi-table targets and unsafe functions are refused with a reason. Write an explicit SELECT when the conservative conversion cannot represent the read you want. Every resulting SELECT still passes capture's independent read guard.
 
 When only normalized text exists (MariaDB always, and MySQL when the sample
 reached `performance_schema_max_sql_text_length`), myflames turns each `?`
@@ -618,9 +673,9 @@ imported from MySQL Shell carry a text label instead (`"mysqlsh-diagnostics"`).
 
 The Health view takes two samples of `SHOW GLOBAL STATUS` a few seconds apart
 and reads a few `SHOW GLOBAL VARIABLES`. It needs no Performance Schema and no
-special privilege, so it works on a default MariaDB install too. Choose the
-**Window** (1, 2, 5, 10, 15, 30, or 60 seconds; 5 by default) in the toolbar,
-then **Load health** (afterwards **Refresh**). The summary line shows the
+special privilege, so it works on a default MariaDB install too. It reads once
+when opened on screen; choose the **Window** (1, 2, 5, 10, 15, 30, or 60
+seconds; 5 by default) in the toolbar and press **Refresh** to sample again. The summary line shows the
 worst status, the counts, the window, and the time of the last sample; the
 facts under it show the server, host, uptime, buffer pool, and
 `max_connections`.
@@ -715,14 +770,14 @@ workers always count as running, so the running limits rise by
 (about three statements and one connection), which never trips a rule by
 itself.
 
-### Wait events, index health, I/O, and configuration
+### Wait events, index health, I/O, and parameters
 
-Waits, I/O, Indexes, Tables, and Configuration each read only when you press
-**Load** or **Refresh**, show a loading line under the toolbar, an error in an
-alert that keeps the last report, and the notes about the read behind the
-**N notes** button. None of them truncates a Performance Schema
-table, changes an instrument, consumer, or variable; when a change would help,
-the report shows the exact statement to copy, with why and a caveat.
+Waits, I/O, Indexes, Tables, and Parameters each read when opened on screen
+(once per connection; **Refresh** retries), while Indexes and Tables keep their
+schema-size consent above 2,000 user tables. Each view shows a loading line under the toolbar, an
+error in an alert that keeps the last report, and the notes about the read
+behind the **N notes** button. None of these reads truncates a Performance
+Schema table or changes an instrument, consumer, or parameter.
 
 - **Waits** reads `performance_schema.events_waits_summary_global_by_event_name`
   twice, a **Sampling window** apart (2, 5, 10, 15, 30, or 60 seconds; 10 by
@@ -788,20 +843,8 @@ the report shows the exact statement to copy, with why and a caveat.
     server refuses instead of blocking writes when it cannot do it online), or
     add an invisible `AUTO_INCREMENT` column, which needs `LOCK=SHARED`, and
     the caveat.
-  - **Free space (fragmentation)**: `DATA_FREE` (whole free extents and the
-    unused end of the file, minus a small reserve) against the data and index
-    size, as bytes and as a share of the file, judged only for tables in their
-    own tablespace file: **Watch** at 10% and 100 MiB, **Problem** at 25% and
-    1 GiB. On MySQL a table's `AUTOEXTEND_SIZE` is set aside first, because
-    the file grows by that much at once. It shows watch and problem rows by default;
-    the Show filter lists all InnoDB tables, those in a shared tablespace, or
-    those not judged. The inspector gives `OPTIMIZE TABLE` and the same
-    rebuild as `ALTER TABLE ... FORCE, ALGORITHM=INPLACE, LOCK=NONE`, with the
-    caveat (online rebuild with brief metadata locks, disk space for a copy,
-    replicas rebuild too). Tables in the system tablespace or a general
-    tablespace are listed under **Shared tablespaces**, because `DATA_FREE`
-    there is the whole tablespace's free space. Telling them apart needs
-    PROCESS; without it free space is shown but not judged.
+  - **Free space**: `DATA_FREE` reports reusable extents inside an InnoDB tablespace. Known file-per-table free space is informational, including large amounts after deletes. The percentage is an approximation based on reported data, index and free bytes. It does not measure remaining file capacity or filesystem headroom, and it does not establish a need to rebuild. Shared tablespaces are listed separately because the value belongs to the whole space. Missing tablespace metadata remains unknown.
+    **Optimize table** is optional maintenance. Review the exact SQL and the warning about metadata locks, disk space for a copy and replica work, then confirm before execution. Reusing allocated space can avoid the cost of rebuilding when the table grows again.
   MySQL keeps these numbers, free space included, in a cache for up to
   `information_schema_stats_expiry` seconds (a day by default; the Statistics
   fact says which you got). **Fresh numbers**
@@ -821,22 +864,39 @@ the report shows the exact statement to copy, with why and a caveat.
   time on servers with many tables, so there is no automatic refresh. A
   table's inspector links to **Index health** and **Top statements** for its
   schema.
-- **Configuration** reviews a short list of settings grouped as Memory,
-  Durability, Redo log, Connections and caches, Observability, and Server
-  facts, as one-line rows (status, setting, value, and the engine's default)
-  with a filter. The inspector shows why it has its status, every setting
-  behind it with the engine's default and where the value came from (default,
-  my.cnf, SET GLOBAL, SET PERSIST, command line), and for a flagged setting
-  **What to do**: the statement or my.cnf line to copy and the caveat. The
-  statuses are **OK**, **Watch**, **Problem**, **No threshold**, and
-  **Unknown**. **Change…** next to a setting opens the Change sheet (see
-  LOCAL_UI.md, "Change a setting"; `myflames config set` on the command line).
-  Supported scopes include **Now only** (SET GLOBAL), **Now and after restart**
-  (SET PERSIST on MySQL), **After restart only** (SET PERSIST_ONLY on MySQL),
-  **This session only** (SET SESSION in a short session to test how the server
-  adjusts or rounds the value), and **Remove the persisted value** (RESET PERSIST).
-  The CLI supports `--session` alongside `--persist` and `--persist-only`:
-  `myflames config set NAME VALUE --session`.
+- **Parameters** (formerly Configuration) is modelled on an AWS RDS parameter
+  group, with a view toolbar pinned under the top bar. It lists every global
+  parameter the server reports in one table: **Name**, **Value**, **Allowed
+  values**, **Apply type** (**Dynamic**, **Static**, **Unknown**), **Source**,
+  **Data type**, and **Description**. **Filter parameters** searches name,
+  value and description, and **Show** filters by **All**, **Modified** (source
+  is not the compiled default), **Dynamic**, **Static**, **Recommendations**
+  (parameters covered by a check that is Watch or Problem), and **Pending**
+  while editing. **Edit** turns the Value column into inline controls (switch,
+  list or text box from the parameter's type) for parameters that can change:
+  MySQL dynamic (applies now) and MySQL static that can be persisted (applies
+  after the next restart through `SET PERSIST_ONLY`), and MariaDB dynamic only
+  (MariaDB static parameters are option-file only; parameters whose apply type
+  is unknown are not editable in the table). **Preview changes** lists Name,
+  Current value, New value, Apply type and When it applies. **Review and
+  apply** opens one review for up to 25 changes: the server plans each change
+  (exact statement, problems, privileges, effect, undo), MySQL dynamic rows use
+  **Keep after restart** (checked: `SET PERSIST`, unchecked: `SET GLOBAL`),
+  static rows use `SET PERSIST_ONLY`, and MariaDB rows use `SET GLOBAL` and
+  show the option file line to copy. Confirm applies the changes one at a time
+  (each re-read and checked first), stops at the first change that is not
+  confirmed, and shows a result per row; Cancel or Escape records a declined
+  attempt for every planned row in the audit trail. Selecting a parameter shows
+  value, default, source with path and who set it when, persisted (MySQL),
+  allowed values, scope, apply type, description, and every covering check
+  (status, explanation, what to do), with the actions **Edit value**, **Reset
+  to default** (stages `DEFAULT` for MySQL numeric and boolean dynamic
+  parameters), **Change…** (the single-parameter sheet with every mode,
+  including **This session only**, which opens the statement in the Query
+  editor; see [The Server place](LOCAL_UI.md#the-server-place)), and
+  **Reset persisted value…** (MySQL, when persisted). The CLI `myflames config`
+  is unchanged (no parameter list, no new flags), and `myflames config set`
+  supports `--session` alongside `--persist` and `--persist-only`.
 
 The schema you enter is shared by I/O and Top statements, and a link from
 another view fills it in. Indexes and Tables each keep their own database
@@ -847,12 +907,14 @@ scroll inside their own region.
 
 ### Performance Schema instruments
 
-The **Instruments** view (the last one, after Configuration) answers two questions:
-which Performance Schema instruments and consumers are on, and what you gain,
-lose, and pay when you turn one on or off. Nothing is read until **Load
-instruments**; the read is four small setup tables, so it is cheap. myflames
-never runs the statements it shows: every one has a **Copy** button, and a line
-under Easy setup says so. Running them needs UPDATE on
+The **Instruments** view (after Parameters under Setup) reads on open (one
+attempt per connection; **Refresh** retries) and lets you pick what to turn on.
+The **Performance Schema** row, preset picker and change banner stay at the top,
+above four tabs: **Features** (the "What myflames can show" checklist),
+**Instruments**, **Consumers**, and **Actors and objects**. The read is four
+small setup tables, so it is cheap. Every change shows the exact SQL and
+requires confirmation, including on Development connections; Read-only
+connections refuse changes. Running the statements needs UPDATE on
 `performance_schema.setup_instruments` and `setup_consumers` (INSERT and DROP,
 for TRUNCATE, on `setup_actors` and `setup_objects` to restore them).
 
@@ -862,12 +924,11 @@ for TRUNCATE, on `setup_actors` and `setup_objects` to restore them).
   `SET PERSIST_ONLY performance_schema = ON` and a restart also works. When it
   is off, the rest of the view shows what the engine turns on by default once
   it is on.
-- **Easy setup** (after Workbench's): the presets as a segmented control, the
-  ones already in place marked with a check, and **Custom** when the server
-  matches none. One line gives the selected preset's summary, its cost level,
-  and whether the server already matches; **Show statements** opens its
-  runtime SQL, my.cnf lines, undo and restore statements, and notes in the
-  inspector.
+- **Presets and change banner**: the presets (**Minimal for myflames**, **Lock
+  troubleshooting**, **Wait analysis**, **Back to defaults**, and **Custom**
+  when the server matches none) show summary, cost level, and whether the
+  server already matches; **Show statements** opens the runtime SQL, my.cnf
+  lines, undo and restore statements, and notes in the inspector.
   *Minimal for myflames* turns on exactly what the views read (on MySQL it is
   already the default; on MariaDB it adds the metadata lock instrument and the
   statement current and history consumers). *Lock troubleshooting* adds table
@@ -877,41 +938,52 @@ for TRUNCATE, on `setup_actors` and `setup_objects` to restore them).
   returns every instrument and consumer to the engine's compiled-in defaults
   and, when `setup_actors` or `setup_objects` were changed, adds the statements
   that restore them.
-- **What myflames can show**: one line per view that reads Performance Schema
-  (Top statements, capture statistics in the Query editor, metadata locks and
-  an idle blocker's last statement in Locks, InnoDB row locks on MySQL, Waits,
-  Indexes, per-table and per-file I/O) with Ready, Partly, Off, Unavailable, or
-  Not needed and the first thing it needs. The inspector lists everything
-  missing, a **Show** link to each row that fixes it, and a link to the view.
-- **Advanced** (collapsed) holds the rest. **Instruments**: one table row per
-  group (statements, stages, file I/O, table I/O, table locks, metadata locks,
-  internal locks, sockets, memory, transactions, idle, and errors on MySQL)
-  with how many are on, the default, how many changed from it, and a cost
-  level. Select a row for which myflames views use it, what you gain when it
-  is on, what you lose when it is off, the cost (a rule of thumb), and the
-  statements and my.cnf lines that turn it on or off.
-- **Consumers**: the same for each consumer, plus what it depends on. A
+- **Features** tab: the "What myflames can show" checklist, one line per view
+  that reads Performance Schema (Top statements, capture statistics in the
+  Query editor, metadata locks and an idle blocker's last statement in Locks,
+  InnoDB row locks on MySQL, Waits, Indexes, per-table and per-file I/O) with
+  Ready, Partly, Off, Unavailable, or Not needed and the first thing it needs.
+  The inspector lists everything missing, a **Show** link to each row that
+  fixes it, and a link to the view.
+- **Instruments** tab: search, group filter, state filter (**All**,
+  **Enabled**, **Disabled**, **Different from default**), a checkbox per row
+  and a header checkbox for every row shown, **Select all shown** (up to
+  2,000), and the actions **Enable**, **Enable without timing**, **Disable**,
+  and **Clear selection**.
+- **Consumers** tab: checkboxes, **Enable**, and **Disable**; enabling a
+  consumer also enables the consumers it requires (`global_instrumentation`,
+  `thread_instrumentation`, or the matching current consumer) and says so.
+- **Actors and objects** tab: whether `setup_actors` and `setup_objects` still
+  have their defaults, with the restore statements when they do not.
+- **Statements and persistence**: statements are built only from names in the
+  report: `UPDATE performance_schema.setup_instruments SET ENABLED = ..., TIMED = ... WHERE NAME IN (...)`
+  for timed instruments and `ENABLED` only for untimed ones (memory, error), at
+  most 500 names per statement; built-in `memory/performance_schema`
+  instruments are skipped by Disable; names containing a backslash are refused;
+  consumers use `UPDATE performance_schema.setup_consumers`. They run through
+  the existing reviewed SQL runner (exact SQL, confirmation, write policy,
+  audit). Runtime changes take effect at once and are lost at restart; **Keep
+  after restart** shows copy-only option file lines
+  (`performance-schema-instrument='name=ON|OFF|COUNTED'`,
+  `performance-schema-consumer-name=ON|OFF`).
+- **How changes apply** (in the inspector): mutex, rwlock, cond and socket
+  instruments re-apply to existing instances at once, table instruments from the
+  next statement on each open table, and a file only once it is reopened;
+  metadata locks and memory count only from the moment the instrument is on. A
   history consumer records only what its current consumer records, under
   `global_instrumentation` (statement, transaction and wait events also need
   `thread_instrumentation`), so "On, but blocked by" names the one that is off.
-- **Who and what is recorded**: whether `setup_actors` and `setup_objects`
-  still have their defaults, with the restore statements when they do not.
-- **How changes apply** (in the inspector): runtime changes take effect at once and are lost at
-  restart. Mutex, rwlock, cond and socket instruments re-apply to existing
-  instances at once, table instruments from the next statement on each open
-  table, and a file only once it is reopened; metadata locks and memory count
-  only from the moment the instrument is on. `setup_actors` changes reach new
-  sessions only. The my.cnf lines keep a change after a restart.
+  `setup_actors` changes reach new sessions only.
 
 When another view finds an instrument or consumer off (Waits' Not instrumented
 list, Indexes or I/O with Performance Schema off, Locks without metadata locks,
 or Top statements with the digest consumer off), its one-sentence note links to
 the matching row here, which is selected, shown in the inspector, and takes
-focus (Advanced opens when the row is in it). MySQL 8.4 and 9.x share the same
-defaults in source, and MySQL 26.7 matched them live. MariaDB ships Performance
-Schema off; when it is on, the metadata lock, transaction and memory
-instruments are off, and of the consumers only `global_instrumentation`,
-`thread_instrumentation` and `statements_digest` are on.
+focus. MySQL 8.4 and 9.x share the same defaults in source, and MySQL 26.7
+matched them live. MariaDB ships Performance Schema off; when it is on, the
+metadata lock, transaction and memory instruments are off, and of the consumers
+only `global_instrumentation`, `thread_instrumentation` and `statements_digest`
+are on.
 
 ### Locks
 
@@ -1208,7 +1280,7 @@ JSON shapes:
   `fetch_ms_without_index`, `share_time`, `mostly`), `no_data` (`reason`:
   `not_opened`, `no_activity`, `not_instrumented`, or `not_read`), `summary`,
   `more`, and `notes`.
-- `schema-1.0` (`tables`): `scope` (`schemas`, `all_user_schemas`,
+- `schema-2.0` (`tables`): `scope` (`schemas`, `all_user_schemas`,
   `excluded`), `statistics` (`fresh`, `cached`, `cache_expiry_s`),
   `tablespaces_known`, `summary`, `thresholds`, `rules`, `why` (titles and
   texts for this engine and version), `missing_primary_keys` (`kind`
@@ -1216,9 +1288,9 @@ JSON shapes:
   `size_bytes`, `partitioned`, `clustered_on`, `unique_keys` with `usable` and
   `why_not`, `why`, `checks` and `fixes` with `label`, `sql` and `template`,
   `caveat`), `generated_primary_keys`, `fragmentation` (`data_bytes`,
-  `index_bytes`, `free_bytes`, `free_pct`, `tablespace` `file_per_table`,
-  `system`, `general` or `shared`, `tablespace_name`, `status` `ok`, `watch`,
-  `problem`, `shared` or `unknown`, `why`, and for watch and problem
+  `index_bytes`, `free_bytes`, nullable `free_pct`, `tablespace` `file_per_table`,
+  `system`, `general` or `shared`, `tablespace_name`, `status` `ok`, `info`,
+  `shared` or `unknown`, `why`, and optional
   `fix_sql`, `online_sql`, `caveat`), `shared_tablespaces`, `more`, and
   `notes`.
 - `schemas-1.0` (the workspace picker's list): `schemas` (`name`, `tables`,
@@ -1230,7 +1302,7 @@ JSON shapes:
 - `config-1.0`: `summary`, `groups`, `checks` (`key`, `group`, `label`,
   `explain`, `value`, `status`, `why`, `rule`, `caveat`, `action` with `sql`,
   `config` or `text`, `settings` with `display`, `default`, `set_by`, and
-  `alias`, and `sources`), and `notes`.
+  `alias`, and `sources`), and `notes` (the CLI `myflames config` is unchanged; `/api/live/config` adds `parameters`).
 
 Reuse a connection saved in the workspace (a profile, on the command line), with
 its remembered password:
@@ -1282,7 +1354,7 @@ original endpoint and saved profile, and cannot answer another connection's
 status or export request.
 
 The [Database diagram guide](LOCAL_UI.md#database-diagram) covers the Schema
-view, SQL/Mermaid/JSON imports, editable layout, SVG export, and model limits.
+view, the **Diagram | Mermaid** switch, SQL/Mermaid/JSON imports, editable layout, SVG/Mermaid export, and model limits.
 
 
 ## API additions
@@ -1337,16 +1409,16 @@ and never lowers a saved connection's protection.
 | `audit/declined` | `operation`, `statements` (as the confirmation showed them), optional `target`, `connection` | `audit_id`, `status: "declined"`: records a cancelled confirmation; nothing is sent to the server. The workspace calls it when a Kill sheet is cancelled (Cancel or Escape) with the tagged `KILL` statement, the identity it would have confirmed (`connection_id`, `mode`, `user`, `host`, `trx_started`, `ps_thread_id`), and the same `connection` the Kill would have used |
 | `live/health` | `connection`, optional `interval` (1 to 60 seconds, default 5) | `health-1.0` report: diagnostics (headline, verdict, why, rule, numbers, settings, recommendation, trend), metrics with value, delta, rate, unit, status, why, rule, link, and learn, plus summary, server facts, and notes. The request takes the sampling window to answer |
 | `live/waits` | `connection`, optional `interval` (2 to 60 seconds, default 10), `limit` (1 to 200, default 20) | `waits-1.0` report: wait events over the window and since start, classes, coverage with enable statements, and notes |
-| `live/indexes` | `connection`, optional `schemas` (a list; the older `schema` still works), `all_schemas: true`, `limit` (1 to 5000, default 200) | `indexes-1.0` report: unused, redundant, full scans, no data, summary, and notes. Without `schemas` it reads every user schema when they hold at most 2,000 tables, and otherwise returns 400 with the reason after one count; `all_schemas: true` skips the count |
-| `live/tables` | `connection`, optional `schemas` (a list; none means every user schema), `fresh` (boolean, MySQL: `information_schema_stats_expiry = 0` for this connection only), `limit` (1 to 5000, default 200) | `schema-1.0` report: tables without a primary key with checks, fix statements and caveats, generated invisible keys, free space per InnoDB table, shared tablespaces, summary, and notes. Read-only: the statements are text |
+| `live/indexes` | `connection`, optional `schemas` (a list; the older `schema` still works), `all_schemas: true`, `limit` (1 to 5000; omitted collects the full scoped inventory, capped at 100,000 rows per category) | `indexes-1.0` report: full index inventory, unused, redundant, full scans, no data, summary, and notes. Without `schemas` it reads every user schema when they hold at most 2,000 tables, and otherwise returns 400 with the reason after one count; `all_schemas: true` skips the count |
+| `live/tables` | `connection`, optional `schemas` (a list; none means every user schema), `fresh` (boolean, MySQL: `information_schema_stats_expiry = 0` for this connection only), `limit` (1 to 5000; omitted collects the full scoped inventory, capped at 100,000 rows per category) | `schema-2.0` report: full table inventory, tables without a primary key with checks, fix statements and caveats, generated invisible keys, free space per InnoDB table, shared tablespaces, summary, and notes. Read-only: the statements are text |
 | `live/catalog` | `connection`, `schema`, optional `table` | `catalog-1.0` for the Query editor's schema browser (`schema_browser.py`): without `table`, `level: "tables"` with the schema's `tables` (`name`, `type`: table, view, system view or sequence) in name order, at most `limit` (5,000) with `truncated`; with `table`, `level: "table"` with `columns` (`name`, `type`, `nullable`, `key`, `default`, `extra`, `generated`) and `indexes` (`name`, `unique`, `primary`, `type`, `columns` with `name`, `expression`, `sub_part`). Reads `information_schema` only, tagged `/*myflames:editor*/`, one schema at a time; names are sent as hex literals. A missing table or one without privileges is a 400 error. The saved password is filled like the Server views |
 | `live/schemas` | `connection` | `schemas-1.0`: every visible schema with its table count and whether it is a system schema, `user_tables`, and the Indexes limit (`all_limit`, `all_note`). Opens no table |
 | `live/io` | `connection`, optional `interval` (2 to 60 seconds, default 10), `schema`, `limit` (1 to 200, default 20) | `io-1.0` report: server-wide rates, tables, files and file kinds over the window and since start, and notes |
-| `live/config` | `connection` | `config-1.0` report: checks with settings (each with `dynamic`: whether it can change at runtime, or null), defaults, sources, statuses, actions and caveats, plus summary and notes |
+| `live/config` | `connection` | `config-1.0` report (internal view id `config`): checks with settings (each with `dynamic`: whether it can change at runtime, or null), defaults, sources, statuses, actions and caveats, summary, notes, and `parameters` (`parameters-1.0` from `myflames/parameters.py` through `config_review.config_report(conn, parameters=True)`: `complete`, `notes`, and `items[]` with `name`, `value`, `truncated`, `scope`, `apply_type`, `modifiable`, `type`, `values`, `min`, `max`, `block_size`, `default`, `source`, `source_label`, `source_path`, `set_time`, `set_user`, `set_host`, `persisted`, `modified`, `description`, `checks`) |
 | `live/variable` | `connection`, `name` | `variable-1.0`: one variable's global and session values, scope, `dynamic`, type, range or values, default, source, the value in `mysqld-auto.cnf` (MySQL), and which modes it allows. Reads only |
 | `live/variable/plan` | `connection`, `name`, `value`, `mode` (`global`, `persist`, `persist_only`, `session`, `reset_persist`) | `variable-plan-1.0`: `status` (`ready` or `refused` with `problems`), the exact `statement`, before values, effect, privileges hint, undo, caveats, the option file line, `alternative` (MariaDB's option file line instead of PERSIST), `expect`, and the connection's `policy`. Reads only |
 | `live/variable/apply` | `connection`, `name`, `value`, `mode`, `expect` (the plan's), `confirmed: true` | `variable-change-1.0`: `status` (`changed`, `unchanged`, `refused`, `needs_confirmation`, `denied`, `refused_by_server`, `interrupted`, `failed`), `message`, the `statement` sent, what was `verified`, `before` and `after` (re-read), `adjusted`, and `audit_id`. The write policy runs before any connection opens; myflames re-reads the variable and sends nothing when it, or the statement, changed since the plan |
-| `live/instruments` | `connection` | `instruments-1.0` report: Performance Schema status (with how to turn it on or off), what each myflames view needs and is missing, instrument groups and consumers with state, default, gain, loss, cost and on/off statements, `setup_actors` and `setup_objects` with restore statements, presets, how changes apply, privileges, and notes. Read-only: the statements are text |
+| `live/instruments` | `connection` | `instruments-1.0` report: Performance Schema status (with how to turn it on or off), what each myflames view needs and is missing, `instruments[]` (`name`, `group`, `enabled`, `timed`, `timed_applies`, `default_enabled`, `default_timed`, `builtin`, `properties`), instrument groups and consumers with state, default, gain, loss, cost and on/off statements, `setup_actors` and `setup_objects` with restore statements, presets, how changes apply, privileges, and notes. Read-only: the statements are text |
 | `live/replication` | `connection` | `replication-1.0` report (`replication.read_status`): engine, version, `available`, `replica`, `message`, `gtid`, `settings`, and `channels` (threads, `lag_s` with `lag_notes` and `lag_signals`, positions, worker, `failing_gtid`, `relay`, `status`, `status_why`, and `skip_plan` with the exact `statements`, `identity`, privileges, drift warning and next steps when the applier stopped on an error), `capabilities`, `summary`, notes. Reads only |
 | `live/replication/skip` | `connection`, `review_token`, `channel`, `expect` (the plan's `identity`), `statements` (as the confirmation showed them), `confirmed: true` | `replication-skip-1.0`: `status` (`skipped`, `refused`, `needs_confirmation`, `denied`, `refused_by_server`, `failed`), `message`, the `statements` sent, `verified`, `target`, `plan`, `after` (re-read; `passed`), `audit_id`. The write policy runs before any connection opens; myflames reads the channel again and sends nothing when the failure or the statements changed. The workspace calls `audit/declined` with the tagged statements when the sheet is cancelled |
 | `live/replication/skip-loop/start` | `connection`, `channel`, `codes` (chosen error numbers), `max_skips` (1 to 1000), `max_minutes` (1 to 1440), `poll_s`, `confirmed: true` | `replication-skip-loop-1.0` (`job_id`, `state` starting, running, stopping, stopped, refused or needs_confirmation, `message`, codes, limits, `skips_done`, `skips`, `last_error`, `stop_reason`, `needs_attention`, `drift_warning`). One loop per channel and connection; each skip is planned, checked and audited on its own |

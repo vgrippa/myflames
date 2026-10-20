@@ -86,6 +86,7 @@ export function skeleton(names: string[]) {
 
 /** The fields of a `top-1.0` statement that decide what runs. */
 export type DigestRow = {
+  analysis_sql?: string | null;
   digest: string | null;
   digest_text: string | null;
   schema: string | null;
@@ -116,7 +117,7 @@ export function digestQuery(row: DigestRow): DigestQuery {
   const recorded = row.sample_text || "";
   const sample = recorded && !row.sample_truncated ? recorded : "";
   const text = sample || row.digest_text || "";
-  const p = parameterize(text);
+  const p = parameterize(row.analysis_sql || text);
   if (!sample) p.sql = joinFunctionCalls(p.sql);
   let reason: FillReason | null = null;
   if (!text.trim()) reason = "missing";

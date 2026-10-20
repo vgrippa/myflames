@@ -47,13 +47,16 @@ import {
   type QueryTab,
 } from "./session";
 import { connectionKey, connectionLabel } from "./binding";
+import { Icon } from "./components";
 import { Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, NumberField, StatusPill, ToolbarButton, useWindowStatus, type Tone } from "./kit";
 import { useWritePolicy, TYPE_LABEL } from "./Connections";
 import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults } from "./ResultsPane";
 import { SchemaBrowser } from "./SchemaBrowser";
+import { TableData } from "./TableData";
 import { HistoryPanel } from "./HistoryPanel";
 import { editorPrivilegeGate, isPrivilegeDenial, privilegeButtonProps, usePrivilege, usePrivileges, type EditorPrivilegePreview } from "./privileges";
+import { QueryDigestView } from "./QueryDigest";
 import "./editor.css";
 
 const MAC =
@@ -84,13 +87,17 @@ export type QueryLabHandle = {
    * connectionKey), nothing opens or runs unless that is still the
    * connection in use. */
   openDigest: (row: TopStatement, rank: number, action: DigestAction, expect?: string) => void;
+  /** Switch to the Query Digest (pt-query-digest) view */
+  openDigestView?: () => void;
   /** Add an empty query tab and put the cursor in it (Home's New query tab). */
   newTab: () => void;
   /** Make an existing tab the current one (Home's Recent work); unknown ids do nothing. */
   openTab: (id: string) => void;
   /** Add a statement at the end of the current tab, selected and not run
-   * (Configuration's SET SESSION: it changes only this tab's session). */
+   * (the SET SESSION from Parameters: it changes only this tab's session). */
   openSql: (sql: string) => void;
+  /** Request closing a query tab, verifying uncommitted transactions first. */
+  closeTab: (id: string) => void;
 };
 function parseParameters(text: string): unknown {
   try {
@@ -421,7 +428,11 @@ export const QueryLab = forwardRef<
     if (via && current?.key === connectionKey(via) && isPrivilegeDenial(value)) void current.accountChanged();
   }
   const [status, setStatus] = useState("");
+  const [analysisWarning, setAnalysisWarning] = useState<{ tab: string; text: string } | null>(null);
   const [error, setError] = useState("");
+  const [workspaceMode, setWorkspaceMode] = useState<"editor" | "digest">("editor");
+  // A staged table draft remains bound to the connection it was opened from.
+  const [tableData, setTableData] = useState<{ connection: Connection; schema: string; table: string } | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   // The connection the capture was started on: the server answers its status
   // and Cancel only for that connection.
@@ -511,11 +522,15 @@ export const QueryLab = forwardRef<
 
   useImperativeHandle(ref, () => ({
     openDigest,
+    openDigestView: () => setWorkspaceMode("digest"),
     newTab: () => addTab(true),
     openTab: (id: string) => {
       if (tabs.some((t) => t.id === id)) setTabId(id);
     },
     openSql: appendStatement,
+    closeTab: (id: string) => {
+      void requestClose(id);
+    },
   }));
   /** A new tab after the others; *focus* puts the cursor in the editor. */
   function addTab(focus = false) {
@@ -574,6 +589,12 @@ export const QueryLab = forwardRef<
     setStatus("");
     if (refused) {
       setStatus(`Loaded the statement into a new tab. Explain and Run analysis cannot run it: ${refused}`);
+      window.setTimeout(() => editor.current?.focus());
+      return;
+    }
+    if (row.analysis_warning) {
+      setAnalysisWarning({ tab: next.id, text: row.analysis_warning });
+      if (q.names.length) setParametersOpen(true);
       window.setTimeout(() => editor.current?.focus());
       return;
     }
@@ -900,6 +921,25 @@ export const QueryLab = forwardRef<
     setStarting(true);
     changeTab({ result_tab: "plan" }, t.id);
     try {
+      const expectedConnection = connectionKey(connectionRef.current);
+      const prepared = await api<{ sql: string; converted: boolean; warning: string; problem: string }>(
+        "analysis/prepare-query", { query: sql });
+      if (pending.cancelled) return;
+      if (expectedConnection !== connectionKey(connectionRef.current))
+        throw new Error("The connection changed. Review the query and try again.");
+      if (prepared.problem) throw new Error(prepared.problem);
+      if (prepared.converted) {
+        // Preserve the original editor text and make the safe projection
+        // reviewable in its own tab. A second explicit action starts capture.
+        const projected: Tab = { ...t, id: crypto.randomUUID(), name: `${t.name} SELECT`,
+          sql: prepared.sql, parameters: JSON.stringify(parameters || {}, null, 2) };
+        setTabs(ts => [...ts, projected]);
+        setTabId(projected.id);
+        setAnalysisWarning({ tab: projected.id, text: prepared.warning });
+        setStatus("Review the converted SELECT, then choose Explain or Run analysis.");
+        return;
+      }
+      sql = prepared.sql;
       captureName.current = t.name;
       setLastRun({ tabId: t.id, label, sql });
       const via = connectionFor(t);
@@ -1410,9 +1450,20 @@ export const QueryLab = forwardRef<
     runtimeRef.current = rest;
     setRuntime(rest);
     setTabs((ts) => {
-      const rest = ts.filter((t) => t.id !== id);
-      if (id === tabId && rest.length) setTabId(rest[0].id);
-      return rest.length ? rest : ts;
+      const index = ts.findIndex((t) => t.id === id);
+      const remainingTabs = ts.filter((t) => t.id !== id);
+      if (remainingTabs.length === 0) {
+        const freshId = crypto.randomUUID();
+        setTabId(freshId);
+        return [{
+          id: freshId,
+          name: "Query 1",
+          sql: "",
+          parameters: "{}",
+        }];
+      }
+      if (id === tabId && remainingTabs.length) setTabId(remainingTabs[Math.max(0, index - 1)].id);
+      return remainingTabs;
     });
   }
   /** Close a tab (or only its session): a transaction that is open, or may
@@ -1602,7 +1653,12 @@ export const QueryLab = forwardRef<
   return (
     <section className="query-lab" aria-labelledby="query-editor-title">
       <h1 id="query-editor-title" className="visually-hidden">Query editor</h1>
-      <div className={`editor-workbench${showBrowser ? " has-browser" : ""}${showHistory ? " has-history" : ""}${narrow ? " is-narrow" : ""}`}>
+      {tableData && <TableData connection={tableData.connection} currentConnectionKey={connectionKey(connection)}
+        schema={tableData.schema} table={tableData.table} onClose={() => {
+          setTableData(null);
+          window.requestAnimationFrame(() => editor.current?.focus());
+        }} /> }
+      <div hidden={!!tableData} className={`editor-workbench${showBrowser ? " has-browser" : ""}${showHistory ? " has-history" : ""}${narrow ? " is-narrow" : ""}`}>
         {/* Kept mounted while hidden, so what was read stays when it opens again. */}
         <div className="schema-browser-slot" hidden={!showBrowser}>
           <SchemaBrowser
@@ -1613,93 +1669,154 @@ export const QueryLab = forwardRef<
             onInsert={insertAtCursor}
             onQuery={appendAndRun}
             onOpenTable={onOpenTable}
+            onOpenData={tableData ? undefined : (schema, table, from) => {
+              if (from !== connectionKey(connection)) {
+                setError("The connection changed. Refresh the schema browser before opening table data.");
+                return;
+              }
+              // A second click cannot replace a draft before the grid's own
+              // discard confirmation has called onClose.
+              setTableData(current => current || { connection: { ...connection }, schema, table });
+            }}
           />
         </div>
         <div className="editor-panel card">
           <div className="query-tabs">
-            <div
-              className="query-tablist"
-              role="tablist"
-              aria-label="Query tabs"
-              ref={tabList}
-            >
-              {tabs.map((t, i) => (
-                <div className="query-tab" key={t.id}>
-                  {renaming?.id === t.id && (
-                    <input className="query-tab-name" aria-label="Query name" value={renaming.name}
-                      autoFocus onFocus={(e) => e.currentTarget.select()}
-                      onChange={(e) => setRenaming({ id: t.id, name: e.target.value })}
-                      onBlur={() => finishRename(true, false)}
-                      onKeyDown={(e) => {
-                        if (e.nativeEvent.isComposing) return;
-                        if (e.key === "Enter" || e.key === "Escape") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          finishRename(e.key === "Enter");
-                        }
-                      }} />
-                  )}
-                  <button
-                    role="tab"
-                    id={`query-tab-${i}`}
-                    aria-selected={t.id === tab.id}
-                    aria-controls="query-tab-panel"
-                    tabIndex={t.id === tab.id ? 0 : -1}
-                    hidden={renaming?.id === t.id}
-                    title="Double-click or press F2 to rename"
-                    onDoubleClick={() => setRenaming({ id: t.id, name: t.name })}
-                    onClick={() => setTabId(t.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "F2") {
-                        e.preventDefault();
-                        setRenaming({ id: t.id, name: t.name });
-                        return;
-                      }
-                      // Roving focus: arrows move between tabs (and open them), Home and End jump to the ends.
-                      const next =
-                        e.key === "ArrowRight"
-                          ? (i + 1) % tabs.length
-                          : e.key === "ArrowLeft"
-                            ? (i - 1 + tabs.length) % tabs.length
-                            : e.key === "Home"
-                              ? 0
-                              : e.key === "End"
-                                ? tabs.length - 1
-                                : -1;
-                      if (next < 0) return;
-                      e.preventDefault();
-                      setTabId(tabs[next].id);
-                      tabList.current
-                        ?.querySelector<HTMLElement>(`#query-tab-${next}`)
-                        ?.focus();
-                    }}
-                  >
-                    {t.name}
-                    {runtime[t.id]?.session?.in_transaction === true && !runtime[t.id]?.session?.ended && (
-                      <span className="tab-transaction" aria-label="Transaction open" title="Transaction open">TX</span>
-                    )}
-                  </button>
-                </div>
-              ))}
+            <div className="query-mode-switch segmented-control" role="tablist" aria-label="Query workspace view">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={workspaceMode === "editor"}
+                className={`mode-tab ${workspaceMode === "editor" ? "is-active" : ""}`}
+                onClick={() => setWorkspaceMode("editor")}
+              >
+                <Icon name="query" size={13} />
+                <span>SQL Editor</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={workspaceMode === "digest"}
+                className={`mode-tab ${workspaceMode === "digest" ? "is-active" : ""}`}
+                onClick={() => setWorkspaceMode("digest")}
+                title="pt-query-digest workload analysis report and slow query inspector"
+              >
+                <Icon name="statements" size={13} />
+                <span>Query Digest (pt-query-digest)</span>
+              </button>
             </div>
-            <button
-              className="query-tab-add"
-              aria-label="New query tab"
-              title="New query tab"
-              onClick={() => addTab()}
-            >
-              +
-            </button>
-            {tabs.length > 1 && (
-              <button type="button" className="query-tab-close" aria-label="Close tab" title="Close tab"
-                onClick={() => void requestClose(tab.id)}>×</button>
+            {workspaceMode === "editor" && (
+              <>
+                <div
+                  className="query-tablist"
+                  role="tablist"
+                  aria-label="Query tabs"
+                  ref={tabList}
+                >
+                  {tabs.map((t, i) => (
+                    <div className="query-tab" key={t.id}>
+                      {renaming?.id === t.id && (
+                        <input className="query-tab-name" aria-label="Query name" value={renaming.name}
+                          autoFocus onFocus={(e) => e.currentTarget.select()}
+                          onChange={(e) => setRenaming({ id: t.id, name: e.target.value })}
+                          onBlur={() => finishRename(true, false)}
+                          onKeyDown={(e) => {
+                            if (e.nativeEvent.isComposing) return;
+                            if (e.key === "Enter" || e.key === "Escape") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              finishRename(e.key === "Enter");
+                            }
+                          }} />
+                      )}
+                      <button
+                        role="tab"
+                        id={`query-tab-${i}`}
+                        aria-selected={t.id === tab.id}
+                        aria-controls="query-tab-panel"
+                        tabIndex={t.id === tab.id ? 0 : -1}
+                        hidden={renaming?.id === t.id}
+                        title="Double-click or press F2 to rename"
+                        onDoubleClick={() => setRenaming({ id: t.id, name: t.name })}
+                        onClick={() => setTabId(t.id)}
+                        // Middle-click closes, like browser and editor tabs.
+                        onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+                        onAuxClick={(e) => {
+                          if (e.button !== 1 || tabs.length < 2) return;
+                          e.preventDefault();
+                          void requestClose(t.id);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "F2") {
+                            e.preventDefault();
+                            setRenaming({ id: t.id, name: t.name });
+                            return;
+                          }
+                          // Roving focus: arrows move between tabs (and open them), Home and End jump to the ends.
+                          const next =
+                            e.key === "ArrowRight"
+                              ? (i + 1) % tabs.length
+                              : e.key === "ArrowLeft"
+                                ? (i - 1 + tabs.length) % tabs.length
+                                : e.key === "Home"
+                                  ? 0
+                                  : e.key === "End"
+                                    ? tabs.length - 1
+                                    : -1;
+                          if (next < 0) return;
+                          e.preventDefault();
+                          setTabId(tabs[next].id);
+                          tabList.current
+                            ?.querySelector<HTMLElement>(`#query-tab-${next}`)
+                            ?.focus();
+                        }}
+                      >
+                        {t.name}
+                        {runtime[t.id]?.session?.in_transaction === true && !runtime[t.id]?.session?.ended && (
+                          <span className="tab-transaction" aria-label="Transaction open" title="Transaction open">TX</span>
+                        )}
+                      </button>
+                      {renaming?.id !== t.id && (
+                        <button type="button" className="query-tab-close" aria-label={`Close ${t.name}`} title="Close tab"
+                          tabIndex={t.id === tab.id ? 0 : -1} onClick={() => void requestClose(t.id)}>
+                          <Icon name="close" size={12} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <button
+                  className="query-tab-add"
+                  aria-label="New query tab"
+                  title="New query tab"
+                  onClick={() => addTab()}
+                >
+                  +
+                </button>
+              </>
             )}
-            <div className="editor-connection">{picker}</div>
+            <div className="editor-connection" style={workspaceMode === "digest" ? { marginLeft: "auto" } : undefined}>{picker}</div>
           </div>
+          {workspaceMode === "digest" && (
+            <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+              <QueryDigestView
+                connection={connection}
+                onOpenInEditor={(row, rank, from) => {
+                  openDigest(row, rank, "open", from);
+                  setWorkspaceMode("editor");
+                }}
+                onExplain={(row, rank, from) => {
+                  openDigest(row, rank, "explain", from);
+                  setWorkspaceMode("editor");
+                }}
+              />
+            </div>
+          )}
           <div
             role="tabpanel" tabIndex={0}
             id="query-tab-panel"
             className="query-tab-panel"
+            hidden={workspaceMode !== "editor"}
             aria-labelledby={`query-tab-${Math.max(0, tabs.indexOf(tab))}`}
             onKeyDown={(e) => {
               // Escape that ends an input method's composition is not Stop.
@@ -1914,6 +2031,7 @@ export const QueryLab = forwardRef<
                   <p>
                     {keys(false)} runs the selection or the statement at the cursor; {keys(true)} runs every
                     statement. {keys(false, "E")} explains; {keys(true, "E")} runs analysis. Escape stops a run.
+                    Ctrl+Space opens SQL suggestions; Ctrl+Shift+Space also works when the system reserves Ctrl+Space.
                   </p>
                   <p>Each tab keeps one session, so SET SESSION, temporary tables and transactions last until the tab closes.</p>
                 </InfoPopover>
@@ -1991,6 +2109,9 @@ export const QueryLab = forwardRef<
                 Explain and Run analysis wait while Explain top N runs on Server.
               </p>
             )}
+            {analysisWarning?.tab === tab.id && (
+              <p role="alert" className="notice">{analysisWarning.text}</p>
+            )}
             {status && (
               <p role="status" className="notice">
                 {status}
@@ -2004,6 +2125,9 @@ export const QueryLab = forwardRef<
             <SqlEditor
               ref={editor}
               value={tab.sql}
+              completionConnection={connectionFor(tab)}
+              completionScope={tab.id}
+              backslashEscapes={rt.session?.backslash_escapes ?? true}
               onChange={(sql) => changeTab({ sql })}
               onSelect={syncCursor}
               caret={cursor}

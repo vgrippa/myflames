@@ -40,14 +40,14 @@ function buildStage(variant) {
   // Index A (left)
   var aTitle = anim.svgEl("text", {
     x: midX / 2, y: 22, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#1d4ed8"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   aTitle.textContent = "idx_category scan";
   svg.appendChild(aTitle);
 
   var aRect = anim.svgEl("rect", {
     x: 20, y: 32, width: midX - 30, height: 120, rx: 8, ry: 8,
-    fill: "#eff6ff", stroke: "#3b82f6", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(aRect);
 
@@ -55,12 +55,12 @@ function buildStage(variant) {
   for (var i = 0; i < IDX_A_ROWS.length; i++) {
     var y = 48 + i * 14;
     var lbl = anim.svgEl("text", {
-      x: 30, y: y, "font-size": 10, "font-weight": 600, fill: "#1e40af"
+      x: 30, y: y, "font-size": 10, "font-weight": 600, fill: "var(--svg-token-ink)"
     });
     lbl.textContent = IDX_A_ROWS[i].name;
     svg.appendChild(lbl);
     var dot = anim.svgEl("circle", {
-      cx: midX - 40, cy: y - 4, r: 5, fill: "#3b82f6", opacity: 0.3
+      cx: midX - 40, cy: y - 4, r: 5, fill: "var(--svg-token)", opacity: 0.3
     });
     svg.appendChild(dot);
     aEntries.push({lbl: lbl, dot: dot, name: IDX_A_ROWS[i].name});
@@ -69,14 +69,14 @@ function buildStage(variant) {
   // Index B (right)
   var bTitle = anim.svgEl("text", {
     x: midX + midX / 2, y: 22, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#c2410c"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   bTitle.textContent = "idx_supplier scan";
   svg.appendChild(bTitle);
 
   var bRect = anim.svgEl("rect", {
     x: midX + 10, y: 32, width: midX - 30, height: 120, rx: 8, ry: 8,
-    fill: "#fff7ed", stroke: "#f97316", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5
   });
   svg.appendChild(bRect);
 
@@ -84,12 +84,12 @@ function buildStage(variant) {
   for (var j = 0; j < IDX_B_ROWS.length; j++) {
     var yb = 48 + j * 14;
     var blbl = anim.svgEl("text", {
-      x: midX + 20, y: yb, "font-size": 10, "font-weight": 600, fill: "#9a3412"
+      x: midX + 20, y: yb, "font-size": 10, "font-weight": 600, fill: "var(--svg-build-ink)"
     });
     blbl.textContent = IDX_B_ROWS[j].name;
     svg.appendChild(blbl);
     var bdot = anim.svgEl("circle", {
-      cx: W - 40, cy: yb - 4, r: 5, fill: "#f97316", opacity: 0.3
+      cx: W - 40, cy: yb - 4, r: 5, fill: "var(--svg-build)", opacity: 0.3
     });
     svg.appendChild(bdot);
     bEntries.push({lbl: blbl, dot: bdot, name: IDX_B_ROWS[j].name});
@@ -101,20 +101,20 @@ function buildStage(variant) {
                      variant === "sort_union" ? "Sort-Union (OR, unsorted)" : "Union (OR)";
   var mergeLbl = anim.svgEl("text", {
     x: W / 2, y: mergeY, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#7c3aed"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"
   });
   mergeLbl.textContent = "Merge: " + variantLabel;
   svg.appendChild(mergeLbl);
 
   var mergeRect = anim.svgEl("rect", {
     x: 60, y: mergeY + 8, width: W - 120, height: 55, rx: 8, ry: 8,
-    fill: "#f5f3ff", stroke: "#8b5cf6", "stroke-width": 1.5
+    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5
   });
   svg.appendChild(mergeRect);
 
   var mergeContent = anim.svgEl("text", {
     x: W / 2, y: mergeY + 40, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#5b21b6"
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-group)"
   });
   mergeContent.textContent = "(row-IDs merged here)";
   svg.appendChild(mergeContent);
@@ -123,27 +123,27 @@ function buildStage(variant) {
   var fetchY = 270;
   var fetchLbl = anim.svgEl("text", {
     x: W / 2, y: fetchY, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#047857"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"
   });
   fetchLbl.textContent = "Clustered index \u2192 fetch actual rows";
   svg.appendChild(fetchLbl);
 
   var fetchRect = anim.svgEl("rect", {
     x: 60, y: fetchY + 8, width: W - 120, height: 55, rx: 8, ry: 8,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5, opacity: 0.3
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5, opacity: 0.3
   });
   svg.appendChild(fetchRect);
 
   var fetchContent = anim.svgEl("text", {
     x: W / 2, y: fetchY + 40, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#065f46", opacity: 0.3
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)", opacity: 0.3
   });
   fetchContent.textContent = "";
   svg.appendChild(fetchContent);
 
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 20, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 600, fill: "#1f2937"
+    "font-size": 12, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -189,7 +189,7 @@ function buildTimeline(variant) {
     (function(idx) {
       tl.call(function() {
         stage.aEntries[idx].dot.setAttribute("opacity", 1);
-        stage.aEntries[idx].dot.setAttribute("fill", "#2563eb");
+        stage.aEntries[idx].dot.setAttribute("fill", "var(--svg-token)");
       });
       tl.delay(200);
     })(i);
@@ -208,7 +208,7 @@ function buildTimeline(variant) {
     (function(jdx) {
       tl.call(function() {
         stage.bEntries[jdx].dot.setAttribute("opacity", 1);
-        stage.bEntries[jdx].dot.setAttribute("fill", "#ea580c");
+        stage.bEntries[jdx].dot.setAttribute("fill", "var(--svg-build)");
       });
       tl.delay(200);
     })(j);
@@ -230,13 +230,13 @@ function buildTimeline(variant) {
   tl.call(function() {
     for (var ai = 0; ai < stage.aEntries.length; ai++) {
       if (OVERLAP_NAMES[stage.aEntries[ai].name]) {
-        stage.aEntries[ai].dot.setAttribute("fill", "#7c3aed");
+        stage.aEntries[ai].dot.setAttribute("fill", "var(--svg-group)");
         stage.aEntries[ai].dot.setAttribute("r", 7);
       }
     }
     for (var bi = 0; bi < stage.bEntries.length; bi++) {
       if (OVERLAP_NAMES[stage.bEntries[bi].name]) {
-        stage.bEntries[bi].dot.setAttribute("fill", "#7c3aed");
+        stage.bEntries[bi].dot.setAttribute("fill", "var(--svg-group)");
         stage.bEntries[bi].dot.setAttribute("r", 7);
       }
     }
@@ -282,16 +282,16 @@ function renderChart(overlapPct, currentA, variant) {
     xMin: 100, xMax: 1e6,
     xLabel: "Rows per index scan (equal for both)", yLabel: "Rows fetched from clustered index",
     curves: [
-      { label: "Index merge union", color: "#7c3aed",
+      { label: "Index merge union", color: "var(--svg-group)",
         fn: function(n) {
           var ov = Math.floor(n * overlapPct / 100);
           return 2 * n - ov;
         }
       },
-      { label: "Index merge intersection", color: "#0284c7",
+      { label: "Index merge intersection", color: "var(--svg-token)",
         fn: function(n) { return Math.floor(n * overlapPct / 100); }
       },
-      { label: "Full table scan (no merge)", color: "#dc2626",
+      { label: "Full table scan (no merge)", color: "var(--svg-danger)",
         fn: function(n) { return n * 10; } }
     ],
     current: { x: currentA },

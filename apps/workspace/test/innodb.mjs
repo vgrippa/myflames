@@ -23,13 +23,10 @@ const inspectorHas = (pattern) =>
 try {
   await h.server();
   // InnoDB is in the Overview group, after Health.
-  assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Full analysis"]);
+  assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Error log"]);
   await h.view("innodb");
-  assert.match(await text(`${view} .view-empty`), /SHOW ENGINE INNODB STATUS/);
-  assert.equal(state.seen.length, 0, "nothing is read until asked");
   assert.match(await h.popover("About InnoDB"), /needs the PROCESS privilege/);
-
-  await button("Load InnoDB status", view + " ");
+  // Opening the view reads once, because it is on screen.
   await page.waitForSelector(`${view} .summary-line`);
   await h.idle(view);
   assert.equal(state.seen.length, 1);
@@ -71,11 +68,13 @@ try {
   assert.match(await text(".view-inspector .inspector-actions-bar"), /Open Sessions\s*Open Locks/);
   await page.click(".view-inspector .innodb-data summary");
   assert.match(await text(".view-inspector .innodb-data"), /trx_id_counter/);
-  // Arrow keys walk the rows across sections.
+  // Back restores row focus; arrow keys walk the retained sections.
+  await page.click(".detail-back");
   await page.focus(`${item("transactions", "oldest_trx")} button`);
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(() => document.activeElement?.closest("li")?.dataset.item === "purge_state");
+  await page.keyboard.press("Enter");
   await page.locator(".view-inspector button ::-p-text(Open Sessions)").click();
   await page.waitForSelector("#server-nav-sessions[aria-current=page]");
   await h.view("innodb");
@@ -93,6 +92,7 @@ try {
   // The raw text: only on an explicit action, for support.
   assert.equal(await page.$(".innodb-raw"), null);
   state.queue.push({ status: 200, body: rawReport });
+  await page.click(`${view} .detail-back`);
   await page.locator(`${view} button ::-p-text(Show raw output)`).click();
   await page.waitForSelector(".view-inspector .innodb-raw");
   assert.equal(state.seen.at(-1).raw, true);

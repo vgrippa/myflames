@@ -1212,8 +1212,7 @@ class ProcessTests(unittest.TestCase):
         session = self.registry.get("tab1")
         strangers = [None, dict(self.connection, host="other"), dict(self.connection, port=3307),
                      dict(self.connection, user="other"), dict(self.connection, profile_id="other"),
-                     dict(self.connection, ssl_mode="REQUIRED"), dict(self.connection, ssl_ca="other.pem"),
-                     dict(self.connection, read_only=True)]
+                     dict(self.connection, ssl_mode="REQUIRED"), dict(self.connection, ssl_ca="other.pem")]
         for action in ("status", "close"):
             path = "/api/editor/" + action
             unknown = self.call(path, tab="missing", discard=True)
@@ -1237,6 +1236,30 @@ class ProcessTests(unittest.TestCase):
         self.assertTrue(self.call("/api/editor/close", connection=same, discard=True)["closed"])
         self.assertIsNone(self.registry.get("tab1"))
         self.assertIsNotNone(session.proc.poll())
+
+    def test_close_stop_and_rollback_survive_a_policy_change(self):
+        profile = self.save_profile(type="production")
+        self.run_sql("START TRANSACTION")
+        session = self.registry.get("tab1")
+        self.store.save("profile", dict(profile, type="development", read_only=True), profile["id"])
+        self.assertEqual(self.call("/api/editor/status")["session"]["connection_id"], session.connection_id)
+        self.assertTrue(self.call("/api/editor/stop")["session"] is not None)
+        self.assertEqual(self.call("/api/editor/rollback")["status"], "complete")
+        self.assertFalse(session.in_transaction)
+        closed = self.call("/api/editor/close")
+        self.assertTrue(closed["closed"])
+        self.assertTrue(closed["session"]["ended"])
+        self.assertIsNone(self.registry.get("tab1"))
+        self.assertIsNotNone(session.proc.poll())
+        # A different endpoint still gets the unknown-tab answer.
+        self.store.save("profile", dict(profile, type="production", read_only=False), profile["id"])
+        self.run_sql("SELECT 1")
+        other = dict(self.connection, user="other")
+        self.assertEqual(self.call("/api/editor/close", connection=other),
+                         self.call("/api/editor/close", tab="missing"))
+        self.assertIsNotNone(self.registry.get("tab1"))
+        with self.assertRaises(ed.EditorError):
+            self.call("/api/editor/stop", connection=other)
 
     def test_ended_session_results_keep_their_connection_owner(self):
         self.run_sql("SELECT 42")
@@ -1334,19 +1357,19 @@ class ProcessTests(unittest.TestCase):
                 previous = self.registry.get("tab1")
                 previous.end("closed", ed.SESSION_ENDED_TEXT)
                 self.store.save("profile", dict(profile, type="development", read_only=read_only), profile["id"])
-                for action in ("run", "commit", "rollback", "stop", "open"):
+                for action in ("run", "commit", "open"):
                     with self.subTest(action=action):
                         with self.assertRaises(ed.EditorError) as caught:
                             self.call("/api/editor/" + action, sql="SELECT 1")
                         self.assertEqual(caught.exception.code, "identity_mismatch")
                         self.assertIs(self.registry.get("tab1"), previous)
-                self.assertIsNone(self.call("/api/editor/status")["session"])
-                self.assertIsNone(self.call("/api/editor/close")["session"])
-                self.assertIs(self.registry.get("tab1"), previous)
-                # Release the old identity explicitly before adopting policy.
-                self.store.save("profile", dict(profile, type="production", read_only=False), profile["id"])
+                # Status, Stop, Rollback and Close follow endpoint ownership, not the policy.
+                self.assertEqual(self.call("/api/editor/status")["session"]["connection_id"],
+                                 previous.connection_id)
+                self.assertFalse(self.call("/api/editor/stop")["session"] is None)
+                self.assertEqual(self.call("/api/editor/rollback")["status"], "session_ended")
                 self.assertTrue(self.call("/api/editor/close")["closed"])
-                self.store.save("profile", dict(profile, type="development", read_only=read_only), profile["id"])
+                self.assertIsNone(self.registry.get("tab1"))
                 opened = self.call("/api/editor/open")
                 self.assertFalse(opened["session"]["ended"])
                 self.assertEqual(opened["session"]["read_only_transactions"], read_only)
@@ -1445,6 +1468,69 @@ class ProcessTests(unittest.TestCase):
                     session = self.registry.get(tab)
                     if session:
                         self.assertFalse(self.logged(tab, "INSERT INTO tt"))
+
+    def test_open_lowering_safe_updates_rereads_policy_after_password_lookup(self):
+        for field, value in (("read_only", True), ("type", "production")):
+            for existing in (False, True):
+                with self.subTest(field=field, existing=existing):
+                    profile = self.save_profile(type="development")
+                    tab = "open-%s-%s" % (field, existing)
+                    if existing:
+                        self.call("/api/editor/open", tab=tab)
+
+                    def fill(payload):
+                        self.store.save("profile", dict(profile, **{field: value}), profile["id"])
+                        return payload
+                    reply = ed.api_response("/api/editor/open", {
+                        "tab_id": tab, "connection": self.connection, "safe_updates": False, "wait": 15,
+                    }, self.workspace, fill)
+                    self.assertEqual(reply["status"], "refused")
+                    self.assertIn("nothing was sent", reply["message"].lower())
+                    if existing:
+                        self.assertFalse(self.logged(tab, ed.SAFE_UPDATES_OFF))
+                    else:
+                        self.assertIsNone(self.registry.get(tab))
+
+    def test_open_lowering_safe_updates_rereads_policy_after_connecting(self):
+        """Security review: the policy can change while the client connects
+        (after the password-lookup re-read); SET sql_safe_updates = 0 must not
+        be sent then. A session this request started is ended, not left open
+        with safe updates deferred under the old policy."""
+        original = ed._open_session
+        for field, value in (("read_only", True), ("type", "production")):
+            for existing in (False, True):
+                with self.subTest(field=field, existing=existing):
+                    profile = self.save_profile(type="development")
+                    tab = "connect-%s-%s" % (field, existing)
+                    if existing:
+                        self.call("/api/editor/open", tab=tab)
+                    opened = []
+
+                    def connect(*args, **kwargs):
+                        session = original(*args, **kwargs)
+                        opened.append(session)
+                        self.store.save("profile", dict(profile, **{field: value}), profile["id"])
+                        return session
+                    audits = len(self.store.audit_records())
+                    with mock.patch.object(ed, "_open_session", side_effect=connect):
+                        reply = self.call("/api/editor/open", tab=tab, safe_updates=False)
+                    self.assertEqual(reply["status"], "refused")
+                    self.assertIn("nothing was sent", reply["message"].lower())
+                    session = opened[0]
+                    log = self.state / ("session-%d.log" % session.connection_id)
+                    self.assertFalse(log.exists() and ed.SAFE_UPDATES_OFF in log.read_text())
+                    records = self.store.audit_records()
+                    self.assertEqual(len(records), audits + 1)
+                    self.assertEqual((records[0]["operation"], records[0]["status"], records[0]["statements"]),
+                                     ("editor_safe_updates", "refused", [ed.SAFE_UPDATES_OFF]))
+                    if existing:
+                        self.assertIs(self.registry.get(tab), session)
+                        self.assertFalse(session.ended)
+                        self.assertEqual(reply["session"]["state"], "idle")
+                    else:
+                        self.assertIsNone(self.registry.get(tab))
+                        self.assertTrue(session.ended)
+                        self.assertIsNone(reply["session"])
 
     def test_review_drop_database_requires_exact_typed_target(self):
         for ctype in ("production", "development"):
@@ -1607,6 +1693,29 @@ class ProcessTests(unittest.TestCase):
         self.assertTrue(read["session"]["read_only_transactions"])
         lifted = self.call("/api/editor/run", sql="START TRANSACTION READ WRITE")
         self.assertEqual(lifted["status"], "refused")
+
+    def test_explicit_review_tightens_development_policy(self):
+        self.save_profile(type="development")
+        sql = "UPDATE t SET v = 'enabled' WHERE id = 1"
+        asked = self.call("/api/editor/run", sql=sql, require_confirmation=True)
+        self.assertEqual(asked["status"], "needs_confirmation")
+        self.assertIsNone(self.registry.get("tab1"))
+        self.assertEqual(asked["confirmation"]["statements"], [sql])
+        changed = self.call("/api/editor/run", sql=sql + " AND 1=1", require_confirmation=True,
+                            confirmed=True, confirm_token=asked["confirmation"]["token"])
+        self.assertEqual(changed["status"], "needs_confirmation")
+        asked = self.call("/api/editor/run", sql=sql, require_confirmation=True)
+        done = self.call("/api/editor/run", sql=sql, require_confirmation=True,
+                         confirmed=True, confirm_token=asked["confirmation"]["token"])
+        self.assertEqual(done["status"], "complete")
+        self.assertIn(sql, self.session_log())
+        self.assertEqual(self.store.audit_records()[0]["status"], "ok")
+
+    def test_explicit_review_preserves_read_only_refusal(self):
+        self.save_profile(type="development", read_only=True)
+        answer = self.call("/api/editor/run", sql="UPDATE t SET a=1", require_confirmation=True)
+        self.assertEqual(answer["status"], "refused")
+        self.assertIsNone(self.registry.get("tab1"))
 
     def test_development_runs_plain_writes(self):
         self.save_profile(type="development")

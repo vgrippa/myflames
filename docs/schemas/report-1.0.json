@@ -140,6 +140,31 @@
         }
       }
     },
+    "health_metrics": {
+      "type": "array",
+      "description": "Optional (added after the first report-1.0 release): every Health metric of the window with its status (ok, info and unknown included), the health-1.0 metric fields minus link, learn, sources and sparkline. Findings keep only watch and problem metrics; empty when Health did not run.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "status"],
+        "properties": {
+          "key": {"type": "string"},
+          "group": {"type": ["string", "null"]},
+          "label": {"type": ["string", "null"]},
+          "explain": {"type": ["string", "null"]},
+          "unit": {"type": ["string", "null"]},
+          "value": {"type": ["number", "null"]},
+          "delta": {"type": ["number", "null"]},
+          "rate": {"type": ["number", "null"]},
+          "max": {"type": ["number", "null"]},
+          "status": {"type": "string", "enum": ["ok", "watch", "problem", "info", "unknown"]},
+          "why": {"type": ["string", "null"]},
+          "rule": {"type": ["string", "null"]},
+          "detail": {"type": ["string", "null"]},
+          "inputs": {"type": ["object", "null"]}
+        }
+      }
+    },
     "notes": {"type": "array", "items": {"type": "string"}},
     "source": {
       "type": "object",
@@ -273,6 +298,7 @@
         },
         "family": {"$ref": "#/$defs/family"},
         "status": {"$ref": "#/$defs/status"},
+        "state": {"type": ["string", "null"], "description": "Optional Health diagnostic state, preserved from health-1.0 (for example room or not_applicable). Absent in older reports; null when unavailable."},
         "title": {"type": "string"},
         "headline": {"type": "string"},
         "verdict": {"type": "string", "description": "What this server shows, without the rule."},

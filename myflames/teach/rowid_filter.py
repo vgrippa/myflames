@@ -161,7 +161,7 @@ def render():
 
     return _html.render_page(
         lesson_id="rowid_filter",
-        title="Rowid Filter \u2014 bitmap pre-filter before table access",
+        title="Rowid Filter: bitmap pre-filter before table access",
         subtitle=(
             "See how MariaDB scans a filtering index to build a rowid bitmap, "
             "then skips table-row fetches for non-matching rows."

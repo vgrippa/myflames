@@ -88,6 +88,25 @@ class SQLTests(unittest.TestCase):
     def log(self):
         return '\n'.join(p.read_text() for p in self.state.glob('session-*.log'))
 
+    def test_yes_records_only_real_outcome_on_both_profile_types(self):
+        for ctype in ('development', 'production'):
+            with self.subTest(type=ctype):
+                for profile in self.store.list('profile'):
+                    self.store.delete('profile', profile['id'])
+                self.profile(type=ctype)
+                before = {r['id'] for r in self.store.audit_records()}
+                code, out, err = self.invoke(['--profile', 'test', '-e', 'CREATE TABLE t (id int)', '--yes'])
+                self.assertEqual(code, 0, err)
+                records = [r for r in self.store.audit_records() if r['id'] not in before]
+                self.assertEqual([r['status'] for r in records], ['ok'])
+
+    def test_development_multistatement_confirmation_grammar(self):
+        self.profile(type='development')
+        code, out, err = self.invoke(['--profile', 'test', '-e',
+                                     'START TRANSACTION; UPDATE t SET v = 1; COMMIT', '--yes'])
+        self.assertNotIn('statements is one', err)
+        self.assertIn('these 3 statements include one', err)
+
     def test_review_output_and_insert_table(self):
         target = self.root / "result.sql"
         code, out, err = self.invoke(["-e", "SELECT 7 AS n", "--format", "insert",
@@ -193,8 +212,7 @@ class SQLTests(unittest.TestCase):
         self.assertEqual([r['rows'] for r in results if r['type'] == 'rows'], [[['42']], [['1', 'before']]])
         self.assertEqual(len(list(self.state.glob('session-*.log'))), 1)
         records = self.store.audit_records()
-        self.assertEqual([r['status'] for r in records], ['ok', 'refused'])
-        self.assertEqual(records[1]['outcome'], 'needs_confirmation')
+        self.assertEqual([r['status'] for r in records], ['ok'])
         self.assertEqual(records[0]['surface'], 'cli')
         self.assertEqual(records[0]['operation'], 'sql')
         self.assertEqual(records[0]['status'], 'ok')
@@ -306,8 +324,7 @@ class SQLTests(unittest.TestCase):
                 self.assertEqual(code, expected, err)
                 self.assertIn('Run these statements? [y/N]', err)
         records = self.store.audit_records()
-        self.assertEqual(sorted(r['status'] for r in records), ['declined', 'ok', 'refused', 'refused'])
-        self.assertTrue(all(r['outcome'] == 'needs_confirmation' for r in records if r['status'] == 'refused'))
+        self.assertEqual(sorted(r['status'] for r in records), ['declined', 'ok'])
 
     def test_review_interrupted_confirmation_is_declined(self):
         for error in (KeyboardInterrupt(), EOFError()):
@@ -446,7 +463,8 @@ class SQLTests(unittest.TestCase):
         self.assertEqual(len(tokens), 2)
         self.assertNotEqual(tokens[0], tokens[1])
         records = self.store.audit_records()
-        self.assertEqual([r['status'] for r in records], ['ok', 'refused', 'refused'])
+        self.assertEqual([r['status'] for r in records], ['ok', 'refused'])
+        self.assertEqual(records[1]['outcome'], 'needs_confirmation')
         self.assertEqual(json.loads(out)['audit_id'], records[0]['id'])
 
     def test_bad_input(self):

@@ -22,8 +22,7 @@ def _attr_escape(s):
     # an attribute is ever single-quoted.
     if s is None:
         return ""
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            .replace('"', "&quot;").replace("'", "&#39;")
+    return (xml_escape(s).replace("'", "&#39;")
             .replace("\n", "&#10;").replace("\r", ""))
 
 
@@ -38,7 +37,14 @@ def _build_bar_info(op, st, pct, unit_display):
     parts.append(f"Self: {st} {unit_display} ({pct:.1f}%)")
     if abs(tt_val - op["self_time"]) > 0.001:
         parts.append(f"Total: {tt} {unit_display}")
-    parts.append(f"Rows: {op['rows']:.0f}")
+    # An operator without a row counter reads "not measured", never 0; a
+    # MySQL operator that never ran (null rows and loops,
+    # explain_access_path.cc) reads "not executed" (charts/bargraph.ts).
+    if details.get("actual_rows") is None:
+        parts.append("Rows: not executed" if details.get("actual_loops") is None
+                     else "Rows: not measured")
+    else:
+        parts.append(f"Rows: {op['rows']:.0f}")
     parts.append(f"Loops: {loops_t}")
     table = details.get("table_name") or ""
     index = details.get("index_name") or ""

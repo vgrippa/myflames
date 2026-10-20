@@ -3,6 +3,7 @@ import argparse
 import html
 import io
 import json
+import os
 import secrets
 import socket
 import sys
@@ -50,7 +51,7 @@ def _operators(root):
 
 def _discover_response(path, payload):
     """Read-only server views over the saved connection (see discover.py,
-    sessions.py, innodb_status.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
+    sessions.py, innodb_status.py, error_log.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
     config_review.py; the schema picker's list is perf_common.schema_catalog)."""
     from .live import connection_options
     from .connector import MySQLConnection
@@ -63,7 +64,7 @@ def _discover_response(path, payload):
     elif path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # A server-wide information_schema.STATISTICS read is slow on MariaDB.
         options["query_timeout"] = 60
-    elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb"):
+    elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log"):
         options["query_timeout"] = 30
     if path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # schemas: a list (the picker), or the older single schema; none means
@@ -81,7 +82,11 @@ def _discover_response(path, payload):
                 schema = payload.get("schema") or None
                 # table: "schema.table" or {"schema", "table"} (workload attribution).
                 return discover.top_report(conn, payload.get("limit", 20), schema,
-                                           payload.get("order", "total"), payload.get("table") or None)
+                                           payload.get("order", "total"), payload.get("table") or None,
+                                           extra_metrics=bool(payload.get("extra_metrics")))
+            if path == "/api/live/slow-queries":
+                return discover.slow_queries_report(conn, payload.get("min_seconds", 1.0),
+                                                    payload.get("limit", 50), payload.get("source", "auto"))
             if path == "/api/live/running":
                 return discover.running_report(conn, payload.get("min_seconds", 0))
             if path == "/api/live/sessions":
@@ -89,10 +94,15 @@ def _discover_response(path, payload):
                 return sessions_report(conn, active_only=payload.get("active_only", True),
                                        user=payload.get("user") or None, host=payload.get("host") or None,
                                        db=payload.get("db") or None, min_seconds=payload.get("min_seconds", 0),
-                                       limit=payload.get("limit", DEFAULT_LIMIT), identity=True)
+                                       limit=payload.get("limit", DEFAULT_LIMIT), identity=True,
+                                       source_mode=payload.get("source_mode", "auto"),
+                                       locked_only=payload.get("locked_only", False))
             if path == "/api/live/innodb":
                 from .innodb_status import innodb_report
                 return innodb_report(conn, raw=payload.get("raw", False))
+            if path == "/api/live/error-log":
+                from .error_log import DEFAULT_LIMIT, error_log_report
+                return error_log_report(conn, limit=payload.get("limit", DEFAULT_LIMIT), levels=payload.get("levels"))
             if path == "/api/live/locks":
                 from .locks import lock_report
                 return lock_report(conn, payload.get("limit", 500),
@@ -105,15 +115,15 @@ def _discover_response(path, payload):
                 from .waits import DEFAULT_LIMIT, waits_report
                 return waits_report(conn, payload.get("interval", DEFAULT_WINDOW), payload.get("limit", DEFAULT_LIMIT))
             if path == "/api/live/indexes":
-                from .indexes import DEFAULT_LIMIT, index_report
+                from .indexes import index_report
                 from .perf_common import ALL_SCHEMAS_TABLE_LIMIT
-                return index_report(conn, schemas=schemas, limit=payload.get("limit", DEFAULT_LIMIT),
+                return index_report(conn, schemas=schemas, limit=payload.get("limit"),
                                     require_choice_above=None if payload.get("all_schemas") is True
                                     else ALL_SCHEMAS_TABLE_LIMIT)
             if path == "/api/live/tables":
-                from .schema_health import DEFAULT_LIMIT, table_report
+                from .schema_health import table_report
                 from .perf_common import ALL_SCHEMAS_TABLE_LIMIT
-                return table_report(conn, schemas, payload.get("fresh", False), payload.get("limit", DEFAULT_LIMIT),
+                return table_report(conn, schemas, payload.get("fresh", False), payload.get("limit"),
                                     require_choice_above=None if payload.get("all_schemas") is True
                                     else ALL_SCHEMAS_TABLE_LIMIT)
             if path == "/api/live/schemas":
@@ -127,7 +137,7 @@ def _discover_response(path, payload):
                                  all_instances=payload.get("all_instances", False))
             if path == "/api/live/config":
                 from .config_review import config_report
-                return config_report(conn)
+                return config_report(conn, parameters=True)
             if path == "/api/live/instruments":
                 from .ps_instruments import instruments_report
                 return instruments_report(conn)
@@ -291,6 +301,136 @@ def _kill_response(payload, workspace):
         _reraise_redacted(exc, password)
 
 
+def _bulk_kill_review_details(payload):
+    from .locks import _check_kill_args
+    targets = payload.get("targets")
+    if not isinstance(targets, list) or not (1 <= len(targets) <= 200):
+        raise ValueError("Choose between 1 and 200 sessions to kill.")
+    mode = payload.get("mode", "connection")
+    if mode not in ("connection", "query"):
+        raise ValueError("mode must be 'connection' or 'query'.")
+    prepared = []
+    statements = []
+    for item in targets:
+        cid = item.get("connection_id")
+        exp = item.get("expect")
+        _check_kill_args(cid, mode, exp)
+        prepared.append({"connection_id": cid, "mode": mode, "expect": exp})
+        statements.append(("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % cid)
+    return {"targets": prepared, "mode": mode, "statements": statements}
+
+
+def _bulk_kill_prepare(payload, workspace):
+    details = _bulk_kill_review_details(payload)
+    identity = _review_identity(payload.get("connection"), workspace)
+    for t in details["targets"]:
+        if t["expect"].get("connection_identity") != identity:
+            raise ValueError("The connection or its write policy changed. Refresh and review again.")
+    details["review_token"] = _review_tokens(workspace).issue("bulk_kill", identity, details)
+    return details
+
+
+def _bulk_kill_response(payload, workspace):
+    from . import dbops
+    from .live import connection_options
+    from .connector import MySQLConnection
+    from .locks import KILL_TAG, _check_kill_args, kill_session, refused_result
+    targets = payload.get("targets")
+    if not isinstance(targets, list) or not (1 <= len(targets) <= 200):
+        raise ValueError("Choose between 1 and 200 sessions to kill.")
+    mode = payload.get("mode", "connection")
+    if mode not in ("connection", "query"):
+        raise ValueError("mode must be 'connection' or 'query'.")
+    connection = payload.get("connection")
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    plain = connection if isinstance(connection, dict) else {}
+    sample_stmt = ("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % targets[0].get("connection_id", 1)
+    decision = dbops.decide(dbops.classify(sample_stmt), safety["type"], safety["read_only"], safety["profile_name"])
+    blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
+    if blocked:
+        return {
+            "schema_version": "kill-bulk-1.0",
+            "total": len(targets),
+            "killed": 0, "gone": 0, "refused": len(targets), "denied": 0, "errors": 0,
+            "message": blocked[1],
+            "results": [{"connection_id": t.get("connection_id"), "status": blocked[0], "message": blocked[1]} for t in targets]
+        }
+    details = _bulk_kill_review_details(payload)
+    consume = _review_tokens(workspace).consumer(payload.get("review_token"), "bulk_kill",
+                dbops.connection_identity(plain, safety), details)
+    consume()
+    payload = _with_saved_password(payload, workspace)
+    options = connection_options(payload.get("connection"))
+    password = options.get("password")
+    results = []
+    with MySQLConnection(**options) as conn:
+        for t in targets:
+            cid = t.get("connection_id")
+            exp = t.get("expect")
+            stmt = ("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % cid
+            audit = dbops.AuditTrail(workspace.store, "kill_query" if mode == "query" else "kill", "ui",
+                                     connection={k: options.get(k) for k in ("host", "port", "user")}, safety=safety,
+                                     password=password, policy=dbops.policy_summary(decision))
+            try:
+                res = kill_session(conn, cid, mode, exp, audit=audit, decision=decision,
+                                   confirmed=True, connection=plain)
+                results.append({"connection_id": cid, "status": res.get("status"), "message": res.get("message")})
+            except Exception as exc:
+                results.append({"connection_id": cid, "status": "error", "message": str(exc)})
+    killed_cnt = sum(1 for r in results if r["status"] == "killed")
+    gone_cnt = sum(1 for r in results if r["status"] == "gone")
+    refused_cnt = sum(1 for r in results if r["status"] == "refused")
+    denied_cnt = sum(1 for r in results if r["status"] == "denied")
+    error_cnt = sum(1 for r in results if r["status"] == "error")
+    msg = "Mass kill completed: %d killed" % killed_cnt
+    if gone_cnt:
+        msg += ", %d already gone" % gone_cnt
+    if refused_cnt:
+        msg += ", %d refused" % refused_cnt
+    if denied_cnt:
+        msg += ", %d denied" % denied_cnt
+    if error_cnt:
+        msg += ", %d errors" % error_cnt
+    return {
+        "schema_version": "kill-bulk-1.0",
+        "total": len(targets),
+        "killed": killed_cnt, "gone": gone_cnt, "refused": refused_cnt,
+        "denied": denied_cnt, "errors": error_cnt,
+        "message": msg,
+        "results": results,
+    }
+
+
+def _table_columns_response(payload):
+    from .live import connection_options
+    from .connector import MySQLConnection
+    options = connection_options(payload.get("connection"))
+    schema = payload.get("schema")
+    table = payload.get("table")
+    if not schema or not table:
+        raise ValueError("schema and table are required.")
+    from . import perf_common
+    schema, table = perf_common.check_schema(schema), perf_common.check_schema(table)
+    sql = ("/*myflames:tables*/ SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, "
+           "COLUMN_DEFAULT, COLUMN_KEY, EXTRA "
+           "FROM information_schema.COLUMNS "
+           "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
+           "ORDER BY ORDINAL_POSITION" % (perf_common.literal(schema), perf_common.literal(table)))
+    with MySQLConnection(**options) as conn:
+        rows = conn.query_rows(sql)
+        cols = []
+        for r in rows:
+            cols.append({
+                "name": r[0],
+                "type": r[1],
+                "nullable": (r[2] or "").upper() == "YES",
+                "default": r[3],
+                "key": r[4],
+                "extra": r[5] or "",
+            })
+        return {"schema": schema, "table": table, "columns": cols}
+
+
 def _declined_response(payload, store):
     """Record that the person cancelled a write's confirmation sheet: nothing
     was sent. The statements are the ones the sheet showed (redacted)."""
@@ -422,7 +562,8 @@ def _lifecycle_prepare(payload, options, workspace, passwords):
             return lc.prepare_dump(conn, options, payload.get("directory") or "",
                                    schemas=_lifecycle_list(payload.get("schemas"), "schemas"),
                                    tables=_lifecycle_list(payload.get("tables"), "tables"), threads=threads,
-                                   prefer_shell=payload.get("prefer_shell") is not False)
+                                   prefer_shell=payload.get("prefer_shell") is not False,
+                                   options=payload.get("options"))
         if operation == "restore":
             return lc.prepare_restore(conn, options, payload.get("directory") or "",
                                       schema=payload.get("schema") or None,
@@ -573,6 +714,16 @@ def _lifecycle_jobs_response(payload, workspace):
     return {"schema_version": "lifecycle-jobs-1.0", "jobs": jobs}
 
 
+def _dump_tool_capabilities(report):
+    """Publish options for detected tools without executing a dump."""
+    from .dump_options import capability_catalog
+    for name, tool in report.get('tools', {}).items():
+        if name in ('mysqlsh', 'mysqldump', 'mariadb-dump'):
+            tool['dump_capabilities'] = capability_catalog(name, tool_version=tool.get('version') or '')
+            tool['dump_table_capabilities'] = capability_catalog(name, table_scope=True, tool_version=tool.get('version') or '')
+    return report
+
+
 def _lifecycle_response(path, payload, workspace):
     """Server lifecycle endpoints (lifecycle.py; contract in docs/DEVELOPER_REFERENCE.md)."""
     from . import dbops, lifecycle as lc
@@ -595,8 +746,13 @@ def _lifecycle_response(path, payload, workspace):
         return job.snapshot()
     if path == "/api/lifecycle/start":
         return _lifecycle_start(payload, workspace)
+    if path == "/api/lifecycle/choose-directory":
+        if payload:
+            raise ValueError("Folder selection does not accept arguments.")
+        from .folder_picker import choose_directory
+        return choose_directory()
     if path == "/api/lifecycle/tools" and not isinstance(payload.get("connection"), dict):
-        return lc.detect_tools()
+        return _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
     if path in ("/api/lifecycle/upgrade-check", "/api/lifecycle/prepare") and payload.get("config_path") is not None:
         raise ValueError("config_path is not accepted over HTTP; use the CLI --config-path option.")
     connection = payload.get("connection")
@@ -609,7 +765,7 @@ def _lifecycle_response(path, payload, workspace):
         passwords.append((payload.get("connection") or {}).get("password"))
         options = _lifecycle_connection(payload.get("connection"), safety)
         if path == "/api/lifecycle/tools":
-            tools = lc.detect_tools()
+            tools = _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
             with lc._connect(lc.LifecycleConnection, options) as conn:
                 server = lc.read_server(conn, options)
             return dict(tools, server={k: server[k] for k in ("engine", "version")},
@@ -861,8 +1017,8 @@ def _replication_response(path, payload, workspace):
 # Endpoints that open a database connection. Each accepts connection.profile_id
 # so a remembered password is filled in on the server, for that request only.
 #: Read-only live server views answered by _discover_response.
-_SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/running", "/api/live/sessions", "/api/live/locks",
-                      "/api/live/innodb", "/api/live/health",
+_SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-queries", "/api/live/running", "/api/live/sessions", "/api/live/locks",
+                      "/api/live/innodb", "/api/live/error-log", "/api/live/health",
                       "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
                       "/api/live/io", "/api/live/config", "/api/live/instruments",
                       "/api/live/report", "/api/live/explain-connection")
@@ -871,7 +1027,7 @@ _SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/running", "/api/live/sessions"
 #: The Query editor's run and commit (editor_session.py) are writes too: the
 #: policy runs first and the saved password is filled only after it.
 _EDITOR_WRITE_PATHS = ("/api/editor/run", "/api/editor/commit")
-_WRITE_PATHS = ("/api/live/kill",) + _EDITOR_WRITE_PATHS
+_WRITE_PATHS = ("/api/live/kill", "/api/live/kill/bulk") + _EDITOR_WRITE_PATHS
 #: Editor open and stop connect with the request's connection (stop sends
 #: KILL QUERY for the tab's own session from a second connection).
 _EDITOR_CONNECTION_PATHS = ("/api/editor/open", "/api/editor/stop")
@@ -890,7 +1046,7 @@ _LIFECYCLE_PATHS = _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE_PATHS + ("/api/lifec
 #: The jobs of one connection (answered by _lifecycle_jobs_response): opens no
 #: database connection, so it is neither a read nor a write path.
 _LIFECYCLE_JOB_LIST_PATHS = ("/api/lifecycle/jobs",)
-_LIFECYCLE_PATHS = _LIFECYCLE_PATHS + _LIFECYCLE_JOB_LIST_PATHS
+_LIFECYCLE_PATHS = _LIFECYCLE_PATHS + _LIFECYCLE_JOB_LIST_PATHS + ("/api/lifecycle/choose-directory",)
 _WRITE_PATHS = _WRITE_PATHS + _LIFECYCLE_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE_PATHS
 #: Replication (replication.py, answered by _replication_response). Status only
@@ -909,7 +1065,8 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _REPLICATION_READ_PATHS + _REPLICATION_W
 #: schema, the columns and indexes of one table. Read-only, with the saved
 #: password like the views; answered by _catalog_response.
 _CATALOG_PATHS = ("/api/live/catalog",)
-_CONNECTION_PATHS = _CONNECTION_PATHS + _CATALOG_PATHS
+_TABLE_COLUMNS_PATHS = ("/api/live/table-columns",)
+_CONNECTION_PATHS = _CONNECTION_PATHS + _CATALOG_PATHS + _TABLE_COLUMNS_PATHS
 
 from .schema_diagram_api import PATHS as _DIAGRAM_PATHS, READ_PATH as _DIAGRAM_READ_PATH  # noqa: E402
 _CONNECTION_PATHS = _CONNECTION_PATHS + (_DIAGRAM_READ_PATH,)
@@ -931,6 +1088,8 @@ from .accounts_api import READ_PATHS as _ACCOUNT_READ_PATHS, WRITE_PATHS as _ACC
 _ACCOUNT_PATHS = _ACCOUNT_READ_PATHS + _ACCOUNT_WRITE_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _ACCOUNT_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
+_APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download')
+
 
 
 def _accounts_response(path, payload, workspace):
@@ -1136,6 +1295,9 @@ def _session_response(path, payload, workspace):
 def api_response(path, payload, workspace=None):
     if not isinstance(payload, dict):
         raise ValueError("Expected a JSON request object.")
+    if path == "/api/analysis/prepare-query":
+        from .analysis_query import prepare
+        return prepare(payload.get("query"))
     if path.startswith("/api/session/"):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
@@ -1144,6 +1306,11 @@ def api_response(path, payload, workspace=None):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
         return _audit_response(path, payload, workspace.store)
+    if path.startswith("/api/table-data/"):
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        from . import table_data
+        return table_data.response(path, payload, workspace, lambda value: _with_saved_password(value, workspace))
     if path.startswith("/api/editor/"):
         # The Query editor's per-tab sessions (editor_session.py). Run and
         # commit fill the saved password only after the write policy.
@@ -1152,6 +1319,15 @@ def api_response(path, payload, workspace=None):
         from . import editor_session
         return editor_session.api_response(path, payload, workspace,
                                            lambda value: _with_saved_password(value, workspace))
+    if path == "/api/app/update/check":
+        from . import app_update
+        return app_update.check_for_updates(force=payload.get("force") is True)
+    if path == "/api/app/update/download":
+        from . import app_update
+        return app_update.download_binary_update(
+            asset_url=payload.get("asset_url"),
+            release_url=payload.get("release_url")
+        )
     if path.startswith("/api/lifecycle/"):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
@@ -1200,6 +1376,12 @@ def api_response(path, payload, workspace=None):
             return _kill_prepare(payload, workspace)
         if path == "/api/live/kill":
             return _kill_response(payload, workspace)
+        if path == "/api/live/kill/bulk/prepare":
+            return _bulk_kill_prepare(payload, workspace)
+        if path == "/api/live/kill/bulk":
+            return _bulk_kill_response(payload, workspace)
+        if path == "/api/live/table-columns":
+            return _table_columns_response(payload)
         if path in _REPLICATION_PATHS:
             return _replication_response(path, payload, workspace)
         if path in _CATALOG_PATHS:
@@ -1299,6 +1481,8 @@ class WorkspaceServer(ThreadingHTTPServer):
         from .lifecycle import LifecycleJobs
         # Dump, restore and clone jobs; running ones are cancelled on close.
         self.lifecycle = LifecycleJobs()
+        from .table_data import TableData
+        self.table_data = TableData()
         # Browser authentication is separate from the CSRF header. Only the
         # one-time launch URL can establish the HttpOnly session cookie.
         self.token = secrets.token_urlsafe(32)
@@ -1341,6 +1525,9 @@ class WorkspaceServer(ThreadingHTTPServer):
         registry = getattr(self, "replication_loops", None)
         if registry is not None:
             registry.stop_all(wait=True)
+        table_data = getattr(self, "table_data", None)
+        if table_data is not None:
+            table_data.close()
         self.jobs.close()
         self.editor.close()
         self.lifecycle.close()
@@ -1352,10 +1539,10 @@ _LAUNCH_REFUSAL_STYLE = """<style id="launch-refusal-style">
 /* Launch refusal: the app's font, surfaces and spacing without a script. */
 #root:has(> .launch-refusal) {
   --bg: #ffffff;
-  --surface-pane: #f6f6f8;
-  --ink: #111114;
-  --ink-muted: #686873;
-  --line: #e5e5ea;
+  --surface-pane: #f4f5f6;
+  --ink: #202429;
+  --ink-muted: #59616b;
+  --line: #d1d5da;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
   --text-md: 13px;
   --leading-md: 20px;
@@ -1393,11 +1580,11 @@ _LAUNCH_REFUSAL_STYLE = """<style id="launch-refusal-style">
 @media (prefers-color-scheme: dark) {
   #root:has(> .launch-refusal) {
     color-scheme: dark;
-    --bg: #1c1c1e;
-    --surface-pane: #252528;
-    --ink: #f2f2f5;
-    --ink-muted: #a1a1aa;
-    --line: #38383c;
+    --bg: #151719;
+    --surface-pane: #1c1e21;
+    --ink: #ededee;
+    --ink-muted: #a5a9af;
+    --line: #34383d;
   }
 }
 </style>"""
@@ -1435,6 +1622,64 @@ class _HeaderDeadlineReader(io.RawIOBase):
             self.raw.close()
         finally:
             super().close()
+
+
+#: Endpoints that turn plan JSON into a view; every other endpoint reads a
+#: server, a store or a job, so the plan wording would mislead there.
+_PLAN_PATHS = ("/api/analyze", "/api/render", "/api/report", "/api/compare")
+
+
+def _unexpected_error_message(path):
+    """The neutral 500 text for *path*. The response never carries the cause."""
+    if path in _PLAN_PATHS:
+        return "Could not render this plan. Try another view or the CLI."
+    if path.startswith("/api/live/"):
+        return "Could not read this from the server. Try Refresh or the CLI."
+    return "Could not complete the request. Try again or use the CLI."
+
+
+def _secret_values(value, store=None, found=None, depth=0):
+    """Every non-empty string stored under a key that names a password (any
+    depth), and the saved password of each connection that names a profile
+    and sends none, so a traceback never carries one."""
+    found = set() if found is None else found
+    if depth > 12:
+        return found
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and "password" in key.lower() and isinstance(item, str) and item:
+                found.add(item)
+            else:
+                _secret_values(item, store, found, depth + 1)
+        if store is not None and value.get("profile_id") and not value.get("password"):
+            try:
+                saved = store.connection_with_saved_password(value).get("password")
+            except Exception:
+                saved = None
+            if isinstance(saved, str) and saved:
+                found.add(saved)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _secret_values(item, store, found, depth + 1)
+    return found
+
+
+def _log_unexpected_error(path, exc_info, payload=None, store=None):
+    """Write the traceback of an unexpected error to stderr, never to the
+    response, with the request's passwords (typed or saved) removed."""
+    import traceback
+    try:
+        text = "".join(traceback.format_exception(*exc_info))
+        variants = set()
+        for secret in _secret_values(payload, store):
+            # Also as it reads inside a repr or JSON text of the exception.
+            variants.update((secret, repr(secret)[1:-1], json.dumps(secret)[1:-1]))
+        for secret in sorted(variants, key=len, reverse=True):
+            text = text.replace(secret, "[redacted]")
+        sys.stderr.write("myflames: unexpected error in POST %s\n%s" % (path, text))
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 class WorkspaceHandler(BaseHTTPRequestHandler):
@@ -1612,8 +1857,10 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/profiles/list", "/api/profiles/save", "/api/profiles/delete",
                              "/api/profiles/forget-password",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
-                             "/api/live/top", "/api/live/running", "/api/live/sessions",
-                             "/api/live/locks", "/api/live/innodb", "/api/live/kill", "/api/live/kill/prepare",
+                             "/api/live/top", "/api/live/slow-queries", "/api/live/running", "/api/live/sessions",
+                             "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/kill", "/api/live/kill/prepare",
+                             "/api/live/kill/bulk", "/api/live/kill/bulk/prepare",
+                             "/api/live/table-columns",
                              "/api/live/health", "/api/live/waits", "/api/live/indexes",
                              "/api/live/tables", "/api/live/schemas",
                              "/api/live/io", "/api/live/config", "/api/live/instruments",
@@ -1623,10 +1870,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/session/settings",
                              "/api/audit/list", "/api/audit/export", "/api/audit/settings",
                              "/api/audit/declined",
+                             "/api/table-data/open", "/api/table-data/prepare", "/api/table-data/apply",
+                             "/api/table-data/decline", "/api/table-data/status", "/api/table-data/cancel", "/api/table-data/close",
                              "/api/editor/open", "/api/editor/run", "/api/editor/status", "/api/editor/preview",
                              "/api/editor/stop", "/api/editor/commit", "/api/editor/rollback",
-                             "/api/editor/close", "/api/editor/history", "/api/editor/export") + _LIFECYCLE_PATHS \
-                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS:
+                             "/api/editor/close", "/api/editor/history", "/api/editor/export", "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
+                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _APP_UPDATE_PATHS:
             self._send(404, {"error": "Not found."})
             return
         if self.headers.get_content_type() != "application/json":
@@ -1635,6 +1884,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         from .workspace_store import SessionConflict, SessionTooLarge
         from .editor_session import EditorError
         session = self.path == "/api/session/save"
+        payload = None
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= (MAX_SESSION_BODY if session else MAX_BODY) or self.headers.get("Transfer-Encoding"):
@@ -1659,13 +1909,14 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             return
         except Exception:
-            self._send(500, {"error": "Could not render this plan. Try another view or the CLI."})
+            _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+            self._send(500, {"error": _unexpected_error_message(self.path)})
 
 
 def cmd_ui(argv):
     parser = argparse.ArgumentParser(
         prog="myflames ui",
-        description="Open the local Performance workspace in your browser.",
+        description="Open the local Performance workspace in your browser (deprecated; use the desktop application).",
         epilog="The workspace (open plans, query tabs, connection settings without passwords, "
                "and the current screen) is autosaved to ~/.myflames/workspace.sqlite3 and "
                "restored on the next launch. Turn this off in the UI under Settings, "
@@ -1687,6 +1938,8 @@ def cmd_ui(argv):
     except OSError as exc:
         parser.exit(2, "Cannot start the UI: %s. Try --port 0.\n" % exc)
     with server:
+        if not os.environ.get("MYFLAMES_DESKTOP_DATA"):
+            sys.stderr.write("warning: 'myflames ui' (browser workspace) is deprecated; use the standalone desktop application (myflames.app).\n")
         sys.stderr.write("myflames UI: %s\nPress Ctrl+C to stop.\n" % server.launch_url)
         if not args.no_browser:
             try:

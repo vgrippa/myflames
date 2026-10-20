@@ -151,8 +151,7 @@ def _digest_capture(args, connection, password):
     parameterized SQL when the server kept no runnable sample statement."""
     import shlex
     from .connector import MySQLConnection
-    from .discover import digest_query, find_statement, short_digest
-    from .live import capture_problem
+    from .discover import digest_capture_problem, digest_query, find_statement, short_digest
     options = _connection_options(connection)
     with MySQLConnection(**options) as conn:
         found = find_statement(conn, args.digest, connection.get('database'))
@@ -160,7 +159,7 @@ def _digest_capture(args, connection, password):
     label = 'Digest %s%s' % (short_digest(statement['digest']),
                              ' (schema %s)' % statement['schema'] if statement['schema'] else '')
     query = digest_query(statement)
-    problem = capture_problem(query['text'])
+    problem = digest_capture_problem(query)
     if problem:
         _fail('%s cannot be captured: %s' % (label, problem), password)
     schema = connection.get('database') or statement['schema']
@@ -246,6 +245,8 @@ def cmd_capture(argv):
         result.setdefault('schema_version', 'capture-1.0')
         result.setdefault('myflames_version', __version__)
         _emit_text(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + '\n', args.output, quiet=args.quiet)
+        _notes([w for w in result.get('warnings') or () if isinstance(w, str) and w.startswith('myflames supports ')],
+               args.quiet)
     except KeyboardInterrupt:
         if job is not None:
             job.cancel()
@@ -337,13 +338,32 @@ def _discover_run(args, work, query_timeout=12):
         options = _connection_options(settings)
         options['query_timeout'] = query_timeout
         with MySQLConnection(**options) as conn:
-            return work(conn)
+            result = work(conn)
+            _version_note(conn, getattr(args, 'quiet', False), result)
+            return result
     except KeyboardInterrupt:
         _fail('Cancelled.', password)
     except EOFError:
         _fail('Password prompt cancelled.', password)
     except (ValueError, TypeError, OSError, ConnectorError) as exc:
         _fail(exc, password)
+
+
+def _version_note(conn, quiet, report=None):
+    """Note on stderr when the server is below the supported floor. Uses the
+    version the command already read; never sends a query of its own."""
+    from .server_info import unsupported_version_note
+    version = getattr(conn, '_version_cache', None)
+    comment = getattr(conn, '_version_comment_cache', None) or ''
+    if not version and isinstance(report, dict):
+        # Most readers use SHOW GLOBAL VARIABLES rather than the connection's
+        # cached @@version. Privileges calls this field version.
+        version = report.get('server_version') or report.get('version')
+        comment = report.get('engine') or ''
+    if version:
+        note = unsupported_version_note(version, comment)
+        if note:
+            _notes([note], quiet)
 
 
 def _notes(notes, quiet):
@@ -567,6 +587,43 @@ def cmd_innodb(argv):
             for item in tripped:
                 sys.stderr.write(terminal_text('  [%s] %s: %s %s\n' % (item['status'], item['title'], item['label'], item['text'])))
         raise SystemExit(1)
+
+
+def cmd_error_log(argv):
+    """Read the MySQL error log buffer or a verified local MariaDB log tail."""
+    from .error_log import DEFAULT_LIMIT, MAX_LIMIT, at_or_worse, check_levels, error_log_report, format_text
+    parser = _discover_parser(
+        'error-log', 'Show the Error log: recent entries, levels and current-run error counts.',
+        'Read-only. MySQL needs SELECT on performance_schema.error_log and a Performance Schema logging sink. '
+        'MariaDB reads at most the last 1 MiB of a verified local error log file. '
+        'Exit codes: 0 success, 1 the --fail-on threshold was reached, '
+        '2 bad input, connection failure, or an unavailable error log (including with --fail-on).')
+    parser.add_argument('--limit', type=_bounded_integer(1, MAX_LIMIT), default=DEFAULT_LIMIT, metavar='N',
+                        help='List at most N entries, 1–%d (default: %d).' % (MAX_LIMIT, DEFAULT_LIMIT))
+    parser.add_argument('--level', metavar='LEVEL[,LEVEL...]',
+                        help='Include system,error,warning,note levels (case-insensitive; default: all).')
+    parser.add_argument('--fail-on', choices=('problem', 'watch'), metavar='LEVEL',
+                        help="Exit 1 at LEVEL or worse: 'watch' for current-run Error entries. "
+                             "This view never reports 'problem'.")
+    _add_output_args(parser, 'the error-log-1.0 report')
+    args = parser.parse_args(argv)
+    try:
+        levels = check_levels(args.level)
+    except ValueError as exc:
+        parser.error(str(exc))
+    report = _discover_run(args, lambda conn: error_log_report(conn, limit=args.limit, levels=levels), query_timeout=30)
+    if not report['available']:
+        # An unavailable read still has a useful machine-readable result.
+        # Keep the documented exit 2 and the plain stderr diagnostic.
+        if args.json:
+            _emit_report(args, report, format_text)
+        _fail(' '.join(text for text in (report['reason_text'], report['how_to_view']) if text))
+    _emit_report(args, report, format_text)
+    if args.fail_on:
+        tripped = at_or_worse(report, args.fail_on)
+        _notes(['%s: %s (--fail-on %s)' % ('FAIL' if tripped else 'OK', report['summary']['text'], args.fail_on)], args.quiet)
+        if tripped:
+            raise SystemExit(1)
 
 
 def cmd_locks(argv):
@@ -846,7 +903,7 @@ def cmd_tables(argv):
                         help='Show at most N rows per section, 1–5000 (default: %d).' % DEFAULT_LIMIT)
     parser.add_argument('--fail-on', choices=('problem', 'watch'), metavar='LEVEL',
                         help="Exit 1 if any table is at LEVEL or worse: 'problem', or 'watch' (watch or problem).")
-    _add_output_args(parser, 'the schema-1.0 report')
+    _add_output_args(parser, 'the schema-2.0 report')
     args = parser.parse_args(argv)
     report = _discover_run(args, lambda conn: table_report(conn, args.schema, args.fresh, args.limit,
                                                                   require_choice_above=None if args.all_schemas else 2000),

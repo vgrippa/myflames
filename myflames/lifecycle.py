@@ -44,11 +44,11 @@ import threading
 import time
 import uuid
 
-from . import dbops, privileges
+from . import dbops, privileges, dump_options
 from .connector import ConnectorError, MySQLConnection, terminal_text
 from .perf_common import Reader, ident, literal, now
 # Public compatibility export, including MariaDB tool banner precedence.
-from .server_info import detect_flavor, tool_version_tuple as version_tuple
+from .server_info import detect_flavor, tool_version_tuple as version_tuple, unsupported_version_note
 
 TAG = '/*myflames:lifecycle*/ '
 TOOLS = ('mysqlsh', 'mysqldump', 'mysqlpump', 'mariadb-dump', 'mariadb-backup',
@@ -114,6 +114,59 @@ class RestoreTargetMismatch(Refused):
     """The typed restore target differs from the reviewed target; nothing ran."""
 
 
+_ANSI = re.compile(r'(?:\x1b|\\u001[bB]|\\x1[bB])\[[0-9;?]*[ -/]*[@-~]')
+_ERROR_WORDS = re.compile(r'error|unsupported|not found|not exist|denied|cannot|can\'t|unknown|failed|refused',
+                          re.I)
+
+
+def strip_ansi(text):
+    """Drop terminal colour codes that MySQL Shell writes even to a pipe."""
+    return _ANSI.sub('', text or '')
+
+
+def tool_error_line(stderr):
+    """The one meaningful line of a failed tool's stderr.
+
+    Colour codes are removed, NOTE and WARNING lines and Shell's trailing
+    "at STDIN:2" position are dropped, and the first line that reads like an
+    error wins (else the first remaining line). Empty output stays empty.
+    """
+    lines = []
+    for raw in strip_ansi(stderr).splitlines():
+        line = re.sub(r'\s+at STDIN:\d+\s*$', '', ' '.join(raw.split()))
+        if line and not re.match(r'(?:NOTE|WARNING|INFO):', line, re.I):
+            lines.append(line)
+    for line in lines:
+        if _ERROR_WORDS.search(line):
+            return line
+    return lines[0] if lines else ''
+
+
+def shell_version_gap(tool, server_version):
+    """How MySQL Shell's version compares with the server's: 'major' when the
+    server's major version is higher (the Shell refuses the dump), 'minor'
+    when only the minor is higher (the Shell warns and may fail), else None.
+
+    MySQL Shell modules/util/dump/dumper.cc:5311-5317 throws "Unsupported
+    MySQL Server ... please upgrade the MySQL Shell first" for a higher
+    major; :5319-5334 warns for a server at or above the next minor.
+    """
+    shell = tuple((tool or {}).get('version_tuple') or ())[:2]
+    server = version_tuple(server_version)[:2]
+    if len(shell) < 2 or server == (0, 0):
+        return None
+    if server[0] > shell[0]:
+        return 'major'
+    return 'minor' if server[0] == shell[0] and server[1] > shell[1] else None
+
+
+def shell_version_message(tool, server_version, gap):
+    shell = '.'.join(str(n) for n in (tool.get('version_tuple') or ())[:2])
+    return ('MySQL Shell %s is older than the server (%s) and %s; update MySQL Shell, or rerun with --no-shell '
+            'to use mysqldump.' % (shell, str(server_version).split('-')[0],
+                                   'refuses it' if gap == 'major' else 'may fail on it'))
+
+
 def _clean_env(home):
     # Allowlist rather than deleting MYSQL_PWD alone: no AWS, vault, API, or
     # arbitrary application secrets are inherited by external lifecycle tools.
@@ -158,7 +211,7 @@ def _report_safe(value, passwords=(), field=''):
     return value
 
 
-def detect_tools(path=None, common_dirs=None, job=None):
+def detect_tools(path=None, common_dirs=None, job=None, check_updates=False):
     """Discover each external tool, including deprecated mysqlpump (never offered).
 
     common_dirs=() makes PATH-only discovery deterministic for callers/tests.
@@ -192,7 +245,9 @@ def detect_tools(path=None, common_dirs=None, job=None):
             except (OSError, subprocess.TimeoutExpired) as exc:
                 entry['error'] = type(exc).__name__
         found[name] = entry
-    return {'schema_version': 'lifecycle-tools-1.0', 'tools': found}
+    from .tool_updates import enrich_tools
+    return enrich_tools({'schema_version': 'lifecycle-tools-1.0', 'tools': found},
+                        check_updates=check_updates)
 
 
 def _tool(tools, name):
@@ -586,7 +641,7 @@ class LifecycleJob(object):
                             if omitted:
                                 self.emit('[tool line longer than 8192 bytes omitted]', stream)
                             elif pending:
-                                self.emit(pending.decode('utf-8', 'replace'), stream)
+                                self.emit(strip_ansi(pending.decode('utf-8', 'replace')), stream)
                             pending, omitted = bytearray(), False
                         elif not omitted:
                             pending.append(byte)
@@ -595,7 +650,7 @@ class LifecycleJob(object):
                 if omitted:
                     self.emit('[tool line longer than 8192 bytes omitted]', stream)
                 elif pending:
-                    self.emit(pending.decode('utf-8', 'replace'), stream)
+                    self.emit(strip_ansi(pending.decode('utf-8', 'replace')), stream)
             finally:
                 pipe.close()
         readers = []
@@ -655,7 +710,7 @@ class LifecycleJob(object):
         if overflow.is_set():
             raise LifecycleError('Tool output exceeded the 16 MiB capture limit.')
         if proc.returncode:
-            error = LifecycleError('Tool exited %d: %s' % (proc.returncode, _safe(stderr, self.passwords)[-4000:]))
+            error = LifecycleError('Tool exited %d: %s' % (proc.returncode, _safe(tool_error_line(stderr) or strip_ansi(stderr)[-4000:], self.passwords)))
             error.server_error_code = dbops.error_code(stderr)
             raise error
         return stdout, stderr
@@ -862,6 +917,17 @@ def upgrade_check(conn, target_version, connection=None, tools=None, config_path
               'target_version': '.'.join(str(n) for n in target), 'checks': [],
               'counts': {'error': 0, 'warning': 0, 'notice': 0}, 'manual_checks': []}
     if server['engine'] == 'mariadb':
+        # MariaDB releases are numbered 10.x and later; 5.x through 9.x are
+        # MySQL's numbers, and no tool upgrades MariaDB into MySQL.
+        installed = version_tuple(re.sub(r'^\s*5\.5\.5-', '', server['version']))
+        if target[0] < 10:
+            raise Refused('%s is a MySQL version number, and MariaDB to MySQL is not an upgrade path. '
+                          'Give a MariaDB target at or above the version of this server (%s).'
+                          % (report['target_version'], '.'.join(str(n) for n in installed)))
+        if target < installed:
+            raise Refused('MariaDB upgrade checks need a target at or above the server version: '
+                          'the server is %s and %s is older.'
+                          % ('.'.join(str(n) for n in installed), report['target_version']))
         report.update(method='mariadb_upgrade_guidance', partial=True, status='guidance', limitations=[
             'MySQL Shell does not support MariaDB. Remote metadata is not a substitute for mariadb-upgrade.',
             'After installing upgraded binaries on the server host, run mariadb-upgrade with a 0600 option file. '
@@ -965,6 +1031,9 @@ def _plan(operation, server, connection, request, tool, target, commands, checks
             'server': server, 'connection_key': dbops.connection_identity(connection), 'tool': tool,
             'target': target, 'commands': commands, 'checks': checks, 'warnings': warnings,
             'ready': not any(c['status'] == 'failed' for c in checks)}
+    note = unsupported_version_note(server.get('version'), (server.get('variables') or {}).get('version_comment'))
+    if note:
+        plan['warnings'] = [note] + list(plan['warnings'])
     plan['binding'] = _plan_binding(plan, binding_extra)
     return plan
 
@@ -1032,6 +1101,7 @@ def _samples(conn, catalog, limit=3, max_bytes=1024 * 1024, seconds=5, job=None)
 
 def _shell_dump_expression(request, dry_run=False):
     opts = {'threads': request['threads'], 'consistent': True, 'showProgress': True, 'dryRun': dry_run}
+    opts.update(dump_options.shell_options(request.get('options', {})))
     directory = json.dumps(request['directory'])
     schemas, tables = request['schemas'], request['tables']
     if tables:
@@ -1043,7 +1113,7 @@ def _shell_dump_expression(request, dry_run=False):
 
 
 def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads=4, tools=None, prefer_shell=True,
-                 job=None):
+                 job=None, options=None):
     """Build a reviewable logical dump plan; Shell dryRun runs before confirmation."""
     server = read_server(conn, connection)
     directory = _output_path(directory)
@@ -1061,22 +1131,37 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         offers = [name for name in offers if name != 'mysqlsh']
     tool = _pick(tools, offers, None) if offers else _pick(tools, ('mariadb-dump',) if server['engine'] == 'mariadb' else ('mysqldump',), server['engine'])
     request = dict(directory=directory, schemas=schemas, tables=tables, threads=threads, prefer_shell=prefer_shell)
+    selected_options = dump_options.normalize(options, tool, bool(tables))
+    if selected_options:
+        request['options'] = selected_options
     catalog = _catalog(conn, schemas, tables, include_system=tool['name'] != 'mysqlsh' and not schemas)
     estimate = sum(int(row[4] or 0) + int(row[5] or 0) for row in catalog)
     available = shutil.disk_usage(os.path.dirname(directory)).free
+    required = [('SELECT', 'ALL', 'ALL PRIVILEGES')]
+    if selected_options.get('events', not (tool['name'] == 'mysqlsh' and tables)):
+        required.append(('EVENT', 'ALL', 'ALL PRIVILEGES'))
+    if selected_options.get('triggers', True):
+        required.append(('TRIGGER', 'ALL', 'ALL PRIVILEGES'))
     checks = [_verification('free_space', 'passed' if available >= estimate else 'failed',
                             'Uncompressed table/index estimate; dump size can differ.',
                             estimated_bytes=estimate, available_bytes=available),
-              _privileges_check(conn, [('SELECT', 'ALL', 'ALL PRIVILEGES'), ('EVENT', 'ALL', 'ALL PRIVILEGES'),
-                                       ('TRIGGER', 'ALL', 'ALL PRIVILEGES')])]
+              _privileges_check(conn, required)]
     nontransactional = ['%s.%s' % (r[0], r[1]) for r in catalog if r[2] == 'BASE TABLE' and r[3] != 'InnoDB']
     warnings = ['A consistent snapshot protects InnoDB data only. Concurrent DDL must be avoided.',
-                'Routines, events and triggers are included by SQL dump tools; user accounts are not included in scoped Shell dumps.']
+                'The reviewed tool options determine whether routines, events and triggers are included. '
+                'User accounts are not included in scoped Shell dumps.']
+    if selected_options.get('network_compression'):
+        warnings.append('Connection compression affects network traffic only; the backup file is not compressed.')
     if tool['name'] != 'mysqlsh' and not schemas:
         warnings.append('SQL instance dumps include mysql system tables and account hashes. Restore is scoped to the entire server.')
     if nontransactional:
         warnings.append('Non-InnoDB tables require a separate consistency strategy: ' + ', '.join(nontransactional))
     if tool['name'] == 'mysqlsh':
+        gap = shell_version_gap(tool, server['version'])
+        if gap == 'major':
+            raise Refused(shell_version_message(tool, server['version'], gap))
+        if gap:
+            warnings.append(shell_version_message(tool, server['version'], gap))
         runner = job or LifecycleJob('dump_dry_run', lambda job: None, connection)
         # Some tool versions create their output directory even for dryRun.
         # Never give an unconfirmed tool the user's requested destination.
@@ -1101,7 +1186,7 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
 
 
 def _dump_args(request, tool):
-    args = ['--single-transaction', '--quick', '--routines', '--events', '--triggers', '--hex-blob', '--add-drop-table']
+    args = ['--single-transaction', '--quick'] + dump_options.sql_flags(request.get('options', {}))
     if tool.get('engine') == 'mysql':
         args += ['--set-gtid-purged=OFF']
     if request['tables']:
@@ -1441,13 +1526,18 @@ def _perform_dump(job, conn, plan, connection):
     os.chmod(directory, 0o700)
     started = now()
     catalog, samples = [], []
+    records = []
     complete = False
     verification = []
     def manifest_value(records):
+        selected_options = request.get('options', {})
         return {'schema_version': 'lifecycle-manifest-1.0', 'source': plan['server'],
                 'scope': {'schemas': request['schemas'], 'tables': request['tables']}, 'tool': tool,
                 'options': {'consistent': True, 'threads': request['threads'], 'users': tool['name'] != 'mysqlsh' and not request['schemas'],
-                            'routines': True, 'events': True, 'triggers': True,
+                            'routines': selected_options.get('routines', not (tool['name'] == 'mysqlsh' and request['tables'])),
+                            'events': selected_options.get('events', not (tool['name'] == 'mysqlsh' and request['tables'])),
+                            'triggers': selected_options.get('triggers', True),
+                            'selected': selected_options,
                             'tool_options': _shell_dump_expression(request) if tool['name'] == 'mysqlsh' else _dump_args(request, tool)},
                 'started_at': started, 'finished_at': now(), 'files': records, 'samples': samples,
                 'object_catalog': catalog, 'verification': verification, 'complete': complete}
@@ -1477,16 +1567,13 @@ def _perform_dump(job, conn, plan, connection):
     finally:
         # An interrupted dump is unusable; do not spend hours hashing it on
         # cancellation just to write an incomplete manifest.
-        records = []
-        try:
-            if complete and not job.cancelled.is_set():
-                records = _file_records(directory, job)
-        finally:
-            complete = complete and bool(records) and not job.cancelled.is_set()
-            manifest = _report_safe(manifest_value(records), job.passwords)
-            _save_manifest(directory, manifest)
-            if not complete:
-                job.emit('Partial dump retained at ' + directory)
+        complete = complete and bool(records) and not job.cancelled.is_set()
+        if not complete:
+            records = []
+        manifest = _report_safe(manifest_value(records), job.passwords)
+        _save_manifest(directory, manifest)
+        if not complete:
+            job.emit('Partial dump retained at ' + directory)
     return {'status': 'completed' if complete else 'verification_failed', 'directory': directory,
             'verification': verification, 'manifest': manifest}
 

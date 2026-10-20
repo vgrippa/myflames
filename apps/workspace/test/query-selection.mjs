@@ -172,10 +172,10 @@ try {
     "WHERE customer_id = :c;",
     "SELECT 3",
   ].join("\n");
-  await page.click('.query-tabs [role=tab][aria-selected=true]', { clickCount: 2 });
+  await page.click('.query-tablist [role=tab][aria-selected=true]', { clickCount: 2 });
   await page.locator('[aria-label="Query name"]').fill("Selected orders");
   await page.keyboard.press("Enter");
-  assert.equal(await text('.query-tabs [role=tab][aria-selected=true]'), "Selected orders");
+  assert.equal(await text('.query-tablist [role=tab][aria-selected=true]'), "Selected orders");
   await page.locator(EDITOR).fill(SQL);
   await page.click('button[aria-label="Explain and Run analysis options"]');
   await page.click(".editor-parameters summary");

@@ -138,7 +138,7 @@ def render() -> str:
     <p>The algorithm is <code>Optimize_table_order::greedy_search</code>
     in <code>sql/sql_planner.cc</code>. The doxygen comment above its
     body documents the complexity directly:</p>
-    <pre style="background:#0f172a;color:#e2e8f0;padding:10px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow-x:auto">
+    <pre style="background:var(--surface-subtle);color:var(--ink);padding:10px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow-x:auto">
 procedure greedy_search
   input: remaining_tables
   output: pplan;
@@ -210,7 +210,7 @@ procedure greedy_search
 
     return _html.render_page(
         lesson_id="join_order",
-        title="Join-order search — why query planning is factorial",
+        title="Join-order search: why query planning is factorial",
         subtitle=(
             "The greedy_search algorithm enumerates partial plans up to "
             "optimizer_search_depth tables ahead, costed by the optimizer, "

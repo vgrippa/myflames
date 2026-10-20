@@ -106,74 +106,74 @@ function buildStage(cost) {
   var eng = TMP_ENGINES[cost.engine];
 
   // Source rows (top)
-  svgText(svg, {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "#0c4a6e"},
+  svgText(svg, {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-token)"},
     "employees table → rows streaming into GROUP BY department");
   var srcRect = anim.svgEl("rect", {
     x: 20, y: 36, width: W - 40, height: 50, rx: 8, ry: 8,
-    fill: "#f0f9ff", stroke: "#0284c7", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(srcRect);
 
   // In-memory temp table (middle): engine name on the left, the limit
   // rule with its value on the right.
-  var memLbl = svgText(svg, {x: 20, y: MEM_Y - 10, "font-size": 13, "font-weight": 700, fill: "#047857"},
+  var memLbl = svgText(svg, {x: 20, y: MEM_Y - 10, "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"},
     "In memory: " + eng.label + " temp table");
   var limitLbl = svgText(svg, {
     x: W - 20, y: MEM_Y - 10, "text-anchor": "end",
-    "font-size": 11.5, "font-weight": 700, fill: "#047857"
+    "font-size": 11.5, "font-weight": 700, fill: "var(--svg-ok)"
   }, limitLabel(cost));
   var memRect = anim.svgEl("rect", {
     x: 20, y: MEM_Y, width: W - 40, height: MEM_H, rx: 8, ry: 8,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5
   });
   svg.appendChild(memRect);
   var barBg = anim.svgEl("rect", {
     x: BAR_X, y: MEM_BAR_Y, width: BAR_W, height: BAR_H, rx: 3, ry: 3,
-    fill: "#d1fae5", stroke: "#a7f3d0", "stroke-width": 1
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)", "stroke-width": 1
   });
   svg.appendChild(barBg);
   var barFill = anim.svgEl("rect", {
-    x: BAR_X, y: MEM_BAR_Y, width: 0, height: BAR_H, rx: 3, ry: 3, fill: "#34d399"
+    x: BAR_X, y: MEM_BAR_Y, width: 0, height: BAR_H, rx: 3, ry: 3, fill: "var(--svg-ok-soft)"
   });
   svg.appendChild(barFill);
   var barPct = svgText(svg, {
     x: BAR_X + BAR_W / 2, y: MEM_BAR_Y + 11, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "#065f46"
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-ok)"
   }, "0%% of limit");
   var memContent = svgText(svg, {
     x: W / 2, y: MEM_Y + 52, "text-anchor": "middle",
-    "font-size": 11.5, "font-weight": 600, fill: "#065f46"
+    "font-size": 11.5, "font-weight": 600, fill: "var(--svg-ok)"
   }, MEM_IDLE_TEXT);
 
   // On-disk temp table (bottom). Everything but the title sits in one
   // group so a single opacity tween brings it to life at conversion.
-  svgText(svg, {x: 20, y: DISK_Y - 10, "font-size": 13, "font-weight": 700, fill: "#991b1b"},
+  svgText(svg, {x: 20, y: DISK_Y - 10, "font-size": 13, "font-weight": 700, fill: "var(--svg-danger)"},
     "On disk: " + eng.disk + " temp table (after conversion)");
   var diskGroup = anim.svgEl("g", {opacity: 0.3});
   svg.appendChild(diskGroup);
   var diskRect = anim.svgEl("rect", {
     x: 20, y: DISK_Y, width: W - 40, height: DISK_H, rx: 8, ry: 8,
-    fill: "#fef2f2", stroke: "#dc2626", "stroke-width": 1.5
+    fill: "var(--svg-danger-soft)", stroke: "var(--svg-danger)", "stroke-width": 1.5
   });
   diskGroup.appendChild(diskRect);
   diskGroup.appendChild(anim.svgEl("rect", {
     x: BAR_X, y: DISK_BAR_Y, width: BAR_W, height: BAR_H, rx: 3, ry: 3,
-    fill: "#fee2e2", stroke: "#fecaca", "stroke-width": 1
+    fill: "var(--svg-danger-soft)", stroke: "var(--svg-danger-soft)", "stroke-width": 1
   }));
   var diskBarFill = anim.svgEl("rect", {
-    x: BAR_X, y: DISK_BAR_Y, width: 0, height: BAR_H, rx: 3, ry: 3, fill: "#f87171"
+    x: BAR_X, y: DISK_BAR_Y, width: 0, height: BAR_H, rx: 3, ry: 3, fill: "var(--svg-danger)"
   });
   diskGroup.appendChild(diskBarFill);
   var diskContent = anim.svgEl("text", {
     x: W / 2, y: DISK_Y + 48, "text-anchor": "middle",
-    "font-size": 11.5, "font-weight": 600, fill: "#991b1b"
+    "font-size": 11.5, "font-weight": 600, fill: "var(--svg-danger)"
   });
   diskContent.textContent = DISK_IDLE_TEXT;
   diskGroup.appendChild(diskContent);
 
   var statusLbl = svgText(svg, {
     x: W / 2, y: H - 14, "text-anchor": "middle",
-    "font-size": 12.5, "font-weight": 600, fill: "#1f2937"
+    "font-size": 12.5, "font-weight": 600, fill: "var(--svg-ink)"
   }, "");
 
   stage = {
@@ -187,8 +187,8 @@ function buildStage(cost) {
 
 function resetStage() {
   if (!stage) return;
-  stage.memRect.setAttribute("fill", "#ecfdf5");
-  stage.memRect.setAttribute("stroke", "#059669");
+  stage.memRect.setAttribute("fill", "var(--svg-ok-soft)");
+  stage.memRect.setAttribute("stroke", "var(--svg-ok)");
   stage.memContent.textContent = MEM_IDLE_TEXT;
   setMemBar(0);
   stage.diskGroup.setAttribute("opacity", 0.3);
@@ -201,9 +201,9 @@ function resetStage() {
 
 // Bar colour eases green -> amber -> red as the table nears its limit.
 function barColor(frac) {
-  if (frac <= 0.6) return "#34d399";
-  if (frac <= 0.8) return anim.lerpColor("#34d399", "#fbbf24", (frac - 0.6) / 0.2);
-  return anim.lerpColor("#fbbf24", "#f87171", clamp01((frac - 0.8) / 0.2));
+  if (frac <= 0.6) return "var(--svg-ok-soft)";
+  if (frac <= 0.8) return anim.lerpColor("var(--svg-ok-soft)", "var(--svg-build)", (frac - 0.6) / 0.2);
+  return anim.lerpColor("var(--svg-build)", "var(--svg-danger)", clamp01((frac - 0.8) / 0.2));
 }
 function setMemBar(frac) {
   var f = clamp01(frac);
@@ -220,11 +220,11 @@ function spawnTuple(text, color, cx, cy) {
   var tw = Math.max(70, text.length * 5.5 + 14);
   g.appendChild(anim.svgEl("rect", {
     x: -tw / 2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
-    fill: color, stroke: "#1f2937", "stroke-width": 1
+    fill: color, stroke: "var(--svg-ink)", "stroke-width": 1
   }));
   var lbl = anim.svgEl("text", {
     x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 8.5, "font-weight": 700, fill: "#ffffff"
+    "font-size": 8.5, "font-weight": 700, fill: "var(--svg-on-solid)"
   });
   lbl.textContent = text;
   g.appendChild(lbl);
@@ -292,7 +292,7 @@ function buildTimeline(cost, c) {
         var fromFrac = before / cost.cap;
         var toFrac = after / cost.cap;
         tl.call(function() {
-          slot.g = spawnTuple(label, "#059669", col, SRC_Y);
+          slot.g = spawnTuple(label, "var(--svg-ok)", col, SRC_Y);
           stage.statusLbl.textContent = "Insert " + label + ": " + fmtN(after) + " of " +
             fmtN(rows) + " rows in memory, " + pctText(toFrac) + " of the " + fmtB(cost.limit) + " limit";
         });
@@ -315,7 +315,7 @@ function buildTimeline(cost, c) {
         slot.x = barEdgeX(1);
         slot.y = memBarMid;
         tl.call(function() {
-          slot.g = spawnTuple(label, "#d97706", col, SRC_Y);
+          slot.g = spawnTuple(label, "var(--svg-build)", col, SRC_Y);
           stage.statusLbl.textContent = "Insert " + label + ": row " + fmtN(cost.cap + 1) + " of " +
             fmtN(rows) + " does not fit under the " + fmtB(cost.limit) + " limit";
         });
@@ -338,8 +338,8 @@ function buildTimeline(cost, c) {
             " table, then copy every row already in memory into it";
         });
         tl.add({from: 0, to: 1, duration: 420, ease: anim.easeOutCubic, onUpdate: function(v) {
-          stage.memRect.setAttribute("fill", anim.lerpColor("#ecfdf5", "#fef2f2", v));
-          stage.memRect.setAttribute("stroke", anim.lerpColor("#059669", "#dc2626", v));
+          stage.memRect.setAttribute("fill", anim.lerpColor("var(--svg-ok-soft)", "var(--svg-danger-soft)", v));
+          stage.memRect.setAttribute("stroke", anim.lerpColor("var(--svg-ok)", "var(--svg-danger)", v));
           stage.diskGroup.setAttribute("opacity", (0.3 + 0.7 * v).toFixed(3));
         }});
         tl.call(function() {
@@ -385,7 +385,7 @@ function buildTimeline(cost, c) {
       var dFrom = before / rows;
       var dTo = after / rows;
       tl.call(function() {
-        slot.g = spawnTuple(label, "#dc2626", col, SRC_Y);
+        slot.g = spawnTuple(label, "var(--svg-danger)", col, SRC_Y);
         stage.statusLbl.textContent = "Insert " + label + ": straight to disk, " +
           fmtN(after - cost.cap) + " rows inserted on disk so far";
       });

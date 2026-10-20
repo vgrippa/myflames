@@ -6,6 +6,7 @@
 // inspector; Kill opens a confirmation sheet with Cancel as the default.
 // It only reads, except a Kill the user confirms.
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useOpenRead } from "./viewOnScreen";
 import { createPortal } from "react-dom";
 import {
   api,
@@ -50,6 +51,7 @@ import {
   ViewLayout,
   ViewStatus,
   moveRowFocus,
+  useScrollEdges,
   type Column,
   type InspectorContent,
   type Selection,
@@ -786,11 +788,14 @@ export function LocksView({
   useEffect(() => {
     if (!auto) return;
     const timer = window.setInterval(() => {
-      const visible = !!root.current && root.current.offsetParent !== null;
+      const view = root.current?.closest<HTMLElement>(".server-view");
+      const visible = !!view && view.offsetParent !== null;
       if (!document.hidden && visible && !disabled && !dialogOpen.current && !running()) loadRef.current();
     }, auto * 1000);
     return () => window.clearInterval(timer);
   }, [auto, disabled, running]);
+
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!loading || running(), read: () => { void loadRef.current(); } });
 
   function openKill(target: KillTarget, trigger: HTMLElement) {
     if (other) return;
@@ -1316,7 +1321,7 @@ export function LocksView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a session, a transaction or a lock to see its details, its plan, and Kill.</p>}
-      status={<ViewStatus loading={loading} error={error} />}
+      status={<><ViewStatus loading={loading} error={error} />{killNote && <KillResultNote note={killNote} noteRef={killNoteRef} onDismiss={() => setKillNote(null)} onRefresh={() => void load(true)} />}</>}
     >
       <div ref={root}>
       {caution && (
@@ -1329,7 +1334,7 @@ export function LocksView({
         {status}
       </p>
       {status && <p className="hint lock-copied">{status}</p>}
-      {killNote && <KillResultNote note={killNote} noteRef={killNoteRef} onDismiss={() => setKillNote(null)} onRefresh={() => void load(true)} />}
+
       {killTarget && report && (
         <KillDialog
           target={killTarget}
@@ -1690,8 +1695,13 @@ function BlockingTree({
   selection: Selection;
 }) {
   const focusKey = rows.some((r) => `tree:${r.path}` === selection.key) ? selection.key : `tree:${rows[0]?.path}`;
+  // Long lock modes scroll sideways; the frame shades an edge with more beyond it.
+  const scroller = useRef<HTMLDivElement>(null);
+  const edges = useRef<HTMLDivElement>(null);
+  useScrollEdges(scroller, edges);
   return (
-    <div className="data-table-wrap lock-tree" role="region" aria-label="Blocking tree" data-rows>
+    <div ref={edges} className="scroll-edges lock-tree-frame">
+    <div ref={scroller} className="data-table-wrap lock-tree" role="region" aria-label="Blocking tree" data-rows>
       <table className="data-table lock-tree-table" role="treegrid" aria-label="Blocking tree">
         {/* Identity and role pills keep their intrinsic width. The outline
             scrolls inside its pane when the inspector takes the remaining room. */}
@@ -1799,6 +1809,7 @@ function BlockingTree({
           })}
         </tbody>
       </table>
+    </div>
     </div>
   );
 }

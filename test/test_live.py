@@ -199,6 +199,42 @@ class TestCaptureProtocol(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def _script(self, code, marker='mk'):
+        import sys
+        job = LiveJob(payload())
+        conn = MagicMock()
+        conn._build_argv.return_value = [sys.executable, '-c', code, 'x', 'y']
+        procs = []
+        real = __import__('subprocess').Popen
+        def spawn(*args, **kwargs):
+            procs.append(real(*args, **kwargs))
+            return procs[-1]
+        with patch('myflames.live.subprocess.Popen', side_effect=spawn):
+            try:
+                return job, procs, job._run_script_isolated(conn, 'SELECT 1;', marker, dict(os.environ), None)
+            except ConnectorError as exc:
+                return job, procs, exc
+
+    def test_script_output_over_the_byte_limit_is_refused_and_reaped(self):
+        flood = "import sys\nwhile True: sys.stdout.buffer.write(b'x' * 4096)"
+        with patch('myflames.live.MAX_STDOUT_BYTES', 100000):
+            job, procs, result = self._script(flood)
+        self.assertIsInstance(result, ConnectorError)
+        self.assertIn('stdout response exceeds the 100000-byte limit', str(result))
+        self.assertIsNotNone(procs[0].poll())
+        noisy = "import sys\nwhile True: sys.stderr.write('e' * 4096)"
+        with patch('myflames.live.MAX_STDERR_BYTES', 100000):
+            job, procs, result = self._script(noisy)
+        self.assertIn('stderr response exceeds', str(result))
+        self.assertIsNotNone(procs[0].poll())
+
+    def test_script_normal_output_still_works(self):
+        code = ("import sys\nsys.stdin.read()\nprint('mk:connection'); print(42); print('plan')\n"
+                "sys.stderr.write('warn')")
+        job, procs, result = self._script(code, 'mk')
+        self.assertEqual(result, ('mk:connection\n42\nplan\n', 'warn'))
+        self.assertIsNone(job.process)
+
     def test_sections_keep_multiline_raw_json_and_status_deltas(self):
         sections = _sections(captured('marker'), 'marker')
         self.assertEqual(json.loads(sections['plan']), json.loads(PLAN))
@@ -318,6 +354,39 @@ class TestCaptureProtocol(unittest.TestCase):
         self.assertIn('[redacted]', job.error)
         self.assertIsNone(job.result)
 
+    def test_analyze_json_on_old_mysql_gets_a_version_message(self):
+        # MySQL 8.0 answers ERROR 1235 for EXPLAIN ANALYZE FORMAT=JSON.
+        self.conn.server_version.return_value = '8.0.46'
+        job = LiveJob(payload())
+        err = "ERROR 1235 (42000) at line 8: This version of MySQL doesn't yet support 'EXPLAIN ANALYZE with JSON format'"
+        with patch.object(job, '_run_script', side_effect=lambda c, s, m: ('', err)):
+            job.run()
+        self.assertEqual(job.state, 'failed')
+        self.assertEqual(job.error, 'EXPLAIN ANALYZE FORMAT=JSON needs MySQL 8.4 or later (this server is 8.0.46); '
+                                    'capture with --mode explain instead.')
+
+    def test_error_positions_from_the_wrapped_script_are_dropped(self):
+        job = LiveJob(payload(mode='explain'))
+        err = "ERROR 1146 (42S02) at line 8: Table 'testdb.nosuch' doesn't exist"
+        with patch.object(job, '_run_script', side_effect=lambda c, s, m: ('', err)):
+            job.run()
+        self.assertNotIn('line 8', job.error)
+        self.assertIn("ERROR 1146 (42S02): Table 'testdb.nosuch' doesn't exist", job.error)
+
+    def test_capture_warns_below_the_supported_floor(self):
+        for version, maria, expected in (('8.0.46', False, 'supports MySQL 8.4 or later'),
+                                         ('10.6.28-MariaDB', True, 'supports MariaDB 10.11 or later'),
+                                         ('11.8.2-MariaDB', True, None), ('9.7.0', False, None)):
+            self.conn.server_version.return_value = version
+            self.conn.is_mariadb.return_value = maria
+            job = LiveJob(payload(mode='explain'))
+            with self.subTest(version=version), patch.object(job, '_run_script', side_effect=lambda c, s, m: (captured(m), '')):
+                job.run()
+                notes = [w for w in job.result['warnings'] if 'myflames supports' in w]
+                self.assertEqual(bool(notes), expected is not None)
+                if expected:
+                    self.assertIn(expected, notes[0])
+
     def test_cancel_before_running_never_launches_query(self):
         job = LiveJob(payload())
         job.cancel()
@@ -397,12 +466,12 @@ class TestCaptureProtocol(unittest.TestCase):
 
     def _interrupted_client(self, events, marker='marker'):
         """A client that printed its connection ID and is still running when
-        Ctrl+C arrives (stderr.read raises KeyboardInterrupt)."""
+        Ctrl+C arrives (the stderr read raises KeyboardInterrupt)."""
         self.conn._build_argv.return_value = ['mysql', '-e', '']
         self.conn.run.side_effect = lambda sql, timeout=None: events.append(('server', sql))
         proc = MagicMock()
         proc.stdout = io.BytesIO((marker + ':connection\n42\n').encode())
-        proc.stderr.read.side_effect = KeyboardInterrupt
+        proc.stderr.read1.side_effect = KeyboardInterrupt
         proc.poll.return_value = None
         proc.terminate.side_effect = lambda: events.append('terminate')
         proc.kill.side_effect = lambda: events.append('kill client')
@@ -411,10 +480,10 @@ class TestCaptureProtocol(unittest.TestCase):
     class _InlineThread:
         """Runs the stdout reader to completion on start(), so the
         connection ID is known before the interrupt, without sleeping."""
-        def __init__(self, target, daemon=None):
-            self.target = target
+        def __init__(self, target, args=(), daemon=None):
+            self.target, self.args = target, args
         def start(self):
-            self.target()
+            self.target(*self.args)
         def join(self, timeout=None):
             pass
 

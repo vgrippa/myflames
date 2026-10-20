@@ -175,7 +175,7 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers['Content-Type'].split(';')[0], 'image/png')
         self.assertEqual(body, logos[0].read_bytes())
-        self.assertEqual(body, (Path(__file__).resolve().parents[1] / 'docs/brand/myflames-icon-v2.png').read_bytes())
+        self.assertEqual(body, (Path(__file__).resolve().parents[1] / 'docs/brand/myflames-icon-v3.png').read_bytes())
         self.assertTrue(body.startswith(b'\x89PNG\r\n\x1a\n'))
         self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
 
@@ -193,7 +193,7 @@ class TestWorkspaceAPI(unittest.TestCase):
     def test_page_favicon_versions_stable_logo_url(self):
         status, body, _ = self.request('/', method='GET')
         self.assertEqual(status, 200)
-        self.assertIn(b'href="/assets/myflames-logo.png?v=2"', body)
+        self.assertIn(b'href="/assets/myflames-logo.png?v=3"', body)
         status, icon, headers = self.request('/assets/myflames-logo.png?v=2', method='GET')
         self.assertEqual(status, 200)
         self.assertEqual(icon, (ASSET_DIR / 'assets' / 'myflames-logo.png').read_bytes())

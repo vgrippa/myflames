@@ -38,9 +38,11 @@
 .lock-col-wait {
   width: calc(var(--space-6) * 3);
 }
-.locks-panel .has-inspector .lock-col-statement,
-.locks-panel .has-inspector .tree-statement {
-  display: none;
+.lock-col-statement {
+  width: 100%;
+}
+.lock-tree-table .tree-statement {
+  min-width: 260px;
 }
 .lock-tree-table th,
 .lock-tree-table td {
@@ -55,7 +57,8 @@
   text-overflow: clip;
 }
 .lock-tree-table .tree-statement .cell-truncate {
-  max-width: 360px;
+  min-width: 260px;
+  max-width: 60ch;
 }
 .lock-tree .tree-cell {
   display: flex;

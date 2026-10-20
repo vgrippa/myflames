@@ -82,7 +82,7 @@ export function PrivilegesProvider({ connection, connected = true, connectRevisi
 export const ACTION_LABELS: Record<string, string> = {
   privileges: "Read your privileges",
   health: "Health",
-  config: "Configuration",
+  config: "Parameters",
   config_sources: "Where settings come from",
   top_statements: "Top statements",
   sessions_own: "Your sessions",
@@ -91,6 +91,7 @@ export const ACTION_LABELS: Record<string, string> = {
   locks_transactions: "Locks: transactions and row locks",
   locks_metadata: "Locks: metadata locks",
   innodb_status: "InnoDB status",
+  error_log: "Error log",
   waits: "Waits",
   io: "I/O",
   instruments: "Instruments",
@@ -218,7 +219,11 @@ export function targetPrivilege(generic: PrivilegeGateResult, hint?: { allowed: 
 /** ConfirmSheet currently accepts a label but no button attributes. Attach
  * accessibility metadata through that label, without changing its native
  * busy/form guards. The caller must also guard its onConfirm handler. */
-export function PrivilegeConfirmLabel({ gate, children }: PropsWithChildren<{ gate: PrivilegeGateResult }>) {
+export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: PropsWithChildren<{
+  gate: PrivilegeGateResult;
+  /** Omit the badge when the dialog already displays permission details. */
+  showStatus?: boolean;
+}>) {
   const label = useRef<HTMLSpanElement>(null);
   const id = useId();
   useLayoutEffect(() => {
@@ -231,7 +236,7 @@ export function PrivilegeConfirmLabel({ gate, children }: PropsWithChildren<{ ga
     button.dataset.privilegeState = gate.state;
   });
   return createElement("span", { ref: label }, children,
-    gate.state === "unknown" ? createElement("span", { className: "privilege-unverified" }, "Unverified") : null,
+    showStatus && gate.state === "unknown" ? createElement("span", { className: "privilege-unverified" }, "Unverified") : null,
     // The reason describes the button (aria-describedby) without becoming
     // part of its name: aria-hidden keeps it out of the label, not the description.
     createElement("span", { id, className: "account-sr", "aria-hidden": "true" }, gate.disabledReason || gate.reason));

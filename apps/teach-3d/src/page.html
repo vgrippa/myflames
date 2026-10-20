@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="myflames-sources-sha256" content="__SOURCES_SHA__">
+<title>B+tree in 3D · myflames</title>
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<header>
+  <div class="inner">
+    <h1>B+tree in 3D: how InnoDB finds a row</h1>
+    <p class="subtitle">The real shape of a clustered index and a secondary index, drawn page by page.</p>
+    <div class="lesson-meta">
+      <span class="family-chip"><span class="chip-dot"></span>Index access</span>
+      <span class="version-chip">3D view</span>
+      <span class="version-chip">MySQL 8.4 · MariaDB 11.4</span>
+    </div>
+  </div>
+</header>
+<main class="layout">
+  <aside class="side">
+    <section class="panel controls" aria-label="Table settings">
+      <div class="control">
+        <label for="in-rows">Rows in users</label>
+        <select id="in-rows"></select>
+      </div>
+      <div class="control">
+        <label for="in-row">Average row size</label>
+        <select id="in-row"></select>
+      </div>
+      <div class="control">
+        <label for="in-email">Average email size</label>
+        <select id="in-email"></select>
+      </div>
+      <div class="control">
+        <label for="in-page">Page size</label>
+        <select id="in-page"></select>
+      </div>
+      <p class="hint">Change any setting and the tree is rebuilt with the real page counts.</p>
+    </section>
+    <div class="query-card">
+      <p class="query-label">Query</p>
+      <pre class="query-sql" id="query"></pre>
+      <label class="covering" id="covering-wrap" hidden>
+        <input type="checkbox" id="covering"> Ask only for email and id (the index covers the query)
+      </label>
+    </div>
+    <div class="explainer-card">
+      <p class="explainer-title">What you'll see</p>
+      <ul class="explainer-list" id="explainer"></ul>
+    </div>
+    <section class="panel readout" aria-label="Readout">
+      <h2>Readout</h2>
+      <div class="readout-grid" id="readout-query"></div>
+      <table class="shape-table" id="shape-table"></table>
+    </section>
+  </aside>
+
+  <section class="stage" aria-label="3D stage">
+    <nav class="chapters" aria-label="Chapters" id="chapters"></nav>
+    <div class="stage-toolbar" role="toolbar" aria-label="Playback">
+      <button type="button" id="btn-play" class="primary">Play</button>
+      <button type="button" id="btn-reset">Reset</button>
+      <label class="speed-label" for="speed">Speed</label>
+      <select id="speed">
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+      <label class="sr-only" for="scrubber">Position in the animation</label>
+      <input type="range" id="scrubber" min="0" max="1000" value="0">
+      <button type="button" id="btn-follow" hidden>Follow the query</button>
+      <button type="button" id="btn-next" class="primary" hidden>Next chapter</button>
+    </div>
+    <p class="phase-label" id="phase-label" aria-live="polite"></p>
+    <div class="viewport" id="viewport">
+      <div class="fallback" id="fallback" hidden>
+        <strong>3D needs WebGL, which this browser has turned off.</strong>
+        The narration and numbers on this page still work, and the 2D lesson shows the same lookups.
+      </div>
+      <p class="drawn" id="drawn"></p>
+      <p class="hint-drag" id="hint-drag">Drag to turn · scroll or pinch to zoom · right-drag to pan · keys: arrows pan, Shift+arrows turn, + and − zoom</p>
+    </div>
+    <ol class="marks" id="marks" aria-label="Steps"></ol>
+  </section>
+
+  <details class="learn-more">
+    <summary>Learn more: what this model assumes</summary>
+    <div class="learn-body">
+      <p><strong>How full the pages are.</strong> Like the 2D lesson, the numbers are a first-order estimate. Each page holds as many records as fit after about 120 bytes of page headers and the two system records (the page directory and the 8 byte trailer are left out). Clustered leaf pages keep one sixteenth of the page free: when rows arrive in key order, InnoDB splits a page rather than fill that space, so later updates have room. Pages that take random inserts, like the leaves of idx_users_email when users arrive in id order, split in the middle and are often much emptier, so a real secondary index can have more leaf pages than shown.</p>
+      <p><strong>What a record costs.</strong> A clustered leaf record is the row's column data plus a record header of at least 5 bytes and two hidden columns, the 6 byte transaction id and the 7 byte rollback pointer. The header also holds null flags and a length byte or two for each variable-length column; count those in the row and email sizes. A pointer in a non-leaf page is the key plus the 5 byte header and a 4 byte child page number. A secondary index record holds the email and the primary key, and so do its pointer records, which is why a long primary key makes every secondary index bigger.</p>
+      <p><strong>The second lookup starts at the root.</strong> A secondary index leaf stores the primary key, not where the row lives. InnoDB fetches the row by searching the clustered index for that key from its root, so a non-covering lookup reads both trees from top to bottom. The adaptive hash index can jump straight to a leaf page for keys it has seen often; it is off by default in MySQL 8.4 and MariaDB 11.4.</p>
+      <p><strong>Neighbors are linked.</strong> Every page's file header records the previous and next page on the same level. A range scan uses the leaf level's links to move to the next page. InnoDB hands rows to the server in small batches and remembers where it stopped; if another session changed that page in the meantime, it finds its place again from the root.</p>
+      <p><strong>A tiny table is one page.</strong> When every row fits in one page, that page is the root and the leaf. The 2D lesson always draws at least two levels to keep its picture simple.</p>
+      <p><strong>How the picture is drawn.</strong> Levels with more than 20,000 pages are drawn as one block per parent page; the blocks the query touches open up into single pages. The readout counts are exact for the model either way.</p>
+    </div>
+  </details>
+</main>
+<footer>
+  <p>Made with myflames, a MySQL &amp; MariaDB query plan visualizer. Inspired by Brendan Gregg&rsquo;s FlameGraph and Tanel Poder&rsquo;s SQL Plan FlameGraphs.</p>
+  <p>This 3D view is inspired by <a href="https://github.com/NikolayS/PGSimCity" rel="noopener">PGSimCity</a> by Nikolay Samokhvalov.</p>
+</footer>
+<script>/*__JS__*/</script>
+</body>
+</html>

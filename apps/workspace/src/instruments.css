@@ -51,9 +51,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.instr-advanced .view-section-head .hint {
-  font-size: var(--text-sm);
-}
 .instr-setup {
   margin-top: var(--space-4);
 }
@@ -111,3 +108,49 @@
     animation: none;
   }
 }
+
+/* Each table owns its horizontal scroll. Filters and actions wrap before they
+   can widen the page; the four section buttons scroll within their own strip. */
+.instr-tabs {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-block: var(--space-3);
+}
+.instr-tabs button {
+  flex: none;
+  white-space: nowrap;
+}
+.instr-list,
+.instr-batch {
+  min-width: 0;
+  max-width: 100%;
+}
+.instr-filters,
+.instr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.instr-filters > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.instr-filters .toolbar-search {
+  flex: 1 1 200px;
+}
+.instr-filters .select {
+  flex: 0 1 240px;
+}
+.instr-batch .disclosure {
+  margin-block: var(--space-2);
+}
+
+/* Row checkboxes in the Instruments and Consumers lists. */
+.instr-pick {
+  display: block;
+  margin: 0 auto;
+  cursor: pointer;
+}
+.instr-pick:disabled { cursor: not-allowed; }

@@ -47,12 +47,12 @@ function buildStage() {
   // Build input (left) — actual department rows
   var buildRect = anim.svgEl("rect", {
     x: 12, y: 44, width: 140, height: DEPTS.length * 22 + 10, rx: 8, ry: 8,
-    fill: "#fef3c7", stroke: "#d97706", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5
   });
   svg.appendChild(buildRect);
   var buildLbl = anim.svgEl("text", {
     x: 82, y: 36, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 700, fill: "#92400e"
+    "font-size": 12, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   buildLbl.textContent = "departments (build side)";
   svg.appendChild(buildLbl);
@@ -61,7 +61,7 @@ function buildStage() {
     var by = 54 + b * 22;
     var rowLbl = anim.svgEl("text", {
       x: 82, y: by + 14, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 600, fill: "#78350f"
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-build-ink)"
     });
     rowLbl.textContent = "id=" + DEPTS[b].id + " " + DEPTS[b].name;
     svg.appendChild(rowLbl);
@@ -72,12 +72,12 @@ function buildStage() {
   var htX = 280, htY = 24, htW = 210, htH = NUM_BUCKETS * 46 + 20;
   var htRect = anim.svgEl("rect", {
     x: htX, y: htY, width: htW, height: htH, rx: 10, ry: 10,
-    fill: "#f3f4f6", stroke: "#6b7280", "stroke-width": 1.5
+    fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5
   });
   svg.appendChild(htRect);
   var htLbl = anim.svgEl("text", {
     x: htX + htW/2, y: htY - 8, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 700, fill: "#1f2937"
+    "font-size": 12, "font-weight": 700, fill: "var(--svg-ink)"
   });
   htLbl.textContent = "Hash table — hash(dept.id) %% " + NUM_BUCKETS;
   svg.appendChild(htLbl);
@@ -90,23 +90,23 @@ function buildStage() {
     var byB = bucketY0 + i * (bucketH + bucketGap);
     var br = anim.svgEl("rect", {
       x: htX + 10, y: byB, width: htW - 20, height: bucketH, rx: 4, ry: 4,
-      fill: "#ffffff", stroke: "#d1d5db", "stroke-width": 1
+      fill: "var(--svg-node-bg)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(br);
     var bIdx = anim.svgEl("text", {
-      x: htX + 16, y: byB + 14, "font-size": 9, "font-weight": 700, fill: "#9ca3af"
+      x: htX + 16, y: byB + 14, "font-size": 9, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
     bIdx.textContent = "[" + i + "]";
     svg.appendChild(bIdx);
     var bContent = anim.svgEl("text", {
       x: htX + htW/2, y: byB + 22, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 600, fill: "#6b7280"
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-ink-muted)"
     });
     bContent.textContent = "(empty)";
     svg.appendChild(bContent);
     var matchLbl = anim.svgEl("text", {
       x: htX + htW - 16, y: byB + 14, "text-anchor": "end",
-      "font-size": 10, "font-weight": 700, fill: "#059669", opacity: 0
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0
     });
     matchLbl.textContent = "MATCH \u2713";
     svg.appendChild(matchLbl);
@@ -120,12 +120,12 @@ function buildStage() {
   // Probe input (right) — named employees
   var probeRect = anim.svgEl("rect", {
     x: W - 170, y: 44, width: 156, height: EMPLOYEES.length * 22 + 10, rx: 8, ry: 8,
-    fill: "#ccfbf1", stroke: "#0d9488", "stroke-width": 1.5
+    fill: "var(--svg-probe-soft)", stroke: "var(--svg-probe)", "stroke-width": 1.5
   });
   svg.appendChild(probeRect);
   var probeLbl = anim.svgEl("text", {
     x: W - 92, y: 36, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 700, fill: "#115e59"
+    "font-size": 12, "font-weight": 700, fill: "var(--svg-probe)"
   });
   probeLbl.textContent = "employees (probe side)";
   svg.appendChild(probeLbl);
@@ -134,7 +134,7 @@ function buildStage() {
     var py = 54 + p * 22;
     var pLbl = anim.svgEl("text", {
       x: W - 92, y: py + 14, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 600, fill: "#134e4a"
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-probe)"
     });
     pLbl.textContent = EMPLOYEES[p].name + " dept=" + EMPLOYEES[p].dept;
     svg.appendChild(pLbl);
@@ -143,14 +143,14 @@ function buildStage() {
 
   var statusLbl = anim.svgEl("text", {
     x: W/2, y: H - 32, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#1f2937"
+    "font-size": 13, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
 
   var spillLbl = anim.svgEl("text", {
     x: W/2, y: H - 10, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 600, fill: "#991b1b", opacity: 0
+    "font-size": 12, "font-weight": 600, fill: "var(--svg-danger)", opacity: 0
   });
   svg.appendChild(spillLbl);
 
@@ -164,11 +164,11 @@ function buildStage() {
 function resetStage() {
   if (!stage) return;
   stage.buckets.forEach(function(b) {
-    b.rect.setAttribute("fill", "#ffffff");
-    b.rect.setAttribute("stroke", "#d1d5db");
+    b.rect.setAttribute("fill", "var(--svg-node-bg)");
+    b.rect.setAttribute("stroke", "var(--svg-node-stroke)");
     b.rect.setAttribute("stroke-width", 1);
     b.contentLbl.textContent = "(empty)";
-    b.contentLbl.setAttribute("fill", "#6b7280");
+    b.contentLbl.setAttribute("fill", "var(--svg-ink-muted)");
     b.matchLbl.setAttribute("opacity", 0);
     b.contents = [];
   });
@@ -182,12 +182,12 @@ function spawnLabeledTuple(text, color, cx, cy) {
   var g = anim.svgEl("g", { opacity: 0, transform: "translate(" + cx + "," + cy + ")" });
   var bg = anim.svgEl("rect", {
     x: -42, y: -9, width: 84, height: 18, rx: 9, ry: 9,
-    fill: color, stroke: "#1f2937", "stroke-width": 1
+    fill: color, stroke: "var(--svg-ink)", "stroke-width": 1
   });
   g.appendChild(bg);
   var lbl = anim.svgEl("text", {
     x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "#ffffff"
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-on-solid)"
   });
   lbl.textContent = text;
   g.appendChild(lbl);
@@ -243,16 +243,16 @@ function buildTimeline(spilled, partitions) {
         phase.textContent = "Build: dept id=" + dept.id + " \u201c" + dept.name +
           "\u201d \u2192 hash(" + dept.id + ") %% " + NUM_BUCKETS + " = bucket [" + bucketIdx + "]";
         var label = "id=" + dept.id + " " + dept.name;
-        var tuple = spawnLabeledTuple(label, "#d97706",
+        var tuple = spawnLabeledTuple(label, "var(--svg-build)",
           stage.buildRows[idx].cx, stage.buildRows[idx].cy);
         flyGroupToBucket(tuple,
           stage.buildRows[idx].cx, stage.buildRows[idx].cy, bucket,
           function() {
             bucket.contents.push(dept.name);
             bucket.contentLbl.textContent = bucket.contents.join(", ");
-            bucket.contentLbl.setAttribute("fill", "#1f2937");
-            bucket.rect.setAttribute("fill", "#fef3c7");
-            bucket.rect.setAttribute("stroke", "#d97706");
+            bucket.contentLbl.setAttribute("fill", "var(--svg-ink)");
+            bucket.rect.setAttribute("fill", "var(--svg-build-soft)");
+            bucket.rect.setAttribute("stroke", "var(--svg-build)");
             anim.pulse(bucket.rect, 2.5, 1, 280);
           });
       });
@@ -282,22 +282,22 @@ function buildTimeline(spilled, partitions) {
           ") \u2192 hash(" + emp.dept + ") %% " + NUM_BUCKETS + " = bucket [" + bucketIdx +
           "] \u2014 bucket holds: " + (bucket.contents.length ? bucket.contents.join(", ") : "empty");
         var label = emp.name + " dept=" + emp.dept;
-        var tuple = spawnLabeledTuple(label, "#0d9488",
+        var tuple = spawnLabeledTuple(label, "var(--svg-probe)",
           stage.probeRows[jdx].cx, stage.probeRows[jdx].cy);
         flyGroupToBucket(tuple,
           stage.probeRows[jdx].cx, stage.probeRows[jdx].cy, bucket,
           function() {
             if (matchDept && bucket.contents.indexOf(matchDept) >= 0) {
-              bucket.rect.setAttribute("fill", "#d1fae5");
-              bucket.rect.setAttribute("stroke", "#059669");
+              bucket.rect.setAttribute("fill", "var(--svg-ok-soft)");
+              bucket.rect.setAttribute("stroke", "var(--svg-ok)");
               bucket.rect.setAttribute("stroke-width", 2.5);
               bucket.matchLbl.setAttribute("opacity", 1);
               stage.statusLbl.textContent = "\u2713 " + emp.name + " matched \u201c" +
                 matchDept + "\u201d (both have dept_id=" + emp.dept +
                 " \u2192 same bucket [" + bucketIdx + "])";
               setTimeout(function() {
-                bucket.rect.setAttribute("fill", "#fef3c7");
-                bucket.rect.setAttribute("stroke", "#d97706");
+                bucket.rect.setAttribute("fill", "var(--svg-build-soft)");
+                bucket.rect.setAttribute("stroke", "var(--svg-build)");
                 bucket.rect.setAttribute("stroke-width", 1);
                 bucket.matchLbl.setAttribute("opacity", 0);
               }, 700);
@@ -356,9 +356,9 @@ function renderChart(buildRows, rowSize, jbs, currentProbe) {
     // default "higher = better" eye bias).
     lowerIsBetter: true,
     curves: [
-      { label: "Hash: O(depts+emps) = O(n+m)", color: "#0d9488",
+      { label: "Hash: O(depts+emps) = O(n+m)", color: "var(--svg-probe)",
         fn: function(n) { return hashJoinCost(buildRows, n, rowSize, jbs).cmp; } },
-      { label: "BNL: O(depts\u00b7emps/buf) = O(n\u00b7m/b)", color: "#ca8a04",
+      { label: "BNL: O(depts\u00b7emps/buf) = O(n\u00b7m/b)", color: "var(--svg-build)",
         fn: function(n) {
           var rpb = Math.max(1, Math.floor(jbs / rowSize));
           var blocks = Math.max(1, Math.ceil(buildRows / rpb));

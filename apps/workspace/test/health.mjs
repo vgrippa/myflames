@@ -51,34 +51,35 @@ const tile = (key) => `${view} .tile-item[data-metric="${key}"]`;
 const diag = (key) => `${view} li[data-diagnostic="${key}"]`;
 const inspectorTitle = (title) => page.waitForFunction((t) => document.querySelector(".view-inspector h3")?.textContent === t, {}, title);
 try {
-  // Health is the first view and opens by default; nothing is read until asked.
+  // Nothing is read before the Server place is on screen. Health is the first
+  // view and reads once when it opens on screen (the default 5 s window).
+  assert.equal(state.seen.length, 0, "nothing is read before Health is on screen");
+  state.delay = 400;
   await h.server();
   assert.deepEqual(await texts(".source-list .source-group h3"), Object.keys(SERVER_GROUPS));
-  assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Full analysis"]);
+  assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Error log"]);
   assert.equal(await page.$eval("#server-nav-health", (e) => e.getAttribute("aria-current")), "page");
-  assert.match(await text(`${view} .view-empty`), /Samples SHOW GLOBAL STATUS twice/);
+  await page.waitForSelector(`${view} .capture-status`);
+  assert.match(await text(`${view} .capture-status`), /Sampling the server for 5 s/);
+  assert.equal(await page.$(`${view} .view-empty`), null, "no empty state while the first read runs");
+  await page.waitForSelector(`${view} .summary-line`);
+  await h.idle(view);
+  state.delay = 0;
+  assert.equal(state.seen.length, 1, "one read on open");
+  assert.equal(state.seen[0].interval, 5);
+  assert.equal(state.seen[0].connection.host, "127.0.0.1");
+  assert.equal(state.seen[0].connection.password || "", "", "no password was typed");
   assert.match(await h.popover("About Health"), /Performance Schema is not needed/);
-  assert.equal(state.seen.length, 0, "nothing is read until asked");
-  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.disabled), true);
+  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.disabled), false);
   assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0", "auto-refresh is off by default");
   assert.deepEqual(await page.$$eval(`${view} .health-window option`, (els) => els.map((e) => e.value)), ["1", "2", "5", "10", "15", "30", "60"]);
   assert.equal(await page.$eval(`${view} .health-window select`, (e) => e.value), "5");
   // The place's intro is behind the ⓘ next to its title.
   assert.match(await h.popover("About Server"), /changes the server only when you choose an action and confirm it/);
 
-  // Load with a 10 s window: loading state, then the report.
+  // Choosing a window does not read; the next Refresh samples over it (below).
   await page.select(`${view} .health-window select`, "10");
-  state.delay = 400;
-  await button("Load health", view + " ");
-  await page.waitForSelector(`${view} .capture-status`);
-  assert.match(await text(`${view} .capture-status`), /Sampling the server for 10 s/);
-  await page.waitForSelector(`${view} .summary-line`);
-  await h.idle(view);
-  state.delay = 0;
-  assert.equal(state.seen.length, 1);
-  assert.equal(state.seen[0].interval, 10);
-  assert.equal(state.seen[0].connection.host, "127.0.0.1");
-  assert.equal(state.seen[0].connection.password || "", "", "no password was typed");
+  assert.equal(state.seen.length, 1, "choosing a window does not read");
   const summary = await text(`${view} .summary-line`);
   assert.match(summary, /Problem\s*3 problems, 1 to watch, 12 ok · diagnostics: 1 problem, 1 to watch/);
   assert.match(summary, /10\.0 s window at/);
@@ -127,10 +128,16 @@ try {
   assert.match(bpWhy, /innodb_lru_scan_depth1024 · default 1024/);
   assert.match(bpWhy, /From Innodb_buffer_pool_pages_total/);
   assert.ok(await page.$('.view-inspector dl[aria-label="Buffer pool: full or warming: numbers"] dt > code'), "wrapped metric identifiers use full-row labels");
-  // Keyboard: Down moves to the next diagnostic and the inspector follows; Escape closes it.
+  // Keyboard: Down moves to the next diagnostic and details open on Enter; Escape closes it.
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector") && document.activeElement?.matches("[data-row-key]"));
   await page.keyboard.press("ArrowDown");
-  await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent !== "Buffer pool: full or warming");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => !!document.querySelector(".view-inspector h3") && document.querySelector(".view-inspector h3").textContent !== "Buffer pool: full or warming");
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector") && document.activeElement?.matches("[data-row-key]"));
   await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
   await inspectorTitle("Buffer pool: full or warming");
   // A watched diagnostic shows what to do and its caveat.
   await h.select(diag("redo"));
@@ -148,6 +155,8 @@ try {
   await h.select(diag("binlog_cache"));
   await page.waitForFunction(() => !/What to do/.test(document.querySelector(".view-inspector")?.textContent || "x What to do"));
   // Tiles: label, value with unit, status dot plus word; compact, no prose.
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.equal((await page.$$(`${view} .tile-item`)).length, mysql.metrics.length);
   const join = await text(tile("select_full_join"));
   assert.match(join, /Joins without an index/);
@@ -247,15 +256,23 @@ try {
   assert.match(links, /Lesson: Filesort/);
   await page.locator(".view-inspector .inspector-actions-bar button ::-p-text(Lesson: Filesort)").click();
   await page.waitForFunction(() => document.querySelector(".main-nav [aria-current=page]")?.textContent.includes("Learn"));
-  await page.waitForFunction(() => /Filesort/i.test(document.querySelector(".teach-workspace h1")?.textContent || ""), { timeout: 15000 });
+  // The open lesson is named by its frame (the top bar shows the title).
+  await page.waitForSelector(".teach-workspace iframe[title^=\"Lesson: Filesort\"]", { timeout: 15000 });
   await h.server();
   await page.waitForSelector(`${view} .summary-line`);
 
   // Refresh: a second sample draws the sparklines on the key tiles.
   state.queue.push({ status: 200, body: later });
+  state.delay = 400;
   await h.refresh();
+  await page.waitForSelector(`${view} .capture-status`);
+  assert.match(await text(`${view} .capture-status`), /Sampling the server for 10 s/);
+  state.delay = 0;
   await page.waitForFunction(() => !!document.querySelector('.tile-item[data-metric="questions"] svg.sparkline'));
   await h.idle(view);
+  assert.equal(state.seen.length, 2);
+  assert.equal(state.seen[1].interval, 10, "Refresh samples over the chosen window");
+  assert.equal(state.seen[1].connection.password || "", "", "no password was typed");
   const spark = await page.$eval(`${tile("questions")} svg.sparkline`, (e) => [e.getAttribute("aria-label"), e.querySelectorAll("rect").length]);
   const qps = Math.round(mysql.metrics.find((m) => m.key === "questions").value);
   assert.equal(spark[0], `Statements from clients, last 2 samples: low 121/s, high ${qps}/s, latest 121/s`);
@@ -276,6 +293,8 @@ try {
   assert.equal(await page.$(`${tile("com_select")} svg.sparkline`), null, "only key rates get a trend");
 
   // Automatic refresh: opt-in; runs on the chosen period while the view is visible.
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   await page.evaluate(() => {
     const original = window.setInterval;
     window.setInterval = (fn, ms, ...rest) => original(fn, ms >= 10000 ? 150 : ms, ...rest);
@@ -318,6 +337,8 @@ try {
   await page.waitForFunction(() => /The buffer pool is full and InnoDB read/.test(document.querySelector(".view-inspector")?.textContent || ""));
   assert.match(await h.inspector(), /Caveat: Leave memory for connections/);
   assert.match(await text(".view-inspector .inspector-actions-bar"), /Lesson: How the buffer pool keeps pages/);
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   await (await page.$(`${view} .health-diagnostics`)).screenshot({ path: path.join(h.shots, "health-diagnostics.png") });
 
   // MariaDB report: engine label and engine-specific explanations.
@@ -336,11 +357,14 @@ try {
   await page.waitForFunction(() => /go to Aria tables on disk/.test(document.querySelector(".view-inspector")?.textContent || ""));
 
   // Narrow layout: no horizontal page scroll at 390 px; tiles and rows fit;
-  // the inspector is a bottom sheet that Escape closes.
+  // full-width details and the list each fit the viewport.
   await page.setViewport({ width: 390, height: 844 });
   await pause(250);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(overflow <= 0, `horizontal scroll of ${overflow}px at 390 px`);
+  assert.ok(await page.$eval(".view-inspector.is-detail", e => e.getBoundingClientRect().right) <= 390, "details fit the viewport");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.ok(await page.$eval(tile("redo_generated"), (e) => e.getBoundingClientRect().right) <= 390, "tiles fit the viewport");
   const rights = await page.$$eval(`${view} li[data-diagnostic]`, (els) => els.map((e) => e.getBoundingClientRect().right));
   assert.ok(rights.every((r) => r <= 390), "diagnostic rows fit the viewport");
@@ -349,7 +373,8 @@ try {
 
   // Session restore keeps the view, the interval and the inspector, never the report.
   await page.select(`${view} .health-window select`, "30");
-  let saved = await h.savedSlow((s) => s.health_interval === 30);
+  await h.select(diag("tmp_tables"));
+  let saved = await h.savedSlow((s) => s.health_interval === 30 && s.inspector === true);
   assert.deepEqual(saved.state.query_lab.slow, { ...SLOW_DEFAULTS, kind: "health", health_interval: 30, inspector: true });
   assert.equal(JSON.stringify(saved.state).includes("health-1.0"), false, "reports are not saved");
   assert.equal(JSON.stringify(saved.state).includes("Innodb_"), false, "sample history is not saved");
@@ -358,8 +383,10 @@ try {
   await h.server();
   await page.waitForSelector("#server-nav-health[aria-current=page]");
   assert.equal(await page.$eval(`${view} .health-window select`, (e) => e.value), "30");
-  assert.match(await text(`${view} .view-empty`), /No health sample yet/);
-  assert.ok(await page.$(".view-inspector .inspector-placeholder"), "the inspector stays open, with nothing selected");
+  // The restored window is used by the read on open; the report itself is never restored.
+  await page.waitForSelector(`${view} .summary-line`);
+  assert.equal(state.seen.at(-1).interval, 30, "the read on open uses the restored window");
+  assert.equal(await page.$(".view-inspector"), null, "without a restored report there is no selected detail to open");
   // A restored Top statements view stays selected too.
   await h.view("top");
   saved = await h.savedSlow((s) => s.kind === "top");

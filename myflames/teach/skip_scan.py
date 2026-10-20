@@ -153,7 +153,7 @@ def render():
 
     return _html.render_page(
         lesson_id="skip_scan",
-        title="Skip Scan \u2014 range access without the leading index column",
+        title="Skip Scan: range access without the leading index column",
         subtitle=(
             "How MySQL turns a full table scan into N small range scans "
             "by iterating over distinct values of the leading index column."

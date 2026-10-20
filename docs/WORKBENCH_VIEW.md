@@ -74,7 +74,7 @@ Structured `join_type` takes priority over operation labels. MariaDB's synthetic
 join nodes remain unknown because its flat input list does not reliably identify
 logical join semantics. The inspector gives a text explanation for each symbol.
 
-The README's [inner and left join samples](../README.md#query-samples-inner-join-and-left-join)
+The README's [execution plan examples](../README.md#1-analyze-execution-plans)
 show both shadings on the same `users` and `orders` tables. Interactive copies
 live in [`docs/demos/mysql-joins/`](demos/mysql-joins/).
 

@@ -138,13 +138,24 @@ def format_plan(plan):
 def format_job(snapshot):
     """lifecycle-job-1.0 as the text result."""
     result = snapshot.get('result') or {}
-    lines = ['%s: %s (%s)' % (snapshot.get('operation', '').capitalize(), snapshot.get('state'),
-                              str(result.get('status', '')).replace('_', ' '))]
-    if snapshot.get('error'):
-        lines.append('Error: ' + ' '.join(snapshot['error'].split()))
+    state = snapshot.get('state') or ''
+    status = str(result.get('status') or '').replace('_', ' ')
+    heading = '%s: %s' % (snapshot.get('operation', '').capitalize(), state)
+    if status and status != state:
+        heading += ' (%s)' % status
+    error = ' '.join((snapshot.get('error') or '').split())
+    if error:
+        heading += ': ' + error
+    lines = [heading]
     if result.get('directory'):
         lines.append('Directory: ' + result['directory'])
     for item in result.get('verification', []):
+        reason = ' '.join((item.get('reason') or '').split())
+        if (item.get('check') == 'operation' and item.get('status') == 'not_checked'
+                and (not reason or reason == error)):
+            # Job failures also carry the error as an operation verification.
+            # Keep it in JSON, but show the reason only once in text.
+            continue
         extra = ''
         if item.get('check') == 'row_count' and 'expected' in item:
             extra = ' %s.%s expected %s, got %s' % (item.get('schema'), item.get('table'), item.get('expected'),

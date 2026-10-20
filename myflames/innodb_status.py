@@ -171,7 +171,7 @@ _LINK = {
     "sessions": {"view": "sessions", "label": "Open Sessions"},
     "health": {"view": "health", "label": "Open Health"},
     "io": {"view": "io", "label": "Open I/O"},
-    "config": {"view": "config", "label": "Open Configuration"},
+    "config": {"view": "config", "label": "Open Parameters"},
 }
 SECTION_KEYS = {
     "BACKGROUND THREAD": "background",

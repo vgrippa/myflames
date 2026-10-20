@@ -62,14 +62,14 @@ function buildStage() {
 
   // ---- Zone 1: Inner join result (top) ----
   var joinLbl = anim.svgEl("text", {
-    x: 20, y: 24, "font-size": 12, "font-weight": 700, fill: "#1e40af"
+    x: 20, y: 24, "font-size": 12, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   joinLbl.textContent = "Inner join result (customers \u00d7 orders) \u2014 contains duplicates";
   svg.appendChild(joinLbl);
 
   var joinRect = anim.svgEl("rect", {
     x: 20, y: 34, width: W - 40, height: 90, rx: 8, ry: 8,
-    fill: "#eff6ff", stroke: "#3b82f6", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(joinRect);
 
@@ -79,7 +79,7 @@ function buildStage() {
     var px = 50 + (p % 4) * 185;
     var py = 55 + Math.floor(p / 4) * 30;
     var pl = anim.svgEl("text", {
-      x: px, y: py, "font-size": 10, "font-weight": 600, fill: "#1e3a8a", opacity: 0
+      x: px, y: py, "font-size": 10, "font-weight": 600, fill: "var(--svg-token-ink)", opacity: 0
     });
     pl.textContent = JOIN_PAIRS[p].cust.name + " \u00d7 " + JOIN_PAIRS[p].order.desc;
     svg.appendChild(pl);
@@ -89,30 +89,30 @@ function buildStage() {
   // ---- Zone 2: Temp table (middle, yellow) ----
   var tempY = 155;
   var tempLbl = anim.svgEl("text", {
-    x: 20, y: tempY, "font-size": 12, "font-weight": 700, fill: "#92400e"
+    x: 20, y: tempY, "font-size": 12, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   tempLbl.textContent = "Weedout temp table (key = customer rowid)";
   svg.appendChild(tempLbl);
 
   var tempRect = anim.svgEl("rect", {
     x: 20, y: tempY + 10, width: W - 40, height: 110, rx: 8, ry: 8,
-    fill: "#fefce8", stroke: "#ca8a04", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5
   });
   svg.appendChild(tempRect);
 
   // Column headers for temp table
   var colHdrRowid = anim.svgEl("text", {
-    x: 60, y: tempY + 30, "font-size": 10, "font-weight": 700, fill: "#78350f"
+    x: 60, y: tempY + 30, "font-size": 10, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   colHdrRowid.textContent = "rowid";
   svg.appendChild(colHdrRowid);
   var colHdrName = anim.svgEl("text", {
-    x: 140, y: tempY + 30, "font-size": 10, "font-weight": 700, fill: "#78350f"
+    x: 140, y: tempY + 30, "font-size": 10, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   colHdrName.textContent = "customer";
   svg.appendChild(colHdrName);
   var colHdrResult = anim.svgEl("text", {
-    x: 280, y: tempY + 30, "font-size": 10, "font-weight": 700, fill: "#78350f"
+    x: 280, y: tempY + 30, "font-size": 10, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   colHdrResult.textContent = "insert result";
   svg.appendChild(colHdrResult);
@@ -122,15 +122,15 @@ function buildStage() {
   for (var s = 0; s < 7; s++) {
     var sy = tempY + 42 + s * 11;
     var sRowid = anim.svgEl("text", {
-      x: 60, y: sy, "font-size": 9, "font-weight": 600, fill: "#78350f", opacity: 0
+      x: 60, y: sy, "font-size": 9, "font-weight": 600, fill: "var(--svg-build-ink)", opacity: 0
     });
     svg.appendChild(sRowid);
     var sName = anim.svgEl("text", {
-      x: 140, y: sy, "font-size": 9, "font-weight": 600, fill: "#78350f", opacity: 0
+      x: 140, y: sy, "font-size": 9, "font-weight": 600, fill: "var(--svg-build-ink)", opacity: 0
     });
     svg.appendChild(sName);
     var sResult = anim.svgEl("text", {
-      x: 280, y: sy, "font-size": 9, "font-weight": 700, fill: "#78350f", opacity: 0
+      x: 280, y: sy, "font-size": 9, "font-weight": 700, fill: "var(--svg-build-ink)", opacity: 0
     });
     svg.appendChild(sResult);
     tempSlots.push({ rowid: sRowid, name: sName, result: sResult });
@@ -139,14 +139,14 @@ function buildStage() {
   // Duplicate counter on the right side of temp table
   var dupCounterLbl = anim.svgEl("text", {
     x: W - 60, y: tempY + 50, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 700, fill: "#991b1b"
+    "font-size": 11, "font-weight": 700, fill: "var(--svg-danger)"
   });
   dupCounterLbl.textContent = "Duplicates: 0";
   svg.appendChild(dupCounterLbl);
 
   var newCounterLbl = anim.svgEl("text", {
     x: W - 60, y: tempY + 70, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 700, fill: "#047857"
+    "font-size": 11, "font-weight": 700, fill: "var(--svg-ok)"
   });
   newCounterLbl.textContent = "New: 0";
   svg.appendChild(newCounterLbl);
@@ -154,27 +154,27 @@ function buildStage() {
   // ---- Zone 3: Deduplicated result (bottom, green) ----
   var resultY = 310;
   var resultLbl = anim.svgEl("text", {
-    x: 20, y: resultY, "font-size": 12, "font-weight": 700, fill: "#065f46"
+    x: 20, y: resultY, "font-size": 12, "font-weight": 700, fill: "var(--svg-ok)"
   });
   resultLbl.textContent = "Deduplicated result set";
   svg.appendChild(resultLbl);
 
   var resultRect = anim.svgEl("rect", {
     x: 20, y: resultY + 10, width: W - 40, height: 60, rx: 8, ry: 8,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5
   });
   svg.appendChild(resultRect);
 
   var resultContent = anim.svgEl("text", {
     x: W / 2, y: resultY + 45, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#065f46"
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)"
   });
   resultContent.textContent = "(unique customers appear here)";
   svg.appendChild(resultContent);
 
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 16, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#1f2937"
+    "font-size": 13, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -184,7 +184,7 @@ function buildStage() {
   for (var r = 0; r < 5; r++) {
     var rx = 80 + r * 150;
     var rl = anim.svgEl("text", {
-      x: rx, y: resultY + 35, "font-size": 10, "font-weight": 700, fill: "#047857", opacity: 0
+      x: rx, y: resultY + 35, "font-size": 10, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0
     });
     svg.appendChild(rl);
     resultLabels.push(rl);
@@ -271,7 +271,7 @@ function buildTimeline() {
 
       tl.call(function() {
         // Highlight the current join pair
-        stage.pairLabels[idx].setAttribute("fill", "#7c3aed");
+        stage.pairLabels[idx].setAttribute("fill", "var(--svg-group)");
 
         isDuplicate = !!seen[rowid];
         if (!isDuplicate) {
@@ -289,16 +289,16 @@ function buildTimeline() {
 
           if (isDuplicate) {
             slot.result.textContent = "\u2717 duplicate \u2014 discard";
-            slot.result.setAttribute("fill", "#dc2626");
-            slot.rowid.setAttribute("fill", "#dc2626");
-            slot.name.setAttribute("fill", "#dc2626");
+            slot.result.setAttribute("fill", "var(--svg-danger)");
+            slot.rowid.setAttribute("fill", "var(--svg-danger)");
+            slot.name.setAttribute("fill", "var(--svg-danger)");
             dupCount++;
             stage.dupCounterLbl.textContent = "Duplicates: " + dupCount;
           } else {
             slot.result.textContent = "\u2713 new \u2014 emit to result";
-            slot.result.setAttribute("fill", "#059669");
-            slot.rowid.setAttribute("fill", "#059669");
-            slot.name.setAttribute("fill", "#059669");
+            slot.result.setAttribute("fill", "var(--svg-ok)");
+            slot.rowid.setAttribute("fill", "var(--svg-ok)");
+            slot.name.setAttribute("fill", "var(--svg-ok)");
             newCount++;
             stage.newCounterLbl.textContent = "New: " + newCount;
 
@@ -329,7 +329,7 @@ function buildTimeline() {
 
       // Reset highlight
       tl.call(function() {
-        stage.pairLabels[idx].setAttribute("fill", "#1e3a8a");
+        stage.pairLabels[idx].setAttribute("fill", "var(--svg-token)");
       });
     })(j);
   }
@@ -345,7 +345,7 @@ function buildTimeline() {
       newCount + " unique results. Duplication factor: " +
       (JOIN_PAIRS.length / newCount).toFixed(1) + "\u00d7";
     stage.resultContent.textContent = newCount + " unique customers emitted";
-    stage.resultRect.setAttribute("stroke", "#047857");
+    stage.resultRect.setAttribute("stroke", "var(--svg-ok)");
     stage.resultRect.setAttribute("stroke-width", 2.5);
   });
 
@@ -367,9 +367,9 @@ function renderChart(outerRows, innerMatches) {
     xMin: 100, xMax: 500000,
     xLabel: "outer rows", yLabel: "Total work (rows processed)",
     curves: [
-      { label: "Weedout: outer \u00d7 inner_matches", color: "#ca8a04",
+      { label: "Weedout: outer \u00d7 inner_matches", color: "var(--svg-build)",
         fn: function(n) { return n * innerMatches; } },
-      { label: "Materialization: outer + subquery", color: "#0d9488",
+      { label: "Materialization: outer + subquery", color: "var(--svg-probe)",
         fn: function(n) { return n + n; } }
     ],
     current: { x: outerRows },

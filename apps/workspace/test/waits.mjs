@@ -2,7 +2,7 @@
 // reports replayed from live MySQL 8.4 and MariaDB captures (fixtures/).
 import assert from "node:assert/strict";
 import path from "node:path";
-import { load, open, pause, SERVER_GROUPS } from "./perf-harness.mjs";
+import { load, open, pause, SERVER_GROUPS, WORKLOAD_GROUPS } from "./perf-harness.mjs";
 
 const mysql = await load("waits-mysql-8.4.json");
 const off = await load("waits-mariadb-13.0-default.json");
@@ -15,16 +15,19 @@ state.fallback = { status: 200, body: mysql };
 const view = ".server-view[data-view=waits]";
 const rows = () => page.$$eval(`${view} [aria-label="Wait events over the window"] tbody tr`, (els) => els.map((e) => e.dataset.event));
 try {
-  await h.server();
-  // Waits sits in the Workload group of the sub-navigation.
-  assert.deepEqual(await texts(".source-list .source-group:nth-child(2) .source-label"), SERVER_GROUPS.Workload);
+  await h.workload();
+  // Waits sits in the Resources group of the Workload sub-navigation.
+  assert.deepEqual(await texts(".source-list .source-group:nth-child(2) .source-label"), WORKLOAD_GROUPS.Resources);
   await h.view("waits");
-  assert.match(await text(`${view} .view-empty`), /Where server threads spent their waiting time/);
-  assert.equal(state.seen.length, 0, "nothing is read until asked");
+  // Opening the view reads once with the default window, because it is on screen.
+  await page.waitForSelector(`${view} .data-table`);
+  await h.idle(view);
+  assert.equal(state.seen.length, 1, "opening reads once");
+  assert.equal(state.seen[0].interval, 10);
+  state.seen.length = 0;
   assert.deepEqual(await page.$$eval(`${view} .perf-window option`, (els) => els.map((e) => e.value)), ["2", "5", "10", "15", "30", "60"]);
   assert.equal(await page.$eval(`${view} .perf-window select`, (e) => e.value), "10");
   assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0", "auto-refresh is off");
-  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.disabled), true);
 
   // Keyboard: arrows move along the sub-navigation (selection follows), Home/End reach the ends.
   await page.focus("#server-nav-waits");
@@ -32,15 +35,16 @@ try {
   await page.waitForFunction(() => document.activeElement?.id === "server-nav-io");
   await page.waitForSelector("#server-nav-io[aria-current=page]");
   await page.keyboard.press("End");
-  await page.waitForFunction(() => document.activeElement?.id === "server-nav-accounts");
+  await page.waitForFunction(() => document.activeElement?.id === "server-nav-io");
   await page.keyboard.press("Home");
-  await page.waitForFunction(() => document.activeElement?.id === "server-nav-health");
+  await page.waitForFunction(() => document.activeElement?.id === "server-nav-top");
   await h.view("waits");
 
   // Load with a 5 s window: loading state, then the report.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .perf-window select`, "5");
   state.delay = 400;
-  await button("Load wait events", view + " ");
+  await h.refresh();
   await page.waitForSelector(`${view} .capture-status`);
   assert.match(await text(`${view} .capture-status`), /Sampling wait events for 5 s/);
   await page.waitForSelector(`${view} .data-table`);
@@ -83,8 +87,10 @@ try {
   assert.equal(state.seen.length, 1, "switching views keeps the report");
   assert.equal(await page.$eval(`${mdl}`, (e) => e.getAttribute("aria-current")), "true", "and its selection");
   // Classes, one by one; since server start with the longest single wait.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=classes]`);
   assert.ok((await page.$$(`${view} [aria-label="Wait classes over the window"] tbody tr`)).length > 0);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=since]`);
   assert.match(await text(`${view} [aria-label="Wait classes since server start"] thead`), /Events/);
   // A class in the inspector: the range on screen first, each range in its own labelled section.
@@ -92,13 +98,19 @@ try {
   assert.deepEqual(await page.$$eval(".view-inspector .inspector-block h4", (els) => els.map((e) => e.textContent)),
     ["What it is", "Since server start", "Over the window"]);
   assert.match(await h.inspector(), /Since server start\s*Events\s*1\s*Waits\s*12,324,105.*Over the window\s*Events\s*1\s*Waits\s*10,407,087/s);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=events]`);
   const sinceTable = `${view} table[aria-label="Wait events since server start"]`;
-  assert.equal(await page.$(`${sinceTable} th[data-col=max]`), null, "longest wait is a detail column beside the inspector");
+  assert.match(await text(`${sinceTable} th[data-col=max]`), /Longest \(ms\)/, "full-width lists retain the longest wait column");
+  await page.click(`${sinceTable} .table-columns-button`);
+  await page.click('.popover input[data-col=max]');
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$(`${sinceTable} th[data-col=max]`), null, "Columns can hide the longest wait explicitly");
   await page.click(`${sinceTable} .table-columns-button`);
   await page.click('.popover input[data-col=max]');
   await page.keyboard.press("Escape");
   assert.match(await text(`${sinceTable} th[data-col=max]`), /Longest \(ms\)/);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=window]`);
 
   // Not instrumented: collapsed; counts, the enable statements to copy, and the caveat in the inspector.
@@ -124,9 +136,11 @@ try {
     window.setInterval = (fn, ms, ...rest) => original(fn, ms >= 10000 ? 150 : ms, ...rest);
   });
   const before = state.seen.length;
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .auto-refresh select`, "30");
   await pause(700);
   assert.ok(state.seen.length > before, "auto-refresh sampled again");
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .auto-refresh select`, "0");
   await h.idle(view);
   const stopped = state.seen.length;
@@ -161,15 +175,16 @@ try {
   await h.narrow("waits-390.png");
 
   // Session restore keeps the view and the window, never the report.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .perf-window select`, "30");
   const saved = await h.savedSlow((s) => s.kind === "waits" && s.waits_interval === 30);
   assert.equal(JSON.stringify(saved.state).includes("waits-1.0"), false, "reports are not saved");
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   await page.reload({ waitUntil: "networkidle0" });
-  await h.server();
+  await h.workload();
   await page.waitForSelector("#server-nav-waits[aria-current=page]");
   assert.equal(await page.$eval(`${view} .perf-window select`, (e) => e.value), "30");
-  assert.match(await text(`${view} .view-empty`), /Load wait events/);
+  await page.waitForSelector(`${view} .data-table`);
 
   assert.deepEqual(h.errors, []);
   console.log("waits view: ok");

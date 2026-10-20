@@ -20,6 +20,11 @@
   "cached": false
  },
  "tablespaces_known": true,
+ "tablespace_collection": {
+  "show_create_limit": 50,
+  "deadline_s": 30.0,
+  "unresolved": 0
+ },
  "summary": {
   "tables": 17,
   "innodb": 16,
@@ -28,25 +33,29 @@
   "not_null_unique": 2,
   "gipk": 0,
   "free_problem": 0,
-  "free_watch": 1,
+  "free_watch": 0,
+  "free_info": 1,
   "shared": 2,
   "unknown_tablespace": 0,
+  "engines": [
+   {
+    "engine": "InnoDB",
+    "tables": 16,
+    "bytes": 86523904
+   },
+   {
+    "engine": "MyISAM",
+    "tables": 1,
+    "bytes": 1024
+   }
+  ],
   "status": "problem"
  },
- "thresholds": {
-  "watch": {
-   "free_pct": 10.0,
-   "free_bytes": 104857600
-  },
-  "problem": {
-   "free_pct": 25.0,
-   "free_bytes": 1073741824
-  }
- },
+ "thresholds": {},
  "rules": {
   "no_usable_key": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
   "not_null_unique": "watch: no PRIMARY KEY, but a UNIQUE key on NOT NULL columns stands in for it",
-  "free": "watch when free space is at least 10% of the tablespace file and at least 100.0 MiB; problem at 25% and 1.0 GiB"
+  "free": "Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report."
  },
  "why": [
   {
@@ -571,11 +580,11 @@
    "partitioned": false,
    "tablespace": "file_per_table",
    "tablespace_name": null,
-   "status": "watch",
-   "why": "275.0 MiB free, 87% of its tablespace file. Rule of thumb: watch when free space is at least 10% of the tablespace file and at least 100.0 MiB; problem at 25% and 1.0 GiB.",
+   "status": "info",
+   "why": "275.0 MiB reusable space, about 87% of reported data, index and free bytes. Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report.",
    "fix_sql": "OPTIMIZE TABLE `mftab`.`frag_fpt`;",
    "online_sql": "ALTER TABLE `mftab`.`frag_fpt` FORCE, ALGORITHM=INPLACE, LOCK=NONE;",
-   "caveat": "Never run by myflames. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with exclusive metadata locks at the start and the end; those wait for transactions that use the table, and queries on it queue behind them. With a FULLTEXT or SPATIAL index, or an index on a virtual column, the rebuild blocks writes. It writes a new copy of the table, so it needs free disk space for one, plus temporary sort files in innodb_tmpdir and an online log of up to innodb_online_alter_log_max_size (128 MiB by default) for the writes made meanwhile. It is written to the binary log, so replicas rebuild too; OPTIMIZE NO_WRITE_TO_BINLOG TABLE keeps it on this server. If the table will grow back, the free space would be reused anyway and a rebuild gains little."
+   "caveat": "Optional maintenance; review and confirm before executing. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with exclusive metadata locks at the start and the end; those wait for transactions that use the table, and queries on it queue behind them. With a FULLTEXT or SPATIAL index, or an index on a virtual column, the rebuild blocks writes. It writes a new copy of the table, so it needs free disk space for one, plus temporary sort files in innodb_tmpdir and an online log of up to innodb_online_alter_log_max_size (128 MiB by default) for the writes made meanwhile. It is written to the binary log, so replicas rebuild too; OPTIMIZE NO_WRITE_TO_BINLOG TABLE keeps it on this server. If the table will grow back, the free space would be reused anyway and a rebuild gains little."
   },
   {
    "schema": "mfother",
@@ -589,7 +598,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -603,7 +612,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -617,7 +626,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -631,7 +640,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -645,7 +654,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -659,7 +668,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -673,7 +682,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -687,7 +696,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -701,7 +710,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -715,7 +724,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -729,7 +738,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -743,7 +752,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",
@@ -757,7 +766,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file)."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "mftab",

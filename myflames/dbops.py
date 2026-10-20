@@ -122,6 +122,11 @@ _VERSIONED_OPEN = re.compile(r"/\*M?!(?:\d{6}(?=\s)|\d{5})?")
 #: is_delimiter_command compare only the first 9 characters).
 _DELIMITER_COMMAND = re.compile(r"[ \t\v\f\r]*(delimiter[^ \t\r\n]*)", re.I)
 _CLIENT_SPACE = " \t\n\r\f\v"
+#: Only ASCII white space separates tokens: both lexers read a non-ASCII
+#: space such as U+00A0 or U+3000 as an identifier character (a multibyte lead
+#: byte), so ``CONCAT\u00a0(`` names another function; str.split() would
+#: drop it.
+_CODE_SPACE = re.compile("[%s]+" % re.escape(_CLIENT_SPACE))
 #: Flags every write sends to the mysql or mariadb client: keep comments (the
 #: myflames tag) and turn the client's backslash commands off (--binary-mode
 #: disables every command except \C and DELIMITER in non-interactive use, on
@@ -194,7 +199,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";"):
             lead = len(raw) - len(raw.lstrip())
             text = raw.strip()
             out.append({"text": text, "start": state["start"] + lead, "end": state["start"] + lead + len(text),
-                        "code": " ".join("".join(state["code"]).split()), "idents": list(state["idents"]),
+                        "code": _CODE_SPACE.sub(" ", "".join(state["code"])).strip(" "),
+                        "idents": list(state["idents"]),
                         "unclosed": state["unclosed"], "issues": list(state["issues"]), "delimiter": delimiter})
         state.update(start=next_start, code=[], idents=[], pending=False, unclosed=False, issues=[])
 
@@ -414,7 +420,12 @@ JOIN INNER LEFT RIGHT CROSS NATURAL OUTER STRAIGHT_JOIN WHEN THEN ELSE
 CASE VALUES VALUE ROWS RANGE BETWEEN FOR FORCE USE IGNORE INDEX KEY
 DECIMAL NUMERIC SIGNED UNSIGNED BINARY NCHAR VARCHAR CHARSET
 """.split())
-_FUNCTION_TOKEN = re.compile(r"`\d+`|''|[\w$]+|[^\s]", re.UNICODE)
+#: Identifier characters outside quotes: both lexers accept any byte that
+#: starts a multibyte character (MySQL strings/sql_chars.cc my_ismb1st,
+#: MariaDB mysys/charset.c is_multi_byte_ident), so with utf8mb4 every
+#: non-ASCII character counts, symbols such as € included, not only \w.
+_IDENT_CHAR = r"[\w$\u0080-\U0010FFFF]"
+_FUNCTION_TOKEN = re.compile(r"`\d+`|''|%s+|[^\s]" % _IDENT_CHAR, re.UNICODE)
 _ADMIN_FUNCTION_PREFIXES = ("GROUP_REPLICATION_", "ASYNCHRONOUS_CONNECTION_FAILOVER_",
                             "KEYRING_", "VERSION_TOKENS_", "SERVICE_GET_", "SERVICE_RELEASE_")
 
@@ -451,7 +462,7 @@ def _select_function_checks(upper, idents):
             found.append(_verdict("risky", "sequence", "A qualified NEXTVAL can advance a MariaDB sequence."))
         if i + 1 >= len(tokens) or tokens[i + 1] != "(":
             continue
-        if not quoted and not re.match(r"^[\w$]+$", token):
+        if not quoted and not re.match(r"^%s+$" % _IDENT_CHAR, token):
             continue
         end = pairs.get(i + 1)
         # WITH c(cols) AS (...) and derived-table aliases t(cols) declare
@@ -597,6 +608,39 @@ _SET_ITEM = re.compile(r"\s*(?:(GLOBAL|PERSIST_ONLY|PERSIST|SESSION|LOCAL)\s+|@@
                        r"LOCAL)\s*\.\s*|(@@)|(@))?\s*(''|%s(?:\s*\.\s*%s)?|[A-Z0-9_$.]+)\s*(?::=|=)" % (_IDENT, _IDENT))
 
 
+# A function call (a stored function can write; GET_LOCK takes a named lock),
+# a := assignment, a subquery (SELECT or TABLE) or a MariaDB sequence advance (NEXT VALUE FOR is
+# a general expression there) in a value. Any call counts, pure or not: a name
+# of identifier characters (_IDENT_CHAR: letters, digits, _, $ and any
+# non-ASCII character), a quoted name (`f`, or "f" under ANSI_QUOTES, which the
+# scanner masks as the string '') or a string followed by "(". The value is
+# the scanner's code: strings are '' and quoted identifiers `N`, so a
+# parenthesis inside a string literal never counts.
+_SET_VALUE_WRITES = re.compile(r"(?:%s|[`'\"])\s*\(|:=|\b(?:SELECT|TABLE)\b|\bNEXT\s+VALUE\s+FOR\b" % _IDENT_CHAR,
+                               re.I)
+# myflames' own text value (variables._text_literal via perf_common.literal):
+# exactly one hex string converted to utf8mb4 and nothing else. Only this form,
+# anchored to the whole value, is exempt from the call test above.
+_SET_TEXT_LITERAL = re.compile(r"\s*CONVERT\(\s*X''\s+USING\s+UTF8MB4\s*\)\s*", re.I)
+_QUALIFIED_PART = re.compile(r"\.\s*(`\d+`|''|[\w$]+)")
+
+
+def _set_value_writes(value, idents):
+    """True when a SET value (scanner code after ``=``) can change state."""
+    if _SET_TEXT_LITERAL.fullmatch(value):
+        return False
+    if _SET_VALUE_WRITES.search(value):
+        return True
+    # In MariaDB sql_mode=ORACLE, seq.NEXTVAL (quoted or not) advances a
+    # sequence without parentheses (sql_lex.cc create_item_ident); a quoted
+    # part after a dot may be an ANSI_QUOTES name, so it counts too.
+    for part in _QUALIFIED_PART.finditer(value):
+        token = part.group(1)
+        if token == "''" or _name(token, idents).upper() == "NEXTVAL":
+            return True
+    return False
+
+
 def _set_items(rest, idents, scoped=True):
     """Verdicts for a comma list of SET assignments (*rest* is after SET).
 
@@ -623,6 +667,13 @@ def _set_items(rest, idents, scoped=True):
         scope = m.group(1) or m.group(2)
         variable = _name(re.split(r"\s*\.\s*", m.group(5))[-1], idents).lower()
         if not scoped:
+            # MariaDB SET STATEMENT values are expressions too (sql_yacc.yy
+            # set_stmt_option: set_expr_or_default). The server refuses stored
+            # functions and table references there, but built-ins such as
+            # GET_LOCK and := assignments run; flagging any call stays safe.
+            if _set_value_writes(piece[m.end():], idents):
+                found.append(_verdict("write", "session", "The value calls a function, assigns a variable or runs a "
+                                                          "subquery, which can change data."))
             if variable in SESSION_RISKY_VARIABLES:
                 found.append(_verdict("risky", "replication", SESSION_RISKY_VARIABLES[variable]))
             elif variable in SESSION_GUARD_VARIABLES:
@@ -645,7 +696,11 @@ def _set_items(rest, idents, scoped=True):
         elif variable in SESSION_RISKY_VARIABLES:
             found.append(_verdict("risky", "replication", SESSION_RISKY_VARIABLES[variable]))
         elif variable in SESSION_READ_VARIABLES:
-            found.append(_verdict("read", "session", "Changes %s for this session only." % variable))
+            if _set_value_writes(piece[m.end():], idents):
+                found.append(_verdict("write", "session", "The value calls a function, assigns a variable or runs a "
+                                                          "subquery, which can change data."))
+            else:
+                found.append(_verdict("read", "session", "Changes %s for this session only." % variable))
         else:
             found.append(_verdict("write", "session", "Changes %s for this session only." % variable))
     return found
@@ -1057,8 +1112,8 @@ def decide(verdict, connection_type=DEFAULT_CONNECTION_TYPE, read_only=False, na
         text = "%s is a Production connection, so myflames asks before every write." % subject
     elif kind == "risky":
         action, title = "confirm", "Risky write"
-        text = ("%s is a Development connection. myflames asks only before risky writes, and %s is one."
-                % (subject, what))
+        text = ("%s is a Development connection. myflames asks only before risky writes, and %s %s."
+                % (subject, what, "include one" if count > 1 else "is one"))
     else:
         action, title = "allow", "Development connection"
         text = "%s is a Development connection, so this write runs without a confirmation." % subject

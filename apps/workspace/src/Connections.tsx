@@ -127,11 +127,14 @@ export const WritePolicyContext = createContext<WritePolicy | null>(null);
 export function useWritePolicy() {
   return useContext(WritePolicyContext);
 }
-/** The strip across the Query editor and Server: Production asks before
- * every change, Read-only refuses them; nothing for Development. While the
- * policy is not known it assumes Production and says why (`unknown`:
- * "loading" or the error text), with Retry after a failure. */
-export function SafetyStrip({
+/** The write safety of the connection in use, first in the window footer of
+ * the places that send to it (Query editor, Server, Workload, Replication,
+ * Tuning): Production asks before every change, Read-only refuses them,
+ * Development asks only before risky ones. While the policy is not known it
+ * assumes Production and says why (`unknown`: "loading" or the error text),
+ * with Retry after a failure. A dot plus words, never color alone; the full
+ * sentence is its accessible name and tooltip. */
+export function SafetyStatus({
   safety,
   name,
   unknown,
@@ -142,33 +145,32 @@ export function SafetyStrip({
   unknown?: string;
   onRetry?: () => void;
 }) {
-  if (!safety.known)
-    return (
-      <div className="safety-strip is-production is-unknown" role="note" data-safety="unknown">
-        <strong>Production assumed</strong>
-        <span>
-          {unknown === "loading"
-            ? `reading the settings of ${name}; changes stay off until they load`
-            : `could not read the settings of ${name}; changes stay off until they load`}
-        </span>
-        {unknown !== "loading" && onRetry && (
-          <button type="button" className="strip-retry" onClick={onRetry}>
-            Retry
-          </button>
-        )}
-      </div>
-    );
-  if (!safety.read_only && safety.type !== "production") return null;
-  return safety.read_only ? (
-    <div className="safety-strip is-read-only" role="note" data-safety="read-only">
-      <strong>Read-only</strong>
-      <span>myflames refuses every change on {name}</span>
-    </div>
-  ) : (
-    <div className="safety-strip is-production" role="note" data-safety="production">
-      <strong>Production</strong>
-      <span>every change on {name} asks first</span>
-    </div>
+  const loading = unknown === "loading";
+  const [state, word, detail, sentence] = !safety.known
+    ? [
+        "unknown",
+        "Production assumed",
+        loading ? "reading settings" : "settings not loaded",
+        loading
+          ? `Production assumed: reading the settings of ${name}; changes stay off until they load`
+          : `Production assumed: could not read the settings of ${name}${unknown ? ` (${unknown})` : ""}; changes stay off until they load`,
+      ]
+    : safety.read_only
+      ? ["read-only", "Read-only", "changes refused", `Read-only: myflames refuses every change on ${name}`]
+      : safety.type === "production"
+        ? ["production", "Production", "changes ask first", `Production: every change on ${name} asks first`]
+        : ["development", "Development", "risky changes ask first", `Development: changes on ${name} ask first only when risky`];
+  return (
+    <span className={`safety-status is-${state}`} data-status="safety" data-safety={state} role="note" aria-label={sentence} title={sentence}>
+      <span className="safety-status-dot" aria-hidden="true" />
+      <strong>{word}</strong>
+      <span className="safety-status-detail" aria-hidden="true">· {detail}</span>
+      {!safety.known && !loading && onRetry && (
+        <button type="button" className="safety-retry" onClick={onRetry} aria-label={`Retry reading the settings of ${name}`}>
+          Retry
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -573,7 +575,7 @@ export function Connections({
         setSelected(ids => checked ? [...new Set([...ids, row.key])] : ids.filter(id => id !== row.key));
       }}><span className="visually-hidden">Select {row.fields.name || connectionTarget(row.fields)}</span></Checkbox>
     ) },
-    { key: "name", label: "Name", primary: true, flex: true, width: 180, sort: row => row.fields.name,
+    { key: "name", label: "Name", primary: true, flex: true, width: 160, minWidth: 160, sort: row => row.fields.name,
       render: row => <span className="cell-name">
         <TypeDot type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
         <strong className="cell-truncate" title={row.fields.name || connectionTarget(row.fields)}>{row.fields.name || connectionTarget(row.fields)}</strong>
@@ -1060,7 +1062,8 @@ export function ConnectionPicker({
           <button className="button picker-manage" onClick={() => { closePopovers(); onManage(); }}>Manage connections…</button>
         </div>
       </Popover>
-      {privileges && <Popover label="Privileges" buttonClassName="button small" trigger="Privileges">
+      {privileges && <Popover label="Privileges" buttonClassName="button small privileges-button" buttonTitle="Privileges"
+        trigger={<><Icon name="key" size={14} /><span className="privileges-button-label">Privileges</span></>}>
         <h3 className="popover-title">Privileges</h3>
         {privileges.report ? <>
           <p>Connected as {privileges.report.account}</p>

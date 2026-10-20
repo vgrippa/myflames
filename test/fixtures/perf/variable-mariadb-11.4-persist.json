@@ -16,8 +16,8 @@
    "hostname\tfixture-db\nserver_id\t1\nversion_compile_os\tLinux\nmax_connections\t300\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\nmyflames:session\nmax_connections\t300\n"
   ],
   [
-   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'MAX_CONNECTIONS'",
-   "MAX_CONNECTIONS\tNULL\t300\tSQL\t151\tGLOBAL\tBIGINT UNSIGNED\t10\t100000\t1\tNULL\tNO\tNULL\tThe number of simultaneous clients allowed\n"
+   "/*myflames:variable*/ SELECT VARIABLE_NAME, SESSION_VALUE, GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN, DEFAULT_VALUE, VARIABLE_SCOPE, VARIABLE_TYPE, NUMERIC_MIN_VALUE, NUMERIC_MAX_VALUE, NUMERIC_BLOCK_SIZE, ENUM_VALUE_LIST, READ_ONLY, GLOBAL_VALUE_PATH, VARIABLE_COMMENT, COMMAND_LINE_ARGUMENT FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'MAX_CONNECTIONS'",
+   "MAX_CONNECTIONS\tNULL\t300\tSQL\t151\tGLOBAL\tBIGINT UNSIGNED\t10\t100000\t1\tNULL\tNO\tNULL\tThe number of simultaneous clients allowed\tREQUIRED\n"
   ],
   [
    "/*myflames:variable*/ SHOW GRANTS",
@@ -32,6 +32,7 @@
  },
  "synthetic_extensions": [
   "Original variable values and write results were recorded live. Server identity (fixture-db, server_id 1, fixed MySQL UUID) and Linux platform rows are synthetic additions for identity/platform regression coverage.",
-  "The persisted-value read was adapted to IS NULL and HEX; encoded answers are derived from the recorded values, not a new live capture."
+  "The persisted-value read was adapted to IS NULL and HEX; encoded answers are derived from the recorded values, not a new live capture.",
+  "COMMAND_LINE_ARGUMENT was appended to the recorded SYSTEM_VARIABLES rows on 2026-10-18, read live from MariaDB 11.4.13-MariaDB-ubu2404 (the recording version), when myflames started selecting that column."
  ]
 }

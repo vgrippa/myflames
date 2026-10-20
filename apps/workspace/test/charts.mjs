@@ -509,6 +509,9 @@ async function viewSuite(browser, page, errors) {
   assert.ok(await page.$eval('#tree1 .tree-row', (r) => r.classList.contains('is-selected')));
   await page.hover('#tree1 .tree-row:last-of-type');
   assert.deepEqual(await treeDetails(), pinnedInfo.split('  ·  '), 'pinned details survive hover');
+  // Keep pointer hover separate from keyboard unpinning: scrolling a focused
+  // row back into view can otherwise generate a new pointerenter after Esc.
+  await page.mouse.move(0, 0);
   await page.keyboard.press('Escape');
   assert.match((await treeDetails())[0], /^Click a row to pin details/);
   await page.hover('#tree1 .tree-row:last-of-type');
@@ -533,6 +536,22 @@ async function viewSuite(browser, page, errors) {
     document.getElementById('outside').dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true, cancelable: true }));
   }));
   assert.equal(outside, false, 'browser find is not hijacked outside the chart');
+  const cmdF = await page.evaluate(() => {
+    const press = (target, platform) => new Promise((resolve) => {
+      Object.defineProperty(navigator, 'platform', { value: platform, configurable: true });
+      document.addEventListener('keydown', (event) => resolve(event.defaultPrevented), { once: true });
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true, cancelable: true }));
+    });
+    return (async () => {
+      const row = document.querySelector('#tree1 .tree-row');
+      const out = { macInside: await press(row, 'MacIntel'), otherInside: await press(row, 'Win32'), macOutside: await press(document.getElementById('outside'), 'MacIntel') };
+      return out;
+    })();
+  });
+  assert.equal(cmdF.macInside, true, 'Cmd+F inside the chart opens its search on macOS');
+  assert.equal(cmdF.otherInside, false, 'Cmd+F is left alone on other platforms');
+  assert.equal(cmdF.macOutside, false, 'Cmd+F outside the chart keeps browser find on macOS');
+  await page.keyboard.press('Escape');
 
   // Selecting a row hidden by Collapse All reveals it.
   const runtime = await page.evaluate(() => {

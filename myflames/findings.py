@@ -13,6 +13,7 @@ Both read the dict produced by :func:`myflames.output_sidecar.build_sidecar`.
 No new data is invented here — confidence is derived from the category/severity
 the advisor already assigned (one source, several projections).
 """
+import re
 
 # Lower number sorts first (most urgent).
 _SEVERITY_RANK = {
@@ -100,8 +101,9 @@ def build_findings(payload):
             "node_labels": list(w.get("node_labels") or []),
             "confidence": _confidence(w.get("category", "other"), w.get("severity", "warn")),
         })
-        if _RULE_DOCS.get(w.get("category")):
-            findings[-1]["docs"] = _RULE_DOCS[w.get("category")]
+        docs = _docs_for(w, payload)
+        if docs:
+            findings[-1]["docs"] = docs
     for s in payload.get("suggestions") or []:
         entry = {
             "kind": "suggestion",
@@ -159,7 +161,7 @@ RULES = (
      "https://dev.mysql.com/doc/refman/8.4/en/innodb-buffer-pool.html"),
     ("semijoin", "info",
      "A subquery is executed with a semijoin strategy.",
-     "https://dev.mysql.com/doc/refman/8.4/en/semijoins.html"),
+     "https://dev.mysql.com/doc/refman/8.4/en/semijoins-antijoins.html"),
     ("index_merge", "info",
      "Several indexes on one table are scanned and merged.",
      "https://dev.mysql.com/doc/refman/8.4/en/index-merge-optimization.html"),
@@ -179,6 +181,75 @@ RULES = (
 )
 
 _RULE_DOCS = dict((r[0], r[3]) for r in RULES)
+
+#: MySQL Reference Manual versions with these pages (checked 2026-10-19:
+#: dev.mysql.com/doc/refman/<v>/en/ answers for each; an unknown version
+#: redirects away). Other MySQL servers get the version-neutral
+#: ``refman/en/`` path, which redirects to the current manual.
+_REFMAN_VERSIONS = frozenset({"8.0", "8.4", "9.7", "26.7"})
+_REFMAN_PREFIX = "https://dev.mysql.com/doc/refman/8.4/en/"
+#: Pages the 8.0 manual names differently (8.4+ split semijoins.html into
+#: semijoins-antijoins.html; the old name redirects to 8.0).
+_REFMAN_80_PAGES = {"semijoins-antijoins.html": "semijoins.html"}
+
+#: The advisor's missing-index environment warning
+#: (advisor._rule_missing_indexes) is about indexes, not server variables.
+_MISSING_INDEX_DOCS = "https://dev.mysql.com/doc/refman/8.4/en/mysql-indexes.html"
+
+
+_MARIADB_DOCS_BASE = "https://mariadb.com/docs/server/"
+#: MariaDB documentation pages for the findings that have a MariaDB
+#: equivalent (each checked 2026-10-19: 200 with a matching title; a missing
+#: page answers 404). Findings without one get no link rather than a MySQL
+#: page that describes different behavior (for example MySQL hash joins
+#: spilling to disk, which MariaDB BNLH does not do).
+_QO = "ha-and-performance/optimization-and-tuning/"
+_MARIADB_DOCS = {
+    "full_scan": _QO + "optimization-and-indexes/building-the-best-index-for-a-given-select",
+    "missing_index": _QO + "optimization-and-indexes/building-the-best-index-for-a-given-select",
+    "filesort": _QO + "optimization-and-indexes/building-the-best-index-for-a-given-select",
+    "misestimate": _QO + "query-optimizations/statistics-for-optimizing-queries",
+    "hash_join": _QO + "query-optimizer/block-based-join-algorithms",
+    "bnl": _QO + "query-optimizer/block-based-join-algorithms",
+    "redundant_index": _QO + "optimization-and-indexes/compound-composite-indexes",
+    "semijoin": _QO + "query-optimizations/subquery-optimizations/semi-join-subquery-optimizations",
+    "index_merge": _QO + "mariadb-internal-optimizations/fair-choice-between-range-and-index_merge-optimizations",
+    "cold_cache": "server-usage/storage-engines/innodb/innodb-buffer-pool",
+    "env": "server-management/variables-and-modes/server-system-variables",
+    "engine": "server-usage/storage-engines",
+    "durability": "server-usage/storage-engines/innodb/innodb-system-variables#innodb_flush_log_at_trx_commit",
+}
+
+
+def _docs_for(warning, payload):
+    """Docs link for one warning: its category's catalog page, in the
+    manual of the plan's MySQL version when the source names one; for a
+    MariaDB plan the MariaDB page, or no link when none fits."""
+    category = warning.get("category")
+    url = _RULE_DOCS.get(category)
+    text = warning.get("text") or ""
+    key = category
+    if category == "env" and text.startswith("Table ") and " has no index covering (" in text:
+        url = _MISSING_INDEX_DOCS
+        key = "missing_index"
+    if ((payload or {}).get("source") or {}).get("engine") == "mariadb":
+        page = _MARIADB_DOCS.get(key)
+        return _MARIADB_DOCS_BASE + page if page else None
+    if not url or not url.startswith(_REFMAN_PREFIX):
+        return url
+    source = (payload or {}).get("source") or {}
+    version = source.get("engine_version")
+    if source.get("engine") != "mysql" or not isinstance(version, str) or not version:
+        return url
+    match = re.match(r"(\d+)\.(\d+)", version)
+    series = "{}.{}".format(match.group(1), match.group(2)) if match else ""
+    rest = url[len(_REFMAN_PREFIX):]
+    if series == "8.0":
+        page, sep, anchor = rest.partition("#")
+        rest = _REFMAN_80_PAGES.get(page, page) + sep + anchor
+    if series in _REFMAN_VERSIONS:
+        return "https://dev.mysql.com/doc/refman/{}/en/{}".format(series, rest)
+    return "https://dev.mysql.com/doc/refman/en/" + rest
 
 
 def rule_catalog():

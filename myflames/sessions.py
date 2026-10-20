@@ -124,9 +124,11 @@ _LINKS = {
 }
 
 
-def _check_args(active_only, user, host, db, min_seconds, limit):
+def _check_args(active_only, user, host, db, min_seconds, limit, locked_only=False):
     if not isinstance(active_only, bool):
         raise ValueError("active_only must be true or false.")
+    if not isinstance(locked_only, bool):
+        raise ValueError("locked_only must be true or false.")
     for name, value in (("user", user), ("host", host), ("db", db)):
         if value is not None and (not isinstance(value, str) or len(value) > 255 or "\x00" in value):
             raise ValueError("Choose a %s filter of at most 255 characters." % name)
@@ -135,8 +137,11 @@ def _check_args(active_only, user, host, db, min_seconds, limit):
         raise ValueError("Minimum seconds must be a number from 0 to %d." % MAX_SECONDS)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise ValueError("Choose a limit from 1 to %d." % MAX_LIMIT)
-    return {"active_only": active_only, "user": user or None, "host": host or None, "db": db or None,
-            "min_seconds": min_seconds}
+    res = {"active_only": active_only, "user": user or None, "host": host or None, "db": db or None,
+           "min_seconds": min_seconds}
+    if locked_only:
+        res["locked_only"] = True
+    return res
 
 
 def split_host(host):
@@ -400,10 +405,38 @@ def _assess(session):
     session["why"] = ("; ".join(why)[:1].upper() + "; ".join(why)[1:] + ".") if why else None
     session["active"] = (session["command"] != "Sleep" and not system) or idle_in_trx \
         or session["lock_wait"] is not None
+    rows_locked = trx.get("rows_locked") if trx else None
+    tables_locked = trx.get("tables_locked") if trx else None
+    is_locked = bool(
+        session["lock_wait"] is not None
+        or (trx and trx.get("state") == "LOCK WAIT")
+        or (rows_locked is not None and rows_locked > 0)
+        or (tables_locked is not None and tables_locked > 0)
+    )
+    session["is_locked"] = is_locked
+    if session["lock_wait"] is not None:
+        session["lock_status"] = "waiting"
+        session["lock_detail"] = "Waiting for %s%s" % (
+            {"innodb": "InnoDB lock", "metadata": "metadata lock", "table": "table lock"}.get(
+                session["lock_wait"]["kind"], "lock"),
+            " (%ss)" % session["lock_wait"]["wait_s"] if session["lock_wait"]["wait_s"] is not None else "")
+    elif rows_locked and rows_locked > 0:
+        session["lock_status"] = "holding"
+        session["lock_detail"] = "%d row%s locked" % (
+            rows_locked, "" if rows_locked == 1 else "s")
+    elif tables_locked and tables_locked > 0:
+        session["lock_status"] = "holding"
+        session["lock_detail"] = "%d table%s locked" % (
+            tables_locked, "" if tables_locked == 1 else "s")
+    else:
+        session["lock_status"] = None
+        session["lock_detail"] = None
     return session
 
 
 def _matches(session, filters):
+    if filters.get("locked_only") and not session.get("is_locked"):
+        return False
     if filters["active_only"] and not session["active"]:
         return False
     if filters["user"] is not None and session["user"] != filters["user"]:
@@ -483,14 +516,16 @@ def _summary_text(summary):
 
 
 def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_seconds=0,
-                    limit=DEFAULT_LIMIT, identity=False):
+                    limit=DEFAULT_LIMIT, identity=False, source_mode="auto", locked_only=False):
     """Return the ``sessions-1.0`` report. Read-only; see the module docstring.
 
     *active_only*, *user*, *host* (client host, with or without the port),
     *db* and *min_seconds* filter the ``sessions`` list; ``summary`` and the
     flag counts always cover every session this account can see.
     """
-    filters = _check_args(active_only, user, host, db, min_seconds, limit)
+    if source_mode not in ("auto", "show", "show_processlist", "processlist", "table"):
+        raise ValueError("source_mode must be 'auto' or 'show_processlist'.")
+    filters = _check_args(active_only, user, host, db, min_seconds, limit, locked_only=locked_only)
     reader = Reader(conn, SESSIONS_TAG)
     notes = []
     try:
@@ -512,13 +547,53 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
                 server_identity = dict(zip(keys, identity_rows[0]))
         except ConnectorError:
             notes.append("Could not read the server identity; refresh before using Kill.")
-    source = _processlist_source(server.engine, server.version_tuple, server.ps_on)
-    try:
-        rows = reader.rows(_processlist_sql(server.engine, source))
-    except ConnectorError as exc:
-        if denied(exc):
-            raise ValueError("This user cannot read %s: %s" % (source, reason(exc)))
-        raise ValueError("Could not read the process list: " + reason(exc))
+    ps_show_pl = None
+    if source_mode in ("show", "show_processlist", "processlist"):
+        source = "show_processlist"
+        if server.engine == "mysql" and server.version_tuple >= (8, 0, 22):
+            try:
+                pl_rows = reader.rows("SHOW GLOBAL VARIABLES LIKE 'performance_schema_show_processlist'")
+                if pl_rows and len(pl_rows[0]) > 1:
+                    ps_show_pl = pl_rows[0][1]
+            except ConnectorError:
+                pass
+        try:
+            raw_rows = reader.rows("SHOW FULL PROCESSLIST")
+        except ConnectorError as exc:
+            if denied(exc):
+                raise ValueError("This user cannot run SHOW FULL PROCESSLIST: %s" % reason(exc))
+            raise ValueError("Could not read SHOW FULL PROCESSLIST: %s" % reason(exc))
+        rows = []
+        for r in raw_rows:
+            if not r:
+                continue
+            info_val = r[7] if len(r) > 7 else None
+            if info_val and SESSIONS_TAG.strip() in info_val:
+                continue
+            id_val = _int(r[0])
+            user_val = r[1] if len(r) > 1 else None
+            host_val = r[2] if len(r) > 2 else None
+            db_val = r[3] if len(r) > 3 else None
+            cmd_val = r[4] if len(r) > 4 else None
+            time_val = _number(r[5]) if len(r) > 5 else None
+            state_val = r[6] if len(r) > 6 else None
+            info_len = len(info_val.encode("utf-8")) if info_val else None
+            if server.engine == "mariadb":
+                prog_val = _number(r[8]) if len(r) > 8 and r[8] not in (None, "") else None
+                formatted_row = [id_val, user_val, host_val, db_val, cmd_val, time_val, state_val, info_val, info_len,
+                                 None, None, prog_val, None, None]
+            else:
+                formatted_row = [id_val, user_val, host_val, db_val, cmd_val, time_val, state_val, info_val, info_len]
+            rows.append(formatted_row)
+        rows.sort(key=lambda r: -(_number(r[5]) or 0))
+    else:
+        source = _processlist_source(server.engine, server.version_tuple, server.ps_on)
+        try:
+            rows = reader.rows(_processlist_sql(server.engine, source))
+        except ConnectorError as exc:
+            if denied(exc):
+                raise ValueError("This user cannot read %s: %s" % (source, reason(exc)))
+            raise ValueError("Could not read the process list: " + reason(exc))
     truncated_read = len(rows) > READ_CAP
     rows = rows[:READ_CAP]
     by_conn, every, process = _read_transactions(reader, notes)
@@ -564,6 +639,8 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
         "by_db": _breakdown(s["db"] for s in sessions),
         "oldest_transaction": oldest,
         "history_list_length": history_item,
+        "locked": sum(1 for s in sessions if s.get("is_locked")),
+        "waiting_locks": sum(1 for s in sessions if s.get("lock_wait") is not None),
     }
     summary["status"] = _worst([s["status"] for s in sessions] + [connections["status"]]
                                + ([oldest["status"]] if oldest else [])
@@ -618,6 +695,9 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
     report.update({
         "server_identity": server_identity,
         "source": source,
+        "source_mode": "show_processlist" if source == "show_processlist" else "auto",
+        "ps_show_processlist": ps_show_pl,
+        "processlist_source": source,
         "capabilities": {"process_privilege": process, "transactions": process is True,
                          "history_list_length": history is not None},
         "filters": filters, "limit": limit,

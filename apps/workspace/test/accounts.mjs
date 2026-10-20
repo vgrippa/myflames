@@ -311,7 +311,15 @@ try {
     const handle = await page.evaluateHandle(text => [...document.querySelectorAll("button")].find(b => b.textContent.trim() === text && b.getClientRects().length), text);
     assert.ok(await handle.asElement(), `button ${text}`); await handle.asElement().click(); await handle.dispose();
   };
-  const inspect = async () => { await page.click(".accounts-view tbody tr[data-row-key]"); await page.waitForSelector(".account-matrix"); };
+  const backToAccounts = async () => {
+    const back = await page.$(".accounts-view .detail-back");
+    if (back) await back.click();
+  };
+  const inspect = async () => {
+    await backToAccounts();
+    await page.click(".accounts-view tbody tr[data-row-key]");
+    await page.waitForSelector(".account-matrix");
+  };
   const tick = async privilege => {
     await page.$$eval(".account-matrix tbody tr", (rows, p) => rows.find(r => r.querySelector("th")?.textContent === p)?.querySelector("input")?.click(), privilege);
   };
@@ -387,6 +395,7 @@ try {
     await click("Read objects"); await page.waitForFunction(()=>document.querySelector('select[aria-label="Routine"]')?.textContent.includes("recount"));
     assert.equal(count("accounts/scope-objects"),objectsBeforeTyping+1); await click("Cancel");
     // Roles receive the same unheld privilege controls and reviewed requests.
+    await backToAccounts();
     await page.$$eval('.accounts-view tbody tr[data-row-key]',rows=>rows.find(r=>r.textContent.includes("reader@%"))?.click());
     await page.waitForFunction(()=>document.querySelector('.account-inspector')&&document.querySelector('.inspector-title')?.textContent.includes('reader'));
     await page.select(field("Grant level"),"database"); await selectScope("shop"); await rowInput("CREATE ROUTINE");
@@ -501,7 +510,7 @@ try {
   await page.click('.account-actions [data-privilege-action="set_password"]');
   await page.click("dialog .checkbox input"); await click("Review statements");
   await page.waitForSelector(".account-review"); await page.click(".account-review .danger-solid");
-  await page.waitForSelector('[aria-label="Generated password"]');
+  await page.waitForSelector('[aria-label="Generated password"]', { visible: true });
   await page.waitForFunction(() => !document.querySelector(".account-review"));
   assert.match(await h.text('[aria-label="Generated password"]'), /shown-once-secret/);
   await click("Dismiss password"); assert.ok(!(await page.content()).includes("shown-once-secret"));

@@ -63,6 +63,38 @@ class AccountsCliTest(unittest.TestCase):
                 code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2)
         return code, out.getvalue(), err.getvalue()
 
+    def test_role_without_flag_has_actionable_hint(self):
+        self.conn = FakeConn(engine='mariadb', exists=False, name='reader')
+        self.conn.role_grants['`reader`'] = ['GRANT SELECT ON *.* TO `reader`']
+        code, out, err = self.run_cli(['accounts', 'show', 'reader'])
+        self.assertEqual(code, 1)
+        self.assertIn('reader is a role', out)
+        self.assertIn('--role', out)
+        code, out, err = self.run_cli(['accounts', 'grant', 'reader', 'SELECT', '--on', '*.*', '--yes'])
+        self.assertEqual(code, 2)
+        self.assertEqual(out, '')
+        self.assertIn('reader is a role', err)
+        self.assertIn('--role', err)
+        self.assertEqual(self.conn.stdin, [])
+        # Explicit role reads retain their normal success behavior.
+        code, out, err = self.run_cli(['accounts', 'show', 'reader', '--role', '--json'])
+        self.assertEqual(code, 0, err)
+        self.assertTrue(json.loads(out)['role'])
+
+    def test_unreadable_role_does_not_claim_a_match(self):
+        self.conn = FakeConn(engine='mariadb', exists=False, name='reader')
+        read = self.conn.run
+
+        def deny_role(sql, **kwargs):
+            if sql == '/*myflames:accounts*/ SHOW GRANTS FOR `reader`':
+                raise ConnectorError('ERROR 1227: Access denied')
+            return read(sql, **kwargs)
+
+        self.conn.run = deny_role
+        code, out, err = self.run_cli(['accounts', 'show', 'reader'])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, 'No such account.\n')
+
     def test_privileges_text_and_json(self):
         self.conn, _data = replay.session('mysql-9.7', 'acct_app')
         with mock.patch.object(p, 'read_privileges', self.real_read):
@@ -203,6 +235,39 @@ class AccountsCliTest(unittest.TestCase):
         self.assertIn('copy the generated password now', err)
         self.assertNotIn('Gen-SECRET-123', json.dumps(WorkspaceStore().audit_records()))
 
+    def test_regression_random_password_collects_current_password_prompt(self):
+        self.conn = FakeConn(name='admin', host='localhost')
+        self.conn.run_stdin = mock.Mock(return_value='admin\tlocalhost\tGen-SECRET-123\t1\n')
+        with mock.patch.object(accounts_cli.getpass, 'getpass', return_value='Current-secret') as prompt:
+            code, out, err = self.run_cli(['accounts', 'password', 'admin@localhost', '--random-password',
+                                           '--current-password', '--yes'], Stdin(tty=True))
+        self.assertEqual(code, 0, err)
+        prompt.assert_called_once_with('Current password of admin@localhost: ')
+        self.assertIn("REPLACE 'Current-secret'", self.conn.run_stdin.call_args[0][0])
+        self.assertNotIn('Current-secret', out + err + json.dumps(WorkspaceStore().audit_records()))
+
+    def test_regression_random_password_collects_current_password_stdin(self):
+        self.conn = FakeConn(name='admin', host='localhost')
+        self.conn.run_stdin = mock.Mock(return_value='admin\tlocalhost\tGen-SECRET-123\t1\n')
+        with mock.patch.object(accounts_cli.getpass, 'getpass') as prompt:
+            code, out, err = self.run_cli(['accounts', 'password', 'admin@localhost', '--random-password',
+                                           '--current-password', '--password-stdin', '--yes'], '\nCurrent-secret\r\n')
+        self.assertEqual(code, 0, err)
+        prompt.assert_not_called()
+        self.assertIn("REPLACE 'Current-secret'", self.conn.run_stdin.call_args[0][0])
+        self.assertNotIn('Current-secret', out + err + json.dumps(WorkspaceStore().audit_records()))
+
+    def test_regression_random_password_current_requires_input(self):
+        self.conn = FakeConn(name='admin', host='localhost')
+        self.conn.run_stdin = mock.Mock(return_value='admin\tlocalhost\tGen-SECRET-123\t1\n')
+        code, out, err = self.run_cli(['accounts', 'password', 'admin@localhost', '--random-password',
+                                       '--current-password', '--yes'])
+        self.assertEqual((code, out), (2, ''), err)
+        self.assertIn('--password-stdin', err)
+        self.assertEqual(self.connects, 0)
+        self.conn.run_stdin.assert_not_called()
+        self.assertEqual(WorkspaceStore().audit_records()[0]['outcome'], 'password_input')
+
     def test_list_and_show(self):
         self.conn, data = replay.reads('mariadb-11.4')
         from test_accounts import catalog_replay
@@ -213,6 +278,11 @@ class AccountsCliTest(unittest.TestCase):
         code, out, err = self.run_cli(['accounts', 'show', 'acct_app@%', '--json', '-q'])
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)['schema_version'], 'account-1.0')
+        # Synthetic missing-role reply for the new CLI diagnostic probe;
+        # the original live recording only queried the missing user.
+        missing_role = '/*myflames:accounts*/ SHOW GRANTS FOR `nobody`'
+        self.conn.answers[missing_role] = dict(
+            self.conn.answers['/*myflames:accounts*/ SHOW GRANTS FOR `nobody`@`%`'], sql=missing_role)
         code, out, err = self.run_cli(['accounts', 'show', 'nobody@%', '-q'])
         self.assertEqual(code, 1)
         for secret in replay.secrets(data):

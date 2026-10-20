@@ -15,15 +15,18 @@ const view = ".server-view[data-view=io]";
 try {
   await h.server();
   await h.view("io");
-  assert.match(await text(`${view} .view-empty`), /tables and files with the most reading and writing/);
+  // Opening the view reads once, because it is on screen.
+  await page.waitForSelector(`${view} .fact-strip`);
+  await h.idle(view);
+  assert.equal(state.seen.length, 1, "opening reads once");
+  state.seen.length = 0;
   assert.equal(await page.$(`${view} .auto-refresh`), null, "no automatic refresh");
-  assert.equal(state.seen.length, 0);
   assert.match(await text(`${view} .perf-schema`), /Schema/);
   assert.equal(await page.$eval("#io-schema", (e) => e.placeholder), "All schemas");
 
   // Without a schema: no schema sent.
   state.delay = 300;
-  await button("Load I/O", view + " ");
+  await h.refresh();
   await page.waitForSelector(`${view} .capture-status`);
   assert.match(await text(`${view} .capture-status`), /Sampling I\/O for 10 s/);
   await page.waitForSelector(`${view} .fact-strip`);
@@ -51,23 +54,29 @@ try {
   // Rows read and written are compact ("12.6M") when large.
   assert.match(await text(`${orders} td[data-col=read]`), /M/);
   assert.match(await text(`${view} th[data-col=total]`), /Total time \(ms\)/);
-  assert.equal(await page.$(`${view} th[data-col=readms]`), null, "read timing is available through Columns or the inspector");
+  assert.ok(await page.$(`${view} th[data-col=readms]`), "full-width list retains read timing");
   assert.match(await h.inspector(), /What it measures/);
   // Files: kinds labeled; temporary files are in the kinds list.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=files]`);
   const kinds = await page.$$eval(`${view} [aria-label="Files over the window"] tbody tr`, (els) => els.map((e) => e.dataset.kind));
   assert.ok(kinds.includes("redo"));
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=kinds]`);
   assert.match(await text(`${view} [aria-label="File kinds over the window"]`), /wait\/io\/file\/sql\/io_cache/);
   await h.select(`${view} tr[data-event="wait/io/file/sql/io_cache"]`);
   await page.waitForFunction(() => /temporary files that were closed/.test(document.querySelector(".view-inspector")?.textContent || ""));
   // Since server start: tables and files.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=since]`);
   assert.ok(await page.$(`${view} [aria-label="File kinds since server start"]`));
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=files]`);
   assert.ok(await page.$(`${view} [aria-label="Files since server start"]`));
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=tables]`);
   assert.ok(await page.$(`${view} [aria-label="Tables since server start"]`));
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=window]`);
   await (await page.$(".server-place")).screenshot({ path: path.join(h.shots, "io.png") });
 
@@ -143,7 +152,7 @@ try {
   assert.equal(JSON.stringify(saved.state).includes("io-1.0"), false, "reports are not saved");
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   await page.reload({ waitUntil: "networkidle0" });
-  await h.server();
+  await h.workload();
   await page.waitForSelector("#server-nav-io[aria-current=page]");
   assert.equal(await page.$eval(`${view} .perf-window select`, (e) => e.value), "5");
   assert.equal(await page.$eval("#io-schema", (e) => e.value), "mfshop");

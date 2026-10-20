@@ -362,6 +362,25 @@ class TestRules(IndexCase):
                 report['available'] = False
                 self.assertNotIn('Statements: ', indexes.format_text(report))
 
+    def test_workspace_retains_every_scoped_index_both_engines(self):
+        for engine in ('mysql', 'mariadb'):
+            rows = [stat('t%03d' % i, 'k_a', 1, 'a') for i in range(251)]
+            usage = [['shop', 't%03d' % i, 'k_a', '0', '0', '0'] for i in range(251)] + \
+                    [['shop', 't%03d' % i, None, '1', '1', '1'] for i in range(251)]
+            report = indexes.compute_indexes(server(engine), raw(rows, usage=usage), 'shop', limit=None)
+            self.assertEqual(len(report['unused']), 251)
+            self.assertEqual(len(report['indexes']), 251)
+            self.assertEqual(report['more']['indexes'], 0)
+            self.assertEqual(report['more']['unused'], 0)
+            limited = indexes.compute_indexes(server(engine), raw(rows, usage=usage), 'shop', limit=200)
+            self.assertEqual((len(limited['unused']), limited['more']['unused']), (200, 51))
+
+    def test_workspace_browse_ceiling_refuses_instead_of_truncating(self):
+        self.assertEqual(indexes.MAX_BROWSE_ROWS, 100000)
+        with mock.patch.object(indexes, 'MAX_BROWSE_ROWS', 2):
+            with self.assertRaisesRegex(ValueError, 'Choose fewer databases'):
+                indexes.compute_indexes(server(), raw([stat('t%d' % i, 'k', 1, 'a') for i in range(3)]), limit=None)
+
     def test_limits_and_short_uptime(self):
         rows = [stat('t%03d' % i, 'k_a', 1, 'a') for i in range(30)]
         usage = [['shop', 't%03d' % i, 'k_a', '0', '0', '0'] for i in range(30)] + \

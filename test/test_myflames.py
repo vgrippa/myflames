@@ -1104,10 +1104,14 @@ class TestAnalysis(unittest.TestCase):
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_hash_join_entries_have_rows(self):
+        """``rows`` is the build input's measured rows, or None when the
+        build input is not identified: MySQL labels it with heading "Hash"
+        (explain_access_path.cc), which this hand-made fixture lacks."""
         _, a = self._analyze(self.HASH_JOIN)
+        self.assertTrue(a["hash_joins"])
         for h in a["hash_joins"]:
             self.assertIn("rows", h)
-            self.assertIsInstance(h["rows"], (int, float))
+            self.assertIsNone(h["rows"])
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "mysql-explain-hash-join.json")), "fixture missing")
     def test_hash_join_plan_has_two_full_scans(self):
@@ -2749,8 +2753,9 @@ class TestComplexityIntegration(unittest.TestCase):
         from myflames.output_sidecar import build_sidecar, SCHEMA_VERSION, validate_sidecar
         payload = build_sidecar(self.root, self.analysis, source_type="file", engine="mysql")
         validate_sidecar(payload)
-        self.assertEqual(payload["schema_version"], "1.3")
-        self.assertEqual(SCHEMA_VERSION, "1.3")
+        # 1.4: plan_summary measurements are null when the plan lacks them.
+        self.assertEqual(payload["schema_version"], "1.4")
+        self.assertEqual(SCHEMA_VERSION, "1.4")
         ops = payload.get("operator_complexities")
         self.assertIsInstance(ops, list)
         self.assertGreater(len(ops), 0)

@@ -126,6 +126,7 @@ async function recorded(n) {
   return records;
 }
 const section = async (label) => {
+  if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.locator(`${view} .segmented button ::-p-text(${label})`).click();
   await page.waitForFunction((v, l) => document.querySelector(`${v} .segmented [aria-pressed=true]`)?.textContent === l, {}, view, label);
 };
@@ -135,13 +136,20 @@ const connect = async (name) => {
   await page.waitForFunction((n) => document.querySelector('.window-toolbar .connection-pill-name')?.textContent === n, {}, name);
 };
 async function field(label, value) {
-  const handle = await page.waitForSelector(`${view} label.ops-field ::-p-text(${label})`);
-  const input = await handle.evaluateHandle((span) => span.closest("label").querySelector("input"));
+  const handle = await page.waitForSelector(`${view} .ops-field label ::-p-text(${label}), ${view} label.ops-field ::-p-text(${label})`);
+  const input = await handle.evaluateHandle((span) => span.closest("label").control || span.closest("label").querySelector("input"));
   await input.click({ clickCount: 3 });
   await page.keyboard.press("Backspace");
   if (value) await input.type(value);
 }
-const preflight = () => page.locator(`${view} .ops-actions button ::-p-text(Run preflight)`).click();
+const preflight = async () => {
+  const back = await page.$(`${view} .detail-back`);
+  if (back) await back.click();
+  // The window footer is fixed over the bottom of the page: a button in the last pixels of the
+  // viewport is in view for Puppeteer but covered, so bring it to the middle first.
+  await page.$eval(`${view} .ops-actions button`, (e) => e.scrollIntoView({ block: "center" }));
+  await page.locator(`${view} .ops-actions button ::-p-text(Run preflight)`).click();
+};
 const closedSheet = () => page.waitForFunction(() => !document.querySelector("dialog.ops-confirm"));
 
 try {
@@ -159,7 +167,11 @@ try {
   assert.match(await h.popover("About Maintenance"), /only read.*Audit log/s);
   assert.equal(state.seen.length, 0, "nothing is read until asked");
   await settle(JOBS, 1, "the job list (no database read) is asked once for the connection in use");
-  assert.equal(state.other.filter((o) => o.path !== JOBS).length, 0);
+  // Health is the Server place's first view: it read once on open for each connection
+  // it was shown with (the default one, then Primary). Maintenance itself read nothing else.
+  const healthReads = calls("/api/live/health");
+  assert.deepEqual(healthReads.map((o) => o.body.connection.host), ["127.0.0.1", "primary.test"], "one on-open Health read per connection");
+  assert.deepEqual(state.other.filter((o) => o.path !== JOBS && o.path !== "/api/live/health"), []);
 
   // Tools on this computer and what they offer for the server.
   state.fallback = { status: 200, body: tools };
@@ -194,6 +206,7 @@ try {
   assert.match(await h.inspector(), /default_authentication_plugin \(COMMAND_LINE\)/);
   // MySQL Shell: the full check.
   next.upgrade = shell;
+  await page.click(`${view} .detail-back`);
   await page.locator(`${view} label.checkbox ::-p-text(Partial check without MySQL Shell)`).click();
   await page.locator(`${view} .ops-actions button ::-p-text(Check upgrade)`).click();
   await settle(UPGRADE, 2);

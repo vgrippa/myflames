@@ -1,17 +1,12 @@
-// Server > Instruments: the Performance Schema setup (instruments-1.0 from
-// myflames/ps_instruments.py), after Workbench's Easy Setup / Advanced:
-//   - Performance Schema on or off, as one row;
-//   - A toolbar preset picker, current state and a compact change banner;
-//     the preset summary and its statements are in the inspector;
-//   - What myflames can show: one checklist row per view;
-//   - Advanced (collapsed): instrument groups and consumers as tables, and
-//     setup_actors / setup_objects. Gain, loss, cost and the on/off statements
-//     of the selected row are in the inspector.
-// myflames only reads: every statement is text with a Copy button.
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+// Server > Instruments: loads setup on open and offers Features, Instruments,
+// Consumers and Actors and objects. Individual rows support bounded selection;
+// exact runtime SQL uses the shared review/confirmation runner. Startup option
+// lines stay copy-only. Linked rows and selected-row details use the inspector.
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   api,
   type Connection,
+  type Instrument,
   type InstrumentConsumer,
   type InstrumentCost,
   type InstrumentFeature,
@@ -25,7 +20,9 @@ import { CopySql, bytes, count, engineLabel } from "./PerfShared";
 import { uptime } from "./Health";
 import type { ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
+import { useViewOnScreen } from "./viewOnScreen";
 import {
+  copyToClipboard,
   DataTable,
   Disclosure,
   EmptyState,
@@ -37,6 +34,8 @@ import {
   Pill,
   PrerequisiteGate,
   Select,
+  SearchField,
+  Segmented,
   StatusPill,
   SummaryLine,
   ViewLayout,
@@ -47,6 +46,7 @@ import {
   type Tone,
 } from "./kit";
 import "./instruments.css";
+import { ReviewedSqlAction, ReviewedSqlProvider, ReviewedSqlStatus } from "./ReviewedSqlAction";
 
 /** Set by the Server place: opens Instruments at one row. */
 export const InstrumentsLinkContext = createContext<((row: string) => void) | null>(null);
@@ -167,12 +167,14 @@ function Toggle({ sql, label }: { sql: InstrumentSql; label: string }) {
       <InspectorSection title="Turn on">
         <p className="hint">Now, until the server restarts:</p>
         <CopySql sql={sql.on.runtime} label={`Turn on ${label} until restart`} />
+          <ReviewedSqlAction sql={sql.on.runtime} label={`Turn on ${label}`} />
         <p className="hint">To keep it after a restart, under [mysqld] in my.cnf:</p>
         <CopySql sql={sql.on.config} label={`my.cnf lines that turn on ${label}`} />
       </InspectorSection>
       <InspectorSection title="Turn off">
         <p className="hint">Now, until the server restarts:</p>
         <CopySql sql={sql.off.runtime} label={`Turn off ${label} until restart`} />
+          <ReviewedSqlAction sql={sql.off.runtime} label={`Turn off ${label}`} />
         <p className="hint">To keep it off after a restart:</p>
         <CopySql sql={sql.off.config} label={`my.cnf line that turns off ${label}`} />
       </InspectorSection>
@@ -202,6 +204,110 @@ function setupTone(setup: InstrumentsSetup): [Tone, string] {
   return setup.state === "default" ? ["ok", "Default"] : setup.state === "empty" ? ["problem", "Empty"] : ["watch", "Changed"];
 }
 
+type InstrumentAction = "enable" | "counted" | "disable";
+
+/** Pure, report-bound SQL generation. No caller-supplied name becomes SQL unless
+ * it exists in the report. Timed and untimed rows always use separate UPDATEs. */
+export function buildInstrumentChange(
+  report: Pick<InstrumentsReport, "instruments" | "consumers">,
+  kind: "instruments" | "consumers",
+  selected: string[],
+  action: InstrumentAction,
+): { sql: string; config: string; alsoEnables: string[]; skippedBuiltin: string[] } {
+  // Doubling quotes reads the same with or without NO_BACKSLASH_ESCAPES; a
+  // backslash would not, so such a name is refused (none exists in either engine).
+  const quote = (name: string) => "'" + name.replace(/'/g, "''") + "'";
+  const optionQuote = (name: string) => name.replace(/'/g, "\\'");
+  const names = [...new Set(selected)].sort();
+  const sql: string[] = [];
+  const config: string[] = [];
+  const alsoEnables: string[] = [];
+  const skippedBuiltin: string[] = [];
+  const on = action !== "disable";
+  function update(table: string, values: string, rows: string[]) {
+    for (let at = 0; at < rows.length; at += 500)
+      sql.push(`UPDATE performance_schema.${table} SET ${values} WHERE NAME IN (${rows.slice(at, at + 500).map(quote).join(", ")});`);
+  }
+  if (kind === "instruments") {
+    const available = new Map((report.instruments || []).map(row => [row.name, row]));
+    const timed: string[] = [], untimed: string[] = [];
+    for (const name of names) {
+      const row = available.get(name);
+      if (!row) throw new Error(`Instrument is not in this report: ${name}`);
+      if (name.includes("\\")) throw new Error(`Instrument name contains a backslash: ${name}`);
+      if (!on && row.builtin) { skippedBuiltin.push(name); continue; }
+      (row.timed_applies ? timed : untimed).push(name);
+      const value = !on ? "OFF" : action === "counted" && row.timed_applies ? "COUNTED" : "ON";
+      config.push(`performance-schema-instrument='${optionQuote(name)}=${value}'`);
+    }
+    const enabled = `ENABLED = '${on ? "YES" : "NO"}'`;
+    update("setup_instruments", `${enabled}, TIMED = '${action === "enable" ? "YES" : "NO"}'`, timed);
+    update("setup_instruments", enabled, untimed);
+  } else {
+    if (action === "counted") throw new Error("Consumers have no timing option.");
+    const available = new Map(report.consumers.map(row => [row.name, row]));
+    const chosen = new Set<string>();
+    function include(name: string) {
+      const row = available.get(name);
+      if (!row || row.enabled === null) throw new Error(`Consumer is not readable in this report: ${name}`);
+      if (chosen.has(name)) return;
+      chosen.add(name);
+      if (on) row.requires.forEach(include);
+    }
+    names.forEach(include);
+    const all = [...chosen].sort();
+    alsoEnables.push(...all.filter(name => !names.includes(name)));
+    update("setup_consumers", `ENABLED = '${on ? "YES" : "NO"}'`, all);
+    config.push(...all.map(name => `performance-schema-consumer-${optionQuote(name)}=${on ? "ON" : "OFF"}`));
+  }
+  return { sql: sql.join("\n"), config: config.join("\n"), alsoEnables, skippedBuiltin };
+}
+
+const RUNTIME_WARNING = "Runtime changes are lost at restart. Copy the option file lines to keep them under [mysqld].";
+function SelectedChanges({ report, kind, names, clear }: {
+  report: InstrumentsReport; kind: "instruments" | "consumers"; names: string[]; clear(): void;
+}) {
+  const actions: [InstrumentAction, string][] = kind === "instruments"
+    ? [["enable", "Enable"], ["counted", "Enable without timing"], ["disable", "Disable"]]
+    : [["enable", "Enable"], ["disable", "Disable"]];
+  // A refresh can remove a selected row before its clearing effect runs.
+  const available = new Set(kind === "instruments" ? (report.instruments || []).map(row => row.name)
+    : report.consumers.filter(row => row.enabled !== null).map(row => row.name));
+  const picked = names.filter(name => available.has(name));
+  const plans = actions.map(([action, label]) => {
+    try { return { label, ...buildInstrumentChange(report, kind, picked, action), error: "" }; }
+    catch (error) {
+      // Missing consumer dependencies must refuse a plan, rather than crash the
+      // view or silently execute a partial enable script.
+      return { label, sql: "", config: "", alsoEnables: [], skippedBuiltin: [], error: (error as Error).message };
+    }
+  });
+  const skipped = plans.find(plan => plan.skippedBuiltin.length)?.skippedBuiltin.length || 0;
+  return <div className="instr-batch" data-instrument-actions={kind}>
+    <div className="instr-actions">
+      <span role="status">{count(picked.length)} selected</span>
+      {plans.map(plan => plan.sql
+        ? <ReviewedSqlAction key={plan.label} sql={plan.sql} label={plan.label}
+            warning={[RUNTIME_WARNING, plan.alsoEnables.length ? `Also enables ${plan.alsoEnables.join(", ")}.` : "",
+              plan.skippedBuiltin.length ? `Skips ${plan.skippedBuiltin.length} built-in memory instruments, which cannot be disabled.` : ""].filter(Boolean).join(" ")} />
+        : <button key={plan.label} type="button" className="button small" disabled>{plan.label}</button>)}
+      <button type="button" className="text-button" disabled={!names.length} onClick={clear}>Clear selection</button>
+    </div>
+    {[...new Set(plans.map(plan => plan.error).filter(Boolean))].map(error => <p key={error} role="alert">{error} Refresh the setup before reviewing this change.</p>)}
+    {!!skipped && <p className="hint">Disable skips {count(skipped)} built-in memory instruments, which cannot be turned off.</p>}
+    {!!names.length && <Disclosure title="Keep after restart">
+      <p className="hint">Copy only. Add under [mysqld] in the server option file.</p>
+      {plans.filter(plan => plan.config).map(plan => <CopySql key={plan.label} sql={plan.config} label={`${plan.label}: option file lines`} />)}
+    </Disclosure>}
+  </div>;
+}
+
+function enabledText(value: boolean | null) { return value === null ? "Unknown" : value ? "Yes" : "No"; }
+function defaultText(row: Instrument) {
+  if (row.default_enabled === null) return "Unknown";
+  return !row.default_enabled ? "Disabled" : row.timed_applies && row.default_timed === false ? "Enabled, not timed" : "Enabled";
+}
+
 export function InstrumentsView({
   connection,
   disabled,
@@ -212,6 +318,7 @@ export function InstrumentsView({
   target,
   onTargetDone,
   onOpenView,
+  onOpenSql,
 }: {
   connection: Connection;
   disabled: boolean;
@@ -224,13 +331,21 @@ export function InstrumentsView({
   /** Called once the target row is shown, so it is not shown again. */
   onTargetDone?: () => void;
   onOpenView: (view: ServerKind) => void;
+  onOpenSql?: (sql: string) => void;
 }) {
   const reads = useConnectionReads(connection);
+  const onScreen = useViewOnScreen();
   const loading = !!reads.loading;
   const error = reads.error;
   const report = bound?.report ?? null;
   const other = bound && bound.key !== reads.key ? bound.label : null;
-  const [advanced, setAdvanced] = useState(false);
+  const [tab, setTab] = useState("features");
+  const [search, setSearch] = useState("");
+  const [group, setGroup] = useState("");
+  const [state, setState] = useState("all");
+  const [instrumentNames, setInstrumentNames] = useState<string[]>([]);
+  const [consumerNames, setConsumerNames] = useState<string[]>([]);
+  const attempted = useRef<string | null>(null);
   const applied = report?.presets.find((p) => p.applied === true)?.key || "";
   const [preset, setPreset] = useState("");
 
@@ -238,39 +353,54 @@ export function InstrumentsView({
     await reads.run(
       "instruments",
       "Reading the Performance Schema setup…",
-      (c) => api<InstrumentsReport>("live/instruments", { connection: c }),
+      (c, signal) => api<InstrumentsReport>("live/instruments", { connection: c }, signal),
       onReport,
     );
   }
 
-  /** Select one row, open the section it is in, scroll to it, and focus it. */
+  // One attempt per connection visit, including failures. Refresh remains explicit.
+  useEffect(() => {
+    if (disabled || !onScreen || attempted.current === reads.key) return;
+    attempted.current = reads.key;
+    if (bound?.key !== reads.key) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reads.key, disabled, onScreen, bound?.key]);
+  useEffect(() => {
+    setInstrumentNames([]);
+    setConsumerNames([]);
+  }, [reads.key, bound?.report]);
+
+  const [revealRequest, setRevealRequest] = useState(0);
+  useLayoutEffect(() => {
+    if (!revealRequest) return;
+    // Details now replace the list. Focus their Back control after rendering,
+    // including when a retained view reveals the same setting a second time.
+    document.querySelector<HTMLButtonElement>(".instruments-panel .detail-back")?.focus();
+  }, [revealRequest]);
+
+  /** Select a row and reveal its full-width details. */
   function reveal(row: string) {
-    const inAdvanced = row.startsWith("group:") || row.startsWith("consumer:") || row === "actors" || row === "objects";
-    if (inAdvanced) setAdvanced(true);
+    if (row.startsWith("group:")) {
+      setTab("instruments");
+      setGroup(row.slice(6));
+      setSearch("");
+      setState("all");
+    } else if (row.startsWith("instrument:")) setTab("instruments");
+    else if (row.startsWith("consumer:")) setTab("consumers");
+    else if (row === "actors" || row === "objects") setTab("setup");
     selection.select(row, true);
-    window.setTimeout(() => {
-      const element = document.querySelector<HTMLElement>(`.instruments-panel [data-row="${CSS.escape(row)}"]`);
-      if (!element) return;
-      const focusable = element.matches("[data-row-key]") ? element : element.querySelector<HTMLElement>("[data-row-key]") || element;
-      element.scrollIntoView({ block: "center" });
-      focusable.focus({ preventScroll: true });
-      element.classList.add("is-target");
-      window.setTimeout(() => element.classList.remove("is-target"), 1600);
-    });
+    setRevealRequest(n => n + 1);
   }
 
   // A link from another view: read the setup once if needed, then show the row.
   useEffect(() => {
     if (!target) return;
     // A setup read from another connection says nothing about this one.
-    if (!report || other) {
-      if (!disabled) void load();
-      return;
-    }
+    if (!report || other || disabled) return;
     reveal(target.row);
     onTargetDone?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target?.n, !!report, !!other]);
+  }, [target?.n, bound?.key, reads.key, disabled]);
 
   const status = report?.status;
   const notes = report ? report.notes.filter((n) => !status || n !== status.text) : [];
@@ -281,47 +411,41 @@ export function InstrumentsView({
   const offCount = views.filter((f) => f.status === "off").length;
   const shownPreset = report?.presets.find((p) => p.key === (preset || applied)) || report?.presets[0];
 
-  const groupColumns: Column<InstrumentGroup>[] = [
-    {
-      key: "name",
-      label: "Instrument group",
-      sort: (g) => g.label,
-      render: (g) => (
-        <span className="cell-name">
-          {g.label}
-          {g.match && <code className="cell-muted">{g.match}</code>}
-        </span>
-      ),
-    },
-    {
-      key: "now",
-      label: "Now",
-      sort: (g) => g.state,
-      render: (g) => (
-        <span className="cell-name">
-          <StatusPill tone={groupTone(g)} label={groupNow(g)} />
-          {!!g.changed && <Pill tone="warn">{`${count(g.changed)} changed from default`}</Pill>}
-        </span>
-      ),
-    },
-    { key: "default", label: "Default", sort: (g) => g.default, render: (g) => g.default },
-    { key: "cost", label: "Cost", sort: (g) => g.cost?.level || "", render: (g) => <CostChip cost={g.cost} /> },
+  const shownInstruments = (report?.instruments || []).filter(row =>
+    row.name.toLowerCase().includes(search.toLowerCase()) && (!group || row.group === group) &&
+    (state === "all" || state === "enabled" && row.enabled || state === "disabled" && !row.enabled ||
+      state === "different" && (row.default_enabled !== null && row.enabled !== row.default_enabled ||
+        row.timed_applies && row.default_timed !== null && row.timed !== row.default_timed)));
+  /** A visible checkbox per row: clicking the row still selects only that row,
+   * the checkbox adds or removes it; the header picks every row shown. */
+  function pickColumn<T>(nameOf: (row: T) => string, shown: T[], names: string[], setNames: (names: string[]) => void,
+    disabledOf: (row: T) => boolean = () => false, cap = 2000): Column<T> {
+    const shownNames = shown.filter(row => !disabledOf(row)).slice(0, cap).map(nameOf);
+    const all = shownNames.length > 0 && shownNames.every(name => names.includes(name));
+    return {
+      key: "pick", name: "Select", width: 40, minWidth: 40,
+      label: <input type="checkbox" className="instr-pick" aria-label="Select every row shown" checked={all}
+        disabled={!shownNames.length} onChange={e => setNames(e.target.checked ? [...new Set([...names, ...shownNames])] : names.filter(name => !shownNames.includes(name)))} />,
+      render: row => <input type="checkbox" className="instr-pick" aria-label={`Select ${nameOf(row)}`} checked={names.includes(nameOf(row))}
+        disabled={disabledOf(row)} onChange={e => setNames(e.target.checked ? [...names, nameOf(row)] : names.filter(name => name !== nameOf(row)))} />,
+    };
+  }
+  const instrumentColumns: Column<Instrument>[] = [
+    pickColumn<Instrument>(row => row.name, shownInstruments, instrumentNames, setInstrumentNames),
+    { key: "name", label: "Name", primary: true, sort: row => row.name, render: row => <code>{row.name}</code> },
+    { key: "enabled", label: "Enabled", sort: row => Number(row.enabled), render: row => enabledText(row.enabled) },
+    { key: "timed", label: "Timed", sort: row => row.timed === null ? -1 : Number(row.timed), render: row => row.timed_applies ? enabledText(row.timed) : "" },
+    { key: "default", label: "Default", sort: defaultText, render: defaultText },
+    { key: "group", label: "Group", sort: row => row.group, render: row => report?.groups.find(g => g.key === row.group)?.label || row.group },
   ];
   const consumerColumns: Column<InstrumentConsumer>[] = [
-    { key: "name", label: "Consumer", sort: (c) => c.name, render: (c) => <code>{c.name}</code> },
-    {
-      key: "now",
-      label: "Now",
-      sort: (c) => consumerNow(c),
-      render: (c) => (
-        <span className="cell-name">
-          <StatusPill tone={consumerTone(c)} label={consumerNow(c)} />
-          {c.enabled !== null && c.enabled !== c.default && <Pill tone="warn">Changed from default</Pill>}
-        </span>
-      ),
-    },
-    { key: "default", label: "Default", sort: (c) => (c.default ? 1 : 0), render: (c) => (c.default ? "On" : "Off") },
-    { key: "cost", label: "Cost", sort: (c) => c.cost.level, render: (c) => <CostChip cost={c.cost} /> },
+    pickColumn<InstrumentConsumer>(c => c.name, report?.consumers || [], consumerNames, setConsumerNames, c => c.enabled === null),
+    { key: "name", label: "Name", primary: true, sort: c => c.name, render: c => <code>{c.name}</code> },
+    { key: "enabled", label: "Enabled", sort: c => Number(c.enabled), render: c => enabledText(c.enabled) },
+    { key: "effective", label: "Effective", sort: c => Number(c.effective), render: c => c.blocked_by.length
+      ? `Blocked by ${c.blocked_by.join(", ")}` : enabledText(c.effective) },
+    { key: "default", label: "Default", sort: c => Number(c.default), render: c => enabledText(c.default) },
+    { key: "requires", label: "Requires", sort: c => c.requires.join(", "), render: c => c.requires.join(", ") },
   ];
 
   let inspector: InspectorContent | null = null;
@@ -415,6 +539,22 @@ export function InstrumentsView({
         ),
       };
     }
+  } else if (report && key.startsWith("instrument:")) {
+    const row = report.instruments?.find(item => `instrument:${item.name}` === key);
+    const g = report.groups.find(item => item.key === row?.group);
+    if (row) inspector = {
+      key, title: row.name, meta: <StatusPill tone={row.enabled ? "ok" : "off"} label={row.enabled ? "Enabled" : "Disabled"} />,
+      body: <>
+        <InspectorSection title="On this server">
+          <Fields label="Instrument" rows={[
+            ["Enabled", enabledText(row.enabled)], ["Timed", row.timed_applies ? enabledText(row.timed) : "Does not apply"],
+            ["Default", defaultText(row)], ["Group", g?.label || row.group], ["Properties", row.properties || "None"],
+          ]} />
+          {row.builtin && <p className="hint">Built-in memory instrument. It cannot be turned off.</p>}
+        </InspectorSection>
+        {g && <InspectorSection title="Gain, loss and cost"><GainLoseCost gain={g.gain} lose={g.lose} cost={g.cost} /></InspectorSection>}
+      </>,
+    };
   } else if (report && key.startsWith("group:")) {
     const g = report.groups.find((x) => x.id === key);
     if (g)
@@ -503,6 +643,7 @@ export function InstrumentsView({
               <InspectorSection title="Restore the defaults">
                 <p className="hint">TRUNCATE empties only this configuration table:</p>
                 <CopySql sql={setup.restore} label={`Restore the default setup_${key} rows`} />
+          <ReviewedSqlAction sql={setup.restore} label={`Restore setup_${key} defaults`} />
               </InspectorSection>
             )}
           </>
@@ -525,6 +666,7 @@ export function InstrumentsView({
   }
 
   return (
+    <ReviewedSqlProvider connection={connection} disabled={disabled || !!other || !report?.status.enabled} onComplete={() => { setInstrumentNames([]); setConsumerNames([]); void load(); }}>
     <ViewLayout
       id="instruments"
       title="Instruments"
@@ -536,7 +678,7 @@ export function InstrumentsView({
             Which Performance Schema instruments and consumers are on, what each gives myflames and you, what it
             costs, and the statements that turn it on or off, with ready-made presets.
           </p>
-          <p>It only reads the setup tables. You run the statements yourself in a SQL client.</p>
+          <p>Refresh reads the setup tables. Apply actions show the exact SQL and require confirmation.</p>
         </>
       }
       controls={report && shownPreset ? (
@@ -571,7 +713,7 @@ export function InstrumentsView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a preset, a view or an instrument to see its statements, gain and cost.</p>}
-      status={<ViewStatus loading={reads.loading} error={error} />}
+      status={<><ViewStatus loading={reads.loading} error={error} /><ReviewedSqlStatus /></>}
     >
       {!report && !loading && !error && (
         <EmptyState
@@ -594,10 +736,12 @@ export function InstrumentsView({
               data-preset={shownPreset.key}
               role="status"
             >
-              <StatusPill
-                tone={shownPreset.applied === true ? "ok" : shownPreset.applied === false ? "info" : "unknown"}
-                label={shownPreset.applied === true ? "Already in place" : shownPreset.applied === false ? "Would change this server" : "Current setup unknown"}
-              />
+              {shownPreset.applied !== true && (
+                <StatusPill
+                  tone={shownPreset.applied === false ? "info" : "unknown"}
+                  label={shownPreset.applied === false ? "Would change this server" : "Current setup unknown"}
+                />
+              )}
               <span className="instr-preset-summary" title={shownPreset.summary}>{shownPreset.summary}</span>
               <CostChip cost={shownPreset.cost} />
             </div>
@@ -616,8 +760,8 @@ export function InstrumentsView({
             <GroupedRow
               rowKey="ps"
               selection={selection}
-              tone={status.enabled ? "ok" : "off"}
-              toneLabel={status.enabled ? "On" : "Off"}
+              tone={status.enabled ? undefined : "off"}
+              toneLabel={status.enabled ? undefined : "Off"}
               label="Performance Schema"
               detail={`${engineLabel(report)}${status.memory_bytes !== null ? ` · its own memory ${bytes(status.memory_bytes)}` : ""}`}
               value={`default ${status.default ? "ON" : "OFF"}`}
@@ -625,9 +769,13 @@ export function InstrumentsView({
               className={status.enabled ? "is-on" : "is-off"}
             />
           </GroupedList>
-          <GroupedList id="instr-features-h" title="What myflames can show" className="instr-features">
+          <Segmented label="Instruments sections" value={tab} onChange={setTab} className="instr-tabs"
+            options={[{ value: "features", label: "Features" }, { value: "instruments", label: "Instruments" },
+              { value: "consumers", label: "Consumers" }, { value: "setup", label: "Actors and objects" }]} />
+          {tab === "features" && <GroupedList id="instr-features-h" title="What myflames can show" className="instr-features">
             {features.map((f) => {
               const [tone, label] = featureStatus(f);
+              const isNormal = f.status === "ready";
               const reason = f.missing.length
                 ? `needs ${f.missing[0]}${f.missing.length > 1 ? ` and ${f.missing.length - 1} more` : ""}`
                 : f.optional_missing.length
@@ -638,46 +786,121 @@ export function InstrumentsView({
                   key={f.key}
                   rowKey={`feature:${f.key}`}
                   selection={selection}
-                  tone={tone}
-                  toneLabel={label}
+                  tone={isNormal ? undefined : tone}
+                  toneLabel={isNormal ? undefined : label}
                   label={f.label}
                   detail={reason || undefined}
                   attrs={{ "data-feature": f.key }}
                 />
               );
             })}
-          </GroupedList>
-          <Disclosure title="Advanced" open={advanced} onToggle={setAdvanced} className="instr-advanced">
-            <section className="view-section" aria-labelledby="instr-groups-h">
-              <div className="view-section-head">
-                <h3 id="instr-groups-h">Instruments</h3>
-                <span className="hint">What the server can measure (setup_instruments)</span>
-              </div>
-              <DataTable
-                id="instruments.groups"
-                label="Instrument groups"
-                columns={groupColumns}
-                rows={report.groups}
-                rowKey={(g) => g.id}
-                selection={selection}
-                rowAttrs={(g) => ({ "data-row": g.id, id: rowDomId(g.id) })}
-              />
-            </section>
-            <section className="view-section" aria-labelledby="instr-consumers-h">
-              <div className="view-section-head">
-                <h3 id="instr-consumers-h">Consumers</h3>
-                <span className="hint">Where measurements are kept (setup_consumers)</span>
-              </div>
-              <DataTable
-                id="instruments.consumers"
-                label="Consumers"
-                columns={consumerColumns}
-                rows={report.consumers}
-                rowKey={(c) => c.id}
-                selection={selection}
-                rowAttrs={(c) => ({ "data-row": c.id, id: rowDomId(c.id) })}
-              />
-            </section>
+          </GroupedList>}
+          {tab === "instruments" && (!status.enabled ? <PrerequisiteGate>{status.text}</PrerequisiteGate> : <section className="view-section instr-list" aria-label="Instruments">
+            <div className="instr-filters">
+              <SearchField label="Search instruments" value={search} onChange={setSearch} />
+              <Select label="Instrument group" value={group} onChange={setGroup}
+                options={[["", "All groups"], ...report.groups.map((g): [string, string] => [g.key, g.label])]} />
+              <Select label="Instrument state" value={state} onChange={setState}
+                options={[["all", "All states"], ["enabled", "Enabled"], ["disabled", "Disabled"], ["different", "Different from default"]]} />
+            </div>
+            <SelectedChanges report={report} kind="instruments" names={instrumentNames} clear={() => setInstrumentNames([])} />
+            <div className="instr-actions">
+              <button type="button" className="text-button" disabled={!shownInstruments.length}
+                onClick={() => setInstrumentNames(shownInstruments.slice(0, 2000).map(row => row.name))}>Select all shown</button>
+              <span className="hint">{count(shownInstruments.length)} shown</span>
+              {shownInstruments.length > 2000 && <span className="hint">Select all shown is limited to the first 2,000 matching instruments.</span>}
+            </div>
+            <DataTable id="instruments.list" label="Instruments" columns={instrumentColumns} rows={shownInstruments}
+              rowKey={row => `instrument:${row.name}`} selection={selection} selectionHighlight="always"
+              multiSelection={{ keys: instrumentNames.map(name => `instrument:${name}`), select: keys => setInstrumentNames(keys.map(key => key.slice(11))) }}
+              onActivate={row => reveal(`instrument:${row.name}`)}
+              rowAttrs={row => ({ "data-row": `instrument:${row.name}` })}
+              rowContextMenu={row => [
+                {
+                  label: "Enable instrument",
+                  icon: "check",
+                  disabled: row.enabled === true,
+                  onClick: () => setInstrumentNames([row.name]),
+                },
+                {
+                  label: "Disable instrument",
+                  icon: "block",
+                  disabled: row.enabled === false || !!row.builtin,
+                  onClick: () => setInstrumentNames([row.name]),
+                },
+                ...(row.timed_applies ? [
+                  {
+                    label: row.timed ? "Disable timing (Counted only)" : "Enable timing",
+                    icon: "waits",
+                    onClick: () => setInstrumentNames([row.name]),
+                  },
+                ] : []),
+                { divider: true as const },
+                {
+                  label: "Explain & Help (What this event does)",
+                  icon: "info",
+                  onClick: () => reveal(`instrument:${row.name}`),
+                },
+                {
+                  label: `Filter by group (${report?.groups.find(g => g.key === row.group)?.label || row.group})`,
+                  icon: "search",
+                  onClick: () => { setGroup(row.group); setSearch(""); },
+                },
+                { divider: true as const },
+                {
+                  label: `Copy instrument name (${row.name})`,
+                  icon: "copy",
+                  onClick: () => void copyToClipboard(row.name),
+                },
+                ...(onOpenSql ? [
+                  {
+                    label: "Query in Editor (performance_schema)",
+                    icon: "query",
+                    onClick: () => onOpenSql(`SELECT * FROM performance_schema.setup_instruments WHERE NAME = '${row.name}';`),
+                  },
+                ] : []),
+              ]} />
+          </section>)}
+          {tab === "consumers" && (!status.enabled ? <PrerequisiteGate>{status.text}</PrerequisiteGate> : <section className="view-section instr-list" aria-label="Consumers">
+            <SelectedChanges report={report} kind="consumers" names={consumerNames} clear={() => setConsumerNames([])} />
+            <DataTable id="instruments.consumers" label="Consumers" columns={consumerColumns} rows={report.consumers}
+              rowKey={c => c.id} selection={selection} selectionHighlight="always"
+              multiSelection={{ keys: consumerNames.map(name => `consumer:${name}`), select: keys => setConsumerNames(keys.map(key => key.slice(9))) }}
+              onActivate={c => reveal(c.id)} rowAttrs={c => ({ "data-row": c.id, id: rowDomId(c.id) })}
+              rowContextMenu={c => [
+                {
+                  label: "Enable consumer",
+                  icon: "check",
+                  disabled: c.enabled === true || c.enabled === null,
+                  onClick: () => setConsumerNames([c.name]),
+                },
+                {
+                  label: "Disable consumer",
+                  icon: "block",
+                  disabled: c.enabled === false || c.enabled === null,
+                  onClick: () => setConsumerNames([c.name]),
+                },
+                { divider: true as const },
+                {
+                  label: "Inspect consumer",
+                  icon: "info",
+                  onClick: () => reveal(c.id),
+                },
+                {
+                  label: `Copy consumer name (${c.name})`,
+                  icon: "copy",
+                  onClick: () => void copyToClipboard(c.name),
+                },
+                ...(onOpenSql ? [
+                  {
+                    label: "Query in Editor (setup_consumers)",
+                    icon: "query",
+                    onClick: () => onOpenSql(`SELECT * FROM performance_schema.setup_consumers WHERE NAME = '${c.name}';`),
+                  },
+                ] : []),
+              ]} />
+          </section>)}
+          {tab === "setup" && <>
             {(report.actors || report.objects) && (
               <GroupedList id="instr-setup-h" title="Who and what is recorded" className="instr-setup">
                 {(["actors", "objects"] as const).map((k) => {
@@ -707,10 +930,11 @@ export function InstrumentsView({
             >
               How changes apply
             </button>
-          </Disclosure>
+          </>}
         </>
       )}
     </ViewLayout>
+    </ReviewedSqlProvider>
   );
 }
 
@@ -740,16 +964,19 @@ function presetInspector(key: string, p: InstrumentsPreset, psOn: boolean, readO
           {!psOn && <p className="hint">Performance Schema is off: turn it on in my.cnf and restart first; the statements then apply.</p>}
           <p className="hint">Now, until the server restarts:</p>
           <CopySql sql={p.runtime} label={`${p.label}: runtime statements`} />
+          <ReviewedSqlAction sql={p.runtime} label={`Apply ${p.label}`} disabled={!psOn} warning={p.cost.text} />
           {p.restore_setup && (
             <>
               <p className="hint">setup_actors and setup_objects differ from the defaults; this restores them:</p>
               <CopySql sql={p.restore_setup} label={`${p.label}: restore setup_actors and setup_objects`} />
+          <ReviewedSqlAction sql={p.restore_setup} label={`Restore setup for ${p.label}`} disabled={!psOn} />
             </>
           )}
           {p.undo && (
             <>
               <p className="hint">When you are done:</p>
               <CopySql sql={p.undo} label={`${p.label}: undo statement`} />
+          <ReviewedSqlAction sql={p.undo} label={`Undo ${p.label}`} disabled={!psOn} />
             </>
           )}
           <p className="hint">To keep it after a restart (my.cnf):</p>

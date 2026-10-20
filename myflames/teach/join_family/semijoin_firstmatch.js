@@ -38,23 +38,23 @@ var ORDERS_BY_CUSTOMER = {
 };
 
 // --- palette (unified with nested_loop / hash lessons) ----------------
-var OUTER_BG_REST   = "#ffedd5";
-var OUTER_BG_DRIVE  = "#fde68a";
-var OUTER_BG_DONE   = "#dcfce7";   // emitted (matched)
-var OUTER_BG_NONE   = "#f3f4f6";   // checked, no match
-var OUTER_STROKE    = "#fdba74";
-var OUTER_STROKE_DR = "#f59e0b";
-var OUTER_STROKE_OK = "#16a34a";
-var PROBE_BG        = "#eff6ff";
-var PROBE_STROKE    = "#7dd3fc";
-var PILL_FILL       = "#bae6fd";
-var PILL_STROKE     = "#0284c7";
-var PILL_MATCH_FILL = "#bbf7d0";
-var PILL_MATCH_STK  = "#16a34a";
-var PILL_SKIP_FILL  = "#e5e7eb";   // greyed: never read
-var PILL_SKIP_STK   = "#9ca3af";
-var MATCH_TEXT      = "#0c4a6e";
-var SKIP_TEXT       = "#9ca3af";
+var OUTER_BG_REST   = "var(--svg-build-soft)";
+var OUTER_BG_DRIVE  = "var(--svg-highlight)";
+var OUTER_BG_DONE   = "var(--svg-ok-soft)";   // emitted (matched)
+var OUTER_BG_NONE   = "var(--svg-node-muted)";   // checked, no match
+var OUTER_STROKE    = "var(--svg-build-soft)";
+var OUTER_STROKE_DR = "var(--svg-build)";
+var OUTER_STROKE_OK = "var(--svg-ok)";
+var PROBE_BG        = "var(--svg-token-soft)";
+var PROBE_STROKE    = "var(--svg-token-soft)";
+var PILL_FILL       = "var(--svg-token-soft)";
+var PILL_STROKE     = "var(--svg-token)";
+var PILL_MATCH_FILL = "var(--svg-ok-soft)";
+var PILL_MATCH_STK  = "var(--svg-ok)";
+var PILL_SKIP_FILL  = "var(--svg-node-muted)";   // greyed: never read
+var PILL_SKIP_STK   = "var(--svg-ink-muted)";
+var MATCH_TEXT      = "var(--svg-token)";
+var SKIP_TEXT       = "var(--svg-ink-muted)";
 
 function buildStage() {
   var svg = document.getElementById("fm-svg");
@@ -65,13 +65,13 @@ function buildStage() {
   var rowH = 46;
 
   var outerLbl = anim.svgEl("text", {
-    x: leftX, y: 26, "font-size": 13, "font-weight": 700, fill: "#7c2d12"
+    x: leftX, y: 26, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   outerLbl.textContent = "Outer (driving): customers checked by IN (…)";
   svg.appendChild(outerLbl);
 
   var innerLbl = anim.svgEl("text", {
-    x: rightX, y: 26, "font-size": 13, "font-weight": 700, fill: "#0c4a6e"
+    x: rightX, y: 26, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   innerLbl.textContent = "Inner scan: this customer's orders > $1000";
   svg.appendChild(innerLbl);
@@ -87,14 +87,14 @@ function buildStage() {
     svg.appendChild(bg);
     var txt = anim.svgEl("text", {
       x: leftX + 12, y: y + 23, "font-size": 11, "font-weight": 600,
-      fill: "#7c2d12"
+      fill: "var(--svg-build-ink)"
     });
     txt.textContent = "customer_id=" + CUSTOMERS[i].id + " " + CUSTOMERS[i].name;
     svg.appendChild(txt);
     // Per-row verdict badge (right edge of the outer box).
     var badge = anim.svgEl("text", {
       x: leftX + colW - 10, y: y + 23, "text-anchor": "end",
-      "font-size": 10.5, "font-weight": 700, fill: "#065f46", opacity: 0
+      "font-size": 10.5, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0
     });
     svg.appendChild(badge);
     outerRows.push({
@@ -112,7 +112,7 @@ function buildStage() {
 
   var probeTitle = anim.svgEl("text", {
     x: rightX + 12, y: topY + 22, "font-size": 11.5, "font-weight": 700,
-    fill: "#0c4a6e"
+    fill: "var(--svg-token-ink)"
   });
   probeTitle.textContent = "Inner rows read for the current customer";
   svg.appendChild(probeTitle);
@@ -130,20 +130,20 @@ function buildStage() {
   // Two diverging counters (the story).
   var counterY = topY + 232;
   var naiveCounter = anim.svgEl("text", {
-    x: rightX, y: counterY, "font-size": 12, "font-weight": 700, fill: "#b91c1c"
+    x: rightX, y: counterY, "font-size": 12, "font-weight": 700, fill: "var(--svg-danger)"
   });
   naiveCounter.textContent = "Naive join inner rows read: 0";
   svg.appendChild(naiveCounter);
 
   var fmCounter = anim.svgEl("text", {
-    x: rightX, y: counterY + 20, "font-size": 12, "font-weight": 700, fill: "#15803d"
+    x: rightX, y: counterY + 20, "font-size": 12, "font-weight": 700, fill: "var(--svg-ok)"
   });
   fmCounter.textContent = "FirstMatch inner rows read: 0";
   svg.appendChild(fmCounter);
 
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 14, "text-anchor": "middle",
-    "font-size": 12.5, "font-weight": 600, fill: "#111827"
+    "font-size": 12.5, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -329,12 +329,12 @@ function buildTimeline() {
         if (n === 0) {
           stage.verdict.textContent = c.name + " (id=" + c.id + ") → no orders > $1000";
           row.badge.textContent = "no match";
-          row.badge.setAttribute("fill", "#6b7280");
+          row.badge.setAttribute("fill", "var(--svg-ink-muted)");
         } else {
           stage.verdict.textContent = c.name + " (id=" + c.id + ") → read all " +
             n + (n === 1 ? " order" : " orders");
           row.badge.textContent = "read " + n;
-          row.badge.setAttribute("fill", "#b91c1c");
+          row.badge.setAttribute("fill", "var(--svg-danger)");
         }
         row.badge.setAttribute("opacity", 1);
       });
@@ -384,7 +384,7 @@ function buildTimeline() {
           setCounters();
           stage.verdict.textContent = c.name + " (id=" + c.id + ") → no match — not in result";
           row.badge.textContent = "no match";
-          row.badge.setAttribute("fill", "#6b7280");
+          row.badge.setAttribute("fill", "var(--svg-ink-muted)");
           row.badge.setAttribute("opacity", 1);
           phase.textContent = "Act 2 — " + c.name + " (id=" + c.id +
             ") has no order > $1000 → excluded from the IN result";
@@ -405,7 +405,7 @@ function buildTimeline() {
         stage.verdict.textContent = c.name + " (id=" + c.id +
           ") → first match on order #" + orders[0].oid + " — emit, short-circuit";
         row.badge.textContent = "✓ emit (read 1)";
-        row.badge.setAttribute("fill", "#15803d");
+        row.badge.setAttribute("fill", "var(--svg-ok)");
         row.badge.setAttribute("opacity", 1);
       });
       tl.delay(140);
@@ -459,9 +459,9 @@ function renderChart(innerMatches, currentOuterRows) {
     xMin: 1000, xMax: 5e6,
     xLabel: "Outer (customer) rows", yLabel: "Inner rows read",
     curves: [
-      { label: "Naive join: O(n · matches)", color: "#b91c1c",
+      { label: "Naive join: O(n · matches)", color: "var(--svg-danger)",
         fn: function(n) { return n * innerMatches; } },
-      { label: "FirstMatch: O(n · 1)", color: "#15803d",
+      { label: "FirstMatch: O(n · 1)", color: "var(--svg-ok)",
         fn: function(n) { return n; } }
     ],
     current: { x: currentOuterRows },

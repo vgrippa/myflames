@@ -241,9 +241,14 @@ try {
       { timeout: 20000 },
       name,
     );
-  const activeTab = () => text('.query-tabs [role="tab"][aria-selected="true"]');
-  /** Select a Top statements row: its actions are in the inspector. */
+  const activeTab = () => text('.query-tablist [role="tab"][aria-selected="true"]');
+  /** Select a Top statements row and open its full-width detail actions. */
   async function row(rank) {
+    const back = await page.$(".view-inspector.is-detail .detail-back");
+    if (back) {
+      await back.click();
+      await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail"));
+    }
     await page.click(`.server-view[data-view=top] tbody tr[data-rank="${rank}"]`);
     await page.waitForFunction((r) => document.querySelector(".view-inspector h3")?.textContent === `Statement ${r}`, {}, rank);
   }
@@ -265,7 +270,7 @@ try {
   await setField("Analysis runs", "3");
   await page.locator("label.check-field ::-p-text(Capture optimizer trace)").click();
   await page.keyboard.press("Escape");
-  await nav("Server");
+  await nav("Workload");
   await page.click("#server-nav-top");
   await page.locator("button ::-p-text(Load top statements)").click();
   await page.waitForSelector(".server-view tbody tr");
@@ -274,8 +279,12 @@ try {
   // 1. A non-SELECT row: Explain and Run analysis are disabled with a reason.
   const disabled = (label) => page.$eval(`[aria-label="${label}"]`, (e) => e.disabled);
   await row(2);
-  assert.equal(await page.$('.server-view[data-view=top] th[data-col=avg]'), null,
-    "detail columns collapse without changing digest actions");
+  assert.ok(await page.$('.server-view[data-view=top] th[data-col=avg]'),
+    "the retained list keeps its detail columns");
+  assert.equal(await page.$eval('.server-view[data-view=top] .view-main', e => e.hidden), true,
+    "the list is hidden while the full-width statement is open");
+  assert.equal(await page.$eval('.server-view[data-view=top] .view-inspector.is-detail', e => e.checkVisibility()), true,
+    "statement actions are visible in the full-width detail");
   assert.ok(await page.$('.server-view[data-view=top] th[data-col=statement]'));
   assert.equal(await disabled("Explain statement 2"), true);
   assert.equal(await disabled("Run analysis on statement 2"), true);
@@ -302,6 +311,7 @@ try {
   await refreshPrivileges();
   const beforeGated = starts.length;
   for (const selector of ['[aria-label="Explain statement 1"]', '[aria-label="Run analysis on statement 1"]', '.batch-controls > button']) {
+    if(selector==='.batch-controls > button')await page.click(".detail-back");
     assert.equal(await page.$eval(selector, e => e.disabled), false);
     assert.equal(await page.$eval(selector, e => e.getAttribute("aria-disabled")), "true");
     await page.focus(selector);
@@ -311,6 +321,7 @@ try {
   }
   assert.equal(starts.length, beforeGated);
   assert.equal(await page.$(".run-confirm"), null);
+  await row(1);
   privilegeActions = {};
   await refreshPrivileges();
   await page.locator('[aria-label="Run analysis on statement 1"]').click();
@@ -341,7 +352,7 @@ try {
 
   // 2. Explain from a row: new tab, digest schema as default database, editor
   // settings, source recorded, and the plan opens in Plans.
-  await nav("Server");
+  await nav("Workload");
   await row(1);
   await page.locator('[aria-label="Explain statement 1"]').click();
   await heading("Top #1 · orders");
@@ -364,7 +375,7 @@ try {
   assert.match(await text(".tab-source"), /From Top statements, digest aaaaaaaaaaaa · runs in shop, the schema it was recorded in/);
 
   // 3. Run analysis states what it executes before anything runs.
-  await nav("Server");
+  await nav("Workload");
   await row(4);
   await page.locator('[aria-label="Run analysis on statement 4"]').click();
   await page.waitForSelector(".run-confirm");
@@ -391,7 +402,7 @@ try {
 
   // 4. Normalized text: :p1, :p2 and a parameters skeleton; nothing runs
   // until the values are filled in.
-  await nav("Server");
+  await nav("Workload");
   await row(3);
   await page.locator('[aria-label="Explain statement 3"]').click();
   await page.waitForFunction(
@@ -432,7 +443,8 @@ try {
 
   // 5. Explain top N: the two-capture limit, a failure, skipped rows, and
   // plans added without leaving Server.
-  await nav("Server");
+  await nav("Workload");
+  await page.click(".detail-back");
   await setField("Top N", "3");
   mock.busyOnce = true;
   const before = (await page.$$(".plan-item")).length;
@@ -471,7 +483,7 @@ try {
   assert.match(skipped, /Skipped #2: not a read-only SELECT/);
   assert.equal((await page.$$(".plan-item")).length, before + 2);
   assert.equal(await page.$eval(".server-place", (e) => e.closest("[hidden]") === null), true);
-  assert.equal(await text(".main-nav button.active"), "Server");
+  assert.equal(await text(".main-nav button.active"), "Workload");
   assert.equal(
     await page.$eval(".editor-actions [data-action=analyze]", (e) => e.disabled),
     false,
@@ -481,7 +493,7 @@ try {
   assert.match(await text(".primary-finding .strip-body"), /From Top statements: cccccccccccc/);
 
   // 6. Cancel: a job that keeps running is cancelled on the server.
-  await nav("Server");
+  await nav("Workload");
   await setField("Top N", "5");
   mock.hang = true;
   const startsBefore = starts.length;
@@ -540,7 +552,7 @@ try {
   await heading("Top #1 · orders");
   assert.match(await text(".primary-finding .strip-body"), /From Top statements: aaaaaaaaaaaa/);
   await nav("Query editor");
-  await page.locator('.query-tabs [role="tab"] ::-p-text(Top #3 · orders)').click();
+  await page.locator('.query-tablist [role="tab"] ::-p-text(Top #3 · orders)').click();
   assert.match(await text(".tab-source"), /digest bbbbbbbbbbbb/);
   assert.equal(await page.$(".fill-notice"), null, "filled parameters stay filled");
 

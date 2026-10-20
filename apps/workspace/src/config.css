@@ -1,4 +1,4 @@
-/* Configuration: Change… in the inspector and the Change sheet (Config.tsx). */
+/* Parameters catalog, local drafts and the exact-statement review sheets. */
 
 /* Change… and Reset persisted value… under a setting's value in the inspector. */
 .config-actions {
@@ -199,4 +199,77 @@ ul.variable-problems {
   .variable-facts dd {
     margin-bottom: var(--space-1);
   }
+}
+
+/* Parameter facts and recommendations occupy the inspector's full width. */
+.config-panel .config-explanation,
+.config-panel .parameter-check,
+.config-panel .config-actions {
+  grid-column: 1 / -1;
+}
+.config-explanation p { max-width: 70ch; }
+.config-switch {
+  display: inline-flex;
+  width: max-content;
+  min-height: var(--control-h);
+  align-items: center;
+  gap: var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  cursor: pointer;
+}
+.config-switch-track { display: inline-flex; align-items: center; width: 36px; height: 22px; padding: 2px; border: 1px solid var(--control-line); border-radius: 20px; background: var(--surface-muted); }
+.config-switch-track > span { width: 16px; height: 16px; border-radius: 50%; background: var(--ink-muted); }
+.config-switch[aria-checked="true"] .config-switch-track { background: var(--accent); border-color: var(--accent); justify-content: flex-end; }
+.config-switch[aria-checked="true"] .config-switch-track > span { background: var(--accent-ink); }
+.config-switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: var(--radius-sm); }
+.config-switch:disabled { opacity: .55; cursor: default; }
+
+.parameter-name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.parameter-name code { overflow: hidden; text-overflow: ellipsis; }
+.parameter-name .status-dot { flex: 0 0 auto; }
+.parameter-cell-editor { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.parameter-cell-editor .variable-input,
+.parameter-cell-editor .select { width: 100%; min-width: 0; }
+.parameter-cell-editor > .variable-input,
+.parameter-cell-editor > .select { flex: 1 1 auto; }
+.parameter-cell-editor .text-button { flex: 0 0 auto; padding: 0; font-size: var(--text-sm); }
+.parameter-current { max-width: 8em; overflow: hidden; text-overflow: ellipsis; }
+.parameter-staged td[data-col="value"] { background: var(--accent-soft); }
+.config-panel .data-table-frame { max-width: 100%; min-width: 0; }
+.config-panel .data-table-wrap { max-height: 65dvh; }
+.parameter-preview { margin-bottom: var(--space-4); min-width: 0; }
+.parameter-preview h3 { margin: 0 0 var(--space-2); font-size: var(--text-md); }
+.parameter-preview .data-table-wrap { max-height: 35dvh; }
+.parameter-check { border-top: 1px solid var(--line); padding-top: var(--space-3); margin-top: var(--space-3); }
+.parameter-check-heading,
+.parameter-review-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.parameter-check-heading { justify-content: flex-start; }
+.parameter-check .config-explanation { margin-top: var(--space-2); }
+.parameter-batch-sheet { width: min(760px, calc(100vw - var(--space-6))); }
+.parameter-persist { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); font-size: var(--text-md); }
+.parameter-review-row { padding: var(--space-3) 0; border-top: 1px solid var(--line); min-width: 0; }
+.parameter-review-heading { margin-bottom: var(--space-2); }
+.parameter-review-heading strong { min-width: 0; overflow-wrap: anywhere; }
+.parameter-review-row .hint { margin: var(--space-2) 0; }
+.parameter-review-row .perf-sql { max-width: 100%; }
+.parameter-results li { margin: var(--space-1) 0; overflow-wrap: anywhere; }
+@media (max-width: 650px) {
+  .config-panel .toolbar-controls { flex: 1 1 100%; justify-content: flex-start; }
+  .config-panel .toolbar-search { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+  .config-panel .toolbar-search input { width: 100%; min-width: 0; }
+  .parameter-batch-sheet { width: calc(100vw - var(--space-4)); }
+}
+
+.parameter-result-values { display: block; }
+
+/* The parameter list is long and Edit mode keeps its Review and apply button
+   in the toolbar (AWS keeps the action bar in view): pin it under the top bar. */
+.config-panel > .view-toolbar {
+  position: sticky;
+  top: var(--topbar-height);
+  z-index: 3;
+  background: var(--surface);
 }

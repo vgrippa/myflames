@@ -19,7 +19,7 @@ const built=await build({root:workspace,configFile:false,publicDir:false,logLeve
     function Fixture(){const [connection,setConnection]=useState({host:"",port:3306,user:"",database:"",ssl_mode:"DISABLED",type:"production"});
       const [document,onDocument]=useState(null),[selected,select]=useState(""),[inspector,setInspector]=useState(false),[width,setWidth]=useState(window.innerWidth);
       React.useEffect(()=>{const f=()=>setWidth(window.innerWidth);window.addEventListener("resize",f);return()=>window.removeEventListener("resize",f);},[]);
-      window.diagramDocument=document;
+      window.diagramDocument=document;window.setDiagramDocument=onDocument;
       return <><div className="test-probes"><button onClick={()=>setConnection(c=>({...c,user:"",host:c.host==="127.0.0.1"?"127.0.0.2":"127.0.0.1"}))}>Switch connection</button></div>
         <InspectorContext.Provider value={{open:inspector,setOpen:setInspector,width:340,setWidth:()=>{},sheet:width<1040}}>
           <SchemaDiagramView connection={connection} document={document} onDocument={onDocument} onBack={()=>{}} selection={{key:selected,select:(key,show)=>{select(key);if(show)setInspector(true);}}}/>
@@ -41,14 +41,17 @@ const tables=[
 ];
 const edge=(id,from_table,from_columns,to_table,to_columns)=>({id,name:id,from_table,from_columns,to_table,to_columns});
 const model={schema_version:"schema-diagram-1.0",tables,relationships:[edge("orders_customer","orders",["customer_id"],"customers",["id"]),edge("items_order","order_items",["order_id"],"orders",["id"]),edge("items_product","order_items",["product_id"],"products",["id"]),edge("product_category","products",["category_id"],"categories",["id"]),{...edge("receives","products",[],"reviews",[]),cardinality:{from:"one",to:"zero-or-many"},identifying:false}],warnings:[]};
-let readDelay=0,importDelay=0,importFailure=false,exportWarnings=true,lastImport;
+let readDelay=0,readFailure=false,importDelay=0,importFailure=false,exportWarnings=true,lastImport;
+let mermaidText=null,exportDelay=0;
+let liveModel=structuredClone(model), catalogFailure=false;
 const temp=await fs.mkdtemp(path.join(os.tmpdir(),"myflames-diagram-files-"));let h;
 try{
  h=await open("/api/unused-diagram","diagram",{
   "/":content("text/html",html),"/__diagram.js":content("text/javascript",js),"/__diagram.css":content("text/css",css),
-  "/api/schema-diagram/read":body=>({status:200,delay:readDelay,body:{...structuredClone(model),warnings:[`Read ${body.database}`]}}),
+  "/api/live/schemas":()=>({status:catalogFailure?400:200,body:catalogFailure?{error:"Catalog permission denied"}:{schemas:[{name:"shop",tables:6,system:false},{name:"inventory",tables:2,system:false}]}}),
+  "/api/schema-diagram/read":body=>({status:readFailure?400:200,delay:readDelay,body:readFailure?{error:"Schema read failed"}:{...structuredClone(liveModel),warnings:[`Read ${body.database}`]}}),
   "/api/schema-diagram/import":body=>{lastImport=body;return{status:importFailure?400:200,delay:importDelay,body:importFailure?{error:"Unsupported SQL statement. Nothing was executed."}:body.format==="json"?JSON.parse(body.text):structuredClone(model)};},
-  "/api/schema-diagram/export":body=>({status:200,body:{text:body.format==="mermaid"?"erDiagram\n  customers ||--o{ orders : places":"CREATE TABLE customers (id bigint PRIMARY KEY);",warnings:exportWarnings?["Conceptual relationships have no SQL foreign keys."]:[]}})
+  "/api/schema-diagram/export":body=>({status:200,delay:exportDelay,body:{text:body.format==="mermaid"?mermaidText??`erDiagram\n${body.diagram.tables.map(t=>`  ${t.name} {\n${t.columns.map(c=>`    ${c.data_type.replaceAll(",","-").replaceAll(" ","_")} ${c.name}`).join("\n")}\n  }`).join("\n")}`:"CREATE TABLE customers (id bigint PRIMARY KEY);",warnings:exportWarnings?["Conceptual relationships have no SQL foreign keys."]:[]}})
  });
  const {page,state}=h;if(process.env.PERF_SHOTS)await fs.mkdir(h.shots,{recursive:true});
  const click=async text=>{const handle=await page.evaluateHandle(text=>[...document.querySelectorAll("button")].find(b=>b.textContent.trim()===text&&b.getClientRects().length),text);assert.ok(handle.asElement(),`Missing button ${text}`);await handle.asElement().click();await handle.dispose();};
@@ -56,10 +59,13 @@ try{
  const shot=async name=>{await settled();await page.screenshot({path:path.join(h.shots,name),fullPage:true});};
  const input=async(selector,value)=>{await page.$eval(selector,(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==="TEXTAREA"?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,"value").set.call(el,value);el.dispatchEvent(new Event("input",{bubbles:true}));},value);};
  const requests=path=>state.other.filter(r=>r.path===`/api/schema-diagram/${path}`);
- await page.evaluate(()=>{window.diagramDownloads=[];HTMLAnchorElement.prototype.click=function(){fetch(this.href).then(r=>r.text()).then(text=>window.diagramDownloads.push({name:this.download,text}));};});
- assert.equal(await page.$eval('.diagram-source button',e=>e.disabled),true);
+ await page.evaluate(()=>{window.diagramDownloads=[];window.diagramClipboard="";Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText:async text=>{window.diagramClipboard=text;}}});HTMLAnchorElement.prototype.click=function(){fetch(this.href).then(r=>r.text()).then(text=>window.diagramDownloads.push({name:this.download,text}));};});
+ assert.equal(await page.$eval('.diagram-source .primary',e=>e.disabled),true);
  await shot("diagram-empty-desktop.png");
- await click("Import a schema");await input(".diagram-paste textarea","CREATE TABLE customers (id bigint PRIMARY KEY);");
+ await click("View Mermaid");
+ assert.equal(await page.$eval('[aria-label="Import format"]',e=>e.value),"mermaid");
+ await click("Cancel");
+ await click("Import a schema");await page.select('[aria-label="Import format"]',"sql");await input(".diagram-paste textarea","CREATE TABLE customers (id bigint PRIMARY KEY);");
  await click("Import diagram");await page.waitForSelector(".diagram-table");assert.equal(lastImport.format,"sql");assert.equal(requests("read").length,0);
  assert.equal(await page.$$(".diagram-table").then(x=>x.length),6);
  assert.equal(await page.$$(".diagram-lines .is-conceptual").then(x=>x.length),1);
@@ -93,7 +99,51 @@ try{
  // Lossy export is reviewed before any download.
  await click("Export");await click("SQL schema");await page.waitForSelector("dialog[open]");assert.equal(await page.evaluate(()=>window.diagramDownloads.length),2);
  assert.match(await page.$eval("dialog",e=>e.textContent),/Conceptual relationships/);await click("Cancel");assert.equal(await page.evaluate(()=>window.diagramDownloads.length),2);
- await click("Export");await click("Mermaid");await page.waitForSelector("dialog[open]");await click("Download file");await page.waitForFunction(()=>window.diagramDownloads.length===3);
+ await click("Export");await page.click(".diagram-export-menu button:last-child");await page.waitForSelector("dialog[open]");await click("Download file");await page.waitForFunction(()=>window.diagramDownloads.length===3);
+ // Mermaid shares the current model without changing the editable layout.
+ await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:"light"}]);
+ const beforeMermaid=await page.evaluate(()=>structuredClone(window.diagramDocument.diagram.layout.positions));
+ await click("Mermaid");await page.waitForSelector(".diagram-mermaid-preview svg");
+ assert.equal(await page.$eval('.diagram-mermaid-panel[aria-label="Mermaid preview"]',e=>e.dataset.theme),"default");
+ const code=await page.$eval(".diagram-mermaid-code",e=>e.textContent);
+ assert.match(code,/erDiagram/);assert.match(code,/customers/);
+ assert.equal(await page.$eval(".diagram-mermaid details",e=>e.open),false);
+ await click("Copy");await page.waitForFunction(code=>window.diagramClipboard===code,{},code);
+ const beforeDownload=await page.evaluate(()=>window.diagramDownloads.length);
+ await click("Download .mmd");await page.waitForFunction(n=>window.diagramDownloads.length===n+1,{},beforeDownload);
+ assert.deepEqual(await page.evaluate(()=>window.diagramDownloads.at(-1)),{name:"database-diagram.mmd",text:code});
+ // Zoom and Fit remain inside the preview frame.
+ const zoom=await page.$eval('[aria-label="Mermaid zoom"]',e=>parseInt(e.textContent));
+ await page.click('.diagram-mermaid [aria-label="Zoom in"]');
+ assert.ok(await page.$eval('[aria-label="Mermaid zoom"]',e=>parseInt(e.textContent))>zoom);
+ await click("Fit");
+ for(const theme of ["dark","light"]){
+   const oldSvg=await page.$eval(".diagram-mermaid-preview svg",e=>e.id);
+   await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:theme}]);
+   await page.waitForFunction(({theme,oldSvg})=>{const panel=document.querySelector('.diagram-mermaid-panel[aria-label="Mermaid preview"]'),svg=panel?.querySelector("svg");return panel?.dataset.theme===(theme==="dark"?"dark":"default")&&svg&&svg.id!==oldSvg;},{},{theme,oldSvg});
+   await shot(`mermaid-${theme}-1440.png`);
+   await page.setViewport({width:390,height:844});await pause(100);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth),0);
+   await shot(`mermaid-${theme}-390.png`);await page.setViewport({width:1440,height:1000});
+ }
+ // Superseded exports cannot replace a newer diagram's code or preview.
+ const exportsBefore=requests("export").length;exportDelay=500;
+ await page.evaluate(()=>window.setDiagramDocument(old=>({...old,diagram:{...old.diagram,tables:old.diagram.tables.map((t,i)=>i===0?{...t,columns:[...t.columns,{name:"late_column",data_type:"int",nullable:true,primary_key:false}]}:t)}})));
+ for(let i=0;i<100&&requests("export").length===exportsBefore;i++)await pause(20);
+ assert.equal(requests("export").length,exportsBefore+1);exportDelay=0;
+ await page.evaluate(()=>window.setDiagramDocument(old=>({...old,diagram:{...old.diagram,tables:old.diagram.tables.map((t,i)=>i===0?{...t,columns:t.columns.map(c=>c.name==="late_column"?{...c,name:"latest_column"}:c)}:t)}})));
+ await page.waitForFunction(()=>document.querySelector(".diagram-mermaid-code")?.textContent.includes("latest_column"));
+ await page.waitForSelector(".diagram-mermaid-preview svg");await pause(550);
+ assert.doesNotMatch(await page.$eval(".diagram-mermaid-code",e=>e.textContent),/late_column/);
+ // Failed rendering leaves readable code and no Mermaid error element in body.
+ mermaidText="erDiagram\n  Broken {\n    invalid syntax here !\n  }";
+ await page.evaluate(()=>window.setDiagramDocument(old=>({...old,diagram:{...old.diagram}})));
+ await page.waitForSelector(".diagram-mermaid-error");
+ assert.equal(await page.$eval(".diagram-mermaid-code",e=>e.textContent),mermaidText);
+ assert.equal(await page.$$('body > [id^="ddatabase-mermaid-"]').then(x=>x.length),0);
+ mermaidText=null;
+ await click("Diagram");await page.waitForSelector(".diagram-table");
+ assert.deepEqual(await page.evaluate(()=>window.diagramDocument.diagram.layout.positions),beforeMermaid);
  // JSON file reimport retains layout. File API limits are checked before parsing.
  const jsonFile=path.join(temp,"layout.json");await fs.writeFile(jsonFile,JSON.stringify(exported));
  await click("Import");const chooser=await page.waitForSelector('input[type="file"]');await chooser.uploadFile(jsonFile);await page.waitForFunction(()=>document.querySelector(".diagram-paste textarea").value.includes("schema-diagram-1.0"));
@@ -112,18 +162,59 @@ try{
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth),0);await shot("diagram-dark-phone.png");
  await page.click(header);await page.waitForSelector(".view-inspector");await shot("diagram-inspector-phone.png");await page.keyboard.press("Escape");
  await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:"light"}]);await shot("diagram-light-phone.png");await page.setViewport({width:1440,height:1000});
+ // Catalog selection reads the active connection, and replacement is explicit.
+ await click("Switch connection");await page.waitForFunction(()=>!!document.querySelector('#diagram-databases option[value="shop"]'));
+ await input('[aria-label="Database"]',"shop");
+ await click("Rebuild from database");await page.waitForSelector("dialog[open]");
+ assert.match(await page.$eval("dialog",e=>e.textContent),/No database changes will be made/);
+ const beforeCancel=requests("read").length;await click("Cancel");assert.equal(requests("read").length,beforeCancel);
  // Connection switch invalidates late server responses but preserves imports.
- await click("Switch connection");await input('[aria-label="Database name"]',"shop");readDelay=150;await click("Load database");await click("Switch connection");await pause(200);
+ readDelay=150;await click("Rebuild from database");await click("Rebuild diagram");await click("Switch connection");await pause(200);
  assert.equal(await page.evaluate(()=>window.diagramDocument.source.kind),"import");readDelay=0;
- await click("Load database");await page.waitForFunction(()=>window.diagramDocument.source.kind==="server");
- // An explicit host works with the client's default OS user. Same-source refresh keeps the arrangement.
+ await input('[aria-label="Database"]',"shop");await click("Rebuild from database");await click("Rebuild diagram");
+ await page.waitForFunction(()=>window.diagramDocument.source.kind==="server");
+ assert.ok(await page.$('time[datetime]'));assert.equal(requests("read").at(-1).body.connection.host,"127.0.0.2");
+ // An explicit host works with the client's default OS user. Same-source rebuild keeps arrangement.
  await input('[aria-label="Find a table or column"]',"");await page.focus(header);await page.keyboard.press("ArrowRight");
  const livePosition=await page.evaluate(()=>window.diagramDocument.diagram.layout.positions.customers);
- const readCount=requests("read").length;await page.click('[data-action="refresh"]');
- await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ liveModel.tables.push({id:"shipments",schema:"shop",name:"shipments",columns:[column("id","bigint",true),column("order_id")]});
+ liveModel.tables[0].columns.push(column("phone","varchar(40)"));
+ liveModel.relationships.push(edge("shipment_order","shipments",["order_id"],"orders",["id"]));
+ const readCount=requests("read").length;await click("Rebuild from database");
+ await page.waitForFunction(()=>window.diagramDocument.diagram.tables.some(t=>t.name==="shipments"));
  assert.equal(requests("read").length,readCount+1);assert.deepEqual(await page.evaluate(()=>window.diagramDocument.diagram.layout.positions.customers),livePosition);
- await click("Switch connection");
- await page.waitForSelector('[data-other-connection="true"]');
+ assert.match(await page.$eval('[aria-label="Table shop.customers"]',e=>e.textContent),/phone/);
+ assert.equal(await page.evaluate(()=>{const d=window.diagramDocument.diagram,p=d.layout.positions,s=p.shipments;return d.tables.filter(t=>t.id!=="shipments").every(t=>s.y>=p[t.id].y+window.diagramHelpers.tableHeight(t));}),true,"New tables do not cover existing table positions");
+ assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.relationships.some(r=>r.id==="shipment_order")),true);
+ // Mermaid export receives the rebuilt model, including new entities and columns.
+ exportWarnings=false;const downloads=await page.evaluate(()=>window.diagramDownloads.length);
+ await click("Export");await page.click(".diagram-export-menu button:last-child");await page.waitForFunction(n=>window.diagramDownloads.length===n+1,{},downloads);
+ assert.match(await page.evaluate(()=>window.diagramDownloads.at(-1).text),/shipments/);
+ assert.match(await page.evaluate(()=>window.diagramDownloads.at(-1).text),/phone/);
+ // Changing the selected database does not retarget Refresh of the displayed diagram.
+ await input('[aria-label="Database"]',"inventory");await page.click('[data-action="refresh"]');
+ await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ assert.equal(requests("read").at(-1).body.database,"shop");
+ // Failed rebuilds preserve the last good model and clearly expose the failure.
+ await input('[aria-label="Database"]',"shop");readFailure=true;await click("Rebuild from database");
+ await page.waitForFunction(()=>document.body.textContent.includes("Schema read failed"));
+ assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.tables.length),7);readFailure=false;
+ // A schema selection change invalidates the outstanding read and its errors.
+ readDelay=180;liveModel.tables.push({id:"stale",schema:"shop",name:"stale",columns:[]});
+ await click("Rebuild from database");await input('[aria-label="Database"]',"inventory");await pause(220);
+ assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.tables.some(t=>t.id==="stale")),false);
+ readDelay=0;liveModel.tables.pop();await input('[aria-label="Database"]',"shop");
+ await click("Rebuild from database");await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ for(const theme of ["light","dark"]){
+   await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:theme}]);await shot(`diagram-rebuilt-${theme}-1440.png`);
+   await page.setViewport({width:390,height:844});await input('[aria-label="Find a table or column"]',"customers");await click("Fit");
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth),0);
+   await shot(`diagram-rebuilt-${theme}-390.png`);await page.setViewport({width:1440,height:1000});await input('[aria-label="Find a table or column"]',"");await click("Fit");
+ }
+ // A catalog failure still permits entering a known database name.
+ catalogFailure=true;await click("Reload database list");await page.waitForFunction(()=>document.body.textContent.includes("Catalog permission denied"));
+ await input('[aria-label="Database"]',"shop");await click("Rebuild from database");await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ await click("Switch connection");await page.waitForSelector('[data-other-connection="true"]');
  // Escaping and malformed model checks exercise pure helpers with hostile text.
  const checks=await page.evaluate(model=>{const h=window.diagramHelpers,d=structuredClone(model);d.tables[0].name='<script>alert(1)</script>';d.tables[0].columns[0].name='x"><image href="https://invalid/">';
   const svg=h.diagramSvg(d),dom=new DOMParser().parseFromString(svg,"image/svg+xml");let invalid=false;
@@ -141,9 +232,14 @@ try{
   let tooWide=false;try{h.validateDiagram({...wide,tables:[{...wide.tables[0],columns:Array.from({length:10001},()=>wide.tables[0].columns[0])}]});}catch{tooWide=true;}
   if(!tooWide)throw Error("Total column bound must reject 10001 columns");
   const safe=h.diagramPositions({...d,layout:{positions:{customers:{x:Infinity,y:NaN}}}});
-  return{rejected,unsafe:dom.querySelectorAll("script,image,foreignObject,parsererror").length,escaped:svg.includes("&lt;script&gt;"),invalid,finite:Number.isFinite(safe.customers.x)};
+  const boundaryPrevious={...d,tables:[d.tables[0]],relationships:[],layout:{positions:{[d.tables[0].id]:{x:40,y:100000}}}};
+  const boundaryNext={...d,tables:d.tables.slice(0,2),relationships:[]};
+  const rebuilt=h.rebuildDiagramLayout(boundaryNext,boundaryPrevious), a=rebuilt.layout.positions[d.tables[0].id], b=rebuilt.layout.positions[d.tables[1].id];
+  const layoutSafe=a.x===40&&a.y===100000&&Math.abs(b.x)<=100000&&Math.abs(b.y)<=100000&&
+    (b.x>=a.x+h.TABLE_WIDTH||b.x+h.TABLE_WIDTH<=a.x||b.y>=a.y+h.tableHeight(d.tables[0])||b.y+h.tableHeight(d.tables[1])<=a.y);
+  return{layoutSafe,rejected,unsafe:dom.querySelectorAll("script,image,foreignObject,parsererror").length,escaped:svg.includes("&lt;script&gt;"),invalid,finite:Number.isFinite(safe.customers.x)};
  },model);
- assert.deepEqual(checks,{rejected:true,unsafe:0,escaped:true,invalid:true,finite:true});assert.deepEqual(h.errors,[]);
- assert.ok(!state.other.some(r=>/\/(sql|editor|accounts|live)\//.test(r.path)),"imports and exports never invoke SQL execution or server writes");
+ assert.deepEqual(checks,{layoutSafe:true,rejected:true,unsafe:0,escaped:true,invalid:true,finite:true});assert.deepEqual(h.errors,[]);
+ assert.ok(!state.other.some(r=>/\/(sql|editor|accounts)\//.test(r.path)||(r.path.startsWith("/api/live/")&&r.path!=="/api/live/schemas")),"imports and exports never invoke SQL execution or server writes");
  console.log("schema diagram: imports, exports, layout roundtrip, keyboard/pointer, fit, conceptual metadata, stale reads, hostile text, limits, dark/light and phone passed");
 }finally{if(h)await h.close();await fs.rm(temp,{recursive:true,force:true});}

@@ -45,7 +45,7 @@ try {
         overflow: document.documentElement.scrollWidth > innerWidth,
       }));
       assert.match(measured.font, /system|Segoe/);
-      assert.equal(measured.background, theme === "dark" ? "rgb(28, 28, 30)" : "rgb(255, 255, 255)");
+      assert.equal(measured.background, theme === "dark" ? "rgb(21, 23, 25)" : "rgb(255, 255, 255)");
       assert.ok(measured.left >= 0 && measured.right <= width && !measured.overflow, JSON.stringify(measured));
       assert.equal(await staticPage.$('meta[name="myflames-token"]'), null);
       assert.equal((await staticPage.content()).includes(secret), false);

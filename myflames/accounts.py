@@ -1230,7 +1230,8 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
                 passwords.append(options['current_password'])
             if operation == 'create' and options.get('locked'):
                 sql += ' ACCOUNT LOCK'
-            statements = [_with_password_mode(sql) if password is not None else TAG + sql]
+            statements = [_with_password_mode(sql) if password is not None or options.get('current_password') is not None
+                          else TAG + sql]
             if random:
                 warnings.append('The server generates the password and returns it once; copy it then, myflames does '
                                 'not store it.')

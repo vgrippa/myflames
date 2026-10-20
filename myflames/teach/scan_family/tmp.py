@@ -187,7 +187,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="tmp",
-        title="Temporary tables — in-memory to on-disk conversion",
+        title="Temporary tables: in-memory to on-disk conversion",
         subtitle=(
             "Watch a GROUP BY fill an in-memory temp table, hit its size limit, "
             "and convert to an on-disk table. That cliff is why your query "

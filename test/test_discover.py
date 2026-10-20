@@ -1045,6 +1045,18 @@ class TestWorkloadAttribution(unittest.TestCase):
                              {'connection': api.connection(), 'order': 'full_join', 'table': 'shop.orders'})
         self.assertEqual(result['order'], 'full_join')
 
+    def test_top_order_aliases_and_filters(self):
+        conn = mysql_top('8.4.3', [attribution_row('SELECT * FROM orders', no_index=1, sample='x')])
+        for order in ('time', 'scans', 'full_join', 'tmp_tables', 'locks', 'rows', 'exec_count'):
+            res = discover.top_report(conn, order=order)
+            self.assertEqual(res['order'], order)
+
+    def test_slow_queries_report(self):
+        conn = mysql_top('8.4.3', [attribution_row('SELECT * FROM slow_t', sample='SELECT * FROM slow_t')])
+        report = discover.slow_queries_report(conn, min_seconds=1.0)
+        self.assertEqual(report['schema_version'], 'slow-queries-1.0')
+        self.assertTrue(len(report['statements']) >= 0)
+
 
 if __name__ == '__main__':
     unittest.main()

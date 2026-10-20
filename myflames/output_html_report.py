@@ -65,7 +65,7 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
     from .output_tree import render_tree
     from .parser import (
         build_flame_entries, flatten_nodes as _flat,
-        enhance_tooltip_flame,
+        enhance_flame_titles,
     )
 
     teach_index_by_folded = kwargs.get("teach_index_by_folded") or {}
@@ -137,17 +137,9 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
         frame_labels=frame_labels or None,
         frame_ids=frame_ids or None,
     )
-    # Enhance tooltips with parser details (still useful on hover).
-    op_details = {n["folded_label"]: n["details"] for n in _flat(root)}
-
-    def repl(m):
-        original = (m.group(1)
-                    .replace("&lt;", "<").replace("&gt;", ">")
-                    .replace("&amp;", "&").replace("&quot;", '"'))
-        enhanced = enhance_tooltip_flame(original, op_details)
-        return "<title>" + xml_escape(enhanced).replace("\n", "&#10;") + "</title>"
-    svg = _re.sub(r"<title>([^<]+)</title>", repl, svg)
-    return svg
+    # Enhance tooltips with each frame's own operator details (frames carry
+    # data-node-id here, so the lookup is exact).
+    return enhance_flame_titles(svg, root)
 
 
 # ---------------------------------------------------------------------------
@@ -301,19 +293,22 @@ def _render_exec_summary(sidecar):
     parts.append('  <h2 id="exec-heading" class="visually-hidden">Summary</h2>')
     parts.append('  <p class="exec-text">{}</p>'.format(_chipify(sidecar["executive_summary"])))
     parts.append('  <dl class="quick-stats">')
+    # A null measurement (the plan does not carry it) reads "Not measured".
+    def _measured(value, fmt):
+        return "Not measured" if value is None else fmt(value)
     parts.append(
         '    <div><dt>Total time</dt><dd>{}</dd></div>'.format(
-            xml_escape(_format_time(ps["total_time_ms"]))
+            xml_escape(_measured(ps["total_time_ms"], _format_time))
         )
     )
     parts.append(
         '    <div><dt>Rows returned</dt><dd>{}</dd></div>'.format(
-            xml_escape(_format_rows(ps["rows_sent"]))
+            xml_escape(_measured(ps["rows_sent"], _format_rows))
         )
     )
     parts.append(
         '    <div><dt>Rows examined</dt><dd>{}</dd></div>'.format(
-            xml_escape(_format_rows(ps["rows_examined_estimate"]))
+            xml_escape(_measured(ps["rows_examined_estimate"], _format_rows))
         )
     )
     parts.append(

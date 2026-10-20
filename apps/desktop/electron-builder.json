@@ -1,0 +1,19 @@
+{
+  "appId": "com.myflames.desktop",
+  "productName": "myflames",
+  "asar": true,
+  "directories": { "output": "dist" },
+  "files": ["main.cjs", "backend.cjs", "package.json"],
+  "extraResources": [
+    { "from": "build/backend/myflames-backend", "to": "backend" },
+    { "from": "../../LICENSE", "to": "licenses/MyFlames-LICENSE" },
+    { "from": "../../NOTICE", "to": "licenses/MyFlames-NOTICE" }
+  ],
+  "mac": {
+    "target": ["dir"], "category": "public.app-category.developer-tools",
+    "icon": "../../docs/brand/myflames-icon-v3.png",
+    "identity": null, "notarize": false
+  },
+  "win": { "target": ["dir"] },
+  "linux": { "target": ["dir"], "category": "Development" }
+}

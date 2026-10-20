@@ -382,7 +382,7 @@ export function useTopStatements({
     top.report.statements.forEach((row, i) => {
       if (picked.length >= batchSize) return;
       const q = digestQuery(row);
-      if (row.capture_problem || q.reason === "missing") notSelect.push(i + 1);
+      if (row.capture_problem || row.analysis_warning || q.reason === "missing") notSelect.push(i + 1);
       else if (q.names.length) needValues.push(i + 1);
       else picked.push({ row, rank: i + 1, sql: q.sql });
     });
@@ -578,7 +578,7 @@ function BatchSummary({
               {batch.needValues.length === 1 ? "that row" : "those rows"} to fill them in.
             </li>
           )}
-          {batch.notSelect.length > 0 && <li className="hint">Skipped {rankList(batch.notSelect)}: not a read-only SELECT.</li>}
+          {batch.notSelect.length > 0 && <li className="hint">Skipped {rankList(batch.notSelect)}: not a read-only SELECT, or its converted SELECT needs individual review.</li>}
         </ul>
       )}
     </section>
@@ -744,6 +744,12 @@ export function TopActions({
       </div>
       <span id={`${privilegeId}-explain`} className="account-sr">{explainGate.reason}</span>
       <span id={`${privilegeId}-analysis`} className="account-sr">{analysisGate.reason}</span>
+      {row.analysis_warning && !problem && (
+        <div className="notice" role="status">
+          <p>{row.analysis_warning}</p>
+          <pre className="sql">{q.sql}</pre>
+        </div>
+      )}
       {problem && (
         <p className="hint top-reason" id={reasonId}>
           Explain and Run analysis are off for this statement: {problem}
@@ -849,6 +855,7 @@ export function TopStatementsView({
       key: "statement",
       label: "Statement",
       flex: true,
+      primary: true,
       sort: (r) => flat(r.sample_text || r.digest_text || "").toLowerCase(),
       render: (r) => {
         const text = r.sample_text || r.digest_text || "";
@@ -1051,6 +1058,7 @@ export function TopStatementsView({
       loading={!!loading}
       otherConnection={other}
       inspector={inspector}
+      detailBackLabel="Back to statements"
       inspectorEmpty={<p>Select a statement to see its full text, its numbers, and Explain or Run analysis.</p>}
       status={<ViewStatus loading={loading} error={gate ? "" : error} />}
     >
@@ -1092,11 +1100,11 @@ export function TopStatementsView({
                     className="button small"
                     disabled={actionsOff}
                     aria-describedby="batch-hint"
-                    title="Estimated plans only: runs EXPLAIN, never executes the statements."
+                    title={explainGate.state === "unknown" ? `Estimated plans only: runs EXPLAIN, never executes the statements. ${explainGate.reason}` : "Estimated plans only: runs EXPLAIN, never executes the statements."}
                     data-privilege-state={explainGate.state}
                     {...privilegeButtonProps(explainGate, () => void state.explainTop(), "", `batch-hint ${privilegeId}`)}
                   >
-                    Explain top {batchSize}{explainGate.state === "unknown" && <span className="privilege-unverified">Unverified</span>}
+                    Explain top {batchSize}
                   </button>
                   {batchRunning && (
                     <button type="button" className="button small danger" onClick={() => void state.cancelBatch()}>
@@ -1136,6 +1144,63 @@ export function TopStatementsView({
               rowKey={(r) => statementKey(r, r.rank)}
               selection={selection}
               rowAttrs={(r) => ({ "data-rank": String(r.rank), "data-digest": r.digest || undefined })}
+              rowContextMenu={(r, { copy, close }) => [
+                {
+                  label: "Explain statement",
+                  icon: "search",
+                  disabled: actionsOff,
+                  onClick: () => {
+                    close();
+                    onDigest(r, r.rank, "explain", activeKey);
+                  },
+                },
+                {
+                  label: "Run analysis",
+                  icon: "run",
+                  disabled: actionsOff,
+                  onClick: () => {
+                    close();
+                    onDigest(r, r.rank, "analyze", activeKey);
+                  },
+                },
+                {
+                  label: "Open in Query Editor",
+                  icon: "query",
+                  disabled: actionsOff,
+                  onClick: () => {
+                    close();
+                    onDigest(r, r.rank, "open", activeKey);
+                  },
+                },
+                { divider: true as const },
+                ...(r.schema
+                  ? [
+                      {
+                        label: `Filter by schema "${r.schema}"`,
+                        icon: "database",
+                        onClick: () => {
+                          close();
+                          setSearch(r.schema || "");
+                        },
+                      },
+                    ]
+                  : []),
+                { divider: true as const },
+                {
+                  label: "Copy SQL query",
+                  icon: "copy",
+                  onClick: () => void copy(r.sample_text || r.digest_text || "", "SQL query copied"),
+                },
+                ...(r.digest
+                  ? [
+                      {
+                        label: `Copy digest hash (${r.digest.slice(0, 12)}…)`,
+                        icon: "copy",
+                        onClick: () => void copy(r.digest || "", "Digest hash copied"),
+                      },
+                    ]
+                  : []),
+              ]}
               empty={<>No statement matches “{search.trim()}”.</>}
             />
           )}

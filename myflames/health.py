@@ -1270,7 +1270,7 @@ def _diag_buffer_pool(w, metrics):
             recommendation = {
                 "text": "Look for queries that scan large tables first (Top statements). If the reads are data the "
                         "workload really needs, a larger innodb_buffer_pool_size keeps more of it in memory; the "
-                        "Config tab shows how this server can resize it.",
+                        "Parameters view (myflames config) shows how this server can resize it.",
                 "caveat": "Leave memory for connections, the operating system and other processes: a buffer pool "
                           "that makes the server swap is far worse than disk reads. One window can catch a one-off "
                           "scan, so watch the trend over several refreshes before changing anything."}
@@ -1479,19 +1479,24 @@ def _diag_redo(w):
         from .config_review import MIB
         target = max(int(rate * 3600 * hours), capacity)
         target = ((target + 256 * MIB - 1) // (256 * MIB)) * 256 * MIB
-        if w.engine == "mysql" and "innodb_redo_log_capacity" not in w.vars:
-            how = ("set innodb_log_file_size x innodb_log_files_in_group to it in the configuration file and "
-                   "restart (this MySQL has no innodb_redo_log_capacity)")
-        else:
-            how = ("SET GLOBAL %s = %d; resizes it online%s; also set it in the configuration file%s so a restart "
-                   "keeps it" % ("innodb_redo_log_capacity" if w.engine == "mysql" else "innodb_log_file_size", target,
-                                 "" if w.engine == "mysql" else " (the statement waits until the resize finishes)",
-                                 " (or use SET PERSIST)" if w.engine == "mysql" else ""))
-        recommendation = {
-            "text": "If this rate is typical of busy periods, about an hour of redo at it is %s (rounded up to "
-                    "256 MiB): %s." % (_bytes_text(target), how),
-            "caveat": "One short window may be a burst or a lull: compare several refreshes, or the Config tab's "
-                      "average since startup. A larger redo log uses more disk and makes crash recovery longer."}
+        if target > capacity:
+            if w.engine == "mysql" and "innodb_redo_log_capacity" not in w.vars:
+                how = ("set innodb_log_file_size x innodb_log_files_in_group to it in the configuration file and "
+                       "restart (this MySQL has no innodb_redo_log_capacity)")
+            elif w.engine == "mariadb" and _version_tuple(w.version) < (10, 9, 1):
+                how = ("set innodb_log_file_size = %d under [mysqld] in the option file and restart "
+                       "(the size is the total for its single redo file; innodb_log_file_size is read-only "
+                       "before MariaDB 10.9.1)" % target)
+            else:
+                how = ("SET GLOBAL %s = %d; resizes it online%s; also set it in the configuration file%s so a restart "
+                       "keeps it" % ("innodb_redo_log_capacity" if w.engine == "mysql" else "innodb_log_file_size", target,
+                                     "" if w.engine == "mysql" else " (the statement waits until the resize finishes)",
+                                     " (or use SET PERSIST)" if w.engine == "mysql" else ""))
+            recommendation = {
+                "text": "If this rate is typical of busy periods, about an hour of redo at it is %s (rounded up to "
+                        "256 MiB): %s." % (_bytes_text(target), how),
+                "caveat": "One short window may be a burst or a lull: compare several refreshes, or the Parameters "
+                          "view's average since startup. A larger redo log uses more disk and makes crash recovery longer."}
     return _diagnostic(key, title, status, headline, verdict, why, rule, value=coverage,
                        unit="s", numbers=numbers, settings=settings, recommendation=recommendation,
                        sources=sources, trend=trend)
@@ -1892,10 +1897,16 @@ def _diag_tmp_tables(w, metrics):
                 if (w.var("temptable_max_mmap") or 0) > 0 else ""))
         verdict += " In the window, " + " and ".join(parts) + "."
     recommendation = None
-    if w.engine == "mysql" and (w.vars.get("internal_tmp_mem_storage_engine") or "TempTable").lower() == "temptable":
-        tmp_caveat = ("All TempTable tables together are capped by temptable_max_ram, so a larger tmp_table_size "
-                      "lets one table take more of that shared memory. With TempTable, BLOB and TEXT columns stay in "
-                      "memory; big_tables=ON sends tables to disk directly.")
+    temptable = w.engine == "mysql" and "temptable_max_ram" in names
+    global_limit = temptable and ("tmp_table_size" not in names or (
+        hits.get("TempTable_count_hit_max_ram") and not hits.get("Count_hit_tmp_table_size")))
+    if temptable:
+        tmp_caveat = ("The total memory limit is global: all TempTable tables share temptable_max_ram, so raising it increases "
+                      "the server-wide memory budget. ")
+        if "tmp_table_size" in names:
+            tmp_caveat += "A larger tmp_table_size lets one table take more of that shared memory. "
+        tmp_caveat += ("With TempTable, BLOB and TEXT columns stay in memory; big_tables=ON sends tables to "
+                       "disk directly.")
     else:
         tmp_caveat = ("Each concurrent temporary table can use up to the limit, so a large global value risks "
                       "memory pressure. Tables with BLOB or TEXT columns go to disk regardless.")
@@ -1903,13 +1914,17 @@ def _diag_tmp_tables(w, metrics):
         limit_text = ("Then raise the limit for the sessions that need it (SET SESSION tmp_table_size = <bytes>%s)."
                       % ("; max_heap_table_size too" if w.engine == "mariadb" or "max_heap_table_size" in names
                          else ""))
-        if hits.get("TempTable_count_hit_max_ram") and not hits.get("Count_hit_tmp_table_size"):
+        if global_limit:
             limit_text = ("Here TempTable's total memory ran out, so temptable_max_ram (global) is the limit to "
-                          "look at, not tmp_table_size.")
+                          "look at. " if hits.get("TempTable_count_hit_max_ram") else
+                          "This TempTable version has only a global memory limit: temptable_max_ram. ")
+            limit_text += "If memory headroom permits, use SET PERSIST temptable_max_ram = <bytes>;"
         recommendation = {"text": "Find the statements with the temporary-table-on-disk flag in Top statements; an "
                                   "index that avoids the temporary table helps more than a bigger limit. "
                                   + limit_text,
                           "caveat": tmp_caveat}
+        if global_limit:
+            recommendation["sql"] = "SET PERSIST temptable_max_ram = <bytes>;"
     return _diagnostic(key, title, metric["status"], headline, verdict, why, metric["rule"] or RULES["tmp_disk"],
                        value=metric["value"], unit="%", numbers=numbers, settings=settings,
                        recommendation=recommendation, sources=("Created_tmp_tables", "Created_tmp_disk_tables")

@@ -114,11 +114,22 @@ def _make_fake_node(operation="Inner hash join", access="join",
 
 class TestDetectNonsargableJoins(unittest.TestCase):
 
-    def test_detects_concat_in_hash_condition(self):
-        """MySQL hash joins put the predicate in hash_condition[]."""
+    def test_keyed_hash_join_is_not_reported(self):
+        """MySQL hash joins put the equijoin key in hash_condition[] and hash
+        each row's key once, so a function in it is O(outer + inner), not a
+        comparison of every row pair: not a non-sargable finding."""
         root = _make_fake_node(
             operation="Inner hash join (concat('u', o.user_id) = concat('u', u.id))",
             hash_condition=["(concat('u', o.user_id) = concat('u', u.id))"],
+        )
+        self.assertEqual(_detect_nonsargable_joins(root), [])
+
+    def test_detects_concat_in_hash_join_without_equijoin(self):
+        """A hash join with no equijoin condition compares every row pair
+        against its extra conditions, so a function there is reported."""
+        root = _make_fake_node(
+            operation="Inner hash join (no condition), extra conditions: "
+                      "(concat('u', o.user_id) = concat('u', u.id))",
         )
         hits = _detect_nonsargable_joins(root)
         self.assertEqual(len(hits), 1)
@@ -164,8 +175,8 @@ class TestDetectNonsargableJoins(unittest.TestCase):
 
     def test_returns_short_label(self):
         root = _make_fake_node(
-            operation="Inner hash join",
-            hash_condition=["(DATE(o.created_at) = u.last_login)"],
+            operation="Nested loop inner join",
+            condition="DATE(o.created_at) = u.last_login",
         )
         hits = _detect_nonsargable_joins(root)
         self.assertTrue(hits[0]["short_label"])

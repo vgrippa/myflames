@@ -5,6 +5,7 @@
 // for the server-wide rates, then one table at a time (tables, files, file
 // kinds); the selected row's details and links are in the inspector.
 import { useState } from "react";
+import { useOpenRead } from "./viewOnScreen";
 import { api, type Connection, type IoFile, type IoFileClass, type IoGlobal, type IoReport, type IoTable } from "./api";
 import { WINDOW_INTERVALS } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
@@ -103,6 +104,8 @@ export function IoView({
       onReport,
     );
   }
+
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!loading || reads.running(), read: () => { void load(); } });
 
   const w = report?.window;
   const since = report?.since_start;

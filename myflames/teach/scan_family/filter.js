@@ -27,47 +27,47 @@ function buildStage() {
   var opX = 320, opW = 150;
   var outX = 520, outW = 260;
 
-  var inLbl = anim.svgEl("text", {x: inX, y: 28, "font-size": 13, "font-weight": 700, fill: "#1e40af"});
+  var inLbl = anim.svgEl("text", {x: inX, y: 28, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"});
   inLbl.textContent = "rows from child operator";
   svg.appendChild(inLbl);
   var inRect = anim.svgEl("rect", {
     x: inX, y: boxY, width: boxW, height: boxH, rx: 8, ry: 8,
-    fill: "#eff6ff", stroke: "#93c5fd", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1.5
   });
   svg.appendChild(inRect);
 
-  var opLbl = anim.svgEl("text", {x: opX + 10, y: 28, "font-size": 13, "font-weight": 700, fill: "#7c2d12"});
+  var opLbl = anim.svgEl("text", {x: opX + 10, y: 28, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"});
   opLbl.textContent = "Filter: total > 500";
   svg.appendChild(opLbl);
   var opRect = anim.svgEl("rect", {
     x: opX, y: 120, width: opW, height: 80, rx: 8, ry: 8,
-    fill: "#fff7ed", stroke: "#fdba74", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build-soft)", "stroke-width": 1.5
   });
   svg.appendChild(opRect);
   var opTxt = anim.svgEl("text", {
     x: opX + opW/2, y: 166, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 700, fill: "#7c2d12"
+    "font-size": 12, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   opTxt.textContent = "evaluate WHERE";
   svg.appendChild(opTxt);
 
-  var outLbl = anim.svgEl("text", {x: outX, y: 28, "font-size": 13, "font-weight": 700, fill: "#065f46"});
+  var outLbl = anim.svgEl("text", {x: outX, y: 28, "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"});
   outLbl.textContent = "rows passed to parent";
   svg.appendChild(outLbl);
   var outRect = anim.svgEl("rect", {
     x: outX, y: boxY, width: outW, height: boxH, rx: 8, ry: 8,
-    fill: "#ecfdf5", stroke: "#86efac", "stroke-width": 1.5
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)", "stroke-width": 1.5
   });
   svg.appendChild(outRect);
 
   var a1 = anim.svgEl("path", {
     d: "M285,164 C300,164 305,164 318,164 M312,158 L318,164 L312,170",
-    stroke: "#9ca3af", "stroke-width": 2, fill: "none"
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2, fill: "none"
   });
   svg.appendChild(a1);
   var a2 = anim.svgEl("path", {
     d: "M472,164 C488,164 500,164 518,164 M512,158 L518,164 L512,170",
-    stroke: "#9ca3af", "stroke-width": 2, fill: "none"
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2, fill: "none"
   });
   svg.appendChild(a2);
 
@@ -77,18 +77,18 @@ function buildStage() {
     var y = boxY + 10 + i * 30;
     var r = anim.svgEl("rect", {
       x: inX + 8, y: y, width: boxW - 16, height: 24, rx: 5, ry: 5,
-      fill: "#dbeafe", stroke: "#bfdbfe", "stroke-width": 1
+      fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1
     });
     svg.appendChild(r);
     var t = anim.svgEl("text", {
-      x: inX + 16, y: y + 16, "font-size": 11, "font-weight": 600, fill: "#1e40af"
+      x: inX + 16, y: y + 16, "font-size": 11, "font-weight": 600, fill: "var(--svg-token-ink)"
     });
     t.textContent = "order_id=" + SAMPLE[i].id + " total=" + SAMPLE[i].total;
     svg.appendChild(t);
     inRows.push({bg: r, txt: t, data: SAMPLE[i]});
 
     var o = anim.svgEl("text", {
-      x: outX + 12, y: boxY + 24 + i * 26, "font-size": 11, "font-weight": 600, fill: "#065f46"
+      x: outX + 12, y: boxY + 24 + i * 26, "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)"
     });
     o.textContent = "";
     svg.appendChild(o);
@@ -97,7 +97,7 @@ function buildStage() {
 
   var status = anim.svgEl("text", {
     x: W / 2, y: H - 16, "text-anchor": "middle",
-    "font-size": 12.5, "font-weight": 600, fill: "#1f2937"
+    "font-size": 12.5, "font-weight": 600, fill: "var(--svg-ink)"
   });
   status.textContent = "";
   svg.appendChild(status);
@@ -108,8 +108,8 @@ function buildStage() {
 function resetStage() {
   if (!stage) return;
   for (var i = 0; i < stage.rows.length; i++) {
-    stage.rows[i].bg.setAttribute("fill", "#dbeafe");
-    stage.rows[i].bg.setAttribute("stroke", "#bfdbfe");
+    stage.rows[i].bg.setAttribute("fill", "var(--svg-token-soft)");
+    stage.rows[i].bg.setAttribute("stroke", "var(--svg-token-soft)");
     stage.outRows[i].textContent = "";
   }
   stage.status.textContent = "";
@@ -129,17 +129,17 @@ function buildTimeline() {
     (function(idx) {
       tl.call(function() {
         var d = stage.rows[idx].data;
-        stage.rows[idx].bg.setAttribute("fill", "#fde68a");
-        stage.rows[idx].bg.setAttribute("stroke", "#f59e0b");
+        stage.rows[idx].bg.setAttribute("fill", "var(--svg-highlight)");
+        stage.rows[idx].bg.setAttribute("stroke", "var(--svg-build)");
         if (d.pass) {
-          stage.rows[idx].bg.setAttribute("fill", "#bbf7d0");
-          stage.rows[idx].bg.setAttribute("stroke", "#22c55e");
+          stage.rows[idx].bg.setAttribute("fill", "var(--svg-ok-soft)");
+          stage.rows[idx].bg.setAttribute("stroke", "var(--svg-ok)");
           stage.outRows[outIx].textContent = "order_id=" + d.id + " total=" + d.total;
           outIx += 1;
           stage.status.textContent = "Row passes filter ✓";
         } else {
-          stage.rows[idx].bg.setAttribute("fill", "#fecaca");
-          stage.rows[idx].bg.setAttribute("stroke", "#ef4444");
+          stage.rows[idx].bg.setAttribute("fill", "var(--svg-danger-soft)");
+          stage.rows[idx].bg.setAttribute("stroke", "var(--svg-danger)");
           stage.status.textContent = "Row dropped ✗";
         }
       });
@@ -168,8 +168,8 @@ function renderChart(selectivityPct, currentRows) {
     xMin: 100, xMax: 1e7,
     xLabel: "Input rows", yLabel: "Rows",
     curves: [
-      {label: "Rows evaluated (filter work)", color: "#b45309", fn: function(n) { return n; }},
-      {label: "Rows output (selectivity × n)", color: "#059669", fn: function(n) { return n * sel; }}
+      {label: "Rows evaluated (filter work)", color: "var(--svg-build)", fn: function(n) { return n; }},
+      {label: "Rows output (selectivity × n)", color: "var(--svg-ok)", fn: function(n) { return n * sel; }}
     ],
     current: {x: currentRows},
     xSlider: "input_rows",

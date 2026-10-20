@@ -169,12 +169,12 @@ function clearStage() {
 function drawTablesStrip(svg, N) {
   var stripBg = anim.svgEl("rect", {
     x: 20, y: TABLE_ROW_Y - 22, width: W - 40, height: 40,
-    rx: 8, fill: "#eef4ff", stroke: "#c7d8f0"
+    rx: 8, fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)"
   });
   svg.appendChild(stripBg);
   var stripLabel = anim.svgEl("text", {
     x: 28, y: TABLE_ROW_Y - 5, "font-size": 10, "font-weight": 700,
-    fill: "#1e3a8a", "letter-spacing": "0.4"
+    fill: "var(--svg-token-ink)", "letter-spacing": "0.4"
   });
   stripLabel.textContent = "TABLES IN QUERY (FROM-list)";
   svg.appendChild(stripLabel);
@@ -188,13 +188,13 @@ function drawTablesStrip(svg, N) {
     var x = startX + i * (cardW + 6);
     var rect = anim.svgEl("rect", {
       x: x, y: TABLE_ROW_Y, width: cardW, height: 22, rx: 5,
-      fill: "#ffffff", stroke: "#3b82f6", "stroke-width": 1.5
+      fill: "var(--svg-node-bg)", stroke: "var(--svg-token)", "stroke-width": 1.5
     });
     svg.appendChild(rect);
     var t = anim.svgEl("text", {
       x: x + cardW / 2, y: TABLE_ROW_Y + 15,
       "text-anchor": "middle", "font-size": 11,
-      "font-weight": 700, fill: "#1e3a8a",
+      "font-weight": 700, fill: "var(--svg-token-ink)",
       "font-family": "ui-monospace, Menlo, monospace"
     });
     t.textContent = tables[i];
@@ -206,17 +206,17 @@ function drawTablesStrip(svg, N) {
 function drawCounter(svg, title) {
   var counterBg = anim.svgEl("rect", {
     x: W - 220, y: 12, width: 200, height: 32, rx: 8,
-    fill: "#0f172a", stroke: "#1e293b"
+    fill: "var(--svg-counter-bg)", stroke: "var(--svg-node-stroke)"
   });
   svg.appendChild(counterBg);
   var counterLbl = anim.svgEl("text", {
-    x: W - 212, y: 26, "font-size": 9, fill: "#94a3b8",
+    x: W - 212, y: 26, "font-size": 9, fill: "var(--svg-counter-ink)",
     "font-weight": 700, "letter-spacing": "0.5"
   });
   counterLbl.textContent = title;
   svg.appendChild(counterLbl);
   var counterVal = anim.svgEl("text", {
-    x: W - 212, y: 39, "font-size": 14, fill: "#fde725",
+    x: W - 212, y: 39, "font-size": 14, fill: "var(--svg-counter-ink)",
     "font-weight": 700,
     "font-family": "ui-monospace, Menlo, monospace"
   });
@@ -228,18 +228,18 @@ function drawCounter(svg, title) {
 function drawFinalPlanStrip(svg, label) {
   var finalBg = anim.svgEl("rect", {
     x: 20, y: FINAL_PLAN_Y - 18, width: W - 40, height: 36, rx: 8,
-    fill: "#f0fdf4", stroke: "#86efac"
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)"
   });
   svg.appendChild(finalBg);
   var finalLbl = anim.svgEl("text", {
     x: 28, y: FINAL_PLAN_Y - 3, "font-size": 10, "font-weight": 700,
-    fill: "#065f46", "letter-spacing": "0.4"
+    fill: "var(--svg-ok)", "letter-spacing": "0.4"
   });
   finalLbl.textContent = label;
   svg.appendChild(finalLbl);
   var finalText = anim.svgEl("text", {
     x: W / 2, y: FINAL_PLAN_Y + 13, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#065f46",
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)",
     "font-family": "ui-monospace, Menlo, monospace", opacity: 0.35
   });
   finalText.textContent = "— (run search to see) —";
@@ -320,7 +320,7 @@ function drawTreeSkeleton(svg, tree) {
       var line = anim.svgEl("line", {
         x1: parent.x, y1: parent.y + 8,
         x2: node.x, y2: node.y - 8,
-        stroke: "#cbd5e1", "stroke-width": 1, opacity: 0.6
+        stroke: "var(--svg-node-stroke)", "stroke-width": 1, opacity: 0.6
       });
       g.appendChild(line);
       node.edge = line;
@@ -330,12 +330,12 @@ function drawTreeSkeleton(svg, tree) {
     var nd = tree.allNodes[n];
     var circle = anim.svgEl("circle", {
       cx: nd.x, cy: nd.y, r: 11,
-      fill: "#f1f5f9", stroke: "#94a3b8", "stroke-width": 1.5
+      fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5
     });
     g.appendChild(circle);
     var lbl = anim.svgEl("text", {
       x: nd.x, y: nd.y + 3, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 700, fill: "#334155",
+      "font-size": 9, "font-weight": 700, fill: "var(--svg-ink)",
       "font-family": "ui-monospace, Menlo, monospace"
     });
     lbl.textContent = nd.label;
@@ -352,7 +352,7 @@ function buildGreedyStage(N, depth) {
 
   var treeTitle = anim.svgEl("text", {
     x: 28, y: TREE_TOP_Y - 16,
-    "font-size": 10, "font-weight": 700, fill: "#6b7280",
+    "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)",
     "letter-spacing": "0.4"
   });
   treeTitle.textContent = "SEARCH TREE OF PARTIAL PLANS (left-deep order)";
@@ -367,12 +367,12 @@ function resetGreedyColors() {
   if (!stageState.tree) return;
   for (var i = 0; i < stageState.tree.allNodes.length; i++) {
     var nd = stageState.tree.allNodes[i];
-    nd.circle.setAttribute("fill", "#f1f5f9");
-    nd.circle.setAttribute("stroke", "#94a3b8");
+    nd.circle.setAttribute("fill", "var(--svg-node-muted)");
+    nd.circle.setAttribute("stroke", "var(--svg-node-stroke)");
     nd.circle.setAttribute("stroke-width", 1.5);
-    nd.labelEl.setAttribute("fill", "#334155");
+    nd.labelEl.setAttribute("fill", "var(--svg-ink)");
     if (nd.edge) {
-      nd.edge.setAttribute("stroke", "#cbd5e1");
+      nd.edge.setAttribute("stroke", "var(--svg-node-stroke)");
       nd.edge.setAttribute("stroke-width", 1);
       nd.edge.setAttribute("opacity", 0.6);
     }
@@ -410,7 +410,7 @@ function buildGreedyTimeline(controls) {
     (function(idx) {
       tl.call(function() {
         var c = stageState.tableCards[idx];
-        animColor(c.rect, "fill", "#dbeafe", 200);
+        animColor(c.rect, "fill", "var(--svg-token-soft)", 200);
         anim.pulse(c.rect, 3, 1, 200);
       });
       tl.delay(60);
@@ -427,8 +427,8 @@ function buildGreedyTimeline(controls) {
     (function(idx) {
       var nd = lvl0[idx];
       tl.call(function() {
-        animColor(nd.circle, "fill", "#fef3c7", 200);
-        animColor(nd.circle, "stroke", "#d97706", 200);
+        animColor(nd.circle, "fill", "var(--svg-build-soft)", 200);
+        animColor(nd.circle, "stroke", "var(--svg-build)", 200);
         anim.pulse(nd.circle, 4, 1, 240);
         bumpCounter(Math.max(1, Math.round(finalPlanCount / (lvl0.length * (tree.levels.length + 1)))));
       });
@@ -442,10 +442,10 @@ function buildGreedyTimeline(controls) {
     phaseLabel.textContent = "Greedy commit — lowest-cost candidate becomes the outer loop";
     var winner = lvl0.find(function(n) { return n.onPath; });
     if (winner) {
-      animColor(winner.circle, "fill", "#34d399", 300, anim.easeOutBack);
-      animColor(winner.circle, "stroke", "#047857", 300);
+      animColor(winner.circle, "fill", "var(--svg-ok-soft)", 300, anim.easeOutBack);
+      animColor(winner.circle, "stroke", "var(--svg-ok)", 300);
       winner.circle.setAttribute("stroke-width", 2.5);
-      animColor(winner.labelEl, "fill", "#064e3b", 300);
+      animColor(winner.labelEl, "fill", "var(--svg-ok)", 300);
       anim.arrival(winner.circle);
     }
   });
@@ -485,12 +485,12 @@ function buildGreedyTimeline(controls) {
         var nd = tree.allNodes[ai];
         if (nd.parentId === null) continue;
         if (!isReachable(nd)) {
-          animColor(nd.circle, "fill", "#e2e8f0", 260, anim.easeInCubic);
-          animColor(nd.circle, "stroke", "#cbd5e1", 260, anim.easeInCubic);
+          animColor(nd.circle, "fill", "var(--svg-node-muted)", 260, anim.easeInCubic);
+          animColor(nd.circle, "stroke", "var(--svg-node-stroke)", 260, anim.easeInCubic);
           nd.circle.setAttribute("stroke-width", 1);
-          animColor(nd.labelEl, "fill", "#94a3b8", 260, anim.easeInCubic);
+          animColor(nd.labelEl, "fill", "var(--svg-ink-muted)", 260, anim.easeInCubic);
           if (nd.edge) {
-            animColor(nd.edge, "stroke", "#e2e8f0", 260, anim.easeInCubic);
+            animColor(nd.edge, "stroke", "var(--svg-node-stroke)", 260, anim.easeInCubic);
             nd.edge.setAttribute("opacity", 0.25);
             nd.edge.setAttribute("stroke-dasharray", "3 3");
           }
@@ -523,10 +523,10 @@ function buildGreedyTimeline(controls) {
       for (var s = 0; s < visited.length; s++) {
         (function(nd) {
           tl.call(function() {
-            animColor(nd.circle, "fill", "#fef3c7", 180);
-            animColor(nd.circle, "stroke", "#d97706", 180);
+            animColor(nd.circle, "fill", "var(--svg-build-soft)", 180);
+            animColor(nd.circle, "stroke", "var(--svg-build)", 180);
             if (nd.edge) {
-              animColor(nd.edge, "stroke", "#fbbf24", 180);
+              animColor(nd.edge, "stroke", "var(--svg-build)", 180);
               nd.edge.setAttribute("stroke-width", 1.5);
               nd.edge.setAttribute("opacity", 1);
             }
@@ -541,12 +541,12 @@ function buildGreedyTimeline(controls) {
       // Commit the winning extension at this level.
       tl.call(function() {
         for (var w = 0; w < onPath.length; w++) {
-          animColor(onPath[w].circle, "fill", "#34d399", 300, anim.easeOutBack);
-          animColor(onPath[w].circle, "stroke", "#047857", 300);
+          animColor(onPath[w].circle, "fill", "var(--svg-ok-soft)", 300, anim.easeOutBack);
+          animColor(onPath[w].circle, "stroke", "var(--svg-ok)", 300);
           onPath[w].circle.setAttribute("stroke-width", 2.5);
-          animColor(onPath[w].labelEl, "fill", "#064e3b", 300);
+          animColor(onPath[w].labelEl, "fill", "var(--svg-ok)", 300);
           if (onPath[w].edge) {
-            animColor(onPath[w].edge, "stroke", "#10b981", 300);
+            animColor(onPath[w].edge, "stroke", "var(--svg-ok)", 300);
             onPath[w].edge.setAttribute("stroke-width", 2);
           }
           anim.arrival(onPath[w].circle);
@@ -614,7 +614,7 @@ function buildHypergraphStage(N) {
 
   var graphTitle = anim.svgEl("text", {
     x: 28, y: 95,
-    "font-size": 10, "font-weight": 700, fill: "#6b7280",
+    "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)",
     "letter-spacing": "0.4"
   });
   graphTitle.textContent = "QUERY GRAPH — vertices = tables, edges = join predicates";
@@ -634,7 +634,7 @@ function buildHypergraphStage(N) {
     if (!a || !b) continue;
     var line = anim.svgEl("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-      stroke: "#cbd5e1", "stroke-width": 2, opacity: 0.6
+      stroke: "var(--svg-node-stroke)", "stroke-width": 2, opacity: 0.6
     });
     g.appendChild(line);
     edgeEls.push({ from: edges[e][0], to: edges[e][1], line: line });
@@ -649,12 +649,12 @@ function buildHypergraphStage(N) {
     if (!pos) continue;
     var circle = anim.svgEl("circle", {
       cx: pos.x, cy: pos.y, r: 18,
-      fill: "#f1f5f9", stroke: "#94a3b8", "stroke-width": 2
+      fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 2
     });
     g.appendChild(circle);
     var lbl = anim.svgEl("text", {
       x: pos.x, y: pos.y + 4, "text-anchor": "middle",
-      "font-size": 11, "font-weight": 700, fill: "#1e293b",
+      "font-size": 11, "font-weight": 700, fill: "var(--svg-ink)",
       "font-family": "ui-monospace, Menlo, monospace"
     });
     lbl.textContent = name;
@@ -665,29 +665,29 @@ function buildHypergraphStage(N) {
   // CSG box (right side panel for showing current subgraph)
   var csgBoxBg = anim.svgEl("rect", {
     x: W - 200, y: 100, width: 180, height: 90, rx: 8,
-    fill: "#fef3c7", stroke: "#f59e0b", "stroke-width": 1.5, opacity: 0.4
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5, opacity: 0.4
   });
   svg.appendChild(csgBoxBg);
   var csgLbl = anim.svgEl("text", {
     x: W - 192, y: 116, "font-size": 9, "font-weight": 700,
-    fill: "#92400e", "letter-spacing": "0.4"
+    fill: "var(--svg-build-ink)", "letter-spacing": "0.4"
   });
   csgLbl.textContent = "CURRENT SUBGRAPH (CSG)";
   svg.appendChild(csgLbl);
   var csgContent = anim.svgEl("text", {
     x: W - 192, y: 140, "font-size": 13, "font-weight": 700,
-    fill: "#7c2d12",
+    fill: "var(--svg-build-ink)",
     "font-family": "ui-monospace, Menlo, monospace"
   });
   csgContent.textContent = "—";
   svg.appendChild(csgContent);
   var csgSize = anim.svgEl("text", {
-    x: W - 192, y: 168, "font-size": 10, fill: "#a16207"
+    x: W - 192, y: 168, "font-size": 10, fill: "var(--svg-build-ink)"
   });
   csgSize.textContent = "size: 0";
   svg.appendChild(csgSize);
   var csgPair = anim.svgEl("text", {
-    x: W - 192, y: 182, "font-size": 9, fill: "#a16207"
+    x: W - 192, y: 182, "font-size": 9, fill: "var(--svg-build-ink)"
   });
   csgPair.textContent = "";
   svg.appendChild(csgPair);
@@ -709,14 +709,14 @@ function resetHypergraphColors() {
   var v = stageState.graph.vertices;
   for (var k in v) {
     if (Object.prototype.hasOwnProperty.call(v, k)) {
-      v[k].circle.setAttribute("fill", "#f1f5f9");
-      v[k].circle.setAttribute("stroke", "#94a3b8");
+      v[k].circle.setAttribute("fill", "var(--svg-node-muted)");
+      v[k].circle.setAttribute("stroke", "var(--svg-node-stroke)");
       v[k].circle.setAttribute("stroke-width", 2);
-      v[k].label.setAttribute("fill", "#1e293b");
+      v[k].label.setAttribute("fill", "var(--svg-ink)");
     }
   }
   for (var i = 0; i < stageState.graph.edges.length; i++) {
-    stageState.graph.edges[i].line.setAttribute("stroke", "#cbd5e1");
+    stageState.graph.edges[i].line.setAttribute("stroke", "var(--svg-node-stroke)");
     stageState.graph.edges[i].line.setAttribute("stroke-width", 2);
     stageState.graph.edges[i].line.setAttribute("opacity", 0.6);
   }
@@ -781,7 +781,7 @@ function buildHypergraphTimeline(controls) {
   for (var i = 0; i < tables.length; i++) {
     (function(name, idx) {
       tl.call(function() {
-        highlightVertex(name, "#fef3c7", "#d97706");
+        highlightVertex(name, "var(--svg-build-soft)", "var(--svg-build)");
         setCsgLabel([name], "size: 1 of " + N, "DPhyp builds best plan for { " + name + " } (= just scan)");
         bumpCounter(1);
       });
@@ -799,9 +799,9 @@ function buildHypergraphTimeline(controls) {
   for (var e = 0; e < edges.length; e++) {
     (function(edgeRec) {
       tl.call(function() {
-        highlightEdge([edgeRec.from, edgeRec.to], "#fbbf24", 4);
-        highlightVertex(edgeRec.from, "#fcd34d", "#d97706");
-        highlightVertex(edgeRec.to,   "#fcd34d", "#d97706");
+        highlightEdge([edgeRec.from, edgeRec.to], "var(--svg-build)", 4);
+        highlightVertex(edgeRec.from, "var(--svg-build-soft)", "var(--svg-build)");
+        highlightVertex(edgeRec.to,   "var(--svg-build-soft)", "var(--svg-build)");
         setCsgLabel(
           [edgeRec.from, edgeRec.to],
           "pair: { " + edgeRec.from + " } ⋈ { " + edgeRec.to + " }",
@@ -848,12 +848,12 @@ function buildHypergraphTimeline(controls) {
         var next = candidates[0];
         grown.push(next);
         for (var v = 0; v < grown.length; v++) {
-          highlightVertex(grown[v], "#a7f3d0", "#059669");
+          highlightVertex(grown[v], "var(--svg-ok-soft)", "var(--svg-ok)");
         }
         // Highlight all edges within the CSG.
         for (var x = 0; x < grown.length; x++) {
           for (var y = x + 1; y < grown.length; y++) {
-            highlightEdge([grown[x], grown[y]], "#34d399", 3);
+            highlightEdge([grown[x], grown[y]], "var(--svg-ok-soft)", 3);
           }
         }
         setCsgLabel(
@@ -877,10 +877,10 @@ function buildHypergraphTimeline(controls) {
     }
     // Color every vertex green to indicate it's in the final plan.
     for (var t = 0; t < tables.length; t++) {
-      highlightVertex(tables[t], "#bbf7d0", "#047857");
+      highlightVertex(tables[t], "var(--svg-ok-soft)", "var(--svg-ok)");
     }
     for (var ei2 = 0; ei2 < edges.length; ei2++) {
-      highlightEdge([edges[ei2].from, edges[ei2].to], "#10b981", 3);
+      highlightEdge([edges[ei2].from, edges[ei2].to], "var(--svg-ok)", 3);
     }
     setCsgLabel(tables.slice(), "size: " + N + " of " + N + " (final)", "DP table now has best plan for { all tables }");
     if (stageState.finalPlanText) {
@@ -920,8 +920,8 @@ function resetStageColors() {
     stageState.finalPlanText.setAttribute("opacity", 0.35);
   }
   for (var j = 0; j < stageState.tableCards.length; j++) {
-    stageState.tableCards[j].rect.setAttribute("fill", "#ffffff");
-    stageState.tableCards[j].rect.setAttribute("stroke", "#3b82f6");
+    stageState.tableCards[j].rect.setAttribute("fill", "var(--svg-node-bg)");
+    stageState.tableCards[j].rect.setAttribute("stroke", "var(--svg-token)");
   }
 }
 
@@ -948,17 +948,17 @@ function renderChart(currentN, depth, prune, algo) {
   var curves = [
     {
       label: "Greedy d=1: O(N²)",
-      color: "#10b981",
+      color: "var(--svg-ok)",
       fn: greedyCurve(1)
     },
     {
       label: "Greedy d=" + Math.min(depth, currentN) + " (current setting)",
-      color: "#3b82f6",
+      color: "var(--svg-token)",
       fn: greedyCurve(depth)
     },
     {
       label: "Greedy exhaustive: O(N!)",
-      color: "#dc2626",
+      color: "var(--svg-danger)",
       fn: function(n) {
         var p = plansEvaluated(n, n);
         var pr = applyPruning(p, prune).plans;
@@ -967,7 +967,7 @@ function renderChart(currentN, depth, prune, algo) {
     },
     {
       label: "Hypergraph DPhyp (tree query): O(N³)",
-      color: "#ec4899",
+      color: "var(--svg-group-alt)",
       fn: function(n) {
         return Math.min(dphypTreePairs(n), OPTIMIZER_MAX_SUBGRAPH_PAIRS);
       }

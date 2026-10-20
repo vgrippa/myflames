@@ -57,6 +57,33 @@ class TestWorkspaceAuthentication(unittest.TestCase):
         # Even knowledge of the CSRF header cannot replace the cookie.
         self.assertEqual(self.request('/api/session/load', token=self.server.token)[0], 403)
 
+    def test_native_folder_picker_requires_authenticated_same_origin_request(self):
+        path = '/api/lifecycle/choose-directory'
+        with mock.patch('myflames.folder_picker.choose_directory',
+                        return_value={'path': '/tmp/backup', 'cancelled': False}) as picker:
+            self.assertEqual(self.request(path)[0], 403)
+            picker.assert_not_called()
+            _, token, cookie = self.bootstrap()
+            cookie = cookie.split(';', 1)[0]
+            for extra in ({'Origin': 'https://example.com'}, {'X-Myflames-Token': ''}):
+                self.assertEqual(self.request(path, cookie=cookie, token=token, extra=extra)[0], 403)
+            self.assertEqual(self.request(path, payload={'path': '/tmp'}, cookie=cookie, token=token)[0], 400)
+            picker.assert_not_called()
+            status, body, _ = self.request(path, cookie=cookie, token=token)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {'path': '/tmp/backup', 'cancelled': False})
+            picker.assert_called_once_with()
+
+    def test_tool_online_check_is_explicit_and_boolean(self):
+        path = '/api/lifecycle/tools'
+        _, token, cookie = self.bootstrap()
+        cookie = cookie.split(';', 1)[0]
+        with mock.patch('myflames.lifecycle.detect_tools', return_value={'tools': {}}) as detect:
+            for payload, expected in (({}, False), ({'check_updates': True}, True),
+                                      ({'check_updates': 'true'}, False)):
+                self.assertEqual(self.request(path, payload=payload, cookie=cookie, token=token)[0], 200)
+                detect.assert_called_with(check_updates=expected)
+
     def test_one_time_exchange_refresh_and_csrf(self):
         secret, token, cookie = self.bootstrap()
         self.assertIn('HttpOnly', cookie)

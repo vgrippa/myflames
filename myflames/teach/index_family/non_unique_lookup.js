@@ -38,91 +38,91 @@ function buildStage() {
   var tblX = 440, tblY = 42, tblW = 400, tblH = 350;
 
   var idxLbl = anim.svgEl("text", {
-    x: idxX, y: 24, "font-size": 13, "font-weight": 700, fill: "#1e40af"
+    x: idxX, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   idxLbl.textContent = "secondary B+tree: idx_users_country(country, user_id)";
   svg.appendChild(idxLbl);
 
   var idxRect = anim.svgEl("rect", {
     x: idxX, y: idxY, width: idxW, height: idxH, rx: 8, ry: 8,
-    fill: "#eff6ff", stroke: "#60a5fa", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(idxRect);
 
   var tableLbl = anim.svgEl("text", {
-    x: tblX, y: 24, "font-size": 13, "font-weight": 700, fill: "#7c2d12"
+    x: tblX, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   tableLbl.textContent = "clustered table (PRIMARY) rows fetched by row-id";
   svg.appendChild(tableLbl);
 
   var tableRect = anim.svgEl("rect", {
     x: tblX, y: tblY, width: tblW, height: tblH, rx: 8, ry: 8,
-    fill: "#fff7ed", stroke: "#fdba74", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build-soft)", "stroke-width": 1.5
   });
   svg.appendChild(tableRect);
 
   var splitX = 420;
   var scanArrow = anim.svgEl("path", {
     d: "M400,220 C412,220 416,220 430,220 M423,214 L430,220 L423,226",
-    stroke: "#94a3b8", "stroke-width": 2, fill: "none"
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2, fill: "none"
   });
   svg.appendChild(scanArrow);
 
   var root = anim.svgEl("rect", {
     x: idxX + 145, y: idxY + 16, width: 100, height: 36, rx: 7, ry: 7,
-    fill: "#dbeafe", stroke: "#93c5fd", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1.5
   });
   svg.appendChild(root);
   var rootTxt = anim.svgEl("text", {
     x: idxX + 195, y: idxY + 38, "text-anchor": "middle",
-    "font-size": 10.5, "font-weight": 700, fill: "#1e3a8a"
+    "font-size": 10.5, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   rootTxt.textContent = "ROOT";
   svg.appendChild(rootTxt);
 
   var internal = anim.svgEl("rect", {
     x: idxX + 130, y: idxY + 86, width: 130, height: 38, rx: 7, ry: 7,
-    fill: "#dbeafe", stroke: "#93c5fd", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1.5
   });
   svg.appendChild(internal);
   var internalTxt = anim.svgEl("text", {
     x: idxX + 195, y: idxY + 110, "text-anchor": "middle",
-    "font-size": 10.5, "font-weight": 700, fill: "#1e3a8a"
+    "font-size": 10.5, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   internalTxt.textContent = "INTERNAL: country ranges";
   svg.appendChild(internalTxt);
 
   var edge1 = anim.svgEl("line", {
     x1: idxX + 195, y1: idxY + 52, x2: idxX + 195, y2: idxY + 86,
-    stroke: "#94a3b8", "stroke-width": 2
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2
   });
   svg.appendChild(edge1);
 
   var leafRect = anim.svgEl("rect", {
     x: idxX + 24, y: idxY + 150, width: idxW - 48, height: 178, rx: 7, ry: 7,
-    fill: "#e0ecff", stroke: "#93c5fd", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1.5
   });
   svg.appendChild(leafRect);
   var leafLbl = anim.svgEl("text", {
-    x: idxX + 30, y: idxY + 172, "font-size": 11, "font-weight": 700, fill: "#1e3a8a"
+    x: idxX + 30, y: idxY + 172, "font-size": 11, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   leafLbl.textContent = "LEAF RANGE: country='US' entries -> row-id pointers";
   svg.appendChild(leafLbl);
 
   var edge2 = anim.svgEl("line", {
     x1: idxX + 195, y1: idxY + 124, x2: idxX + 195, y2: idxY + 150,
-    stroke: "#94a3b8", "stroke-width": 2
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2
   });
   svg.appendChild(edge2);
 
   var token = anim.svgEl("rect", {
     x: idxX + 34, y: idxY + 16, width: 72, height: 24, rx: 12, ry: 12,
-    fill: "#f59e0b", stroke: "#b45309", "stroke-width": 1.5, opacity: 0.96
+    fill: "var(--svg-build)", stroke: "var(--svg-build)", "stroke-width": 1.5, opacity: 0.96
   });
   svg.appendChild(token);
   var tokenTxt = anim.svgEl("text", {
     x: idxX + 70, y: idxY + 32, "text-anchor": "middle",
-    "font-size": 9.5, "font-weight": 700, fill: "#ffffff"
+    "font-size": 9.5, "font-weight": 700, fill: "var(--svg-on-solid)"
   });
   tokenTxt.textContent = "country='US'";
   svg.appendChild(tokenTxt);
@@ -133,18 +133,18 @@ function buildStage() {
     var y = idxY + 184 + i * 26;
     var r = anim.svgEl("rect", {
       x: idxX + 34, y: y, width: idxW - 72, height: 20, rx: 5, ry: 5,
-      fill: "#dbeafe", stroke: "#bfdbfe", "stroke-width": 1
+      fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1
     });
     svg.appendChild(r);
     var t = anim.svgEl("text", {
-      x: idxX + 42, y: y + 14, "font-size": 10, "font-weight": 600, fill: "#1e40af"
+      x: idxX + 42, y: y + 14, "font-size": 10, "font-weight": 600, fill: "var(--svg-token-ink)"
     });
     t.textContent = "country=US -> row_id=" + INDEX_KEYS[i].rid + " (" + INDEX_KEYS[i].name + ")";
     svg.appendChild(t);
     rows.push({bg: r, txt: t, data: INDEX_KEYS[i], y: y});
 
     var out = anim.svgEl("text", {
-      x: tblX + 14, y: tblY + 70 + i * 34, "font-size": 11, "font-weight": 600, fill: "#7c2d12"
+      x: tblX + 14, y: tblY + 70 + i * 34, "font-size": 11, "font-weight": 600, fill: "var(--svg-build-ink)"
     });
     out.textContent = "";
     svg.appendChild(out);
@@ -152,20 +152,20 @@ function buildStage() {
   }
 
   var tableHdr = anim.svgEl("text", {
-    x: tblX + 14, y: tblY + 36, "font-size": 11, "font-weight": 700, fill: "#92400e"
+    x: tblX + 14, y: tblY + 36, "font-size": 11, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   tableHdr.textContent = "Fetched base rows:";
   svg.appendChild(tableHdr);
 
   var probeDot = anim.svgEl("circle", {
-    cx: splitX, cy: idxY + 220, r: 5.5, fill: "#f59e0b", stroke: "#92400e",
+    cx: splitX, cy: idxY + 220, r: 5.5, fill: "var(--svg-build)", stroke: "var(--svg-build)",
     "stroke-width": 1.5, opacity: 0
   });
   svg.appendChild(probeDot);
 
   var status = anim.svgEl("text", {
     x: W / 2, y: H - 18, "text-anchor": "middle",
-    "font-size": 12.5, "font-weight": 600, fill: "#1f2937"
+    "font-size": 12.5, "font-weight": 600, fill: "var(--svg-ink)"
   });
   status.textContent = "";
   svg.appendChild(status);
@@ -191,13 +191,13 @@ function buildStage() {
 function resetStage() {
   if (!stage) return;
   for (var i = 0; i < stage.rows.length; i++) {
-    stage.rows[i].bg.setAttribute("fill", "#dbeafe");
-    stage.rows[i].bg.setAttribute("stroke", "#bfdbfe");
+    stage.rows[i].bg.setAttribute("fill", "var(--svg-token-soft)");
+    stage.rows[i].bg.setAttribute("stroke", "var(--svg-token-soft)");
     stage.fetched[i].textContent = "";
   }
-  stage.nodes.root.setAttribute("fill", "#dbeafe");
-  stage.nodes.internal.setAttribute("fill", "#dbeafe");
-  stage.nodes.leaf.setAttribute("fill", "#e0ecff");
+  stage.nodes.root.setAttribute("fill", "var(--svg-token-soft)");
+  stage.nodes.internal.setAttribute("fill", "var(--svg-token-soft)");
+  stage.nodes.leaf.setAttribute("fill", "var(--svg-token-soft)");
   stage.token.setAttribute("x", stage.idxX + 34);
   stage.token.setAttribute("y", 58);
   stage.token.setAttribute("opacity", 0.96);
@@ -229,7 +229,7 @@ function buildTimeline() {
       stage.tokenTxt.setAttribute("x", x + 36);
     },
     onComplete: function() {
-      stage.nodes.root.setAttribute("fill", "#bfdbfe");
+      stage.nodes.root.setAttribute("fill", "var(--svg-token-soft)");
       stage.status.textContent = "Root page chooses child pointer for country='US'.";
     }
   });
@@ -240,7 +240,7 @@ function buildTimeline() {
       stage.tokenTxt.setAttribute("y", y + 16);
     },
     onComplete: function() {
-      stage.nodes.internal.setAttribute("fill", "#bfdbfe");
+      stage.nodes.internal.setAttribute("fill", "var(--svg-token-soft)");
       stage.status.textContent = "Internal page narrows to the US key range.";
     }
   });
@@ -251,7 +251,7 @@ function buildTimeline() {
       stage.tokenTxt.setAttribute("y", y + 16);
     },
     onComplete: function() {
-      stage.nodes.leaf.setAttribute("fill", "#c7d2fe");
+      stage.nodes.leaf.setAttribute("fill", "var(--svg-group-soft)");
       stage.status.textContent = "Reached leaf level: now scan contiguous US entries.";
     }
   });
@@ -263,8 +263,8 @@ function buildTimeline() {
   for (var i = 0; i < n; i++) {
     (function(idx) {
       tl.call(function() {
-        stage.rows[idx].bg.setAttribute("fill", "#93c5fd");
-        stage.rows[idx].bg.setAttribute("stroke", "#3b82f6");
+        stage.rows[idx].bg.setAttribute("fill", "var(--svg-token-soft)");
+        stage.rows[idx].bg.setAttribute("stroke", "var(--svg-token)");
         stage.status.textContent = "Leaf hit " + (idx + 1) + "/" + n + ": row_id=" + stage.rows[idx].data.rid + " collected";
       });
       tl.delay(260);
@@ -340,11 +340,11 @@ function renderChart(selectivityPct, currentRows) {
     xMin: 100, xMax: 1e7,
     xLabel: "Rows in table", yLabel: "Rows/entries touched",
     curves: [
-      { label: "Non-unique lookup (non-covering)", color: "#1d4ed8",
+      { label: "Non-unique lookup (non-covering)", color: "var(--svg-token)",
         fn: function(n) { return (Math.log(Math.max(2, n)) / Math.log(2)) + (n * sel) + (n * sel); } },
-      { label: "Non-unique lookup (covering)", color: "#059669",
+      { label: "Non-unique lookup (covering)", color: "var(--svg-ok)",
         fn: function(n) { return (Math.log(Math.max(2, n)) / Math.log(2)) + (n * sel); } },
-      { label: "Full table scan", color: "#b45309",
+      { label: "Full table scan", color: "var(--svg-build)",
         fn: function(n) { return n; } }
     ],
     current: { x: currentRows },

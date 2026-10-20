@@ -3,15 +3,14 @@
 // (tables, grouped lists, inspector) are in kit.tsx.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api, type Connection, type SchemaCatalog } from "./api";
-import { DataTable, Popover, Select, closePopovers, useInspector } from "./kit";
+import { DataTable, Popover, Select, closePopovers } from "./kit";
 import { connectionKey } from "./binding";
 import "./perf.css";
 
-/** Keep the identifying columns in the list while its details occupy a pane.
- * The full column definitions still reach DataTable's Columns menu and sorter. */
+/** Full-width details replace the list, so opening them never hides columns.
+ * Explicit column choices remain under DataTable's existing persistence rules. */
 export function PriorityTable<T>({ detailColumns, ...props }: Parameters<typeof DataTable<T>>[0] & { detailColumns: string[] }) {
-  const inspector = useInspector();
-  return <DataTable {...props} detailColumns={detailColumns} compact={!!inspector?.open && !inspector.sheet} />;
+  return <DataTable {...props} detailColumns={detailColumns} compact={false} />;
 }
 
 /** Milliseconds as "1.23 s", "45.6 ms", "120 µs", "80 ns". */
