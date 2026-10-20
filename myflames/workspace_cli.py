@@ -1462,7 +1462,8 @@ def cmd_cluster(argv):
         'every node\'s state. Never changes membership or settings. A server that is not part of a cluster '
         'says so and exits 0. '
         'Exit codes: 0 success (nothing at the --fail-on level), 1 a finding reached the --fail-on level, '
-        '2 bad input, missing privilege, or connection failure.')
+        '2 bad input, missing privilege (with --json the available:false report is still written), or '
+        'connection failure.')
     parser.add_argument('--fail-on', choices=('problem', 'watch'), metavar='LEVEL',
                         help="Exit 1 if any finding is at LEVEL or worse: 'problem', or 'watch' (watch or problem).")
     _add_output_args(parser, 'the cluster-1.0 report')

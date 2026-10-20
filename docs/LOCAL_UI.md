@@ -98,7 +98,8 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   and screen readers hear it in words ("Health, 1 other view has a problem");
   counts stay in the list. **Dock the list of views** (in the list's header or
   the top bar) keeps it beside the view instead, and the choice is remembered;
-  **Float the list of views** in the top bar floats it again. Workload works
+  docked from the list's header, focus moves to the top bar's toggle, which
+  now reads **Float the list of views** and floats it again. Workload works
   the same way. In a narrow window the list is a screen of its own, as below.
 - **Toolbar.** The view's title with an ⓘ that explains it, its controls (a
   sampling window, auto-refresh, a database picker, a filter) and **Refresh**.
@@ -442,7 +443,10 @@ InnoDB Cluster, **Routers**:
   address, version and counters; **Routers** lists the MySQL Routers registered
   in the InnoDB Cluster metadata with their ports and last check-in (its age
   and UTC time; shown, not judged: MySQL Router writes it periodically, by
-  default every few seconds and never in a ClusterSet).
+  default every few seconds and never by default in a ClusterSet, or as its
+  `stats_updates_frequency` option sets). Members (Nodes on Galera and Percona
+  XtraDB Cluster) and Routers each keep their own column widths and hidden
+  columns, saved with the workspace.
 
 Members are shown as the connected server sees them. Galera exposes only its
 own node's state, so the other nodes read **In the component**: their state
@@ -521,7 +525,10 @@ The footer holds one status: **All changes saved**, **Saving…**, or **Not
 saved:** with the reason. **Settings**, next to it, opens a compact menu (Escape
 or a click outside closes it) with the appearance (System, Light, Dark),
 **Restore workspace on startup** (passwords are never part of the workspace),
-the **Audit log** (see [Audit log](#audit-log)), and **About myflames**, a window
+**Show MySQL and MariaDB news on Home** (on by default; off hides News and stops
+every news read; its hint says the headlines come from Planet MySQL and the
+MariaDB Foundation, read while Home is open), the **Audit log** (see
+[Audit log](#audit-log)), and **About myflames**, a window
 with the version, the license, one privacy line (myflames contacts only your
 database servers, official release pages when you check for updates,
 and news feeds when shown and turned on), and the credits (Brendan Gregg's
@@ -533,8 +540,9 @@ Tuning, one view each, name the place in their view header only) and has one sid
 toggle. With plans open it also shows **Save investigation** with **Unsaved
 changes** or **Investigation saved**. The top bar holds no status badge and no
 privileges button: on the places that send to a connection it shows the sidebar
-toggle, the place, the connection picker, Refresh all (Server and Workload) and
-**Search…**.
+toggle, the place, the connection picker, then on Server and Workload **Refresh
+all**, an ⓘ about the place and the control that docks or floats the list of
+views (a **Views** menu in a narrow window), and **Search…**.
 
 The connection picker's menu ends with **Account and privileges…** and **Manage
 connections…**. Account and privileges opens a sheet for the connection in use:
@@ -551,7 +559,10 @@ color: gray is for the sidebar and side panes only.
 The command palette (⌘K or **Search…** in the top bar) lists the places in the
 sidebar's order, then what belongs to one of them (Full analysis under Tuning,
 **Compare** under Plans), the Server and Workload views, and actions such as
-Import plan and the Audit log.
+Import plan and the Audit log. When you type, commands whose name contains
+every word come first, then those that match only a keyword or their group,
+each in that same order: **innodb** opens the InnoDB view, not the Cluster
+place, and **health** opens the Health view, not Tuning.
 
 Use the Up and Down arrow keys to move between places, and Home or End to jump
 to the first or last. Below 650 pixels the sidebar becomes a compact bar with
@@ -641,8 +652,9 @@ On phone and narrow screens (below 720 px):
 On wide windows the Query editor fills the window between the top bar and the
 footer exactly, and the Server, Workload and Tuning views are at least that
 tall, so the page never scrolls by a few pixels and the first row (the query
-tabs, a view's toolbar) stays flush under the top bar. The Server and Workload
-list of views stays pinned under the top bar while a long view scrolls. The
+tabs, a view's toolbar) stays flush under the top bar. When it is docked, the
+Server and Workload list of views stays pinned under the top bar while a long
+view scrolls; while it floats, it opens from the view's title. The
 command palette's list ends on a whole command when it is taller than the
 palette.
 
@@ -891,8 +903,11 @@ current view, selections, and the Server view (sessions saved with the old
 Running queries tab open on Sessions). Choose **Start fresh** to clear it, turn off
 **Restore workspace on startup** in **Settings** to stop saving, or launch with
 `myflames ui --no-restore` to start clean once without deleting it. Save
-investigations to keep named copies in the library. Downloads are saved through your browser. Nothing is sent to an
-external service.
+investigations to keep named copies in the library. Downloads are saved through your browser. Your session and
+saved investigations stay on this computer. Apart from your database servers,
+myflames contacts only official release pages when you check for updates
+(**Check for updates**, or **Detect tools** in Maintenance) and the two news
+feeds described below, while Home is shown and news is turned on.
 
 Home news only reads: while Home is on screen and **Settings > Show MySQL and
 MariaDB news on Home** is on (the default), the backend reads two fixed public
@@ -1024,7 +1039,7 @@ Workspace routing in `myflames/ui.py` (`api_response`) dispatches across dedicat
 - Full analysis export (`/api/report/export`).
 - Home news (`/api/news`, `news-1.0`, and `/api/news/settings` for the Settings switch); see [Session and scope](#session-and-scope).
 - Saved profiles and investigations (`/api/profiles/*`, `/api/investigations/*`, `/api/connection/test`).
-- Live diagnostics, Server views, and actions (`/api/live/*`, including `health`, `innodb`, `error-log`, `top`, `sessions`, `running`, `locks`, `kill/prepare`, `kill`, `waits`, `indexes`, `tables`, `io`, `config`, `variable`, `instruments`, `replication`, `privileges`, `catalog`, and `schemas`).
+- Live diagnostics, Server views, and actions (`/api/live/*`, including `health`, `innodb`, `error-log`, `top`, `sessions`, `running`, `locks`, `kill/prepare`, `kill`, `waits`, `indexes`, `tables`, `io`, `config`, `variable`, `instruments`, `replication`, `cluster`, `privileges`, `catalog`, and `schemas`).
 
 Detailed schemas and request/response payloads are documented in [QUERY_WORKSPACE.md](QUERY_WORKSPACE.md#api-additions).
 

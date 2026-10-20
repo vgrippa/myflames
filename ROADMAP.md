@@ -16,7 +16,7 @@ The workspace ships only as the macOS desktop app (3.1.0): an unsigned Apple
 Silicon `.app` that bundles Python and opens directly from Finder, attached to
 the GitHub release as `myflames-3.1.0-macos-arm64.zip`. The browser launch
 (`myflames ui`) is deprecated and the Python CLI remains for command-line use.
-Signing, notarization, updates and other platforms remain release work.
+Signing, notarization, automatic updates and other platforms remain release work.
 The app is Electron around the existing React/TypeScript workspace and Python
 engine. The
 working UI includes the new compact shell, command palette, full-width Server
@@ -177,7 +177,7 @@ complexity models for ordered/multidimensional aggregates.
 
 ### Workspace refinement, October 2026
 
-Implemented Home version information and workflow shortcuts, grouped SQL navigation, a white app mark with saturated flames, the Database diagram Diagram | Mermaid view (`mermaid` 11.17.2) and Mermaid export/import fixes, all-section Refresh all, the Parameters view (`parameters-1.0` and the 817-variable `mysql_sysvars.py` catalog) replacing Configuration, interactive Instruments selection, and the Learn workspace restyle with light and dark tokens and `--svg-*` drawing colors. Automatic application update checks and installers remain future work; a local build does not claim to be current.
+Implemented Home version information and workflow shortcuts, grouped SQL navigation, a white app mark with saturated flames, the Database diagram Diagram | Mermaid view (`mermaid` 11.17.2) and Mermaid export/import fixes, all-section Refresh all, the Parameters view (`parameters-1.0` and the 817-variable `mysql_sysvars.py` catalog) replacing Configuration, interactive Instruments selection, and the Learn workspace restyle with light and dark tokens and `--svg-*` drawing colors. **Check for updates** in Home's version footer and About myflames asks GitHub only when clicked and shows Up to date, the newer version with **Download…** (which saves the release file to Downloads and never installs it), or why it could not check. The outcome and its time are kept in the workspace store (`app-update-status-1.0`), and a result older than 24 hours reads as the last result; until a check, the version reads Not checked yet. Automatic update checks, installers and a signed, verified update channel remain future work.
 
 Implemented complete scoped Tables and Indexes inventories, pagination and CSV/HTML/PDF exports. A reusable-space filter is available for known file-per-table allocations. Per-index fragmentation measurement remains unavailable from these metadata sources.
 

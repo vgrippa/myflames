@@ -1122,7 +1122,8 @@ export function AccountPrivilegesSheet({ name, hasConnection, onClose }: {
         {hasConnection && privileges?.error && <p role="alert" className="error">{privileges.error}</p>}
       </div>
       <div className="dialog-actions sheet-actions">
-        {hasConnection && privileges && <button type="button" className="button" disabled={privileges.loading} onClick={() => void privileges.refresh(true)}>
+        {hasConnection && privileges && <button type="button" className={`button${privileges.loading ? " is-busy" : ""}`} aria-disabled={privileges.loading || undefined}
+          onClick={() => { if (!privileges.loading) void privileges.refresh(true); }}>
           {privileges.loading ? "Reading privileges…" : "Refresh privileges"}
         </button>}
         <button ref={close} type="button" className="button primary" onClick={onClose}>Close</button>

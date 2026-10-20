@@ -48,7 +48,7 @@ import {
   type ActiveConnection,
 } from "./Connections";
 import type { DigestAction } from "./SlowQueries";
-import { closePopovers, Disclosure, ExportMenu, NotesButton, Popover, Segmented, Select, useFocusScope } from "./kit";
+import { closePopovers, ColumnStoreContext, Disclosure, ExportMenu, NotesButton, Popover, Segmented, Select, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import {
   defaultLab,
@@ -337,6 +337,21 @@ function App() {
     (slow: SlowState) => patchLab({ slow }),
     [patchLab],
   );
+  // Column widths and hidden columns of the workspace's tables by table id
+  // (Server's views and the Cluster place), one record for both so each
+  // table keeps its own layout and it is saved with the workspace
+  // (slow.columns_v1, validated by session.ts).
+  const [columnLayouts, setColumnLayouts] = useState<Record<string, ColumnPrefs>>({});
+  const columnStore = useColumnStore(columnLayouts, setColumnLayouts);
+  useEffect(() => {
+    setLabState((current) => {
+      const slow = { ...current.slow };
+      if (Object.keys(columnLayouts).length) slow.columns_v1 = columnLayouts;
+      else delete slow.columns_v1;
+      const next = normalizeLab({ ...current, slow });
+      return sameLab(current, next) ? current : next;
+    });
+  }, [columnLayouts]);
   // Saved connections and the connection in use. Its non-secret settings
   // live in the lab state (and so in the saved session); the password is
   // typed for this page only.
@@ -830,6 +845,7 @@ function App() {
     setReturnToPlan(false);
     setLabInitial(undefined);
     setLabState(defaultLab());
+    setColumnLayouts({});
     setActivePassword("");
     setConnectionNote("");
     setTeachLesson("");
@@ -1022,6 +1038,7 @@ function App() {
     setTeachLesson(lessonKey);
     setLabInitial(lab);
     setLabState(lab);
+    setColumnLayouts(lab.slow?.columns_v1 || {});
     setActivePassword("");
     setConnectionNote("");
     setResetKey((k) => k + 1);
@@ -1387,7 +1404,7 @@ function App() {
     setConfirmFresh(false);
   }
   // The write safety of the connection in use, first in the window footer of
-  // the places that send to it (Query editor, Server, Workload, Replication,
+  // the places that send to it (Query editor, Server, Workload, Replication, Cluster,
   // Tuning). Unknown (not loaded, or the read failed) is Production assumed.
   const safetyStatus = ready && connectionPlace ? (
     <SafetyStatus
@@ -1891,6 +1908,8 @@ function App() {
                 }}
                 initial={labInitial?.slow}
                 onStateChange={reportSlow}
+                columns={columnLayouts}
+                onColumns={setColumnLayouts}
                 replicationLoops={replicationLoops}
                 onReplicationLoops={setReplicationLoops}
                 replication={replicationReport}
@@ -1949,8 +1968,10 @@ function App() {
           {ready && mountCluster && (
             <div hidden={mode !== "cluster"}>
               <ViewOnScreenContext.Provider value={mode === "cluster"}>
+              <ColumnStoreContext.Provider value={columnStore}>
                 <ClusterPlace connection={request} disabled={labBusy} report={clusterReport} onReport={shareCluster}
                   failure={clusterFailure} onFailure={failCluster} />
+              </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
             </div>
           )}

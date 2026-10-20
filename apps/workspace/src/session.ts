@@ -141,13 +141,16 @@ export type SlowState = {
   /** Replication: a skip loop was active when the workspace was saved. The
    * only loop state a restore keeps; it warns that nothing resumes. */
   replication_loop_active?: boolean;
-  /** Column layout of the Server tables by table id (TABLE_IDS): widths
-   * and hidden columns. Versioned key: a new layout format gets a new key. */
+  /** Column layout of the workspace tables (Server's views and the Cluster
+   * place) by table id (TABLE_IDS): widths and hidden columns. Versioned
+   * key: a new layout format gets a new key. */
   columns_v1?: Record<string, ColumnLayout>;
 };
 /** One table's column layout: widths in px by column key, hidden keys. */
 export type ColumnLayout = { widths?: Record<string, number>; hidden?: string[] };
-/** The Server tables that keep a column layout (DataTable id). */
+/** The tables that keep a column layout (DataTable id): Server's views and
+ * the Cluster place (Nodes on Galera and PXC, Members on Group Replication,
+ * Routers), each with its own. */
 export const TABLE_IDS = [
   "errorlog.entries",
   "errorlog.codes",
@@ -155,6 +158,7 @@ export const TABLE_IDS = [
   "sessions.sessions",
   "replication.channels",
   "cluster.members",
+  "cluster.nodes",
   "cluster.routers",
   "waits.events",
   "waits.classes",

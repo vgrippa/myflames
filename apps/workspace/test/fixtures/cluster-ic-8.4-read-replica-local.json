@@ -29,7 +29,7 @@
  },
  "status": "ok",
  "status_why": [
-  "Every judged member is healthy and the cluster has quorum."
+  "This read replica is replicating from the cluster over the read_replica_replication channel. It is not a group member, so the group's quorum and the failures it tolerates are not visible here: connect to a group member to judge them."
  ],
  "local": "member:44444444-4444-11f0-8a00-0242ac130005",
  "members": [

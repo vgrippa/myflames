@@ -722,6 +722,9 @@ class TestGroupReplication(unittest.TestCase):
         self.assertEqual((replica['role'], replica['state'], replica['status']), ('READ_REPLICA', None, 'unknown'))
         self.assertEqual(report['cluster']['expected_size'], 3)
         self.assertEqual(report['status'], 'ok')
+        # Seen from a group member, quorum was measured, so OK says so.
+        self.assertTrue(report['cluster']['quorum'])
+        self.assertEqual(report['status_why'], ['Every judged member is healthy and the cluster has quorum.'])
 
     def test_connected_to_a_read_replica(self):
         """A read replica has no group of its own (Sh add_replica_instance.cc
@@ -742,6 +745,15 @@ class TestGroupReplication(unittest.TestCase):
         self.assertEqual(report['metadata']['local_copy'], 'read_replica')
         self.assertTrue(any("WHERE CHANNEL_NAME = 'read_replica_replication'" in sql for sql, _ in conn.calls))
         self.assertIn('this server is a read replica', m.format_text(report))
+        # Codex review: a read replica never claims quorum it cannot see.
+        # Quorum and failures tolerated stay unknown, and OK says why.
+        self.assertIsNone(report['cluster']['failures_tolerated'])
+        self.assertEqual(len(report['status_why']), 1)
+        self.assertNotIn('has quorum', report['status_why'][0])
+        self.assertIn('This read replica is replicating', report['status_why'][0])
+        self.assertIn("quorum and the failures it tolerates are not visible here", report['status_why'][0])
+        self.assertIn('quorum and failures tolerated unknown (not a group member)', m.format_text(report))
+        self.assertNotIn('quorum yes', m.format_text(report))
         stopped = F.report('ic-8.4-read-replica-stopped')
         self.assertEqual((stopped['status'], ids(stopped)), ('problem', ['read_replica']))
         self.assertIn('not running (receiver OFF, applier ON)', stopped['findings'][0]['text'])
@@ -941,6 +953,62 @@ class TestMCP(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     fn(**values)
                 resolve.assert_not_called()
+
+
+
+class TestRecorder(unittest.TestCase):
+    """scripts/record-cluster-fixtures.py, which makes the recordings above:
+    committed, named by the fixture helper, password from the matrix's
+    credentials file only (never argv, never printed), never the real home."""
+
+    def load(self):
+        import importlib.util
+        path = ROOT / 'scripts' / 'record-cluster-fixtures.py'
+        self.assertTrue(path.is_file())
+        spec = importlib.util.spec_from_file_location('record_cluster_fixtures', str(path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_recorder_is_committed_and_named_by_the_fixtures(self):
+        self.assertIn('scripts/record-cluster-fixtures.py', F.__doc__)
+        self.assertNotIn('scratchpad', F.__doc__)
+        self.assertIn('record-cluster-fixtures.py', (ROOT / 'test' / 'README.md').read_text(encoding='utf-8'))
+        self.assertNotIn('--password', (ROOT / 'scripts' / 'record-cluster-fixtures.py').read_text(encoding='utf-8'))
+
+    def test_password_comes_from_the_credentials_file(self):
+        rec = self.load()
+        with tempfile.TemporaryDirectory() as lab:
+            creds = os.path.join(lab, 'credentials.env')
+            with open(creds, 'w', encoding='utf-8') as handle:
+                handle.write('ROOT_PASSWORD=root-secret\nMF_ADMIN_PASSWORD="admin-secret"\n')
+            with mock.patch.dict(os.environ, {'CLUSTER_LAB': lab}):
+                os.environ.pop('CREDS_FILE', None)
+                self.assertEqual(rec.credentials_file(), creds)
+                self.assertEqual(rec.read_password('root'), 'root-secret')
+                self.assertEqual(rec.read_password('mf_admin'), 'admin-secret')
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as stop:
+                    rec.read_password('mf_read')
+                self.assertEqual(stop.exception.code, 2)
+                self.assertNotIn('secret', err.getvalue())
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    rec.read_password('someone')
+            with mock.patch.dict(os.environ, {'CREDS_FILE': creds, 'CLUSTER_LAB': '/nonexistent'}):
+                self.assertEqual(rec.credentials_file(), creds)
+
+    def test_refuses_the_real_home(self):
+        rec = self.load()
+        if rec.pwd is None:
+            self.skipTest('Unix only')
+        real = rec.pwd.getpwuid(os.getuid()).pw_dir
+        for home in (real, os.path.join(real, '.myflames'), os.path.join(real, '.myflames', 'lab')):
+            with self.subTest(home=home), mock.patch.dict(os.environ, {'HOME': home}):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stop:
+                    rec.refuse_real_home()
+                self.assertEqual(stop.exception.code, 2)
+        with tempfile.TemporaryDirectory() as isolated, mock.patch.dict(os.environ, {'HOME': isolated}):
+            rec.refuse_real_home()
 
 
 if __name__ == '__main__':

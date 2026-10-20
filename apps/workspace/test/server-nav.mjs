@@ -135,6 +135,17 @@ try {
   await pause(100);
   assert.equal(await page.evaluate(() => document.activeElement?.tagName), "SELECT", "a clicked control keeps focus");
   await page.keyboard.press("Escape");
+  // Typing ranks commands whose name holds every word first, then keyword
+  // matches, each in the declared order: health lists the Health view before Tuning.
+  await page.keyboard.down("Meta"); await page.keyboard.press("k"); await page.keyboard.up("Meta");
+  await page.waitForSelector("dialog.command-palette[open]");
+  await page.type('input[aria-label="Search commands"]', "health");
+  const ranked = await page.$$eval("dialog.command-palette .command-option > span", (els) => els.map((e) => e.textContent));
+  assert.equal(ranked[0], "Health", `the Health view comes first: ${ranked}`);
+  assert.ok(ranked.indexOf("Tuning") > 0, `Tuning still matches by keyword: ${ranked}`);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.command-palette"));
+  await page.focus("#health-switcher");
   // Navigation from elsewhere (the command palette) never carries an open list onto the next view.
   await page.click("#health-switcher");
   await page.waitForSelector(".view-switcher-popover");
@@ -174,11 +185,17 @@ try {
   assert.equal(await page.$eval("#health-switcher .view-switcher-marker", (e) => e.getAttribute("aria-hidden")), "true");
   assert.equal(await page.$eval("#health-switcher .view-switcher-marker", (e) => e.textContent), "", "no counts on the title");
 
-  // Docking from the list's header persists across a reload.
+  // Docking from the list's header persists across a reload. From the
+  // keyboard, focus moves to the toolbar's Dock/Float toggle, never the page.
   await page.click("#health-switcher");
-  await page.click('.view-switcher-popover button[aria-label="Dock the list of views"]');
+  await page.waitForSelector('.view-switcher-popover button[aria-label="Dock the list of views"]');
+  await page.focus('.view-switcher-popover button[aria-label="Dock the list of views"]');
+  await page.keyboard.press("Enter");
   await page.waitForSelector(".server-place:not(.is-nav-collapsed) .server-source-wrap .source-list");
   assert.equal(await page.$(".view-switcher"), null, "docked: the title is a heading again");
+  await page.waitForFunction(() => document.activeElement?.matches(".place-toolbar .server-sidebar-toggle"));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Float the list of views",
+    "docking from the list keeps focus on the Dock/Float toggle");
   assert.equal(await page.evaluate((key) => localStorage.getItem(key), DOCK_KEY), "false");
   await page.reload({ waitUntil: "networkidle0" });
   // The reloaded workspace starts over: count its reads only.

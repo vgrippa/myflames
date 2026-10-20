@@ -143,22 +143,38 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
   );
 }
 
+/** A finding's identity across reports: its rule and the member it names
+ * (a second finding of the same rule and member gets its occurrence). */
+export function findingKeys(findings: ClusterFinding[]): string[] {
+  const seen = new Map<string, number>();
+  return findings.map((f) => {
+    const key = `${f.id}:${f.member ?? ""}`;
+    const n = seen.get(key) || 0;
+    seen.set(key, n + 1);
+    return n ? `${key}#${n}` : key;
+  });
+}
+
 /** Findings, one compact line each: the state's shape, the title in
  * foreground text with only the member name as a link, and the reason on
- * demand, stacked under the title. */
+ * demand, stacked under the title. Details stay open by the finding's
+ * identity, so a refresh never opens another finding; the caller remounts
+ * this per connection, so nothing carries over to another cluster. */
 function Findings({ report, selection }: { report: ClusterReport; selection: Selection }) {
   const base = useId();
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const names = new Map(report.members.map((m) => [m.key, m.name]));
+  const keys = findingKeys(report.findings);
   return (
     <ul className="cluster-findings" aria-label="Findings">
       {report.findings.map((f: ClusterFinding, i) => {
         const id = `${base}-finding-${i}`;
+        const key = keys[i];
         const name = f.member ? names.get(f.member) : undefined;
         const linked = !!name && f.title.startsWith(name);
-        const shown = !!open[id];
+        const shown = !!open[key];
         return (
-          <li key={`${f.id}-${i}`} className={shown ? "is-open" : undefined}>
+          <li key={key} className={shown ? "is-open" : undefined}>
             <span className="cluster-finding-head">
               <ClusterMark tone={f.status} label={f.status === "problem" ? "Problem" : "Watch"} />
               <span className="cluster-finding-title">
@@ -168,7 +184,7 @@ function Findings({ report, selection }: { report: ClusterReport; selection: Sel
                 </> : f.title}
               </span>
               <button type="button" className="text-button cluster-finding-toggle" aria-expanded={shown} aria-controls={id}
-                onClick={() => setOpen((o) => ({ ...o, [id]: !o[id] }))}>
+                onClick={() => setOpen((o) => ({ ...o, [key]: !o[key] }))}>
                 {shown ? "Hide details" : "Details"}
               </button>
             </span>
@@ -260,7 +276,11 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   const tiles = report && isCluster ? clusterTiles(report, stale) : null;
   const tone: Tone | undefined = !report || !isCluster ? (report && !report.available ? "unknown" : undefined) : report.status;
   const failed = current ? failureText(current.message) : reads.error && !onFailure ? failureText(reads.error) : "";
-  const findings = isCluster && report!.findings.length > 0 && shownTab !== "routers" ? <Findings report={report!} selection={selection} /> : null;
+  const findings = isCluster && report!.findings.length > 0 && shownTab !== "routers" ? <Findings key={bound?.key} report={report!} selection={selection} /> : null;
+  // Each table keeps its own column layout (ColumnStoreContext, saved with
+  // the workspace): Galera and PXC Nodes, Group Replication Members and
+  // Routers have different columns, so each has its own id and instance.
+  const membersTable = galera ? "cluster.nodes" : "cluster.members";
   return (
     <ViewLayout id="cluster" title="Cluster" className={`cluster-view${failedOver ? " is-stale" : ""}`} onRefresh={() => { void load(); }} refreshDisabled={disabled}
       loading={!!reads.loading} otherConnection={other} inspector={content}
@@ -309,10 +329,10 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
           {shownTab === "topology" ? (
             <ClusterTopology report={report} selection={selection} marker={marker} />
           ) : shownTab === "members" ? (
-            <DataTable id="cluster.members" label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
+            <DataTable key={membersTable} id={membersTable} label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
           ) : (
             routers.length ? (
-              <DataTable id="cluster.routers" label="Routers" columns={routerColumns} rows={routers} rowKey={(r) => routerKey(r, routers.indexOf(r))} selection={selection} />
+              <DataTable key="cluster.routers" id="cluster.routers" label="Routers" columns={routerColumns} rows={routers} rowKey={(r) => routerKey(r, routers.indexOf(r))} selection={selection} />
             ) : <EmptyState icon="cluster" title="No routers registered">No MySQL Router is registered for this cluster in the InnoDB Cluster metadata.</EmptyState>
           )}
         </>}
@@ -372,7 +392,13 @@ function clusterTiles(report: ClusterReport, stale: boolean) {
   // Quorum and failures tolerated carry their own tone: no majority is a
   // problem, one more failure away from losing it a watch.
   const quorumTone: Tone | undefined = c.quorum === false ? "problem" : c.quorum && c.failures_tolerated === 0 ? "watch" : undefined;
-  const tolerance = c.failures_tolerated !== null ? <span className="tile-hint">{`Tolerates ${plural(c.failures_tolerated, "failure")}`}</span> : undefined;
+  // A member that cannot see the group (a read replica, or this member out of
+  // it) never claims quorum: both stay unknown, with the reason.
+  const unseen = !galera && c.quorum === null && blind
+    ? isReadReplica(blind) ? "A read replica is not a group member, so it cannot see the group's quorum." : "This member is not in the group, so it cannot see the group's quorum."
+    : "";
+  const tolerance = c.failures_tolerated !== null ? <span className="tile-hint">{`Tolerates ${plural(c.failures_tolerated, "failure")}`}</span>
+    : unseen ? <span className="tile-hint">Failures tolerated unknown</span> : undefined;
   let membersTile;
   if (galera) {
     const judged = s.members - s.unknown;
@@ -407,7 +433,7 @@ function clusterTiles(report: ClusterReport, stale: boolean) {
             attrs={{ title: `${GLOSSARY.component} ${GLOSSARY.tolerates}${c.failures_tolerated !== null ? " Assumes equal pc.weight." : ""}` }} />
         ) : (
           <MetricTile rowKey="quorum" label="Quorum" value={c.quorum === null ? "Not visible" : c.quorum ? "Yes" : "No"}
-            tone={quorumTone} trend={tolerance} attrs={{ title: GLOSSARY.tolerates }} />
+            tone={quorumTone} trend={tolerance} attrs={{ title: unseen ? `${unseen} ${GLOSSARY.tolerates}` : GLOSSARY.tolerates }} />
         )}
         {membersTile}
         <MetricTile rowKey="this" label={stale ? "Read from" : galera ? "This node" : me && isReadReplica(me) ? "This server" : "This member"} value={me ? stateWord(me) : "Not found"}

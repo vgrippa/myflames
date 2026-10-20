@@ -515,6 +515,7 @@ export function Checkbox({
   onChange,
   children,
   disabled,
+  busy,
   className = "",
   describedBy,
   title,
@@ -524,20 +525,24 @@ export function Checkbox({
   onChange: (checked: boolean) => void;
   children: ReactNode;
   disabled?: boolean;
+  /** Unavailable for a moment (a save on its way): it keeps keyboard focus
+   * (aria-disabled, not disabled) and ignores changes until it is done. */
+  busy?: boolean;
   className?: string;
   describedBy?: string;
   title?: string;
   id?: string;
 }) {
   return (
-    <label className={`checkbox ${className}`.trim()} title={title}>
+    <label className={`checkbox${busy ? " is-busy" : ""} ${className}`.trim()} title={title}>
       <input
         id={id}
         type="checkbox"
         checked={checked}
         disabled={disabled}
+        aria-disabled={busy || undefined}
         aria-describedby={describedBy}
-        onChange={(e) => onChange(e.target.checked)}
+        onChange={(e) => { if (!busy) onChange(e.target.checked); }}
       />
       <span>{children}</span>
     </label>
@@ -1119,6 +1124,26 @@ export type ColumnStore = {
   set: (table: string, prefs: ColumnPrefs | null) => void;
 };
 export const ColumnStoreContext = createContext<ColumnStore | null>(null);
+/** A ColumnStore over one record of layouts by table id (Server and the
+ * shell keep it in the workspace session); clearing a table removes it. */
+export function useColumnStore(
+  columns: Record<string, ColumnPrefs>,
+  setColumns: (update: (all: Record<string, ColumnPrefs>) => Record<string, ColumnPrefs>) => void,
+): ColumnStore {
+  return useMemo(
+    () => ({
+      get: (table) => columns[table],
+      set: (table, prefs) =>
+        setColumns((all) => {
+          const next = { ...all };
+          if (prefs) next[table] = prefs;
+          else delete next[table];
+          return next;
+        }),
+    }),
+    [columns, setColumns],
+  );
+}
 export const COLUMN_MIN = 48;
 export const COLUMN_MAX = 1200;
 /** The flexible column never gets narrower than this. */

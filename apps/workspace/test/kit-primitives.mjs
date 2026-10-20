@@ -11,7 +11,7 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
   import React, { useState } from 'react';
   import { createRoot } from 'react-dom/client';
   import { SplitButton, SplitPane, FormGrid, FormRow, PendingBar, Fields, DataTable,
-    WindowStatusProvider, WindowStatusBar, useWindowStatus } from './kit';
+    WindowStatusProvider, WindowStatusBar, useWindowStatus, Checkbox, IconButton } from './kit';
   function Status() {
     useWindowStatus('server:A', { engineVersion: 'MySQL 8.4.0', connectionState: 'Connected', transaction: 'Autocommit', refreshedAt: 1000 });
     useWindowStatus('server:B', { engineVersion: 'MariaDB 11.4', connectionState: 'Disconnected' });
@@ -36,6 +36,14 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
           { key: 'id', label: 'Identifier', render: r => r.id },
           { key: 'value', label: 'Count', num: true, render: r => r.value, sort: r => r.value }
         ]} /><Status />
+      <div id="busy-look">
+        <Checkbox className="busy-check" checked={false} busy onChange={() => {}}>Busy switch</Checkbox>
+        <Checkbox className="idle-check" checked={false} onChange={() => {}}>Idle switch</Checkbox>
+        <IconButton icon="refresh" label="Busy refresh" className="is-busy" aria-disabled />
+        <IconButton icon="refresh" label="Gated icon" aria-disabled />
+        <button type="button" className="button is-busy" aria-disabled>Busy button</button>
+        <button type="button" className="button" aria-disabled title="Denied">Gated button</button>
+      </div>
     </WindowStatusProvider>;
   }
   createRoot(document.getElementById('root')).render(<Demo />);
@@ -101,6 +109,27 @@ try {
   await page.waitForSelector('[role="dialog"][aria-label="Columns of Numbers"]');
   await page.keyboard.press('Escape');
   assert.equal(await page.$('[role="dialog"][aria-label="Columns of Numbers"]'), null);
+  // The busy look (dimmed, still focusable) belongs to controls that say they
+  // are busy (is-busy); a privilege-gated aria-disabled button or icon button
+  // keeps its own look.
+  const look = await page.evaluate(() => {
+    const of = (selector) => { const s = getComputedStyle(document.querySelector(selector)); return [s.opacity, s.cursor]; };
+    return {
+      busyCheck: of('#busy-look .busy-check input'), busyCheckLabel: getComputedStyle(document.querySelector('#busy-look .busy-check')).cursor,
+      busyCheckDisabled: document.querySelector('#busy-look .busy-check input').disabled,
+      idleCheck: of('#busy-look .idle-check input'),
+      busyIcon: of('#busy-look [aria-label="Busy refresh"]'), gatedIcon: of('#busy-look [aria-label="Gated icon"]'),
+      busyButton: of('#busy-look .button.is-busy'), gatedButton: of('#busy-look .button[title="Denied"]'),
+    };
+  });
+  assert.deepEqual(look.busyCheck, ['0.5', 'default'], 'a busy Checkbox is dimmed');
+  assert.equal(look.busyCheckLabel, 'default');
+  assert.equal(look.busyCheckDisabled, false, 'a busy Checkbox stays focusable');
+  assert.equal(look.idleCheck[0], '1');
+  assert.deepEqual(look.busyIcon, ['0.5', 'default'], 'a busy icon button is dimmed');
+  assert.deepEqual(look.busyButton, ['0.5', 'default'], 'a busy button is dimmed');
+  assert.deepEqual(look.gatedIcon, ['1', 'pointer'], 'an aria-disabled icon button without is-busy keeps its look');
+  assert.deepEqual(look.gatedButton, ['1', 'pointer'], 'a privilege-gated button keeps its look');
   const status = await page.$eval('.window-statusbar', e => e.textContent);
   assert.match(status, /MySQL 8.4.0ConnectedAutocommit/);
   assert.doesNotMatch(status, /MariaDB|Disconnected/);

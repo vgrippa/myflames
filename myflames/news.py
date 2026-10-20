@@ -7,13 +7,15 @@ the time ``/api/news`` waits. A document that declares a DOCTYPE or an ENTITY
 is refused before parsing, and titles and summaries keep plain text only.
 Requests send no cookies and no identifiers; only a neutral User-Agent.
 
-Headlines are cached for six hours in ``news-cache.json`` next to the
-workspace store. A failed read (offline, an HTTP error, a malformed feed)
-serves that cache with its age. Home reads ``/api/news`` only while it is on
-screen and the Settings switch ("Show MySQL and MariaDB news on Home") is on;
-with the switch off nothing is read. A workspace server reads the network
-only when it was given a reader (``cmd_ui`` passes :func:`fetch_feed`), so
-test servers never reach the network.
+Headlines are cached in ``news-cache.json`` next to the workspace store. A
+successful read is reused for six hours; a failed read (offline, an HTTP
+error, a malformed feed) serves that cache with its age and is tried again
+after ten minutes, and Refresh news reads again at most once a minute. Home
+reads ``/api/news`` only while it is on screen and the Settings switch ("Show
+MySQL and MariaDB news on Home") is on; with the switch off nothing is read.
+A workspace server reads the network only when it was given a reader
+(``cmd_ui`` passes :func:`fetch_feed`), so test servers never reach the
+network.
 """
 import copy
 import datetime

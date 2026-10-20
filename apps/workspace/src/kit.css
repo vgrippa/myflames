@@ -249,6 +249,20 @@
   color: var(--ink-faint);
   cursor: default;
 }
+/* Busy for a moment (a save or a read on its way): dimmed like a disabled
+   control but still focusable (aria-disabled), so keyboard focus stays put.
+   Only controls that set is-busy (Checkbox busy, Refresh news, Refresh
+   privileges) look like this; an aria-disabled privilege gate keeps its own
+   look. */
+.checkbox.is-busy {
+  color: var(--ink-faint);
+  cursor: default;
+}
+.checkbox.is-busy input[type="checkbox"],
+:is(.icon-button, .button).is-busy[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.5;
+}
 /* A number field with its unit inside the border. */
 .number-field {
   display: inline-flex;

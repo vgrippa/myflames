@@ -35,6 +35,15 @@ const api = (route, body) =>
     const response = await fetch(r, { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": token }, body: JSON.stringify(b) });
     return response.json();
   }, route, body);
+/** The findings with their Details state, in order. */
+const findingStates = () => page.$$eval(`${view} .cluster-findings li`, (lis) => lis.map((li) => ({
+  title: li.querySelector(".cluster-finding-title").textContent,
+  expanded: li.querySelector(".cluster-finding-toggle").getAttribute("aria-expanded") })));
+async function toggleFinding(pattern) {
+  const at = (await findingStates()).findIndex((f) => pattern.test(f.title));
+  assert.ok(at >= 0, `a finding matches ${pattern}`);
+  await page.click(`${view} .cluster-findings li:nth-child(${at + 1}) .cluster-finding-toggle`);
+}
 const visible = (selector) => page.$$eval(selector, (els) => els.filter((e) => e.offsetParent || e.getClientRects().length).map((e) => e.textContent.replace(/\s+/g, " ").trim()));
 const shot = (file) => page.screenshot({ path: path.join(h.shots, file), fullPage: false });
 async function answer(report) {
@@ -127,6 +136,45 @@ try {
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   await page.waitForFunction((key) => document.activeElement?.getAttribute("data-row-key") === key, {}, second);
 
+  // Each table keeps its own column layout, saved with the workspace:
+  // hiding Version among Members leaves the Routers' Version, and the
+  // layout survives Topology and a reload.
+  const membersTable = `${view} .data-table-wrap[aria-label="Cluster members"]`;
+  const routersTable = `${view} .data-table-wrap[aria-label="Routers"]`;
+  const columnKeys = (t) => page.$$eval(`${t} thead th[data-col]`, (els) => els.map((e) => e.dataset.col));
+  const membersMenu = '[role=dialog][aria-label="Columns of Cluster members"]';
+  await tab("Members");
+  await page.waitForSelector(`${membersTable} thead th[data-col="version"]`);
+  await page.click(`${membersTable} .table-columns-button`);
+  await page.waitForSelector(membersMenu);
+  await page.click(`${membersMenu} input[data-col="version"]`);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label^="Columns of"]'));
+  assert.ok(!(await columnKeys(membersTable)).includes("version"), "Version hidden among Members");
+  await tab("Routers");
+  await page.waitForSelector(`${routersTable} thead th[data-col]`);
+  assert.ok((await columnKeys(routersTable)).includes("version"), "Routers keep their own Version column");
+  await tab("Topology");
+  await tab("Members");
+  assert.ok(!(await columnKeys(membersTable)).includes("version"), "the Members layout survives a visit to Topology");
+  const savedColumns = await h.savedSlow((s) => (s.columns_v1?.["cluster.members"]?.hidden || []).includes("version"));
+  assert.equal(savedColumns.state.query_lab.slow.columns_v1["cluster.routers"], undefined, "Routers have no layout of their own yet");
+  await page.reload({ waitUntil: "networkidle0" });
+  await answer(R["ic-8.4-healthy"]);
+  await page.click(nav);
+  await page.waitForSelector(`${view} .cluster-topology`);
+  await tab("Members");
+  await page.waitForSelector(`${membersTable} thead th[data-col]`);
+  assert.ok(!(await columnKeys(membersTable)).includes("version"), "the Members layout is restored after a reload");
+  await page.click(`${membersTable} .table-columns-button`);
+  await page.waitForSelector(membersMenu);
+  await page.click(`${membersMenu} .columns-reset`);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label^="Columns of"]'));
+  assert.ok((await columnKeys(membersTable)).includes("version"), "Reset columns shows Version again");
+  await h.savedSlow((s) => !s.columns_v1?.["cluster.members"]);
+  await tab("Topology");
+
   // Routers table and its inspector.
   await tab("Routers");
   await page.waitForSelector(`${view} [data-row-key^="router:"]`);
@@ -170,6 +218,15 @@ try {
   assert.equal(unreachableRow.title, "mf-ic-3:3306 is UNREACHABLE");
   await page.click(`${view} .cluster-findings li:last-child .cluster-finding-toggle`);
   assert.equal(await page.$eval(`${view} .cluster-findings li:last-child .cluster-finding-text`, (e) => e.hidden), false);
+  // Details stay with their finding, never its position: with RECOVERING's
+  // open, a report where UNREACHABLE takes that place opens nothing.
+  await page.click(`${view} .cluster-findings li:last-child .cluster-finding-toggle`);
+  await toggleFinding(/is RECOVERING$/);
+  assert.deepEqual((await findingStates()).filter((f) => f.expanded === "true").map((f) => f.title), ["mf-ic-2:3306 is RECOVERING"]);
+  await refreshTo(R["ic-8.4-unreachable"]);
+  assert.deepEqual((await findingStates()).filter((f) => f.expanded === "true"), [], "no other finding opens in its place");
+  await refreshTo(R["ic-8.4-degraded"]);
+  await toggleFinding(/is RECOVERING$/);
   // Degraded tiles carry their tone: the quorum tile when one more failure loses it.
   assert.ok(await page.$(`${view} li.tile-item.is-watch`), "a degraded tile has its tone");
   await shot("cluster-ic-degraded.png");
@@ -221,6 +278,10 @@ try {
   // Connected to the read replica itself: an InnoDB Cluster, not "not part of a cluster".
   await refreshTo(R["ic-8.4-read-replica-local"]);
   assert.match((await visible(`${view} .summary-line`))[0], /this server is a read replica · Replicating/);
+  // It never claims quorum it cannot see: unknown, with the reason.
+  const quorumTile = await page.$eval(`${view} .tile-item:first-child`, (t) => ({ text: t.textContent, title: t.getAttribute("title") || t.querySelector("[title]")?.getAttribute("title") || "" }));
+  assert.match(quorumTile.text, /Quorum.*Not visible.*Failures tolerated unknown/);
+  assert.match(quorumTile.title, /^A read replica is not a group member/);
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
 
   // Multi-primary Group Replication without metadata: every member PRIMARY, no Routers tab.
@@ -452,6 +513,17 @@ try {
   assert.equal(afterAllFailed.stale, true);
   assert.deepEqual(afterAllFailed.chips, ["Read here"]);
   assert.match(afterAllFailed.error, /^Lost the connection to the server while reading/);
+
+  // Details never carry over to another connection's report, even for the
+  // same finding.
+  await refreshTo(R["ic-8.4-degraded"]);
+  await toggleFinding(/^Cannot survive another failure/);
+  assert.equal((await findingStates()).find((f) => /^Cannot survive/.test(f.title)).expanded, "true");
+  await chooseConnection(page, await connectionOption(page, "Node A"));
+  await page.waitForFunction((sel) => [...document.querySelectorAll(sel)].some((e) => e.offsetParent && e.hasAttribute("data-other-connection")), {}, view);
+  await refreshTo(R["ic-8.4-degraded"]);
+  assert.equal(state.seen.at(-1).connection.host, "node-a.test");
+  assert.deepEqual((await findingStates()).filter((f) => f.expanded === "true"), [], "a new connection starts with every finding closed");
 
   // The app's 720 px minimum window: no page scroll sideways; the cards wrap
   // inside the frame; the sections stay reachable; the first tab's content

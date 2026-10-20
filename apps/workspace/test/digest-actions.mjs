@@ -305,7 +305,9 @@ try {
     const reads = privilegeReads.length;
     await openAccountSheet(page);
     await page.locator('dialog.account-sheet button ::-p-text(Refresh privileges)').click();
-    await page.waitForFunction(() => [...document.querySelectorAll('dialog.account-sheet button')].some(b => b.textContent === "Refresh privileges" && !b.disabled));
+    // Busy while reading but still focusable (aria-disabled), so focus stays in the sheet.
+    await page.waitForFunction(() => [...document.querySelectorAll('dialog.account-sheet button')].some(b => b.textContent === "Refresh privileges" && !b.disabled && b.getAttribute("aria-disabled") !== "true"));
+    assert.equal(await page.evaluate(() => !!document.activeElement?.closest("dialog.account-sheet")), true, "focus stays in the sheet after Refresh privileges");
     assert.equal(privilegeReads.length, reads + 1);
     await closeAccountSheet(page);
   };
@@ -318,6 +320,8 @@ try {
     if(selector==='.batch-controls > button')await page.click(".detail-back");
     assert.equal(await page.$eval(selector, e => e.disabled), false);
     assert.equal(await page.$eval(selector, e => e.getAttribute("aria-disabled")), "true");
+    // A denial is not the busy look (kit.css is-busy): no dimming here.
+    assert.equal(await page.$eval(selector, e => getComputedStyle(e).opacity), "1", `${selector} is not dimmed as busy`);
     await page.focus(selector);
     assert.equal(await page.$eval(selector, e => e === document.activeElement), true);
     assert.match(await page.$eval(selector, e => e.getAttribute("aria-describedby").split(" ").map(id => document.getElementById(id)?.textContent).join(" ")), /TEST_GLOBAL_PRIVILEGE/);

@@ -134,5 +134,33 @@ redacted. The committed set has three states: `healthy`; `degraded`, after
 `fail galera-2`, `fail pxc-2` and `fail ic-1` (the primary, so the group elects
 `mf-ic-2` and the router moves read/write there); and `recovered`, after
 `recover` of the same nodes (IST for Galera and PXC, incremental recovery for
-Group Replication). These files are captured server output for replay tests;
-nothing reads them yet.
+Group Replication). These matrix captures (`CLUSTER-STATE-NODE*.json` and
+`index.json`) are captured server output for replay tests; nothing reads them
+yet.
+
+The replay recordings that `test_cluster.py` reads sit in the same directory as
+`cluster-<engine>-<version>-<state>.json` (for example
+`cluster-galera-11.8-donor.json`). Each is one live `myflames cluster` read in
+the `test/fixtures/perf` replay shape, `{server, source, args, calls, report}`:
+every statement `myflames/cluster.py` sent with the `mysql --batch` text it got
+back, and the report it made. `test/_cluster_fixtures.py` replays them (and
+derives further states from them), and
+`test_recordings_replay_to_their_recorded_report` checks each replay against
+its stored `report`, so record them again whenever `cluster.py`'s report
+changes. Put the cluster in the state first, then record one node:
+
+```bash
+HOME=$(mktemp -d) python3 scripts/record-cluster-fixtures.py --port 34101 --server galera-11.8-healthy
+```
+
+The states recorded so far: `healthy`; `donor` (`SET GLOBAL wsrep_desync = ON`
+on the node read); `two-of-three` (`fail` one node); `non-primary` (one node
+isolated from the others, read on that node); and for InnoDB Cluster
+`member-offline` and `local-offline` (`STOP GROUP_REPLICATION` on one member,
+read from the primary and from that member) and `unreachable` (one member's
+container paused with `group_replication_member_expel_timeout` raised to 60 so
+it stays UNREACHABLE while it is read). The recorder reads the password for
+`--user` (`root` by default, `mf_admin` or `mf_read`) from the matrix's
+credentials file the way `cluster-matrix.sh` does (`CREDS_FILE`, else
+`$CLUSTER_LAB/credentials.env`), sends it to the client in a defaults file,
+never prints it, and refuses your real home or `~/.myflames` as `HOME`.

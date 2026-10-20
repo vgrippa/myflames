@@ -45,15 +45,20 @@ async function refresh(mock, line) {
 async function toggleNews() {
   await page.click('button[aria-label="Settings"]');
   await page.waitForSelector("#settings-popover .news-toggle input");
-  // One change at a time: the switch is disabled until the stored answer.
-  const disabledWhileSaving = await page.evaluate(async () => {
+  // One change at a time: the switch is busy until the stored answer, and it
+  // keeps keyboard focus meanwhile (aria-disabled, never disabled).
+  const whileSaving = await page.evaluate(async () => {
     const input = document.querySelector("#settings-popover .news-toggle input");
+    input.focus();
     input.click();
     for (let i = 0; i < 3; i++) await Promise.resolve();
-    return input.disabled;
+    return { busy: input.getAttribute("aria-disabled"), disabled: input.disabled, focused: document.activeElement === input,
+      look: input.closest(".checkbox").classList.contains("is-busy") };
   });
-  assert.equal(disabledWhileSaving, true, "the switch waits for its saved answer");
-  await page.waitForFunction(() => !document.querySelector("#settings-popover .news-toggle input").disabled);
+  assert.deepEqual(whileSaving, { busy: "true", disabled: false, focused: true, look: true }, "the switch waits for its saved answer and keeps focus");
+  await page.waitForFunction(() => !document.querySelector('#settings-popover .news-toggle input[aria-disabled="true"]'));
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector("#settings-popover .news-toggle input")), true,
+    "focus stays on the switch after the save");
   const checked = await page.$eval("#settings-popover .news-toggle input", (e) => e.checked);
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("#settings-popover"));
@@ -105,6 +110,31 @@ try {
   await refresh({ status: 500, body: { error: "Something failed" } }, "News could not be loaded.");
   await refresh(report(), "");
   assert.equal(await page.$$eval(".home-news .news-item", (l) => l.length), 6);
+  // Refresh stays focusable while reading (aria-disabled), and a second
+  // Enter meanwhile asks nothing.
+  // A slow answer, so the busy state is still on screen when it is checked.
+  state.delay = 3000;
+  state.queue.push(report());
+  const beforeKey = state.seen.length;
+  await page.focus('.home-news button[aria-label="Refresh news"]');
+  await page.keyboard.press("Enter");
+  for (let i = 0; i < 100 && state.seen.length === beforeKey; i++) await pause(20);
+  assert.equal(state.seen.length, beforeKey + 1, "Enter on Refresh asks once");
+  // The request can leave before React draws the busy state: wait for it.
+  await page.waitForSelector('.home-news[aria-busy="true"]');
+  const reading = await page.evaluate(() => {
+    const b = document.querySelector('.home-news button[aria-label="Refresh news"]');
+    return { busy: b.getAttribute("aria-disabled"), disabled: b.disabled, focused: document.activeElement === b,
+      opacity: getComputedStyle(b).opacity };
+  });
+  assert.deepEqual(reading, { busy: "true", disabled: false, focused: true, opacity: "0.5" }, "Refresh keeps focus while reading, dimmed");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => !document.querySelector('.home-news[aria-busy="true"]'), { timeout: 10000 });
+  state.delay = 0;
+  assert.equal(state.seen.length, beforeKey + 1, "Refresh while reading asks nothing");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Refresh news", "focus stays on Refresh");
+  assert.deepEqual(await page.$eval('.home-news button[aria-label="Refresh news"]',
+    (b) => [b.hasAttribute("aria-disabled"), b.classList.contains("is-busy"), getComputedStyle(b).opacity]), [false, false, "1"]);
 
   // Layout: News sits under Recent work and never moves Connections or Recent work.
   const sizes = [[1440, 900], [720, 520]];

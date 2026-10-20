@@ -50,11 +50,12 @@ export function HomeNews() {
       <div className="pane-head">
         <h2 id="news-title">News</h2>
         <InfoPopover label="About News">
-          <p>Headlines from Planet MySQL (posts by the MySQL team) and the MariaDB Foundation. myflames reads these two feeds over HTTPS while Home is open, at most every six hours, and sends nothing about you or your connections.</p>
+          <p>Headlines from Planet MySQL (posts by the MySQL team) and the MariaDB Foundation. myflames reads these two feeds over HTTPS while Home is open, reusing a successful read for six hours (a failed read is tried again after ten minutes), and sends nothing about you or your connections.</p>
           <p>Turn news off in Settings.</p>
         </InfoPopover>
-        <IconButton icon="refresh" label="Refresh news" className="pane-action" disabled={loading}
-          onClick={() => { refresh.current = true; setReads((n) => n + 1); }} />
+        {/* Stays focusable while reading (aria-disabled), so focus is not lost. */}
+        <IconButton icon="refresh" label="Refresh news" className={`pane-action${loading ? " is-busy" : ""}`} aria-disabled={loading || undefined}
+          onClick={() => { if (loading) return; refresh.current = true; setReads((n) => n + 1); }} />
       </div>
       {state && <p className="empty-small news-state" role="status">{state}</p>}
       {!!items.length && (
@@ -82,14 +83,15 @@ export function HomeNews() {
 export function NewsSetting() {
   const enabled = useNewsEnabled();
   const [error, setError] = useState("");
-  // One change at a time: the switch waits for the stored answer.
+  // One change at a time: the switch waits for the stored answer. It stays
+  // focusable meanwhile (busy is aria-disabled), so focus never leaves Settings.
   const [saving, setSaving] = useState(false);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
   return (
     <>
       <Checkbox className="check-field session-toggle news-toggle" checked={enabled === true}
-        disabled={enabled === null || saving} describedBy="news-toggle-hint"
+        disabled={enabled === null} busy={saving} describedBy="news-toggle-hint"
         onChange={(on) => {
           setError("");
           setSaving(true);

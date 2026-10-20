@@ -8,7 +8,8 @@ Three sources, in order of preference:
   report}``). Recorded 2026-10-20 from throwaway Docker clusters (MariaDB
   11.8.9 with Galera 26.4.27, Percona XtraDB Cluster 8.4.11-11.1, MySQL
   8.4.11 InnoDB Cluster with MySQL Router 8.4.10) with
-  ``scratchpad/tools/record-cluster.py``: healthy, a donor (wsrep_desync),
+  ``scripts/record-cluster-fixtures.py`` (see test/README.md, Cluster
+  matrix): healthy, a donor (wsrep_desync),
   a node stopped (two of three), an isolated node (non-Primary), a member
   with Group Replication stopped (MISSING from the primary, OFFLINE on
   itself) and an UNREACHABLE member (paused, with

@@ -48,6 +48,7 @@ import { validateDiagram, rebuildDiagramLayout, type DiagramDocument, type Schem
 import type { AccountsReport } from "./accountsApi";
 import {
   ColumnStoreContext,
+  useColumnStore,
   ViewActivityContext,
   ViewBackLabelContext,
   ViewSwitcherContext,
@@ -68,7 +69,6 @@ import {
   storedInspectorWidth,
   worstTone,
   type ColumnPrefs,
-  type ColumnStore,
   type InspectorShared,
   type Selection,
   type SourceItem,
@@ -274,6 +274,8 @@ export function Server({
   cluster: propCluster,
   onCluster: propOnCluster,
   onClusterFailed: propOnClusterFailed,
+  columns: propColumns,
+  onColumns: propOnColumns,
 }: {
   /** The place on screen (or shown last, while another place is): Server and
    * Workload list their views; Tuning shows its one view, full width. */
@@ -325,6 +327,11 @@ export function Server({
   onCluster?: (report: Bound<ClusterReport>) => void;
   /** Refresh all could not read the cluster (the place greys its last report). */
   onClusterFailed?: (key: string, message: string) => void;
+  /** Column layouts by table id, owned by the shell when given, so tables
+   * outside Server (the Cluster place) keep theirs in the same saved state;
+   * otherwise kept here, restored from *initial*. */
+  columns?: Record<string, ColumnPrefs>;
+  onColumns?: (update: (all: Record<string, ColumnPrefs>) => Record<string, ColumnPrefs>) => void;
 }) {
   // Tuning (with its Full analysis tab) is a place of its own, never a view
   // chosen inside Server: an earlier session that saved either as the Server
@@ -371,27 +378,20 @@ export function Server({
   const setFloatingMenuOpen = useCallback((open: boolean) => setFloatingMenuFor(open ? kindRef.current : null), []);
   /** A view chosen from the floating list: its title button takes focus once it is on screen. */
   const switcherFocus = useRef(false);
+  /** Docked from the floating list's own header: the list and the Dock button
+   * in it are gone, so focus moves to the toolbar's Dock/Float toggle. */
+  const dockFocus = useRef(false);
   const takeSwitcherFocus = useCallback(() => {
     const take = switcherFocus.current;
     switcherFocus.current = false;
     return take;
   }, []);
   // Column widths and hidden columns of every Server table, by table id,
-  // restored with the workspace (session.ts validates them).
-  const [columns, setColumns] = useState<Record<string, ColumnPrefs>>(initial?.columns_v1 || {});
-  const columnStore: ColumnStore = useMemo(
-    () => ({
-      get: (table) => columns[table],
-      set: (table, prefs) =>
-        setColumns((all) => {
-          const next = { ...all };
-          if (prefs) next[table] = prefs;
-          else delete next[table];
-          return next;
-        }),
-    }),
-    [columns],
-  );
+  // restored with the workspace (session.ts validates them). The shell owns
+  // them when it passes them (shared with the Cluster place's tables).
+  const [ownColumns, setOwnColumns] = useState<Record<string, ColumnPrefs>>(initial?.columns_v1 || {});
+  const columns = propColumns ?? ownColumns;
+  const columnStore = useColumnStore(columns, propOnColumns ?? setOwnColumns);
   const reportRef = useRef(onStateChange);
   reportRef.current = onStateChange;
   const latestConnection = useRef(connection);
@@ -583,6 +583,18 @@ export function Server({
   useEffect(() => {
     if (!floating || !onScreen || floatingMenuFor !== kind) setFloatingMenuFor(null);
   }, [floating, onScreen, kind]);
+  // Dock from the floating list's header: the Dock button goes with the list,
+  // so focus lands on the toolbar's Dock/Float toggle (now Float the list of
+  // views), or on the view's title when there is no toggle, never on the page.
+  useEffect(() => {
+    if (floating || !dockFocus.current) return;
+    dockFocus.current = false;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused.isConnected) return;
+    const toggle = placeRef.current?.querySelector<HTMLElement>(".server-sidebar-toggle");
+    const target = toggle ?? document.getElementById(`${kind}-title`);
+    target?.focus({ preventScroll: true });
+  }, [floating, kind]);
   const sheet = width > 0 && width < SHEET_WIDTH;
   const [pushed, setPushed] = useState(false);
   const showList = compact && !pushed;
@@ -1269,6 +1281,7 @@ export function Server({
             title="Dock the list of views"
             aria-label="Dock the list of views"
             onClick={() => {
+              dockFocus.current = true;
               setFloatingMenuOpen(false);
               toggleNavCollapsed();
             }}

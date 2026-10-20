@@ -1535,6 +1535,24 @@ def _natural(text):
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text or "")]
 
 
+def _read_replica_here(report):
+    """True when the connected server is an InnoDB Cluster read replica."""
+    return any(m.get("local") and m.get("instance_type") == "read-replica" for m in report["members"])
+
+
+def _ok_text(report):
+    """Why the report is OK, from what was measured: quorum is claimed only
+    when this server saw it. A read replica is not a group member, so the
+    group's quorum and the failures it tolerates stay unknown (null)."""
+    if _read_replica_here(report):
+        return ("This read replica is replicating from the cluster over the %s channel. It is not a group member, "
+                "so the group's quorum and the failures it tolerates are not visible here: connect to a group "
+                "member to judge them." % READ_REPLICA_CHANNEL)
+    if report["cluster"].get("quorum") is True:
+        return "Every judged member is healthy and the cluster has quorum."
+    return "Every judged member is healthy; quorum could not be measured from this server."
+
+
 def _finish(report):
     # Members in name order (MySQL Shell lists its topology by label); the
     # server's own order follows UUIDs, which means nothing to a reader.
@@ -1559,7 +1577,7 @@ def _finish(report):
     if report["findings"]:
         report["status_why"].extend(f["text"] for f in report["findings"])
     elif status == "ok":
-        report["status_why"].append("Every judged member is healthy and the cluster has quorum.")
+        report["status_why"].append(_ok_text(report))
     else:
         report["status_why"].append("Nothing could be judged from this server.")
 
@@ -1621,6 +1639,8 @@ def format_text(report):
         facts.append("component %s" % cluster["component"])
     if cluster.get("quorum") is not None:
         facts.append("quorum %s" % ("yes" if cluster["quorum"] else "NO"))
+    elif _read_replica_here(report):
+        facts.append("quorum and failures tolerated unknown (not a group member)")
     size = _size_fact(report)
     if size:
         facts.append(size)
