@@ -43,6 +43,7 @@ export type IconName =
   | "configuration"
   | "instruments"
   | "replication"
+  | "cluster"
   | "maintenance"
   | "info"
   | "refresh"

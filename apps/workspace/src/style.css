@@ -3469,6 +3469,16 @@ button, .plan-item, .main-nav button {
 .main-nav button.active > svg {
   color: var(--accent-text);
 }
+/* A place with nothing for the connection in use (Cluster on a server that is
+   not part of one): looks disabled, stays focusable and opens the place, and
+   its tooltip and hidden text say why. */
+.main-nav button.is-muted:not(.active) {
+  color: var(--ink-faint);
+}
+.main-nav button.is-muted:not(.active) > svg {
+  color: var(--ink-faint);
+  opacity: 0.7;
+}
 :is(.main-nav button, .source-item, .plan-select, .query-document, .brand):focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
@@ -4410,7 +4420,7 @@ button, .plan-item, .main-nav button {
 .query-document[aria-current=true] > svg { color: var(--accent-text); }
 .sidebar-footer { margin-top: auto; }
 
-/* Brand version & update badge */
+/* Brand */
 .brand-group {
   display: flex;
   align-items: center;
@@ -4420,28 +4430,6 @@ button, .plan-item, .main-nav button {
 .brand-name {
   font-weight: 600;
 }
-/* Icon-only, so the icon uses the warning text color (at least 3:1 on its
-   tint over the sidebar in both appearances). */
-.update-badge-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--warn-text);
-  background: var(--warn-soft);
-  border: 1px solid var(--warn-line);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-  cursor: pointer;
-  animation: pulse-update 2.5s infinite ease-in-out;
-}
-.update-badge-button:hover {
-  border-color: var(--warn);
-}
-@keyframes pulse-update {
-  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 var(--warn-line); }
-  50% { transform: scale(1.08); box-shadow: 0 0 8px 2px var(--warn-line); }
-}
-
 /* Update dialog */
 .update-dialog {
   max-width: 480px;

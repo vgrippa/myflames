@@ -55,7 +55,7 @@
   },
   "status": "problem",
   "status_why": [
-   "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected, and refuses queries until it rejoins a Primary component."
+   "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected. Until it rejoins a Primary component it refuses most queries (SET, SHOW, reads of no table and reads with wsrep_dirty_reads still run)."
   ],
   "local": "node:192.168.80.4:0",
   "members": [
@@ -73,7 +73,7 @@
     "local": true,
     "status": "problem",
     "status_why": [
-     "In a non-Primary component. Initialized: not a member of any cluster component."
+     "In a non-Primary component. Initialized: not in a Primary component (non-Primary or disconnected); it does not apply or accept writes."
     ],
     "metrics": {
      "local_state": 0,
@@ -144,7 +144,7 @@
     "id": "non_primary",
     "status": "problem",
     "title": "Not in a Primary component",
-    "text": "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected, and refuses queries until it rejoins a Primary component."
+    "text": "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected. Until it rejoins a Primary component it refuses most queries (SET, SHOW, reads of no table and reads with wsrep_dirty_reads still run)."
    }
   ],
   "summary": {

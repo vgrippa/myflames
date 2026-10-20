@@ -76,37 +76,6 @@
   "local": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
   "members": [
    {
-    "key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
-    "name": "mf-ic-3:3306",
-    "address": "mf-ic-3:3306",
-    "host": "mf-ic-3",
-    "port": 3306,
-    "uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
-    "state": "OFFLINE",
-    "state_source": "replication_group_members",
-    "role": null,
-    "version": null,
-    "local": true,
-    "status": "problem",
-    "status_why": [
-     "OFFLINE: Group Replication is not running on this member."
-    ],
-    "metrics": {
-     "transactions_in_queue": 0,
-     "transactions_checked": 0,
-     "conflicts_detected": 0,
-     "rows_validating": 0,
-     "applier_queue": 0,
-     "remote_applied": 0,
-     "local_proposed": 0,
-     "local_rollback": 0
-    },
-    "communication_stack": "MySQL",
-    "label": "mf-ic-3:3306",
-    "in_metadata": true,
-    "endpoint": "mf-ic-3:3306"
-   },
-   {
     "key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
     "name": "mf-ic-1:3306",
     "address": "mf-ic-1:3306",
@@ -143,6 +112,37 @@
     ],
     "metrics": {},
     "in_metadata": true
+   },
+   {
+    "key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+    "name": "mf-ic-3:3306",
+    "address": "mf-ic-3:3306",
+    "host": "mf-ic-3",
+    "port": 3306,
+    "uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+    "state": "OFFLINE",
+    "state_source": "replication_group_members",
+    "role": null,
+    "version": null,
+    "local": true,
+    "status": "problem",
+    "status_why": [
+     "OFFLINE: Group Replication is not running on this member."
+    ],
+    "metrics": {
+     "transactions_in_queue": 0,
+     "transactions_checked": 0,
+     "conflicts_detected": 0,
+     "rows_validating": 0,
+     "applier_queue": 0,
+     "remote_applied": 0,
+     "local_proposed": 0,
+     "local_rollback": 0
+    },
+    "communication_stack": "MySQL",
+    "label": "mf-ic-3:3306",
+    "in_metadata": true,
+    "endpoint": "mf-ic-3:3306"
    }
   ],
   "galera": null,
@@ -225,7 +225,7 @@
    "SELECT mysql_innodb_cluster_metadata.v2_gr_clusters, v2_instances, v2_routers"
   ],
   "notes": [
-   "Queue lengths are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
+   "Queue lengths and rows validating are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
   ]
  }
 }

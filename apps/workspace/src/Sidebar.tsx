@@ -9,14 +9,14 @@ import { time, type Plan } from "./api";
 import { Icon, type IconName } from "./components";
 import { Checkbox, useFocusScope } from "./kit";
 import type { SaveStatus } from "./session";
-import type { AppUpdateInfo } from "./api";
 
-export type Place = "home" | "server" | "workload" | "replication" | "tuning" | "query" | "plans" | "investigations" | "learn";
+export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "tuning" | "query" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "server", label: "Server", icon: "server" },
   { key: "workload", label: "Workload", icon: "statements" },
   { key: "replication", label: "Replication", icon: "replication" },
+  { key: "cluster", label: "Cluster", icon: "cluster" },
   { key: "tuning", label: "Tuning", icon: "tuning" },
   { key: "query", label: "Query editor", icon: "query" },
   { key: "plans", label: "Plans", icon: "plan" },
@@ -61,10 +61,9 @@ export function Sidebar({
   onRemoveQuery,
   expanded,
   onExpandedChange,
-  updateInfo,
-  onOpenUpdate,
   onNewSession,
   placeBadges,
+  placeMuted,
 }: {
   /** Optional shell-controlled sidebar/drawer; legacy callers remain uncontrolled. */
   expanded?: boolean;
@@ -90,10 +89,12 @@ export function Sidebar({
   activeQueryId?: string;
   onOpenQuery?: (id: string) => void;
   onRemoveQuery?: (id: string) => void;
-  updateInfo?: AppUpdateInfo | null;
-  onOpenUpdate?: () => void;
   onNewSession?: () => void;
   placeBadges?: Partial<Record<Place, ReactNode>>;
+  /** Places that have nothing for the connection in use (Cluster on a server
+   * that is not part of one), with the sentence that says so: the item looks
+   * disabled but stays focusable and opens the place, which explains. */
+  placeMuted?: Partial<Record<Place, string>>;
 }) {
   const [localOpen, setLocalOpen] = useState(false);
   const drawerOpen = expanded ?? localOpen;
@@ -215,17 +216,6 @@ export function Sidebar({
             <img src={logo} alt="" width="22" height="22" />
             <span className="brand-name">myflames</span>
           </button>
-          {updateInfo?.update_available && (
-            <button
-              type="button"
-              className="icon-button update-badge-button"
-              title={`Update available: v${updateInfo.latest_version}. Click to update.`}
-              aria-label={`Update available: v${updateInfo.latest_version}`}
-              onClick={onOpenUpdate}
-            >
-              <Icon name="import" size={15} />
-            </button>
-          )}
         </div>
         <button
           ref={menuButton}
@@ -253,13 +243,16 @@ export function Sidebar({
               key={key}
               ref={(el) => (navRefs.current[index] = el)}
               data-place={key}
-              className={place === key ? "active" : ""}
+              className={[place === key ? "active" : "", placeMuted?.[key] ? "is-muted" : ""].filter(Boolean).join(" ")}
               aria-current={place === key ? "page" : undefined}
+              title={placeMuted?.[key] || undefined}
+              data-muted={placeMuted?.[key] ? "true" : undefined}
               onKeyDown={(e) => onNavKey(e, index)}
               onClick={() => go(key)}
             >
               <Icon name={icon} />
               {label}
+              {placeMuted?.[key] && <span className="visually-hidden">, {placeMuted[key]}</span>}
               {placeBadges?.[key]}
             </button>
             </Fragment>
@@ -443,20 +436,6 @@ export function Sidebar({
                 <Icon name="audit" size={16} />
                 Audit log
               </button>
-              {onOpenUpdate && (
-                <button
-                  type="button"
-                  className="settings-item"
-                  onClick={() => {
-                    setSettingsOpen(false);
-                    setDrawerOpen(false);
-                    onOpenUpdate();
-                  }}
-                >
-                  <Icon name="import" size={16} />
-                  Check for updates…
-                </button>
-              )}
               <button type="button" className="settings-item" aria-haspopup="dialog" onClick={openAbout}>
                 <Icon name="info" size={16} />
                 About myflames

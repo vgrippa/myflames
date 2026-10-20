@@ -1,0 +1,52 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mariadb",
+ "server_version": "11.8.9-MariaDB-ubu2404-log",
+ "version_comment": "mariadb.org binary distribution",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 3600,
+ "performance_schema": false,
+ "available": true,
+ "message": "Not part of a cluster: wsrep_on is OFF, so Galera replication is off on this MariaDB server and its wsrep status is hidden (MariaDB has no Group Replication).",
+ "kind": "none",
+ "server": {
+  "hostname": "galera-1",
+  "port": 3306,
+  "report_host": null,
+  "server_uuid": null
+ },
+ "cluster": {
+  "name": null,
+  "uuid": null,
+  "size": null,
+  "expected_size": null,
+  "expected_source": null,
+  "component": null,
+  "quorum": null,
+  "failures_tolerated": null,
+  "topology": null,
+  "provider": null
+ },
+ "status": "unknown",
+ "status_why": [
+  "Not part of a cluster: wsrep_on is OFF, so Galera replication is off on this MariaDB server and its wsrep status is hidden (MariaDB has no Group Replication)."
+ ],
+ "local": null,
+ "members": [],
+ "galera": null,
+ "group_replication": null,
+ "metadata": null,
+ "routers": [],
+ "findings": [],
+ "summary": {
+  "members": 0,
+  "ok": 0,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 0
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES"
+ ],
+ "notes": []
+}

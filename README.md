@@ -24,6 +24,7 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 - **Table data**: Browse a table, stage row changes, review exact SQL, and apply a batch with stale-row checks. Tables without a supported reliable key remain read-only.
 - **Guarded Operations**: Three-tier write-safety model (Production, Development, Read-only), shared CLI confirmation prompts, and an audited local trail.
 - **Replication and Maintenance**: Monitor replication lag and recovery loops, run upgrade readiness checks, create and verify checksummed dumps, and perform live instance cloning.
+- **Cluster**: See the MariaDB Galera Cluster, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection belongs to: members, roles, state, quorum, flow control and queues, and InnoDB Cluster routers. Read-only.
 - **Database diagram**: Rebuild an ER diagram from the connected database and import or export SQL, Mermaid, editable JSON and SVG.
 - **Users and Roles**: Complete grant matrix supporting global, database, table, column, and routine scopes with batch review.
 - **Agent and CI Ready**: Native Model Context Protocol (MCP) server, token-efficient plan digests, and exit-code validation gates.
@@ -199,6 +200,7 @@ All mutations are logged to a local SQLite database (`~/.myflames/workspace.sqli
 ### 5. Replication, lifecycle, and administration
 
 - **Replication Monitoring and Recovery**: Review channel status, each source's engine and version, GTID sets, and worker lag caveats. Plan a single transaction skip or an error-capped skip loop (`myflames replication skip`).
+- **Cluster status**: Read the cluster the server belongs to: MariaDB Galera Cluster (this node's state; the other nodes are listed without a verdict, because Galera exposes only its own), Percona XtraDB Cluster (every node's state from `performance_schema.pxc_cluster_view`), MySQL InnoDB Cluster and Group Replication (every member's state and role, quorum, failures tolerated, a member missing from the group, and the registered MySQL Routers). Gate CI on it with `myflames cluster --fail-on problem`. It never changes membership or settings.
 - **Upgrade Checking**: Validate compatibility against target versions with MySQL Shell or native checks (`myflames upgrade-check`).
 - **Backup and Restore**: Generate checksummed dumps and perform verified restores (`myflames dump`, `myflames restore`). In Maintenance, choose a folder with the system dialog and review the selected tool's compression, chunking and object options before starting. File encryption requires an encrypted destination or a separate tool.
 - **Local tools**: Open official download pages and check for newer releases with Detect tools or Refresh. Server client checks stay within the installed release series; MySQL Shell checks its latest GA release. Offline checks remain unknown.
@@ -213,13 +215,14 @@ Integrate myflames into automation pipelines and AI tooling. CLI tool discovery 
   ```bash
   myflames check explain.json --fail-on full_scan,filesort
   myflames report --profile prod --fail-on problem -q
+  myflames cluster --profile node1 --fail-on problem -q
   ```
 - **Compact Plan Digests**: Produce token-cheap plan summaries for LLMs:
   ```bash
   myflames digest explain.json
   myflames digest explain.json --cost
   ```
-- **Model Context Protocol (MCP)**: Run the native MCP server to provide read-only diagnostic tools (`analyze_plan`, `server_report`, `top_statements`, `locks_report`) to AI agents over stdio:
+- **Model Context Protocol (MCP)**: Run the native MCP server to provide read-only diagnostic tools (`analyze_plan`, `server_report`, `top_statements`, `locks_report`, `replication_status`, `cluster_status`) to AI agents over stdio:
   ```bash
   pip install 'myflames[mcp]'
   myflames-mcp
@@ -254,6 +257,7 @@ Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
 | `instruments`| `[--preset {minimal,locks,waits,defaults}]` | Review Performance Schema instrumentation and generate setup SQL. |
 | `report` | `[--interval N] [--schema NAME] [--html \| --json \| --markdown]` | Generate a full server analysis report across all diagnostic modules. |
 | `replication`| `[--channel NAME]`; `skip [--yes]`; `skip-loop --errors CODES` | Monitor replica lag and source versions, and manage transaction skip recovery loops. |
+| `cluster` | `[--fail-on {problem,watch}] [--json] [-o PATH] [-q]` | Show the Galera, Percona XtraDB Cluster, InnoDB Cluster or Group Replication cluster the server belongs to (`cluster-1.0`); read-only. |
 | `accounts` | `list`, `show`, `create`, `drop`, `grant`, `revoke`, `role` | Inspect and manage users, roles, passwords, and privileges. |
 | `privileges` | `[--json]` | Report effective permissions and per-action verification status. |
 | `upgrade-check`| `--target-version X.Y.Z [--no-shell]` | Run MySQL Shell upgrade checks or native compatibility checks. |
@@ -273,7 +277,7 @@ Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
 
 | Connection option | Purpose |
 | --- | --- |
-| `--profile NAME_OR_ID` | Use a saved connection for live commands, including capture, sql, top, sessions, report, replication and lifecycle operations. |
+| `--profile NAME_OR_ID` | Use a saved connection for live commands, including capture, sql, top, sessions, report, replication, cluster and lifecycle operations. |
 | `-h HOST`, `-P PORT`, `-u USER`, `-D DATABASE` | Set the server address, port, user and default database. |
 | `-p` | Prompt for a password without putting it on the command line. |
 
@@ -300,6 +304,8 @@ Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs are the origin
 ### Workspace navigation and settings
 
 Home shows the installed version, a release link, and shortcuts to SQL, Server and database diagrams. **Check for updates** in Home's version footer (and in About myflames) asks GitHub for the latest release only when clicked, then shows Up to date, the newer version with **Download…**, or why the check failed, with the time of the last check (kept across restarts; a result older than a day is shown as the last result). Query editor and Plans sit together under SQL workspace. Database diagram includes a Diagram | Mermaid switch that renders the Mermaid ER diagram beside its code. Refresh all reads every Server section, including unopened sections, with bounded concurrency; a view reads when opened on screen (once per connection, while Tables and Indexes keep their schema-size consent and Error log waits for Load).
+
+Cluster is a place of its own, right after Replication. It reads when opened (once per connection; Refresh and Refresh all read again) and shows a summary line, tiles, and the Topology, Members and (for InnoDB Cluster) Routers tabs, with an inspector per member. Once read, a connection that is not part of a cluster greys the sidebar item (it stays clickable and explains why). It is read-only.
 
 Parameters (under Server > Setup) lists every global server parameter in one filterable table modelled on an AWS RDS parameter group. Edit turns supported dynamic and persistable static values into inline controls, Preview changes summarizes staged edits, and Review and apply plans and confirms up to 25 changes in one batch with per-row re-reads and audit records. The inspector also offers Reset to default, single-parameter Change… (including This session only, which opens the statement in the Query editor) and Reset persisted value…. Permission details appear inside the review dialog.
 

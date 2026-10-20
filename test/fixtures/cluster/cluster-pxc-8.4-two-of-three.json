@@ -64,26 +64,6 @@
   "local": "node:fbfa0b80-cc94-11f1-a429-3a43a27786f1",
   "members": [
    {
-    "key": "node:09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
-    "name": "pxc-3",
-    "address": "mf-pxc-3:3306",
-    "host": "mf-pxc-3",
-    "port": 3306,
-    "uuid": "09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
-    "state": "SYNCED",
-    "state_source": "pxc_cluster_view",
-    "role": null,
-    "version": null,
-    "local": false,
-    "status": "ok",
-    "status_why": [
-     "SYNCED: a full member."
-    ],
-    "metrics": {},
-    "pxc_status": "SYNCED",
-    "segment": 0
-   },
-   {
     "key": "node:fbfa0b80-cc94-11f1-a429-3a43a27786f1",
     "name": "pxc-1",
     "address": "mf-pxc-1:3306",
@@ -122,6 +102,26 @@
      "cluster_conf_id": 4,
      "cluster_weight": 2
     },
+    "pxc_status": "SYNCED",
+    "segment": 0
+   },
+   {
+    "key": "node:09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
+    "name": "pxc-3",
+    "address": "mf-pxc-3:3306",
+    "host": "mf-pxc-3",
+    "port": 3306,
+    "uuid": "09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
+    "state": "SYNCED",
+    "state_source": "pxc_cluster_view",
+    "role": null,
+    "version": null,
+    "local": false,
+    "status": "ok",
+    "status_why": [
+     "SYNCED: a full member."
+    ],
+    "metrics": {},
     "pxc_status": "SYNCED",
     "segment": 0
    }

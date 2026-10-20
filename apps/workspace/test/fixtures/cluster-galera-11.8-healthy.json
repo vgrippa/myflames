@@ -1,0 +1,176 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mariadb",
+ "server_version": "11.8.9-MariaDB-ubu2404-log",
+ "version_comment": "mariadb.org binary distribution",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 635,
+ "performance_schema": true,
+ "available": true,
+ "message": null,
+ "kind": "galera",
+ "server": {
+  "hostname": "mf-galera-1",
+  "port": 3306,
+  "report_host": null,
+  "server_uuid": null
+ },
+ "cluster": {
+  "name": "mf_galera",
+  "uuid": "58fabe80-cc92-11f1-baa6-0b645d2f9239",
+  "size": 3,
+  "expected_size": 3,
+  "expected_source": "wsrep_cluster_address",
+  "component": "Primary",
+  "quorum": true,
+  "failures_tolerated": null,
+  "topology": null,
+  "provider": {
+   "name": "Galera",
+   "version": "26.4.27(rf032a460)",
+   "vendor": "Codership Oy <info@codership.com>"
+  }
+ },
+ "status": "ok",
+ "status_why": [
+  "Every judged member is healthy and the cluster has quorum."
+ ],
+ "local": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+ "members": [
+  {
+   "key": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+   "name": "galera-1",
+   "address": "192.168.80.2:0",
+   "host": "192.168.80.2",
+   "port": null,
+   "uuid": "58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+   "state": "Synced",
+   "state_source": "wsrep_local_state_comment",
+   "role": null,
+   "version": null,
+   "local": true,
+   "status": "ok",
+   "status_why": [
+    "Synced: a full member, applying and accepting writes."
+   ],
+   "metrics": {
+    "local_state": 4,
+    "local_state_comment": "Synced",
+    "ready": true,
+    "connected": true,
+    "evs_state": "OPERATIONAL",
+    "local_recv_queue": 0,
+    "local_recv_queue_avg": 0.0769231,
+    "local_send_queue": 0,
+    "local_send_queue_avg": 0,
+    "flow_control_paused": 0,
+    "flow_control_active": false,
+    "flow_control_sent": 0,
+    "flow_control_recv": 0,
+    "cert_deps_distance": 1.33333,
+    "local_cert_failures": 0,
+    "local_bf_aborts": 0,
+    "desync_count": 0,
+    "last_committed": 23,
+    "local_index": 0,
+    "cluster_conf_id": 5,
+    "cluster_weight": 3
+   }
+  },
+  {
+   "key": "node:6ae7b745-cc93-11f1-acf4-070008b6688b",
+   "name": "galera-2",
+   "address": "192.168.80.3:0",
+   "host": "192.168.80.3",
+   "port": null,
+   "uuid": "6ae7b745-cc93-11f1-acf4-070008b6688b",
+   "state": null,
+   "state_source": null,
+   "role": null,
+   "version": null,
+   "local": false,
+   "status": "unknown",
+   "status_why": [
+    "In the component as this node sees it. A node's own state is read on that node: connect to it to judge it."
+   ],
+   "metrics": {}
+  },
+  {
+   "key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+   "name": "galera-3",
+   "address": "192.168.80.4:0",
+   "host": "192.168.80.4",
+   "port": null,
+   "uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+   "state": null,
+   "state_source": null,
+   "role": null,
+   "version": null,
+   "local": false,
+   "status": "unknown",
+   "status_why": [
+    "In the component as this node sees it. A node's own state is read on that node: connect to it to judge it."
+   ],
+   "metrics": {}
+  }
+ ],
+ "galera": {
+  "node_name": "galera-1",
+  "node_address": null,
+  "cluster_address": "gcomm://mf-galera-1,mf-galera-2,mf-galera-3",
+  "incoming_addresses": [
+   "192.168.80.2:0",
+   "192.168.80.3:0",
+   "192.168.80.4:0"
+  ],
+  "gcomm_uuid": "58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+  "desync": "OFF",
+  "pxc_strict_mode": null,
+  "pxc_maint_mode": null,
+  "members_source": "wsrep_cluster_members",
+  "metrics": {
+   "local_state": 4,
+   "local_state_comment": "Synced",
+   "ready": true,
+   "connected": true,
+   "evs_state": "OPERATIONAL",
+   "local_recv_queue": 0,
+   "local_recv_queue_avg": 0.0769231,
+   "local_send_queue": 0,
+   "local_send_queue_avg": 0,
+   "flow_control_paused": 0,
+   "flow_control_active": false,
+   "flow_control_sent": 0,
+   "flow_control_recv": 0,
+   "cert_deps_distance": 1.33333,
+   "local_cert_failures": 0,
+   "local_bf_aborts": 0,
+   "desync_count": 0,
+   "last_committed": 23,
+   "local_index": 0,
+   "cluster_conf_id": 5,
+   "cluster_weight": 3
+  }
+ },
+ "group_replication": null,
+ "metadata": null,
+ "routers": [],
+ "findings": [],
+ "summary": {
+  "members": 3,
+  "ok": 1,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 2
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES",
+  "SHOW GLOBAL STATUS (wsrep_%)",
+  "SELECT mysql.wsrep_cluster_members"
+ ],
+ "notes": [
+  "mysql.wsrep_cluster_members reports port 0 for galera-1, galera-2, galera-3: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
+  "wsrep_flow_control_paused and the queue averages cover the time since the provider statistics were last reset (FLUSH STATUS) or since start.",
+  "Galera exposes only this node's own state: the other nodes are listed as members of the component without a verdict. Connect to a node to judge it."
+ ]
+}

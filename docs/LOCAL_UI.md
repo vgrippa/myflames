@@ -61,6 +61,7 @@ The sidebar separates where you go from what you have open:
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
 | **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O) |
 | **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation |
+| **Cluster** | The MariaDB Galera Cluster, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum and routers. Read-only. Greyed in the sidebar once the connection is known not to be part of a cluster |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
 | **Investigations** | Saved investigations: search, open, delete |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
@@ -84,7 +85,7 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Nothing is read just for a badge. A view reads when it is opened on screen,
   once per connection (Refresh retries); Tables and Indexes keep their
   schema-size consent, Error log waits for **Load**, and nothing reads off
-  screen (Server and Replication mount on their first visit, and a hidden view
+  screen (Server, Replication and Cluster mount on their first visit, and a hidden view
   never reads on its own). The arrow keys move between items.
 - **The list of views floats** by default in a wide window, so the view gets
   the full width: the view's title is a pop-up button ("Health ▾") that opens
@@ -382,6 +383,46 @@ statements, and sends nothing until you confirm again; the server checks it
 once more right before sending. Cancel and Escape are recorded as declined in
 the [Audit log](#audit-log).
 
+**Cluster** (a place of its own, right after Replication) shows the cluster
+the connection in use belongs to: a MariaDB Galera Cluster, a Percona XtraDB
+Cluster, a MySQL InnoDB Cluster, or Group Replication without InnoDB Cluster
+metadata. It only reads, in this release: nothing on it changes membership,
+the primary or a setting. It reads when it is opened on screen, once per
+connection; **Refresh** reads again, and the Server place's **Refresh all**
+reads it too. The summary line names the cluster and its state, four tiles
+show the component (Galera) or quorum and failures tolerated (Group
+Replication), the members, this node or member, and flow control (Galera) or
+the mode (single- or multi-primary). Findings follow, each with its title and reason. The
+header switches between **Topology**, **Members** and, for InnoDB Cluster,
+**Routers**:
+
+- **Topology** is a still picture: one card per member with its role
+  (Primary or Secondary for Group Replication), **This connection** on the
+  member you are connected to, its address, engine and version, its state as a
+  word beside a dot, and its queues (or this node's receive and send queues and
+  flow control on Galera) as text, each joined to one line for the group,
+  labelled with the component or the group mode, quorum and the failures it
+  tolerates. Routers hang below that line. A member that is unreachable,
+  missing from the group, offline or in error has a dashed edge, a cut link
+  and a warning mark beside its state; a member to watch has a heavier left
+  edge. The arrow keys move between cards and Enter opens the inspector.
+- **Members** is a table of every member with its state, role, address,
+  version and counters; **Routers** lists the MySQL Routers registered in the
+  InnoDB Cluster metadata with their ports and last check-in (shown, not
+  judged: MySQL Router writes it periodically, by default every few seconds
+  and never in a ClusterSet).
+
+Members are shown as the connected server sees them. MariaDB Galera exposes
+only its own node's state, so the other nodes read **Not judged here**:
+connect to a node to judge it. Percona XtraDB Cluster names every node's state,
+and Group Replication every member's state and role. A server that is not part
+of a cluster shows a calm **Not part of a cluster** with the reason; from then
+on the sidebar item looks disabled (faint text and icon, tooltip "This
+connection is not part of a cluster") but stays focusable and opens the place.
+Before the first read, and for another connection, it looks like any other
+place. Choosing another connection while Cluster stays on screen greys the old
+report until **Refresh**. The command line twin is `myflames cluster`.
+
 **Maintenance** (Setup, last) has five tasks in a segmented control. **Tools**
 (**Detect tools**) lists the MySQL and MariaDB tools on this computer
 (mysqlsh, mysqldump, mariadb-dump, and the rest) with their versions and what
@@ -446,8 +487,8 @@ and news feeds when shown and turned on), and the credits (Brendan Gregg's
 FlameGraph and Tanel Poder's SQL Plan FlameGraphs). Close is its default button, and in a
 short window its text scrolls while Close stays in view. The
 top bar names the place once (Server and Workload name the view in the view
-header, Plans names the plan in the plan header, and Replication and Tuning,
-one view each, name the place in their view header only) and has one sidebar
+header, Plans names the plan in the plan header, and Replication, Cluster and
+Tuning, one view each, name the place in their view header only) and has one sidebar
 toggle. With plans open it also shows **Save investigation** with **Unsaved
 changes** or **Investigation saved**. The top bar holds no status badge and no
 privileges button: on the places that send to a connection it shows the sidebar
@@ -478,7 +519,7 @@ in a drawer; Escape closes it.
 
 ### Window status bar
 
-Across Plans, the Query editor, Server, Workload, Replication and Tuning, one
+Across Plans, the Query editor, Server, Workload, Replication, Cluster and Tuning, one
 window status bar at the bottom of the viewport shows the state of what is on
 screen. On the places that send to the connection in use it starts with that
 connection's write safety, a dot plus words: **Production** · changes ask
@@ -653,8 +694,8 @@ one of them in the form and it warns that the connection is Production there,
 shows Production, and saves as Production unless you choose Development again.
 **Use** with such edits, before saving, is Production too.
 
-The window footer of the Query editor, Server, Workload, Replication and
-Tuning starts with the write safety of the connection in use: a red dot and
+The window footer of the Query editor, Server, Workload, Replication, Cluster
+and Tuning starts with the write safety of the connection in use: a red dot and
 "Production · changes ask first" (the full sentence, "Production: every change
 on NAME asks first", is its tooltip and accessible name), an outlined dot and
 "Read-only · changes refused", or a green dot and "Development · risky changes

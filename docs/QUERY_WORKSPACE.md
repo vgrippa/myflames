@@ -526,6 +526,7 @@ connection picker as the Query editor. **Server** uses a grouped sub-navigation:
 **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles).
 **Workload** is a place of its own with **Queries** (Top statements, Processlist) and
 **Resources** (Waits, I/O); **Replication** is a place of its own for replication channels;
+**Cluster** is a place of its own for the Galera, Percona XtraDB Cluster or InnoDB Cluster the server belongs to;
 and **Tuning** is a place of its own with the **Scorecard** tab and the **Full analysis** tab.
 Each view in the sub-navigation shows a status dot or a count from data you already loaded. Every view has a toolbar with **Refresh**, one summary
 line with an **N notes** button, a table or one-line rows, and an inspector for
@@ -546,6 +547,12 @@ instruments](#performance-schema-instruments) for Instruments.
   in the inspector are the changes, each confirmed with the exact statements
   and recorded in the Audit log; see [The Server place](LOCAL_UI.md#the-server-place).
   Its badge is the number of failed channels, or the worst status.
+- **Cluster** (a standalone sidebar place after Replication; `POST /api/live/cluster`, the same
+  `cluster-1.0` report as `myflames cluster`) shows the cluster's members with their state and
+  role as this server sees them, quorum, flow control and queues, and InnoDB Cluster routers, in
+  Topology, Members and Routers. Read-only. Once a read says the connection is not part of a
+  cluster, the sidebar item looks disabled but still opens the place; see
+  [The Server place](LOCAL_UI.md#the-server-place).
 - **Maintenance** detects tools, checks an upgrade (MySQL Shell, or a labeled
   partial check), and dumps, restores or clones after a read-only preflight
   and a confirmation (`/api/lifecycle/*`, the same work as `myflames

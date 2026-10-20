@@ -494,7 +494,7 @@ CONSUMER_LITERAL = re.compile(r"\b(global_instrumentation|thread_instrumentation
                               r"events_(?:statements|stages|transactions|waits)_(?:current|history_long|history|cpu))\b")
 TABLE_LITERAL = re.compile(r"performance_schema\.([a-z_]+)")
 VIEW_MODULES = ('discover', 'live', 'locks', 'waits', 'indexes', 'io_stats', 'perf_common', 'config_review', 'health',
-                'report', 'server_checks', 'replication', 'variables', 'error_log')
+                'report', 'server_checks', 'replication', 'variables', 'error_log', 'cluster')
 
 
 class TestReplicationReceiverFeature(unittest.TestCase):

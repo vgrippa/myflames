@@ -299,6 +299,10 @@ TABLES = {
     # Replication (replication.py): filled whenever Performance Schema is on, no instrument or consumer.
     "replication_connection_configuration": (), "replication_connection_status": (),
     "replication_applier_configuration": (), "replication_applier_status_by_worker": (),
+    # Cluster (cluster.py): Group Replication's member tables come from the
+    # plugin and Percona XtraDB Cluster's pxc_cluster_view from the server,
+    # filled whenever Performance Schema is on, no instrument or consumer.
+    "replication_group_members": (), "replication_group_member_stats": (), "pxc_cluster_view": (),
     # Server variables (variables.py): readable with Performance Schema on or off, no instrument or consumer.
     "persisted_variables": (), "variables_metadata": (),
 }

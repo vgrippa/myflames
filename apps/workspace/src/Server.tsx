@@ -112,6 +112,7 @@ import {
   type ReplicationReport,
   type SkipLoop,
 } from "./opsApi";
+import type { ClusterReport } from "./clusterApi";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { ALL_SERVER_VIEWS, SERVER_GROUPS, SERVER_VIEWS, WORKLOAD_GROUPS, WORKLOAD_KINDS, WORKLOAD_VIEWS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
@@ -146,7 +147,7 @@ function focusWhenMounted(id: string) {
 
 /** Names of what Refresh all reads that is not a view in a list: the Full
  * analysis lives in the Tuning place. */
-const READ_LABELS: Partial<Record<ServerKind, string>> = { report: "Full analysis", tuning: "Tuning", replication: "Replication" };
+const READ_LABELS: Partial<Record<ServerKind, string>> = { report: "Full analysis", tuning: "Tuning", replication: "Replication", cluster: "Cluster" };
 
 /** Below this width the sub-navigation becomes a screen of its own. */
 const COMPACT_WIDTH = 720;
@@ -270,6 +271,8 @@ export function Server({
   onReplicationLoops: propOnReplicationLoops,
   replication: propReplication,
   onReplication: propOnReplication,
+  cluster: propCluster,
+  onCluster: propOnCluster,
 }: {
   /** The place on screen (or shown last, while another place is): Server and
    * Workload list their views; Tuning shows its one view, full width. */
@@ -277,7 +280,7 @@ export function Server({
   /** The place is on screen (not hidden behind another place). Views read on
    * open only while it is (viewOnScreen.ts). */
   onScreen?: boolean;
-  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "replication", view: ServerKind) => void;
+  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "replication" | "cluster", view: ServerKind) => void;
   /** Command palette navigation: changes the visible view without reading it. */
   navigation?: { view: ServerKind; n: number };
   /** The list of views floats (opened from the view's title) instead of
@@ -314,12 +317,17 @@ export function Server({
    * replication once and the place shows that answer. */
   replication?: Bound<ReplicationReport> | null;
   onReplication?: (report: Bound<ReplicationReport>) => void;
+  /** The Cluster place's report, owned by the shell like Replication's:
+   * Refresh all reads it, and the sidebar learns when the connection in use
+   * is not part of a cluster. */
+  cluster?: Bound<ClusterReport> | null;
+  onCluster?: (report: Bound<ClusterReport>) => void;
 }) {
   // Tuning (with its Full analysis tab) is a place of its own, never a view
   // chosen inside Server: an earlier session that saved either as the Server
   // view opens Health there.
   const [serverSelectedKind, setServerSelectedKind] = useState<ServerKind>(() => {
-    return initial?.kind && !WORKLOAD_KINDS.includes(initial.kind) && !["tuning", "report", "replication"].includes(initial.kind) ? initial.kind : "health";
+    return initial?.kind && !WORKLOAD_KINDS.includes(initial.kind) && !["tuning", "report", "replication", "cluster"].includes(initial.kind) ? initial.kind : "health";
   });
   const [workloadSelectedKind, setWorkloadSelectedKind] = useState<ServerKind>(() => {
     return initial?.kind && WORKLOAD_KINDS.includes(initial.kind) ? initial.kind : "top";
@@ -443,6 +451,15 @@ export function Server({
     },
     [propOnReplication],
   );
+  const [localCluster, setLocalCluster] = useState<Bound<ClusterReport> | null>(null);
+  const cluster = propCluster !== undefined ? propCluster : localCluster;
+  const setCluster = useCallback(
+    (report: Bound<ClusterReport>) => {
+      setLocalCluster(report);
+      propOnCluster?.(report);
+    },
+    [propOnCluster],
+  );
   const setReplicationLoops = useCallback(
     (loops: Bound<SkipLoop[]>) => {
       setLocalReplicationLoops(loops);
@@ -472,7 +489,7 @@ export function Server({
   const [lastRead, setLastRead] = useState<{ key: string; at?: number; engineVersion?: string }>({ key: activeKey });
   useEffect(() => {
     const reports = [health.report ? { key: health.key, report: health.report } : null,
-      innodb, errorlog, sessions, waits, io, locks, indexes, tables, config, instruments, replication,
+      innodb, errorlog, sessions, waits, io, locks, indexes, tables, config, instruments, replication, cluster,
       maintenance.tools, maintenance.upgrade, analysis, topStatements.top];
     let at: number | undefined;
     let engineVersion: string | undefined;
@@ -495,7 +512,7 @@ export function Server({
     setLastRead((old) => old.key === activeKey && old.at === at && old.engineVersion === engineVersion
       ? old : { key: activeKey, at, engineVersion });
   }, [activeKey, health.report, health.key, innodb, errorlog, sessions, waits, io, locks, indexes, tables,
-    config, instruments, replication, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
+    config, instruments, replication, cluster, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
 
   // Links between views.
   const [instrumentsTarget, setInstrumentsTarget] = useState<{ row: string; n: number } | null>(null);
@@ -513,6 +530,7 @@ export function Server({
     top: topStatements.top?.key || "",
     sessions: sessions?.key || "",
     replication: replication?.key || "",
+    cluster: cluster?.key || "",
     waits: waits?.key || "",
     io: io?.key || "",
     locks: locks?.key || "",
@@ -600,8 +618,8 @@ export function Server({
   /** Choose a view from the list (narrow layouts push it on screen). Tuning
    * has one home, its own place: a route to it goes there. */
   function choose(view: ServerKind) {
-    if (view === "replication") {
-      onNavigatePlace?.("replication", "replication");
+    if (view === "replication" || view === "cluster") {
+      onNavigatePlace?.(view, view);
       return;
     }
     if (view === "tuning" || view === "report") {
@@ -800,6 +818,7 @@ export function Server({
       top: topStatements.top?.report,
       sessions: sessions?.report,
       replication: replication?.report,
+      cluster: cluster?.report,
       waits: waits?.report,
       io: io?.report,
       locks: locks?.report,
@@ -919,6 +938,9 @@ export function Server({
     // views; loop starts, preflights, jobs and the upgrade check never run in
     // Refresh all.
     add("replication", "replication", "live/replication", (c) => ({ connection: c }), (b) => setReplication(b as Bound<ReplicationReport>));
+    // The Cluster place's status (read-only); it also tells the sidebar when
+    // the connection in use is not part of a cluster.
+    add("cluster", "cluster", "live/cluster", (c) => ({ connection: c }), (b) => setCluster(b as Bound<ClusterReport>));
     add("maintenance", "maintenance-tools", "lifecycle/tools", (c) => ({ connection: c }), (b) =>
         setMaintenance((m) => ({ ...m, tools: b as Bound<LifecycleTools> })),
       );
@@ -1469,6 +1491,7 @@ export function Server({
       // switching views and keeps its polls and control paths. Replication
       // is its own place (choose() routes there).
       case "replication":
+      case "cluster":
       case "maintenance":
       case "tables":
       case "instruments":

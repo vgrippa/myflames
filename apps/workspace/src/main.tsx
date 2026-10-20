@@ -30,7 +30,8 @@ import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import type { ReplicationReport, SkipLoop } from "./opsApi";
-import { WindowStatusBar, WindowStatusProvider } from "./kit";
+import { clusterNav, NOT_A_CLUSTER, type ClusterReport } from "./clusterApi";
+import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { PLACES, Sidebar, type Place } from "./Sidebar";
 import {
@@ -80,6 +81,7 @@ const QueryLab = lazyComponent(() => import("./QueryLab").then((m) => m.QueryLab
 void QueryLab.preload().catch(() => {});
 const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
+const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
 const Library = lazyComponent(() => import("./Library").then((m) => m.Library));
 const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
 const PlanChart = lazyComponent(() => import("./PlanChart").then((m) => m.PlanChart));
@@ -102,8 +104,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "server" | "workload" | "replication" | "tuning" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "workload", "replication", "tuning", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "server" | "workload" | "replication" | "cluster" | "tuning" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "workload", "replication", "cluster", "tuning", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -125,6 +127,7 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   server: "server",
   workload: "workload",
   replication: "replication",
+  cluster: "cluster",
   tuning: "tuning",
   investigations: "library",
   learn: "teach",
@@ -273,6 +276,14 @@ function App() {
   const replicationReport = replicationShared.reset === resetKey ? replicationShared.report : null;
   const shareReplication = useCallback(
     (report: Bound<ReplicationReport>) => setReplicationShared({ reset: resetKeyRef.current, report }),
+    [],
+  );
+  // The Cluster place's report, shared the same way: Server's Refresh all
+  // reads it too, and the sidebar names its state from it.
+  const [clusterShared, setClusterShared] = useState<{ reset: number; report: Bound<ClusterReport> | null }>({ reset: 0, report: null });
+  const clusterReport = clusterShared.reset === resetKey ? clusterShared.report : null;
+  const shareCluster = useCallback(
+    (report: Bound<ClusterReport>) => setClusterShared({ reset: resetKeyRef.current, report }),
     [],
   );
   const [labInitial, setLabInitial] = useState<LabState | undefined>();
@@ -1294,9 +1305,19 @@ function App() {
     [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known],
   );
   const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
+  // The Cluster item names the state of the connection in use once the place
+  // or Refresh all has read it: muted when it is not part of a cluster (still
+  // focusable; the place explains), otherwise the cluster's status. Before
+  // the first read it looks like any other place.
+  const clusterState = clusterNav(clusterReport, connectionKey(request));
+  const clusterMuted = clusterState.state === "none";
+  const clusterBadge = clusterState.state !== "cluster" ? null
+    : clusterState.status === "problem" && clusterState.problems > 0
+      ? <NavMarker compact tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
+      : <NavMarker tone={clusterState.status} text={clusterState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
-  const connectionPlace = mode === "query" || mode === "server" || mode === "workload" || mode === "replication" || mode === "tuning";
+  const connectionPlace = mode === "query" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "tuning";
   // Server renders Server, Workload and Tuning. While another place is on
   // screen it keeps the one shown last, so leaving it never swaps (and
   // mounts) a different view in the hidden place.
@@ -1309,10 +1330,12 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
+  if (ready && mode === "cluster") visited.current.cluster = true;
+  const mountCluster = visited.current.cluster;
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
@@ -1320,7 +1343,7 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, PlanChart, ContextPanel]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, PlanChart, ContextPanel]);
   }, [ready]);
   // Replication's "How to turn it on" opens Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -1446,7 +1469,7 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "server" || mode === "workload" || mode === "replication" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -1497,6 +1520,7 @@ function App() {
     { id: "place-server", label: "Server", group: "Places", icon: "server", keywords: "database status", run: () => go("server") },
     { id: "place-workload", label: "Workload", group: "Places", icon: "statements", keywords: "queries top processes waits io", run: () => go("workload") },
     { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
+    { id: "place-cluster", label: "Cluster", group: "Places", icon: "cluster", keywords: "galera percona xtradb pxc innodb cluster group replication wsrep members quorum router", run: () => go("cluster") },
     { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
     { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
     { id: "place-plans", label: "Plans", group: "Places", icon: "plan", keywords: "explain analyze flame graph visual explain", run: () => go("plans") },
@@ -1550,7 +1574,8 @@ function App() {
         onRemovePlan={removePlan}
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
-        placeBadges={{ replication: replicationBadge }}
+        placeBadges={{ replication: replicationBadge, cluster: clusterBadge }}
+        placeMuted={clusterMuted ? { cluster: NOT_A_CLUSTER } : undefined}
       />
       <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
@@ -1563,7 +1588,7 @@ function App() {
                 document in the plan header. Replication and Tuning are one
                 view whose header already says the place name, so it stays
                 here for assistive technology only. */}
-            <strong className={mode === "replication" || mode === "tuning" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+            <strong className={mode === "replication" || mode === "cluster" || mode === "tuning" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
           {ready && (mode === "inspect" || mode === "compare") && (
             <div className={`plans-bar${mode === "inspect" && active ? " has-active-plan" : ""}`}>
@@ -1641,6 +1666,7 @@ function App() {
             mode === "server" ||
             mode === "workload" ||
             mode === "replication" ||
+            mode === "cluster" ||
             mode === "tuning" ||
             mode === "query" ||
             mode === "audit" ||
@@ -1836,8 +1862,8 @@ function App() {
                 onScreen={serverOnScreen}
                 onNavigatePlace={(targetPlace, targetView) => {
                   go(targetPlace);
-                  // Tuning and Replication show their one view; Server and Workload choose theirs.
-                  if (targetPlace !== "tuning" && targetPlace !== "replication") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
+                  // Tuning, Replication and Cluster show their one view; Server and Workload choose theirs.
+                  if (targetPlace !== "tuning" && targetPlace !== "replication" && targetPlace !== "cluster") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
                 }}
                 navCollapsed={serverNavCollapsed}
                 onToggleNavCollapsed={toggleServerNavCollapsed}
@@ -1856,6 +1882,8 @@ function App() {
                 onReplicationLoops={setReplicationLoops}
                 replication={replicationReport}
                 onReplication={shareReplication}
+                cluster={clusterReport}
+                onCluster={shareCluster}
                 onDigest={openDigest}
                 onShowPlan={showPlan}
                 onAddPlan={addPlan}
@@ -1902,6 +1930,13 @@ function App() {
                 />
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountCluster && (
+            <div hidden={mode !== "cluster"}>
+              <ViewOnScreenContext.Provider value={mode === "cluster"}>
+                <ClusterPlace connection={request} disabled={labBusy} report={clusterReport} onReport={shareCluster} />
+              </ViewOnScreenContext.Provider>
             </div>
           )}
           {ready && mode === "library" && <Library onOpen={openBundle} />}

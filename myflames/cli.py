@@ -953,7 +953,7 @@ def main():
             return
         if sys.argv[1] in ("capture", "explore", "top", "sessions", "running", "locks", "innodb", "error-log", "health",
                            "waits", "indexes", "tables", "io", "config", "instruments", "report", "profiles",
-                           "audit", "replication"):
+                           "audit", "replication", "cluster"):
             from . import workspace_cli
             command = getattr(workspace_cli, "cmd_" + sys.argv[1].replace("-", "_"))
             command(sys.argv[2:])
@@ -1028,6 +1028,7 @@ Examples:
   myflames instruments -h localhost -u admin -p --preset minimal # P_S setup SQL to run
   myflames report -h localhost -u admin -p --html -o report.html # full analysis of the server
   myflames replication --profile replica                # channels, lag caveats, skip plans
+  myflames cluster --profile node1 --fail-on problem    # Galera, PXC, InnoDB Cluster, Group Replication
   myflames upgrade-check -h localhost -u admin -p --target-version 8.4.0 # before an upgrade
   myflames dump /backups/shop -h localhost -u admin -p --schema shop # dump with a verified manifest
   myflames restore /backups/shop -h staging -u admin -p # restore after typing the target
@@ -1075,6 +1076,7 @@ Subcommands:
   instruments  Performance Schema instruments/consumers: gain, cost, SQL to run (--preset)
   report    Full analysis: every Server view once, ranked findings, sections (--html, --fail-on)
   replication  Replication channels and lag; skip one failed transaction; skip-loop until stopped
+  cluster   Galera, Percona XtraDB Cluster, InnoDB Cluster or Group Replication members (--fail-on)
   upgrade-check  Check a MySQL server before an upgrade (MySQL Shell, else a partial native subset)
   dump      Dump databases into a new directory with a verified manifest (mysqlsh, mysqldump, mariadb-dump)
   restore   Restore a myflames dump after typing the target; verify objects and row counts

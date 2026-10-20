@@ -375,6 +375,18 @@ def replication_status_tool(profile: str, detail: str = "core") -> object:
                         lambda r: _text_with_notes(replication.format_text, r))
 
 
+def cluster_status_tool(profile: str, detail: str = "core") -> object:
+    """Read-only cluster status (Galera, Percona XtraDB Cluster, InnoDB Cluster, Group Replication); never changes membership.
+
+    profile is a saved workspace connection name or ID; its saved password is
+    resolved locally. detail="core" returns compact text; detail="full" returns
+    the complete module JSON report. No password or SQL arguments are accepted.
+    """
+    from . import cluster
+    return _server_read(profile, detail, cluster.read_status,
+                        lambda r: _text_with_notes(cluster.format_text, r))
+
+
 # ---------------------------------------------------------------------------
 # MCP transport (optional — imports `mcp` lazily)
 # ---------------------------------------------------------------------------
@@ -478,6 +490,7 @@ def build_server():
         ("innodb_status", innodb_status_tool),
         ("my_privileges", my_privileges_tool),
         ("replication_status", replication_status_tool),
+        ("cluster_status", cluster_status_tool),
     ):
         server.tool(name=name)(tool)
 

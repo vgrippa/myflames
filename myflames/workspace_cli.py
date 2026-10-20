@@ -1445,6 +1445,46 @@ def cmd_replication(argv):
     _emit_report(args, report, format_text)
 
 
+def cmd_cluster(argv):
+    """Cluster status: Galera, Percona XtraDB Cluster, InnoDB Cluster, Group Replication."""
+    from .cluster import at_or_worse, format_text, read_status
+    parser = _discover_parser(
+        'cluster', 'Show the cluster this server belongs to: MariaDB Galera, Percona XtraDB Cluster, MySQL '
+                   'InnoDB Cluster or Group Replication. Name, quorum or Primary component, every member with '
+                   'its address, state and role as this server sees it, flow control and queues, InnoDB Cluster '
+                   'routers, and ok/watch/problem with the reasons.',
+        'Read-only: SHOW GLOBAL VARIABLES and SHOW GLOBAL STATUS (wsrep_%), mysql.wsrep_cluster_members, '
+        'performance_schema.pxc_cluster_view on Percona XtraDB Cluster, '
+        'performance_schema.replication_group_members and replication_group_member_stats on MySQL 8.0+, and '
+        'the mysql_innodb_cluster_metadata views when they are readable. MariaDB Galera shows only this '
+        'node\'s own state, so the other nodes are listed without a verdict; Percona XtraDB Cluster names '
+        'every node\'s state. Never changes membership or settings. A server that is not part of a cluster '
+        'says so and exits 0. '
+        'Exit codes: 0 success (nothing at the --fail-on level), 1 a finding reached the --fail-on level, '
+        '2 bad input, missing privilege, or connection failure.')
+    parser.add_argument('--fail-on', choices=('problem', 'watch'), metavar='LEVEL',
+                        help="Exit 1 if any finding is at LEVEL or worse: 'problem', or 'watch' (watch or problem).")
+    _add_output_args(parser, 'the cluster-1.0 report')
+    args = parser.parse_args(argv)
+    report = _discover_run(args, read_status, query_timeout=30)
+    if not report['available']:
+        if args.json:
+            _emit_report(args, report, format_text)
+        _fail(report['message'])
+    _emit_report(args, report, format_text)
+    if args.fail_on:
+        tripped = at_or_worse(report, args.fail_on)
+        if not args.quiet:
+            if tripped:
+                sys.stderr.write('FAIL: %d finding(s) at --fail-on %s or worse:\n' % (len(tripped), args.fail_on))
+                for item in tripped:
+                    sys.stderr.write(terminal_text('  [%s] %s: %s\n' % (item['status'], item['title'], item['text'])))
+            else:
+                sys.stderr.write('OK: no finding at --fail-on %s\n' % args.fail_on)
+        if tripped:
+            raise SystemExit(1)
+
+
 def _replication_skip(argv):
     from .replication import (OPERATION_SKIP, SKIP_SCHEMA_VERSION, SKIP_TAG, describe_plan, format_skip,
                               read_status, skip_one)

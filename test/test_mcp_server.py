@@ -275,7 +275,7 @@ class TestServerWrapper(unittest.TestCase):
 
 
 NEW_TOOLS = ("server_report", "top_statements", "sessions", "locks_report", "health_sample",
-             "innodb_status", "my_privileges", "replication_status")
+             "innodb_status", "my_privileges", "replication_status", "cluster_status")
 
 
 class FakeMCP(object):
@@ -326,6 +326,10 @@ def fixture_connection(tool, maria=False):
         if view == "report":
             patches.append(mock.patch.object(report, "analysis_report", partial(
                 report.analysis_report, workers=1, sleep=clock.sleep, clock=clock.monotonic)))
+    elif tool == "cluster_status":
+        # Live recordings: MariaDB Galera and MySQL InnoDB Cluster.
+        from _cluster_fixtures import recorded
+        conn = recorded("galera-11.8-healthy" if maria else "ic-8.4-healthy")[0]
     elif tool == "health_sample":
         from test_health import conn_for
         conn = conn_for(version, clock=clock)
@@ -402,7 +406,8 @@ class TestServerReadTools(unittest.TestCase):
     def test_every_tool_digest_and_full_on_both_engines(self):
         schemas = {"server_report": "report-1.0", "top_statements": "top-1.0", "sessions": "sessions-1.0",
                    "locks_report": "locks-1.1", "health_sample": "health-1.0", "innodb_status": "innodb-1.0",
-                   "my_privileges": "privileges-1.0", "replication_status": "replication-1.0"}
+                   "my_privileges": "privileges-1.0", "replication_status": "replication-1.0",
+                   "cluster_status": "cluster-1.0"}
         for tool in NEW_TOOLS:
             for maria in (False, True):
                 with self.subTest(tool=tool, maria=maria):
@@ -454,7 +459,7 @@ class TestServerReadTools(unittest.TestCase):
             expected = {"server_report": "analysis_report", "top_statements": "top_report",
                         "sessions": "sessions_report", "locks_report": "lock_report", "health_sample": "health_report",
                         "innodb_status": "innodb_report", "my_privileges": "read_privileges",
-                        "replication_status": "read_status"}
+                        "replication_status": "read_status", "cluster_status": "read_status"}
             forbidden = {"kill_session", "kill_cli", "skip_one", "plan_skip", "SkipLoop", "run", "execute",
                          "apply", "dump", "restore", "clone", "set_variable"}
             for name in NEW_TOOLS:

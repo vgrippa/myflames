@@ -17,8 +17,15 @@ export function CommandPalette({ commands, onClose }: { commands: WorkspaceComma
   const input = useRef<HTMLInputElement>(null);
   const listId = useId();
   const words = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+  // Commands whose label holds every word come first ("innodb" opens the
+  // InnoDB view before the Cluster place, which only has it as a keyword);
+  // otherwise the order stays as declared.
+  const labelMatch = (command: WorkspaceCommand) => words.every(word => command.label.toLocaleLowerCase().includes(word));
   const matches = commands.filter(command => words.every(word =>
-    `${command.label} ${command.group} ${command.keywords || ""}`.toLocaleLowerCase().includes(word)));
+    `${command.label} ${command.group} ${command.keywords || ""}`.toLocaleLowerCase().includes(word)))
+    .map((command, order) => ({ command, order, rank: labelMatch(command) ? 0 : 1 }))
+    .sort((a, b) => a.rank - b.rank || a.order - b.order)
+    .map(({ command }) => command);
   const index = Math.min(selected, Math.max(0, matches.length - 1));
   useFocusScope(dialog, { open: true, onClose, initialFocus: () => input.current });
   useEffect(() => { document.getElementById(`${listId}-${index}`)?.scrollIntoView({ block: "nearest" }); }, [index, listId, query]);

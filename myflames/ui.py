@@ -52,7 +52,7 @@ def _operators(root):
 
 def _discover_response(path, payload):
     """Read-only server views over the saved connection (see discover.py,
-    sessions.py, innodb_status.py, error_log.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
+    sessions.py, innodb_status.py, error_log.py, cluster.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
     config_review.py; the schema picker's list is perf_common.schema_catalog)."""
     from .live import connection_options
     from .connector import MySQLConnection
@@ -65,7 +65,7 @@ def _discover_response(path, payload):
     elif path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # A server-wide information_schema.STATISTICS read is slow on MariaDB.
         options["query_timeout"] = 60
-    elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log"):
+    elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster"):
         options["query_timeout"] = 30
     if path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # schemas: a list (the picker), or the older single schema; none means
@@ -104,6 +104,9 @@ def _discover_response(path, payload):
             if path == "/api/live/error-log":
                 from .error_log import DEFAULT_LIMIT, error_log_report
                 return error_log_report(conn, limit=payload.get("limit", DEFAULT_LIMIT), levels=payload.get("levels"))
+            if path == "/api/live/cluster":
+                from .cluster import read_status
+                return read_status(conn)
             if path == "/api/live/locks":
                 from .locks import lock_report
                 return lock_report(conn, payload.get("limit", 500),
@@ -1025,7 +1028,7 @@ def _replication_response(path, payload, workspace):
 # so a remembered password is filled in on the server, for that request only.
 #: Read-only live server views answered by _discover_response.
 _SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-queries", "/api/live/running", "/api/live/sessions", "/api/live/locks",
-                      "/api/live/innodb", "/api/live/error-log", "/api/live/health",
+                      "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/health",
                       "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
                       "/api/live/io", "/api/live/config", "/api/live/instruments",
                       "/api/live/report", "/api/live/explain-connection")
@@ -1906,7 +1909,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/profiles/forget-password",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
                              "/api/live/top", "/api/live/slow-queries", "/api/live/running", "/api/live/sessions",
-                             "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/kill", "/api/live/kill/prepare",
+                             "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/kill", "/api/live/kill/prepare",
                              "/api/live/kill/bulk", "/api/live/kill/bulk/prepare",
                              "/api/live/table-columns",
                              "/api/live/health", "/api/live/waits", "/api/live/indexes",

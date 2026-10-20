@@ -256,7 +256,7 @@
    "SELECT mysql_innodb_cluster_metadata.v2_gr_clusters, v2_instances, v2_routers"
   ],
   "notes": [
-   "Queue lengths are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
+   "Queue lengths and rows validating are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
   ]
  }
 }
