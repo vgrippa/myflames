@@ -392,7 +392,8 @@ class LifecycleConnection(MySQLConnection):
             error = ConnectorError(dbops.redact(raw, self.password))
             error.server_error_code = dbops.error_code(raw)
             raise error
-        return proc.stdout.decode('utf-8', 'replace')
+        from .connector import _client_text
+        return _client_text(proc.stdout)
 
 
 def _verification(check, status, reason, **extra):
