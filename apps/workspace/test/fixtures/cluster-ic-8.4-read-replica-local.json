@@ -1,0 +1,196 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "version_comment": "MySQL Community Server - GPL",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 3600,
+ "performance_schema": true,
+ "available": true,
+ "message": null,
+ "kind": "innodb_cluster",
+ "server": {
+  "hostname": "mf-rr-1",
+  "port": 3306,
+  "report_host": "mf-rr-1",
+  "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+ },
+ "cluster": {
+  "name": "mfcluster",
+  "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "size": null,
+  "expected_size": 3,
+  "expected_source": "mysql_innodb_cluster_metadata",
+  "component": null,
+  "quorum": null,
+  "failures_tolerated": null,
+  "topology": "single_primary",
+  "provider": null
+ },
+ "status": "ok",
+ "status_why": [
+  "Every judged member is healthy and the cluster has quorum."
+ ],
+ "local": "member:44444444-4444-11f0-8a00-0242ac130005",
+ "members": [
+  {
+   "key": "member:11111111-1111-11f0-8a00-0242ac130002",
+   "name": "mf-ic-1:3306",
+   "address": "mf-ic-1:3306",
+   "host": "mf-ic-1",
+   "port": 3306,
+   "uuid": "11111111-1111-11f0-8a00-0242ac130002",
+   "state": null,
+   "state_source": "metadata",
+   "role": null,
+   "version": null,
+   "local": false,
+   "status": "unknown",
+   "status_why": [
+    "In the InnoDB Cluster metadata (this read replica's replicated copy). A read replica is not in the group, so it cannot see the members' states: connect to a group member to judge them."
+   ],
+   "metrics": {},
+   "in_metadata": true
+  },
+  {
+   "key": "member:22222222-2222-11f0-8a00-0242ac130003",
+   "name": "mf-ic-2:3306",
+   "address": "mf-ic-2:3306",
+   "host": "mf-ic-2",
+   "port": 3306,
+   "uuid": "22222222-2222-11f0-8a00-0242ac130003",
+   "state": null,
+   "state_source": "metadata",
+   "role": null,
+   "version": null,
+   "local": false,
+   "status": "unknown",
+   "status_why": [
+    "In the InnoDB Cluster metadata (this read replica's replicated copy). A read replica is not in the group, so it cannot see the members' states: connect to a group member to judge them."
+   ],
+   "metrics": {},
+   "in_metadata": true
+  },
+  {
+   "key": "member:33333333-3333-11f0-8a00-0242ac130004",
+   "name": "mf-ic-3:3306",
+   "address": "mf-ic-3:3306",
+   "host": "mf-ic-3",
+   "port": 3306,
+   "uuid": "33333333-3333-11f0-8a00-0242ac130004",
+   "state": null,
+   "state_source": "metadata",
+   "role": null,
+   "version": null,
+   "local": false,
+   "status": "unknown",
+   "status_why": [
+    "In the InnoDB Cluster metadata (this read replica's replicated copy). A read replica is not in the group, so it cannot see the members' states: connect to a group member to judge them."
+   ],
+   "metrics": {},
+   "in_metadata": true
+  },
+  {
+   "key": "member:44444444-4444-11f0-8a00-0242ac130005",
+   "name": "mf-rr-1:3306",
+   "address": "mf-rr-1:3306",
+   "host": "mf-rr-1",
+   "port": 3306,
+   "uuid": "44444444-4444-11f0-8a00-0242ac130005",
+   "state": "Replicating",
+   "state_source": "replication_channel",
+   "role": "READ_REPLICA",
+   "version": null,
+   "local": true,
+   "status": "ok",
+   "status_why": [
+    "Replicating from the cluster over the read_replica_replication channel (receiver and applier ON)."
+   ],
+   "metrics": {
+    "receiver_state": "ON",
+    "applier_state": "ON",
+    "last_error_number": 0
+   },
+   "in_metadata": true,
+   "instance_type": "read-replica"
+  }
+ ],
+ "galera": null,
+ "group_replication": null,
+ "metadata": {
+  "available": true,
+  "schema_version": "2.3.0",
+  "cluster_id": "cid-1",
+  "cluster_name": "mfcluster",
+  "primary_mode": "pm",
+  "instances": [
+   {
+    "label": "mf-ic-1:3306",
+    "server_uuid": "11111111-1111-11f0-8a00-0242ac130002",
+    "address": "mf-ic-1:3306",
+    "endpoint": "mf-ic-1:3306",
+    "instance_type": "group-member"
+   },
+   {
+    "label": "mf-ic-2:3306",
+    "server_uuid": "22222222-2222-11f0-8a00-0242ac130003",
+    "address": "mf-ic-2:3306",
+    "endpoint": "mf-ic-2:3306",
+    "instance_type": "group-member"
+   },
+   {
+    "label": "mf-ic-3:3306",
+    "server_uuid": "33333333-3333-11f0-8a00-0242ac130004",
+    "address": "mf-ic-3:3306",
+    "endpoint": "mf-ic-3:3306",
+    "instance_type": "group-member"
+   },
+   {
+    "label": "mf-rr-1:3306",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005",
+    "address": "mf-rr-1:3306",
+    "endpoint": "mf-rr-1:3306",
+    "instance_type": "read-replica"
+   }
+  ],
+  "reason": null,
+  "local_copy": "read_replica"
+ },
+ "routers": [
+  {
+   "id": 1,
+   "name": null,
+   "product": "MySQL Router",
+   "address": "mf-ic-router",
+   "version": "8.4.10",
+   "last_check_in": "2026-10-20 12:00:00",
+   "last_check_in_age_s": 120,
+   "last_check_in_utc": "2026-10-20T12:00:00Z",
+   "from_local_copy": false,
+   "ports": {
+    "RWEndpoint": "6446",
+    "ROEndpoint": "6447",
+    "RWSplitEndpoint": "6450",
+    "RWXEndpoint": "6448",
+    "ROXEndpoint": "6449"
+   }
+  }
+ ],
+ "findings": [],
+ "summary": {
+  "members": 4,
+  "ok": 1,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 3
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES",
+  "SELECT performance_schema.replication_group_members",
+  "SELECT mysql_innodb_cluster_metadata.v2_gr_clusters, v2_instances, v2_routers",
+  "SELECT performance_schema.replication_connection_status, replication_applier_status (read_replica_replication)"
+ ],
+ "notes": [
+  "This server is a read replica of the InnoDB Cluster: it replicates asynchronously over the read_replica_replication channel and is not a group member, so the group's quorum and members are not visible here. The metadata read here is its replicated copy."
+ ]
+}

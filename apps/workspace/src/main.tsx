@@ -30,7 +30,7 @@ import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import type { ReplicationReport, SkipLoop } from "./opsApi";
-import { clusterNav, NOT_A_CLUSTER, type ClusterReport } from "./clusterApi";
+import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { PLACES, Sidebar, type Place } from "./Sidebar";
@@ -280,10 +280,21 @@ function App() {
   );
   // The Cluster place's report, shared the same way: Server's Refresh all
   // reads it too, and the sidebar names its state from it.
-  const [clusterShared, setClusterShared] = useState<{ reset: number; report: Bound<ClusterReport> | null }>({ reset: 0, report: null });
+  // A failed read (the place's Refresh or Refresh all) is kept with the
+  // report it failed over, so that report shows as the last one, greyed,
+  // until a read succeeds through either path.
+  const [clusterShared, setClusterShared] = useState<{ reset: number; report: Bound<ClusterReport> | null; failure?: ClusterFailure }>({ reset: 0, report: null });
   const clusterReport = clusterShared.reset === resetKey ? clusterShared.report : null;
+  const clusterFailure = clusterShared.reset === resetKey ? clusterShared.failure || null : null;
   const shareCluster = useCallback(
     (report: Bound<ClusterReport>) => setClusterShared({ reset: resetKeyRef.current, report }),
+    [],
+  );
+  const failCluster = useCallback(
+    (key: string, message: string) => setClusterShared((s) => {
+      const report = s.reset === resetKeyRef.current ? s.report : null;
+      return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
+    }),
     [],
   );
   const [labInitial, setLabInitial] = useState<LabState | undefined>();
@@ -1311,10 +1322,12 @@ function App() {
   // the first read it looks like any other place.
   const clusterState = clusterNav(clusterReport, connectionKey(request));
   const clusterMuted = clusterState.state === "none";
+  // The word stays visible beside the shape (a triangle for Problem, cluster place shapes), never "● 1" alone.
   const clusterBadge = clusterState.state !== "cluster" ? null
     : clusterState.status === "problem" && clusterState.problems > 0
-      ? <NavMarker compact tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
-      : <NavMarker tone={clusterState.status} text={clusterState.text} />;
+      ? <NavMarker tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
+      // Not judged (an account that cannot read): no marker word of its own; the place says why.
+      : <NavMarker tone={clusterState.status === "unknown" ? undefined : clusterState.status} text={clusterState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
   const connectionPlace = mode === "query" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "tuning";
@@ -1884,6 +1897,7 @@ function App() {
                 onReplication={shareReplication}
                 cluster={clusterReport}
                 onCluster={shareCluster}
+                onClusterFailed={failCluster}
                 onDigest={openDigest}
                 onShowPlan={showPlan}
                 onAddPlan={addPlan}
@@ -1935,7 +1949,8 @@ function App() {
           {ready && mountCluster && (
             <div hidden={mode !== "cluster"}>
               <ViewOnScreenContext.Provider value={mode === "cluster"}>
-                <ClusterPlace connection={request} disabled={labBusy} report={clusterReport} onReport={shareCluster} />
+                <ClusterPlace connection={request} disabled={labBusy} report={clusterReport} onReport={shareCluster}
+                  failure={clusterFailure} onFailure={failCluster} />
               </ViewOnScreenContext.Provider>
             </div>
           )}

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://myflames.dev/schemas/cluster-1.0.json",
   "title": "myflames cluster status 1.0",
-  "description": "The Cluster place's report (myflames/cluster.py:read_status), emitted by `myflames cluster --json`, POST /api/live/cluster and the MCP tool cluster_status (detail=full). The cluster the connected server belongs to: MariaDB Galera, Percona XtraDB Cluster, MySQL InnoDB Cluster, or Group Replication without InnoDB Cluster metadata; kind 'none' when it is none of them. Read-only. Members are as the connected server sees them: MariaDB Galera exposes only its own state, so another Galera node has state null and status 'unknown' (never a guessed state); on Percona XtraDB Cluster performance_schema.pxc_cluster_view names every other node's state. Additive optional fields keep 1.x; renamed or removed fields bump the major version.",
+  "description": "The Cluster place's report (myflames/cluster.py:read_status), emitted by `myflames cluster --json`, POST /api/live/cluster and the MCP tool cluster_status (detail=full). The cluster the connected server belongs to: MariaDB Galera, Galera Cluster for MySQL, Percona XtraDB Cluster, MySQL InnoDB Cluster (also read from one of its read replicas), or Group Replication without InnoDB Cluster metadata; kind 'none' when it is none of them. Read-only. Members are as the connected server sees them: Galera exposes only its own state, so another Galera node has state null and status 'unknown' (never a guessed state); on Percona XtraDB Cluster performance_schema.pxc_cluster_view names every other node's state. One severity scale for every kind: ok (quorum, every expected member present and healthy); watch (quorum holds but a member is missing, MISSING or UNREACHABLE, a member is in a transitional state, or the cluster cannot survive another failure); problem (no quorum or a non-Primary component, a member in ERROR, the connected member OFFLINE or in ERROR, or a Galera node that does not replicate). Additive optional fields keep 1.x; renamed or removed fields bump the major version.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -162,7 +162,7 @@
             "number",
             "null"
           ],
-          "description": "Members in the component or group as this server sees it."
+          "description": "Members in the component or group as this server sees it. null when this member is OFFLINE or in ERROR (it lists only itself and sees no group) and on an InnoDB Cluster read replica (not a group member)."
         },
         "expected_size": {
           "type": [
@@ -170,7 +170,7 @@
             "number",
             "null"
           ],
-          "description": "Galera: nodes named by wsrep_cluster_address, counting this node once (null for a bootstrap address 'gcomm://'). InnoDB Cluster: group members in the metadata (read replicas excluded)."
+          "description": "Galera: the nodes wsrep_cluster_address names, plus this node when it is proved absent from the list; null when this node cannot be identified in the list (the count is then only a lower bound, see notes and galera.address_nodes), for a bootstrap address ('gcomm://'), and when the component is larger than the list (a partial seed list or an arbitrator). InnoDB Cluster: group members in the metadata (read replicas excluded)."
         },
         "expected_source": {
           "type": [
@@ -195,7 +195,7 @@
             "boolean",
             "null"
           ],
-          "description": "Galera: Primary component. Group Replication: a majority of members is not UNREACHABLE. null when it cannot be told."
+          "description": "Galera: Primary component. Group Replication: a majority of members is not UNREACHABLE. null when it cannot be told (this member OFFLINE or in ERROR, a read replica)."
         },
         "failures_tolerated": {
           "type": [
@@ -203,7 +203,7 @@
             "number",
             "null"
           ],
-          "description": "Group Replication: (ONLINE + RECOVERING - 1) / 2, as MySQL Shell computes it."
+          "description": "Galera: (size - 1) / 2 in a Primary component, assuming equal pc.weight (null when wsrep_cluster_weight differs from the size, or not Primary). Group Replication: the failures the current view survives by the majority rule, (members - UNREACHABLE) - (members / 2 + 1), never below 0 (MySQL Shell's (ONLINE + RECOVERING - 1) / 2 when no member is UNREACHABLE); null without quorum or when this member cannot see the group."
         },
         "topology": {
           "type": [
@@ -322,7 +322,8 @@
             "wsrep_cluster_members",
             "wsrep_incoming_addresses",
             null
-          ]
+          ],
+          "description": "Where the member list came from."
         },
         "metrics": {
           "type": "object",
@@ -334,6 +335,41 @@
               "null"
             ]
           }
+        },
+        "address_nodes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Distinct entries in wsrep_cluster_address (0 for 'gcomm://', null without a gcomm URL)."
+        },
+        "address_names_this_node": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "true when an entry names this node, false when this node is proved absent from the list, null when it cannot be identified there."
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Entries of wsrep_cluster_address that are not in the component, when they can be matched to the missing nodes one for one (empty otherwise; the finding then says how many)."
+        },
+        "wsrep_on": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The global wsrep_on (MariaDB; absent on Percona XtraDB Cluster 8.4, where it is session-only)."
+        },
+        "incomplete": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Required wsrep status the server did not report (wsrep_cluster_status, wsrep_connected, wsrep_ready, wsrep_cluster_size) or invalid values; when not empty nothing is judged and status is 'unknown' (the Full analysis's checks.wsrep uses the same rule)."
         }
       }
     },
@@ -457,6 +493,18 @@
             "string",
             "null"
           ]
+        },
+        "local_copy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "left_group",
+            "read_replica",
+            null
+          ],
+          "description": "The metadata was read from a copy that may lag: 'left_group' when this member is OFFLINE or in ERROR (its last copy from the group, frozen), 'read_replica' on a read replica (its asynchronously replicated copy)."
         }
       }
     },
@@ -546,13 +594,14 @@
             "string",
             "null"
           ],
-          "description": "host:port as the cluster reports it."
+          "description": "host:port as the cluster reports it (an IPv6 host in brackets); Galera port 0 is kept here, while port is null and the surfaces show the host alone."
         },
         "host": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The host alone (an IPv6 host without brackets)."
         },
         "port": {
           "type": [
@@ -573,7 +622,7 @@
             "string",
             "null"
           ],
-          "description": "Galera: wsrep_local_state_comment for this node, pxc_cluster_view STATUS for the others on Percona XtraDB Cluster. Group Replication: ONLINE, RECOVERING, OFFLINE, ERROR, UNREACHABLE; MISSING for a group instance in the metadata that is not in the group. null when this server cannot know."
+          "description": "Galera: wsrep_local_state_comment for this node; on Percona XtraDB Cluster the other nodes' pxc_cluster_view STATUS in the node's own words (DONOR as Donor/Desynced, JOINER as Joiner, JOINED as Joined, SYNCED as Synced, PRIMARY as Joining, NON-PRIMARY as Non-Primary; the raw value in pxc_status); 'Not replicating' for this node while the global wsrep_on is OFF. Group Replication: ONLINE, RECOVERING, OFFLINE, ERROR, UNREACHABLE; MISSING for a group instance in the metadata that is not in the group. InnoDB Cluster read replica connected to: Replicating, Connecting, Stopped, Error or Not replicating from its read_replica_replication channel. null when this server cannot know."
         },
         "state_source": {
           "type": [
@@ -585,6 +634,7 @@
             "pxc_cluster_view",
             "replication_group_members",
             "metadata",
+            "replication_channel",
             null
           ]
         },
@@ -630,7 +680,7 @@
               "null"
             ]
           },
-          "description": "Galera: this node's wsrep status. Group Replication: replication_group_member_stats counters."
+          "description": "Galera: this node's wsrep status. Group Replication: replication_group_member_stats counters. A read replica connected to: receiver_state, applier_state and last_error_number of its read_replica_replication channel."
         },
         "label": {
           "type": [
@@ -668,7 +718,7 @@
             "string",
             "null"
           ],
-          "description": "Percona XtraDB Cluster: STATUS from pxc_cluster_view, also for this node."
+          "description": "Percona XtraDB Cluster: STATUS from pxc_cluster_view as the server reports it (SYNCED, DONOR, ...), also for this node."
         },
         "segment": {
           "type": [
@@ -729,14 +779,15 @@
             "string",
             "null"
           ],
-          "description": "As the server shows it (session time zone); from router_stats first with metadata 2.4.0+. Shown, not judged: MySQL Router writes it periodically (by default every tenth metadata refresh, never by default in a ClusterSet)."
+          "description": "As the server shows it (session time zone); from router_stats first with metadata 2.4.0+. Shown, not judged: MySQL Router writes it periodically (by default every tenth metadata refresh, never by default in a ClusterSet), on the writable member only."
         },
         "last_check_in_age_s": {
           "type": [
             "integer",
             "number",
             "null"
-          ]
+          ],
+          "description": "Seconds between the check-in and the server's NOW() at the read (never below 0)."
         },
         "ports": {
           "type": "object",
@@ -753,6 +804,17 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "last_check_in_utc": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The check-in as UTC, ISO-8601 with Z (UNIX_TIMESTAMP of the check-in)."
+        },
+        "from_local_copy": {
+          "type": "boolean",
+          "description": "Read from the metadata copy of a member that left the group, so the check-in may be out of date."
         }
       }
     },
@@ -767,7 +829,8 @@
       ],
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "description": "non_primary, state_transfer, wsrep_off, not_connected, not_ready, local_state, member_state, size_below_configured, no_tolerance, flow_control, cert_failures, pxc_maint_mode, no_quorum, local_not_in_group, read_replica, version_mismatch, primary_count."
         },
         "status": {
           "type": "string",

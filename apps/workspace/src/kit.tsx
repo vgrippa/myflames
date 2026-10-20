@@ -374,11 +374,12 @@ export function InfoPopover({ label, children }: { label: string; children: Reac
 }
 
 /** "ⓘ 3 notes": engine differences, caveats and privileges, on demand. */
-export function NotesButton({ notes, label = "Notes about this read" }: { notes: ReactNode[]; label?: string }) {
+export function NotesButton({ notes, label = "Notes about this read", title }: { notes: ReactNode[]; label?: string; title?: string }) {
   if (!notes.length) return null;
   return (
     <Popover
       label={label}
+      buttonTitle={title}
       wide
       className="notes-anchor"
       buttonClassName="notes-button"
@@ -2313,11 +2314,13 @@ export function EmptyState({
 /** One line per view (≤ 120 characters), with the notes button at the end.
  * On desktop it stays on one line: a longer text truncates and shows in full
  * on hover. */
-export function SummaryLine({ tone, toneLabel, children, notes, extra }: {
+export function SummaryLine({ tone, toneLabel, children, notes, notesTitle, extra }: {
   tone?: Tone;
   toneLabel?: string;
   children: ReactNode;
   notes?: ReactNode[];
+  /** What the notes are about, on hover (a glossary line for the "notes" button). */
+  notesTitle?: string;
   extra?: ReactNode;
 }) {
   const text = useRef<HTMLSpanElement>(null);
@@ -2336,7 +2339,7 @@ export function SummaryLine({ tone, toneLabel, children, notes, extra }: {
         </span>
       </p>
       {extra}
-      {notes && <NotesButton notes={notes} />}
+      {notes && <NotesButton notes={notes} title={notesTitle} />}
     </div>
   );
 }

@@ -540,7 +540,8 @@ try {
   // Unknown outcome destroys the sent plan and never offers a retry.
   await click("Grants"); applyFailure = true; await review(); await page.click(".account-review .danger-solid");
   await page.waitForFunction(() => document.querySelector('.accounts-view [role="alert"]')?.textContent.includes("may have run"));
-  assert.equal(await page.$(".account-review"), null); applyFailure = false;
+  // The alert can render a frame before the review sheet unmounts.
+  await page.waitForFunction(() => !document.querySelector(".account-review"), { timeout: 5000 }); applyFailure = false;
   await h.refresh(); await inspect();
 
   // Mixed groups share a review, one typed guard, and one decline per plan.

@@ -225,10 +225,79 @@ def _pxc_maint(data):
     return editor((VARIABLES, pairs(pxc_maint_mode="MAINTENANCE")))
 
 
+def _pxc_member(status):
+    """Another node in pxc_cluster_view STATUS *status* (the Galera
+    provider's node states: SYNCED, DONOR, JOINER, JOINED, PRIMARY,
+    NON-PRIMARY; all seen live in the lab's pxc_cluster_view)."""
+    def factory(data):
+        def fn(rs):
+            rs = [list(r) for r in rs]
+            rs[-1][2] = status
+            return rs
+        return editor((PXC_VIEW, rows(fn)))
+    return factory
+
+
+def _galera_address(address, **extra):
+    """wsrep_cluster_address (and other variables) as another deployment
+    writes it; wsrep_node_address stays empty, MariaDB's default
+    (Ma/sql/sys_vars.cc:6423-6431)."""
+    def factory(data):
+        return editor((VARIABLES, pairs(wsrep_cluster_address=address, **extra)))
+    return factory
+
+
+#: The wsrep status names MariaDB still lists while the global wsrep_on is
+#: OFF: the server's own (Ma/sql/mysqld.cc:8070-8085); the provider's are
+#: replaced by a bare "wsrep" row (wsrep_var.cc wsrep_show_status), which
+#: LIKE 'wsrep\_%' does not match.
+SERVER_WSREP_NAMES = ("wsrep_connected", "wsrep_ready", "wsrep_cluster_state_uuid", "wsrep_cluster_conf_id",
+                      "wsrep_cluster_status", "wsrep_cluster_size", "wsrep_local_index", "wsrep_local_bf_aborts",
+                      "wsrep_provider_name", "wsrep_provider_version", "wsrep_provider_vendor",
+                      "wsrep_provider_capabilities", "wsrep_thread_count", "wsrep_applier_thread_count",
+                      "wsrep_rollbacker_thread_count", "wsrep_cluster_capabilities")
+
+
+def _galera_wsrep_off(data):
+    """SET GLOBAL wsrep_on=OFF on a joined node (Ma/sql/wsrep_var.cc
+    wsrep_on_check allows it and keeps the provider connected)."""
+    return editor((VARIABLES, pairs(wsrep_on="OFF")),
+                  (WSREP, rows(lambda rs: [r for r in rs if r[0] in SERVER_WSREP_NAMES])))
+
+
+def _galera_joiner(data):
+    """A node receiving its state transfer: the server state is s_joiner, so
+    wsrep_cluster_status reads non-Primary and wsrep_ready OFF
+    (Ma/sql/wsrep_server_service.cc:356-380), connected, Joining."""
+    return editor((WSREP, pairs(wsrep_cluster_status="non-Primary", wsrep_ready="OFF", wsrep_connected="ON",
+                                wsrep_local_state="1", wsrep_local_state_comment="Joining: receiving State Transfer")))
+
+
 #: name -> (recording it starts from, edit factory(data) -> edit).
 DERIVED = {
     "pxc-8.4-member-donor": ("pxc-8.4-healthy", _pxc_member_donor),
+    "pxc-8.4-member-joiner": ("pxc-8.4-healthy", _pxc_member("JOINER")),
+    "pxc-8.4-member-primary": ("pxc-8.4-healthy", _pxc_member("PRIMARY")),
     "pxc-8.4-maintenance": ("pxc-8.4-healthy", _pxc_maint),
+    # Galera Cluster for MySQL (Codership): a MySQL server with a wsrep
+    # provider that is not Percona XtraDB Cluster.
+    "galera-mysql-8.4-healthy": ("pxc-8.4-healthy", lambda data: editor((VARIABLES, pairs(
+        version_comment="MySQL Community Server - GPL, wsrep_26.22")))),
+    # The address list as other deployments write it: node IPs (MariaDB's
+    # basic example), FQDNs against a short host name, a seed list naming one
+    # peer, a single DNS service name (Kubernetes headless service).
+    "galera-11.8-ip-address": ("galera-11.8-healthy",
+                               _galera_address("gcomm://192.168.80.2,192.168.80.3,192.168.80.4")),
+    "galera-11.8-ip-port-two-of-three": ("galera-11.8-two-of-three",
+                                         _galera_address("gcomm://192.168.80.2:4567,192.168.80.3:4567,192.168.80.4:4567")),
+    "galera-11.8-fqdn": ("galera-11.8-healthy", _galera_address(
+        "gcomm://mf-galera-1.lab.example,mf-galera-2.lab.example,mf-galera-3.lab.example")),
+    "galera-11.8-partial-seeds": ("galera-11.8-healthy", _galera_address("gcomm://mf-galera-2")),
+    "galera-11.8-dns-service": ("galera-11.8-healthy", _galera_address("gcomm://galera-headless.db.svc.cluster.local")),
+    # A deliberate two-node cluster: one more failure loses the majority.
+    "galera-11.8-two-nodes": ("galera-11.8-two-of-three", _galera_address("gcomm://mf-galera-1,mf-galera-3")),
+    "galera-11.8-wsrep-off": ("galera-11.8-healthy", _galera_wsrep_off),
+    "galera-11.8-joiner": ("galera-11.8-healthy", _galera_joiner),
     "ic-8.4-degraded": ("ic-8.4-healthy", _ic_degraded),
     "ic-8.4-no-quorum": ("ic-8.4-healthy", _ic_no_quorum),
 }
@@ -243,6 +312,7 @@ def derived(name):
 # ---- synthetic scenarios -------------------------------------------------------------
 
 GROUP_NAME = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+RR_UUID = "44444444-4444-11f0-8a00-0242ac130005"
 SERVER_UUIDS = ["11111111-1111-11f0-8a00-0242ac130002", "22222222-2222-11f0-8a00-0242ac130003",
                 "33333333-3333-11f0-8a00-0242ac130004"]
 
@@ -288,7 +358,7 @@ def _instances(n=3, read_replica=None):
 
 
 ROUTERS = [[1, "cid-1", "", "MySQL Router", "mf-ic-router", "8.4.10", "2026-10-20 12:00:00", 120,
-            "6446", "6447", "6450", "6448", "6449"]]
+            "6446", "6447", "6450", "6448", "6449", 1792497600]]
 
 
 def _ic(members, stats, instances=None, routers=None, variables=None, version=(2, 2, 0)):
@@ -358,10 +428,55 @@ SCENARIOS = {
         "variables": _mysql_vars(performance_schema="OFF"),
     },
     "ic-8.4-read-replica": _ic([_gr_member(i) for i in range(3)], [_gr_stats(i) for i in range(3)],
-                               instances=_instances(read_replica="44444444-4444-11f0-8a00-0242ac130005"),
+                               instances=_instances(read_replica=RR_UUID),
                                version=(2, 3, 0)),
     "ic-8.4-metadata-2.4": _ic([_gr_member(i) for i in range(3)], [_gr_stats(i) for i in range(3)],
                                version=(2, 4, 0)),
+    # Connected to the read replica itself: no Group Replication plugin (MySQL
+    # Shell's addReplicaInstance never installs it), its replicated copy of
+    # the metadata, and the read_replica_replication channel running.
+    "ic-8.4-read-replica-local": dict(_ic([], [], instances=_instances(read_replica=RR_UUID), version=(2, 3, 0),
+                                          variables=_mysql_vars(server_uuid=RR_UUID, hostname="mf-rr-1",
+                                                                report_host="mf-rr-1", group_replication_group_name=None,
+                                                                group_replication_single_primary_mode=None,
+                                                                group_replication_local_address=None,
+                                                                group_replication_group_seeds=None)),
+                                     extra={"performance_schema.replication_connection_status": [["ON", "0", ""]],
+                                            "performance_schema.replication_applier_status": [["ON"]]}),
+    "ic-8.4-read-replica-stopped": dict(_ic([], [], instances=_instances(read_replica=RR_UUID), version=(2, 3, 0),
+                                            variables=_mysql_vars(server_uuid=RR_UUID, hostname="mf-rr-1",
+                                                                  group_replication_group_name=None)),
+                                       extra={"performance_schema.replication_connection_status":
+                                              [["OFF", "2003", "error connecting to source 'mf-ic-1:3306'"]],
+                                              "performance_schema.replication_applier_status": [["ON"]]}),
+    # The receiver retrying keeps its last connection error (Codex review):
+    # CONNECTING is watch, never Error.
+    "ic-8.4-read-replica-connecting": dict(_ic([], [], instances=_instances(read_replica=RR_UUID), version=(2, 3, 0),
+                                               variables=_mysql_vars(server_uuid=RR_UUID, hostname="mf-rr-1",
+                                                                     group_replication_group_name=None)),
+                                          extra={"performance_schema.replication_connection_status":
+                                                 [["CONNECTING", "2003", "error connecting to source 'mf-ic-1:3306'"]],
+                                                 "performance_schema.replication_applier_status": [["ON"]]}),
+    # The applier table refused: unknown, not stopped.
+    "ic-8.4-read-replica-applier-denied": dict(_ic([], [], instances=_instances(read_replica=RR_UUID), version=(2, 3, 0),
+                                                   variables=_mysql_vars(server_uuid=RR_UUID, hostname="mf-rr-1",
+                                                                         group_replication_group_name=None)),
+                                              extra={"performance_schema.replication_connection_status": [["ON", "0", ""]],
+                                                     "performance_schema.replication_applier_status":
+                                                     ConnectorError("mysql client exited 1: ERROR 1142 (42000) at line 1: "
+                                                                    "SELECT command denied to user 'app'@'%' for table "
+                                                                    "'replication_applier_status'")}),
+    # MEMBER_HOST and MEMBER_PORT are separate columns; an IPv6 host.
+    "gr-8.4-ipv6": {
+        "variables": _mysql_vars(),
+        "tables": {
+            "performance_schema.replication_group_members": [_gr_member(0, host="2001:db8::1"),
+                                                             _gr_member(1, host="2001:db8::2"),
+                                                             _gr_member(2, host="2001:db8::3")],
+            "performance_schema.replication_group_member_stats": [_gr_stats(i) for i in range(3)],
+            "information_schema.SCHEMATA": [],
+        },
+    },
     "mysql-8.4-standalone": {
         "variables": _mysql_vars(group_replication_group_name=None, group_replication_single_primary_mode=None,
                                  group_replication_local_address=None, group_replication_group_seeds=None),
@@ -412,7 +527,9 @@ class ScenarioConn(object):
             if sc.get("status_error"):
                 raise sc["status_error"]
             return batch(sorted(sc.get("status", {}).items()))
-        for table, answer in sc.get("tables", {}).items():
+        tables = dict(sc.get("tables", {}))
+        tables.update(sc.get("extra", {}))
+        for table, answer in tables.items():
             if re.search(r" FROM %s( |$)" % re.escape(table), body):
                 if isinstance(answer, Exception):
                     raise answer

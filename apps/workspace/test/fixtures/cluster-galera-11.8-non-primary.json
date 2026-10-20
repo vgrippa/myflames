@@ -33,17 +33,17 @@
  },
  "status": "problem",
  "status_why": [
-  "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected. Until it rejoins a Primary component it refuses most queries (SET, SHOW, reads of no table and reads with wsrep_dirty_reads still run)."
+  "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected. Until it rejoins a Primary component it refuses most queries (SET, SHOW, SELECT without tables, reads of only information_schema or performance_schema tables, and reads with wsrep_dirty_reads still run)."
  ],
- "local": "node:192.168.80.4:0",
+ "local": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
  "members": [
   {
-   "key": "node:192.168.80.4:0",
+   "key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
    "name": "galera-3",
    "address": "192.168.80.4:0",
    "host": "192.168.80.4",
    "port": null,
-   "uuid": null,
+   "uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
    "state": "Initialized",
    "state_source": "wsrep_local_state_comment",
    "role": null,
@@ -51,7 +51,7 @@
    "local": true,
    "status": "problem",
    "status_why": [
-    "In a non-Primary component. Initialized: not in a Primary component (non-Primary or disconnected); it does not apply or accept writes."
+    "In a non-Primary component. Not in a Primary component (non-Primary or disconnected); it does not apply or accept writes."
    ],
    "metrics": {
     "local_state": 0,
@@ -89,7 +89,11 @@
   "desync": "OFF",
   "pxc_strict_mode": null,
   "pxc_maint_mode": null,
+  "wsrep_on": "ON",
   "members_source": "wsrep_incoming_addresses",
+  "address_nodes": 3,
+  "address_names_this_node": true,
+  "missing": [],
   "metrics": {
    "local_state": 0,
    "local_state_comment": "Initialized",
@@ -112,7 +116,8 @@
    "local_index": 0,
    "cluster_conf_id": -1,
    "cluster_weight": 0
-  }
+  },
+  "incomplete": []
  },
  "group_replication": null,
  "metadata": null,
@@ -122,7 +127,7 @@
    "id": "non_primary",
    "status": "problem",
    "title": "Not in a Primary component",
-   "text": "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected. Until it rejoins a Primary component it refuses most queries (SET, SHOW, reads of no table and reads with wsrep_dirty_reads still run)."
+   "text": "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected. Until it rejoins a Primary component it refuses most queries (SET, SHOW, SELECT without tables, reads of only information_schema or performance_schema tables, and reads with wsrep_dirty_reads still run)."
   }
  ],
  "summary": {
@@ -139,7 +144,7 @@
  ],
  "notes": [
   "mysql.wsrep_cluster_members is written only for a Primary component, so on this node it lists the last Primary view; the members shown come from wsrep_incoming_addresses.",
-  "wsrep_incoming_addresses reports port 0 for galera-3: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
-  "wsrep_flow_control_paused and the queue averages cover the time since the provider statistics were last reset (FLUSH STATUS) or since start."
+  "wsrep_incoming_addresses reports port 0 for galera-3, so only the host is shown: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
+  "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH GLOBAL STATUS) or since start."
  ]
 }

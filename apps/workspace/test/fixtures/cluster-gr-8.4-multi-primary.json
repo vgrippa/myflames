@@ -47,7 +47,7 @@
    "local": true,
    "status": "ok",
    "status_why": [
-    "ONLINE: a full member of the group."
+    "A full member of the group."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -75,7 +75,7 @@
    "local": false,
    "status": "ok",
    "status_why": [
-    "ONLINE: a full member of the group."
+    "A full member of the group."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -103,7 +103,7 @@
    "local": false,
    "status": "ok",
    "status_why": [
-    "ONLINE: a full member of the group."
+    "A full member of the group."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -133,7 +133,8 @@
   "cluster_name": null,
   "primary_mode": null,
   "instances": [],
-  "reason": "No mysql_innodb_cluster_metadata schema is visible to this account, so this is a Group Replication group without InnoDB Cluster metadata (or the account cannot read it)."
+  "reason": "No mysql_innodb_cluster_metadata schema is visible to this account, so this is a Group Replication group without InnoDB Cluster metadata (or the account cannot read it).",
+  "local_copy": null
  },
  "routers": [],
  "findings": [],

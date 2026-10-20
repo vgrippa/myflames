@@ -117,6 +117,9 @@ class TestGalera(unittest.TestCase):
         self.assertEqual(report['cluster']['component'], 'Primary')
         self.assertIs(report['cluster']['quorum'], True)
         self.assertEqual((report['cluster']['size'], report['cluster']['expected_size']), (3, 3))
+        # Equal pc.weight assumed, and said so.
+        self.assertEqual(report['cluster']['failures_tolerated'], 1)
+        self.assertTrue(any('assumes equal pc.weight' in n for n in report['notes']))
         self.assertEqual(report['galera']['members_source'], 'wsrep_cluster_members')
         self.assertEqual(len(report['members']), 3)
         me = local(report)
@@ -138,8 +141,15 @@ class TestGalera(unittest.TestCase):
         for x in report['members']:
             self.assertTrue(x['address'].endswith(':0'))
             self.assertIsNone(x['port'])
+            # One format: the host alone, the note explains port 0.
+            self.assertEqual(m.address_text(x), x['host'])
         note = next(n for n in report['notes'] if 'port 0' in n)
         self.assertIn('wsrep_node_incoming_address', note)
+        # The note lists the nodes in the members' order.
+        self.assertIn(', '.join(x['name'] for x in report['members']), note)
+        text = m.format_text(report)
+        self.assertNotIn(':0', text)
+        self.assertIn('galera-2  192.168.80.3  in the component', text)
         self.assertEqual(m._split_address('[fe80::1]:0'), ('fe80::1', None))
         self.assertEqual(m._split_address('db1:3306'), ('db1', 3306))
         self.assertEqual(m._split_address('db1'), ('db1', None))
@@ -155,6 +165,22 @@ class TestGalera(unittest.TestCase):
         self.assertEqual(report['galera']['desync'], 'ON')
         self.assertEqual((report['status'], ids(report)), ('watch', ['local_state']))
         self.assertIs(report['cluster']['quorum'], True)
+        # The finding names the measured cause and does not repeat the state.
+        finding = report['findings'][0]
+        self.assertEqual(finding['title'], 'This node is Donor/Desynced')
+        self.assertTrue(finding['text'].startswith('wsrep_desync is ON: '), finding['text'])
+        self.assertNotIn('Donor/Desynced:', finding['text'])
+
+    def test_desync_off_names_the_other_causes(self):
+        """Donor/Desynced with wsrep_desync OFF and wsrep_desync_count 2 (an RSU
+        schema change, Ma/mysql-test/suite/galera/r/MW-258.result): no claim
+        that wsrep_desync is ON."""
+        edit = F.editor((F.VARIABLES, F.pairs(wsrep_desync='OFF')), (F.WSREP, F.pairs(wsrep_desync_count='2')))
+        report = m.read_status(F.recorded('galera-11.8-donor', edit=edit)[0])
+        text = report['findings'][0]['text']
+        self.assertNotIn('wsrep_desync is ON', text)
+        for cause in ('state transfer', 'FLUSH TABLES WITH READ LOCK', 'BACKUP STAGE BLOCK_DDL', 'RSU'):
+            self.assertIn(cause, text)
 
     def test_flow_control_threshold_boundary(self):
         for paused, tripped in (('0.0999', False), ('0.1', True), ('0.25', True)):
@@ -164,8 +190,17 @@ class TestGalera(unittest.TestCase):
                 self.assertEqual('flow_control' in ids(report), tripped)
                 if tripped:
                     flow = next(f for f in report['findings'] if f['id'] == 'flow_control')
-                    self.assertIn('%d%%' % round(float(paused) * 100), flow['text'])
+                    self.assertIn(m.flow_percent(float(paused)), flow['text'])
                     self.assertEqual(report['status'], 'watch')
+                self.assertIn('flow control paused %s' % m.flow_percent(float(paused)), m.format_text(report))
+
+    def test_flow_percent_one_format(self):
+        """One percent text for the finding, the CLI and the workspace: one
+        decimal, cut so a value under the watch line never reads as it."""
+        for value, text in ((0, '0%'), (0.0004, '<0.1%'), (0.004, '0.4%'), (0.0995, '9.9%'), (0.1, '10%'),
+                            (0.125, '12.5%'), (0.29, '29%'), (1, '100%'), (None, '?')):
+            with self.subTest(value=value):
+                self.assertEqual(m.flow_percent(value), text)
 
     def test_lost_node_recording(self):
         """Live: galera-2 stopped, read from galera-1."""
@@ -173,10 +208,18 @@ class TestGalera(unittest.TestCase):
         report = F.report('galera-11.8-two-of-three')
         self.assertEqual((report['cluster']['size'], report['cluster']['expected_size']), (2, 3))
         self.assertEqual(report['cluster']['expected_source'], 'wsrep_cluster_address')
-        self.assertEqual((report['status'], ids(report)), ('watch', ['size_below_configured']))
-        self.assertIn('names 3, counting this one', report['findings'][0]['text'])
+        self.assertEqual((report['status'], ids(report)), ('watch', ['size_below_configured', 'no_tolerance']))
+        text = report['findings'][0]['text']
+        self.assertIn('names 3 (this node included)', text)
+        # The lab names nodes by container (mf-galera-N) and members are IPs and
+        # node names (galera-N): the missing node is counted, never guessed.
+        self.assertIn('1 configured node is not in the component and cannot be named here', text)
+        self.assertEqual(report['galera']['missing'], [])
         self.assertEqual([x['name'] for x in report['members']], ['galera-1', 'galera-3'])
         self.assertEqual(report['galera']['members_source'], 'wsrep_cluster_members')
+        # Two nodes left: one more failure loses the majority.
+        self.assertEqual(report['cluster']['failures_tolerated'], 0)
+        self.assertEqual(report['findings'][1]['title'], 'Cannot survive another failure')
 
     def test_non_primary_recording(self):
         """Live: galera-3 cut off from the others, read from galera-3."""
@@ -195,6 +238,14 @@ class TestGalera(unittest.TestCase):
         self.assertTrue(any('last Primary view' in n for n in report['notes']))
         # Not judged against the configured size while not Primary.
         self.assertNotIn('size_below_configured', ids(report))
+        self.assertIsNone(report['cluster']['failures_tolerated'])
+        # What still runs on both engines (Ma/sql/sql_parse.cc, PXC sql_parse.cc).
+        self.assertIn('information_schema or performance_schema', report['findings'][0]['text'])
+        # The node keeps its gcomm key and UUID across Primary and non-Primary.
+        me = local(report)
+        self.assertEqual(me['uuid'], report['galera']['gcomm_uuid'])
+        self.assertEqual(me['key'], 'node:' + report['galera']['gcomm_uuid'])
+        self.assertEqual(me['key'], member(F.report('galera-11.8-healthy'), 'galera-3')['key'])
 
     def test_not_ready_in_primary_component(self):
         joined = F.editor((F.WSREP, F.pairs(wsrep_ready='OFF', wsrep_local_state='3',
@@ -229,20 +280,166 @@ class TestGalera(unittest.TestCase):
         m.read_status(conn)
         self.assertFalse(any('replication_group_members' in sql for sql, _ in conn.calls))
 
-    def test_configured_nodes_counts_this_node_once(self):
-        cases = (({'wsrep_cluster_address': 'gcomm://a,b,c', 'hostname': 'b'}, 3),
-                 ({'wsrep_cluster_address': 'gcomm://a,b', 'hostname': 'c'}, 3),
-                 ({'wsrep_cluster_address': 'gcomm://10.0.0.1:4567,10.0.0.2', 'wsrep_node_address': '10.0.0.1'}, 2),
-                 ({'wsrep_cluster_address': 'gcomm://', 'hostname': 'a'}, None),
-                 ({'wsrep_cluster_address': 'gcomm://a,b?pc.wait_prim=no', 'wsrep_node_name': 'A'}, 2),
-                 ({'wsrep_cluster_address': '', 'hostname': 'a'}, None),
-                 # Three instances on one host are three nodes.
+    def test_configured_nodes_never_adds_this_node_blindly(self):
+        """wsrep_cluster_address gives an expected size only when this node
+        is identified: named by one entry, or proved absent (every entry is
+        another member, or on this host with another port)."""
+        others = [{'host': 'a', 'name': 'node-a', 'local': False}, {'host': 'b', 'name': 'node-b', 'local': False}]
+        me = [{'host': '10.0.0.3', 'name': 'node-c', 'local': True}]
+        cases = (({'wsrep_cluster_address': 'gcomm://a,b,c', 'hostname': 'b'}, (), 3),
+                 # Lists only the others: absent only when both are proved to be others.
+                 ({'wsrep_cluster_address': 'gcomm://a,b', 'hostname': 'c'}, others, 3),
+                 ({'wsrep_cluster_address': 'gcomm://a,b', 'hostname': 'c'}, (), None),
+                 ({'wsrep_cluster_address': 'gcomm://10.0.0.1:4567,10.0.0.2', 'wsrep_node_address': '10.0.0.1'}, (), 2),
+                 ({'wsrep_cluster_address': 'gcomm://', 'hostname': 'a'}, (), None),
+                 ({'wsrep_cluster_address': 'gcomm://a,b?pc.wait_prim=no', 'wsrep_node_name': 'A'}, (), 2),
+                 ({'wsrep_cluster_address': '', 'hostname': 'a'}, (), None),
+                 # IPs with wsrep_node_address unset (MariaDB's default): this
+                 # node is found by its own incoming address.
+                 ({'wsrep_cluster_address': 'gcomm://10.0.0.1,10.0.0.2,10.0.0.3', 'hostname': 'db3',
+                   'wsrep_node_address': ''}, me, 3),
+                 ({'wsrep_cluster_address': 'gcomm://10.0.0.1,10.0.0.2,10.0.0.3', 'hostname': 'db3'}, (), None),
+                 # FQDN entries against the short host name.
+                 ({'wsrep_cluster_address': 'gcomm://db1.example.com,db2.example.com,db3.example.com',
+                   'hostname': 'db1'}, (), 3),
+                 # Codex review: two entries share the short name: not identified.
+                 ({'wsrep_cluster_address': 'gcomm://db1.red.example,db1.blue.example,db2.example',
+                   'hostname': 'db1'}, (), None),
+                 # Different domains never match each other.
+                 ({'wsrep_cluster_address': 'gcomm://db1.red.example,db2.red.example',
+                   'hostname': 'db1.blue.example'}, (), None),
+                 # Three instances on one host are three nodes; the port decides.
                  ({'wsrep_cluster_address': 'gcomm://127.0.0.1:4567,127.0.0.1:4568,127.0.0.1:4569',
-                   'wsrep_node_address': '127.0.0.1:4568'}, 3),
-                 ({'wsrep_cluster_address': 'gcomm://a,A', 'hostname': 'b'}, 2))
-        for variables, expected in cases:
-            with self.subTest(variables=variables):
-                self.assertEqual(m.configured_nodes(variables), expected)
+                   'wsrep_node_address': '127.0.0.1:4568'}, (), 3),
+                 # Codex review: seeds name the two other instances on this host.
+                 ({'wsrep_cluster_address': 'gcomm://127.0.0.1:4567,127.0.0.1:4569',
+                   'wsrep_node_address': '127.0.0.1:4568'}, (), 3),
+                 # MTR's galera_3nodes.cnf: node 2 names node 1 only.
+                 ({'wsrep_cluster_address': 'gcomm://127.0.0.1:16000', 'wsrep_node_address': '127.0.0.1:16003'}, (), 2),
+                 # Several entries on this host and no port of its own: not identified.
+                 ({'wsrep_cluster_address': 'gcomm://127.0.0.1:4567,127.0.0.1:4569', 'hostname': 'h',
+                   'wsrep_node_address': '127.0.0.1'}, (), None),
+                 ({'wsrep_cluster_address': 'gcomm://a,A', 'hostname': 'b'}, (), None))
+        for variables, members, expected in cases:
+            with self.subTest(variables=variables, members=members):
+                self.assertEqual(m.configured_nodes(variables, {}, members), expected)
+        self.assertEqual(m.cluster_address_entries('gcomm://[fe80::1]:4567,B:4568?x=1'),
+                         [('fe80::1', 4567), ('b', 4568)])
+
+    def test_address_variants_on_a_healthy_cluster(self):
+        """The same healthy 3-node component with the address written other
+        ways (live finding: IPs and FQDNs gave a false watch, a partial list
+        gave '3 of 2')."""
+        for name, expected in (('galera-11.8-ip-address', 3), ('galera-11.8-fqdn', 3),
+                               ('galera-11.8-partial-seeds', None), ('galera-11.8-dns-service', None)):
+            with self.subTest(scenario=name):
+                report = F.report(name)
+                self.assertEqual((report['status'], ids(report)), ('ok', []))
+                self.assertEqual(report['cluster']['expected_size'], expected)
+                text = m.format_text(report)
+                self.assertNotIn(' of 1', text)
+                self.assertNotIn(' of 2', text)
+                if expected is None:
+                    self.assertTrue(any('lower bound' in n or 'fewer than the 3' in n for n in report['notes']),
+                                    report['notes'])
+        # A partial list names fewer than the component: size alone, and why.
+        report = F.report('galera-11.8-partial-seeds')
+        self.assertIsNone(report['galera']['address_names_this_node'])
+        self.assertEqual(report['galera']['address_nodes'], 1)
+        # A node down with IP:port entries: the missing entry is named.
+        report = F.report('galera-11.8-ip-port-two-of-three')
+        self.assertEqual(report['galera']['missing'], ['192.168.80.3:4567'])
+        self.assertIn('192.168.80.3:4567 is not in the component', report['findings'][0]['text'])
+
+    def test_two_nodes_cannot_survive_another_failure(self):
+        """A deliberate two-node cluster: (2 - 1) / 2 = 0 (galera_kill_nochanges.test:
+        the survivor of a kill goes non-Primary)."""
+        report = F.report('galera-11.8-two-nodes')
+        self.assertEqual((report['cluster']['size'], report['cluster']['expected_size']), (2, 2))
+        self.assertEqual((report['status'], ids(report)), ('watch', ['no_tolerance']))
+        self.assertIn('assumes equal pc.weight', report['findings'][0]['text'])
+        weights = F.editor((F.WSREP, F.pairs(wsrep_cluster_weight='5')))
+        report = m.read_status(F.recorded('galera-11.8-healthy', edit=weights)[0])
+        self.assertIsNone(report['cluster']['failures_tolerated'])
+        self.assertTrue(any('pc.weight differ' in n for n in report['notes']))
+        single = F.editor((F.WSREP, F.pairs(wsrep_cluster_size='1', wsrep_cluster_weight='1')), (F.VARIABLES, F.pairs(wsrep_cluster_address='gcomm://')))
+        report = m.read_status(F.recorded('galera-11.8-healthy', edit=single)[0])
+        self.assertIn('no_tolerance', ids(report))
+
+    def test_incomplete_status_is_not_judged(self):
+        """The completeness rule the Full analysis shares: a required name
+        missing, or a flow-control fraction out of range, judges nothing."""
+        for changes in ({'wsrep_cluster_size': None}, {'wsrep_ready': None}, {'wsrep_flow_control_paused': '1.5'},
+                        # Codex review: invalid sizes, and incomplete plus unhealthy.
+                        {'wsrep_cluster_size': 'bogus'}, {'wsrep_cluster_size': '-3'},
+                        {'wsrep_cluster_size': None, 'wsrep_ready': 'OFF'}):
+            with self.subTest(changes=changes):
+                conn = F.recorded('galera-11.8-healthy', edit=F.editor((F.WSREP, F.pairs(**changes))))[0]
+                report = m.read_status(conn)
+                self.assertEqual(report['status'], 'unknown')
+                self.assertTrue(report['galera']['incomplete'])
+                self.assertTrue(any(n.startswith('Not judged: ') for n in report['notes']))
+                # Nothing judged: no finding, no member verdict, no --fail-on trip.
+                self.assertEqual(report['findings'], [])
+                self.assertEqual(set(x['status'] for x in report['members']), {'unknown'})
+                self.assertEqual(m.at_or_worse(report, 'watch'), [])
+        # A missing provider counter alone (flow control) is not required.
+        report = m.read_status(F.recorded('galera-11.8-healthy', edit=F.editor(
+            (F.WSREP, F.pairs(wsrep_flow_control_paused=None))))[0])
+        self.assertEqual(report['status'], 'ok')
+
+    def test_certification_failures_one_rule_with_the_full_analysis(self):
+        edit = F.editor((F.WSREP, F.pairs(wsrep_local_cert_failures='7')))
+        report = m.read_status(F.recorded('galera-11.8-healthy', edit=edit)[0])
+        finding = next(f for f in report['findings'] if f['id'] == 'cert_failures')
+        self.assertEqual((finding['status'], finding['text']), ('watch', m.CERT_FAILURES_TEXT % 7))
+        self.assertEqual(report['status'], 'watch')
+
+    def test_wsrep_on_off_with_the_provider_joined_is_a_problem(self):
+        """SET GLOBAL wsrep_on=OFF on a joined MariaDB node: still Galera, not
+        'Not part of a cluster' (Ma/sql/wsrep_var.cc, mysqld.cc:8070-8085)."""
+        report = F.report('galera-11.8-wsrep-off')
+        self.assertEqual((report['kind'], report['status']), ('galera', 'problem'))
+        self.assertEqual(ids(report), ['wsrep_off'])
+        me = local(report)
+        self.assertEqual((me['name'], me['status'], me['state']), ('galera-1', 'problem', 'Not replicating'))
+        self.assertIn('not replicated', report['findings'][0]['text'])
+        code, out, err, _ = run_cli('cluster', ['--fail-on', 'problem'], F.conn('galera-11.8-wsrep-off'))
+        self.assertEqual(code, 1, err)
+        # The provider not connected: not part of a cluster, said precisely.
+        edit = F.editor((F.VARIABLES, F.pairs(wsrep_on='OFF')),
+                        (F.WSREP, F.rows(lambda rs: [r for r in rs if r[0] in F.SERVER_WSREP_NAMES and r[0] not in (
+                            'wsrep_connected', 'wsrep_cluster_size')] + [['wsrep_connected', 'OFF'],
+                                                                         ['wsrep_cluster_size', '0']])))
+        report = m.read_status(F.recorded('galera-11.8-healthy', edit=edit)[0])
+        self.assertEqual(report['kind'], 'none')
+        self.assertIn('not connected', report['message'])
+        # Unreadable is not disconnected (Codex review): not available.
+        edit = F.editor((F.VARIABLES, F.pairs(wsrep_on='OFF')), (F.WSREP, lambda text: F.refused(
+            "mysql client exited 1: ERROR 1227 (42000) at line 1: Access denied; you need (at least one of) the "
+            "PROCESS privilege(s) for this operation")))
+        report = m.read_status(F.recorded('galera-11.8-healthy', edit=edit)[0])
+        self.assertEqual((report['kind'], report['available'], report['status']), ('galera', False, 'unknown'))
+        self.assertIn('not known', report['message'])
+
+    def test_joining_node_is_not_called_lost_quorum(self):
+        """A joiner reads non-Primary until its state transfer ends
+        (Ma/sql/wsrep_server_service.cc:356-380): watch, joining."""
+        report = F.report('galera-11.8-joiner')
+        self.assertEqual((report['status'], ids(report)), ('watch', ['state_transfer']))
+        self.assertNotIn('lost quorum', report['findings'][0]['text'])
+        self.assertEqual(local(report)['status'], 'watch')
+        # Not connected while non-Primary is still a problem.
+        lost = F.editor((F.WSREP, F.pairs(wsrep_cluster_status='non-Primary', wsrep_connected='OFF',
+                                          wsrep_local_state_comment='Joining')))
+        self.assertIn('non_primary', ids(m.read_status(F.recorded('galera-11.8-healthy', edit=lost)[0])))
+
+    def test_galera_on_mysql_is_not_called_mariadb(self):
+        report = F.report('galera-mysql-8.4-healthy')
+        self.assertEqual((report['engine'], report['kind']), ('mysql', 'galera'))
+        self.assertEqual(m.kind_label(report), 'Galera Cluster for MySQL')
+        self.assertTrue(m.format_text(report).startswith('Galera Cluster for MySQL mf_pxc'))
+        self.assertEqual(m.kind_label(F.report('galera-11.8-healthy')), 'MariaDB Galera Cluster')
 
 
 class TestPerconaXtraDBCluster(unittest.TestCase):
@@ -267,20 +464,53 @@ class TestPerconaXtraDBCluster(unittest.TestCase):
         others = [x for x in report['members'] if not x['local']]
         self.assertEqual(len(others), 2)
         for x in others:
-            self.assertEqual((x['state'], x['state_source'], x['status']), ('SYNCED', 'pxc_cluster_view', 'ok'))
+            # The node's own word; the server's raw value in pxc_status.
+            self.assertEqual((x['state'], x['pxc_status'], x['state_source'], x['status']),
+                             ('Synced', 'SYNCED', 'pxc_cluster_view', 'ok'))
             self.assertEqual(x['segment'], 0)
+        # One casing for every node in the text output.
+        self.assertNotIn('SYNCED', m.format_text(report))
         self.assertEqual(report['summary']['ok'], 3)
         self.assertEqual(report['galera']['pxc_strict_mode'], 'ENFORCING')
 
     def test_member_not_synced_is_watch(self):
         report = F.report('pxc-8.4-member-donor')
-        donor = next(x for x in report['members'] if x['state'] == 'DONOR')
-        self.assertEqual(donor['status'], 'watch')
+        donor = next(x for x in report['members'] if x.get('pxc_status') == 'DONOR')
+        self.assertEqual((donor['state'], donor['status']), ('Donor/Desynced', 'watch'))
         self.assertEqual(report['status'], 'watch')
-        self.assertEqual(report['findings'][0]['member'], donor['key'])
-        self.assertEqual(m._pxc_state('SYNCED')[0], 'ok')
-        self.assertEqual(m._pxc_state('JOINER')[0], 'watch')
-        self.assertEqual(m._pxc_state('')[0], 'unknown')
+        finding = report['findings'][0]
+        self.assertEqual(finding['member'], donor['key'])
+        self.assertEqual(finding['title'], '%s is Donor/Desynced' % donor['name'])
+        self.assertNotIn('DONOR:', finding['text'])
+
+    def test_every_pxc_cluster_view_state_has_its_own_sentence(self):
+        """The Galera provider's node states as pxc_cluster_view prints them
+        (seen live: SYNCED, DONOR, JOINER, PRIMARY); PRIMARY never reads as
+        the word Primary on a node."""
+        sentences = set()
+        for raw, word, status in (('SYNCED', 'Synced', 'ok'), ('DONOR', 'Donor/Desynced', 'watch'),
+                                  ('DESYNCED', 'Donor/Desynced', 'watch'), ('JOINER', 'Joiner', 'watch'),
+                                  ('JOINED', 'Joined', 'watch'), ('PRIMARY', 'Joining', 'watch'),
+                                  ('NON-PRIMARY', 'Non-Primary', 'watch'), ('ODD', 'Odd', 'watch')):
+            with self.subTest(raw=raw):
+                got = m._pxc_state(raw)
+                self.assertEqual(got[:2], (word, status))
+                self.assertFalse(got[2].upper().startswith(raw + ':'))
+                sentences.add(got[2])
+        self.assertEqual(len(sentences), 7)
+        self.assertEqual(m._pxc_state('')[1], 'unknown')
+        for name, word in (('pxc-8.4-member-joiner', 'Joiner'), ('pxc-8.4-member-primary', 'Joining')):
+            report = F.report(name)
+            self.assertEqual([x['state'] for x in report['members'] if x['status'] == 'watch'], [word])
+
+    def test_finding_text_never_repeats_the_state(self):
+        for name in F.ALL:
+            report = F.report(name)
+            for f in report['findings']:
+                if f['id'] in ('local_state', 'member_state'):
+                    state = f['title'].rsplit(' is ', 1)[1]
+                    with self.subTest(scenario=name, finding=f['title']):
+                        self.assertFalse(f['text'].startswith(state + ':'), f['text'])
 
     def test_maintenance_mode(self):
         report = F.report('pxc-8.4-maintenance')
@@ -297,8 +527,12 @@ class TestPerconaXtraDBCluster(unittest.TestCase):
         self.assertEqual([x['status'] for x in donor['members'] if not x['local']], ['ok', 'ok'])
         lost = F.report('pxc-8.4-two-of-three')
         self.assertEqual((lost['cluster']['size'], lost['cluster']['expected_size']), (2, 3))
-        self.assertEqual((lost['status'], ids(lost)), ('watch', ['size_below_configured']))
+        self.assertEqual((lost['status'], ids(lost)), ('watch', ['size_below_configured', 'no_tolerance']))
         self.assertEqual([x['name'] for x in lost['members']], ['pxc-1', 'pxc-3'])
+        # The node that left is named: its entry matches no member.
+        self.assertEqual(lost['galera']['missing'], ['mf-pxc-2'])
+        self.assertIn('mf-pxc-2 is not in the component', lost['findings'][0]['text'])
+        self.assertIn('mf-pxc-2  (in wsrep_cluster_address, not in the component)', m.format_text(lost))
         self.assertEqual(lost['galera']['cluster_address'], 'gcomm://mf-pxc-1,mf-pxc-2,mf-pxc-3')
 
     def test_states_kept_when_the_members_table_is_not_readable(self):
@@ -319,7 +553,8 @@ class TestPerconaXtraDBCluster(unittest.TestCase):
         self.assertEqual(report['galera']['members_source'], 'wsrep_incoming_addresses')
         self.assertEqual([x['name'] for x in report['members']], ['pxc-1', 'pxc-2', 'pxc-3'])
         self.assertEqual(local(report)['name'], 'pxc-1')
-        self.assertEqual(member(report, 'pxc-3')['state'], 'DONOR')
+        self.assertEqual((member(report, 'pxc-3')['state'], member(report, 'pxc-3')['pxc_status']),
+                         ('Donor/Desynced', 'DONOR'))
         self.assertEqual((report['status'], ids(report)), ('watch', ['member_state']))
         self.assertTrue(all(x['uuid'] for x in report['members']))
 
@@ -377,12 +612,14 @@ class TestGroupReplication(unittest.TestCase):
         self.assertEqual(states['RECOVERING']['status'], 'watch')
         self.assertEqual(states['RECOVERING']['role'], 'SECONDARY')
         self.assertIn('Queues: 4 in certification, 12 in the applier.', states['RECOVERING']['status_why'])
-        self.assertEqual(states['UNREACHABLE']['status'], 'problem')
+        # One scale: a member missing from the reachable group while quorum
+        # holds is watch, like a Galera node that left.
+        self.assertEqual(states['UNREACHABLE']['status'], 'watch')
         # UNREACHABLE overrides the state only; the role stays (ps_information.cc).
         self.assertIn(states['UNREACHABLE']['role'], ('PRIMARY', 'SECONDARY'))
         self.assertIs(report['cluster']['quorum'], True)
         self.assertEqual(report['cluster']['failures_tolerated'], 0)
-        self.assertEqual(report['status'], 'problem')
+        self.assertEqual(report['status'], 'watch')
         self.assertEqual(sorted(ids(report)), ['member_state', 'member_state', 'no_tolerance'])
 
     def test_no_quorum(self):
@@ -391,22 +628,32 @@ class TestGroupReplication(unittest.TestCase):
         self.assertEqual(report['findings'][0]['id'], 'no_quorum')
         self.assertIn('2 of 3 members are UNREACHABLE', report['findings'][0]['text'])
         self.assertNotIn('primary_count', ids(report))
-        # The majority rule of member_info.cc:1450-1464, through the module.
-        for total, unreachable, quorum in ((3, 1, True), (3, 2, False), (4, 2, False), (5, 2, True), (2, 1, False),
-                                           (1, 0, True)):
+        # No tolerance is claimed without quorum (MySQL Shell's NO_QUORUM branch).
+        self.assertIsNone(report['cluster']['failures_tolerated'])
+        self.assertNotIn('tolerates', m.format_text(report))
+        # The majority rule of member_info.cc:1450-1464, through the module,
+        # and the failures it still survives over the current view.
+        for total, unreachable, quorum, tolerated in (
+                (3, 1, True, 0), (3, 2, False, None), (4, 1, True, 0), (4, 2, False, None), (5, 1, True, 1),
+                (5, 2, True, 0), (6, 2, True, 0), (6, 3, False, None), (7, 3, True, 0), (9, 4, True, 0),
+                (2, 1, False, None), (1, 0, True, 0), (3, 0, True, 1), (5, 0, True, 2)):
             with self.subTest(total=total, unreachable=unreachable):
                 report = m.read_status(F.ScenarioConn(F.group(total, unreachable)))
                 self.assertIs(report['cluster']['quorum'], quorum)
                 self.assertEqual('no_quorum' in ids(report), not quorum)
+                self.assertEqual(report['cluster']['failures_tolerated'], tolerated)
+                self.assertEqual('no_tolerance' in ids(report), tolerated == 0)
 
     def test_unreachable_recording(self):
         """Live: mf-ic-3 paused (expel timeout raised to 60), read from the primary."""
         report = F.report('ic-8.4-unreachable')
         gone = member(report, 'mf-ic-3:3306')
-        self.assertEqual((gone['state'], gone['role'], gone['status']), ('UNREACHABLE', 'SECONDARY', 'problem'))
+        self.assertEqual((gone['state'], gone['role'], gone['status']), ('UNREACHABLE', 'SECONDARY', 'watch'))
         self.assertIs(report['cluster']['quorum'], True)
         self.assertEqual(report['cluster']['failures_tolerated'], 0)
-        self.assertEqual((report['status'], sorted(ids(report))), ('problem', ['member_state', 'no_tolerance']))
+        self.assertEqual((report['status'], sorted(ids(report))), ('watch', ['member_state', 'no_tolerance']))
+        self.assertIn('2 of 3 members are reachable',
+                      next(f['text'] for f in report['findings'] if f['id'] == 'no_tolerance'))
         self.assertEqual(local(report)['role'], 'PRIMARY')
         self.assertNotIn('primary_count', ids(report))
 
@@ -414,12 +661,17 @@ class TestGroupReplication(unittest.TestCase):
         """Live: STOP GROUP_REPLICATION on mf-ic-3, read from the primary."""
         report = F.report('ic-8.4-member-offline')
         missing = next(x for x in report['members'] if x['state'] == 'MISSING')
+        # One scale: MISSING while quorum holds is watch, like a Galera node that left.
         self.assertEqual((missing['name'], missing['status'], missing['state_source']),
-                         ('mf-ic-3:3306', 'problem', 'metadata'))
+                         ('mf-ic-3:3306', 'watch', 'metadata'))
         self.assertEqual((report['cluster']['size'], report['cluster']['expected_size']), (2, 3))
         self.assertNotIn('size_below_configured', ids(report))
         self.assertEqual(sorted(ids(report)), ['member_state', 'no_tolerance'])
-        self.assertEqual(report['summary'], {'members': 3, 'ok': 2, 'watch': 0, 'problem': 1, 'unknown': 0})
+        self.assertEqual(report['status'], 'watch')
+        self.assertEqual(report['summary'], {'members': 3, 'ok': 2, 'watch': 1, 'problem': 0, 'unknown': 0})
+        # The metadata instance not in the group is named.
+        self.assertEqual(next(f for f in report['findings'] if f['id'] == 'member_state')['title'],
+                         'mf-ic-3:3306 is MISSING')
 
     def test_this_member_offline_cannot_judge_the_group(self):
         """Live: STOP GROUP_REPLICATION on mf-ic-3, read from mf-ic-3."""
@@ -431,11 +683,25 @@ class TestGroupReplication(unittest.TestCase):
         self.assertIsNone(report['cluster']['quorum'])
         self.assertEqual(ids(report), ['local_not_in_group'])
         self.assertIn('connect to an ONLINE member', report['findings'][0]['text'])
+        # It lists only itself (gcs_event_handlers.cc:1017-1042): no group size.
+        self.assertEqual((report['cluster']['size'], report['cluster']['expected_size']), (None, 3))
+        self.assertIsNone(report['cluster']['failures_tolerated'])
+        text = m.format_text(report)
+        self.assertNotIn('size 1', text)
+        self.assertIn('group not visible from this member (3 in the metadata)', text)
         others = [x for x in report['members'] if not x['local']]
         self.assertEqual(len(others), 2)
         for x in others:
             self.assertIsNone(x['state'])
             self.assertEqual(x['status'], 'unknown')
+            # About the connected member, never the instance shown.
+            self.assertIn('The connected member (mf-ic-3:3306) is OFFLINE', x['status_why'][0])
+            self.assertNotIn('This member is not in the group', x['status_why'][0])
+        # The metadata (and the router check-in) is this member's frozen copy.
+        self.assertEqual(report['metadata']['local_copy'], 'left_group')
+        self.assertTrue(report['routers'][0]['from_local_copy'])
+        self.assertIn("this member's metadata copy, possibly out of date", text)
+        self.assertFalse(F.report('ic-8.4-healthy')['routers'][0]['from_local_copy'])
 
     def test_multi_primary_every_member_primary(self):
         report = F.report('gr-8.4-multi-primary')
@@ -456,6 +722,47 @@ class TestGroupReplication(unittest.TestCase):
         self.assertEqual((replica['role'], replica['state'], replica['status']), ('READ_REPLICA', None, 'unknown'))
         self.assertEqual(report['cluster']['expected_size'], 3)
         self.assertEqual(report['status'], 'ok')
+
+    def test_connected_to_a_read_replica(self):
+        """A read replica has no group of its own (Sh add_replica_instance.cc
+        never installs the plugin): found by @@server_uuid in its replicated
+        metadata, judged by its read_replica_replication channel."""
+        conn = F.conn('ic-8.4-read-replica-local')
+        report = m.read_status(conn)
+        self.assertEqual((report['kind'], report['status'], report['cluster']['name']), ('innodb_cluster', 'ok', 'mfcluster'))
+        me = local(report)
+        self.assertEqual((me['role'], me['state'], me['state_source'], me['instance_type']),
+                         ('READ_REPLICA', 'Replicating', 'replication_channel', 'read-replica'))
+        self.assertEqual((report['cluster']['size'], report['cluster']['expected_size'], report['cluster']['quorum']),
+                         (None, 3, None))
+        group = [x for x in report['members'] if not x['local']]
+        self.assertEqual(len(group), 3)
+        for x in group:
+            self.assertEqual((x['state'], x['status']), (None, 'unknown'))
+        self.assertEqual(report['metadata']['local_copy'], 'read_replica')
+        self.assertTrue(any("WHERE CHANNEL_NAME = 'read_replica_replication'" in sql for sql, _ in conn.calls))
+        self.assertIn('this server is a read replica', m.format_text(report))
+        stopped = F.report('ic-8.4-read-replica-stopped')
+        self.assertEqual((stopped['status'], ids(stopped)), ('problem', ['read_replica']))
+        self.assertIn('not running (receiver OFF, applier ON)', stopped['findings'][0]['text'])
+        self.assertIn('2003', stopped['findings'][0]['text'])
+        # Retrying (CONNECTING with its last error) is watch, never Error.
+        connecting = F.report('ic-8.4-read-replica-connecting')
+        self.assertEqual((connecting['status'], local(connecting)['state']), ('watch', 'Connecting'))
+        # A table that cannot be read is unknown, never "stopped".
+        denied = F.report('ic-8.4-read-replica-applier-denied')
+        self.assertEqual((denied['status'], local(denied)['status'], local(denied)['state']), ('unknown', 'unknown', None))
+        self.assertEqual(ids(denied), [])
+        # Not in the metadata: still not part of a cluster.
+        self.assertEqual(F.report('mysql-8.4-standalone')['kind'], 'none')
+
+    def test_ipv6_member_address(self):
+        """Codex review: MEMBER_HOST 2001:db8::1 and MEMBER_PORT 3306 stay
+        separate; the address brackets the host."""
+        report = F.report('gr-8.4-ipv6')
+        me = local(report)
+        self.assertEqual((me['host'], me['port'], me['address']), ('2001:db8::1', 3306, '[2001:db8::1]:3306'))
+        self.assertIn('[2001:db8::2]:3306', m.format_text(report))
 
     def test_denied_ps_off_standalone_and_idle_plugin(self):
         denied = F.report('gr-8.4-denied')
@@ -490,6 +797,13 @@ class TestCLI(unittest.TestCase):
         code, out, err, factory = run_cli('cluster', ['-h', 'db', '-u', 'app'], F.conn('ic-8.4-healthy'))
         self.assertEqual(code, 0)
         self.assertIn('MySQL InnoDB Cluster mfcluster  [ok]', out)
+        # A name that equals the address is printed once; this connection in words.
+        self.assertNotIn('mf-ic-1:3306  mf-ic-1:3306', out)
+        self.assertIn('(this connection)', out)
+        # Router check-in: its age and UTC, never a bare server-time stamp.
+        self.assertRegex(out, r'last check-in \d+ s ago \(2026-10-20 \d\d:\d\d:\d\d UTC\)')
+        self.assertEqual(m.age_text(-3), '0 s ago')
+        self.assertEqual(m.age_text(150), '2 min ago')
         self.assertIn('note:', err)
         self.assertEqual(factory.options['query_timeout'], 30)
         code, out, err, _ = run_cli('cluster', ['--json', '-q'], F.conn('galera-11.8-healthy'))

@@ -75,7 +75,8 @@ try {
   assert.match(local, /aria-label="Select Local MySQL"|Select Local MySQL/);
   assert.match(local, /aria-label="Local MySQL, in use"/);
   assert.match(local, /Actions for Local MySQL/);
-  assert.doesNotMatch(local, /Not saved|row-confirm/);
+  assert.doesNotMatch(local, /row-confirm/);
+  assert.match(local, /title="No saved password">Not saved</, 'the Password column names a connection with no saved password');
   const cleared = { id: '', fields: { ...connectionFields, host: '', name: '' }, password: '' };
   assert.doesNotMatch(renderConnections({ active: cleared }), /data-row-key="active"/);
   assert.equal(home.requestConnection(cleared).port, 0, 'an empty host must not silently open localhost');
@@ -88,7 +89,6 @@ try {
   assert.match(savedRows, /class="type-dot is-read-only" role="img" aria-label="Development, read-only"/);
   assert.match(savedRows, /title="Development · Read-only"/);
   assert.match(savedRows, /title="Password saved in macOS Keychain">Saved<\/span>/);
-  assert.match(local, /title="No saved password">None<\/span>/);
   assert.match(savedRows, /class="cell-truncate" title="127\.0\.0\.1:3306"/);
   assert.doesNotMatch(savedRows, /<script>/);
   assert.match(savedRows, /Not recorded/, 'profile modification dates are never used as usage history');

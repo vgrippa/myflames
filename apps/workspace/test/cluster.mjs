@@ -22,7 +22,8 @@ const R = {};
 for (const name of ["galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two-of-three", "galera-11.8-non-primary", "pxc-8.4-healthy",
   "pxc-8.4-donor", "pxc-8.4-member-donor", "ic-8.4-healthy", "ic-8.4-degraded", "ic-8.4-unreachable", "ic-8.4-no-quorum",
   "ic-8.4-member-offline", "ic-8.4-local-offline", "gr-8.4-multi-primary", "gr-8.4-denied", "mysql-8.4-standalone",
-  "mariadb-11.8-standalone"]) R[name] = await load(`cluster-${name}.json`);
+  "mariadb-11.8-standalone", "pxc-8.4-two-of-three", "galera-11.8-two-nodes", "galera-11.8-partial-seeds", "galera-mysql-8.4-healthy",
+  "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local"]) R[name] = await load(`cluster-${name}.json`);
 
 const view = '.server-view[data-view="cluster"]';
 const nav = '.main-nav button[data-place="cluster"]';
@@ -83,12 +84,15 @@ try {
   assert.deepEqual(tiles, ["Quorum", "Members", "This member", "Mode"]);
   const cards = await page.$$eval(`${view} .cluster-members .cluster-card`, (els) => els.map((e) => ({
     label: e.getAttribute("aria-label"), local: e.classList.contains("is-local"), role: e.querySelector(".cluster-role")?.textContent,
-    state: e.querySelector(".cluster-state")?.textContent, flow: e.querySelector(".cluster-flow")?.textContent })));
+    state: e.querySelector(".cluster-mark")?.textContent, flow: e.querySelector(".cluster-flow")?.textContent })));
   assert.equal(cards.length, 3);
   assert.equal(cards.filter((c) => c.local).length, 1, "one card is this connection");
   assert.deepEqual(cards.map((c) => c.role).sort(), ["Primary", "Secondary", "Secondary"]);
   assert.ok(cards.every((c) => c.state === "ONLINE" && /^Queue \d+ · applier \d+$/.test(c.flow)), JSON.stringify(cards));
   assert.equal(await page.$$eval(`${view} .cluster-card.is-local .cluster-local`, (els) => els.map((e) => e.textContent).join()), "This connection");
+  // Every card's lines start at the same height, the local one included.
+  const nameTops = await page.$$eval(`${view} .cluster-members .cluster-card`, (els) => els.map((e) => e.querySelector(".cluster-name").getBoundingClientRect().top - e.getBoundingClientRect().top));
+  assert.equal(new Set(nameTops).size, 1, `name rows line up: ${nameTops}`);
   assert.match(await h.text(`${view} .cluster-bus-label`), /Single-primary group · quorum · tolerates 1 failure/);
   assert.equal(await page.$$eval(`${view} .cluster-routers .cluster-card`, (els) => els.length), 1, "the router hangs under the group");
   // Static: nothing in the picture animates.
@@ -99,7 +103,12 @@ try {
   assert.equal(animated, 0, "no animation in the topology");
   const info = await h.popover("About Cluster");
   assert.match(info, /Read-only in this release/);
-  assert.match(info, /MariaDB Galera Cluster, Percona XtraDB Cluster, MySQL InnoDB Cluster/);
+  assert.match(info, /MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster, MySQL InnoDB Cluster/);
+  assert.match(info, /OK: quorum, and every expected member present and healthy/);
+  // The healthy summary reads like Watch and Problem: a shape and the word, inline.
+  assert.notEqual(await page.$eval(`${view} .summary-line .status-pill.is-ok .status-dot`, (d) => getComputedStyle(d).display), "none");
+  // A name equal to its address is announced once.
+  assert.ok(cards.every((c) => c.label.split("mf-ic-").length === 2), JSON.stringify(cards.map((c) => c.label)));
   await shot("cluster-ic-topology.png");
   assert.equal(await page.$eval(nav, (b) => [...b.querySelectorAll(".status-dot")].filter((d) => d.getClientRects().length).length), 0, "OK draws no marker");
   assert.match(await page.$eval(nav, (b) => b.textContent), /cluster OK/, "the state still reaches screen readers");
@@ -132,8 +141,8 @@ try {
   // broken link, warning mark and the word), and findings name it.
   await refreshTo(R["ic-8.4-degraded"]);
   const degraded = await page.$$eval(`${view} .cluster-members .cluster-card`, (els) => els.map((e) => ({
-    state: e.querySelector(".cluster-state")?.textContent, detached: e.classList.contains("is-detached"),
-    border: getComputedStyle(e).borderTopStyle, mark: !!e.querySelector(".cluster-state svg"),
+    state: e.querySelector(".cluster-mark")?.textContent, detached: e.classList.contains("is-detached"),
+    border: getComputedStyle(e).borderTopStyle, mark: !!e.querySelector(".cluster-mark.is-watch .cluster-shape"),
     stem: e.parentElement.querySelector(".cluster-stem")?.classList.contains("is-broken") })));
   const unreachable = degraded.find((c) => c.state === "UNREACHABLE");
   assert.deepEqual(unreachable, { state: "UNREACHABLE", detached: true, border: "dashed", mark: true, stem: true });
@@ -142,11 +151,27 @@ try {
   assert.equal(recovering.border, "solid");
   assert.ok(degraded.filter((c) => c.state === "ONLINE").every((c) => !c.detached && c.border === "solid"));
   const findings = await visible(`${view} .cluster-findings li`);
-  assert.ok(findings.some((f) => /^Problem.*is UNREACHABLE/.test(f)), findings.join(" | "));
-  assert.ok(findings.some((f) => /Cannot tolerate a failure/.test(f)));
-  assert.match((await visible(`${view} .summary-line`))[0], /^Problem/);
-  assert.ok(await page.$(`${nav} .status-dot.is-problem`), "the sidebar names the problem");
-  assert.match(await page.$eval(nav, (b) => b.textContent), /problem/);
+  // One scale: UNREACHABLE and RECOVERING with quorum are Watch.
+  assert.ok(findings.some((f) => /^Watch.*is UNREACHABLE/.test(f)), findings.join(" | "));
+  assert.ok(findings.some((f) => /Cannot survive another failure/.test(f)));
+  assert.match((await visible(`${view} .summary-line`))[0], /^Watch/);
+  assert.ok(await page.$(`${nav} .status-dot.is-watch`), "the sidebar names the state");
+  assert.match(await page.$eval(nav, (b) => b.textContent), /to watch/);
+  // Not OK: the findings come first, above the tiles; one line each, the
+  // title in foreground text with only the member name linked, the reason on demand.
+  const order = await page.$eval(`${view} .view-main`, (m) => [...m.querySelectorAll(".cluster-findings, .cluster-tiles")].map((e) => e.className));
+  assert.deepEqual(order.map((c) => c.split(" ")[0]), ["cluster-findings", "cluster-tiles"]);
+  const row = await page.$$eval(`${view} .cluster-findings li`, (lis) => lis.map((li) => ({
+    link: li.querySelector(".cluster-finding-title .text-button")?.textContent || null,
+    title: li.querySelector(".cluster-finding-title").textContent, hidden: li.querySelector(".cluster-finding-text").hidden })));
+  assert.ok(row.every((r) => r.hidden), "reasons are on demand");
+  const unreachableRow = row.find((r) => /UNREACHABLE/.test(r.title));
+  assert.equal(unreachableRow.link, "mf-ic-3:3306");
+  assert.equal(unreachableRow.title, "mf-ic-3:3306 is UNREACHABLE");
+  await page.click(`${view} .cluster-findings li:last-child .cluster-finding-toggle`);
+  assert.equal(await page.$eval(`${view} .cluster-findings li:last-child .cluster-finding-text`, (e) => e.hidden), false);
+  // Degraded tiles carry their tone: the quorum tile when one more failure loses it.
+  assert.ok(await page.$(`${view} li.tile-item.is-watch`), "a degraded tile has its tone");
   await shot("cluster-ic-degraded.png");
   // Members: state pills with words; the inspector says why.
   await tab("Members");
@@ -165,16 +190,38 @@ try {
   assert.ok(await page.$(`${view} .cluster-bus.is-broken`), "the group line is broken without quorum");
   assert.match(await h.text(`${view} .cluster-bus-label`), /no quorum/);
   await refreshTo(R["ic-8.4-member-offline"]);
-  assert.ok((await visible(`${view} .cluster-card.is-detached .cluster-state`)).includes("MISSING"));
+  assert.ok((await visible(`${view} .cluster-card.is-detached .cluster-mark`)).includes("MISSING"));
   // Recorded live: a paused member is UNREACHABLE and keeps its role badge.
   await refreshTo(R["ic-8.4-unreachable"]);
-  const paused = await page.$$eval(`${view} .cluster-card.is-detached`, (els) => els.map((e) => [e.querySelector(".cluster-role")?.textContent, e.querySelector(".cluster-state")?.textContent]));
+  const paused = await page.$$eval(`${view} .cluster-card.is-detached`, (els) => els.map((e) => [e.querySelector(".cluster-role")?.textContent, e.querySelector(".cluster-mark")?.textContent]));
   assert.deepEqual(paused, [["Secondary", "UNREACHABLE"]]);
   await shot("cluster-ic-unreachable.png");
   await refreshTo(R["ic-8.4-local-offline"]);
-  assert.match(await h.text(`${view} .cluster-bus-label`), /quorum not visible from here/);
-  assert.ok((await visible(`${view} .cluster-card.is-local.is-detached .cluster-state`)).includes("OFFLINE"));
-  assert.equal((await visible(`${view} .cluster-card:not(.is-local) .cluster-state`)).filter((s) => s === "Not visible here").length, 2);
+  // This member left the group: no group count, nothing called out of the group.
+  assert.match(await h.text(`${view} .cluster-bus-label`), /not visible from this member/);
+  const blindSummary = (await visible(`${view} .summary-line`))[0];
+  assert.doesNotMatch(blindSummary, /\d+ of \d+ members ONLINE/);
+  assert.match(blindSummary, /this member OFFLINE · group not visible from here/);
+  // The sidebar's problem marker shows its word, not a dot and a count alone.
+  assert.match(await page.$eval(`${nav} .nav-marker`, (m) => m.textContent), /^Problem1$/);
+  assert.match(await h.text(`${view} .tile-item:nth-child(2) .tile-value`), /^Not visible/);
+  assert.ok((await visible(`${view} .cluster-card.is-local.is-detached .cluster-mark`)).includes("OFFLINE"));
+  assert.equal((await visible(`${view} .cluster-card:not(.is-local) .cluster-mark`)).filter((s) => s === "Not visible here").length, 2);
+  assert.ok((await visible(`${view} .cluster-card:not(.is-local) .cluster-flow`)).every((t) => !/Not in the group/.test(t)));
+  // The router check-in is this member's frozen copy.
+  await tab("Routers");
+  assert.match((await visible(`${view} tbody tr`))[0], /this member's copy/);
+  await tab("Topology");
+  // From a group member, the read replica hangs apart from the group line.
+  await refreshTo(R["ic-8.4-read-replica"]);
+  const replica = await page.$eval(`${view} .cluster-card.is-replica`, (e) => ({
+    inGroup: !!e.closest(".cluster-group"), stem: getComputedStyle(e.parentElement.querySelector(".cluster-stem")).borderLeftStyle }));
+  assert.deepEqual(replica, { inGroup: false, stem: "dashed" });
+  assert.equal(await page.$$eval(`${view} .cluster-group .cluster-card`, (els) => els.length), 3);
+  // Connected to the read replica itself: an InnoDB Cluster, not "not part of a cluster".
+  await refreshTo(R["ic-8.4-read-replica-local"]);
+  assert.match((await visible(`${view} .summary-line`))[0], /this server is a read replica · Replicating/);
+  assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
 
   // Multi-primary Group Replication without metadata: every member PRIMARY, no Routers tab.
   await refreshTo(R["gr-8.4-multi-primary"]);
@@ -186,36 +233,74 @@ try {
   await refreshTo(R["galera-11.8-healthy"]);
   assert.match((await visible(`${view} .summary-line`))[0], /MariaDB Galera Cluster mf_galera · Primary component · 3 nodes · this node Synced/);
   const galera = await page.$$eval(`${view} .cluster-members .cluster-card`, (els) => els.map((e) => ({
-    local: e.classList.contains("is-local"), state: e.querySelector(".cluster-state")?.textContent, meta: [...e.querySelectorAll(".cluster-meta")].map((m) => m.textContent) })));
-  assert.deepEqual(galera.map((c) => c.state).sort(), ["Not judged here", "Not judged here", "Synced"]);
+    local: e.classList.contains("is-local"), state: e.querySelector(".cluster-mark")?.textContent, meta: [...e.querySelectorAll(".cluster-meta")].map((m) => m.textContent) })));
+  assert.deepEqual(galera.map((c) => c.state).sort(), ["In the component", "In the component", "Synced"]);
   assert.ok(galera.find((c) => c.local).meta.some((m) => /^MariaDB 11\.8\.9/.test(m)), JSON.stringify(galera));
-  assert.ok(galera.every((c) => c.meta.some((m) => /port not reported/.test(m))), "port 0 is not shown as a port");
+  // Port 0: the host alone (a note explains it); another node's version is not visible, so none is shown.
+  assert.ok(galera.every((c) => c.meta.some((m) => /^192\.168\.80\.\d+$/.test(m))), JSON.stringify(galera));
+  assert.ok(galera.filter((c) => !c.local).every((c) => !c.meta.includes("MariaDB")), "no bare product name");
   assert.deepEqual(await visible(`${view} .tile-label`), ["Component", "Nodes", "This node", "Flow control paused"]);
-  assert.match(await h.text(`${view} .cluster-bus-label`), /Primary component · 3 of 3 nodes · flow control paused 0% on this node/);
+  assert.match(await h.text(`${view} .tile-item:nth-child(2)`), /3 in component.*1 inspected here/);
+  assert.match(await h.text(`${view} .cluster-bus-label`), /^Primary component · 3 nodes · tolerates 1 failure$/);
   await shot("cluster-galera-topology.png");
-  await tab("Members");
+  // Galera says Node, not Member.
+  assert.deepEqual(await visible(`${view} .segmented button`), ["Topology", "Nodes"]);
+  await tab("Nodes");
   const galeraCols = await visible(`${view} thead th`);
-  for (const col of ["Recv queue", "Send queue", "Flow control paused", "Cert failures"]) assert.ok(galeraCols.some((c) => c.startsWith(col)), `${col} in ${galeraCols}`);
+  assert.ok(galeraCols[0].startsWith("Node"), galeraCols.join());
+  for (const col of ["Receive queue", "Send queue", "Flow control paused", "Cert failures"]) assert.ok(galeraCols.some((c) => c.startsWith(col)), `${col} in ${galeraCols}`);
+  // The table fits at 1440 px: nothing under the Columns button, no cut address.
+  const fit = await page.$eval(`${view} .data-table-wrap`, (w) => ({ client: w.clientWidth, scroll: w.scrollWidth,
+    cut: [...w.querySelectorAll("td")].filter((td) => td.scrollWidth > td.clientWidth + 1).map((td) => td.textContent) }));
+  assert.ok(fit.scroll <= fit.client, JSON.stringify(fit));
+  assert.deepEqual(fit.cut, []);
   await tab("Topology");
   await refreshTo(R["galera-11.8-donor"]);
-  const donor = await page.$$eval(`${view} .cluster-card.is-local`, (els) => els.map((e) => ({ state: e.querySelector(".cluster-state").textContent,
+  const donor = await page.$$eval(`${view} .cluster-card.is-local`, (els) => els.map((e) => ({ state: e.querySelector(".cluster-mark").textContent,
     watch: e.classList.contains("tone-watch"), flow: e.querySelector(".cluster-flow").textContent })));
-  assert.deepEqual(donor, [{ state: "Donor/Desynced", watch: true, flow: "Recv queue 0 · send 0 · flow control paused 0%" }]);
+  assert.deepEqual(donor, [{ state: "Donor/Desynced", watch: true, flow: "Receive queue 0 · send 0 · flow control paused 0%" }]);
+  // The finding names the measured cause.
+  await page.click(`${view} .cluster-findings li .cluster-finding-toggle`);
+  assert.match(await h.text(`${view} .cluster-findings li .cluster-finding-text`), /^wsrep_desync is ON/);
   await refreshTo(R["galera-11.8-two-of-three"]);
   assert.match(await h.text(`${view} .cluster-bus-label`), /Primary component · 2 of 3 nodes/);
   assert.ok((await visible(`${view} .cluster-findings li`)).some((f) => /Fewer nodes than configured/.test(f)));
   await refreshTo(R["galera-11.8-non-primary"]);
   assert.ok(await page.$(`${view} .cluster-bus.is-broken`));
   assert.match(await h.text(`${view} .cluster-bus-label`), /non-Primary component · 1 of 3 nodes/);
+  // A partial seed list: the size alone, never "3 of 1".
+  await refreshTo(R["galera-11.8-partial-seeds"]);
+  assert.match(await h.text(`${view} .cluster-bus-label`), /^Primary component · 3 nodes ·/);
+  assert.doesNotMatch((await visible(`${view} .summary-line`))[0], / of 1/);
+  // Two nodes: one more failure stops the cluster.
+  await refreshTo(R["galera-11.8-two-nodes"]);
+  assert.match((await visible(`${view} .cluster-findings li`)).join(" | "), /Cannot survive another failure/);
+  // wsrep_on OFF on a joined node: still a cluster, a problem.
+  await refreshTo(R["galera-11.8-wsrep-off"]);
+  assert.match((await visible(`${view} .summary-line`))[0], /^Problem/);
+  assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
+  // Galera on MySQL that is not Percona XtraDB Cluster.
+  await refreshTo(R["galera-mysql-8.4-healthy"]);
+  assert.match((await visible(`${view} .summary-line`))[0], /Galera Cluster for MySQL mf_pxc/);
 
   // Percona XtraDB Cluster: every node's state comes from pxc_cluster_view.
   await refreshTo(R["pxc-8.4-healthy"]);
-  assert.deepEqual(await visible(`${view} .cluster-members .cluster-state`), ["Synced", "Synced", "Synced"]);
-  assert.ok((await visible(`${view} .cluster-members .cluster-meta`)).some((m) => /^Percona XtraDB Cluster 8\.4\.11/.test(m)));
+  assert.deepEqual(await visible(`${view} .cluster-members .cluster-mark`), ["Synced", "Synced", "Synced"]);
+  // PXC in the place (the summary names the product); the full name on hover.
+  assert.ok((await visible(`${view} .cluster-members .cluster-meta`)).some((m) => /^PXC 8\.4\.11/.test(m)));
   await refreshTo(R["pxc-8.4-member-donor"]);
-  assert.ok((await visible(`${view} .cluster-card.tone-watch .cluster-state`)).includes("Donor"));
+  // One word for one state on every surface: the card, the finding title.
+  assert.ok((await visible(`${view} .cluster-card.tone-watch .cluster-mark`)).includes("Donor/Desynced"));
+  assert.match((await visible(`${view} .cluster-findings li .cluster-finding-title`))[0], /is Donor\/Desynced$/);
+  await tab("Nodes");
+  const pxcFit = await page.$eval(`${view} .data-table-wrap`, (w) => ({ client: w.clientWidth, scroll: w.scrollWidth }));
+  assert.ok(pxcFit.scroll <= pxcFit.client, `PXC table fits at 1440: ${JSON.stringify(pxcFit)}`);
+  await tab("Topology");
+  // A node down: the configured entry that is not in the component is named and drawn apart.
+  await refreshTo(R["pxc-8.4-two-of-three"]);
+  assert.deepEqual(await visible(`${view} .cluster-card.is-placeholder .cluster-name`), ["mf-pxc-2"]);
   await refreshTo(R["pxc-8.4-donor"]);
-  assert.deepEqual(await visible(`${view} .cluster-card.is-local .cluster-state`), ["Donor/Desynced"]);
+  assert.deepEqual(await visible(`${view} .cluster-card.is-local .cluster-mark`), ["Donor/Desynced"]);
   await shot("cluster-pxc-topology.png");
 
   // An account that cannot read: one sentence, no muted sidebar.
@@ -228,7 +313,7 @@ try {
   await refreshTo(R["mysql-8.4-standalone"]);
   assert.equal(await h.text(`${view} .view-empty h3`), "Not part of a cluster");
   const calm = await h.text(`${view} .view-empty p`);
-  assert.match(calm, /MariaDB Galera Cluster, Percona XtraDB Cluster and MySQL InnoDB Cluster/);
+  assert.match(calm, /MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster and MySQL InnoDB Cluster/);
   assert.match(calm, /^This server has no Galera provider, and Group Replication is not installed or not running\./);
   assert.equal(await page.$(`${view} .gate`), null, "not a warning");
   assert.equal(await page.$$eval(`${view} .segmented`, (els) => els.length), 0, "no sections without a cluster");
@@ -262,17 +347,17 @@ try {
   await page.waitForFunction((sel) => !!document.querySelector(`${sel} .view-empty`)?.offsetParent, {}, view);
   await page.mouse.move(900, 600);
   await pause(200);
-  // On screen it reads as the current place, not as disabled.
+  // On screen it still looks disabled: a neutral gray fill, never the accent, and the faint text.
   const here = await page.$eval(nav, (b) => {
     const probe = document.createElement("span");
-    probe.style.background = "var(--selection-fill)";
-    probe.style.color = "var(--selection-ink)";
+    probe.style.background = "var(--surface-hover)";
+    probe.style.color = "var(--ink-faint)";
     document.body.append(probe);
     const want = { bg: getComputedStyle(probe).backgroundColor, ink: getComputedStyle(probe).color };
     probe.remove();
     return { bg: getComputedStyle(b).backgroundColor, ink: getComputedStyle(b).color, want };
   });
-  assert.deepEqual({ bg: here.bg, ink: here.ink }, here.want, "the open Cluster place looks current");
+  assert.deepEqual({ bg: here.bg, ink: here.ink }, here.want, "the open Cluster place keeps its disabled look");
   await shot("cluster-sidebar-muted.png");
   await refreshTo(R["mariadb-11.8-standalone"]);
   assert.match(await h.text(`${view} .view-empty p`), /wsrep_on is OFF/);
@@ -285,6 +370,14 @@ try {
   await chooseConnection(page, nodeA);
   await page.waitForFunction((sel) => [...document.querySelectorAll(sel)].some((e) => e.offsetParent && e.hasAttribute("data-other-connection")), {}, view);
   assert.match(await h.text(`${view} .other-connection`), /From .*refresh to load this server/);
+  // Another connection's report never marks a member "This connection".
+  const stale = await page.evaluate((sel) => ({
+    text: document.querySelector(sel).textContent,
+    labels: [...document.querySelectorAll(`${sel} [aria-label]`)].map((e) => e.getAttribute("aria-label")).join(" | "),
+    chips: [...document.querySelectorAll(`${sel} .cluster-local`)].map((e) => e.textContent) }), view);
+  assert.doesNotMatch(stale.text, /This connection/);
+  assert.doesNotMatch(stale.labels, /this connection/i);
+  assert.deepEqual(stale.chips, ["Read here"]);
   assert.equal(await page.$(`${nav} .status-dot`), null, "no marker from another connection");
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
   await pause(300);
@@ -323,23 +416,67 @@ try {
   await pause(300);
   assert.equal(state.seen.length, beforeAll + 1, "opening Cluster after Refresh all reads nothing more");
 
-  // The app's 720 px minimum window: no page scroll sideways; the picture
-  // scrolls inside its frame; the sections stay reachable.
+  // A failed read keeps the last report greyed with its age, a short reason
+  // (no client dump), and no "This connection".
+  await refreshTo(R["galera-11.8-healthy"]);
+  state.fallback = { status: 400, body: { error: "mysql client exited 1: ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:34102' (61)" } };
+  await h.refresh();
+  await page.waitForFunction((sel) => document.querySelector(`${sel} .view-status .error`), {}, view);
+  const failedRead = await page.evaluate((sel) => ({
+    error: document.querySelector(`${sel} .view-status .error`).textContent,
+    stale: document.querySelector(sel).classList.contains("is-stale"),
+    note: document.querySelector(`${sel} .cluster-stale`)?.textContent || "",
+    chips: [...document.querySelectorAll(`${sel} .cluster-local`)].map((e) => e.textContent) }), view);
+  assert.match(failedRead.error, /^Could not connect to 127\.0\.0\.1:34102/);
+  assert.doesNotMatch(failedRead.error, /mysql client exited|ERROR 2003/);
+  assert.equal(failedRead.stale, true);
+  assert.match(failedRead.note, /^Last read .*the read since failed/);
+  assert.deepEqual(failedRead.chips, ["Read here"]);
+  // Refresh all shares that state: a successful read through it ends the
+  // stale state, and a failed one starts it.
+  async function refreshAll(body, status = 200) {
+    state.fallback = { status, body };
+    await h.server();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.click(".server-place [data-action=refresh-all]");
+    await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""), { timeout: 20000 });
+    await page.click(nav);
+    await page.waitForFunction((sel) => !!document.querySelector(`${sel} .summary-line`)?.offsetParent, {}, view);
+    await pause(200);
+    return page.evaluate((sel) => ({ stale: document.querySelector(sel).classList.contains("is-stale"),
+      chips: [...document.querySelectorAll(`${sel} .cluster-local`)].map((e) => e.textContent),
+      error: document.querySelector(`${sel} .view-status .error`)?.textContent || "" }), view);
+  }
+  assert.deepEqual(await refreshAll(R["galera-11.8-healthy"]), { stale: false, chips: ["This connection"], error: "" });
+  const afterAllFailed = await refreshAll({ error: "mysql client exited 1: ERROR 2013 (HY000): Lost connection to MySQL server at 'reading initial communication packet'" }, 400);
+  assert.equal(afterAllFailed.stale, true);
+  assert.deepEqual(afterAllFailed.chips, ["Read here"]);
+  assert.match(afterAllFailed.error, /^Lost the connection to the server while reading/);
+
+  // The app's 720 px minimum window: no page scroll sideways; the cards wrap
+  // inside the frame; the sections stay reachable; the first tab's content
+  // starts above the fold.
   await refreshTo(R["ic-8.4-degraded"]);
   await page.setViewport({ width: 720, height: 520 });
   await pause(400);
   const narrow = await page.evaluate((sel) => ({
     overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     tabs: [...document.querySelectorAll(`${sel} .segmented button`)].filter((b) => b.offsetParent).length,
-    frame: (() => { const f = document.querySelector(`${sel} .cluster-topology`); return f ? getComputedStyle(f).overflowX : null; })(),
+    frame: (() => { const f = document.querySelector(`${sel} .cluster-topology`); return f ? f.scrollWidth - f.clientWidth : null; })(),
+    top: document.querySelector(`${sel} .cluster-topology`).getBoundingClientRect().top,
+    fold: document.querySelector(".window-statusbar").getBoundingClientRect().top,
   }), view);
   assert.ok(narrow.overflow <= 0, `horizontal page scroll at 720 px: ${narrow.overflow}`);
   assert.equal(narrow.tabs, 3);
-  assert.equal(narrow.frame, "auto");
+  assert.equal(narrow.frame, 0, "the cards wrap instead of running off the right edge");
+  assert.ok(narrow.top < narrow.fold - 24, `the topology starts above the fold: ${JSON.stringify(narrow)}`);
   await shot("cluster-720.png");
   await tab("Members");
   await pause(200);
   assert.ok((await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 0);
+  const tableTop = await page.evaluate((sel) => ({ top: document.querySelector(`${sel} .data-table-wrap`).getBoundingClientRect().top,
+    fold: document.querySelector(".window-statusbar").getBoundingClientRect().top }), view);
+  assert.ok(tableTop.top < tableTop.fold - 24, `the members table starts above the fold: ${JSON.stringify(tableTop)}`);
   await page.setViewport({ width: 1440, height: 1000 });
   await h.narrow("cluster-390.png", { place: ".cluster-place" });
 

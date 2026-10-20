@@ -23,15 +23,15 @@
   "expected_source": "mysql_innodb_cluster_metadata",
   "component": null,
   "quorum": false,
-  "failures_tolerated": 0,
+  "failures_tolerated": null,
   "topology": "single_primary",
   "provider": null
  },
  "status": "problem",
  "status_why": [
   "2 of 3 members are UNREACHABLE from this member, so the group has lost its majority and cannot process writes.",
-  "This server cannot reach the member; it may be down or partitioned.",
-  "This server cannot reach the member; it may be down or partitioned."
+  "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout.",
+  "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout."
  ],
  "local": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
  "members": [
@@ -49,7 +49,7 @@
    "local": true,
    "status": "ok",
    "status_why": [
-    "ONLINE: a full member of the group."
+    "A full member of the group."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -78,9 +78,9 @@
    "role": "SECONDARY",
    "version": "8.4.11",
    "local": false,
-   "status": "problem",
+   "status": "watch",
    "status_why": [
-    "UNREACHABLE: this server cannot reach the member; it may be down or partitioned."
+    "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -109,9 +109,9 @@
    "role": "SECONDARY",
    "version": "8.4.11",
    "local": false,
-   "status": "problem",
+   "status": "watch",
    "status_why": [
-    "UNREACHABLE: this server cannot reach the member; it may be down or partitioned."
+    "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -166,7 +166,8 @@
     "instance_type": "group-member"
    }
   ],
-  "reason": null
+  "reason": null,
+  "local_copy": null
  },
  "routers": [
   {
@@ -177,6 +178,8 @@
    "version": "8.4.10",
    "last_check_in": "2026-10-20 14:37:48",
    "last_check_in_age_s": 2,
+   "last_check_in_utc": "2026-10-20T14:37:48Z",
+   "from_local_copy": false,
    "ports": {
     "RWEndpoint": "6446",
     "ROEndpoint": "6447",
@@ -195,24 +198,24 @@
   },
   {
    "id": "member_state",
-   "status": "problem",
+   "status": "watch",
    "title": "mf-ic-2:3306 is UNREACHABLE",
-   "text": "This server cannot reach the member; it may be down or partitioned.",
+   "text": "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout.",
    "member": "member:10a527c5-cc92-11f1-956e-2a01c1402350"
   },
   {
    "id": "member_state",
-   "status": "problem",
+   "status": "watch",
    "title": "mf-ic-3:3306 is UNREACHABLE",
-   "text": "This server cannot reach the member; it may be down or partitioned.",
+   "text": "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout.",
    "member": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b"
   }
  ],
  "summary": {
   "members": 3,
   "ok": 1,
-  "watch": 0,
-  "problem": 2,
+  "watch": 2,
+  "problem": 0,
   "unknown": 0
  },
  "statements": [

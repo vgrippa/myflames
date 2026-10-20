@@ -65,7 +65,13 @@
     "test:report-table-exports": "node test/report-table-export.mjs",
     "test:tuning-rules": "node test/tuning-rules.mjs",
     "test:tuning-browser": "npm run build && node test/tuning-browser.mjs",
-    "test:tuning": "npm run test:tuning-rules && npm run test:tuning-browser"
+    "test:tuning": "npm run test:tuning-rules && npm run test:tuning-browser",
+    "test:accounts": "npm run build && node test/accounts.mjs",
+    "test:compare-text": "node test/compare-text.mjs",
+    "test:kit-primitives": "npm run build && node test/kit-primitives.mjs",
+    "test:kit-static": "node test/kit-static.mjs",
+    "test:mermaid-export": "npm run build && node test/mermaid-export.mjs",
+    "test:table-index-pagination": "npm run build && node test/table-index-pagination.mjs"
   },
   "dependencies": {
     "mermaid": "11.17.2",

@@ -273,6 +273,7 @@ export function Server({
   onReplication: propOnReplication,
   cluster: propCluster,
   onCluster: propOnCluster,
+  onClusterFailed: propOnClusterFailed,
 }: {
   /** The place on screen (or shown last, while another place is): Server and
    * Workload list their views; Tuning shows its one view, full width. */
@@ -322,6 +323,8 @@ export function Server({
    * is not part of a cluster. */
   cluster?: Bound<ClusterReport> | null;
   onCluster?: (report: Bound<ClusterReport>) => void;
+  /** Refresh all could not read the cluster (the place greys its last report). */
+  onClusterFailed?: (key: string, message: string) => void;
 }) {
   // Tuning (with its Full analysis tab) is a place of its own, never a view
   // chosen inside Server: an earlier session that saved either as the Server
@@ -999,6 +1002,7 @@ export function Server({
           const stopped = controller.signal.aborted || (e as Error).name === "AbortError";
           const report = reportOfRef.current(current.view);
           update(current.view, stopped ? { state: "stopped", report } : { state: "failed", error: (e as Error).message, report });
+          if (!stopped && current.view === "cluster" && connectionKey(latestConnection.current) === key) propOnClusterFailed?.(key, (e as Error).message);
         }
       }
     };

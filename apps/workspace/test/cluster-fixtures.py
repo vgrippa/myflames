@@ -23,7 +23,9 @@ import _cluster_fixtures as F  # noqa: E402
 NAMES = ("galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two-of-three", "galera-11.8-non-primary",
          "pxc-8.4-healthy", "pxc-8.4-donor", "pxc-8.4-member-donor", "ic-8.4-healthy", "ic-8.4-degraded",
          "ic-8.4-unreachable", "ic-8.4-no-quorum", "ic-8.4-member-offline", "ic-8.4-local-offline",
-         "gr-8.4-multi-primary", "gr-8.4-denied", "mysql-8.4-standalone", "mariadb-11.8-standalone")
+         "gr-8.4-multi-primary", "gr-8.4-denied", "mysql-8.4-standalone", "mariadb-11.8-standalone",
+         "pxc-8.4-two-of-three", "galera-11.8-two-nodes", "galera-11.8-partial-seeds", "galera-mysql-8.4-healthy",
+         "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local")
 OUT = os.path.join(ROOT, "apps", "workspace", "test", "fixtures")
 
 

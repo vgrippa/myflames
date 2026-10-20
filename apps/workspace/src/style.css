@@ -3488,6 +3488,34 @@ button, .plan-item, .main-nav button {
   color: var(--ink-faint);
   opacity: 0.7;
 }
+/* Selected, it still looks disabled: a neutral gray fill instead of the
+   accent, and the faint text and icon stay. */
+.main-nav button.is-muted.active {
+  color: var(--ink-faint);
+  background: var(--surface-hover);
+  font-weight: 400;
+}
+.main-nav button.is-muted.active > svg {
+  color: var(--ink-faint);
+  opacity: 0.7;
+}
+/* The Cluster marker uses the place's state shapes: a triangle for Problem. */
+.main-nav button[data-place="cluster"] .nav-marker .status-dot.is-problem {
+  width: 9px;
+  height: 8px;
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.main-nav button[data-place="cluster"] .nav-marker > span:not(.status-dot):not(.count-badge) {
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.main-nav button[data-place="cluster"] .nav-marker:has(.status-dot.is-problem) > span:not(.status-dot):not(.count-badge) {
+  color: var(--danger-text);
+}
+.main-nav button[data-place="cluster"] .nav-marker:has(.status-dot.is-watch) > span:not(.status-dot):not(.count-badge) {
+  color: var(--warn-text);
+}
 :is(.main-nav button, .source-item, .plan-select, .query-document, .brand):focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;

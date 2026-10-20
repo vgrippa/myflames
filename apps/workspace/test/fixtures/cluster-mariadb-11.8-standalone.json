@@ -7,7 +7,7 @@
  "uptime_s": 3600,
  "performance_schema": false,
  "available": true,
- "message": "Not part of a cluster: wsrep_on is OFF, so Galera replication is off on this MariaDB server and its wsrep status is hidden (MariaDB has no Group Replication).",
+ "message": "Not part of a cluster: wsrep_on is OFF and no Galera provider is loaded (MariaDB has no Group Replication).",
  "kind": "none",
  "server": {
   "hostname": "galera-1",
@@ -29,7 +29,7 @@
  },
  "status": "unknown",
  "status_why": [
-  "Not part of a cluster: wsrep_on is OFF, so Galera replication is off on this MariaDB server and its wsrep status is hidden (MariaDB has no Group Replication)."
+  "Not part of a cluster: wsrep_on is OFF and no Galera provider is loaded (MariaDB has no Group Replication)."
  ],
  "local": null,
  "members": [],

@@ -61,7 +61,7 @@ The sidebar separates where you go from what you have open:
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
 | **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O) |
 | **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation |
-| **Cluster** | The MariaDB Galera Cluster, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum and routers. Read-only. Greyed in the sidebar once the connection is known not to be part of a cluster |
+| **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers. Read-only. Greyed in the sidebar once the connection is known not to be part of a cluster |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
 | **Investigations** | Saved investigations: search, open, delete |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
@@ -384,44 +384,73 @@ once more right before sending. Cancel and Escape are recorded as declined in
 the [Audit log](#audit-log).
 
 **Cluster** (a place of its own, right after Replication) shows the cluster
-the connection in use belongs to: a MariaDB Galera Cluster, a Percona XtraDB
-Cluster, a MySQL InnoDB Cluster, or Group Replication without InnoDB Cluster
-metadata. It only reads, in this release: nothing on it changes membership,
-the primary or a setting. It reads when it is opened on screen, once per
-connection; **Refresh** reads again, and the Server place's **Refresh all**
-reads it too. The summary line names the cluster and its state, four tiles
-show the component (Galera) or quorum and failures tolerated (Group
-Replication), the members, this node or member, and flow control (Galera) or
-the mode (single- or multi-primary). Findings follow, each with its title and reason. The
-header switches between **Topology**, **Members** and, for InnoDB Cluster,
-**Routers**:
+the connection in use belongs to: a MariaDB Galera Cluster, a Galera Cluster
+for MySQL, a Percona XtraDB Cluster, a MySQL InnoDB Cluster (also when you
+connect to one of its read replicas), or Group Replication without InnoDB
+Cluster metadata. It only reads, in this release: nothing on it changes
+membership, the primary or a setting. It reads when it is opened on screen,
+once per connection; **Refresh** reads again, and the Server place's
+**Refresh all** reads it too.
+
+One scale for every kind: **OK** with quorum and every expected member present
+and healthy; **Watch** while quorum holds but a member is missing (a Galera
+node not in the component, an InnoDB Cluster member missing from the group or
+unreachable), a member is in transition (Donor/Desynced, Joiner, Joined,
+RECOVERING), or one more failure would stop the cluster; **Problem** without
+quorum or outside a Primary component, for a member in error, or when the
+member you are connected to is offline or in error. The same word reaches the
+sidebar, `myflames cluster` and its `--fail-on`.
+
+The summary line names the cluster and its state. When something is wrong the
+findings come next, one line each (the state's shape and word, the title with
+the member's name as a link, **Details** for the reason), then four tiles: the
+component (Galera) or quorum, each with the failures it tolerates (a Galera
+figure assumes every node has the same `pc.weight`); the nodes in the
+component and how many are inspected here, or the members ONLINE out of the
+group; this node or member; and flow control (Galera) or the mode. The header
+switches between **Topology**, **Members** (**Nodes** on Galera) and, for
+InnoDB Cluster, **Routers**:
 
 - **Topology** is a still picture: one card per member with its role
-  (Primary or Secondary for Group Replication), **This connection** on the
-  member you are connected to, its address, engine and version, its state as a
-  word beside a dot, and its queues (or this node's receive and send queues and
-  flow control on Galera) as text, each joined to one line for the group,
-  labelled with the component or the group mode, quorum and the failures it
-  tolerates. Routers hang below that line. A member that is unreachable,
-  missing from the group, offline or in error has a dashed edge, a cut link
-  and a warning mark beside its state; a member to watch has a heavier left
-  edge. The arrow keys move between cards and Enter opens the inspector.
-- **Members** is a table of every member with its state, role, address,
-  version and counters; **Routers** lists the MySQL Routers registered in the
-  InnoDB Cluster metadata with their ports and last check-in (shown, not
-  judged: MySQL Router writes it periodically, by default every few seconds
-  and never in a ClusterSet).
+  (Primary or Secondary for Group Replication), its name and address, engine
+  and version, its state as a word beside its shape (a check for OK, a dot for
+  Watch, a triangle for Problem, a ring for not judged), its queues (or this
+  node's receive and send queues and flow control on Galera) as text, and
+  **This connection** on the member you are connected to, each joined to one
+  line for the group, labelled with the component or the group mode, quorum and
+  the failures it tolerates. A node that `wsrep_cluster_address` names but
+  that is not in the component is a dashed placeholder when it can be named.
+  Read replicas hang below the group on dashed links (they replicate
+  asynchronously and are not group members), and routers below them. A member
+  that is unreachable, missing from the group, offline or in error has a
+  dashed edge, a cut link and its shape; a member to watch has a heavier left
+  edge. In a narrow window the cards wrap inside a frame that stands for the
+  group. The arrow keys move between cards and Enter opens the inspector.
+- **Members** (**Nodes**) is a table of every member with its state, role,
+  address, version and counters; **Routers** lists the MySQL Routers registered
+  in the InnoDB Cluster metadata with their ports and last check-in (its age
+  and UTC time; shown, not judged: MySQL Router writes it periodically, by
+  default every few seconds and never in a ClusterSet).
 
-Members are shown as the connected server sees them. MariaDB Galera exposes
-only its own node's state, so the other nodes read **Not judged here**:
-connect to a node to judge it. Percona XtraDB Cluster names every node's state,
-and Group Replication every member's state and role. A server that is not part
-of a cluster shows a calm **Not part of a cluster** with the reason; from then
-on the sidebar item looks disabled (faint text and icon, tooltip "This
-connection is not part of a cluster") but stays focusable and opens the place.
-Before the first read, and for another connection, it looks like any other
-place. Choosing another connection while Cluster stays on screen greys the old
-report until **Refresh**. The command line twin is `myflames cluster`.
+Members are shown as the connected server sees them. Galera exposes only its
+own node's state, so the other nodes read **In the component**: their state
+and queues are read on that node, so connect to it to inspect them. Percona
+XtraDB Cluster names every node's state, and Group Replication every member's
+state and role. Connected to a member that is offline or in error, the place
+says so, claims no group size, lists the other instances as **Not visible
+here**, and marks the routers' check-in as this member's copy, which may be out
+of date: connect to an ONLINE member to judge the cluster. A server that is
+not part of a cluster shows a calm **Not part of a cluster** with the reason;
+from then on the sidebar item looks disabled (faint text and icon, tooltip
+"This connection is not part of a cluster"), also while it is open, but stays
+focusable and opens the place. Before the first read, and for another
+connection, it looks like any other place. Choosing another connection while
+Cluster stays on screen greys the old report until **Refresh**, and a failed
+read keeps the last report greyed with the time it was read and one sentence
+saying why; either way its member is marked **Read here**, never **This
+connection**. Terms such as Primary component, flow control, failures
+tolerated, queues and the router ports explain themselves on hover. The command
+line twin is `myflames cluster`.
 
 **Maintenance** (Setup, last) has five tasks in a segmented control. **Tools**
 (**Detect tools**) lists the MySQL and MariaDB tools on this computer

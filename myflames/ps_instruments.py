@@ -296,9 +296,9 @@ TABLES = {
     "memory_summary_global_by_event_name": (),
     # Error log uses logging sinks, not Performance Schema instruments or consumers.
     "error_log": (),
-    # Replication (replication.py): filled whenever Performance Schema is on, no instrument or consumer.
+    # Replication (replication.py) and a read replica's channel (cluster.py): filled whenever Performance Schema is on, no instrument or consumer.
     "replication_connection_configuration": (), "replication_connection_status": (),
-    "replication_applier_configuration": (), "replication_applier_status_by_worker": (),
+    "replication_applier_configuration": (), "replication_applier_status": (), "replication_applier_status_by_worker": (),
     # Cluster (cluster.py): Group Replication's member tables come from the
     # plugin and Percona XtraDB Cluster's pxc_cluster_view from the server,
     # filled whenever Performance Schema is on, no instrument or consumer.

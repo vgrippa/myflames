@@ -47,7 +47,7 @@
    "local": true,
    "status": "ok",
    "status_why": [
-    "ONLINE: a full member of the group."
+    "A full member of the group."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -78,7 +78,7 @@
    "local": false,
    "status": "ok",
    "status_why": [
-    "ONLINE: a full member of the group."
+    "A full member of the group."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -109,7 +109,7 @@
    "local": false,
    "status": "ok",
    "status_why": [
-    "ONLINE: a full member of the group."
+    "A full member of the group."
    ],
    "metrics": {
     "transactions_in_queue": 0,
@@ -164,7 +164,8 @@
     "instance_type": "group-member"
    }
   ],
-  "reason": null
+  "reason": null,
+  "local_copy": null
  },
  "routers": [
   {
@@ -175,6 +176,8 @@
    "version": "8.4.10",
    "last_check_in": "2026-10-20 14:37:48",
    "last_check_in_age_s": 2,
+   "last_check_in_utc": "2026-10-20T14:37:48Z",
+   "from_local_copy": false,
    "ports": {
     "RWEndpoint": "6446",
     "ROEndpoint": "6447",

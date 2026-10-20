@@ -49,7 +49,7 @@
    "expected_source": "wsrep_cluster_address",
    "component": "Primary",
    "quorum": true,
-   "failures_tolerated": null,
+   "failures_tolerated": 1,
    "topology": null,
    "provider": {
     "name": "Galera",
@@ -77,7 +77,7 @@
     "local": true,
     "status": "ok",
     "status_why": [
-     "Synced: a full member, applying and accepting writes."
+     "A full member, applying and accepting writes."
     ],
     "metrics": {
      "local_state": 4,
@@ -112,14 +112,14 @@
     "host": "mf-pxc-2",
     "port": 3306,
     "uuid": "fd611f54-cc94-11f1-88ba-437fb5ee3fb9",
-    "state": "SYNCED",
+    "state": "Synced",
     "state_source": "pxc_cluster_view",
     "role": null,
     "version": null,
     "local": false,
     "status": "ok",
     "status_why": [
-     "SYNCED: a full member."
+     "A full member, applying and accepting writes."
     ],
     "metrics": {},
     "pxc_status": "SYNCED",
@@ -132,14 +132,14 @@
     "host": "mf-pxc-3",
     "port": 3306,
     "uuid": "09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
-    "state": "SYNCED",
+    "state": "Synced",
     "state_source": "pxc_cluster_view",
     "role": null,
     "version": null,
     "local": false,
     "status": "ok",
     "status_why": [
-     "SYNCED: a full member."
+     "A full member, applying and accepting writes."
     ],
     "metrics": {},
     "pxc_status": "SYNCED",
@@ -159,7 +159,11 @@
    "desync": "OFF",
    "pxc_strict_mode": "ENFORCING",
    "pxc_maint_mode": "DISABLED",
+   "wsrep_on": null,
    "members_source": "wsrep_cluster_members",
+   "address_nodes": 3,
+   "address_names_this_node": true,
+   "missing": [],
    "metrics": {
     "local_state": 4,
     "local_state_comment": "Synced",
@@ -182,7 +186,8 @@
     "local_index": 1,
     "cluster_conf_id": 3,
     "cluster_weight": 3
-   }
+   },
+   "incomplete": []
   },
   "group_replication": null,
   "metadata": null,
@@ -202,7 +207,8 @@
    "SELECT performance_schema.pxc_cluster_view"
   ],
   "notes": [
-   "wsrep_flow_control_paused and the queue averages cover the time since the provider statistics were last reset (FLUSH STATUS) or since start.",
+   "Failures tolerated assumes equal pc.weight on every node (the default): a Primary component needs more than half of the total weight.",
+   "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH STATUS) or since start.",
    "The other nodes' states come from performance_schema.pxc_cluster_view on this node; this node's own from wsrep_local_state_comment."
   ]
  }

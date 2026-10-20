@@ -36,8 +36,8 @@
    "1\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-1:3306\t1062e681-cc92-11f1-83dd-b6daec340a27\tmf-ic-1:3306\tmf-ic-1:3306\tgroup-member\n2\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-2:3306\t10a527c5-cc92-11f1-956e-2a01c1402350\tmf-ic-2:3306\tmf-ic-2:3306\tgroup-member\n3\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-3:3306\t10db71e2-cc92-11f1-aaa1-eec8cb922a3b\tmf-ic-3:3306\tmf-ic-3:3306\tgroup-member\n"
   ],
   [
-   "/*myflames:cluster*/ SELECT r.router_id, r.cluster_id, r.router_name, r.product_name, r.address, r.version, r.last_check_in, TIMESTAMPDIFF(SECOND, r.last_check_in, NOW()), r.attributes->>'$.RWEndpoint', r.attributes->>'$.ROEndpoint', r.attributes->>'$.RWSplitEndpoint', r.attributes->>'$.RWXEndpoint', r.attributes->>'$.ROXEndpoint' FROM mysql_innodb_cluster_metadata.v2_routers AS r",
-   "1\t30d8061b-cc92-11f1-b51d-b6daec340a27\t\tMySQL Router\tmf-ic-router\t8.4.10\t2026-10-20 14:37:48\t2\t6446\t6447\t6450\t6448\t6449\n"
+   "/*myflames:cluster*/ SELECT r.router_id, r.cluster_id, r.router_name, r.product_name, r.address, r.version, r.last_check_in, TIMESTAMPDIFF(SECOND, r.last_check_in, NOW()), r.attributes->>'$.RWEndpoint', r.attributes->>'$.ROEndpoint', r.attributes->>'$.RWSplitEndpoint', r.attributes->>'$.RWXEndpoint', r.attributes->>'$.ROXEndpoint', UNIX_TIMESTAMP(r.last_check_in) FROM mysql_innodb_cluster_metadata.v2_routers AS r",
+   "1\t30d8061b-cc92-11f1-b51d-b6daec340a27\t\tMySQL Router\tmf-ic-router\t8.4.10\t2026-10-20 14:37:48\t2\t6446\t6447\t6450\t6448\t6449\t1792507068\n"
   ]
  ],
  "report": {
@@ -89,7 +89,7 @@
     "local": true,
     "status": "ok",
     "status_why": [
-     "ONLINE: a full member of the group."
+     "A full member of the group."
     ],
     "metrics": {
      "transactions_in_queue": 0,
@@ -120,7 +120,7 @@
     "local": false,
     "status": "ok",
     "status_why": [
-     "ONLINE: a full member of the group."
+     "A full member of the group."
     ],
     "metrics": {
      "transactions_in_queue": 0,
@@ -151,7 +151,7 @@
     "local": false,
     "status": "ok",
     "status_why": [
-     "ONLINE: a full member of the group."
+     "A full member of the group."
     ],
     "metrics": {
      "transactions_in_queue": 0,
@@ -206,7 +206,8 @@
      "instance_type": "group-member"
     }
    ],
-   "reason": null
+   "reason": null,
+   "local_copy": null
   },
   "routers": [
    {
@@ -217,6 +218,8 @@
     "version": "8.4.10",
     "last_check_in": "2026-10-20 14:37:48",
     "last_check_in_age_s": 2,
+    "last_check_in_utc": "2026-10-20T14:37:48Z",
+    "from_local_copy": false,
     "ports": {
      "RWEndpoint": "6446",
      "ROEndpoint": "6447",

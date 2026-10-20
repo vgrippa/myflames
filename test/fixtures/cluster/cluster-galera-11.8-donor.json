@@ -45,7 +45,7 @@
    "expected_source": "wsrep_cluster_address",
    "component": "Primary",
    "quorum": true,
-   "failures_tolerated": null,
+   "failures_tolerated": 1,
    "topology": null,
    "provider": {
     "name": "Galera",
@@ -55,7 +55,7 @@
   },
   "status": "watch",
   "status_why": [
-   "Donor/Desynced: serving a state transfer, or desynchronized with wsrep_desync; it may fall behind the cluster."
+   "wsrep_desync is ON: this node was desynchronized on purpose. It stays Donor/Desynced, and can fall behind the cluster, until wsrep_desync is set to OFF."
   ],
   "local": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d",
   "members": [
@@ -73,7 +73,7 @@
     "local": true,
     "status": "watch",
     "status_why": [
-     "Donor/Desynced: serving a state transfer, or desynchronized with wsrep_desync; it may fall behind the cluster."
+     "wsrep_desync is ON: this node was desynchronized on purpose. It stays Donor/Desynced, and can fall behind the cluster, until wsrep_desync is set to OFF."
     ],
     "metrics": {
      "local_state": 2,
@@ -113,7 +113,7 @@
     "local": false,
     "status": "unknown",
     "status_why": [
-     "In the component as this node sees it. A node's own state is read on that node: connect to it to judge it."
+     "In the component as this node sees it. A node's state and queues are read on that node: connect to it to inspect them."
     ],
     "metrics": {}
    },
@@ -131,7 +131,7 @@
     "local": false,
     "status": "unknown",
     "status_why": [
-     "In the component as this node sees it. A node's own state is read on that node: connect to it to judge it."
+     "In the component as this node sees it. A node's state and queues are read on that node: connect to it to inspect them."
     ],
     "metrics": {}
    }
@@ -149,7 +149,11 @@
    "desync": "ON",
    "pxc_strict_mode": null,
    "pxc_maint_mode": null,
+   "wsrep_on": "ON",
    "members_source": "wsrep_cluster_members",
+   "address_nodes": 3,
+   "address_names_this_node": true,
+   "missing": [],
    "metrics": {
     "local_state": 2,
     "local_state_comment": "Donor/Desynced",
@@ -172,7 +176,8 @@
     "local_index": 0,
     "cluster_conf_id": 5,
     "cluster_weight": 3
-   }
+   },
+   "incomplete": []
   },
   "group_replication": null,
   "metadata": null,
@@ -182,7 +187,7 @@
     "id": "local_state",
     "status": "watch",
     "title": "This node is Donor/Desynced",
-    "text": "Donor/Desynced: serving a state transfer, or desynchronized with wsrep_desync; it may fall behind the cluster.",
+    "text": "wsrep_desync is ON: this node was desynchronized on purpose. It stays Donor/Desynced, and can fall behind the cluster, until wsrep_desync is set to OFF.",
     "member": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d"
    }
   ],
@@ -199,9 +204,10 @@
    "SELECT mysql.wsrep_cluster_members"
   ],
   "notes": [
-   "mysql.wsrep_cluster_members reports port 0 for galera-1, galera-2, galera-3: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
-   "wsrep_flow_control_paused and the queue averages cover the time since the provider statistics were last reset (FLUSH STATUS) or since start.",
-   "Galera exposes only this node's own state: the other nodes are listed as members of the component without a verdict. Connect to a node to judge it."
+   "mysql.wsrep_cluster_members reports port 0 for galera-1, galera-2, galera-3, so only the host is shown: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
+   "Failures tolerated assumes equal pc.weight on every node (the default): a Primary component needs more than half of the total weight.",
+   "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH GLOBAL STATUS) or since start.",
+   "Galera exposes only this node's own state: the other nodes are listed as members of the component without a verdict. Connect to a node to inspect it."
   ]
  }
 }

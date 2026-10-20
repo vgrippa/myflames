@@ -88,9 +88,11 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
 """
 import datetime
 
+from . import cluster
 from .connector import ConnectorError
 from .ps_instruments import BUILTIN_MEMORY
-from .perf_common import Reader, _bytes_text as _bytes, _count_text, _duration_text, _number, base_report, preflight, reason
+from .perf_common import (Reader, Server, _bytes_text as _bytes, _count_text, _duration_text, _number, base_report,
+                          preflight, reason, show_variables)
 
 SCHEMA_VERSION = "checks-1.0"
 CHECKS_TAG = "/*myflames:checks*/ "
@@ -116,6 +118,10 @@ CACHE_STATUS = ("Key_blocks_used", "Key_blocks_unused", "Key_read_requests", "Ke
 WSREP_STATUS = ("wsrep_cluster_size", "wsrep_cluster_status", "wsrep_connected", "wsrep_ready",
                 "wsrep_local_state", "wsrep_local_state_comment", "wsrep_flow_control_paused",
                 "wsrep_local_cert_failures")
+#: What the Galera membership rule needs beyond WSREP_STATUS (cluster.galera_membership).
+WSREP_IDENTITY_STATUS = ("wsrep_gcomm_uuid", "wsrep_incoming_addresses", "wsrep_local_index", "wsrep_cluster_weight")
+WSREP_IDENTITY_SQL = "SHOW GLOBAL STATUS WHERE Variable_name IN (%s)" % ", ".join(
+    "'%s'" % n for n in WSREP_IDENTITY_STATUS)
 STATUS_VARIABLES = QCACHE_STATUS + CACHE_STATUS + WSREP_STATUS + ("Max_used_connections",)
 STATUS_SQL = "SHOW GLOBAL STATUS WHERE Variable_name IN (%s)" % ", ".join(
     "'%s'" % n for n in STATUS_VARIABLES)
@@ -230,8 +236,11 @@ RULES = {
     "engine_cache": ("watch at %.0f%% cache misses with at least %d read requests; unknown without readable "
                      "inventory and counters; skip efficiency when no engine tables are visible" %
                      (CACHE_MISS_WATCH_PCT, CACHE_MIN_REQUESTS)),
-    "wsrep": ("problem when disconnected, not ready or non-Primary; watch while not Synced, for a singleton "
-              "cluster, any certification failures, or flow-control paused >= %.0f%%" % (100 * WSREP_FLOW_WATCH)),
+    "wsrep": ("the Cluster place's Galera rules (cluster.py): problem when disconnected, not ready, non-Primary or "
+              "not replicating (wsrep_on OFF); watch while not Synced, with fewer nodes than wsrep_cluster_address "
+              "names (when this node is identified there), when one more failure would lose the majority (a "
+              "singleton or two nodes), for any certification failures, maintenance mode, or flow-control paused "
+              ">= %.0f%%" % (100 * WSREP_FLOW_WATCH)),
     "replication": ("problem when a replication thread is stopped or reports an error; watch while the receiver "
                     "is still connecting, or when the lag reaches %d s; problem at %d s" % REPLICA_LAG_S),
     "replica_read_only": "watch when a replica accepts writes (read_only=OFF)",
@@ -293,6 +302,13 @@ def server_checks(conn):
             if _fatal(exc):
                 raise
             raw["status_error"] = reason(exc)
+        if _wsrep_active(server.variables, raw["status"]) and not raw.get("status_error"):
+            try:
+                raw["galera"] = _read_galera_inputs(reader, server)
+            except ConnectorError as exc:
+                if _fatal(exc):
+                    raise
+                raw["galera_error"] = reason(exc)
         if server.ps_on:
             try:
                 rows = reader.rows(PS_MEMORY_SQL)
@@ -893,59 +909,104 @@ def engine_cache_checks(check_report, tables_report=None, gate=None):
 
 
 def _wsrep(server, raw):
-    """Provider-gated, read-only state. No expected cluster size is guessed.
+    """Provider-gated, read-only state, judged by the Cluster place's Galera
+    rules (cluster.galera_status: state, membership against
+    wsrep_cluster_address, failures tolerated, flow control, certification
+    failures, maintenance mode), so the Full analysis and Cluster agree.
 
     https://mariadb.com/docs/galera-cluster/reference/galera-cluster-status-variables
     describes Primary, connected/ready and the provider-reported paused
-    fraction. Provider counter semantics are not verified by this server tree.
-    FLUSH STATUS calls provider.reset_status (Ma/sql/mysqld.cc:9653).
-    Synced=4: https://mariadb.com/docs/galera-cluster/galera-cluster-quickstart-guides/mariadb-galera-cluster-usage-guide
-    Cert failures report rollbacks since provider start or last FLUSH STATUS,
-    subject to provider semantics, not a current error rate.
-    The 10% flow-control threshold and singleton watch are rules of thumb.
+    fraction. Provider counter semantics are not verified by this server tree:
+    the server calls the provider's reset_status on FLUSH GLOBAL STATUS
+    (Ma/sql/mysqld.cc:9650-9655; FLUSH STATUS too before MariaDB 11.5.1).
+    The 10% flow-control threshold is a rule of thumb.
     """
     variables, status = server.variables, raw.get("status") or {}
     if "wsrep_on" not in variables and "wsrep_provider" not in variables and not any(n in status for n in WSREP_STATUS):
         return []
     provider = variables.get("wsrep_provider")
-    # Plain MariaDB exposes wsrep variables too. Explicitly disabled Galera
-    # is outside this check's scope, even if status is stale or unreadable.
-    if (variables.get("wsrep_on") or "").upper() in ("OFF", "NO", "0") or (
-            provider is not None and provider.strip().lower() in ("", "none")):
+    off = (variables.get("wsrep_on") or "").upper() in ("OFF", "NO", "0")
+    # Plain MariaDB exposes wsrep variables too. Galera explicitly disabled
+    # (no provider, or wsrep_on OFF while the provider is not connected) is
+    # outside this check's scope, even if status is stale or unreadable.
+    # wsrep_on OFF with a provider loaded and the status unreadable is unknown:
+    # unreadable is not disconnected (cluster.py says not available).
+    if (provider is not None and provider.strip().lower() in ("", "none")) or (
+            off and not (cluster.provider_loaded(variables)
+                         and (raw.get("status_error") or _wsrep_active(variables, status)))):
         return []
-    caveat = ("A singleton may be intentional; expected membership is not known. Flow-control paused is a fraction "
-              "reported over the provider's reset period, not this report's sampling window. Certification failures "
-              "report transaction rollbacks since provider start or last FLUSH STATUS, not a current failure rate; "
-              "applications may retry them. These counter meanings/reset periods are provider-dependent; "
-              "FLUSH STATUS requests a provider status reset, whose implementation is outside the reviewed server tree. "
-              "A single node's view does not establish the health of the entire cluster.")
+    caveat = ("Expected membership comes from wsrep_cluster_address only when this node is identified there (as in "
+              "the Cluster place); a component larger than the list is not compared with it. Failures tolerated "
+              "assume equal pc.weight. Flow-control paused is a fraction reported over the provider's reset period, "
+              "not this report's sampling window. " + cluster.CERT_FAILURES_CAVEAT + " These counter meanings and "
+              "reset periods are provider-dependent. A single node's view does not establish the health of the "
+              "entire cluster: other nodes' states are read on those nodes (Percona XtraDB Cluster lists them in "
+              "pxc_cluster_view).")
     numbers = [_number_item(n, str(status.get(n, "unknown")), _number(status.get(n))) for n in WSREP_STATUS]
     size = _nonnegative(status.get("wsrep_cluster_size"))
-    state = _nonnegative(status.get("wsrep_local_state"))
-    paused = _nonnegative(status.get("wsrep_flow_control_paused"))
-    failures = _nonnegative(status.get("wsrep_local_cert_failures"))
-    required = ("wsrep_cluster_status", "wsrep_connected", "wsrep_ready")
-    missing = any(not status.get(n) for n in required) or any(v is None for v in (size, state, paused, failures))
-    fault = (status.get("wsrep_cluster_status", "Primary").lower() != "primary" or
-             any(n in status and (status[n] or "").upper() in ("OFF", "NO", "0")
-                 for n in ("wsrep_connected", "wsrep_ready")))
-    invalid = paused is not None and paused > 1
-    if raw.get("status_error") or missing or invalid:
+    # The completeness rule is the Cluster place's (cluster.galera_incomplete).
+    incomplete = cluster.galera_incomplete(status)
+    galera = raw.get("galera") or {}
+    findings = []
+    if raw.get("status_error") or incomplete:
         check_status = "unknown"
-        observation = "wsrep status incomplete: " + (raw.get("status_error") or "missing or invalid wsrep counters")
-    elif fault:
-        check_status = "problem"
-        observation = "wsrep is disconnected, not ready or outside the Primary component"
-    elif state != 4 or size < 2 or paused >= WSREP_FLOW_WATCH or failures > 0:
-        check_status = "watch"
-        observation = "Review wsrep state, membership, flow control and certification rollbacks"
+        observation = "wsrep status incomplete: " + (raw.get("status_error") or "missing or invalid " + ", ".join(incomplete))
     else:
-        check_status = "ok"
-        observation = "wsrep is Primary, connected, ready and Synced"
+        merged = Server(dict(variables, **(galera.get("variables") or {})), server.status)
+        wsrep = dict(galera.get("status") or {})
+        wsrep.update((k, v) for k, v in status.items() if k.startswith("wsrep_"))
+        judged = cluster.galera_status(merged, wsrep, galera.get("members"), galera.get("pxc"))
+        findings = judged["findings"]
+        check_status = judged["status"]
+        expected = judged["cluster"]["expected_size"]
+        if expected is not None:
+            numbers.append(_number_item("Nodes wsrep_cluster_address names", str(expected), expected))
+        if judged["cluster"]["failures_tolerated"] is not None:
+            numbers.append(_number_item("Failures tolerated", str(judged["cluster"]["failures_tolerated"]),
+                                        judged["cluster"]["failures_tolerated"]))
+        if findings:
+            observation = "; ".join(f["title"] for f in findings)
+            if expected is not None and size is not None and size < expected:
+                observation += " (%d of %d configured nodes in the Primary component)" % (size, expected)
+        elif check_status == "ok":
+            observation = "wsrep is Primary, connected, ready and Synced"
+        else:
+            check_status = "unknown"
+            observation = "The wsrep state could not be judged from this server"
+    if galera.get("notes"):
+        caveat += " " + " ".join(galera["notes"])
+    if raw.get("galera_error"):
+        caveat += " The membership variables and rows could not be read (%s), so the expected size was not compared." % raw["galera_error"]
     return [_check("wsrep", "replication", "Galera / wsrep", check_status, observation, "wsrep", caveat=caveat,
-                   numbers=numbers, sources=list(WSREP_STATUS) + ["wsrep_provider", "wsrep_on"], value=check_status,
-                   action={"text": "Inspect peer state, expected membership and a fresh workload interval; no recovery is applied."}
+                   explain=" ".join("%s: %s" % (f["title"], f["text"]) for f in findings),
+                   numbers=numbers, sources=list(WSREP_STATUS) + list(WSREP_IDENTITY_STATUS) + [
+                       "wsrep_provider", "wsrep_on", "wsrep_cluster_address", "mysql.wsrep_cluster_members"],
+                   value=check_status,
+                   action={"text": "Open the Cluster place for the members and the reasons; no recovery is applied."}
                    if check_status in ("watch", "problem") else None)]
+
+
+def _wsrep_active(variables, status):
+    """Galera with wsrep on, or MariaDB's global wsrep_on OFF while the loaded
+    provider is still connected (cluster.py reads such a node as Galera)."""
+    if cluster.is_galera_node(variables):
+        return True
+    off = (variables.get("wsrep_on") or "").upper() in ("OFF", "NO", "0")
+    return (off and cluster.provider_loaded(variables)
+            and (_on(status.get("wsrep_connected")) or (_number(status.get("wsrep_cluster_size")) or 0) > 0))
+
+
+def _read_galera_inputs(reader, server):
+    """The variables, status and member rows cluster.py's Galera rules read,
+    so checks.wsrep judges as the Cluster place does."""
+    notes = []
+    variables = show_variables(reader, cluster.GALERA_VARIABLES)
+    status = reader.pairs(WSREP_IDENTITY_SQL)
+    table = reader.optional(cluster.WSREP_MEMBERS_SQL, "mysql.wsrep_cluster_members", notes)
+    merged = dict(server.variables, **variables)
+    pxc = (reader.optional(cluster.PXC_VIEW_SQL, "performance_schema.pxc_cluster_view", notes)
+           if cluster.galera_kind(merged) == "pxc" else None)
+    return {"variables": variables, "status": status, "members": table, "pxc": pxc, "notes": notes}
 
 
 def compute_checks(server, raw, notes=None, as_of=None):

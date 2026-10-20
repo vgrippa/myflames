@@ -36,8 +36,8 @@
    "1\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-1:3306\t1062e681-cc92-11f1-83dd-b6daec340a27\tmf-ic-1:3306\tmf-ic-1:3306\tgroup-member\n2\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-2:3306\t10a527c5-cc92-11f1-956e-2a01c1402350\tmf-ic-2:3306\tmf-ic-2:3306\tgroup-member\n3\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-3:3306\t10db71e2-cc92-11f1-aaa1-eec8cb922a3b\tmf-ic-3:3306\tmf-ic-3:3306\tgroup-member\n"
   ],
   [
-   "/*myflames:cluster*/ SELECT r.router_id, r.cluster_id, r.router_name, r.product_name, r.address, r.version, r.last_check_in, TIMESTAMPDIFF(SECOND, r.last_check_in, NOW()), r.attributes->>'$.RWEndpoint', r.attributes->>'$.ROEndpoint', r.attributes->>'$.RWSplitEndpoint', r.attributes->>'$.RWXEndpoint', r.attributes->>'$.ROXEndpoint' FROM mysql_innodb_cluster_metadata.v2_routers AS r",
-   "1\t30d8061b-cc92-11f1-b51d-b6daec340a27\t\tMySQL Router\tmf-ic-router\t8.4.10\t2026-10-20 14:49:27\t3\t6446\t6447\t6450\t6448\t6449\n"
+   "/*myflames:cluster*/ SELECT r.router_id, r.cluster_id, r.router_name, r.product_name, r.address, r.version, r.last_check_in, TIMESTAMPDIFF(SECOND, r.last_check_in, NOW()), r.attributes->>'$.RWEndpoint', r.attributes->>'$.ROEndpoint', r.attributes->>'$.RWSplitEndpoint', r.attributes->>'$.RWXEndpoint', r.attributes->>'$.ROXEndpoint', UNIX_TIMESTAMP(r.last_check_in) FROM mysql_innodb_cluster_metadata.v2_routers AS r",
+   "1\t30d8061b-cc92-11f1-b51d-b6daec340a27\t\tMySQL Router\tmf-ic-router\t8.4.10\t2026-10-20 14:49:27\t3\t6446\t6447\t6450\t6448\t6449\t1792507767\n"
   ]
  ],
  "report": {
@@ -69,10 +69,10 @@
    "topology": "single_primary",
    "provider": null
   },
-  "status": "problem",
+  "status": "watch",
   "status_why": [
-   "This server cannot reach the member; it may be down or partitioned.",
-   "With 2 ONLINE or RECOVERING members, losing one more member loses the majority."
+   "2 of 3 members are reachable, so losing one more member loses the majority.",
+   "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout."
   ],
   "local": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
   "members": [
@@ -90,7 +90,7 @@
     "local": true,
     "status": "ok",
     "status_why": [
-     "ONLINE: a full member of the group."
+     "A full member of the group."
     ],
     "metrics": {
      "transactions_in_queue": 0,
@@ -121,7 +121,7 @@
     "local": false,
     "status": "ok",
     "status_why": [
-     "ONLINE: a full member of the group."
+     "A full member of the group."
     ],
     "metrics": {
      "transactions_in_queue": 0,
@@ -150,9 +150,9 @@
     "role": "SECONDARY",
     "version": "8.4.11",
     "local": false,
-    "status": "problem",
+    "status": "watch",
     "status_why": [
-     "UNREACHABLE: this server cannot reach the member; it may be down or partitioned."
+     "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout."
     ],
     "metrics": {
      "transactions_in_queue": 0,
@@ -207,7 +207,8 @@
      "instance_type": "group-member"
     }
    ],
-   "reason": null
+   "reason": null,
+   "local_copy": null
   },
   "routers": [
    {
@@ -218,6 +219,8 @@
     "version": "8.4.10",
     "last_check_in": "2026-10-20 14:49:27",
     "last_check_in_age_s": 3,
+    "last_check_in_utc": "2026-10-20T14:49:27Z",
+    "from_local_copy": false,
     "ports": {
      "RWEndpoint": "6446",
      "ROEndpoint": "6447",
@@ -229,24 +232,24 @@
   ],
   "findings": [
    {
-    "id": "member_state",
-    "status": "problem",
-    "title": "mf-ic-3:3306 is UNREACHABLE",
-    "text": "This server cannot reach the member; it may be down or partitioned.",
-    "member": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b"
-   },
-   {
     "id": "no_tolerance",
     "status": "watch",
-    "title": "Cannot tolerate a failure",
-    "text": "With 2 ONLINE or RECOVERING members, losing one more member loses the majority."
+    "title": "Cannot survive another failure",
+    "text": "2 of 3 members are reachable, so losing one more member loses the majority."
+   },
+   {
+    "id": "member_state",
+    "status": "watch",
+    "title": "mf-ic-3:3306 is UNREACHABLE",
+    "text": "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout.",
+    "member": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b"
    }
   ],
   "summary": {
    "members": 3,
    "ok": 2,
-   "watch": 0,
-   "problem": 1,
+   "watch": 1,
+   "problem": 0,
    "unknown": 0
   },
   "statements": [
