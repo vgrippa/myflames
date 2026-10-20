@@ -129,6 +129,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import sqlite3
 import threading
 import time
@@ -440,8 +441,9 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
     through a matching saved connection from *profiles* opened by
     *open_profile* (at most once per process for the same settings and
     password), else unknown with the reason. *replica_host* is the host this
-    replica was reached at (default: the connection's), which decides whether
-    a loopback source address can be on this computer. Status reads for
+    replica was reached at (default: the connection's). A loopback source
+    address is matched to a saved connection only when that host is loopback
+    and the replica's @@hostname is this computer's. Status reads for
     skips and the skip loop leave it off.
     """
     reader = Reader(conn, REPLICATION_TAG)
@@ -880,21 +882,35 @@ def _usable_relay(report, channel, relay):
 #    and port are the ones the replica reports (names compared ignoring case,
 #    IP addresses in their canonical form; 127.0.0.1, localhost and ::1
 #    treated as one host only for a replica on this computer and only when
-#    exactly one saved connection matches that way). It is read with its own saved password through the same isolated
+#    exactly one saved connection matches that way). For a loopback source
+#    address (_is_loopback: any address of the replica's own computer) a
+#    saved connection is opened only when the replica is on this computer:
+#    it was reached at a loopback address AND its @@hostname, read on the
+#    replica connection, equals socket.gethostname() (error_log.same_host).
+#    A loopback connection can be an SSH tunnel or a port forward to another
+#    computer, so this is checked before any saved password is looked up.
+#    The source is read with its own saved password through the same isolated
 #    client as every read (SHOW GLOBAL VARIABLES, short timeouts, never a
 #    prompt, never the replica's credentials). The answer counts only when
 #    its server_id (and server_uuid when the replica reports one) is the one
-#    the replica reports for its source, and, for a loopback source address
-#    (_is_loopback: any address of the replica's own computer), when its
-#    @@hostname is the replica's (a loopback connection can be an SSH tunnel
-#    or a port forward to another computer). With the server_id
-#    alone (MariaDB reports no source UUID) the version is not verified.
+#    the replica reports for its source, and, for a loopback source address,
+#    when its @@hostname is the replica's (a second guard, after the login).
+#    With the server_id alone (MariaDB reports no source UUID) the version is
+#    not verified.
 #    A saved connection is opened at most once per process for the same
 #    settings and password, success or failure (a stale password must not
-#    log in again on every read). One read sends nothing to a saved
-#    connection once SOURCE_READ_BUDGET_S no longer covers a full
-#    SOURCE_QUERY_TIMEOUT_S, checked before its saved password is looked up
-#    and again after (the Keychain or the vault lock can make it wait).
+#    log in again on every read). The results are an LRU cache, but every
+#    (profile ID, fingerprint) tried is also kept in _source_attempts until
+#    the process ends (at most SOURCE_ATTEMPT_LIMIT), so an evicted result is
+#    "Not checked", never a second login, and a full registry opens nothing.
+#    One read is in flight per profile ID (_source_pending), whatever its
+#    fingerprint; the fingerprint comes from the stored profile, read under
+#    the claim lock, and waiters claim again once that read ends. The owner
+#    compares the stored fingerprint again after its password lookup.
+#    One read sends nothing to a saved connection once SOURCE_READ_BUDGET_S
+#    no longer covers a full SOURCE_QUERY_TIMEOUT_S, checked before its
+#    saved password is looked up and again after (the Keychain or the vault
+#    lock can make it wait).
 # c) Otherwise the version is unknown, with the reason and a hint.
 
 #: Events read from the start of the relay log, per engine. MySQL: its own
@@ -918,6 +934,9 @@ SOURCE_READ_BUDGET_S = 5
 #: that matched a source). Past it the least recently used answers go first,
 #: then failures; a pending read is never dropped.
 SOURCE_CACHE_SIZE = 256
+#: Fingerprints reserved or attempted in this process. Unlike cached answers,
+#: these are never evicted; at capacity no new automatic login is allowed.
+SOURCE_ATTEMPT_LIMIT = 1024
 #: The loopback names a saved connection may stand in for one another with.
 _LOCAL_NAMES = ("127.0.0.1", "localhost", "::1")
 _SERVER_VER = re.compile(r"^Server ver: (.+?), Binlog ver: \d+\s*$")
@@ -931,8 +950,14 @@ SERVER_ID_ONLY = "only its server ID could be compared"
 EARLIER_READ_CAVEAT = ("Read the first time myflames needed this saved connection; it is not opened again until "
                        "the saved connection changes or myflames restarts.")
 
-# (profile id, fingerprint) -> {"done": Event, "values": dict or None, "problem": str or None}
+# (profile id, fingerprint) -> {"done": Event, "values": dict or None, "problem": str or None, "kept": bool,
+# "key": the same tuple, "connect": the owner's opener while pending}
 _source_cache = collections.OrderedDict()
+# Every (profile id, fingerprint) claimed in this process; never evicted.
+_source_attempts = set()
+# profile id -> the entry of its read in flight: one per saved connection,
+# whatever the fingerprint, even while its settings or password change.
+_source_pending = {}
 _source_cache_lock = threading.Lock()
 # Keys the saved password part of a fingerprint for this process only.
 _FINGERPRINT_KEY = os.urandom(32)
@@ -940,9 +965,11 @@ _monotonic = time.monotonic
 
 
 def reset_source_cache():
-    """Forget every saved-connection result of this process."""
+    """Reset process state for tests only, with no reads in flight."""
     with _source_cache_lock:
         _source_cache.clear()
+        _source_attempts.clear()
+        _source_pending.clear()
 
 
 def _norm_host(host):
@@ -995,12 +1022,16 @@ def _profile_name(profile):
 
 def match_source_profiles(source, profiles, replica_host=None):
     """``(profiles, problem)``: the saved connections that name the source the
-    replica reports, in the order to try, or why none can be used."""
+    replica reports, in the order to try, or why none can be used. Loopback
+    candidates also need the replica's local hostname proof before any login."""
     host = _host_key(source.get("host"))
     port = _int(source.get("port")) or 3306
     if not host:
         return [], "The replica does not report its source's host."
-    if _is_loopback(host) and not _is_loopback(replica_host or "127.0.0.1"):
+    if _is_loopback(host) and not replica_host:
+        return [], ("The source address %s is local to the replica, and the address the replica was reached at "
+                    "is not known, so no saved connection can stand for it." % _endpoint_text(source))
+    if _is_loopback(host) and not _is_loopback(replica_host):
         return [], ("The source address %s is local to the replica, which is not on this computer, so no saved "
                     "connection can stand for it." % _endpoint_text(source))
     candidates = [p for p in profiles or () if isinstance(p, dict) and _profile_port(p) == port]
@@ -1044,6 +1075,11 @@ def _keyed_digest(text):
     return hmac.new(_FINGERPRINT_KEY, (text or "").encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _stored_fingerprint(profile):
+    """Fingerprint one store snapshot without reading its saved password."""
+    return "%s.%s" % (_settings_fingerprint(profile), _keyed_digest(profile.get("secret_ref") or ""))
+
+
 def _evict():
     """Bring the cache down to SOURCE_CACHE_SIZE (the lock is held)."""
     for failures in (False, True):
@@ -1054,28 +1090,58 @@ def _evict():
             del _source_cache[key]
 
 
-def _claim(key):
-    """``(entry, owner)``: this process's result for *key*, or a new pending
-    entry the caller (the owner) fills. A changed saved connection (another
-    fingerprint for the same ID) replaces its earlier result."""
+def _claim(profile, open_profile, reads, remaining):
+    """Return ``(entry, owner, pending)`` with one read per saved profile ID.
+
+    Prepare from the current store under the claim lock, never from an old
+    request's fingerprint. Preparation reads no password and sends no login.
+    Reserve an attempt slot before releasing the lock; only a read that sends
+    nothing may return that slot. Cached results may be evicted, attempts may not.
+    """
+    name = _profile_name(profile)
+    profile_id = profile.get("id") or name
     with _source_cache_lock:
+        pending = _source_pending.get(profile_id)
+        if pending is not None and not pending["done"].is_set():
+            return pending, False, True
+        prepare = getattr(open_profile, "prepare", None)
+        if prepare is not None:
+            fingerprint, connect = prepare(profile)
+        else:
+            fingerprint, connect = _settings_fingerprint(profile), (lambda: open_profile(profile))
+        key = (profile_id, fingerprint)
         entry = _source_cache.get(key)
         if entry is not None:
             _source_cache.move_to_end(key)
-            return entry, False
+            return entry, False, False
+        if key in _source_attempts:
+            raise ValueError("Not checked: the saved connection %s was already tried while myflames runs and its "
+                             "result is no longer kept, so it is not opened again until it changes." % name)
+        if len(_source_attempts) >= SOURCE_ATTEMPT_LIMIT:
+            raise ValueError("Not checked: myflames has tried %d saved connections since it started, its limit, so "
+                             "it opens no other until it restarts." % SOURCE_ATTEMPT_LIMIT)
+        if reads[0] >= SOURCE_PROFILE_READS:
+            raise ValueError("More than %d saved connections matched sources; the rest were not read."
+                             % SOURCE_PROFILE_READS)
+        if remaining() < SOURCE_QUERY_TIMEOUT_S:
+            raise ValueError("Not checked: this read already spent its %d s on other saved connections, so %s was "
+                             "not opened. Refresh to check it." % (SOURCE_READ_BUDGET_S, name))
         for old in [k for k in _source_cache if k[0] == key[0]]:
             del _source_cache[old]
-        entry = {"done": threading.Event(), "values": None, "problem": None, "kept": True}
+        entry = {"done": threading.Event(), "values": None, "problem": None, "kept": True,
+                 "key": key, "connect": connect}
+        _source_attempts.add(key)
+        _source_pending[profile_id] = entry
         _source_cache[key] = entry
         _evict()
-        return entry, True
+        return entry, True, False
 
 
 def _fill(entry, key, connect, name, remaining):
     """Open one saved connection and read its variables into *entry*. A
     failure before any login (the saved password lookup) is not kept, nor a
     connection closed unused because that lookup took the time left."""
-    keep, password = True, None
+    keep, password, sent = True, None, False
     try:
         try:
             conn = connect()
@@ -1098,20 +1164,27 @@ def _fill(entry, key, connect, name, remaining):
                     "Not checked: looking up the saved password for %s took the rest of the %d s for saved "
                     "connections, so nothing was sent to it. Refresh to check it." % (name, SOURCE_READ_BUDGET_S))
                 return
+            sent = True
             rows = Reader(conn, REPLICATION_TAG).rows(_SOURCE_VARIABLES_SQL, timeout=SOURCE_QUERY_TIMEOUT_S)
         entry["values"] = {row[0]: (row[1] if len(row) > 1 else "") for row in rows if row}
     except (ConnectorError, ValueError) as exc:
         entry["problem"] = "The saved connection %s could not be read: %s" % (name, dbops.redact(reason(exc), password))
     except BaseException:
-        keep, entry["problem"] = False, "The saved connection %s was not read." % name
+        keep, entry["problem"] = sent, "The saved connection %s was not read." % name
         raise
     finally:
-        if not keep:
-            entry["kept"] = False
-            with _source_cache_lock:
+        with _source_cache_lock:
+            if not keep:
+                entry["kept"] = False
+                _source_attempts.discard(key)
                 if _source_cache.get(key) is entry:
                     del _source_cache[key]
-        entry["done"].set()
+            # The closure retains settings, not a password, but is no longer needed.
+            entry.pop("connect", None)
+            entry["done"].set()
+            if _source_pending.get(key[0]) is entry:
+                del _source_pending[key[0]]
+            _evict()
 
 
 def _profile_values(open_profile, profile, reads, remaining, filled):
@@ -1120,35 +1193,28 @@ def _profile_values(open_profile, profile, reads, remaining, filled):
     made it), else read now when this read has the time and a read left.
     *filled* holds the keys this read opened."""
     name = _profile_name(profile)
-    prepare = getattr(open_profile, "prepare", None)
-    try:
-        if prepare is not None:
-            fingerprint, connect = prepare(profile)
-        else:
-            fingerprint, connect = _settings_fingerprint(profile), (lambda: open_profile(profile))
-    except ValueError as exc:
-        return None, str(exc), False
-    except (sqlite3.Error, OSError) as exc:
-        return None, "The saved password for %s could not be read: %s" % (name, type(exc).__name__), False
-    key = (profile.get("id") or name, fingerprint)
-    with _source_cache_lock:
-        entry = _source_cache.get(key)
-    if entry is None:
-        if reads[0] >= SOURCE_PROFILE_READS:
-            return None, ("More than %d saved connections matched sources; the rest were not read."
-                          % SOURCE_PROFILE_READS), False
-        if remaining() < SOURCE_QUERY_TIMEOUT_S:
-            return None, ("Not checked: this read already spent its %d s on other saved connections, so %s was "
-                          "not opened. Refresh to check it." % (SOURCE_READ_BUDGET_S, name)), False
-        entry, owner = _claim(key)
+    while True:
+        try:
+            entry, owner, pending = _claim(profile, open_profile, reads, remaining)
+        except ValueError as exc:
+            return None, str(exc), False
+        except (sqlite3.Error, OSError) as exc:
+            return None, "The saved password for %s could not be read: %s" % (name, type(exc).__name__), False
+        key = entry["key"]
         if owner:
             reads[0] += 1
             filled.add(key)
-            _fill(entry, key, connect, name, remaining)
+            _fill(entry, key, entry["connect"], name, remaining)
             return entry["values"], entry["problem"], False
-    if not entry["done"].wait(max(0.0, remaining())):
-        return None, ("Not checked: another read of the saved connection %s had not finished within this read's "
-                      "%d s." % (name, SOURCE_READ_BUDGET_S)), False
+        if not pending:
+            break
+        if not entry["done"].wait(max(0.0, remaining())):
+            return None, ("Not checked: another read of the saved connection %s had not finished within this read's "
+                          "%d s." % (name, SOURCE_READ_BUDGET_S)), False
+        if not entry["kept"]:
+            return None, entry["problem"], False
+        # A save may have happened during the wait. Claim again from the store;
+        # the completed answer belongs only to its original fingerprint.
     earlier = key not in filled
     if entry["problem"] and earlier and entry["kept"]:
         return None, "%s Not tried again until the saved connection changes." % entry["problem"], True
@@ -1290,11 +1356,18 @@ def attach_source_versions(reader, report, profiles=(), open_profile=None, repli
         source = channel.get("source") or {}
         host_name = None
         if _is_loopback(source.get("host")):
-            # Read before any login: without it the answer could not be accepted.
+            from .error_log import same_host
+            # A loopback transport can be an SSH tunnel. Prove locality on the
+            # already-open replica connection before looking up any password.
             host_name, problem = replica_hostname()
             if not host_name:
                 return None, ("%s A saved connection to %s counts only when it reaches the replica's own host, "
                               "so %s was not read." % (problem, _endpoint_text(source), name))
+            local_name = socket.gethostname()
+            if not _is_loopback(replica_host) or not same_host(host_name, local_name):
+                return None, ("The replica is not on this computer, so its loopback source cannot be matched to a "
+                              "saved connection (the replica's host name is %s, this computer's is %s)."
+                              % (host_name, local_name or "unknown"))
         values, problem, earlier = _profile_values(open_profile, profile, reads, remaining, filled)
         if problem:
             return None, problem
@@ -1362,15 +1435,29 @@ def profile_opener(store):
     from .live import connection_options
 
     def prepare(profile):
-        # The stored record names its saved password without holding it.
-        stored = store._profile(profile.get("id")) or {}
-        fingerprint = "%s.%s" % (_settings_fingerprint(profile), _keyed_digest(stored.get("secret_ref") or ""))
+        # One current record, including its save time and password reference;
+        # a stale request must never recreate an earlier fingerprint.
+        stored = store._profile(profile.get("id"), include_updated=True)
+        if stored is None:
+            raise ValueError("The saved connection %s no longer exists, so it was not read."
+                             % _profile_name(profile))
+        fields = ("host", "port", "user", "ssl_mode", "ssl_ca")
+        if any(profile.get(k) != stored.get(k) for k in fields):
+            raise ValueError("Not checked: the saved connection %s changed its endpoint. Refresh to match its "
+                             "current settings." % _profile_name(profile))
+        fingerprint = _stored_fingerprint(stored)
 
         def connect():
-            value = {k: profile.get(k) for k in ("host", "port", "user", "ssl_mode", "ssl_ca")
-                     if profile.get(k) not in (None, "")}
+            value = {k: stored.get(k) for k in fields if stored.get(k) not in (None, "")}
             value["profile_id"] = profile.get("id")
             options = connection_options(store.connection_with_saved_password(value))
+            # The secret lookup reads the store again and may wait. A save
+            # during it must not send new credentials under an old claim.
+            current = store._profile(profile.get("id"), include_updated=True)
+            current_fingerprint = _stored_fingerprint(current) if current else None
+            if current_fingerprint != fingerprint:
+                raise ValueError("Not checked: the saved connection %s changed while its password was being "
+                                 "read. Refresh to check its current settings." % _profile_name(profile))
             if not options.get("password"):
                 raise ValueError("The saved connection %s has no saved password, so it was not read."
                                  % _profile_name(profile))

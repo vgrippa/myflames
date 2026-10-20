@@ -599,11 +599,19 @@ class WorkspaceStore:
         row = conn.execute('SELECT kind, payload FROM records WHERE id=?', (key,)).fetchone()
         return (row[0], json.loads(row[1])) if row else (None, None)
 
-    def _profile(self, key):
-        """A stored profile with its ``secret_ref``, or None. Never creates the database."""
+    def _profile(self, key, include_updated=False):
+        """A stored profile with its ``secret_ref``, or None. Never creates the database.
+
+        ``include_updated`` reads its save time in the same snapshot, for callers
+        that fingerprint the current settings and password reference together.
+        """
         if not self.path.exists() or not isinstance(key, str):
             return None
         with closing(self._connect()) as conn, conn:
+            if include_updated:
+                row = conn.execute('SELECT updated, payload FROM records WHERE id=? AND kind=?',
+                                   (key, 'profile')).fetchone()
+                return dict(json.loads(row[1]), updated_at=row[0]) if row else None
             kind, value = self._record(conn, key)
         return value if kind == 'profile' else None
 

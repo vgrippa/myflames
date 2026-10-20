@@ -348,12 +348,17 @@ connection matches), with that connection's own saved password, and it uses the
 answer only when its server ID (and server UUID when the replica reports one)
 is the source's and, for a source address on the replica's own computer
 (localhost or any loopback address, such as 127.0.0.1, 127.0.0.2 or ::1), when
-that server runs on the replica's own host (a loopback connection can be an SSH
-tunnel). On
+that server runs on the replica's own host. For such an address it opens a
+saved connection only when the replica itself is on this computer (reached at a
+loopback address and reporting this computer's host name), so a replica reached
+through an SSH tunnel never logs in to a server on this computer. On
 MariaDB only the server ID can be compared, and the version says "only its
 server ID could be compared". A saved connection is opened at most once while
-myflames runs, whether it answered or failed, until you edit it, so a stale
-saved password never sends a failed login on every read. Each source's login
+myflames runs, whether it answered or failed, until you edit it, also after its
+result is no longer kept (the source then says "Not checked"), so a stale saved
+password never sends a failed login on every read. One read of a saved
+connection runs at a time, and after 1,024 attempts myflames opens no more until
+it restarts. Each source's login
 and read get 3 seconds, and all saved connections of one read 5 seconds,
 counting the time spent looking up their saved passwords; nothing is sent once
 that time is used, and the remaining sources say "Not checked" and get their

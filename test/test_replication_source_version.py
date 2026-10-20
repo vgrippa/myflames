@@ -22,13 +22,13 @@ version. ``source_calls`` in a recording are the saved connection's own
 answers. Edits marked synthetic below change a recorded answer to reach a
 branch the live servers could not show. Every recording predates the
 @@hostname reads: the replica's answer and the ``hostname`` row of the saved
-connection's answer are synthetic (the same name on both, as for two servers
-on one computer), and the saved connection's statement is today's.
+connection's answer and this computer's host name are synthetic (the same
+name, as for two servers on one computer), and the saved connection's
+statement is today's.
 """
 import json
 import sqlite3
 import threading
-import time
 import types
 import unittest
 from unittest import mock
@@ -131,7 +131,7 @@ class Source(object):
 class FakeReader(object):
     """The replica for synthetic reports: the relay log head and @@hostname."""
 
-    def __init__(self, relay=None, hostname='replica-host'):
+    def __init__(self, relay=None, hostname=HOST):
         self.relay, self.hostname, self.calls, self.timeouts = relay, hostname, [], []
 
     def named(self, sql):
@@ -146,16 +146,6 @@ class FakeReader(object):
         if isinstance(self.hostname, Exception):
             raise self.hostname
         return [['hostname', self.hostname]]
-
-
-def wait_until(predicate, timeout=5.0):
-    """Poll *predicate* in real time; True once it holds."""
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if predicate():
-            return True
-        time.sleep(0.005)
-    return predicate()
 
 
 class Clock(object):
@@ -192,6 +182,9 @@ class Fresh(object):
 
     def setUp(self):
         rp.reset_source_cache()
+        self.local_hostname = mock.patch.object(rp.socket, 'gethostname', return_value=HOST)
+        self.local_hostname.start()
+        self.addCleanup(self.local_hostname.stop)
         super(Fresh, self).setUp()
 
     def tearDown(self):
@@ -478,11 +471,16 @@ class TestLoopbackHost(Fresh, ReplicationCase):
         local_dev = profile('dev', host='127.0.0.1', name='local dev')
         unrelated = Source(server_id='1', version='11.4.2-MariaDB', hostname='laptop')
         opener = Opener(unrelated)
+        opener.prepare = mock.Mock(side_effect=AssertionError('must not prepare a local saved connection'))
         reader = FakeReader(relay=[], hostname='db-host-7')
         found = attach([channel(host='127.0.0.1', server_id=1)], [local_dev], opener, reader, engine='mariadb')[0]
         self.assertIsNone(found['version'])
-        self.assertEqual(opener.opened, ['dev'])
-        self.assertIn("The saved connection local dev reaches the host laptop, not the replica's host db-host-7",
+        self.assertEqual(opener.opened, [])
+        opener.prepare.assert_not_called()
+        self.assertEqual(unrelated.timeouts, [])
+        self.assertEqual(rp._source_attempts, set())
+        self.assertIn("The replica is not on this computer, so its loopback source cannot be matched to a saved "
+                      "connection (the replica's host name is db-host-7, this computer's is %s)." % HOST,
                       found['attempts'][-1])
         # With the source's event in the relay log, the saved connection is never opened.
         rp.reset_source_cache()
@@ -496,8 +494,10 @@ class TestLoopbackHost(Fresh, ReplicationCase):
 
     def test_same_host_is_accepted_ignoring_case_and_a_trailing_dot(self):
         reader = FakeReader(hostname='box.local')
-        found = attach([channel(host='localhost', server_id=9)], [profile('a', host='::1')],
-                       Opener(Source(server_id='9', version='8.4.6', hostname='Box.Local.')), reader)[0]
+        opener = Opener(Source(server_id='9', version='8.4.6', hostname='Box.Local.'))
+        with mock.patch.object(rp.socket, 'gethostname', return_value='BOX.local.'):
+            found = attach([channel(host='localhost', server_id=9)], [profile('a', host='::1')], opener, reader)[0]
+        self.assertEqual(opener.opened, ['a'])
         self.assertEqual((found['version'], found['provenance']), ('8.4.6', 'saved_connection'))
         # The replica's host name is read once, within the bound of one source.
         self.assertEqual(reader.timeouts, [rp.SOURCE_QUERY_TIMEOUT_S])
@@ -507,7 +507,7 @@ class TestLoopbackHost(Fresh, ReplicationCase):
         # this computer answering with another @@hostname is refused.
         for host in ('127.0.0.1', 'localhost', 'LocalHost.', '::1', '[::1]', '0:0:0:0:0:0:0:1', '127.0.0.2',
                      '::ffff:127.0.0.1', '0.0.0.0', 'db.localhost'):
-            with self.subTest(host=host):
+            with self.subTest(host=host), mock.patch.object(rp.socket, 'gethostname', return_value='db-host-7'):
                 rp.reset_source_cache()
                 opener = Opener(Source(server_id='1', version='11.4.2-MariaDB', hostname='laptop'))
                 reader = FakeReader(relay=[], hostname='db-host-7')
@@ -535,6 +535,17 @@ class TestLoopbackHost(Fresh, ReplicationCase):
                 self.assertEqual(opener.opened, [])
                 self.assertNotIn(rp._HOSTNAME_SQL, reader.calls)
                 self.assertIn('is local to the replica, which is not on this computer', found['reason'])
+
+    def test_a_loopback_source_with_unknown_replica_transport_opens_nothing(self):
+        opener = Opener(Source(server_id='7', version='8.4.6', hostname=HOST))
+        reader = FakeReader(hostname=HOST)
+        found = attach([channel(host='127.0.0.1')], [profile('a', host='127.0.0.1')], opener,
+                       reader, replica_host=None)[0]
+        self.assertEqual(opener.opened, [])
+        self.assertNotIn(rp._HOSTNAME_SQL, reader.calls)
+        self.assertIsNone(found['version'])
+        self.assertIn('the address the replica was reached at is not known, so no saved connection can stand for it',
+                      found['reason'])
 
     def test_saved_connection_without_a_hostname_is_not_used(self):
         found = attach([channel(host='127.0.0.1', server_id=9)], [profile('a', host='127.0.0.1')],
@@ -618,7 +629,7 @@ class TestProcessCache(Fresh, ReplicationCase):
             first, _ = prepare(listed())
             self.assertEqual(prepare(listed())[0], first)
         self.assertNotIn('first-secret-1', first)
-        stored = store._profile(saved['id'])
+        stored = store._profile(saved['id'], include_updated=True)
         self.assertTrue(stored.get('secret_ref'))
         self.assertNotIn(stored['secret_ref'], first)
         # Only the saved password's reference changes: same settings, same save time.
@@ -626,8 +637,9 @@ class TestProcessCache(Fresh, ReplicationCase):
         with mock.patch.object(store, '_profile', return_value=dict(stored, secret_ref=stored['secret_ref'] + 'x')):
             self.assertNotEqual(prepare(same)[0], first)
         self.assertEqual(prepare(same)[0], first)
-        # Only a setting changes.
-        self.assertNotEqual(prepare(dict(same, port=3307))[0], first)
+        # Caller settings must match the current endpoint before preparation.
+        with self.assertRaisesRegex(ValueError, 'changed its endpoint'):
+            prepare(dict(same, port=3307))
         # Saving a new password writes a new reference.
         store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}, saved['id'],
                    password='second-secret-2', remember=True)
@@ -635,30 +647,191 @@ class TestProcessCache(Fresh, ReplicationCase):
         self.assertNotEqual(prepare(listed())[0], first)
 
     def test_the_cache_is_bounded_and_replaces_a_changed_profile(self):
+        def claim(key):
+            saved = profile(key[0], updated_at=key[1])
+            return rp._claim(saved, Opener(None), [0], lambda: rp.SOURCE_READ_BUDGET_S)
+
         def done(key, failed=False):
-            entry, _ = rp._claim(key)
+            entry, _, _ = claim(key)
             entry['values'], entry['problem'] = (None, 'refused') if failed else ({'version': '8.4.6'}, None)
             entry['done'].set()
-        pending, _ = rp._claim(('pending', 'f'))
+        pending, _, _ = claim(('pending', 'f'))
         # A second claim of an open in progress waits for it, never opens again.
-        self.assertEqual(rp._claim(('pending', 'f')), (pending, False))
+        self.assertEqual(claim(('pending', 'f')), (pending, False, True))
         done(('failed', 'f'), failed=True)
         for i in range(rp.SOURCE_CACHE_SIZE + 5):
             done(('p%d' % i, 'f'))
         self.assertEqual(len(rp._source_cache), rp.SOURCE_CACHE_SIZE)
         # Answers go first: a kept failure and a pending read stay.
-        self.assertIn(('failed', 'f'), rp._source_cache)
-        self.assertIn(('pending', 'f'), rp._source_cache)
-        self.assertNotIn(('p0', 'f'), rp._source_cache)
-        rp._claim(('p9', 'g'))
-        self.assertNotIn(('p9', 'f'), rp._source_cache)
-        self.assertIn(('p9', 'g'), rp._source_cache)
+        ids = [key[0] for key in rp._source_cache]
+        self.assertIn('failed', ids)
+        self.assertIn('pending', ids)
+        self.assertNotIn('p0', ids)
+        before = next(key for key in rp._source_cache if key[0] == 'p9')
+        changed, owner, _ = claim(('p9', 'g'))
+        self.assertTrue(owner)
+        self.assertNotIn(before, rp._source_cache)
+        self.assertIn(changed['key'], rp._source_cache)
+
+    def test_evicted_successes_and_failures_are_never_opened_again(self):
+        for failure in (False, True):
+            with self.subTest(failure=failure), mock.patch.object(rp, 'SOURCE_CACHE_SIZE', 1):
+                rp.reset_source_cache()
+                value = ConnectorError('ERROR 1045: Access denied') if failure else Source(server_id='7', version='8.4.6')
+                opener = Opener(value)
+                attach([channel()], [profile('a')], opener)
+                attempted = set(rp._source_attempts)
+                attach([channel()], [profile('b')], opener)
+                self.assertEqual(len(rp._source_cache), 1)
+                self.assertNotIn('a', [key[0] for key in rp._source_cache])
+                self.assertTrue(attempted.issubset(rp._source_attempts))
+                found = attach([channel()], [profile('a')], opener)[0]
+                self.assertEqual(opener.opened, ['a', 'b'])
+                self.assertIsNone(found['version'])
+                self.assertIn('Not checked: the saved connection Saved a was already tried while myflames runs',
+                              found['reason'])
+                self.assertIn('result is no longer kept, so it is not opened again until it changes', found['reason'])
+                self.assertEqual(len(rp._source_attempts), 2)
+
+    def test_a_full_attempt_registry_serves_cached_results_without_new_logins(self):
+        self.assertEqual(rp.SOURCE_ATTEMPT_LIMIT, 1024)
+
+        def answer(saved):
+            if saved['id'] == 'failed':
+                raise ConnectorError('ERROR 1045: Access denied')
+            return Source(server_id='7', version='8.4.6')
+        opener = Opener(answer)
+        with mock.patch.object(rp, 'SOURCE_ATTEMPT_LIMIT', 2):
+            for pid in ('failed', 'known'):
+                attach([channel()], [profile(pid)], opener)
+            blocked = attach([channel()], [profile('new')], opener)[0]
+            failed = attach([channel()], [profile('failed')], opener)[0]
+            known = attach([channel()], [profile('known')], opener)[0]
+            changed = attach([channel()], [profile('known', updated_at='2026-10-20T11:00:00')], opener)[0]
+        self.assertEqual(opener.opened, ['failed', 'known'])
+        self.assertIn('Not checked: myflames has tried 2 saved connections since it started, its limit',
+                      blocked['reason'])
+        self.assertIn('it opens no other until it restarts', changed['reason'])
+        self.assertIn('Not tried again until the saved connection changes', failed['reason'])
+        self.assertEqual((known['version'], known['caveat']), ('8.4.6', rp.EARLIER_READ_CAVEAT))
+        self.assertEqual((len(rp._source_attempts), len(rp._source_cache)), (2, 2))
+
+    def test_pending_attempts_reserve_the_registry_capacity(self):
+        opener = Opener(Source(server_id='7', version='8.4.6'))
+        with mock.patch.object(rp, 'SOURCE_ATTEMPT_LIMIT', 1):
+            pending, owner, waiting = rp._claim(profile('a'), opener, [0], lambda: rp.SOURCE_READ_BUDGET_S)
+            self.assertEqual((owner, waiting), (True, False))
+            self.assertEqual(rp._claim(profile('a', updated_at='later'), opener, [0],
+                                       lambda: rp.SOURCE_READ_BUDGET_S), (pending, False, True))
+            with self.assertRaisesRegex(ValueError, 'tried 1 saved connections since it started, its limit'):
+                rp._claim(profile('b'), opener, [0], lambda: rp.SOURCE_READ_BUDGET_S)
+        self.assertEqual(opener.opened, [])
+        self.assertEqual(len(rp._source_attempts), 1)
+
+    def test_unexpected_errors_retain_attempts_only_after_a_query_was_sent(self):
+        class Broken(Source):
+            def run(self, sql, extra_flags=None, timeout=None):
+                super(Broken, self).run(sql, extra_flags, timeout)
+                raise RuntimeError('source read interrupted')
+
+        for after_send in (False, True):
+            with self.subTest(after_send=after_send):
+                rp.reset_source_cache()
+                failure = Broken(server_id='7', version='8.4.6') if after_send else RuntimeError('lookup interrupted')
+                opener = Opener(failure)
+                with self.assertRaises(RuntimeError):
+                    attach([channel()], [profile('a')], opener)
+                self.assertEqual(rp._source_pending, {})
+                self.assertEqual(len(rp._source_attempts), int(after_send))
+                opener.conn = Source(server_id='7', version='8.4.7')
+                found = attach([channel()], [profile('a')], opener)[0]
+                if after_send:
+                    self.assertEqual(opener.opened, ['a'])
+                    self.assertIsNone(found['version'])
+                    self.assertIn('was not read. Not tried again until the saved connection changes', found['reason'])
+                else:
+                    self.assertEqual(opener.opened, ['a', 'a'])
+                    self.assertEqual(found['version'], '8.4.7')
+
+    def test_prepare_uses_current_stored_timestamp_and_reference_not_the_caller(self):
+        store = WorkspaceStore()
+        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}, None,
+                           password='first-secret-1', remember=True)
+        prepare = rp.profile_opener(store).prepare
+        before = store.list('profile')[0]
+        stored = store._profile(saved['id'], include_updated=True)
+        self.assertEqual(stored['updated_at'], before['updated_at'])
+        first, _ = prepare(before)
+        self.assertEqual(prepare(dict(before, updated_at='caller-invented-timestamp'))[0], first)
+        current = dict(stored, updated_at='2026-10-20T12:00:00', secret_ref='current-reference')
+        with mock.patch.object(store, '_profile', return_value=current) as lookup:
+            after, _ = prepare(before)
+            self.assertEqual(prepare(dict(before, updated_at='another-stale-timestamp'))[0], after)
+        self.assertNotEqual(after, first)
+        self.assertEqual(lookup.call_args_list, [mock.call(saved['id'], include_updated=True)] * 2)
+
+    def test_a_stale_caller_cannot_revive_an_earlier_attempt(self):
+        store = WorkspaceStore()
+        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}
+        saved = store.save('profile', value, None, password='first-secret-1', remember=True)
+        stale = store.list('profile')[0]
+        options = []
+
+        def refused(**kwargs):
+            options.append(kwargs)
+            raise ConnectorError('ERROR 1045: Access denied')
+        with mock.patch('myflames.connector.MySQLConnection', refused):
+            opener = rp.profile_opener(store)
+            attach([channel()], [stale], opener)
+            store.save('profile', value, saved['id'], password='second-secret-2', remember=True)
+            current = store.list('profile')[0]
+            attach([channel()], [current], opener)
+            found = attach([channel()], [stale], opener)[0]
+        self.assertEqual([o['password'] for o in options], ['first-secret-1', 'second-secret-2'])
+        self.assertIn('Not tried again until the saved connection changes', found['reason'])
+        self.assertEqual((len(rp._source_attempts), len(rp._source_cache)), (2, 1))
+
+    def test_a_profile_deleted_after_listing_is_not_opened(self):
+        store = WorkspaceStore()
+        saved = store.save('profile', {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}, None,
+                           password='first-secret-1', remember=True)
+        listed = store.list('profile')[0]
+        store.delete('profile', saved['id'])
+        with mock.patch('myflames.connector.MySQLConnection') as factory:
+            found = attach([channel()], [listed], rp.profile_opener(store))[0]
+        factory.assert_not_called()
+        self.assertIsNone(found['version'])
+        self.assertIn('The saved connection Src no longer exists, so it was not read.', found['reason'])
+        self.assertEqual((rp._source_attempts, rp._source_pending, len(rp._source_cache)), (set(), {}, 0))
+
+    def test_a_profile_saved_during_password_lookup_sends_nothing(self):
+        store = WorkspaceStore()
+        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}
+        saved = store.save('profile', value, None, password='first-secret-1', remember=True)
+        stale = store.list('profile')[0]
+        lookup = store.connection_with_saved_password
+
+        def save_during_lookup(connection):
+            options = lookup(connection)
+            store.save('profile', value, saved['id'], password='second-secret-2', remember=True)
+            return options
+        with mock.patch.object(store, 'connection_with_saved_password', save_during_lookup), \
+                mock.patch('myflames.connector.MySQLConnection') as factory:
+            found = attach([channel()], [stale], rp.profile_opener(store))[0]
+        factory.assert_not_called()
+        self.assertIn('changed while its password was being read', found['reason'])
+        self.assertEqual(rp._source_attempts, set())
+        self.assertEqual(rp._source_cache, {})
+        with mock.patch('myflames.connector.MySQLConnection', return_value=Source(server_id='7', version='8.4.7')):
+            found = attach([channel()], [stale], rp.profile_opener(store))[0]
+        self.assertEqual(found['version'], '8.4.7')
 
     def test_cli_opens_the_source_once_per_run(self):
         store = WorkspaceStore()
         store.save('profile', {'name': 'Source 9.7', 'host': '127.0.0.1', 'port': 33297, 'user': 'probe'}, None,
                    password='source-secret-1', remember=True)
         replica = ReplayConn(replica_calls('mysql-9.7-srcver-denied'))
+        replica.host = '127.0.0.1'
         source = source_conn('mysql-9.7-srcver-profile')
         opened = []
 
@@ -670,6 +843,126 @@ class TestProcessCache(Fresh, ReplicationCase):
         self.assertEqual(code, 0, err)
         self.assertIn('  Source version: 9.7.2 (saved connection Source 9.7)\n', out)
         self.assertEqual(opened.count(33297), 1)
+
+
+class TestConcurrentProfileChanges(Fresh, ReplicationCase):
+    """A saved profile has one owner, including while its settings change."""
+
+    def saved_read_race(self, complete_before_wait=False, change_endpoint=False):
+        store = WorkspaceStore()
+        value = {'name': 'Src', 'host': 'db1.example.com', 'port': 3306, 'user': 'probe'}
+        saved = store.save('profile', value, None, password='first-secret-1', remember=True)
+        stale = store.list('profile')[0]
+        in_query, release, finished = threading.Event(), threading.Event(), threading.Event()
+        waiting = {name: threading.Event() for name in ('new', 'stale')}
+        opened, preparations, results, failures, started = [], [], {}, [], []
+        case = self
+
+        class SlowSource(Source):
+            def run(self, sql, extra_flags=None, timeout=None):
+                in_query.set()
+                if not release.wait(5):
+                    raise AssertionError('the first source read was not released')
+                return super(SlowSource, self).run(sql, extra_flags, timeout)
+
+        class Watched(threading.Event):
+            def wait(self, timeout=None):
+                waiting[threading.current_thread().name].set()
+                return super(Watched, self).wait(timeout)
+
+        def factory(**options):
+            opened.append(options)
+            if options['password'] == 'first-secret-1':
+                return SlowSource(server_id='7', version='8.4.6')
+            return Source(server_id='7', version='8.4.7')
+
+        def one_read(name, snapshot):
+            try:
+                results[name] = attach([channel(host=snapshot['host'])], [snapshot], opener)[0]
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                if name == 'old':
+                    finished.set()
+
+        def start(name, snapshot):
+            thread = threading.Thread(target=one_read, args=(name, snapshot), name=name)
+            started.append(thread)
+            thread.start()
+
+        claim = rp._claim
+
+        def finish_before_returning_claim(*args):
+            claimed = claim(*args)
+            if claimed[2] and threading.current_thread().name == 'new':
+                # The entry becomes done after _claim chose a pending read,
+                # but before _profile_values can inspect that entry.
+                release.set()
+                case.assertTrue(finished.wait(5), 'the old read finishes before the pending claim returns')
+            return claimed
+
+        with mock.patch('myflames.connector.MySQLConnection', factory), \
+                mock.patch.object(rp, '_monotonic', Clock()):
+            opener = rp.profile_opener(store)
+            prepare = opener.prepare
+
+            def observed_prepare(snapshot):
+                case.assertTrue(rp._source_cache_lock.locked(), 'preparation belongs to the claim lock')
+                prepared = prepare(snapshot)
+                preparations.append((threading.current_thread().name, prepared[0]))
+                return prepared
+            opener.prepare = observed_prepare
+            try:
+                start('old', stale)
+                self.assertTrue(in_query.wait(5), 'the old read has sent its query')
+                old_entry = next(iter(rp._source_cache.values()))
+                old_entry['done'] = Watched()
+                value = dict(value, host='db2.example.com') if change_endpoint else value
+                store.save('profile', value, saved['id'], password='second-secret-2', remember=True)
+                current = store.list('profile')[0]
+                if complete_before_wait:
+                    with mock.patch.object(rp, '_claim', finish_before_returning_claim):
+                        start('new', current)
+                        for thread in started:
+                            thread.join(5)
+                else:
+                    start('new', current)
+                    self.assertTrue(waiting['new'].wait(5), 'the new read joins the old profile owner')
+                    start('stale', stale)
+                    self.assertTrue(waiting['stale'].wait(5), 'the stale read joins the same owner')
+                    self.assertEqual(len(opened), 1, 'neither waiter starts a simultaneous login')
+                    self.assertEqual(len(preparations), 1, 'waiters cannot prepare until the old owner is done')
+                    release.set()
+                    for thread in started:
+                        thread.join(5)
+            finally:
+                release.set()
+                for thread in started:
+                    thread.join(5)
+        self.assertFalse([t.name for t in started if t.is_alive()], 'all workers finished')
+        self.assertEqual(failures, [])
+        self.assertEqual([o['password'] for o in opened], ['first-secret-1', 'second-secret-2'])
+        self.assertEqual(results['old']['version'], '8.4.6')
+        self.assertEqual(results['new']['version'], '8.4.7')
+        if not complete_before_wait:
+            if change_endpoint:
+                self.assertIsNone(results['stale']['version'])
+                self.assertIn('changed its endpoint', results['stale']['reason'])
+            else:
+                self.assertEqual(results['stale']['version'], '8.4.7')
+        self.assertEqual((len(rp._source_attempts), len(rp._source_cache)), (2, 1))
+        self.assertEqual(rp._source_pending, {})
+        cached = next(iter(rp._source_cache.values()))
+        self.assertEqual(cached['values']['version'], '8.4.7')
+
+    def test_old_new_and_stale_reads_share_one_profile_owner(self):
+        self.saved_read_race()
+
+    def test_a_waiter_reclaims_when_the_old_read_finishes_before_wait(self):
+        self.saved_read_race(complete_before_wait=True)
+
+    def test_a_waiter_with_a_stale_endpoint_is_refused_after_the_owner_finishes(self):
+        self.saved_read_race(change_endpoint=True)
 
 
 class TestTimeBudget(Fresh, ReplicationCase):
@@ -707,7 +1000,7 @@ class TestTimeBudget(Fresh, ReplicationCase):
 
     def test_another_reads_open_is_waited_for_only_within_the_budget(self):
         saved = profile('a')
-        entry, owner = rp._claim(('a', rp._settings_fingerprint(saved)))
+        entry, owner, _ = rp._claim(saved, Opener(None), [0], lambda: rp.SOURCE_READ_BUDGET_S)
         self.assertTrue(owner)
         clock = Clock()
         opener = Opener(Source(server_id='7', version='8.4.6'))
@@ -726,14 +1019,19 @@ class TestTimeBudget(Fresh, ReplicationCase):
 
     def test_concurrent_reads_open_once(self):
         # Both reads find no result and claim at the same moment.
-        gate, opened, claims, results = threading.Event(), [], [], []
+        gate, both_claimed, opened, claims, results = threading.Event(), threading.Event(), [], [], []
         barrier, claim = threading.Barrier(2, timeout=5), rp._claim
 
-        def racing_claim(key):
-            barrier.wait()
-            entry, owner = claim(key)
+        def racing_claim(*args):
+            # A waiter claims again after the owner finishes. Only the
+            # initial pair rendezvous; later claims see the completed cache.
+            if len(claims) < 2:
+                barrier.wait()
+            entry, owner, pending = claim(*args)
             claims.append(owner)
-            return entry, owner
+            if len(claims) >= 2:
+                both_claimed.set()
+            return entry, owner, pending
 
         def slow(profile):
             opened.append(profile['id'])
@@ -746,13 +1044,14 @@ class TestTimeBudget(Fresh, ReplicationCase):
                 for thread in threads:
                     thread.start()
                 # The open is released only after both claims returned.
-                self.assertTrue(wait_until(lambda: len(claims) == 2), claims)
+                self.assertTrue(both_claimed.wait(5), claims)
                 gate.set()
                 for thread in threads:
                     thread.join(5)
         finally:
             gate.set()
-        self.assertEqual(sorted(claims), [False, True])
+        self.assertEqual(claims.count(True), 1)
+        self.assertGreaterEqual(claims.count(False), 1)
         self.assertEqual(opened, ['a'])
         self.assertEqual(sorted(r['version'] for r in results), ['8.4.6', '8.4.6'])
 
@@ -797,7 +1096,7 @@ class TestTimeBudget(Fresh, ReplicationCase):
         # Too little time left to open a saved connection is still time to
         # wait for another read's open of it.
         saved = profile('a')
-        entry, _ = rp._claim(('a', rp._settings_fingerprint(saved)))
+        entry, _, _ = rp._claim(saved, Opener(None), [0], lambda: rp.SOURCE_READ_BUDGET_S)
         waited = []
 
         class Finishing(object):
@@ -929,7 +1228,8 @@ class TestMatching(unittest.TestCase):
         self.assertEqual(self.names({'host': '127.0.0.2', 'port': 3306}, ip, '127.0.0.1'), ([], None))
         self.assertEqual(self.names({'host': '127.0.0.2', 'port': 3306}, ip + [{'name': 'two', 'host': '127.0.0.2'}],
                                     '127.0.0.1'), (['two'], None))
-        # A replica reached on any loopback address is on this computer.
+        # Any loopback transport permits matching candidates; hostname
+        # confirmation still happens before any saved connection is opened.
         self.assertEqual(self.names({'host': '127.0.0.1', 'port': 3306}, ip, '127.0.0.2'), (['ip'], None))
 
     def test_no_host(self):
