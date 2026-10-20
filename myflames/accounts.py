@@ -37,7 +37,7 @@ import time
 import uuid
 
 from . import dbops, privileges
-from .connector import ConnectorError, MySQLConnection
+from .connector import ConnectorError, MySQLConnection, unescape_mysql
 from .perf_common import Reader, literal
 from .server_info import detect_flavor
 
@@ -1626,7 +1626,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                 break
             else:
                 if plan._random_result and engine == 'mysql':
-                    rows = [[MySQLConnection._unescape_mysql(c) for c in line.split('\t')]
+                    rows = [[unescape_mysql(c) for c in line.split('\t')]
                             for line in result.split('\n') if line]
                     if rows and len(rows[0]) >= 3:
                         generated = rows[0][2]

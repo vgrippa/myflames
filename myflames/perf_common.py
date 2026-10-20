@@ -33,7 +33,7 @@ import datetime
 import re
 import time
 
-from .connector import ConnectorError, MySQLConnection
+from .connector import ConnectorError, MySQLConnection, unescape_mysql
 from .server_info import detect_flavor, server_version_tuple as _version_tuple
 
 #: Schemas never reported as user data.
@@ -138,7 +138,7 @@ def text_rows(conn, sql, tag):
     Reader.rows has a separate, intentional contract: SQL NULL becomes None.
     """
     text = conn.run(tag + sql, extra_flags=["--comments"])
-    return [[MySQLConnection._unescape_mysql(c) for c in line.split("\t")]
+    return [[unescape_mysql(c) for c in line.split("\t")]
             for line in text.split("\n") if line]
 
 
@@ -211,7 +211,7 @@ class Reader(object):
         # Only \n separates rows (see connector.query_rows).
         for line in text.replace("\r\n", "\n").split("\n"):
             if line:
-                out.append([None if cell == "NULL" else MySQLConnection._unescape_mysql(cell)
+                out.append([None if cell == "NULL" else unescape_mysql(cell)
                             for cell in line.split("\t")])
         return out
 

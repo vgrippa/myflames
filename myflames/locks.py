@@ -110,7 +110,7 @@ import re
 import sys
 import time
 
-from .connector import ConnectorError, MySQLConnection, terminal_text
+from .connector import ConnectorError, MySQLConnection, terminal_text, unescape_mysql
 from .perf_common import _denied, _reason, _server
 
 SCHEMA_VERSION = "locks-1.1"
@@ -295,7 +295,7 @@ def _q(conn, sql):
     # must not split a row, so split on \n alone, not str.splitlines().
     for line in text.replace("\r\n", "\n").split("\n"):
         if line:
-            rows.append([_null(MySQLConnection._unescape_mysql(c)) for c in line.split("\t")])
+            rows.append([_null(unescape_mysql(c)) for c in line.split("\t")])
     return rows
 
 

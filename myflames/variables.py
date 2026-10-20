@@ -104,12 +104,11 @@ import re
 from decimal import Decimal, DecimalException, localcontext
 
 from . import dbops, mysql_sysvars
-from .connector import ConnectorError, MySQLConnection
+from .connector import ConnectorError, MySQLConnection, unescape_mysql
 from .perf_common import _bytes_text, _number, _version_tuple, literal, reason
 from .server_info import detect_flavor
 
-#: Bound at import, so a test that replaces the connection class keeps it.
-_unescape = MySQLConnection._unescape_mysql
+_unescape = unescape_mysql
 
 READ_SCHEMA = "variable-1.0"
 PLAN_SCHEMA = "variable-plan-1.0"

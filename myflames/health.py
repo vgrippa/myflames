@@ -260,7 +260,7 @@ import datetime
 import re
 import time
 
-from .connector import ConnectorError, MySQLConnection
+from .connector import ConnectorError, MySQLConnection, unescape_mysql
 # Compatibility exports for one release.
 from .perf_common import _bytes_text, _count_text, _duration_text, _number, _round, _version_tuple
 from .server_info import detect_flavor
@@ -436,7 +436,7 @@ def _rows(conn, sql):
     # Only \n separates rows (see connector.query_rows).
     for line in text.split("\n"):
         if line:
-            rows.append([MySQLConnection._unescape_mysql(c) for c in line.split("\t")])
+            rows.append([unescape_mysql(c) for c in line.split("\t")])
     return rows
 
 
