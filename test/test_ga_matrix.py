@@ -1,6 +1,6 @@
-"""scripts/ga-matrix.sh profiles: the MYFLAMES_HOME guard.
+"""scripts/ga-matrix.sh and scripts/cluster-matrix.sh profiles: the MYFLAMES_HOME guard.
 
-The script runs from a copy in a temporary directory (its LAB, state and
+Each script runs from a copy in a temporary directory (its LAB, state and
 credentials live next to the copy), with a temporary HOME and stub docker and
 python3 commands, so no test touches the repository, ~/.myflames or Docker.
 """
@@ -12,11 +12,14 @@ import subprocess
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ga-matrix.sh"
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "needs bash and POSIX symlinks")
 class TestMyflamesHomeGuard(unittest.TestCase):
+    script_name = "ga-matrix.sh"
+    lab_name = "ga-matrix"
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -26,8 +29,8 @@ class TestMyflamesHomeGuard(unittest.TestCase):
         self.home.chmod(0o755)
         repo = self.root / "repo"
         (repo / "scripts").mkdir(parents=True)
-        shutil.copy(str(SCRIPT), str(repo / "scripts" / "ga-matrix.sh"))
-        self.lab = repo / "local" / "ga-matrix"
+        shutil.copy(str(SCRIPTS / self.script_name), str(repo / "scripts" / self.script_name))
+        self.lab = repo / "local" / self.lab_name
         bindir = self.root / "bin"
         bindir.mkdir()
         for name in ("docker", "python3"):
@@ -36,14 +39,14 @@ class TestMyflamesHomeGuard(unittest.TestCase):
             stub.chmod(0o755)
         self.creds = self.root / "credentials.env"
         self.creds.write_text("ROOT_PASSWORD=x\nMF_ADMIN_PASSWORD=x\nMF_READ_PASSWORD=x\nREPL_PASSWORD=x\n")
-        self.script = repo / "scripts" / "ga-matrix.sh"
+        self.script = repo / "scripts" / self.script_name
         self.path = str(bindir) + os.pathsep + "/usr/bin:/bin"
 
-    def run_profiles(self, myflames_home, creds=None, command="profiles", cwd=None):
+    def run_profiles(self, myflames_home, creds=None, command="profiles", cwd=None, args=()):
         env = {"HOME": str(self.home), "USERPROFILE": str(self.home), "PATH": self.path,
                "MYFLAMES_SECRET_BACKEND": "vault", "MYFLAMES_HOME": str(myflames_home),
                "CREDS_FILE": str(creds or self.creds)}
-        return subprocess.run(["bash", str(self.script), command], env=env, cwd=str(cwd or self.root),
+        return subprocess.run(["bash", str(self.script), command] + list(args), env=env, cwd=str(cwd or self.root),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
 
     def snapshot(self):
@@ -129,6 +132,34 @@ class TestMyflamesHomeGuard(unittest.TestCase):
                 self.assertFalse((self.root / "lab").exists())
                 self.assertFalse((self.home / "lab").exists())
                 self.assertFalse((self.root / "relative-lab").exists())
+
+
+class TestClusterMatrixHomeGuard(TestMyflamesHomeGuard):
+    """scripts/cluster-matrix.sh runs the same guard for profiles and env,
+    on MYFLAMES_HOME or on --home DIR, which wins."""
+    script_name = "cluster-matrix.sh"
+    lab_name = "cluster-matrix"
+
+    def test_home_option_is_guarded_and_wins_over_the_environment(self):
+        stop = self.root / "stop.env"
+        stop.write_text('echo "MYFLAMES_HOME=$MYFLAMES_HOME" >&2; exit 7\n')
+        safe = self.root / "lab" / "home"
+        for command in ("profiles", "env"):
+            with self.subTest(command=command):
+                before = self.snapshot()
+                result = self.run_profiles(safe, command=command, args=("--home", str(self.home)))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("must not be your real home", result.stderr.decode())
+                self.assertEqual(self.snapshot(), before)
+                result = self.run_profiles(self.home, creds=stop, command=command, args=("--home", str(safe)))
+                self.assertEqual(result.returncode, 7, result.stderr)
+                self.assertIn("MYFLAMES_HOME=%s\n" % safe, result.stderr.decode())
+                self.assertFalse((self.root / "lab").exists())
+
+    def test_unknown_profiles_argument_is_refused(self):
+        result = self.run_profiles(self.root / "lab", args=("--hom", "x"))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("unknown argument --hom", result.stderr.decode())
 
 
 if __name__ == "__main__":

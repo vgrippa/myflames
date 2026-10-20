@@ -1,0 +1,262 @@
+{
+ "server": "ic-8.4-unreachable",
+ "source": "live",
+ "args": [],
+ "calls": [
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('group_replication_group_name', 'group_replication_group_seeds', 'group_replication_local_address', 'group_replication_single_primary_mode', 'hostname', 'performance_schema', 'port', 'pxc_maint_mode', 'pxc_strict_mode', 'report_host', 'report_port', 'server_uuid', 'userstat', 'version', 'version_comment', 'wsrep_cluster_address', 'wsrep_cluster_name', 'wsrep_desync', 'wsrep_node_address', 'wsrep_node_incoming_address', 'wsrep_node_name', 'wsrep_on', 'wsrep_provider')",
+   "group_replication_group_name\t2ffff60d-cc92-11f1-b51d-b6daec340a27\ngroup_replication_group_seeds\tmf-ic-2:3306,mf-ic-3:3306\ngroup_replication_local_address\tmf-ic-1:3306\ngroup_replication_single_primary_mode\tON\nhostname\tmf-ic-1\nperformance_schema\tON\nport\t3306\nreport_host\tmf-ic-1\nreport_port\t3306\nserver_uuid\t1062e681-cc92-11f1-83dd-b6daec340a27\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t865\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT CHANNEL_NAME, MEMBER_ID, MEMBER_HOST, MEMBER_PORT, MEMBER_STATE, MEMBER_ROLE, MEMBER_VERSION, MEMBER_COMMUNICATION_STACK FROM performance_schema.replication_group_members",
+   "group_replication_applier\t1062e681-cc92-11f1-83dd-b6daec340a27\tmf-ic-1\t3306\tONLINE\tPRIMARY\t8.4.11\tMySQL\ngroup_replication_applier\t10a527c5-cc92-11f1-956e-2a01c1402350\tmf-ic-2\t3306\tONLINE\tSECONDARY\t8.4.11\tMySQL\ngroup_replication_applier\t10db71e2-cc92-11f1-aaa1-eec8cb922a3b\tmf-ic-3\t3306\tUNREACHABLE\tSECONDARY\t8.4.11\tMySQL\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT MEMBER_ID, VIEW_ID, COUNT_TRANSACTIONS_IN_QUEUE, COUNT_TRANSACTIONS_CHECKED, COUNT_CONFLICTS_DETECTED, COUNT_TRANSACTIONS_ROWS_VALIDATING, COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE, COUNT_TRANSACTIONS_REMOTE_APPLIED, COUNT_TRANSACTIONS_LOCAL_PROPOSED, COUNT_TRANSACTIONS_LOCAL_ROLLBACK FROM performance_schema.replication_group_member_stats",
+   "1062e681-cc92-11f1-83dd-b6daec340a27\t17925063669729468:11\t0\t169\t0\t3\t0\t156\t13\t0\n10a527c5-cc92-11f1-956e-2a01c1402350\t17925063669729468:11\t0\t243\t0\t3\t0\t74\t169\t0\n10db71e2-cc92-11f1-aaa1-eec8cb922a3b\t17925063669729468:11\t0\t1\t0\t3\t0\t1\t0\t0\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'mysql_innodb_cluster_metadata'",
+   "mysql_innodb_cluster_metadata\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT major, minor, patch FROM mysql_innodb_cluster_metadata.schema_version",
+   "2\t2\t0\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT cluster_id, cluster_name, primary_mode, group_name FROM mysql_innodb_cluster_metadata.v2_gr_clusters",
+   "30d8061b-cc92-11f1-b51d-b6daec340a27\tmfcluster\tpm\t2ffff60d-cc92-11f1-b51d-b6daec340a27\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT instance_id, cluster_id, label, mysql_server_uuid, address, endpoint, attributes->>'$.instance_type' FROM mysql_innodb_cluster_metadata.v2_instances",
+   "1\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-1:3306\t1062e681-cc92-11f1-83dd-b6daec340a27\tmf-ic-1:3306\tmf-ic-1:3306\tgroup-member\n2\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-2:3306\t10a527c5-cc92-11f1-956e-2a01c1402350\tmf-ic-2:3306\tmf-ic-2:3306\tgroup-member\n3\t30d8061b-cc92-11f1-b51d-b6daec340a27\tmf-ic-3:3306\t10db71e2-cc92-11f1-aaa1-eec8cb922a3b\tmf-ic-3:3306\tmf-ic-3:3306\tgroup-member\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT r.router_id, r.cluster_id, r.router_name, r.product_name, r.address, r.version, r.last_check_in, TIMESTAMPDIFF(SECOND, r.last_check_in, NOW()), r.attributes->>'$.RWEndpoint', r.attributes->>'$.ROEndpoint', r.attributes->>'$.RWSplitEndpoint', r.attributes->>'$.RWXEndpoint', r.attributes->>'$.ROXEndpoint' FROM mysql_innodb_cluster_metadata.v2_routers AS r",
+   "1\t30d8061b-cc92-11f1-b51d-b6daec340a27\t\tMySQL Router\tmf-ic-router\t8.4.10\t2026-10-20 14:49:27\t3\t6446\t6447\t6450\t6448\t6449\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "cluster-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "version_comment": "MySQL Community Server - GPL",
+  "captured_at": "2026-10-20T14:49:30.370533+00:00",
+  "uptime_s": 865,
+  "performance_schema": true,
+  "available": true,
+  "message": null,
+  "kind": "innodb_cluster",
+  "server": {
+   "hostname": "mf-ic-1",
+   "port": 3306,
+   "report_host": "mf-ic-1",
+   "server_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27"
+  },
+  "cluster": {
+   "name": "mfcluster",
+   "uuid": "2ffff60d-cc92-11f1-b51d-b6daec340a27",
+   "size": 3,
+   "expected_size": 3,
+   "expected_source": "mysql_innodb_cluster_metadata",
+   "component": null,
+   "quorum": true,
+   "failures_tolerated": 0,
+   "topology": "single_primary",
+   "provider": null
+  },
+  "status": "problem",
+  "status_why": [
+   "This server cannot reach the member; it may be down or partitioned.",
+   "With 2 ONLINE or RECOVERING members, losing one more member loses the majority."
+  ],
+  "local": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+  "members": [
+   {
+    "key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+    "name": "mf-ic-1:3306",
+    "address": "mf-ic-1:3306",
+    "host": "mf-ic-1",
+    "port": 3306,
+    "uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+    "state": "ONLINE",
+    "state_source": "replication_group_members",
+    "role": "PRIMARY",
+    "version": "8.4.11",
+    "local": true,
+    "status": "ok",
+    "status_why": [
+     "ONLINE: a full member of the group."
+    ],
+    "metrics": {
+     "transactions_in_queue": 0,
+     "transactions_checked": 169,
+     "conflicts_detected": 0,
+     "rows_validating": 3,
+     "applier_queue": 0,
+     "remote_applied": 156,
+     "local_proposed": 13,
+     "local_rollback": 0
+    },
+    "communication_stack": "MySQL",
+    "label": "mf-ic-1:3306",
+    "in_metadata": true,
+    "endpoint": "mf-ic-1:3306"
+   },
+   {
+    "key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
+    "name": "mf-ic-2:3306",
+    "address": "mf-ic-2:3306",
+    "host": "mf-ic-2",
+    "port": 3306,
+    "uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+    "state": "ONLINE",
+    "state_source": "replication_group_members",
+    "role": "SECONDARY",
+    "version": "8.4.11",
+    "local": false,
+    "status": "ok",
+    "status_why": [
+     "ONLINE: a full member of the group."
+    ],
+    "metrics": {
+     "transactions_in_queue": 0,
+     "transactions_checked": 243,
+     "conflicts_detected": 0,
+     "rows_validating": 3,
+     "applier_queue": 0,
+     "remote_applied": 74,
+     "local_proposed": 169,
+     "local_rollback": 0
+    },
+    "communication_stack": "MySQL",
+    "label": "mf-ic-2:3306",
+    "in_metadata": true,
+    "endpoint": "mf-ic-2:3306"
+   },
+   {
+    "key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+    "name": "mf-ic-3:3306",
+    "address": "mf-ic-3:3306",
+    "host": "mf-ic-3",
+    "port": 3306,
+    "uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+    "state": "UNREACHABLE",
+    "state_source": "replication_group_members",
+    "role": "SECONDARY",
+    "version": "8.4.11",
+    "local": false,
+    "status": "problem",
+    "status_why": [
+     "UNREACHABLE: this server cannot reach the member; it may be down or partitioned."
+    ],
+    "metrics": {
+     "transactions_in_queue": 0,
+     "transactions_checked": 1,
+     "conflicts_detected": 0,
+     "rows_validating": 3,
+     "applier_queue": 0,
+     "remote_applied": 1,
+     "local_proposed": 0,
+     "local_rollback": 0
+    },
+    "communication_stack": "MySQL",
+    "label": "mf-ic-3:3306",
+    "in_metadata": true,
+    "endpoint": "mf-ic-3:3306"
+   }
+  ],
+  "galera": null,
+  "group_replication": {
+   "group_name": "2ffff60d-cc92-11f1-b51d-b6daec340a27",
+   "single_primary_mode": "ON",
+   "local_address": "mf-ic-1:3306",
+   "group_seeds": "mf-ic-2:3306,mf-ic-3:3306",
+   "view_id": "17925063669729468:11"
+  },
+  "metadata": {
+   "available": true,
+   "schema_version": "2.2.0",
+   "cluster_id": "30d8061b-cc92-11f1-b51d-b6daec340a27",
+   "cluster_name": "mfcluster",
+   "primary_mode": "pm",
+   "instances": [
+    {
+     "label": "mf-ic-1:3306",
+     "server_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+     "address": "mf-ic-1:3306",
+     "endpoint": "mf-ic-1:3306",
+     "instance_type": "group-member"
+    },
+    {
+     "label": "mf-ic-2:3306",
+     "server_uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "address": "mf-ic-2:3306",
+     "endpoint": "mf-ic-2:3306",
+     "instance_type": "group-member"
+    },
+    {
+     "label": "mf-ic-3:3306",
+     "server_uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "address": "mf-ic-3:3306",
+     "endpoint": "mf-ic-3:3306",
+     "instance_type": "group-member"
+    }
+   ],
+   "reason": null
+  },
+  "routers": [
+   {
+    "id": 1,
+    "name": null,
+    "product": "MySQL Router",
+    "address": "mf-ic-router",
+    "version": "8.4.10",
+    "last_check_in": "2026-10-20 14:49:27",
+    "last_check_in_age_s": 3,
+    "ports": {
+     "RWEndpoint": "6446",
+     "ROEndpoint": "6447",
+     "RWSplitEndpoint": "6450",
+     "RWXEndpoint": "6448",
+     "ROXEndpoint": "6449"
+    }
+   }
+  ],
+  "findings": [
+   {
+    "id": "member_state",
+    "status": "problem",
+    "title": "mf-ic-3:3306 is UNREACHABLE",
+    "text": "This server cannot reach the member; it may be down or partitioned.",
+    "member": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b"
+   },
+   {
+    "id": "no_tolerance",
+    "status": "watch",
+    "title": "Cannot tolerate a failure",
+    "text": "With 2 ONLINE or RECOVERING members, losing one more member loses the majority."
+   }
+  ],
+  "summary": {
+   "members": 3,
+   "ok": 2,
+   "watch": 0,
+   "problem": 1,
+   "unknown": 0
+  },
+  "statements": [
+   "SHOW GLOBAL VARIABLES",
+   "SELECT performance_schema.replication_group_members",
+   "SELECT performance_schema.replication_group_member_stats",
+   "SELECT mysql_innodb_cluster_metadata.v2_gr_clusters, v2_instances, v2_routers"
+  ],
+  "notes": [
+   "Queue lengths are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
+  ]
+ }
+}

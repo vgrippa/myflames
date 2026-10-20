@@ -1,0 +1,207 @@
+{
+ "server": "galera-11.8-donor",
+ "source": "live",
+ "args": [],
+ "calls": [
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('group_replication_group_name', 'group_replication_group_seeds', 'group_replication_local_address', 'group_replication_single_primary_mode', 'hostname', 'performance_schema', 'port', 'pxc_maint_mode', 'pxc_strict_mode', 'report_host', 'report_port', 'server_uuid', 'userstat', 'version', 'version_comment', 'wsrep_cluster_address', 'wsrep_cluster_name', 'wsrep_desync', 'wsrep_node_address', 'wsrep_node_incoming_address', 'wsrep_node_name', 'wsrep_on', 'wsrep_provider')",
+   "hostname\tmf-galera-1\nperformance_schema\tON\nport\t3306\nreport_host\t\nreport_port\t3306\nuserstat\tOFF\nversion\t11.8.9-MariaDB-ubu2404-log\nversion_comment\tmariadb.org binary distribution\nwsrep_cluster_address\tgcomm://mf-galera-1,mf-galera-2,mf-galera-3\nwsrep_cluster_name\tmf_galera\nwsrep_desync\tON\nwsrep_node_address\t\nwsrep_node_incoming_address\tAUTO\nwsrep_node_name\tgalera-1\nwsrep_on\tON\nwsrep_provider\t/usr/lib/galera/libgalera_smm.so\n"
+  ],
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t4\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t765\n"
+  ],
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\\_%'",
+   "wsrep_local_state_uuid\t58fabe80-cc92-11f1-baa6-0b645d2f9239\nwsrep_protocol_version\t11\nwsrep_protocol_application\t4\nwsrep_protocol_replicator\t11\nwsrep_protocol_gcs\t6\nwsrep_last_committed\t23\nwsrep_replicated\t18\nwsrep_replicated_bytes\t46968\nwsrep_repl_keys\t1097\nwsrep_repl_keys_bytes\t9208\nwsrep_repl_data_bytes\t36552\nwsrep_repl_other_bytes\t0\nwsrep_received\t13\nwsrep_received_bytes\t1390\nwsrep_local_commits\t4\nwsrep_local_cert_failures\t0\nwsrep_local_replays\t0\nwsrep_local_send_queue\t0\nwsrep_local_send_queue_max\t1\nwsrep_local_send_queue_min\t0\nwsrep_local_send_queue_avg\t0\nwsrep_local_recv_queue\t0\nwsrep_local_recv_queue_max\t2\nwsrep_local_recv_queue_min\t0\nwsrep_local_recv_queue_avg\t0.0769231\nwsrep_local_cached_downto\t1\nwsrep_flow_control_paused_ns\t0\nwsrep_flow_control_paused\t0\nwsrep_flow_control_sent\t0\nwsrep_flow_control_recv\t0\nwsrep_flow_control_active\tfalse\nwsrep_flow_control_requested\tfalse\nwsrep_cert_deps_distance\t1.33333\nwsrep_apply_oooe\t0\nwsrep_apply_oool\t0\nwsrep_apply_window\t1\nwsrep_apply_waits\t0\nwsrep_commit_oooe\t0\nwsrep_commit_oool\t0\nwsrep_commit_window\t1\nwsrep_local_state\t2\nwsrep_local_state_comment\tDonor/Desynced\nwsrep_cert_index_size\t807\nwsrep_causal_reads\t0\nwsrep_cert_interval\t0\nwsrep_open_transactions\t0\nwsrep_open_connections\t0\nwsrep_incoming_addresses\t192.168.80.2:0,192.168.80.3:0,192.168.80.4:0\nwsrep_cluster_weight\t3\nwsrep_desync_count\t1\nwsrep_evs_delayed\t\nwsrep_evs_evict_list\t\nwsrep_evs_repl_latency\t0.000218958/0.000218958/0.000218958/0/1\nwsrep_evs_state\tOPERATIONAL\nwsrep_gcomm_uuid\t58f352a6-cc92-11f1-8b10-7672dd4ac63d\nwsrep_gmcast_segment\t0\nwsrep_checkpoint_position\t58fabe80-cc92-11f1-baa6-0b645d2f9239:23\nwsrep_se_checkpoint\t58fabe80-cc92-11f1-baa6-0b645d2f9239:23 0-4100-18\nwsrep_applier_thread_count\t1\nwsrep_cluster_capabilities\t\nwsrep_cluster_conf_id\t5\nwsrep_cluster_size\t3\nwsrep_cluster_state_uuid\t58fabe80-cc92-11f1-baa6-0b645d2f9239\nwsrep_cluster_status\tPrimary\nwsrep_connected\tON\nwsrep_local_bf_aborts\t0\nwsrep_local_index\t0\nwsrep_provider_capabilities\t:MULTI_MASTER:CERTIFICATION:PARALLEL_APPLYING:TRX_REPLAY:ISOLATION:PAUSE:CAUSAL_READS:INCREMENTAL_WRITESET:UNORDERED:PREORDERED:STREAMING:NBO:\nwsrep_provider_name\tGalera\nwsrep_provider_vendor\tCodership Oy <info@codership.com>\nwsrep_provider_version\t26.4.27(rf032a460)\nwsrep_ready\tON\nwsrep_rollbacker_thread_count\t1\nwsrep_thread_count\t2\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT node_uuid, node_name, node_incoming_address FROM mysql.wsrep_cluster_members",
+   "58f352a6-cc92-11f1-8b10-7672dd4ac63d\tgalera-1\t192.168.80.2:0\n6ae7b745-cc93-11f1-acf4-070008b6688b\tgalera-2\t192.168.80.3:0\na57a5d64-cc92-11f1-9569-7fa5350ac23b\tgalera-3\t192.168.80.4:0\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "cluster-1.0",
+  "engine": "mariadb",
+  "server_version": "11.8.9-MariaDB-ubu2404-log",
+  "version_comment": "mariadb.org binary distribution",
+  "captured_at": "2026-10-20T14:40:00.367615+00:00",
+  "uptime_s": 765,
+  "performance_schema": true,
+  "available": true,
+  "message": null,
+  "kind": "galera",
+  "server": {
+   "hostname": "mf-galera-1",
+   "port": 3306,
+   "report_host": null,
+   "server_uuid": null
+  },
+  "cluster": {
+   "name": "mf_galera",
+   "uuid": "58fabe80-cc92-11f1-baa6-0b645d2f9239",
+   "size": 3,
+   "expected_size": 3,
+   "expected_source": "wsrep_cluster_address",
+   "component": "Primary",
+   "quorum": true,
+   "failures_tolerated": null,
+   "topology": null,
+   "provider": {
+    "name": "Galera",
+    "version": "26.4.27(rf032a460)",
+    "vendor": "Codership Oy <info@codership.com>"
+   }
+  },
+  "status": "watch",
+  "status_why": [
+   "Donor/Desynced: serving a state transfer, or desynchronized with wsrep_desync; it may fall behind the cluster."
+  ],
+  "local": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+  "members": [
+   {
+    "key": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+    "name": "galera-1",
+    "address": "192.168.80.2:0",
+    "host": "192.168.80.2",
+    "port": null,
+    "uuid": "58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+    "state": "Donor/Desynced",
+    "state_source": "wsrep_local_state_comment",
+    "role": null,
+    "version": null,
+    "local": true,
+    "status": "watch",
+    "status_why": [
+     "Donor/Desynced: serving a state transfer, or desynchronized with wsrep_desync; it may fall behind the cluster."
+    ],
+    "metrics": {
+     "local_state": 2,
+     "local_state_comment": "Donor/Desynced",
+     "ready": true,
+     "connected": true,
+     "evs_state": "OPERATIONAL",
+     "local_recv_queue": 0,
+     "local_recv_queue_avg": 0.0769231,
+     "local_send_queue": 0,
+     "local_send_queue_avg": 0,
+     "flow_control_paused": 0,
+     "flow_control_active": false,
+     "flow_control_sent": 0,
+     "flow_control_recv": 0,
+     "cert_deps_distance": 1.33333,
+     "local_cert_failures": 0,
+     "local_bf_aborts": 0,
+     "desync_count": 1,
+     "last_committed": 23,
+     "local_index": 0,
+     "cluster_conf_id": 5,
+     "cluster_weight": 3
+    }
+   },
+   {
+    "key": "node:6ae7b745-cc93-11f1-acf4-070008b6688b",
+    "name": "galera-2",
+    "address": "192.168.80.3:0",
+    "host": "192.168.80.3",
+    "port": null,
+    "uuid": "6ae7b745-cc93-11f1-acf4-070008b6688b",
+    "state": null,
+    "state_source": null,
+    "role": null,
+    "version": null,
+    "local": false,
+    "status": "unknown",
+    "status_why": [
+     "In the component as this node sees it. A node's own state is read on that node: connect to it to judge it."
+    ],
+    "metrics": {}
+   },
+   {
+    "key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+    "name": "galera-3",
+    "address": "192.168.80.4:0",
+    "host": "192.168.80.4",
+    "port": null,
+    "uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+    "state": null,
+    "state_source": null,
+    "role": null,
+    "version": null,
+    "local": false,
+    "status": "unknown",
+    "status_why": [
+     "In the component as this node sees it. A node's own state is read on that node: connect to it to judge it."
+    ],
+    "metrics": {}
+   }
+  ],
+  "galera": {
+   "node_name": "galera-1",
+   "node_address": null,
+   "cluster_address": "gcomm://mf-galera-1,mf-galera-2,mf-galera-3",
+   "incoming_addresses": [
+    "192.168.80.2:0",
+    "192.168.80.3:0",
+    "192.168.80.4:0"
+   ],
+   "gcomm_uuid": "58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+   "desync": "ON",
+   "pxc_strict_mode": null,
+   "pxc_maint_mode": null,
+   "members_source": "wsrep_cluster_members",
+   "metrics": {
+    "local_state": 2,
+    "local_state_comment": "Donor/Desynced",
+    "ready": true,
+    "connected": true,
+    "evs_state": "OPERATIONAL",
+    "local_recv_queue": 0,
+    "local_recv_queue_avg": 0.0769231,
+    "local_send_queue": 0,
+    "local_send_queue_avg": 0,
+    "flow_control_paused": 0,
+    "flow_control_active": false,
+    "flow_control_sent": 0,
+    "flow_control_recv": 0,
+    "cert_deps_distance": 1.33333,
+    "local_cert_failures": 0,
+    "local_bf_aborts": 0,
+    "desync_count": 1,
+    "last_committed": 23,
+    "local_index": 0,
+    "cluster_conf_id": 5,
+    "cluster_weight": 3
+   }
+  },
+  "group_replication": null,
+  "metadata": null,
+  "routers": [],
+  "findings": [
+   {
+    "id": "local_state",
+    "status": "watch",
+    "title": "This node is Donor/Desynced",
+    "text": "Donor/Desynced: serving a state transfer, or desynchronized with wsrep_desync; it may fall behind the cluster.",
+    "member": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d"
+   }
+  ],
+  "summary": {
+   "members": 3,
+   "ok": 0,
+   "watch": 1,
+   "problem": 0,
+   "unknown": 2
+  },
+  "statements": [
+   "SHOW GLOBAL VARIABLES",
+   "SHOW GLOBAL STATUS (wsrep_%)",
+   "SELECT mysql.wsrep_cluster_members"
+  ],
+  "notes": [
+   "mysql.wsrep_cluster_members reports port 0 for galera-1, galera-2, galera-3: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
+   "wsrep_flow_control_paused and the queue averages cover the time since the provider statistics were last reset (FLUSH STATUS) or since start.",
+   "Galera exposes only this node's own state: the other nodes are listed as members of the component without a verdict. Connect to a node to judge it."
+  ]
+ }
+}

@@ -1,0 +1,19 @@
+{
+ "fixture": "cluster-matrix",
+ "schema": "cluster-fixture-1",
+ "cluster": "ic",
+ "state": "healthy",
+ "captured_at": "2026-10-20T14:33:30+00:00",
+ "router_running": true,
+ "source": "SELECT @@hostname through mf-ic-router:6446 (RW, host 34306) and :6447 (RO, host 34307)",
+ "routes": {
+  "rw": {
+   "host_port": 34306,
+   "reached": "mf-ic-1"
+  },
+  "ro": {
+   "host_port": 34307,
+   "reached": "mf-ic-2"
+  }
+ }
+}

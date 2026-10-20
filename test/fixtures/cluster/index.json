@@ -1,0 +1,246 @@
+{
+ "fixture": "cluster-matrix",
+ "generator": "scripts/cluster-matrix.sh fixtures",
+ "files": [
+  {
+   "file": "galera-degraded-galera-1.json",
+   "cluster": "galera",
+   "state": "degraded",
+   "node": "galera-1",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:34:34+00:00"
+  },
+  {
+   "file": "galera-degraded-galera-3.json",
+   "cluster": "galera",
+   "state": "degraded",
+   "node": "galera-3",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:34:35+00:00"
+  },
+  {
+   "file": "galera-healthy-galera-1.json",
+   "cluster": "galera",
+   "state": "healthy",
+   "node": "galera-1",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:32:43+00:00"
+  },
+  {
+   "file": "galera-healthy-galera-2.json",
+   "cluster": "galera",
+   "state": "healthy",
+   "node": "galera-2",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:32:44+00:00"
+  },
+  {
+   "file": "galera-healthy-galera-3.json",
+   "cluster": "galera",
+   "state": "healthy",
+   "node": "galera-3",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:32:45+00:00"
+  },
+  {
+   "file": "galera-recovered-galera-1.json",
+   "cluster": "galera",
+   "state": "recovered",
+   "node": "galera-1",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:35:26+00:00"
+  },
+  {
+   "file": "galera-recovered-galera-2.json",
+   "cluster": "galera",
+   "state": "recovered",
+   "node": "galera-2",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:35:27+00:00"
+  },
+  {
+   "file": "galera-recovered-galera-3.json",
+   "cluster": "galera",
+   "state": "recovered",
+   "node": "galera-3",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:35:28+00:00"
+  },
+  {
+   "file": "ic-degraded-ic-2-primary.json",
+   "cluster": "ic",
+   "state": "degraded",
+   "node": "ic-2",
+   "member_role": "primary",
+   "captured_at": "2026-10-20T14:34:37+00:00"
+  },
+  {
+   "file": "ic-degraded-ic-3-secondary.json",
+   "cluster": "ic",
+   "state": "degraded",
+   "node": "ic-3",
+   "member_role": "secondary",
+   "captured_at": "2026-10-20T14:34:38+00:00"
+  },
+  {
+   "file": "ic-degraded-router.json",
+   "cluster": "ic",
+   "state": "degraded",
+   "node": null,
+   "member_role": null,
+   "captured_at": "2026-10-20T14:34:40+00:00"
+  },
+  {
+   "file": "ic-degraded-shell-status.json",
+   "cluster": "ic",
+   "state": "degraded",
+   "node": null,
+   "member_role": null,
+   "captured_at": "2026-10-20T14:34:40+00:00"
+  },
+  {
+   "file": "ic-healthy-ic-1-primary.json",
+   "cluster": "ic",
+   "state": "healthy",
+   "node": "ic-1",
+   "member_role": "primary",
+   "captured_at": "2026-10-20T14:33:27+00:00"
+  },
+  {
+   "file": "ic-healthy-ic-2-secondary.json",
+   "cluster": "ic",
+   "state": "healthy",
+   "node": "ic-2",
+   "member_role": "secondary",
+   "captured_at": "2026-10-20T14:33:28+00:00"
+  },
+  {
+   "file": "ic-healthy-ic-3-secondary.json",
+   "cluster": "ic",
+   "state": "healthy",
+   "node": "ic-3",
+   "member_role": "secondary",
+   "captured_at": "2026-10-20T14:33:29+00:00"
+  },
+  {
+   "file": "ic-healthy-router.json",
+   "cluster": "ic",
+   "state": "healthy",
+   "node": null,
+   "member_role": null,
+   "captured_at": "2026-10-20T14:33:30+00:00"
+  },
+  {
+   "file": "ic-healthy-shell-status.json",
+   "cluster": "ic",
+   "state": "healthy",
+   "node": null,
+   "member_role": null,
+   "captured_at": "2026-10-20T14:33:30+00:00"
+  },
+  {
+   "file": "ic-recovered-ic-1-secondary.json",
+   "cluster": "ic",
+   "state": "recovered",
+   "node": "ic-1",
+   "member_role": "secondary",
+   "captured_at": "2026-10-20T14:35:31+00:00"
+  },
+  {
+   "file": "ic-recovered-ic-2-primary.json",
+   "cluster": "ic",
+   "state": "recovered",
+   "node": "ic-2",
+   "member_role": "primary",
+   "captured_at": "2026-10-20T14:35:32+00:00"
+  },
+  {
+   "file": "ic-recovered-ic-3-secondary.json",
+   "cluster": "ic",
+   "state": "recovered",
+   "node": "ic-3",
+   "member_role": "secondary",
+   "captured_at": "2026-10-20T14:35:33+00:00"
+  },
+  {
+   "file": "ic-recovered-router.json",
+   "cluster": "ic",
+   "state": "recovered",
+   "node": null,
+   "member_role": null,
+   "captured_at": "2026-10-20T14:35:35+00:00"
+  },
+  {
+   "file": "ic-recovered-shell-status.json",
+   "cluster": "ic",
+   "state": "recovered",
+   "node": null,
+   "member_role": null,
+   "captured_at": "2026-10-20T14:35:35+00:00"
+  },
+  {
+   "file": "pxc-degraded-pxc-1.json",
+   "cluster": "pxc",
+   "state": "degraded",
+   "node": "pxc-1",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:50:12+00:00"
+  },
+  {
+   "file": "pxc-degraded-pxc-3.json",
+   "cluster": "pxc",
+   "state": "degraded",
+   "node": "pxc-3",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:50:13+00:00"
+  },
+  {
+   "file": "pxc-healthy-pxc-1.json",
+   "cluster": "pxc",
+   "state": "healthy",
+   "node": "pxc-1",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:49:55+00:00"
+  },
+  {
+   "file": "pxc-healthy-pxc-2.json",
+   "cluster": "pxc",
+   "state": "healthy",
+   "node": "pxc-2",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:49:56+00:00"
+  },
+  {
+   "file": "pxc-healthy-pxc-3.json",
+   "cluster": "pxc",
+   "state": "healthy",
+   "node": "pxc-3",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:49:57+00:00"
+  },
+  {
+   "file": "pxc-recovered-pxc-1.json",
+   "cluster": "pxc",
+   "state": "recovered",
+   "node": "pxc-1",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:50:19+00:00"
+  },
+  {
+   "file": "pxc-recovered-pxc-2.json",
+   "cluster": "pxc",
+   "state": "recovered",
+   "node": "pxc-2",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:50:19+00:00"
+  },
+  {
+   "file": "pxc-recovered-pxc-3.json",
+   "cluster": "pxc",
+   "state": "recovered",
+   "node": "pxc-3",
+   "member_role": null,
+   "captured_at": "2026-10-20T14:50:20+00:00"
+  }
+ ]
+}

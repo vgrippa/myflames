@@ -1,0 +1,759 @@
+{
+ "fixture": "cluster-matrix",
+ "schema": "cluster-fixture-1",
+ "cluster": "ic",
+ "node": "ic-3",
+ "container": "mf-ic-3",
+ "image": "mysql:8.4",
+ "state": "degraded",
+ "captured_at": "2026-10-20T14:34:38+00:00",
+ "queries": {
+  "identity": {
+   "sql": "SELECT @@version AS version, @@version_comment AS version_comment, @@hostname AS hostname, @@port AS port, @@server_id AS server_id, @@report_host AS report_host, @@read_only AS read_only, @@super_read_only AS super_read_only, @@server_uuid AS server_uuid",
+   "columns": [
+    "version",
+    "version_comment",
+    "hostname",
+    "port",
+    "server_id",
+    "report_host",
+    "read_only",
+    "super_read_only",
+    "server_uuid"
+   ],
+   "rows": [
+    [
+     "8.4.11",
+     "MySQL Community Server - GPL",
+     "mf-ic-3",
+     "3306",
+     "4303",
+     "mf-ic-3",
+     "1",
+     "1",
+     "10db71e2-cc92-11f1-aaa1-eec8cb922a3b"
+    ]
+   ]
+  },
+  "replication_group_members": {
+   "sql": "SELECT * FROM performance_schema.replication_group_members",
+   "columns": [
+    "CHANNEL_NAME",
+    "MEMBER_ID",
+    "MEMBER_HOST",
+    "MEMBER_PORT",
+    "MEMBER_STATE",
+    "MEMBER_ROLE",
+    "MEMBER_VERSION",
+    "MEMBER_COMMUNICATION_STACK"
+   ],
+   "rows": [
+    [
+     "group_replication_applier",
+     "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "mf-ic-2",
+     "3306",
+     "ONLINE",
+     "PRIMARY",
+     "8.4.11",
+     "MySQL"
+    ],
+    [
+     "group_replication_applier",
+     "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "mf-ic-3",
+     "3306",
+     "ONLINE",
+     "SECONDARY",
+     "8.4.11",
+     "MySQL"
+    ]
+   ]
+  },
+  "replication_group_member_stats": {
+   "sql": "SELECT * FROM performance_schema.replication_group_member_stats",
+   "columns": [
+    "CHANNEL_NAME",
+    "VIEW_ID",
+    "MEMBER_ID",
+    "COUNT_TRANSACTIONS_IN_QUEUE",
+    "COUNT_TRANSACTIONS_CHECKED",
+    "COUNT_CONFLICTS_DETECTED",
+    "COUNT_TRANSACTIONS_ROWS_VALIDATING",
+    "TRANSACTIONS_COMMITTED_ALL_MEMBERS",
+    "LAST_CONFLICT_FREE_TRANSACTION",
+    "COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE",
+    "COUNT_TRANSACTIONS_REMOTE_APPLIED",
+    "COUNT_TRANSACTIONS_LOCAL_PROPOSED",
+    "COUNT_TRANSACTIONS_LOCAL_ROLLBACK"
+   ],
+   "rows": [
+    [
+     "group_replication_applier",
+     "17925063669729468:8",
+     "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "0",
+     "65",
+     "0",
+     "3",
+     "1062e681-cc92-11f1-83dd-b6daec340a27:1-9,\n2ffff60d-cc92-11f1-b51d-b6daec340a27:1-126",
+     "2ffff60d-cc92-11f1-b51d-b6daec340a27:139",
+     "0",
+     "61",
+     "4",
+     "0"
+    ],
+    [
+     "group_replication_applier",
+     "17925063669729468:8",
+     "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "0",
+     "56",
+     "0",
+     "3",
+     "1062e681-cc92-11f1-83dd-b6daec340a27:1-9,\n2ffff60d-cc92-11f1-b51d-b6daec340a27:1-139",
+     "2ffff60d-cc92-11f1-b51d-b6daec340a27:1000091",
+     "0",
+     "56",
+     "0",
+     "0"
+    ]
+   ]
+  },
+  "group_replication_variables": {
+   "sql": "SHOW GLOBAL VARIABLES LIKE 'group_replication%'",
+   "columns": [
+    "Variable_name",
+    "Value"
+   ],
+   "rows": [
+    [
+     "group_replication_advertise_recovery_endpoints",
+     "DEFAULT"
+    ],
+    [
+     "group_replication_allow_local_lower_version_join",
+     "OFF"
+    ],
+    [
+     "group_replication_auto_increment_increment",
+     "7"
+    ],
+    [
+     "group_replication_autorejoin_tries",
+     "3"
+    ],
+    [
+     "group_replication_bootstrap_group",
+     "OFF"
+    ],
+    [
+     "group_replication_clone_threshold",
+     "9223372036854775807"
+    ],
+    [
+     "group_replication_communication_debug_options",
+     "GCS_DEBUG_NONE"
+    ],
+    [
+     "group_replication_communication_max_message_size",
+     "10485760"
+    ],
+    [
+     "group_replication_communication_stack",
+     "MYSQL"
+    ],
+    [
+     "group_replication_components_stop_timeout",
+     "300"
+    ],
+    [
+     "group_replication_compression_threshold",
+     "1000000"
+    ],
+    [
+     "group_replication_consistency",
+     "BEFORE_ON_PRIMARY_FAILOVER"
+    ],
+    [
+     "group_replication_enforce_update_everywhere_checks",
+     "OFF"
+    ],
+    [
+     "group_replication_exit_state_action",
+     "OFFLINE_MODE"
+    ],
+    [
+     "group_replication_flow_control_applier_threshold",
+     "25000"
+    ],
+    [
+     "group_replication_flow_control_certifier_threshold",
+     "25000"
+    ],
+    [
+     "group_replication_flow_control_hold_percent",
+     "10"
+    ],
+    [
+     "group_replication_flow_control_max_quota",
+     "0"
+    ],
+    [
+     "group_replication_flow_control_member_quota_percent",
+     "0"
+    ],
+    [
+     "group_replication_flow_control_min_quota",
+     "0"
+    ],
+    [
+     "group_replication_flow_control_min_recovery_quota",
+     "0"
+    ],
+    [
+     "group_replication_flow_control_mode",
+     "QUOTA"
+    ],
+    [
+     "group_replication_flow_control_period",
+     "1"
+    ],
+    [
+     "group_replication_flow_control_release_percent",
+     "50"
+    ],
+    [
+     "group_replication_force_members",
+     ""
+    ],
+    [
+     "group_replication_group_name",
+     "2ffff60d-cc92-11f1-b51d-b6daec340a27"
+    ],
+    [
+     "group_replication_group_seeds",
+     "mf-ic-1:3306,mf-ic-2:3306"
+    ],
+    [
+     "group_replication_gtid_assignment_block_size",
+     "1000000"
+    ],
+    [
+     "group_replication_ip_allowlist",
+     "AUTOMATIC"
+    ],
+    [
+     "group_replication_local_address",
+     "mf-ic-3:3306"
+    ],
+    [
+     "group_replication_member_expel_timeout",
+     "5"
+    ],
+    [
+     "group_replication_member_weight",
+     "50"
+    ],
+    [
+     "group_replication_message_cache_size",
+     "1073741824"
+    ],
+    [
+     "group_replication_paxos_single_leader",
+     "OFF"
+    ],
+    [
+     "group_replication_poll_spin_loops",
+     "0"
+    ],
+    [
+     "group_replication_preemptive_garbage_collection",
+     "OFF"
+    ],
+    [
+     "group_replication_preemptive_garbage_collection_rows_threshold",
+     "100000"
+    ],
+    [
+     "group_replication_recovery_compression_algorithms",
+     "uncompressed"
+    ],
+    [
+     "group_replication_recovery_get_public_key",
+     "OFF"
+    ],
+    [
+     "group_replication_recovery_public_key_path",
+     ""
+    ],
+    [
+     "group_replication_recovery_reconnect_interval",
+     "60"
+    ],
+    [
+     "group_replication_recovery_retry_count",
+     "10"
+    ],
+    [
+     "group_replication_recovery_ssl_ca",
+     ""
+    ],
+    [
+     "group_replication_recovery_ssl_capath",
+     ""
+    ],
+    [
+     "group_replication_recovery_ssl_cert",
+     ""
+    ],
+    [
+     "group_replication_recovery_ssl_cipher",
+     ""
+    ],
+    [
+     "group_replication_recovery_ssl_crl",
+     ""
+    ],
+    [
+     "group_replication_recovery_ssl_crlpath",
+     ""
+    ],
+    [
+     "group_replication_recovery_ssl_key",
+     ""
+    ],
+    [
+     "group_replication_recovery_ssl_verify_server_cert",
+     "OFF"
+    ],
+    [
+     "group_replication_recovery_tls_ciphersuites",
+     ""
+    ],
+    [
+     "group_replication_recovery_tls_version",
+     "TLSv1.2,TLSv1.3"
+    ],
+    [
+     "group_replication_recovery_use_ssl",
+     "ON"
+    ],
+    [
+     "group_replication_recovery_zstd_compression_level",
+     "3"
+    ],
+    [
+     "group_replication_single_primary_mode",
+     "ON"
+    ],
+    [
+     "group_replication_ssl_mode",
+     "REQUIRED"
+    ],
+    [
+     "group_replication_start_on_boot",
+     "ON"
+    ],
+    [
+     "group_replication_tls_source",
+     "MYSQL_MAIN"
+    ],
+    [
+     "group_replication_transaction_size_limit",
+     "150000000"
+    ],
+    [
+     "group_replication_unreachable_majority_timeout",
+     "0"
+    ],
+    [
+     "group_replication_view_change_uuid",
+     "AUTOMATIC"
+    ]
+   ]
+  },
+  "group_replication_status": {
+   "sql": "SHOW GLOBAL STATUS WHERE Variable_name LIKE 'group\\_replication%' OR Variable_name LIKE 'Gr\\_%'",
+   "columns": [
+    "Variable_name",
+    "Value"
+   ],
+   "rows": [
+    [
+     "Gr_all_consensus_proposals_count",
+     "488"
+    ],
+    [
+     "Gr_all_consensus_time_sum",
+     "349085"
+    ],
+    [
+     "Gr_certification_garbage_collector_count",
+     "9"
+    ],
+    [
+     "Gr_certification_garbage_collector_time_sum",
+     "631"
+    ],
+    [
+     "Gr_consensus_bytes_received_sum",
+     "1643484"
+    ],
+    [
+     "Gr_consensus_bytes_sent_sum",
+     "935136"
+    ],
+    [
+     "Gr_control_messages_sent_bytes_sum",
+     "111265"
+    ],
+    [
+     "Gr_control_messages_sent_count",
+     "492"
+    ],
+    [
+     "Gr_control_messages_sent_roundtrip_time_sum",
+     "383264"
+    ],
+    [
+     "Gr_data_messages_sent_bytes_sum",
+     "0"
+    ],
+    [
+     "Gr_data_messages_sent_count",
+     "0"
+    ],
+    [
+     "Gr_data_messages_sent_roundtrip_time_sum",
+     "0"
+    ],
+    [
+     "Gr_empty_consensus_proposals_count",
+     "89"
+    ],
+    [
+     "Gr_extended_consensus_count",
+     "0"
+    ],
+    [
+     "Gr_last_consensus_end_timestamp",
+     "2026-10-20 14:34:38.118413"
+    ],
+    [
+     "Gr_total_messages_sent_count",
+     "494"
+    ],
+    [
+     "Gr_transactions_consistency_after_sync_count",
+     "0"
+    ],
+    [
+     "Gr_transactions_consistency_after_sync_time_sum",
+     "0"
+    ],
+    [
+     "Gr_transactions_consistency_after_termination_count",
+     "0"
+    ],
+    [
+     "Gr_transactions_consistency_after_termination_time_sum",
+     "0"
+    ],
+    [
+     "Gr_transactions_consistency_before_begin_count",
+     "0"
+    ],
+    [
+     "Gr_transactions_consistency_before_begin_time_sum",
+     "0"
+    ]
+   ]
+  },
+  "replication_group_communication_information": {
+   "sql": "SELECT * FROM performance_schema.replication_group_communication_information",
+   "columns": [
+    "WRITE_CONCURRENCY",
+    "PROTOCOL_VERSION",
+    "WRITE_CONSENSUS_LEADERS_PREFERRED",
+    "WRITE_CONSENSUS_LEADERS_ACTUAL",
+    "WRITE_CONSENSUS_SINGLE_LEADER_CAPABLE",
+    "MEMBER_FAILURE_SUSPICIONS_COUNT"
+   ],
+   "rows": [
+    [
+     "10",
+     "8.0.27",
+     "10a527c5-cc92-11f1-956e-2a01c1402350,10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "10a527c5-cc92-11f1-956e-2a01c1402350,10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "0",
+     "{\"10a527c5-cc92-11f1-956e-2a01c1402350\":0,\"10db71e2-cc92-11f1-aaa1-eec8cb922a3b\":0}"
+    ]
+   ]
+  },
+  "replication_connection_status": {
+   "sql": "SELECT * FROM performance_schema.replication_connection_status",
+   "columns": [
+    "CHANNEL_NAME",
+    "GROUP_NAME",
+    "SOURCE_UUID",
+    "THREAD_ID",
+    "SERVICE_STATE",
+    "COUNT_RECEIVED_HEARTBEATS",
+    "LAST_HEARTBEAT_TIMESTAMP",
+    "RECEIVED_TRANSACTION_SET",
+    "LAST_ERROR_NUMBER",
+    "LAST_ERROR_MESSAGE",
+    "LAST_ERROR_TIMESTAMP",
+    "LAST_QUEUED_TRANSACTION",
+    "LAST_QUEUED_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP",
+    "LAST_QUEUED_TRANSACTION_IMMEDIATE_COMMIT_TIMESTAMP",
+    "LAST_QUEUED_TRANSACTION_START_QUEUE_TIMESTAMP",
+    "LAST_QUEUED_TRANSACTION_END_QUEUE_TIMESTAMP",
+    "QUEUEING_TRANSACTION",
+    "QUEUEING_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP",
+    "QUEUEING_TRANSACTION_IMMEDIATE_COMMIT_TIMESTAMP",
+    "QUEUEING_TRANSACTION_START_QUEUE_TIMESTAMP"
+   ],
+   "rows": [
+    [
+     "group_replication_applier",
+     "2ffff60d-cc92-11f1-b51d-b6daec340a27",
+     "2ffff60d-cc92-11f1-b51d-b6daec340a27",
+     null,
+     "ON",
+     "0",
+     "0000-00-00 00:00:00.000000",
+     "1062e681-cc92-11f1-83dd-b6daec340a27:1-9,\n2ffff60d-cc92-11f1-b51d-b6daec340a27:1-139:1000088-1000091",
+     "0",
+     "",
+     "0000-00-00 00:00:00.000000",
+     "2ffff60d-cc92-11f1-b51d-b6daec340a27:1000091",
+     "2026-10-20 14:34:35.748969",
+     "2026-10-20 14:34:35.748969",
+     "2026-10-20 14:34:35.749311",
+     "2026-10-20 14:34:35.749357",
+     "",
+     "0000-00-00 00:00:00.000000",
+     "0000-00-00 00:00:00.000000",
+     "0000-00-00 00:00:00.000000"
+    ],
+    [
+     "group_replication_recovery",
+     "",
+     "",
+     null,
+     "OFF",
+     "0",
+     "0000-00-00 00:00:00.000000",
+     "",
+     "0",
+     "",
+     "0000-00-00 00:00:00.000000",
+     "",
+     "0000-00-00 00:00:00.000000",
+     "0000-00-00 00:00:00.000000",
+     "0000-00-00 00:00:00.000000",
+     "0000-00-00 00:00:00.000000",
+     "",
+     "0000-00-00 00:00:00.000000",
+     "0000-00-00 00:00:00.000000",
+     "0000-00-00 00:00:00.000000"
+    ]
+   ]
+  },
+  "replication_applier_status": {
+   "sql": "SELECT * FROM performance_schema.replication_applier_status",
+   "columns": [
+    "CHANNEL_NAME",
+    "SERVICE_STATE",
+    "REMAINING_DELAY",
+    "COUNT_TRANSACTIONS_RETRIES"
+   ],
+   "rows": [
+    [
+     "group_replication_applier",
+     "ON",
+     null,
+     "0"
+    ],
+    [
+     "group_replication_recovery",
+     "OFF",
+     null,
+     "0"
+    ]
+   ]
+  },
+  "gtid": {
+   "sql": "SELECT @@gtid_mode AS gtid_mode, @@gtid_executed AS gtid_executed, @@gtid_purged AS gtid_purged",
+   "columns": [
+    "gtid_mode",
+    "gtid_executed",
+    "gtid_purged"
+   ],
+   "rows": [
+    [
+     "ON",
+     "1062e681-cc92-11f1-83dd-b6daec340a27:1-9,\n2ffff60d-cc92-11f1-b51d-b6daec340a27:1-139:1000088-1000091",
+     "1062e681-cc92-11f1-83dd-b6daec340a27:1-9,\n2ffff60d-cc92-11f1-b51d-b6daec340a27:1-87"
+    ]
+   ]
+  },
+  "plugins": {
+   "sql": "SELECT PLUGIN_NAME, PLUGIN_STATUS, PLUGIN_TYPE, PLUGIN_LIBRARY FROM information_schema.PLUGINS WHERE PLUGIN_NAME IN ('group_replication', 'clone') ORDER BY 1",
+   "columns": [
+    "PLUGIN_NAME",
+    "PLUGIN_STATUS",
+    "PLUGIN_TYPE",
+    "PLUGIN_LIBRARY"
+   ],
+   "rows": [
+    [
+     "clone",
+     "ACTIVE",
+     "CLONE",
+     "mysql_clone.so"
+    ],
+    [
+     "group_replication",
+     "ACTIVE",
+     "GROUP REPLICATION",
+     "group_replication.so"
+    ]
+   ]
+  },
+  "metadata_schema_version": {
+   "sql": "SELECT * FROM mysql_innodb_cluster_metadata.schema_version",
+   "columns": [
+    "major",
+    "minor",
+    "patch"
+   ],
+   "rows": [
+    [
+     "2",
+     "2",
+     "0"
+    ]
+   ]
+  },
+  "metadata_v2_clusters": {
+   "sql": "SELECT * FROM mysql_innodb_cluster_metadata.v2_clusters",
+   "columns": [
+    "cluster_type",
+    "primary_mode",
+    "cluster_id",
+    "cluster_name",
+    "router_options"
+   ],
+   "rows": [
+    [
+     "gr",
+     "pm",
+     "30d8061b-cc92-11f1-b51d-b6daec340a27",
+     "mfcluster",
+     "{\"tags\": {}, \"Configuration\": {\"8.4.10\": {\"Defaults\": {\"io\": {\"threads\": 0}, \"common\": {\"name\": \"system\", \"socket\": \"\", \"bind_address\": \"0.0.0.0\", \"read_timeout\": 30, \"server_ssl_ca\": \"\", \"server_ssl_crl\": \"\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"max_total_connections\": 512, \"unknown_config_option\": \"error\", \"client_connect_timeout\": 9, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2, \"max_idle_server_connections\": 64}, \"loggers\": {\"filelog\": {\"level\": \"info\", \"filename\": \"mysqlrouter.log\", \"destination\": \"\", \"timestamp_precision\": \"second\"}}, \"endpoints\": {\"bootstrap_ro\": {\"socket\": \"\", \"protocol\": \"classic\", \"bind_port\": 6447, \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=SECONDARY\", \"server_ssl_ca\": \"\", \"server_ssl_crl\": \"\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"round-robin-with-fallback\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": true, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}, \"bootstrap_rw\": {\"socket\": \"\", \"protocol\": \"classic\", \"bind_port\": 6446, \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=PRIMARY\", \"server_ssl_ca\": \"\", \"server_ssl_crl\": \"\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"first-available\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": true, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}, \"bootstrap_x_ro\": {\"socket\": \"\", \"protocol\": \"x\", \"bind_port\": 6449, \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=SECONDARY\", \"server_ssl_ca\": \"\", \"server_ssl_crl\": \"\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"round-robin-with-fallback\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": false, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}, \"bootstrap_x_rw\": {\"socket\": \"\", \"protocol\": \"x\", \"bind_port\": 6448, \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=PRIMARY\", \"server_ssl_ca\": \"\", \"server_ssl_crl\": \"\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"first-available\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": false, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}, \"bootstrap_rw_split\": {\"socket\": \"\", \"protocol\": \"classic\", \"bind_port\": 6450, \"access_mode\": \"auto\", \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=PRIMARY_AND_SECONDARY\", \"server_ssl_ca\": \"\", \"server_ssl_crl\": \"\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"round-robin\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": true, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": true, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}}, \"http_server\": {\"ssl\": true, \"port\": 8443, \"ssl_key\": \"\", \"ssl_cert\": \"\", \"ssl_cipher\": \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_CCM_SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-CCM:ECDHE-ECDSA-AES128-CCM:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-CCM:DHE-RSA-AES256-CCM:DHE-RSA-CHACHA20-POLY1305\", \"ssl_curves\": \"\", \"bind_address\": \"0.0.0.0\", \"require_realm\": \"\", \"ssl_dh_params\": \"\", \"static_folder\": \"\"}, \"rest_configs\": {\"rest_api\": {\"require_realm\": \"\"}, \"rest_router\": {\"require_realm\": \"default_auth_realm\"}, \"rest_routing\": {\"require_realm\": \"default_auth_realm\"}, \"rest_metadata_cache\": {\"require_realm\": \"default_auth_realm\"}}, \"routing_rules\": {\"read_only_targets\": \"secondaries\", \"stats_updates_frequency\": -1, \"use_replica_primary_as_rw\": false, \"invalidated_cluster_policy\": \"drop_all\", \"unreachable_quorum_allowed_traffic\": \"none\"}, \"metadata_cache\": {\"ttl\": 0.5, \"ssl_ca\": \"\", \"ssl_crl\": \"\", \"ssl_mode\": \"PREFERRED\", \"ssl_capath\": \"\", \"ssl_cipher\": \"\", \"ssl_crlpath\": \"\", \"tls_version\": \"\", \"read_timeout\": 30, \"auth_cache_ttl\": -1.0, \"connect_timeout\": 5, \"thread_stack_size\": 1024, \"use_gr_notifications\": false, \"auth_cache_refresh_interval\": 2.0}, \"connection_pool\": {\"idle_timeout\": 5, \"max_idle_server_connections\": 64}, \"destination_status\": {\"error_quarantine_interval\": 1, \"error_quarantine_threshold\": 1}, \"http_authentication_realm\": {\"name\": \"default_realm\", \"method\": \"basic\", \"backend\": \"default_auth_backend\", \"require\": \"valid-user\"}, \"http_authentication_backends\": {\"default_auth_backend\": {\"backend\": \"metadata_cache\", \"filename\": \"\"}}}, \"ConfigurationChangesSchema\": {\"type\": \"object\", \"title\": \"MySQL Router configuration JSON schema\", \"$schema\": \"http://json-schema.org/draft-04/schema#\", \"properties\": {\"routing_rules\": {\"type\": \"object\", \"properties\": {\"target_cluster\": {\"type\": \"string\"}, \"read_only_targets\": {\"enum\": [\"all\", \"read_replicas\", \"secondaries\"], \"type\": \"string\"}, \"stats_updates_frequency\": {\"type\": \"number\"}, \"use_replica_primary_as_rw\": {\"type\": \"boolean\"}, \"invalidated_cluster_policy\": {\"enum\": [\"accept_ro\", \"drop_all\"], \"type\": \"string\"}, \"unreachable_quorum_allowed_traffic\": {\"enum\": [\"none\", \"read\", \"all\"], \"type\": \"string\"}}, \"additionalProperties\": false}}, \"description\": \"JSON Schema for the Router configuration options that can be changed in the runtime. Shared by the Router in the metadata to announce which options it supports changing.\", \"additionalProperties\": false}}}, \"read_only_targets\": \"secondaries\"}"
+    ]
+   ]
+  },
+  "metadata_v2_instances": {
+   "sql": "SELECT * FROM mysql_innodb_cluster_metadata.v2_instances",
+   "columns": [
+    "instance_id",
+    "cluster_id",
+    "label",
+    "mysql_server_uuid",
+    "address",
+    "endpoint",
+    "xendpoint",
+    "attributes",
+    "instance_type"
+   ],
+   "rows": [
+    [
+     "1",
+     "30d8061b-cc92-11f1-b51d-b6daec340a27",
+     "mf-ic-1:3306",
+     "1062e681-cc92-11f1-83dd-b6daec340a27",
+     "mf-ic-1:3306",
+     "mf-ic-1:3306",
+     "mf-ic-1:33060",
+     "{\"server_id\": 4301, \"instance_type\": \"group-member\", \"opt_certSubject\": \"\", \"recoveryAccountHost\": \"%\", \"recoveryAccountUser\": \"mysql_innodb_cluster_4301\"}",
+     "group-member"
+    ],
+    [
+     "2",
+     "30d8061b-cc92-11f1-b51d-b6daec340a27",
+     "mf-ic-2:3306",
+     "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "mf-ic-2:3306",
+     "mf-ic-2:3306",
+     "mf-ic-2:33060",
+     "{\"joinTime\": \"2026-10-20 14:26:09.752\", \"server_id\": 4302, \"instance_type\": \"group-member\", \"opt_certSubject\": \"\", \"recoveryAccountHost\": \"%\", \"recoveryAccountUser\": \"mysql_innodb_cluster_4302\"}",
+     "group-member"
+    ],
+    [
+     "3",
+     "30d8061b-cc92-11f1-b51d-b6daec340a27",
+     "mf-ic-3:3306",
+     "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "mf-ic-3:3306",
+     "mf-ic-3:3306",
+     "mf-ic-3:33060",
+     "{\"joinTime\": \"2026-10-20 14:26:22.841\", \"server_id\": 4303, \"instance_type\": \"group-member\", \"opt_certSubject\": \"\", \"recoveryAccountHost\": \"%\", \"recoveryAccountUser\": \"mysql_innodb_cluster_4303\"}",
+     "group-member"
+    ]
+   ]
+  },
+  "metadata_v2_routers": {
+   "sql": "SELECT * FROM mysql_innodb_cluster_metadata.v2_routers",
+   "columns": [
+    "router_id",
+    "cluster_id",
+    "router_name",
+    "product_name",
+    "address",
+    "version",
+    "last_check_in",
+    "attributes",
+    "options",
+    "clusterset_id"
+   ],
+   "rows": [
+    [
+     "1",
+     "30d8061b-cc92-11f1-b51d-b6daec340a27",
+     "",
+     "MySQL Router",
+     "mf-ic-router",
+     "8.4.10",
+     "2026-10-20 14:34:35",
+     "{\"ROEndpoint\": \"6447\", \"RWEndpoint\": \"6446\", \"ROXEndpoint\": \"6449\", \"RWXEndpoint\": \"6448\", \"MetadataUser\": \"mysql_router1_x6gx615\", \"Configuration\": {\"io\": {\"backend\": \"linux_epoll\", \"threads\": 0}, \"common\": {\"name\": \"system\", \"user\": \"mysql\", \"socket\": \"\", \"bind_address\": \"0.0.0.0\", \"read_timeout\": 30, \"server_ssl_ca\": \"\", \"client_ssl_key\": \"/router/run/data/router-key.pem\", \"server_ssl_crl\": \"\", \"client_ssl_cert\": \"/router/run/data/router-cert.pem\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"max_total_connections\": 512, \"unknown_config_option\": \"error\", \"client_connect_timeout\": 9, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2, \"max_idle_server_connections\": 64}, \"loggers\": {\"filelog\": {\"level\": \"info\", \"filename\": \"mysqlrouter.log\", \"destination\": \"\", \"timestamp_precision\": \"second\"}}, \"endpoints\": {\"bootstrap_ro\": {\"socket\": \"\", \"protocol\": \"classic\", \"bind_port\": 6447, \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=SECONDARY\", \"server_ssl_ca\": \"\", \"client_ssl_key\": \"/router/run/data/router-key.pem\", \"server_ssl_crl\": \"\", \"client_ssl_cert\": \"/router/run/data/router-cert.pem\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"round-robin-with-fallback\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": true, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}, \"bootstrap_rw\": {\"socket\": \"\", \"protocol\": \"classic\", \"bind_port\": 6446, \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=PRIMARY\", \"server_ssl_ca\": \"\", \"client_ssl_key\": \"/router/run/data/router-key.pem\", \"server_ssl_crl\": \"\", \"client_ssl_cert\": \"/router/run/data/router-cert.pem\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"first-available\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": true, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}, \"bootstrap_x_ro\": {\"socket\": \"\", \"protocol\": \"x\", \"bind_port\": 6449, \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=SECONDARY\", \"server_ssl_ca\": \"\", \"client_ssl_key\": \"/router/run/data/router-key.pem\", \"server_ssl_crl\": \"\", \"client_ssl_cert\": \"/router/run/data/router-cert.pem\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"round-robin-with-fallback\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": false, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}, \"bootstrap_x_rw\": {\"socket\": \"\", \"protocol\": \"x\", \"bind_port\": 6448, \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=PRIMARY\", \"server_ssl_ca\": \"\", \"client_ssl_key\": \"/router/run/data/router-key.pem\", \"server_ssl_crl\": \"\", \"client_ssl_cert\": \"/router/run/data/router-cert.pem\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"first-available\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": false, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": false, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}, \"bootstrap_rw_split\": {\"socket\": \"\", \"protocol\": \"classic\", \"bind_port\": 6450, \"access_mode\": \"auto\", \"bind_address\": \"0.0.0.0\", \"destinations\": \"metadata-cache://mfcluster/?role=PRIMARY_AND_SECONDARY\", \"server_ssl_ca\": \"\", \"client_ssl_key\": \"/router/run/data/router-key.pem\", \"server_ssl_crl\": \"\", \"client_ssl_cert\": \"/router/run/data/router-cert.pem\", \"client_ssl_mode\": \"PREFERRED\", \"connect_timeout\": 5, \"max_connections\": 0, \"server_ssl_mode\": \"PREFERRED\", \"routing_strategy\": \"round-robin\", \"client_ssl_cipher\": \"\", \"client_ssl_curves\": \"\", \"net_buffer_length\": 16384, \"server_ssl_capath\": \"\", \"server_ssl_cipher\": \"\", \"server_ssl_curves\": \"\", \"server_ssl_verify\": \"DISABLED\", \"thread_stack_size\": 1024, \"connection_sharing\": true, \"max_connect_errors\": 100, \"server_ssl_crlpath\": \"\", \"wait_for_my_writes\": true, \"client_ssl_dh_params\": \"\", \"client_connect_timeout\": 9, \"router_require_enforce\": true, \"connection_sharing_delay\": 1.0, \"wait_for_my_writes_timeout\": 2}}, \"http_server\": {\"ssl\": true, \"port\": 8443, \"ssl_key\": \"/router/run/data/router-key.pem\", \"ssl_cert\": \"/router/run/data/router-cert.pem\", \"ssl_cipher\": \"ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_CCM_SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-CCM:ECDHE-ECDSA-AES128-CCM:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-CCM:DHE-RSA-AES256-CCM:DHE-RSA-CHACHA20-POLY1305\", \"ssl_curves\": \"\", \"bind_address\": \"0.0.0.0\", \"require_realm\": \"\", \"ssl_dh_params\": \"\", \"static_folder\": \"\"}, \"rest_configs\": {\"rest_api\": {\"require_realm\": \"\"}, \"rest_router\": {\"require_realm\": \"default_auth_realm\"}, \"rest_routing\": {\"require_realm\": \"default_auth_realm\"}, \"rest_metadata_cache\": {\"require_realm\": \"default_auth_realm\"}}, \"routing_rules\": {\"read_only_targets\": \"secondaries\", \"stats_updates_frequency\": -1, \"use_replica_primary_as_rw\": false, \"invalidated_cluster_policy\": \"drop_all\", \"unreachable_quorum_allowed_traffic\": \"none\"}, \"metadata_cache\": {\"ttl\": 0.5, \"user\": \"mysql_router1_x6gx615\", \"ssl_ca\": \"\", \"ssl_crl\": \"\", \"ssl_mode\": \"PREFERRED\", \"ssl_capath\": \"\", \"ssl_cipher\": \"\", \"ssl_crlpath\": \"\", \"tls_version\": \"\", \"read_timeout\": 30, \"auth_cache_ttl\": -1.0, \"connect_timeout\": 5, \"thread_stack_size\": 1024, \"use_gr_notifications\": false, \"auth_cache_refresh_interval\": 2.0}, \"connection_pool\": {\"idle_timeout\": 5, \"max_idle_server_connections\": 64}, \"destination_status\": {\"error_quarantine_interval\": 1, \"error_quarantine_threshold\": 1}, \"http_authentication_realm\": {\"name\": \"default_realm\", \"method\": \"basic\", \"backend\": \"default_auth_backend\", \"require\": \"valid-user\"}, \"http_authentication_backends\": {\"default_auth_backend\": {\"backend\": \"metadata_cache\", \"filename\": \"\"}}}, \"RWSplitEndpoint\": \"6450\", \"bootstrapTargetType\": \"cluster\"}",
+     null,
+     null
+    ]
+   ]
+  },
+  "metadata_v2_this_instance": {
+   "sql": "SELECT * FROM mysql_innodb_cluster_metadata.v2_this_instance",
+   "columns": [
+    "cluster_id",
+    "instance_id",
+    "instance_type",
+    "cluster_name",
+    "cluster_type"
+   ],
+   "rows": [
+    [
+     "30d8061b-cc92-11f1-b51d-b6daec340a27",
+     "3",
+     "group-member",
+     "mfcluster",
+     "gr"
+    ]
+   ]
+  }
+ },
+ "member_role": "secondary"
+}

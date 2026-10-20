@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Float the Server and Workload list of views by default: the view's title opens it (Health ▾), a dot beside the title shows when another view has a problem or something to watch, and Dock the list of views keeps it beside the view as before.
+- Add `scripts/cluster-matrix.sh`, which starts a MariaDB Galera, a Percona XtraDB Cluster and a MySQL InnoDB Cluster (with MySQL Router) of three nodes each in Docker on 127.0.0.1, with shared accounts, a small `testdb`, saved connections in an isolated home, `fail` and `recover` for one node, and `fixtures` that records each node's cluster state as JSON; healthy, degraded and recovered captures are in `test/fixtures/cluster/` (see `test/README.md`).
 
 ## [3.1.0] - 2026-10-20
 

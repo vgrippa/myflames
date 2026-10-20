@@ -77,3 +77,62 @@ anything inside `~/.myflames`, and a `$MYFLAMES_HOME/.myflames` that is the
 real store; `test/test_ga_matrix.py`) and `env`
 (JSON) are the subcommands. Run myflames against a profile with
 `HOME=$MYFLAMES_HOME MYFLAMES_SECRET_BACKEND=vault python3 -m myflames health --profile ga-mysql-8.4`.
+
+## Cluster matrix (live servers)
+
+`scripts/cluster-matrix.sh` starts three 3-node clusters in Docker on 127.0.0.1
+for building and testing cluster views:
+
+| Cluster | Image | Containers | Ports |
+| --- | --- | --- | --- |
+| MariaDB Galera (`mf_galera`, rsync SST) | `mariadb:11.8` | `mf-galera-1..3` | 34101-34103 |
+| Percona XtraDB Cluster (`mf_pxc`, cluster traffic encrypted with one shared CA and certificate) | `percona/percona-xtradb-cluster:8.4` | `mf-pxc-1..3` | 34201-34203 |
+| MySQL InnoDB Cluster (`mfcluster`, made with the mysqlsh inside the image, clone recovery) | `mysql:8.4` | `mf-ic-1..3` | 34301-34303 |
+| MySQL Router for `mfcluster` | `mf-mysql-router:8.4` (built locally from `mysql:8.4`, since Docker Hub has no `mysql/mysql-router:8.4`) | `mf-ic-router` | 34306 (RW), 34307 (RO) |
+
+Every node gets `root`, `mf_admin` (ALL) and `mf_read` (SELECT, PROCESS,
+REPLICATION CLIENT, SHOW VIEW), created once and replicated by the cluster, and a
+small `testdb` (customers, products, orders). Passwords are random, in
+`local/cluster-matrix/credentials.env` (chmod 600), and reach the servers through
+the container environment or stdin, never a command line. Set `CLUSTER_LAB` to
+keep state elsewhere. Subcommands:
+
+```bash
+scripts/cluster-matrix.sh up [galera|pxc|ic|all]    # start, form, seed, wait healthy (idempotent)
+scripts/cluster-matrix.sh status                    # one line per node with its cluster state
+scripts/cluster-matrix.sh check [CLUSTER...]        # health gate, exit 1 when unhealthy
+scripts/cluster-matrix.sh profiles --home DIR       # saved connections, then a health smoke per profile
+scripts/cluster-matrix.sh env                       # the matrix as JSON
+scripts/cluster-matrix.sh fail ic-1                 # docker stop one node
+scripts/cluster-matrix.sh recover ic-1              # start it and rejoin (IST/SST, GR recovery or rejoinInstance)
+scripts/cluster-matrix.sh fixtures STATE [CLUSTER...] [--out DIR]
+scripts/cluster-matrix.sh down [galera|pxc|ic|all]  # remove containers, data volumes and networks
+```
+
+Healthy means `wsrep_cluster_size` 3, `wsrep_cluster_status` Primary and every
+node Synced (Galera, PXC); three ONLINE members in
+`performance_schema.replication_group_members` with one PRIMARY,
+`dba.getCluster().status()` OK and the router answering on both ports (InnoDB
+Cluster). `profiles` saves `cluster-galera-1..3`, `cluster-pxc-1..3`,
+`cluster-ic-1..3` and `cluster-ic-router-rw` (user `mf_admin`, type development,
+`ssl_mode` PREFERRED, password remembered with the vault backend) in an isolated
+home and refuses the real home or `~/.myflames` with the same guard as
+`ga-matrix.sh` (`test/test_ga_matrix.py`). Run myflames against a node with
+`HOME=DIR MYFLAMES_SECRET_BACKEND=vault python3 -m myflames health --profile cluster-pxc-1 --interval 1`.
+
+`fixtures STATE` writes `test/fixtures/cluster/CLUSTER-STATE-NODE[-ROLE].json`
+for every running node plus `index.json`: `@@version` and `@@version_comment`,
+`SHOW GLOBAL STATUS LIKE 'wsrep%'`, `SHOW GLOBAL VARIABLES LIKE 'wsrep%'` (and
+`'pxc%'` on PXC), the wsrep plugins and every wsrep or pxc table (`mysql.wsrep_cluster`,
+`mysql.wsrep_cluster_members`, `performance_schema.pxc_cluster_view`) for
+Galera and PXC; the `replication_group_*` tables, Group Replication variables
+and `Gr_*` status counters, GTID state and the `mysql_innodb_cluster_metadata`
+`v2_*` views for InnoDB Cluster, plus `ic-STATE-shell-status.json`
+(`dba.getCluster().status({extended: 1})`) and `ic-STATE-router.json` (which
+member each router port reaches). Secret-like variables and any lab password are
+redacted. The committed set has three states: `healthy`; `degraded`, after
+`fail galera-2`, `fail pxc-2` and `fail ic-1` (the primary, so the group elects
+`mf-ic-2` and the router moves read/write there); and `recovered`, after
+`recover` of the same nodes (IST for Galera and PXC, incremental recovery for
+Group Replication). These files are captured server output for replay tests;
+nothing reads them yet.
