@@ -148,6 +148,16 @@ try {
   await shoot("tuning-measured");
 
   // ---- Full analysis tab: the report, ranked ----
+  // Scorecard | Full analysis is the shared segmented control in the header
+  // row, with tab semantics.
+  assert.ok(await page.$(".server-view[data-view=tuning] .view-toolbar .segmented[role=tablist] #tuning-tab-analysis[role=tab]"), "the tabs sit in the header");
+  assert.equal(await page.$eval("#tuning-tab-scorecard", (e) => e.tabIndex), 0);
+  assert.equal(await page.$eval("#tuning-tab-analysis", (e) => e.tabIndex), -1);
+  await page.focus("#tuning-tab-scorecard");
+  await page.keyboard.press("End");
+  await page.waitForFunction(() => document.activeElement?.id === "tuning-tab-analysis" && document.activeElement.getAttribute("aria-selected") === "true");
+  await page.keyboard.press("Home");
+  await page.waitForFunction(() => document.activeElement?.id === "tuning-tab-scorecard" && document.activeElement.getAttribute("aria-selected") === "true");
   await page.click("#tuning-tab-analysis");
   await page.waitForSelector("#tuning-panel-analysis .report-look");
   assert.equal(await page.$eval("#tuning-tab-analysis", (e) => e.getAttribute("aria-selected")), "true");

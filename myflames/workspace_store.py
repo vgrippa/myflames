@@ -143,6 +143,50 @@ def validate_bundle(value):
     return clean
 
 
+#: Page size bounds of ``investigations/list`` (Home asks for 6, Library 25).
+INVESTIGATION_PAGE_SIZE = 25
+INVESTIGATION_PAGE_MAX = 50
+INVESTIGATION_SEARCH_MAX = 512
+
+
+def _investigation_summary(value):
+    """``investigation-summary-1.0``: what Home and Library show, never plans.
+
+    Name, notes and tags are kept whole because Library displays and searches
+    them; each plan keeps its ID, name and capture mode. The saved
+    ``investigation-1.0`` bundle stays the only source for opening, comparing
+    and exporting. Raises on a record that is not a bundle.
+    """
+    plans = []
+    for plan in value['plans']:
+        item = {'id': plan['id'], 'name': plan.get('name') or 'Plan'}
+        if isinstance(plan.get('capture'), dict):
+            item['capture'] = {'mode': plan['capture'].get('mode')}
+        plans.append(item)
+    tags = [str(tag) for tag in value.get('tags') or []]
+    return {'schema_version': 'investigation-summary-1.0',
+            'name': str(value.get('name') or 'Untitled investigation'),
+            'notes': str(value.get('notes') or ''), 'tags': tags,
+            'baseline_id': str(value.get('baseline_id') or ''), 'plans': plans}
+
+
+def _save_investigation_summary(conn, key, updated, value):
+    summary = _investigation_summary(value)
+    # Library's own filter: name, tags and notes, lowercased.
+    search = ('%s %s %s' % (summary['name'], ' '.join(summary['tags']), summary['notes'])).lower()
+    conn.execute('INSERT OR REPLACE INTO investigation_summaries VALUES (?, ?, ?, ?)',
+                 (key, updated, json.dumps(summary, allow_nan=False), search))
+
+
+# A summary is current when it carries its record's ``updated`` stamp
+# (microsecond ISO time, new on every save). These read only the leading
+# columns of each record, never the payload's overflow pages.
+_STALE_SUMMARIES = ("SELECT r.id FROM records r LEFT JOIN investigation_summaries s ON s.id = r.id "
+                    "WHERE r.kind = 'investigation' AND (s.updated IS NULL OR s.updated <> r.updated)")
+_ORPHAN_SUMMARIES = ("SELECT s.id FROM investigation_summaries s LEFT JOIN records r "
+                     "ON r.id = s.id AND r.kind = 'investigation' WHERE r.id IS NULL")
+
+
 class WorkspaceStore:
     def __init__(self, path=None):
         self.path = Path(path) if path else Path.home() / '.myflames' / 'workspace.sqlite3'
@@ -169,6 +213,13 @@ class WorkspaceStore:
                          'message TEXT, rows_affected INTEGER, after TEXT, duration_ms REAL)')
             conn.execute('CREATE INDEX IF NOT EXISTS audit_attempted_at ON audit (attempted_at)')
             conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            # A cache of investigation list metadata, derived from records and
+            # refreshed by list_investigations: an older myflames sharing this
+            # file writes records only, so no version bump or migration.
+            conn.execute('CREATE TABLE IF NOT EXISTS investigation_summaries (id TEXT PRIMARY KEY, '
+                         'updated TEXT NOT NULL, payload TEXT NOT NULL, search TEXT NOT NULL)')
+            conn.execute('CREATE INDEX IF NOT EXISTS investigation_summaries_recent '
+                         'ON investigation_summaries (updated, id)')
             conn.commit()
             if conn.execute('PRAGMA user_version').fetchone()[0] < STORE_VERSION:
                 self._migrate(conn)
@@ -342,6 +393,81 @@ class WorkspaceStore:
         return [_present(kind, dict(id=key, updated_at=updated, **json.loads(payload)))
                 for key, updated, payload in rows]
 
+    def list_investigations(self, limit=INVESTIGATION_PAGE_SIZE, cursor=None, search=''):
+        """``investigation-list-1.0``: one page of summaries, newest first.
+
+        Pages are keyed on (updated, id), so a delete never skips a row and
+        ``next_cursor`` is null on the last page. *search* keeps the rows
+        whose name, tags or notes contain it, ignoring case (Library's filter).
+        Never decodes a saved bundle except to refresh a stale summary, one at
+        a time; get() returns the complete bundle.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= INVESTIGATION_PAGE_MAX:
+            raise ValueError('Ask for 1 to %d investigations at a time.' % INVESTIGATION_PAGE_MAX)
+        if not isinstance(search, str) or len(search) > INVESTIGATION_SEARCH_MAX:
+            raise ValueError('Search text must be at most %d characters.' % INVESTIGATION_SEARCH_MAX)
+        if cursor is not None and (not isinstance(cursor, dict) or any(
+                not isinstance(cursor.get(k), str) or not cursor[k] or len(cursor[k]) > 200
+                for k in ('updated_at', 'id'))):
+            raise ValueError('That page of investigations is no longer valid. Reload the list.')
+        result = {'schema_version': 'investigation-list-1.0', 'items': [], 'next_cursor': None}
+        if not self.path.exists():
+            return result
+        where, args = [], []
+        if cursor is not None:
+            where.append('(updated < ? OR (updated = ? AND id < ?))')
+            args.extend((cursor['updated_at'], cursor['updated_at'], cursor['id']))
+        needle = search.strip().lower()
+        if needle:
+            where.append('instr(search, ?) > 0')
+            args.append(needle)
+        sql = "SELECT id, updated, payload FROM investigation_summaries WHERE payload <> 'null'"
+        for clause in where:
+            sql += ' AND ' + clause
+        sql += ' ORDER BY updated DESC, id DESC LIMIT ?'
+        args.append(limit + 1)
+        self._sync_investigation_summaries()
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute(sql, args).fetchall()
+        if len(rows) > limit:
+            rows = rows[:limit]
+            result['next_cursor'] = {'updated_at': rows[-1][1], 'id': rows[-1][0]}
+        result['items'] = [dict(id=key, updated_at=updated, **json.loads(payload)) for key, updated, payload in rows]
+        return result
+
+    def _sync_investigation_summaries(self):
+        """Bring the summary cache in line with the saved records.
+
+        This version writes both in one transaction; an older myflames using
+        the same file writes records only. Missing or outdated summaries are
+        rebuilt one bundle at a time, summaries of deleted records dropped. A
+        record that is not a readable bundle is marked (payload ``null``) and
+        left out of the list.
+        """
+        with closing(self._connect()) as conn:
+            if (conn.execute(_STALE_SUMMARIES + ' LIMIT 1').fetchone() is None
+                    and conn.execute(_ORPHAN_SUMMARIES + ' LIMIT 1').fetchone() is None):
+                return
+        conn = self._transaction()
+        try:
+            conn.execute('DELETE FROM investigation_summaries WHERE id IN (%s)' % _ORPHAN_SUMMARIES)
+            for (key,) in conn.execute(_STALE_SUMMARIES).fetchall():
+                updated, payload = conn.execute(
+                    "SELECT updated, payload FROM records WHERE id = ? AND kind = 'investigation'", (key,)).fetchone()
+                try:
+                    _save_investigation_summary(conn, key, updated, json.loads(payload))
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    # Not listed, and not decoded again until it changes.
+                    conn.execute("INSERT OR REPLACE INTO investigation_summaries VALUES (?, ?, 'null', '')",
+                                 (key, updated))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+
     def get(self, kind, key):
         """One record by ID, or None. Never creates the database."""
         if not self.path.exists() or not isinstance(key, str):
@@ -383,6 +509,8 @@ class WorkspaceStore:
             if existing and existing[0] != kind:
                 raise ValueError('Record type does not match.')
             conn.execute('INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?)', (key, kind, updated, json.dumps(value, allow_nan=False)))
+            if kind == 'investigation':
+                _save_investigation_summary(conn, key, updated, value)
         return _present(kind, dict(id=key, updated_at=updated, **value))
 
     def _save_profile(self, payload, key, password, remember):
@@ -557,6 +685,8 @@ class WorkspaceStore:
                 return {'deleted': True}
             with closing(self._connect()) as conn, conn:
                 conn.execute('DELETE FROM records WHERE id=? AND kind=?', (str(key), kind))
+                if kind == 'investigation':
+                    conn.execute('DELETE FROM investigation_summaries WHERE id=?', (str(key),))
         return {'deleted': True}
 
     # -- Audit trail of server writes (rows shaped by dbops.py) ----------------

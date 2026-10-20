@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { api, download, safePreview, type Bundle, type Comparison } from "./api";
+import {
+  api, download, getInvestigation, listInvestigations, safePreview,
+  type Bundle, type Comparison, type InvestigationCursor, type InvestigationSummary,
+} from "./api";
 import { Icon, ImportDialog } from "./components";
 import {
   ConfirmSheet, EmptyState, GroupedList, GroupedRow, Pill,
@@ -7,16 +10,30 @@ import {
 } from "./kit";
 import { relativeTime } from "./session";
 
+/** Rows per `investigations/list` page. */
+const PAGE = 25;
+/** Typing pauses this long before the server searches every saved investigation. */
+const SEARCH_DELAY_MS = 250;
+
 /** A saved collection stays in the list while its details and actions share one pane. */
 export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> }) {
-  const [items, setItems] = useState<Bundle[]>([]);
+  // Summaries only; Open, Compare and Export read the complete bundle.
+  const [items, setItems] = useState<InvestigationSummary[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [targetId, setTargetId] = useState("");
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [nextCursor, setNextCursor] = useState<InvestigationCursor | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** Whether anything is saved at all (null until the unfiltered list says), so an empty search reads as no match. */
+  const [anySaved, setAnySaved] = useState<boolean | null>(null);
+  const listRead = useRef<AbortController | null>(null);
+  const moreRead = useRef(false);
+  const firstRead = useRef(true);
+  const latest = useRef({ items: [] as InvestigationSummary[], nextCursor: null as InvestigationCursor | null, search: "" });
   const [busy, setBusy] = useState(false);
-  const [deleting, setDeleting] = useState<Bundle | null>(null);
+  const [deleting, setDeleting] = useState<InvestigationSummary | null>(null);
   const [importing, setImporting] = useState(false);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [comparing, setComparing] = useState(false);
@@ -32,18 +49,49 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
   const baseline = selected?.plans.find((p) => p.id === selected.baseline_id);
   const candidates = selected?.plans.filter((p) => p.id !== baseline?.id) || [];
   const target = candidates.find((p) => p.id === targetId) || candidates[0];
+  latest.current = { items, nextCursor, search };
 
+  // The server searches every saved investigation; the rows already loaded
+  // are filtered above as well, so typing narrows the list at once.
   useEffect(() => {
+    listRead.current?.abort();
     const controller = new AbortController();
-    api<{ items: Bundle[] }>("investigations/list", {}, controller.signal)
+    listRead.current = controller;
+    setNextCursor(null);
+    setLoading(true);
+    const text = search.trim();
+    const timer = window.setTimeout(() => {
+      listInvestigations(PAGE, null, text, controller.signal)
+        .then((r) => {
+          if (controller.signal.aborted) return;
+          setItems(r.items);
+          setNextCursor(r.next_cursor);
+          if (!text) setAnySaved(r.items.length > 0);
+          else if (r.items.length) setAnySaved(true);
+        })
+        .catch((e) => { if (!controller.signal.aborted) setError((e as Error).message); })
+        .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    }, firstRead.current || !text ? 0 : SEARCH_DELAY_MS);
+    firstRead.current = false;
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [search]);
+  function loadMore() {
+    const controller = listRead.current;
+    if (!controller || !nextCursor || loading || moreRead.current) return;
+    moreRead.current = true;
+    setLoadingMore(true);
+    listInvestigations(PAGE, nextCursor, search.trim(), controller.signal)
       .then((r) => {
-        if (!controller.signal.aborted)
-          setItems([...r.items].sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || "")));
+        if (controller.signal.aborted) return;
+        setItems((rows) => {
+          const ids = new Set(rows.map((b) => b.id));
+          return rows.concat(r.items.filter((b) => !ids.has(b.id)));
+        });
+        setNextCursor(r.next_cursor);
       })
       .catch((e) => { if (!controller.signal.aborted) setError((e as Error).message); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, []);
+      .finally(() => { moreRead.current = false; setLoadingMore(false); });
+  }
   useEffect(() => {
     setComparison(null);
     setComparing(false);
@@ -57,12 +105,12 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
     setTargetId("");
     setError("");
   }
-  async function open(bundle: Bundle) {
+  async function open(bundle: InvestigationSummary | Bundle) {
     if (actionLock.current) return;
     actionLock.current = true;
     setBusy(true);
     setError("");
-    try { await onOpen(bundle); }
+    try { await onOpen(await getInvestigation(bundle)); }
     catch (e) { setError((e as Error).message); }
     finally { actionLock.current = false; setBusy(false); }
   }
@@ -83,7 +131,7 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
     catch (e) { setError((e as Error).message); }
   }
   async function compare() {
-    if (!baseline || !target || comparing) return;
+    if (!selected || !baseline || !target || comparing) return;
     comparisonRead.current?.abort();
     const controller = new AbortController();
     comparisonRead.current = controller;
@@ -91,10 +139,27 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
     setComparison(null);
     setError("");
     try {
-      const result = await api<Comparison>("compare", { before: baseline.raw, after: target.raw }, controller.signal);
+      const bundle = await getInvestigation(selected, controller.signal);
+      const before = bundle.plans.find((p) => p.id === baseline.id);
+      const after = bundle.plans.find((p) => p.id === target.id);
+      if (!before || !after) throw new Error("This investigation changed after the list was loaded. Open Investigations again to see it.");
+      if (controller.signal.aborted) return;
+      const result = await api<Comparison>("compare", { before: before.raw, after: after.raw }, controller.signal);
       if (!controller.signal.aborted) setComparison(result);
     } catch (e) { if (!controller.signal.aborted) setError((e as Error).message); }
     finally { if (!controller.signal.aborted) setComparing(false); }
+  }
+  async function exportBundle(item: InvestigationSummary) {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const bundle = await getInvestigation(item);
+      download(JSON.stringify(bundle, null, 2),
+        `${bundle.name.replace(/[^a-z0-9_-]/gi, "-") || "investigation"}.json`, "application/json");
+    } catch (e) { setError((e as Error).message); }
+    finally { actionLock.current = false; setBusy(false); }
   }
   function cancelDelete() {
     setDeleting(null);
@@ -108,7 +173,10 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
     setError("");
     try {
       await api("investigations/delete", { id });
+      // A page loaded while the delete was pending stays: filter the current rows.
       setItems((current) => current.filter((b) => b.id !== id));
+      const now = latest.current;
+      if (!now.search.trim() && !now.nextCursor && now.items.every((b) => b.id === id)) setAnySaved(false);
       setDeleting(null);
       // The removed row's detail vanishes; return focus to the surviving list.
       window.requestAnimationFrame(() => {
@@ -152,8 +220,10 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
                 </span>
               </button>
             ))}
-            {loading && <p className="empty-small" role="status">Loading investigations…</p>}
-            {!loading && !!items.length && !filtered.length && <EmptyState icon="search" title="No matching investigations"
+            {loading && !filtered.length && <p className="empty-small" role="status">Loading investigations…</p>}
+            {nextCursor && !loading && <button className="text-button" disabled={busy || loadingMore}
+              onClick={loadMore}>{loadingMore ? "Loading investigations…" : "Load more investigations"}</button>}
+            {!loading && anySaved !== false && !!search.trim() && !filtered.length && <EmptyState icon="search" title="No matching investigations"
               action={<button className="button" onClick={() => changeSearch("")}>Clear search</button>}>
               Try a different name, note, or tag.
             </EmptyState>}
@@ -169,8 +239,7 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
                 <button className="button" disabled={busy || comparing || !baseline || !target}
                   title={!baseline ? "This investigation has no baseline." : !target ? "Add a second plan to compare." : `Compare ${target.name} to ${baseline.name}`}
                   onClick={() => void compare()}>{comparing ? "Comparing…" : "Compare to baseline"}</button>
-                <button className="button" disabled={busy} onClick={() => download(JSON.stringify(selected, null, 2),
-                  `${selected.name.replace(/[^a-z0-9_-]/gi, "-") || "investigation"}.json`, "application/json")}>Export</button>
+                <button className="button" disabled={busy} onClick={() => void exportBundle(selected)}>Export</button>
                 <button className="text-button" ref={deleteButton} disabled={busy} onClick={() => { setError(""); setDeleting(selected); }}>Delete</button>
               </div>
             </header>
@@ -197,10 +266,10 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
                 <button className="text-button" onClick={() => setComparison(null)}>Close comparison</button></div>
               <iframe title="Baseline comparison" sandbox="allow-scripts" srcDoc={safePreview(comparison.html)} />
             </section>}
-          </> : !loading && !items.length && !error ? <EmptyState icon="investigation" title="No investigations yet"
+          </> : !loading && anySaved === false && !error ? <EmptyState icon="investigation" title="No investigations yet"
             action={<button className="button primary" onClick={() => { setError(""); setImporting(true); }}>Import plan</button>}>
             Open plans, then choose Save investigation in the top bar.
-          </EmptyState> : !loading && !!items.length ? <EmptyState icon="investigation" title="Select an investigation" /> : null}
+          </EmptyState> : !loading && anySaved !== false ? <EmptyState icon="investigation" title="Select an investigation" /> : null}
         </section>
       </div>
       {deleting && <ConfirmSheet title={`Delete “${deleting.name}”?`} description="This removes the saved collection from this computer."

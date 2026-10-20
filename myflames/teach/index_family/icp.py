@@ -123,7 +123,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="icp",
-        title="Index Condition Pushdown: filtering inside InnoDB",
+        title="Index condition pushdown: filtering inside InnoDB",
         subtitle=(
             "See how ICP checks trailing index columns before fetching the row, "
             "saving unnecessary clustered-index lookups."

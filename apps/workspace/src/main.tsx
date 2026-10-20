@@ -8,6 +8,7 @@ import {
   authenticate,
   digestSource,
   download,
+  exportedAnalysis,
   number,
   time,
   type Bundle,
@@ -45,7 +46,8 @@ import {
   type ActiveConnection,
 } from "./Connections";
 import type { DigestAction } from "./SlowQueries";
-import { closePopovers, Disclosure, NotesButton, Popover, Segmented, Select, useFocusScope } from "./kit";
+import { closePopovers, Disclosure, ExportMenu, NotesButton, Popover, Segmented, Select, useFocusScope } from "./kit";
+import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import {
   defaultLab,
   hasContent,
@@ -1165,7 +1167,7 @@ function App() {
         ? loading
           ? undefined
           : comparison?.analysis
-        : active?.analysis;
+        : active && exportedAnalysis(active.analysis);
     if (data)
       download(
         JSON.stringify(data, null, 2),
@@ -1483,15 +1485,20 @@ function App() {
   }, []);
 
   const workspaceCommands = useMemo<WorkspaceCommand[]>(() => [
+    // Places in the sidebar's order, then what belongs to one of them.
     { id: "place-home", label: "Home", group: "Places", icon: "home", run: () => go("home") },
-    { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
     { id: "place-server", label: "Server", group: "Places", icon: "server", keywords: "database status", run: () => go("server") },
     { id: "place-workload", label: "Workload", group: "Places", icon: "statements", keywords: "queries top processes waits io", run: () => go("workload") },
     { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
     { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
+    { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
+    { id: "place-plans", label: "Plans", group: "Places", icon: "plan", keywords: "explain analyze flame graph visual explain", run: () => go("plans") },
+    { id: "place-investigations", label: "Investigations", group: "Places", icon: "investigation", keywords: "saved library notes", run: () => go("investigations") },
+    { id: "place-learn", label: "Learn", group: "Places", icon: "learn", keywords: "lessons teach algorithms", run: () => go("learn") },
     // The Full analysis is the Tuning place's second tab (Server.tsx choose).
     { id: "tuning-report", label: "Full analysis", group: "Tuning", icon: "analysis", keywords: "full analysis report findings tuner", run: () => { go("tuning"); setServerNavigation((n) => ({ view: "report", n: (n?.n || 0) + 1 })); } },
-    { id: "place-compare", label: "Compare plans", group: "Places", icon: "compare", keywords: "diff compare plans", run: () => setMode("compare") },
+    // Compare is a mode of Plans (vocabulary), not a place.
+    { id: "plans-compare", label: "Compare", group: "Plans", icon: "compare", keywords: "diff compare plans before after", run: () => setMode("compare") },
     ...SERVER_VIEWS.map((v) => ({
       id: `server-${v.id}`,
       label: v.label,
@@ -1509,7 +1516,7 @@ function App() {
       run: () => { go("workload"); chooseServerView(v.id); },
     })),
     { id: "action-import", label: "Import plan", group: "Actions", icon: "import", keywords: "open json explain analyze", run: openImport },
-    { id: "action-audit", label: "Audit log", group: "Actions", icon: "history", keywords: "history writes log", run: openAuditLog },
+    { id: "action-audit", label: "Audit log", group: "Actions", icon: "audit", keywords: "writes changes kill declined refused log", run: openAuditLog },
   ], [go]);
 
   return (
@@ -1574,6 +1581,10 @@ function App() {
             </div>
           )}
           {ready && connectionPlace && picker}
+          {/* Server and Workload draw their place actions (Refresh all, ⓘ,
+              the list toggle) over this slot, right after the connection
+              picker; the slot keeps their width in the bar. */}
+          {ready && (mode === "server" || mode === "workload") && <span className="place-actions-slot" aria-hidden="true" />}
           <div className="topbar-actions">
             {/* ui-architecture: actions stay with the object they act on;
                 workspace autosave and investigation edits have distinct names. */}
@@ -1588,8 +1599,10 @@ function App() {
               </>
             )}
             {ready && mode === "home" && (
+              // Home's one Import plan, in the top bar with or without recent
+              // work; Add connection is Home's primary action.
               <button
-                className={`button small${!plans.length ? " primary" : ""}`}
+                className="button small"
                 aria-label="Import plan"
                 title="Import plan"
                 onClick={openImport}
@@ -1629,7 +1642,8 @@ function App() {
             mode === "tuning" ||
             mode === "query" ||
             mode === "audit" ||
-            mode === "home"
+            mode === "home" ||
+            mode === "teach"
               ? "is-flush"
               : undefined
           }
@@ -1773,7 +1787,6 @@ function App() {
                   onActiveDeleted={() => applyConnection("", { ...defaultLab().connection, name: "", host: "", user: "", database: "", ssl_ca: "" }, "")}
                 />
               }
-              onImport={openImport}
               onDropFile={importFile}
               onSample={openSample}
               onOpenPlan={openPlan}
@@ -2039,7 +2052,7 @@ function App() {
                     </div>
                   )}
                 </div>
-                <PlanExports onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
+                <PlanExports label="Export plan" onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
               </header>
               <div className="exploration-layout plan-fold">
                 <section className="plan-canvas" aria-label="Execution plan">
@@ -2101,7 +2114,7 @@ function App() {
                   {active.analysis.warnings.map((w, i) => (
                     <div className="finding" key={i}>
                       <span className={`severity ${w.severity}`}>
-                        {w.severity}
+                        {severityText(w.severity)}
                       </span>
                       <p>{w.text}</p>
                       {w.node_ids?.[0] && (
@@ -2261,7 +2274,7 @@ function App() {
                 </label>
                 </div>
                 {comparison && !loading && (
-                  <PlanExports onJson={exportJson} onHtml={exportHtml} />
+                  <PlanExports label="Export comparison" onJson={exportJson} onHtml={exportHtml} />
                 )}
               </header>
               {!before || !after || before.id === after.id ? (
@@ -2301,12 +2314,8 @@ function App() {
                         />
                         <Stat
                           label="Change"
-                          value={
-                            comparison.analysis.summary.time_delta_pct === null
-                              ? "—"
-                              : `${comparison.analysis.summary.time_delta_pct}%`
-                          }
-                          hint="Total measured plan time"
+                          value={changeText(comparison.analysis.summary.time_delta_pct)}
+                          hint={`Total measured plan time${comparison.analysis.summary.time_delta_pct === null ? "" : `: ${changeExact(comparison.analysis.summary.time_delta_pct)}`}`}
                         />
                         <Stat
                           label="Regressions"
@@ -2320,7 +2329,10 @@ function App() {
                         {/* Phones: the four views as one select, like Explore. */}
                         <span className="compare-phone-view"><Select label="Comparison chart view on phones" value={view} options={views} onChange={(value) => setView(value as View)} /></span>
                         <label>Metric <Select label="Comparison operator metric" value={metric} options={metrics} onChange={setMetric} /></label>
-                        <NotesButton label="About operator matches" notes={["Select a node or comparison row to highlight its counterpart. Uncertain matches are tentative and excluded from regression counts."]} />
+                        <NotesButton label="About operator matches" notes={[
+                          "Select a node or comparison row to highlight its counterpart. Uncertain matches are tentative and excluded from regression counts.",
+                          "Each chart is scaled to its own plan's total time, so compare the printed times, not bar lengths across plans.",
+                        ]} />
                       </div>
                     </div>
                     <div className="comparison-canvases">
@@ -2344,17 +2356,11 @@ function App() {
                           }
                         >
                           <span>
-                            <strong>
-                              {d.before_label || "Added"} →{" "}
-                              {d.after_label || "Removed"}
-                            </strong>
-                            <small>
-                              {d.matching.method} · {d.matching.confidence}{" "}
-                              confidence
-                            </small>
+                            <strong>{pairTitle(d.before_label, d.after_label)}</strong>
+                            <small>{matchText(d.matching)}</small>
                           </span>
-                          <span className="match-badge">
-                            {d.matching.status}
+                          <span className="match-badge" data-status={d.matching.status}>
+                            {statusText(d.matching.status)}
                           </span>
                           <span>
                             {d.self_time_ms.before === null
@@ -2378,7 +2384,6 @@ function App() {
           fallback={plansStatus ? {
             engineVersion: mode === "inspect" && active?.capture?.server_version ? `${engineName(active.capture.engine)} ${active.capture.server_version}` : undefined,
             connectionState: mode === "compare" ? "Compared plans" : active?.capture ? "Captured plan" : active?.origin === "sample" ? "Sample plan" : active ? "Imported plan" : "No plan selected",
-            transaction: "No live session",
           } : { connectionState: request.host ? connectionLabel(request) : "No connection" }} />}
       </div>
       <input
@@ -2450,15 +2455,12 @@ function NotebookSheet({ open, busy, error, onClose, onSave, onExport, children 
     </dialog>
   );
 }
-/** A single export home for both Plans modes. */
-function PlanExports({ onJson, onHtml, exporting = false }: { onJson: () => void; onHtml: () => void; exporting?: boolean }) {
-  return <Popover label="Export plan" trigger={<>Export <Icon name="disclosure" size={12} /></>}
-    buttonClassName="button" className="plan-exports">
-    <div className="plan-menu">
-      <button className="text-button" onClick={() => { onJson(); closePopovers(); }}>Export JSON</button>
-      <button className="text-button" disabled={exporting} onClick={() => { onHtml(); closePopovers(); }}>Export HTML</button>
-    </div>
-  </Popover>;
+/** A single export home for both Plans modes (the shared Export pull-down). */
+function PlanExports({ label, onJson, onHtml, exporting = false }: { label: string; onJson: () => void; onHtml: () => void; exporting?: boolean }) {
+  return <ExportMenu label={label} className="plan-exports" formats={[
+    { key: "json", label: "JSON", onSelect: onJson },
+    { key: "html", label: "HTML report", onSelect: onHtml, disabled: exporting },
+  ]} />;
 }
 
 /** A comparison keeps each chart's controls and metric rows instance-scoped. */
@@ -2466,19 +2468,28 @@ function ComparisonPane({ plan, side, view, metric, selectedId, onSelect }: {
   plan: Plan; side: string; view: string; metric: string; selectedId: string; onSelect: (id: string) => void;
 }) {
   const [target, setTarget] = useState<HTMLDivElement | null>(null);
+  // Without a selection the linked metric list waits in a hidden holder
+  // (the inspector's Operators section docks it when it opens).
+  const [holder, setHolder] = useState<HTMLDivElement | null>(null);
   const selected = plan.operators.find((op) => op.node_id === selectedId);
+  const totalMs = plan.analysis.plan_summary.total_time_ms;
+  const total = typeof totalMs === "number" ? time(totalMs) : "";
   return <div className="compare-pane">
     <div className="compare-pane-heading">
       <h3 title={plan.name}>{side}: {plan.name}</h3>
+      {total && <span className="compare-pane-total" title="Total measured plan time; this chart is scaled to it">{total}</span>}
       {plan.capture && <NotesButton label={`${side} capture measurements`} notes={[
         plan.capture.measurements.median_ms === null ? "Estimated plan. No measured runs." :
           `${plan.capture.measurements.count} measured runs, median ${time(plan.capture.measurements.median_ms)}. Chart shows the last captured plan.`,
       ]} />}
     </div>
     <PlanChart plan={plan} view={view} label={`${side} execution plan`} variant="compare"
-      metric={metric} selectedId={selectedId} onSelect={onSelect} metricsTarget={target} />
-    <ContextPanel key={plan.id} plan={plan} selected={selected} mismatch={selected ? ratio(selected) : null}
-      onMetricsTarget={setTarget} onSelect={onSelect} />
+      metric={metric} selectedId={selectedId} onSelect={onSelect} metricsTarget={target || holder} />
+    <div className="compare-metrics-holder" hidden ref={setHolder} />
+    {/* The inspector opens for a selection only: two empty panes would push
+        the operator changes below the fold. */}
+    {selected && <ContextPanel key={plan.id} plan={plan} selected={selected} mismatch={ratio(selected)}
+      onMetricsTarget={setTarget} onSelect={onSelect} />}
   </div>;
 }
 

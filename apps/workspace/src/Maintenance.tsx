@@ -91,7 +91,8 @@ type Prepared = Bound<LifecyclePlan> & { donor?: Connection; at: number; inputKe
 /** The last part of a folder path, for a title (the full path is shown below it). */
 const folderName = (target: string) => target.replace(/\/+$/, "").split("/").pop() || target;
 /** "mysqlsh 9.6.0" (the full --version banner is in the plan's tool). */
-const toolName = (tool: Tool) => [tool.name, tool.version_tuple?.length ? tool.version_tuple.join(".") : tool.version].filter(Boolean).join(" ") || "Not available";
+// A plan of another step (or one still loading) may carry no tool yet.
+const toolName = (tool?: Tool) => (tool ? [tool.name, tool.version_tuple?.length ? tool.version_tuple.join(".") : tool.version].filter(Boolean).join(" ") : "") || "Not available";
 
 function FormField({ label, value, onChange, disabled, type = "text", hint, wide, placeholder }: {
   label: string; value: string; onChange: (value: string) => void;
@@ -240,11 +241,11 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       const remote = checkGate(source);
       return [local, remote].find(g => !!g.disabledReason) || [local, remote].find(g => g.state === "unknown") || local;
     }
-    const action = op === "restore" ? "restore" : ({ mysqlsh: "dump_shell", mysqldump: "dump_mysqldump", "mariadb-dump": "dump_mariadb" } as Record<string, string>)[p?.tool.name || ""];
+    const action = op === "restore" ? "restore" : ({ mysqlsh: "dump_shell", mysqldump: "dump_mysqldump", "mariadb-dump": "dump_mariadb" } as Record<string, string>)[p?.tool?.name || ""];
     const generic = op === "restore" ? restoreGate : privilegeResult(action ? privileges?.report?.actions[action] : undefined, privileges?.report?.account);
     // Legacy dump/restore checks cover only a subset of grants. Object-grant
     // absence is not definitive denial, nor is this a complete allowance.
-    const check = p?.checks.find(c => c.check === "privileges");
+    const check = p?.checks?.find(c => c.check === "privileges");
     return check?.status === "not_checked" && !generic.disabledReason ? privilegeResult() : generic;
   }
   const operationGate = operation ? lifecycleGate(operation, currentPlan) : privilegeResult();

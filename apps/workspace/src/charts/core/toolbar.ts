@@ -19,11 +19,15 @@ export function findShortcut(doc: Document): string {
   return /Mac|iPhone|iPad/.test(doc.defaultView?.navigator.platform || "") ? "⌘F" : "Ctrl+F";
 }
 
-export function createToolbar(doc: Document, parent: HTMLElement, label: string,
+/** Every chart's search field reads the same (Visual Explain included). */
+export const SEARCH_LABEL = "Search operators";
+
+export function createToolbar(doc: Document, parent: HTMLElement, label = SEARCH_LABEL,
                               withIgnoreCase = false): Toolbar {
   const element = html(doc, "div", { class: "mfc-toolbar", role: "search" }, parent);
   const input = html(doc, "input", {
     type: "search", "aria-label": label, placeholder: label + " · " + findShortcut(doc), spellcheck: "false",
+    title: "Regular expression. Enter or n for the next match, Shift+Enter or N for the previous.",
   }, element);
   let ignoreCase: HTMLInputElement | null = null;
   if (withIgnoreCase) {

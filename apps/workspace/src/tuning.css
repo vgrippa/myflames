@@ -2,12 +2,6 @@
    analysis tab. Tokens only (style.css :root); shared components (grouped
    list, segmented control, search field, inspector) keep their own look. */
 
-/* Tabs under the toolbar: Scorecard | Full analysis. */
-.tuning-tabs {
-  padding: 0 var(--space-5);
-  border-bottom: 1px solid var(--line);
-}
-
 .tuning {
   display: flex;
   flex-direction: column;
@@ -227,9 +221,6 @@
   }
 }
 @media (max-width: 650px) {
-  .tuning-tabs {
-    padding: 0 var(--space-3);
-  }
   .tuning-score {
     gap: var(--space-4);
   }
@@ -241,5 +232,18 @@
   }
   .tuning-check .grouped-row > .status-pill {
     width: auto;
+  }
+}
+
+/* A narrow window (the app's 720 px minimum): Scorecard | Full analysis and
+   the actions take one row under the title instead of wrapping around it. */
+@container view (max-width: 640px) {
+  .server-view[data-view="tuning"] .toolbar-controls {
+    flex-basis: 100%;
+    order: 3;
+    justify-content: flex-start;
+  }
+  .server-view[data-view="tuning"] .toolbar-end {
+    margin-left: auto;
   }
 }

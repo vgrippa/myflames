@@ -89,7 +89,7 @@ try {
     assert.ok(desktop.visibleRows >= 8, JSON.stringify(desktop));
     assert.ok(desktop.recent.y < 900 && desktop.recent.x >= desktop.connections.right - 1, JSON.stringify(desktop));
     assert.equal(await page.$eval(`${connectionRow('Connection 01')} [data-col=password]`, el => el.textContent), 'Saved');
-    assert.equal(await page.$eval(`${connectionRow('Connection 03')} [data-col=password]`, el => el.textContent), 'None');
+    assert.equal(await page.$eval(`${connectionRow('Connection 03')} [data-col=password]`, el => el.textContent), 'Not saved');
     assert.match(await page.$eval(`${connectionRow('Connection 01')} [data-col=password] span`, el => el.title), /encrypted on this computer/);
     const typeTag = await page.$eval(`${connectionRow('Connection 03')} [data-col=type] .type-tag`, el => ({
       title: el.title, overflow: getComputedStyle(el).overflow, ellipsis: getComputedStyle(el).textOverflow,

@@ -273,6 +273,70 @@ class TestLiveReplay(unittest.TestCase):
 
 
 class TestRules(unittest.TestCase):
+    def test_tablespace_snapshot_has_bounded_passes(self):
+        """Classification work over spaces stays bounded as the table count grows."""
+        class CountedRows(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super(CountedRows, self).__iter__()
+
+        for engine in ('mysql', 'mariadb'):
+            # MariaDB names system tables in SYS_TABLES; only MySQL has General spaces.
+            for general in (False, True) if engine == 'mysql' else (False,):
+                with self.subTest(engine=engine, general=general):
+                    rows = [table('t%d' % i, free=MIB) for i in range(100)]
+                    spaces = [['shop/t%d' % i, 'Single'] for i in range(50)]
+                    if engine == 'mariadb':
+                        spaces += [['shop/t%d' % i, 'System'] for i in range(50, 100)]
+                    if general:
+                        spaces += [['general_space', 'General']]
+                    spaces = CountedRows(spaces)
+                    creates = {'shop.t%d' % i: 'innodb_system' for i in range(50, 100)}
+                    report = schema_health.compute_tables(server(engine), raw(rows, spaces=spaces,
+                                                                              show_create=creates))
+                    found = by_table(report['fragmentation'])
+                    self.assertEqual({found['t%d' % i]['tablespace'] for i in range(50)}, {'file_per_table'})
+                    self.assertEqual({found['t%d' % i]['tablespace'] for i in range(50, 100)}, {'system'})
+                    self.assertLessEqual(spaces.iterations, 3,
+                                         'tablespace snapshots must not be rescanned for each system table')
+
+    def test_case_insensitive_names_match_without_rescanning_spaces(self):
+        """lower_case_table_names 1 or 2: a name that differs only in case still
+        matches its tablespace, and the space names are folded once per report."""
+        class CountedSpaces(dict):
+            scans = 0
+
+            def items(self):
+                self.scans += 1
+                return super(CountedSpaces, self).items()
+
+        single_keys = schema_health._single_keys
+        for engine in ('mysql', 'mariadb'):
+            counted = []
+
+            def counting(rows, server_):
+                counted.append(CountedSpaces(single_keys(rows, server_)))
+                return counted[-1]
+
+            with self.subTest(engine=engine), mock.patch.object(schema_health, '_single_keys', counting):
+                rows = [table('T%d' % i, free=MIB) for i in range(100)]
+                rows += [table('sys%d' % i, free=MIB) for i in range(100)]
+                spaces = [['shop/t%d' % i, 'Single'] for i in range(100)]
+                if engine == 'mariadb':
+                    spaces += [['shop/SYS%d' % i, 'System'] for i in range(100)]
+                report = schema_health.compute_tables(server(engine, lower_case_table_names='2'),
+                                                      raw(rows, spaces=spaces))
+                found = by_table(report['fragmentation'])
+                self.assertEqual({found['T%d' % i]['tablespace'] for i in range(100)}, {'file_per_table'})
+                self.assertEqual({found['sys%d' % i]['tablespace'] for i in range(100)}, {'system'})
+                self.assertEqual(sum(spaces.scans for spaces in counted), 1, 'fold the space names once')
+                plain = schema_health.compute_tables(server(engine), raw(rows, spaces=spaces))
+                self.assertEqual({e['tablespace'] for e in plain['fragmentation'] if e['table'].startswith('T')},
+                                 {None} if engine == 'mariadb' else {'system'},
+                                 'with lower_case_table_names=0 case still matters')
+
     def test_correctness_regression_myisam_copy_lock(self):
         for version in ('11.2.0-MariaDB', '11.4.13-MariaDB', '13.0.1-MariaDB'):
             with self.subTest(version=version):

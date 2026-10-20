@@ -261,7 +261,9 @@ def table_report(conn, schemas=None, fresh=False, limit=DEFAULT_LIMIT,
                 singles = _single_keys(raw["spaces"], server)
                 raw["show_create"] = {}
                 deadline = time.monotonic() + METADATA_DEADLINE_S
-                candidates = [k for k in with_free if not _lookup(singles, k, _fold(server))]
+                fold = _fold(server)
+                folded = _folded(singles) if fold else None
+                candidates = [k for k in with_free if not _lookup(singles, k, fold, folded)]
                 raw["spaces_unresolved"] = set(candidates)
                 if len(candidates) > MAX_SHOW_CREATE:
                     notes.append("Tablespace lookup capped at %d SHOW CREATE TABLE reads; unresolved spaces "
@@ -450,24 +452,38 @@ def _single_keys(rows, server):
     return out
 
 
-def _lookup(spaces, key, fold):
+def _folded(spaces):
+    """{(schema, table) lowercased: value}, the first key in *spaces* order
+    winning, for matching names that differ only in letter case. Build it
+    once per report: scanning *spaces* per table was quadratic."""
+    out = {}
+    for other, value in spaces.items():
+        out.setdefault((other[0].lower(), other[1].lower()), value)
+    return out
+
+
+def _lookup(spaces, key, fold, folded=None):
+    """*key*'s value or, with *fold* (lower_case_table_names 1 or 2), the
+    value of the first key equal to it ignoring case. *folded* is
+    ``_folded(spaces)``, built by the caller once per report."""
     if key in spaces:
         return spaces[key]
     if fold:
-        lowered = (key[0].lower(), key[1].lower())
-        for other, value in spaces.items():
-            if (other[0].lower(), other[1].lower()) == lowered:
-                return value
+        if folded is None:
+            folded = _folded(spaces)
+        return folded.get((key[0].lower(), key[1].lower()))
     return None
 
 
-def _tablespace(server, raw, key, fold, singles):
+def _tablespace(server, raw, key, fold, singles, has_general, folded_singles=None):
     """(kind, name) for an InnoDB table: ('file_per_table', None),
     ('system', 'innodb_system'), ('general', name), ('shared', None) when a
-    shared tablespace could not be named, or None when unknown."""
+    shared tablespace could not be named, or None when unknown.
+    *has_general* (any General tablespace row) and *folded_singles* are
+    computed once per report, not per table."""
     if raw.get("spaces") is None:
         return None
-    found = _lookup(singles, key, fold)
+    found = _lookup(singles, key, fold, folded_singles)
     if found == "Single":
         return "file_per_table", None
     if found == "System":
@@ -475,7 +491,7 @@ def _tablespace(server, raw, key, fold, singles):
     if server.engine == "mariadb":
         # SYS_TABLES lists every InnoDB table; a miss is a name it could not decode.
         return None
-    if not any(len(r) >= 2 and r[1] == "General" for r in raw["spaces"]):
+    if not has_general:
         return "system", "innodb_system"
     if key in raw.get("spaces_unresolved", ()):
         return None
@@ -705,6 +721,9 @@ def _fragmentation(server, raw, tables, fold):
     rows, shared = [], {}
     singles = _single_keys(raw.get("spaces"), server)
     autoextend = _autoextend(raw.get("spaces"), server)
+    folded_singles = _folded(singles) if fold else None
+    folded_autoextend = _folded(autoextend) if fold else None
+    has_general = any(len(row) >= 2 and row[1] == "General" for row in raw.get("spaces") or [])
     for key in sorted(tables):
         t = tables[key]
         if not t["innodb"]:
@@ -717,7 +736,7 @@ def _fragmentation(server, raw, tables, fold):
         entry = {"schema": t["schema"], "table": t["table"], "rows": t["rows"], "data_bytes": t["data"],
                  "index_bytes": t["index"], "free_bytes": free, "free_pct": _round(pct, 1),
                  "partitioned": t["partitioned"], "tablespace": None, "tablespace_name": None}
-        found = _tablespace(server, raw, key, fold, singles) if free else None
+        found = _tablespace(server, raw, key, fold, singles, has_general, folded_singles) if free else None
         if free is None:
             entry["status"] = "unknown"
         elif not free:
@@ -726,7 +745,7 @@ def _fragmentation(server, raw, tables, fold):
             entry["status"] = "unknown"
         elif found[0] == "file_per_table":
             entry["tablespace"] = "file_per_table"
-            grow = _lookup(autoextend, key, fold) or 0
+            grow = _lookup(autoextend, key, fold, folded_autoextend) or 0
             if grow:
                 entry["autoextend_bytes"] = grow
             entry["status"] = "info"

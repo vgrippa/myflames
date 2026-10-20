@@ -108,8 +108,9 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement?.id), "audit-title");
   assert.equal(await page.$eval("#audit-title", (e) => e.classList.contains("visually-hidden")), true, "the top bar supplies the visible screen title");
   await page.waitForSelector(`${view} .view-empty`);
-  assert.match(await text(`${view} .view-empty`), /No writes recorded yet/);
-  assert.match(await text(`${view} .view-empty`), /Writes made through myflames are recorded here/);
+  assert.match(await text(`${view} .view-empty`), /No changes recorded yet/);
+  assert.match(await text(`${view} .view-empty`), /Every change myflames sends, refuses or you decline is listed here\./);
+  assert.equal(await page.$eval(`${view} .audit-export button`, (e) => e.disabled), true, "nothing to export while the log is empty");
   assert.match(await text(`${view} .view-empty`), /90 days/);
   assert.equal(last("/api/audit/list").body.limit, 500);
   // Retention stays reachable with nothing listed (review gate): in the toolbar.

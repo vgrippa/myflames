@@ -1,0 +1,489 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myflames.dev/schemas/chart-data-2.0.json",
+  "title": "myflames chart data 2.0",
+  "description": "Payload consumed by the myflames-charts.js bundle (myflames/chart_data.py:build_chart_data). Python owns every MySQL/MariaDB decision (operator kind, reported join type, phase, family, metrics, teach index, details text); the bundle only lays out, formats, and wires interaction. Times are canonical milliseconds; display_unit is a hint. Not part of sidecar-v1. Additive optional fields bump the minor version; renamed or removed fields bump the major. Version 2.0 differs from chart-data-1.0 in one place: node.highlight (the analysis message, repeated on every operator it applies to) is replaced by node.highlight_id, a zero-based index into the top-level highlight_messages, so a grouped warning that names every affected table is stored once instead of once per table. Messages are kept verbatim, including empty strings. The workspace (/api/analyze) emits 2.0; HTML reports and explore pages still emit chart-data-1.0, and the bundle (myflames-charts.js) reads both versions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "title",
+    "engine",
+    "display_unit",
+    "timing_available",
+    "root_id",
+    "nodes",
+    "projection",
+    "metrics_meta",
+    "labels",
+    "highlight_messages"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "chart-data-2.0"
+    },
+    "title": {
+      "type": "string"
+    },
+    "engine": {
+      "type": "string",
+      "enum": [
+        "mysql",
+        "mariadb"
+      ]
+    },
+    "display_unit": {
+      "type": "string",
+      "enum": [
+        "ms",
+        "\u00b5s"
+      ],
+      "description": "Display hint only. Every *_ms value stays in milliseconds."
+    },
+    "timing_available": {
+      "type": "boolean",
+      "description": "The root carries a finite measured elapsed time (plan_matching.timing_available)."
+    },
+    "root_id": {
+      "$ref": "#/$defs/node_id"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Every parsed operator exactly once, in pre-order. nodes[0] is the root.",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "focus_id",
+        "collapsed_ids",
+        "selected_id",
+        "metric"
+      ],
+      "description": "Copy-only view state applied by the bundle. Never changes measurements.",
+      "properties": {
+        "focus_id": {
+          "type": "string",
+          "description": "Show only this operator and its descendants; empty for the whole plan."
+        },
+        "collapsed_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node_id"
+          }
+        },
+        "selected_id": {
+          "type": "string",
+          "description": "Initially selected operator; unknown IDs are ignored."
+        },
+        "metric": {
+          "$ref": "#/$defs/metric_name"
+        }
+      }
+    },
+    "metrics_meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "self_time",
+        "total_time",
+        "rows",
+        "estimate_error"
+      ],
+      "properties": {
+        "self_time": {
+          "$ref": "#/$defs/metric_meta"
+        },
+        "total_time": {
+          "$ref": "#/$defs/metric_meta"
+        },
+        "rows": {
+          "$ref": "#/$defs/metric_meta"
+        },
+        "estimate_error": {
+          "$ref": "#/$defs/metric_meta"
+        }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "join_types",
+        "metric_notes"
+      ],
+      "properties": {
+        "join_types": {
+          "type": "object",
+          "description": "Reported join type to heading and highlighted-region meaning (output_workbench.JOIN_LABELS).",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "meaning"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "meaning": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "metric_notes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base",
+            "collapsed",
+            "select_list"
+          ],
+          "properties": {
+            "base": {
+              "type": "string"
+            },
+            "collapsed": {
+              "type": "string"
+            },
+            "select_list": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "highlight_messages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Distinct analysis messages, in the order nodes (pre-order) first reference them; every entry is referenced by at least one node. Node highlight_id indexes this array. Text is verbatim, never shortened or paraphrased."
+    }
+  },
+  "$defs": {
+    "node_id": {
+      "type": "string",
+      "pattern": "^n:[0-9a-f]{12}$"
+    },
+    "metric_name": {
+      "type": "string",
+      "enum": [
+        "self_time",
+        "total_time",
+        "rows",
+        "estimate_error"
+      ]
+    },
+    "metric_meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "unit"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        }
+      }
+    },
+    "metric_value": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "[value or null, display label]. Unavailable is null, never zero.",
+      "prefixItems": [
+        {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "items": {
+        "type": [
+          "number",
+          "string",
+          "null"
+        ]
+      }
+    },
+    "number_or_null": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "parent_id",
+        "children",
+        "depth",
+        "input_kind",
+        "short_label",
+        "full_label",
+        "folded_label",
+        "operation",
+        "family",
+        "wb_kind",
+        "join_type",
+        "phase",
+        "arrow_width",
+        "measured",
+        "self_ms",
+        "total_ms",
+        "actual_rows",
+        "estimated_rows",
+        "loops",
+        "first_row_ms",
+        "last_row_ms",
+        "estimated_cost",
+        "table",
+        "schema",
+        "index",
+        "access_type",
+        "index_access_type",
+        "condition",
+        "ranges",
+        "covering",
+        "join_algorithm",
+        "complexity",
+        "teach_index",
+        "highlight_id",
+        "metrics",
+        "details_text",
+        "flame_details"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "parent_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/node_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node_id"
+          },
+          "description": "Ordered input IDs; inputs[] order is semantically significant and never sorted. SELECT-list subqueries follow regular inputs."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "input",
+            "select_list",
+            "subquery",
+            null
+          ],
+          "description": "Relationship to the parent: a regular input, a SELECT-list subquery, or an attached subquery (MariaDB / MySQL format 1). Subquery kinds follow the regular inputs and their time is not subtracted from the parent. null for the root."
+        },
+        "short_label": {
+          "type": "string"
+        },
+        "full_label": {
+          "type": "string"
+        },
+        "folded_label": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string",
+          "description": "Raw reported operation text."
+        },
+        "family": {
+          "type": "string",
+          "description": "parser.operator_family category."
+        },
+        "wb_kind": {
+          "type": "string",
+          "enum": [
+            "table",
+            "lookup",
+            "range",
+            "index",
+            "nested_loop",
+            "hash",
+            "bka",
+            "operation",
+            "materialize",
+            "unknown"
+          ]
+        },
+        "join_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "inner",
+            "left",
+            "right",
+            "full",
+            "semi",
+            "anti",
+            "cross",
+            "unknown",
+            null
+          ],
+          "description": "Reported logical join type for join kinds; MariaDB synthetic joins stay unknown. null for non-joins."
+        },
+        "phase": {
+          "type": "string",
+          "description": "Evidence-only input role relative to the parent (outer/inner, build/probe, input N, select-list subquery); empty when not inferred."
+        },
+        "arrow_width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Edge width toward the parent: 1 + log2(estimated rows), capped."
+        },
+        "measured": {
+          "type": "boolean",
+          "description": "actual_last_row_ms is a finite number."
+        },
+        "self_ms": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "total_ms": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "actual_rows": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "estimated_rows": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "loops": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "first_row_ms": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "last_row_ms": {
+          "$ref": "#/$defs/number_or_null"
+        },
+        "estimated_cost": {
+          "$ref": "#/$defs/number_or_null",
+          "description": "Optimizer cost units, never milliseconds."
+        },
+        "table": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "index": {
+          "type": "string"
+        },
+        "access_type": {
+          "type": "string"
+        },
+        "index_access_type": {
+          "type": "string"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "ranges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "covering": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "join_algorithm": {
+          "type": "string"
+        },
+        "complexity": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "teach_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "self_time",
+            "total_time",
+            "rows",
+            "estimate_error"
+          ],
+          "properties": {
+            "self_time": {
+              "$ref": "#/$defs/metric_value"
+            },
+            "total_time": {
+              "$ref": "#/$defs/metric_value"
+            },
+            "rows": {
+              "$ref": "#/$defs/metric_value"
+            },
+            "estimate_error": {
+              "$ref": "#/$defs/metric_value"
+            }
+          }
+        },
+        "details_text": {
+          "type": "string",
+          "description": "Multi-line inspector text; also the search haystack."
+        },
+        "flame_details": {
+          "type": "string",
+          "description": "Flame-graph tooltip lines for exactly this operator (parser.enhance_tooltip_flame with a one-entry map); empty when there is nothing to add."
+        },
+        "highlight_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Zero-based index into highlight_messages, or null when no analysis highlight applies. Must be less than the table length."
+        }
+      }
+    }
+  }
+}

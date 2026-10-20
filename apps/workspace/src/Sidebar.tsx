@@ -31,11 +31,10 @@ export function statusText(status: SaveStatus) {
     case "off":
       return status.reason;
     case "pending":
-      return "Workspace save pending";
     case "saving":
       return "Saving…";
     case "saved":
-      return "Workspace autosaved";
+      return "All changes saved";
     case "error":
       return `Not saved: ${status.reason}`;
   }
@@ -62,7 +61,6 @@ export function Sidebar({
   onRemoveQuery,
   expanded,
   onExpandedChange,
-  version,
   updateInfo,
   onOpenUpdate,
   onNewSession,
@@ -92,7 +90,6 @@ export function Sidebar({
   activeQueryId?: string;
   onOpenQuery?: (id: string) => void;
   onRemoveQuery?: (id: string) => void;
-  version?: string;
   updateInfo?: AppUpdateInfo | null;
   onOpenUpdate?: () => void;
   onNewSession?: () => void;
@@ -217,7 +214,6 @@ export function Sidebar({
           <button className="brand" onClick={() => go("home")} aria-label="myflames Home">
             <img src={logo} alt="" width="22" height="22" />
             <span className="brand-name">myflames</span>
-            <span className="brand-version" title={`myflames v${version || "3.0.0"}`}>v{version || "3.0.0"}</span>
           </button>
           {updateInfo?.update_available && (
             <button
@@ -418,7 +414,7 @@ export function Sidebar({
             <p className="hint" id="session-toggle-hint">
               {skipRestore
                 ? "Started with --no-restore. The saved workspace is kept for the next launch."
-                : "Off clears the saved workspace; passwords are never saved."}
+                : "Off clears the saved workspace. Passwords are never part of the workspace."}
             </p>
             <div className="settings-menu">
               {onNewSession && (

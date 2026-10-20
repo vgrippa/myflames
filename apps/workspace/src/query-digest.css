@@ -1,8 +1,6 @@
 /* pt-query-digest Live Query Digest styles for myflames */
 
 .query-digest-container {
-  --text-muted: var(--ink-muted);
-  --text-secondary: var(--ink-secondary);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -177,10 +175,9 @@
 }
 
 .query-digest-stat-label {
-  font-size: 11px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-weight: 400;
   color: var(--ink-muted);
   margin-bottom: 4px;
 }
@@ -241,11 +238,9 @@
 
 .query-digest-table th {
   padding: 8px 12px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--ink-secondary);
+  color: var(--ink-muted);
   border-bottom: 1px solid var(--line-strong);
   white-space: nowrap;
   user-select: none;
@@ -276,8 +271,25 @@
   vertical-align: middle;
 }
 
-.query-digest-table td:nth-child(7) span[style*="font-weight"] {
-  color: var(--danger-text) !important;
+/* Secondary figures under a value, and temporary tables written to disk. */
+.query-digest-subvalue {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.query-digest-tmp-disk {
+  color: var(--danger-text);
+  font-weight: 600;
+}
+.query-digest-zero {
+  color: var(--ink-muted);
+}
+.query-digest-preview-lead {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  color: var(--ink-secondary);
 }
 
 /* Cell Elements */
@@ -513,11 +525,9 @@
 }
 
 .query-digest-card-title {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--ink-secondary);
+  color: var(--ink-muted);
   margin: 0 0 10px 0;
 }
 

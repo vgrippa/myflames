@@ -1,6 +1,6 @@
 // End-to-end test against the actual packaged UI and Python server.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -189,8 +189,9 @@ try {
     await button("Analyze plan");
   }
   async function exportPlan(format) {
-    await button("Export", ".plan-exports ");
-    await button("Export " + format, ".plan-exports .plan-menu ");
+    // The shared Export pull-down: its items name the format.
+    await page.click(".plan-exports button.export-button");
+    await page.click(`.plan-exports [role=menuitem][data-format="${format.toLowerCase()}"]`);
   }
   async function inspectorSection(section) {
     await page.click(`.plan-fold .segmented[aria-label="Inspector section"] button[data-value="${section}"]`);
@@ -210,11 +211,11 @@ try {
   await page.waitForSelector('.home [aria-label="Get started"]');
   assert.ok(await page.$('.home [aria-label="Open plans"]') === null, "no plan rows in an empty workspace");
   assert.ok(await page.$('.topbar button[aria-label="Import plan"]'));
-  // Import plan lives in the top bar; the empty Recent work offers it again
-  // (an empty state), and nowhere else.
+  // Home's one Import plan lives in the top bar; the empty Recent work
+  // offers the sample instead of a second Import plan.
   assert.deepEqual((await page.$$eval('button', (els) => els.filter((e) => e.textContent.trim() === "Import plan")
     .map((e) => e.closest('.topbar') ? "top bar" : e.closest('[aria-label="Get started"]') ? "get started" : "elsewhere"))).sort(),
-    ["get started", "top bar"]);
+    ["top bar"]);
   assert.equal(await page.$('.topbar button[aria-label="New query tab"]'), null, "New query tab belongs to the Query editor");
   await button("Query editor", ".main-nav ");
   await page.waitForSelector('.editor-toolbar');
@@ -418,15 +419,18 @@ try {
         assert.equal(phonePosition.popoverDisplay, 'block', 'compact Legend popover shows on phone');
         if (width === 390) console.log(JSON.stringify({ viewport: '390x844', beforeSvgTop: 467,
           afterSvgTop: phonePosition.top, pixelsRecovered: 467 - phonePosition.top }));
-        const minWidths = { tree: 820, flamegraph: 720, bargraph: 760 };
+        // The narrowest layouts (PlanChart MIN_CHART_WIDTH): a narrower pane
+        // scrolls sideways instead of shrinking the text.
+        const minWidths = { tree: 489, flamegraph: 360, bargraph: 480 };
         for (const view of ['tree', 'flamegraph', 'bargraph']) {
           await page.select('select[aria-label="Chart view"]', view);
           await page.waitForSelector(`.plan-chart[data-view="${view}"] .chart-scroll > svg`);
           const scroll = `.plan-chart[data-view="${view}"] .chart-scroll`;
-          await page.waitForFunction(selector => {
+          await page.waitForFunction((selector, min) => {
             const box = document.querySelector(selector);
-            return box.clientWidth > 0 && box.scrollWidth > box.clientWidth;
-          }, {}, scroll);
+            const drawn = Number(box?.querySelector('svg')?.getAttribute('width'));
+            return box.clientWidth > 0 && Math.abs(drawn - Math.max(min, box.clientWidth)) <= 1;
+          }, {}, scroll, minWidths[view]);
           const geometry = await page.$eval(scroll, box => ({
             width: box.clientWidth, full: box.scrollWidth,
             svg: box.querySelector('svg').getBoundingClientRect().width,
@@ -434,8 +438,10 @@ try {
           }));
           assert.ok(geometry.width <= width && geometry.svg >= minWidths[view] - 1 && geometry.scale >= .99,
             `${view} keeps readable operator labels on a ${width}px phone: ${JSON.stringify(geometry)}`);
-          await page.$eval(scroll, box => { box.focus(); box.scrollLeft = 150; });
-          assert.ok(await page.$eval(scroll, box => box.scrollLeft >= 149), `${view} can scroll to its remaining operators`);
+          if (geometry.full > geometry.width) {
+            await page.$eval(scroll, box => { box.focus(); box.scrollLeft = 40; });
+            assert.ok(await page.$eval(scroll, box => box.scrollLeft >= 39), `${view} can scroll to its remaining operators`);
+          }
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         }
         await page.select('select[aria-label="Chart view"]', 'workbench');
@@ -498,6 +504,80 @@ try {
       });
       assert.ok(topGap <= 2, `${label} top-aligns directly below toolbar (gap=${topGap})`);
     }
+    if (label === "Execution tree") {
+      // A chart drawn for one width is drawn again when its pane resizes:
+      // shrunk to the 720 px window (sidebar shown) the numbers stay on
+      // screen with no sideways scroll, shortened labels carry a tooltip, and
+      // the search, the selection, a row collapsed with its own toggle and
+      // the focused row survive the redraw.
+      const drawn = () => page.$eval(C + ".chart-scroll", (box) => ({
+        svg: Number(box.querySelector("svg").getAttribute("width")),
+        client: box.clientWidth, scroll: box.scrollWidth,
+        numbers: Math.max(...Array.from(box.querySelectorAll(".row-time, .row-pct"), (t) => t.getBoundingClientRect().right)),
+        right: box.getBoundingClientRect().left + box.clientWidth,
+      }));
+      const desktop = page.viewport();
+      const wide = await drawn();
+      assert.ok(Math.abs(wide.svg - wide.client) <= 1, `the tree fills its pane: ${JSON.stringify(wide)}`);
+      await page.locator(C + ".mfc-toolbar input").fill("scan");
+      const matching = await page.$$eval(C + ".tree-row:not(.mfc-dim)", (rows) => rows.map((row) => row.dataset.nodeId));
+      assert.ok(matching.length > 0);
+      const picked = await page.$eval(C + '.tree-row[data-has-children="1"]:not(.mfc-dim)', (row) => {
+        row.focus();
+        row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        row.querySelector(".toggle").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        return row.dataset.nodeId;
+      });
+      assert.equal(await page.$eval(C + `.tree-row[data-node-id="${picked}"]`, (row) => row.getAttribute("aria-expanded")), "false");
+      await page.setViewport({ width: 720, height: 520 });
+      await page.waitForFunction((c, before) => {
+        const svg = document.querySelector(c + ".chart-scroll > svg");
+        return !!svg && Number(svg.getAttribute("width")) < before;
+      }, {}, C, wide.svg);
+      const narrow = await drawn();
+      assert.ok(narrow.scroll <= narrow.client && Math.abs(narrow.svg - narrow.client) <= 1, `no sideways scroll at 720 px: ${JSON.stringify(narrow)}`);
+      assert.ok(narrow.numbers <= narrow.right + 0.5, `times and shares stay visible at 720 px: ${JSON.stringify(narrow)}`);
+      assert.ok(await page.$$eval(C + ".tree-row > title", (titles) => titles.length) > 0, "shortened labels have a tooltip");
+      assert.equal(await page.$eval(C + ".mfc-toolbar input", (el) => el.value), "scan", "the search survives the redraw");
+      assert.deepEqual(await page.$$eval(C + ".tree-row:not(.mfc-dim)", (rows) => rows.map((row) => row.dataset.nodeId)), matching);
+      assert.equal(await page.$eval(C + ".tree-row.is-selected", (row) => row.dataset.nodeId), picked, "the selection survives the redraw");
+      assert.equal(await page.$eval(C + `.tree-row[data-node-id="${picked}"]`, (row) => row.getAttribute("aria-expanded")), "false", "a collapsed row stays collapsed");
+      assert.equal(await page.evaluate(() => document.activeElement?.closest?.("[data-node-id]")?.getAttribute("data-node-id")), picked,
+        "focus returns to the same row");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await page.setViewport(desktop);
+      await page.waitForFunction((c, before) => Number(document.querySelector(c + ".chart-scroll > svg")?.getAttribute("width")) === before, {}, C, wide.svg);
+      // Focus in the chart's search stays there through a redraw.
+      await page.focus(C + ".mfc-toolbar input");
+      await page.setViewport({ width: 720, height: 520 });
+      await page.waitForFunction((c, before) => Number(document.querySelector(c + ".chart-scroll > svg")?.getAttribute("width")) < before, {}, C, wide.svg);
+      assert.equal(await page.$eval(C + ".mfc-toolbar input", (el) => el === document.activeElement), true, "the search keeps focus");
+      await page.setViewport(desktop);
+      await page.waitForFunction((c, before) => Number(document.querySelector(c + ".chart-scroll > svg")?.getAttribute("width")) === before, {}, C, wide.svg);
+      await page.$eval(C + ".mfc-toolbar input", (el) => {
+        el.value = "";
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    if (label === "Flame graph") {
+      // A zoomed flame graph stays zoomed to the same frame when redrawn for a new width.
+      const desktop = page.viewport();
+      const before = await page.$eval(C + ".chart-scroll > svg", (svg) => Number(svg.getAttribute("width")));
+      const frame = await page.$eval(C + ".frames > g[data-node-id]:nth-child(2)", (g) => {
+        g.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        return g.dataset.nodeId;
+      });
+      assert.equal(await page.$eval(C + "svg.mfc-flame", (svg) => svg.getAttribute("data-zoom")), frame);
+      await page.setViewport({ width: 720, height: 520 });
+      await page.waitForFunction((c, width) => Number(document.querySelector(c + ".chart-scroll > svg")?.getAttribute("width")) < width, {}, C, before);
+      assert.equal(await page.$eval(C + "svg.mfc-flame", (svg) => svg.getAttribute("data-zoom")), frame, "the zoom survives the redraw");
+      assert.ok(await page.$(C + ".fg-reset:not(.fg-off)"), "Reset zoom stays offered");
+      assert.equal(await page.$eval(C + ".chart-scroll", (box) => box.scrollWidth <= box.clientWidth), true, "no sideways scroll at 720 px");
+      await page.setViewport(desktop);
+      await page.waitForFunction((c, width) => Number(document.querySelector(c + ".chart-scroll > svg")?.getAttribute("width")) === width, {}, C, before);
+      await page.$eval(C + ".fg-reset", (button) => button.click());
+      assert.equal(await page.$eval(C + "svg.mfc-flame", (svg) => svg.hasAttribute("data-zoom")), false);
+    }
     // Exercise the shared renderers' initialization and search navigation.
     // In the page, Ctrl+F and the n/N keys belong to the chart only while
     // focus is inside it; browser find keeps working everywhere else.
@@ -543,6 +623,20 @@ try {
   const analysis = JSON.parse(await downloaded("sample-plan-analysis.json"));
   assert.ok(analysis.schema_version);
   assert.ok(analysis.plan_summary.operator_count > 0);
+  // /api/analyze leaves the SQL out of each teach hook; Export JSON restores
+  // it, so the file is the sidecar the CLI writes (teach hooks with query_sql).
+  const sidecar = JSON.parse(execFileSync(process.env.PYTHON || "python3", ["-c", `
+import json, sys
+from myflames.output_sidecar import build_sidecar
+from myflames.parser import analyze_plan
+from myflames.plan_input import _plan
+text, root, query, engine = _plan({"plan": sys.stdin.read()})
+print(json.dumps(build_sidecar(root, analyze_plan(root), source_type="file", engine=engine, query_raw=query)))
+`], { cwd: root, input: JSON.stringify(JSON.parse(await fs.readFile(path.join(root, "apps/workspace/src/example.json"), "utf8"))) }));
+  assert.ok(sidecar.teach_hooks.length > 0 && sidecar.teach_hooks.every((h) => h.query_sql === sidecar.query.raw));
+  for (const value of [analysis, sidecar]) delete value.generated_at;
+  assert.deepEqual(analysis, sidecar, "Export JSON writes the same sidecar as before");
+  assert.deepEqual(analysis.teach_hooks.map(Object.keys), sidecar.teach_hooks.map(Object.keys), "hook keys keep their order");
   await exportPlan("HTML");
   assert.match(
     await downloaded("sample-plan-report.html"),
@@ -706,17 +800,36 @@ try {
   assert.equal((await page.$$(".plan-item")).length, 2);
   await button("Compare", ".plans-bar ");
   await page.waitForSelector(".comparison-row");
-  assert.equal(await page.$$eval(".compare-pane .plan-inspector", (els) => els.length), 2, "each plan has its own inspector");
+  // Each plan's inspector opens for its selection only, so two empty panes
+  // never push Operator changes below the fold.
+  assert.equal(await page.$$eval(".compare-pane .plan-inspector", (els) => els.length), 0, "no empty inspectors before a selection");
   assert.equal(await page.$(".compare-pane .plan-chart .metric-panel"), null, "comparison lists are docked too");
   await page.click('.compare-tools [data-value="tree"]');
   await page.waitForFunction(() => Array.from(document.querySelectorAll('.compare-pane .plan-chart')).every((el) => el.dataset.view === "tree"));
   await page.select('select[aria-label="Comparison operator metric"]', "rows");
   await page.waitForFunction(() => Array.from(document.querySelectorAll('.compare-pane .metric-panel h2')).every((el) => el.textContent.includes("rows")));
+  // A bar chart is laid out for its pane's width and redrawn when the window
+  // narrows or widens, so its value labels stay inside the pane.
+  await page.click('.compare-tools [data-value="bargraph"]');
+  await page.waitForFunction(() => document.querySelectorAll('.compare-pane svg.mfc-bar').length === 2);
+  const barFits = () => Array.from(document.querySelectorAll('.compare-pane svg.mfc-bar')).map((svg) =>
+    ({ svg: Number(svg.getAttribute("width")), pane: svg.closest(".compare-pane").clientWidth }));
+  const wideBars = await page.evaluate(barFits);
+  assert.ok(wideBars.every((b) => b.svg <= b.pane && b.svg > 560), `Compare bar charts fill their panes: ${JSON.stringify(wideBars)}`);
+  await page.setViewport({ width: 720, height: 520 });
+  await page.waitForFunction(() => Array.from(document.querySelectorAll(".compare-pane svg.mfc-bar")).every((svg) =>
+    Number(svg.getAttribute("width")) <= svg.closest(".compare-pane").clientWidth), { timeout: 5000 });
+  await page.setViewport({ width: 1440, height: 1050 });
+  await page.waitForFunction((before) => {
+    const widths = Array.from(document.querySelectorAll('.compare-pane svg.mfc-bar')).map((svg) => Number(svg.getAttribute("width")));
+    return widths.length === 2 && widths.every((w, i) => Math.abs(w - before[i]) < 16);
+  }, { timeout: 5000 }, wideBars.map((b) => b.svg));
   await page.click('.compare-tools [data-value="workbench"]');
   await page.waitForSelector('.compare-pane .wb-node');
   const linked = await page.$eval('.comparison-row', (el) => { el.click(); return el.textContent; });
   assert.ok(linked);
   await page.waitForFunction(() => !!document.querySelector('.compare-pane .plan-inspector .operator-detail'));
+  assert.ok(await page.$$eval(".compare-pane .plan-inspector", (els) => els.length) >= 1, "a selected pair opens its plans' inspectors");
   await exportPlan("JSON");
   assert.equal(
     JSON.parse(await downloaded("comparison.json")).schema_version,

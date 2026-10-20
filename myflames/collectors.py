@@ -427,6 +427,41 @@ _STATS_COLUMNS = (
     "engine",
     "row_format",
 )
+# One client call reads up to this many tables. The SQL travels on the
+# client's command line (``mysql -e``), so each batch also stays under a
+# length that fits every platform's limit (Windows allows 32,767 characters
+# for the whole command).
+_STATS_BATCH_SIZE = 100
+_STATS_BATCH_CHARS = 24000
+
+
+def _stats_select(index, fq):
+    """One request: the original per-table SELECT, tagged with its position.
+
+    Each request keeps its constant ``table_name`` and ``table_schema``
+    equalities (``DATABASE()`` for an unqualified name), which both servers
+    resolve as direct lookups on ``information_schema.TABLES`` instead of
+    reading every table's metadata.
+    """
+    schema, table = fq.split(".", 1) if "." in fq else (None, fq)
+    return ("SELECT %d AS request_id, %s FROM information_schema.tables WHERE table_name = %s "
+            "AND table_schema = %s" % (index, ", ".join(_STATS_COLUMNS), _sql_string(table),
+                                       _sql_string(schema) if schema else "DATABASE()"))
+
+
+def _stats_batches(requests):
+    """Split (index, SELECT) pairs by count and by statement length."""
+    batch, size = [], 0
+    for request in requests:
+        extra = len(request[1]) + (len(" UNION ALL ") if batch else 0)
+        if batch and (len(batch) >= _STATS_BATCH_SIZE or size + extra > _STATS_BATCH_CHARS):
+            yield batch
+            batch, size = [], 0
+            extra = len(request[1])
+        batch.append(request)
+        size += extra
+    if batch:
+        yield batch
 
 
 def collect_stats(conn, tables):
@@ -436,35 +471,48 @@ def collect_stats(conn, tables):
     Stats are approximate for InnoDB (they come from dictionary counters,
     not a live ``COUNT(*)``) but that is exactly what we want — we are
     advising on orders of magnitude, not exact row counts.
+
+    Tables are read in batches (``_stats_batches``): one ``UNION ALL`` of the
+    per-table SELECTs, each tagged with the table's position in *tables*, so
+    every name keeps its own row (the first one the server returns, as
+    before), whatever its spelling. When a batch fails, its tables are read
+    one at a time, so only a table whose own read fails is left out.
     """
     from .connector import ConnectorError
 
+    tables = list(tables or ())
     if not tables:
         return {}
-    out = {}
-    for fq in tables:
-        if "." in fq:
-            schema, table = fq.split(".", 1)
-        else:
-            schema, table = None, fq
-        where = "table_name = " + _sql_string(table)
-        if schema:
-            where += " AND table_schema = " + _sql_string(schema)
-        else:
-            where += " AND table_schema = DATABASE()"
-        sql = (
-            "SELECT "
-            + ", ".join(_STATS_COLUMNS)
-            + " FROM information_schema.tables WHERE " + where
-        )
+    by_request = {}
+
+    def read(batch):
+        rows = conn.query_dicts(" UNION ALL ".join(sql for _, sql in batch), ("request_id",) + _STATS_COLUMNS)
+        wanted = set(index for index, _ in batch)
+        for row in rows:
+            try:
+                index = int(row.pop("request_id"))
+            except (TypeError, ValueError):
+                continue
+            if index in wanted:
+                by_request.setdefault(index, row)
+
+    for batch in _stats_batches([(index, _stats_select(index, fq)) for index, fq in enumerate(tables)]):
         try:
-            rows = conn.query_dicts(sql, _STATS_COLUMNS)
+            read(batch)
         except ConnectorError:
-            continue
-        if not rows:
+            if len(batch) == 1:
+                continue
+            for request in batch:
+                try:
+                    read([request])
+                except ConnectorError:
+                    continue
+    out = {}
+    for index, fq in enumerate(tables):
+        row = by_request.get(index)
+        if row is None:
             continue
         # Convert numeric columns so the advisor can do math directly.
-        row = rows[0]
         for k in ("table_rows", "data_length", "index_length", "data_free", "auto_increment"):
             try:
                 row[k] = int(row[k]) if row[k] and row[k] != "NULL" else 0

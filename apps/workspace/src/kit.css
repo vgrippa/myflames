@@ -296,6 +296,9 @@
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
+  /* Rows fit the pane: a long name ends in an ellipsis and the marker stays
+     whole, so the list never scrolls sideways. */
+  overflow-x: hidden;
 }
 /* Group headers: sentence case and semibold, like the sidebar's. */
 .source-group h3 {
@@ -308,6 +311,7 @@
 }
 .source-group ul {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
   margin: 0;
   padding: 0;
@@ -320,6 +324,7 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  min-width: 0;
   min-height: var(--nav-row-h);
   padding: 2px var(--space-2);
   border: 0;
@@ -433,10 +438,15 @@
   gap: var(--space-2) var(--space-3);
   min-width: 0;
 }
+/* Refresh keeps the trailing edge, also when the controls are hidden while
+   a row's full-width details are open. */
 .toolbar-end {
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  /* Refresh stays at the trailing edge, also on detail pages whose toolbar
+     has no controls between the title and it. */
+  margin-left: auto;
 }
 .toolbar-refresh {
   font-size: var(--text-sm);
@@ -1058,6 +1068,20 @@
 .data-table tbody tr.is-selected:hover td.col-menu {
   background: var(--surface-pane);
 }
+/* A row's ⋯ menu (rowAction) shows on the row being pointed at, the focused
+   or selected row and the row whose menu is open, like the Query editor's
+   schema tree. Transparent rather than hidden, so Tab still reaches it;
+   touch screens have no hover and always show it. */
+.data-table td.col-menu .row-more {
+  opacity: 0;
+}
+.data-table tbody tr:is(:hover, :focus-within, .is-selected, [aria-selected="true"]) td.col-menu .row-more,
+.data-table td.col-menu .row-more:is(:focus-visible, [aria-expanded="true"]) {
+  opacity: 1;
+}
+@media (hover: none) {
+  .data-table td.col-menu .row-more { opacity: 1; }
+}
 /* Columns scrolled out of view sideways (overlay scroll bars stay hidden
    until the pointer scrolls): the content fades out toward each edge with
    more beyond it, so a column cut at the edge reads as scrolled, not covered.
@@ -1536,6 +1560,10 @@ button.metric-tile.is-selected:hover {
   margin-top: auto;
   min-height: 20px;
 }
+/* The trend keeps the tile's trailing edge, with or without a status marker. */
+.tile-foot > .sparkline {
+  margin-left: auto;
+}
 .sparkline {
   width: 72px;
   height: 20px;
@@ -1588,6 +1616,36 @@ button.metric-tile.is-selected:hover {
 .disclosure > summary .count {
   margin-left: var(--space-1);
 }
+/* A plain <details> (no class on it or its summary, no icon in the summary)
+   draws the same chevron as the Disclosure component instead of the
+   browser's triangle. Styled disclosures keep their own marker. */
+details:not([class]) > summary:not([class]):not(:has(> svg)) {
+  list-style: none;
+}
+details:not([class]) > summary:not([class]):not(:has(> svg))::-webkit-details-marker {
+  display: none;
+}
+details:not([class]) > summary:not([class]):not(:has(> svg))::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: var(--space-1);
+  vertical-align: -1px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6s6 4.42 6 6-6 6-6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6s6 4.42 6 6-6 6-6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0.7;
+  transition: transform var(--motion-hover);
+}
+details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  details:not([class]) > summary:not([class]):not(:has(> svg))::before {
+    transition: none;
+  }
+}
 .disclosure-body {
   margin-top: var(--space-2);
 }
@@ -1596,7 +1654,7 @@ button.metric-tile.is-selected:hover {
 .confirm-sheet {
   width: min(560px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
-  overflow-y: auto;
+  overflow: hidden;
   padding: var(--space-5);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -1610,6 +1668,40 @@ button.metric-tile.is-selected:hover {
 .confirm-sheet .dialog-heading {
   margin-bottom: var(--space-2);
 }
+/* Title, a body that scrolls, then the actions: whatever the sheet holds,
+   Cancel and the confirm button never leave the window. */
+.confirm-sheet[open] {
+  display: flex;
+  flex-direction: column;
+}
+.confirm-sheet > :is(.dialog-heading, .sheet-actions) {
+  flex: none;
+}
+.sheet-body {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Room for focus rings at the scrolling edges. */
+  margin-inline: calc(-1 * var(--space-1));
+  padding: 2px var(--space-1);
+}
+.sheet-body > :last-child {
+  margin-bottom: 0;
+}
+/* A hairline marks an edge that has more content beyond it; each line is
+   covered by the sheet's own color while that edge is scrolled to its end. */
+.sheet-body,
+.about-body {
+  background:
+    linear-gradient(var(--surface-raised), var(--surface-raised)) top / 100% 2px no-repeat local,
+    linear-gradient(var(--surface-raised), var(--surface-raised)) bottom / 100% 2px no-repeat local,
+    linear-gradient(var(--line-strong), var(--line-strong)) top / 100% 1px no-repeat scroll,
+    linear-gradient(var(--line-strong), var(--line-strong)) bottom / 100% 1px no-repeat scroll;
+}
+.confirm-sheet > .sheet-actions {
+  margin-top: var(--space-4);
+}
 .sheet-lead {
   margin: 0 0 var(--space-3);
   font-size: var(--text-sm);
@@ -1618,6 +1710,17 @@ button.metric-tile.is-selected:hover {
 }
 .sheet-actions {
   justify-content: flex-end;
+}
+/* A short window (the 720x520 minimum): less padding, so more of the review
+   shows before the body scrolls. */
+@media (max-height: 600px) {
+  .confirm-sheet {
+    max-height: calc(100dvh - var(--space-4));
+    padding: var(--space-4);
+  }
+  .confirm-sheet > .sheet-actions {
+    margin-top: var(--space-3);
+  }
 }
 .button.danger-solid {
   background: var(--danger-fill);
@@ -1710,6 +1813,28 @@ button.metric-tile.is-selected:hover {
   flex: none;
 }
 
+/* A narrow view (the 720 px window, or a window under about 1000 px with
+   the list of views docked): the first toolbar row keeps Back, the title and
+   Refresh; the view's controls start a second row at the left edge and wrap
+   there, so a field label never runs into the title. */
+@container view (max-width: 760px) {
+  .toolbar-controls:not(:empty) {
+    order: 3;
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    gap: var(--space-2);
+  }
+  .toolbar-end {
+    margin-left: auto;
+  }
+  .toolbar-search {
+    flex: 1 1 160px;
+  }
+  .toolbar-search input {
+    width: 100%;
+    max-width: none;
+  }
+}
 /* A narrow view (phone, tablet, or the inspector open): rows with a long
    value put it on a second line instead of cutting the label. */
 @container view (max-width: 720px) {
@@ -2010,9 +2135,8 @@ button.metric-tile.is-selected:hover {
   .privilege-confirm-note { text-align: left; }
 }
 
-.kill-manual { flex-basis: 100%; font-size: var(--text-sm); line-height: var(--leading-sm); }
-.kill-manual > summary { color: var(--ink-muted); cursor: pointer; }
-.kill-manual > p { margin-top: var(--space-2); }
+.kill-manual { flex-basis: 100%; margin-top: 0; font-size: var(--text-sm); line-height: var(--leading-sm); }
+.kill-manual > summary { cursor: pointer; }
 
 /* A gated action that cannot run looks disabled whatever its tone (primary,
    danger), while staying focusable with its reason. */
@@ -2132,3 +2256,33 @@ button.metric-tile.is-selected:hover {
   80% { opacity: 1; transform: translate(-50%, 0); }
   100% { opacity: 0; transform: translate(-50%, -4px); }
 }
+
+/* ---- Export (ExportMenu): one pull-down everywhere ----
+   Export icon + "Export" + chevron-down when it opens a menu of formats;
+   the menu items read like a macOS menu (accent fill when highlighted). */
+.button.export-button { gap: var(--space-1-5); padding-inline: var(--space-2); }
+.button.export-button > svg { flex: none; color: var(--ink-muted); }
+.popover:has(> .export-menu-items) { padding: var(--space-1); }
+.export-menu-items { display: grid; }
+.export-menu-items [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+.export-menu-items [role="menuitem"]:is(:hover:not(:disabled), :focus-visible) {
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  outline: none;
+}
+.export-menu-items [role="menuitem"]:disabled { color: var(--ink-faint); }

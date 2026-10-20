@@ -1,4 +1,4 @@
-"""``chart-data-1.0``: the semantic payload consumed by ``myflames-charts.js``.
+"""Versioned semantic payloads consumed by ``myflames-charts.js``.
 
 Python keeps every MySQL/MariaDB decision (operator kind, reported join type,
 input phase, operator family, metrics, teach index, details text) and emits it
@@ -6,8 +6,10 @@ as data. The TypeScript bundle only lays out, formats, and wires interaction.
 
 The helpers below are imported from the renderers that own them, so the
 semantic tests for those renderers keep covering what the bundle draws.
-Schema: ``docs/schemas/chart-data-1.0.json``. This payload is deliberately
-separate from the slim sidecar ``plan_tree``.
+Schemas: ``docs/schemas/chart-data-1.0.json`` (HTML reports and explore
+pages) and ``chart-data-2.0.json`` (the workspace's ``/api/analyze``, which
+stores each analysis message once). The bundle accepts both. This payload is
+deliberately separate from the slim sidecar ``plan_tree``.
 """
 import math
 
@@ -19,6 +21,7 @@ from .parser import enhance_tooltip_flame, flatten_nodes, operator_family
 from .plan_matching import timing_available
 
 SCHEMA_VERSION = "chart-data-1.0"
+COMPACT_SCHEMA_VERSION = "chart-data-2.0"
 JOIN_KINDS = ("nested_loop", "hash", "bka")
 
 #: Copy for the metric list. Assembled by the bundle for the visible
@@ -88,17 +91,39 @@ def _projection(nodes, projection):
 
 
 def build_chart_data(root, title="Query plan", engine=None,
-                     teach_index_by_folded=None, analysis=None, projection=None):
-    """Return the ``chart-data-1.0`` dict for the canonical parsed tree.
+                     teach_index_by_folded=None, analysis=None, projection=None,
+                     compact=False):
+    """Return versioned chart data for the canonical parsed tree.
 
     ``root`` must come from :func:`myflames.parser.parse_explain`; it is read,
     never mutated. Nodes are flat pre-order; ``children`` keeps input order.
     Measured milliseconds stay canonical; ``display_unit`` is only a hint.
     ``projection`` (focus/collapse/selection/metric) is applied by the bundle
     as a copy, so measurements are identical whatever is visible.
+    ``compact=True`` returns ``chart-data-2.0`` (the workspace): each node's
+    ``highlight_id`` indexes ``highlight_messages``, which holds every
+    message once, in the order nodes first use it. A grouped warning names
+    every affected table and applies to each of them, so repeating it per
+    node (1.0's ``highlight``) grows with the square of the scan count. The
+    default stays ``chart-data-1.0`` (HTML reports, explore pages). The bundle
+    reads both.
     """
     teach = teach_index_by_folded or {}
     highlight = _highlights(analysis)
+    highlight_messages = []
+    highlight_ids = {}
+
+    def highlight_field(node):
+        message = highlight.get((node.get("short_label") or "").strip())
+        if not compact:
+            return "highlight", message
+        if message is None:
+            return "highlight_id", None
+        if message not in highlight_ids:
+            highlight_ids[message] = len(highlight_messages)
+            highlight_messages.append(message)
+        return "highlight_id", highlight_ids[message]
+
     by_id = {node["node_id"]: node for node in flatten_nodes(root)}
     rows = []
 
@@ -107,6 +132,7 @@ def build_chart_data(root, title="Query plan", engine=None,
         kind = _kind(node)
         measured = _number(d.get("actual_last_row_ms")) is not None
         children = node.get("children") or []
+        highlight_key, highlight_value = highlight_field(node)
         rows.append({
             "id": node["node_id"],
             "parent_id": parent["node_id"] if parent is not None else None,
@@ -142,7 +168,7 @@ def build_chart_data(root, title="Query plan", engine=None,
             "join_algorithm": _text(d.get("join_algorithm")),
             "complexity": d.get("complexity") if isinstance(d.get("complexity"), dict) else None,
             "teach_index": teach.get((node.get("folded_label") or "").strip()),
-            "highlight": highlight.get((node.get("short_label") or "").strip()),
+            highlight_key: highlight_value,
             "metrics": {name: list(metric_value(node, name)) for name in METRICS},
             "details_text": _details(node),
             "flame_details": _flame_details(node),
@@ -153,7 +179,7 @@ def build_chart_data(root, title="Query plan", engine=None,
     visit(root, None, 0, 0)
     total = _number(root.get("total_time"))
     payload = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": COMPACT_SCHEMA_VERSION if compact else SCHEMA_VERSION,
         "title": _text(title),
         "engine": engine or root.get("engine") or "mysql",
         "display_unit": "µs" if total is not None and 0 < total < 1 else "ms",
@@ -169,4 +195,6 @@ def build_chart_data(root, title="Query plan", engine=None,
             "metric_notes": dict(METRIC_NOTES),
         },
     }
+    if compact:
+        payload["highlight_messages"] = highlight_messages
     return _clean(payload)

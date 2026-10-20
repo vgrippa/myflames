@@ -500,7 +500,8 @@ export function AuditLog({ profiles }: { profiles: Profile[] }) {
                   label="Export the audit log"
                   className="audit-export"
                   buttonClassName="button"
-                  buttonTitle="Export the records that match these filters"
+                  buttonTitle={records.length ? "Export the records that match these filters" : "Nothing to export yet"}
+                  disabled={!records.length}
                   trigger={
                     <>
                       <Icon name="export" size={15} />
@@ -546,10 +547,9 @@ export function AuditLog({ profiles }: { profiles: Profile[] }) {
           status={<ViewStatus loading={loading && !report ? "Reading the audit log…" : undefined} error={error} />}
         >
           {report && !records.length && !filtered && !loading ? (
-            <EmptyState icon="audit" title="No writes recorded yet">
-              Writes made through myflames are recorded here, such as ending a session in Locks or Sessions: what was
-              sent, to which connection, and how it ended, including ones you cancel. Kept on this computer for{" "}
-              {retention} days.
+            <EmptyState icon="audit" title="No changes recorded yet">
+              Every change myflames sends, refuses or you decline is listed here. Kept on this computer for{" "}
+              {retention} {retention === 1 ? "day" : "days"}.
             </EmptyState>
           ) : report ? (
             <>

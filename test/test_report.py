@@ -231,6 +231,72 @@ class TestAdvisoryFeatures(unittest.TestCase):
 
 
 class TestLiveRecordings(ReportShape):
+    def test_shared_attribution_keeps_every_full_recorded_report(self):
+        """Compare complete envelopes, not only statuses or selected fields."""
+        class FixedDatetime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 10, 15, 12, tzinfo=tz)
+
+        with mock.patch.object(datetime, 'datetime', FixedDatetime), \
+                mock.patch.object(report.time, 'monotonic', return_value=1234.0):
+            for name in RECORDINGS:
+                with self.subTest(server=name):
+                    with mock.patch.object(report, '_AttributionContext', side_effect=lambda conn: conn):
+                        original, _, _ = run_report(name)
+                    shared, _, _ = run_report(name)
+                    self.assertEqual(shared, original)
+
+    def test_attribution_reads_shared_metadata_once(self):
+        """Each filter keeps its own digest read on both database engines."""
+        for name, expected in (("mysql-8.4-replica", 9), ("mysql-8.0", 9),
+                               ("mariadb-11.4", 8), ("mariadb-11.4-default", 0),
+                               ("mysql-8.0-limited", 2)):
+            with self.subTest(server=name):
+                result, conn, _ = run_report(name, workers=3)
+                calls = [sql for sql, _ in conn.calls if sql.startswith(discover.DISCOVER_TAG)]
+                self.assertEqual(len(calls), expected)
+                self.assertEqual(len(calls), len(set(calls)))
+                if name.startswith("mysql-8") and expected == 9:
+                    # Every shared statement is still discover's exact text.
+                    self.assertTrue(discover.SHARED_METADATA_SQL.issubset(calls))
+                if expected >= 8:
+                    self.assertEqual(len(result["attribution"]["full_scans"]), 3)
+                    self.assertEqual(sum("WHERE DIGEST IS NOT NULL" in sql for sql in calls), 4)
+
+    def test_attribution_metadata_does_not_outlive_one_report(self):
+        """A later report re-reads coverage, consumers and server metadata."""
+        for name in ('mysql-8.4-replica', 'mariadb-11.4'):
+            with self.subTest(server=name):
+                clock = FakeTime()
+                conn, data = replay('report', name, clock=clock)
+                for _ in range(2):
+                    report.analysis_report(conn, data['args']['interval'], workers=3,
+                                           sleep=clock.sleep, clock=clock.monotonic)
+                shared = [sql for sql in conn.seen if sql in discover.SHARED_METADATA_SQL]
+                self.assertTrue(shared)
+                self.assertEqual({conn.seen[sql] for sql in shared}, {2})
+
+    def test_attribution_shared_coverage_errors_remain_best_effort(self):
+        """A denied metadata query is shared without swallowing digest errors."""
+        status = "SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Performance_schema_digest_lost')"
+
+        def refuse(sql, text, n):
+            if sql == discover.DISCOVER_TAG + status or (sql.startswith(discover.DISCOVER_TAG)
+                                                        and 'WHERE DIGEST IS NULL' in sql):
+                return _Refused('Access denied')
+            return text
+
+        for name in ('mysql-8.4-replica', 'mariadb-11.4'):
+            with self.subTest(server=name):
+                result, conn, _ = run_report(name, edit=refuse, workers=3)
+                attribution = result['attribution']
+                self.assertTrue(attribution['available'])
+                self.assertIsNone(attribution['coverage']['uptime_s'])
+                self.assertIsNone(attribution['coverage']['overflow'])
+                self.assertTrue(attribution['full_joins']['statements'])
+                self.assertEqual(conn.seen[discover.DISCOVER_TAG + status], 1)
+
     def test_every_recording_replays_to_the_recorded_findings(self):
         for name in RECORDINGS:
             with self.subTest(server=name):

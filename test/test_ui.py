@@ -284,7 +284,7 @@ class TestWorkspaceAnalysis(unittest.TestCase):
                 result = api_response('/api/analyze', {'plan': raw})
                 data = result['chart_data']
                 root = parse_explain(raw)
-                self.assertEqual(data['schema_version'], 'chart-data-1.0')
+                self.assertEqual(data['schema_version'], 'chart-data-2.0')
                 self.assertEqual(data['engine'], engine)
                 # Full canonical tree in pre-order, same IDs as the operator
                 # table; the browser applies focus/collapse as a projection.
@@ -295,7 +295,7 @@ class TestWorkspaceAnalysis(unittest.TestCase):
                     'focus_id': '', 'collapsed_ids': [], 'selected_id': '', 'metric': 'self_time'})
                 by_folded = build_teach_index_maps(result['teach_hooks'])['by_folded_label']
                 expected = build_chart_data(root, title='Query plan', engine=engine,
-                                            teach_index_by_folded=by_folded, analysis=analyze_plan(root))
+                                            teach_index_by_folded=by_folded, analysis=analyze_plan(root), compact=True)
                 self.assertEqual(data, expected)
                 if by_folded:
                     self.assertTrue(any(n['teach_index'] is not None for n in data['nodes']))

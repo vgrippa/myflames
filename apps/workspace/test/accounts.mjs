@@ -437,6 +437,7 @@ try {
   assert.deepEqual(probes.compact[0].privileges, ["INSERT", "UPDATE"]);
 
   await click("Load users and roles"); await page.waitForSelector(".accounts-view tbody tr"); await inspect();
+  assert.equal(await h.text(".accounts-view .summary-text"), "2 users · 1 role", "counts are pluralized");
   assert.equal(await page.$("probe"), null); // User names are rendered as text.
   assert.equal(count("accounts/apply"), 0);
   await review();

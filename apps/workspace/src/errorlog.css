@@ -1,4 +1,9 @@
 /* Server > Error log view styles */
+/* The filter row above the list (report-table-tools); Export ends it. */
+.errorlog-tools .errorlog-export {
+  margin-left: auto;
+}
+
 .errorlog-time-select select {
   min-width: 110px;
 }

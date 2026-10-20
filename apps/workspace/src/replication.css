@@ -1,4 +1,5 @@
-/* Replication Place — Apple standard design school styles */
+/* Replication place: the shared summary line, metric tiles, table and
+   inspector (kit.css) carry the look; only the pieces below are local. */
 
 .replication-place {
   display: flex;
@@ -9,78 +10,32 @@
   background: var(--bg);
 }
 
-.replication-overview-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
+/* The tiles keep a gap above whatever the section shows under them (the
+   GTID facts, a table); the topology map has its own toolbar padding. */
+.replication-tiles + :is(.fact-strip, .data-table-frame) {
+  margin-top: var(--space-3);
 }
 
-.replication-stat-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 14px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md, 8px);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+/* One line of context under a tile's value ("1 OK", "1 measured · 1 unknown"). */
+.replication-tiles .tile-hint {
   min-width: 0;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.replication-stat-card:hover {
-  border-color: var(--accent);
-}
-
-.replication-stat-card .stat-label {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--ink-secondary);
-}
-
-.replication-stat-card .stat-value {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--ink);
-  line-height: 1.25;
-  font-variant-numeric: tabular-nums;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 26px;
-}
-
-.replication-stat-card .stat-hint {
-  font-size: 12px;
-  color: var(--ink-muted);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.replication-tab-banner {
-  padding: var(--space-2) var(--space-4);
-  background: var(--surface-secondary, rgba(0, 113, 227, 0.04));
-  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
   font-size: var(--text-sm);
-  color: var(--ink);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
 }
 
-.ops-gtid-overview {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
-}
-
-.ops-gtid-overview .fields-table code {
-  font-size: 11px;
-  word-break: break-all;
+/* A narrow window (the app's 720 px minimum): the five sections take their
+   own row under the title instead of scrolling out of sight. */
+@container view (max-width: 640px) {
+  .server-view[data-view="replication"] .toolbar-controls {
+    flex-basis: 100%;
+    order: 3;
+    justify-content: flex-start;
+  }
+  .server-view[data-view="replication"] .toolbar-end {
+    margin-left: auto;
+  }
 }

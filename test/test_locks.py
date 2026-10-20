@@ -3004,6 +3004,28 @@ class TestKillAudit(LockCase):
 
 
 class TestLockScaleBudgets(unittest.TestCase):
+    def test_metadata_owner_snapshot_reused_across_waiters(self):
+        """MySQL and MariaDB share owner enumeration, including rotation and self-exclusion."""
+        class CountedOwners(dict):
+            enumerations = 0
+
+            def items(self):
+                self.enumerations += 1
+                return super(CountedOwners, self).items()
+
+        owners = CountedOwners([(11, ['a', 'b']), (22, ['c']), (33, ['d'])])
+        empty = CountedOwners()
+        group = {'owners': owners}
+        selected = [(group, 4), ({'owners': empty}, 0)]
+        cases = ((11, 0, ['c', 'd']), (22, 1, ['d', 'a', 'b']),
+                 (44, 7, ['c', 'd', 'a', 'b']), (33, 2, ['a', 'b', 'c']))
+        for owner, start, expected in cases:
+            result = list(locks._mdl_blockers(selected, owner, start))
+            self.assertEqual([lock for _, lock in result], expected)
+            self.assertTrue(all(found is group for found, _ in result))
+        self.assertEqual(owners.enumerations, 1, 'a shared blocker group is materialized once')
+        self.assertEqual(empty.enumerations, 1, 'an empty cached owner list is reusable too')
+
     def report_state(self, engine='mysql'):
         return locks._Report(engine, '8.4.11' if engine == 'mysql' else '11.4.13-MariaDB',
                              (8, 4, 11) if engine == 'mysql' else (11, 4, 13), True, 5000, 'all')

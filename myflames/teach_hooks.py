@@ -312,6 +312,10 @@ def _note_for_hook(node):
 def build_teach_hooks(root, query_sql=None, variables=None, stats=None):
     """Return deterministic teach hooks for nodes that map to a lesson.
 
+    ``query_sql`` is optional. Hosts that already carry the query at the
+    response root should omit it instead of repeating SQL for every hook.
+    Sidecar and digest callers keep supplying it for their existing contract.
+
     *stats* is an optional ``{table_name: {...}}`` dict from
     ``information_schema.tables`` collected by the advisor. When present,
     ``_row_size_for_lesson`` can compute ``data_length / table_rows``

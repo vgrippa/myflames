@@ -802,7 +802,9 @@ def _mdl_blockers(selected, owner, start=0):
     each group's owners read from *start* (mod their count), so requests
     that share blockers spread a capped budget over different owners."""
     for group, _count in selected:
-        owners = group.setdefault("owner_list", list(group["owners"].items()))
+        if "owner_list" not in group:
+            group["owner_list"] = list(group["owners"].items())
+        owners = group["owner_list"]
         for step in range(len(owners)):
             other_owner, locks = owners[(start + step) % len(owners)]
             if other_owner == owner:

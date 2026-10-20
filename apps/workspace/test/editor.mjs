@@ -284,10 +284,20 @@ try {
   const ran = async (n) => until(() => calls("/api/editor/run").length >= n && calls("/api/editor/run")[n - 1], `editor/run #${n} was not sent`);
   const idle = () => page.waitForFunction(() => !document.querySelector(".results-running") && !document.querySelector("[data-action=run]")?.disabled);
   const resultTabs = () => texts(".results-tabs [role=tab]");
-  const quietPrivilegeText = "Privileges not verified for this statement";
+  /** Unverified privileges add no note (the server decides); each action
+   * keeps its reason in its accessible description. */
+  async function quietUnverified() {
+    await page.waitForFunction(() => document.querySelector("[data-action=run]")?.dataset.privilegeState === "unknown");
+    await pause(450);
+    assert.equal(await page.$(".editor-privilege-note"), null, "an unverified statement shows no note");
+    for (const action of ["run", "run-all"])
+      assert.match(await page.$eval(`[data-action=${action}]`, e => document.getElementById(e.getAttribute("aria-describedby").split(" ")[0])?.textContent || ""), /^Unverified/);
+  }
   async function sharedPrivilegeNotice(expected) {
     await page.waitForSelector(".editor-privilege-note", { visible: true });
     assert.equal(await page.$$eval(".editor-privilege-note", els => els.length), 1);
+    // In the toolbar row: a late answer never pushes the editor down.
+    assert.equal(await page.$eval(".editor-privilege-note", e => !!e.closest(".editor-toolbar")), true);
     assert.equal(await text(".editor-privilege-note"), expected);
     for (const action of ["run", "run-all", "explain", "analyze"]) {
       const selector = `[data-action=${action}]`;
@@ -338,9 +348,7 @@ try {
   await page.waitForFunction(() => document.querySelector('.window-statusbar [data-status="session"]')?.textContent === "No session");
   assert.equal(await page.$(".tx-state"), null);
   assert.equal(await page.$(".editor-statusbar"), null, "one status region: the window's");
-  await page.waitForFunction(text => document.querySelector(".editor-privilege-note")?.textContent === text, {}, quietPrivilegeText);
-  await sharedPrivilegeNotice(quietPrivilegeText);
-  assert.equal(await page.$eval(".editor-privilege-note", e => e.classList.contains("is-warning")), false);
+  await quietUnverified();
   await setText("");
   assert.equal(await page.$(".editor-privilege-note"), null, "empty SQL has no preview note");
 
@@ -375,10 +383,14 @@ try {
   assert.equal(body.cursor, undefined);
   await idle();
   assert.equal(await text(".tx-state .status-pill"), "Auto-commit");
-  // Server, session, transaction and last run are in the one window status bar.
+  // Server, session and last run are in the one window status bar; the
+  // transaction state stays in the toolbar and rows and time in the result
+  // tab, each said once.
   assert.equal(await statusField("engine"), "MySQL 8.4.3");
   assert.equal(await statusField("session"), "Session open · connection 42");
-  assert.equal(await statusField("transaction"), "Auto-commit");
+  assert.equal(await statusField("transaction"), null);
+  assert.equal(await statusField("rows"), null);
+  assert.equal(await statusField("duration"), null);
   assert.ok(await page.$('.window-statusbar [data-status="last-run"] time[datetime]'), "the last run includes its completion time");
   assert.equal(await page.$$eval('[aria-label="Workspace status"]', (els) => els.length), 1, "exactly one Workspace status region");
 
@@ -612,7 +624,13 @@ try {
   await chord("Enter");
   await ran(12);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction unknown");
+  // The footer leaves the transaction to the toolbar, except in Query digest,
+  // which hides the toolbar: an open or unknown transaction stays visible.
+  assert.equal(await page.$('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]'), null);
+  await page.click('.query-mode-switch [role=tab]:nth-child(2)');
   await page.waitForFunction(() => document.querySelector('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]')?.textContent === "Transaction unknown");
+  await page.click('.query-mode-switch [role=tab]:nth-child(1)');
+  await page.waitForFunction(() => !document.querySelector('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]') && !!document.querySelector(".tx-state"));
   mock.close.push({ closed: false, reason: "transaction_unknown", message: "A transaction may be open.", session: session({ in_transaction: null }) });
   mock.close.push({ closed: true, session: session({ ended: true, ended_reason: "closed", state: "ended" }) });
   await page.click(".query-tab:has([aria-selected=true]) .query-tab-close");
@@ -1203,8 +1221,7 @@ try {
     await ran(before + 1);
     await idle();
   }
-  await page.waitForFunction(text => document.querySelector(".editor-privilege-note")?.textContent === text, {}, quietPrivilegeText);
-  await sharedPrivilegeNotice(quietPrivilegeText);
+  await quietUnverified();
   assert.equal(await page.$eval('[data-action=run]', e => e.getAttribute("aria-disabled")), "false");
   assert.equal(await page.$eval('[data-action=run]', e => e.classList.contains("primary")), true);
   assert.equal(await page.$eval('[data-action=run-all]', e => e.getAttribute("aria-disabled")), "false");

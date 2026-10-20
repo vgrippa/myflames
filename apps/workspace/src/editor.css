@@ -6,7 +6,6 @@
   display: flex;
   flex-direction: column;
   height: calc(100dvh - var(--topbar-height));
-  min-height: 600px;
   min-width: 0;
 }
 .editor-workbench {
@@ -243,7 +242,6 @@
   align-items: center;
   font-size: inherit;
 }
-.editor-privilege-note,
 .editor-feedback {
   flex: none;
   margin: 0;
@@ -252,6 +250,19 @@
   line-height: var(--leading-sm);
   color: var(--ink-muted);
   overflow-wrap: anywhere;
+}
+/* A denial, in the toolbar row: one line (the full text is its tooltip and
+   each action's description), so it never adds a row under the toolbar. */
+.editor-privilege-note {
+  flex: 0 1 auto;
+  min-width: 8em;
+  margin: 0 0 0 var(--space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
 }
 .editor-privilege-note.is-warning {
   color: var(--warn-text);
@@ -302,11 +313,13 @@
 
 /* ---- The SQL text area and its layers ------------------------------------ */
 /* Every layer repeats the textarea's text metrics exactly. */
+/* Its height comes from the splitter (QueryLab caps it so the results keep
+   three rows); in a short window it may still give way to the results. */
 .sql-editor-wrap {
-  flex: none;
+  flex: 0 1 auto;
   position: relative;
   display: flex;
-  min-height: 120px;
+  min-height: 72px;
   height: 260px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -563,8 +576,8 @@
 
 /* ---- Results ----------------------------------------------------------------- */
 .results-pane {
-  flex: 1 1 auto;
-  min-height: 160px;
+  flex: 1 1 0;
+  min-height: 96px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -889,14 +902,13 @@
   padding: 0 var(--space-1) 0 var(--space-3);
   border-bottom: 1px solid var(--line);
 }
+/* Pane titles (Schemas, History) read like every other section label. */
 .browser-head h2 {
   flex: 1 1 auto;
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  font-weight: 600;
-  color: var(--ink-muted);
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  font-weight: var(--section-weight);
+  color: var(--section-ink);
 }
 .browser-filter {
   flex: none;
@@ -1138,17 +1150,14 @@
 }
 
 /* ---- Narrow windows ---------------------------------------------------------- */
-@media (max-width: 720px) {
-  .query-lab {
-    height: auto;
-    min-height: 0;
-  }
-  .editor-workbench {
-    display: block;
-  }
-  .query-lab .editor-panel {
-    overflow: visible;
-  }
+/* A narrow editor pane (the 720 px window with the sidebar, or the schema
+   browser open in a window under about 1000 px): the toolbar wraps onto a
+   second row instead of hiding controls in a sideways scroll, and the scope
+   shares that row. */
+.query-lab .editor-panel {
+  container: editor-panel / inline-size;
+}
+@container editor-panel (max-width: 700px) {
   .editor-toolbar {
     flex-wrap: wrap;
     overflow: visible;
@@ -1158,17 +1167,35 @@
     min-width: 0;
     max-width: 100%;
   }
+  /* Wrapped toolbar: the note fills the rest of the last row (one line),
+     so a late answer still never adds a row. */
+  .editor-toolbar .editor-privilege-note {
+    flex: 1 1 8em;
+  }
   .editor-toolbar .run-scope {
-    flex: 1 1 100%;
-    margin-left: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .editor-toolbar .editor-actions,
   .editor-toolbar .tx-group {
     padding-left: 0;
     border-left: 0;
   }
+}
+/* A short window (the 720x520 minimum has 492 px of content): the one-line
+   notes and the result bar take less height, which goes to the editor. */
+@media (max-height: 600px) {
+  .editor-privilege-note,
+  .editor-feedback,
+  .result-bar {
+    padding-block: 2px;
+  }
+}
+/* The 720 px window (the app's minimum): the editor and its results keep
+   one window-high column, split by the splitter. */
+@media (max-width: 720px) {
   .sql-gutter {
     width: 36px;
   }
@@ -1176,10 +1203,8 @@
   .sql-layer {
     padding: var(--space-2) var(--space-3) var(--space-5);
   }
-  .results-pane {
-    min-height: 280px;
-  }
-  .result-sortnote {
+  /* With its " · " separator. */
+  .result-meta > span:has(> .result-sortnote) {
     display: none;
   }
   /* The schema browser and the history open as bottom sheets. */

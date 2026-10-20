@@ -37,6 +37,7 @@ import {
   AutoRefresh,
   Checkbox,
   ConfirmSheet,
+  Disclosure,
   EmptyState,
   FactStrip,
   Fields,
@@ -407,7 +408,7 @@ export function KillDialog({
       }}
       onConfirm={() => { if (!busy && !confirmGate.disabledReason && review) onConfirm(mode, review.review_token); }}
     >
-      {reviewError && <p role="alert">{reviewError}</p>}
+      {reviewError && <p role="alert" className="error kill-review-error">{reviewError}</p>}
       {review && <Sql text={review.statements.join(";\n")} label="Statement to send" />}
       <dl className="kill-facts">
         {target.via && (
@@ -638,7 +639,7 @@ function KillControl({
         aria-label={`Kill blocker: connection ${target.connection_id}`}
         onClick={(e) => onKill(candidate, e.currentTarget)}>Kill…</VisiblePrivilegeGate>
       {gate.disabledReason ? <CopyCommand command={`KILL ${target.connection_id}`} onCopied={onCopied} /> : commands && (
-        <details className="kill-manual"><summary>End it yourself</summary>
+        <Disclosure className="kill-manual" title="End it yourself">
           <p className="hint">{gate.state === "allowed" ? "Or run it yourself in a SQL client:" : "To end it, run this yourself in a SQL client:"}</p>
           <div className="kill-commands">
             {commands.query && <CopyCommand command={commands.query} onCopied={onCopied} />}
@@ -647,7 +648,7 @@ function KillControl({
           <p className="hint">{commands.query
             ? "KILL QUERY stops the statement; its transaction stays open with its row and metadata locks unless it runs in autocommit mode. KILL ends the connection and rolls the transaction back."
             : "KILL ends the connection and rolls its open transaction back, which can take a while after many changes."}</p>
-        </details>
+        </Disclosure>
       )}
     </div>
   );

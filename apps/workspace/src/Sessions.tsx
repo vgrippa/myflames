@@ -566,48 +566,6 @@ export function SessionsView({
       }
       controls={
         <>
-          <Segmented
-            label="Sessions to list"
-            value={scope}
-            onChange={(v) => {
-              const next = v as "active" | "all" | "locked";
-              onScopeChange(next);
-              // Latest wins: a read still running for the other scope is replaced.
-              if (report) void load(next === "active", false, sourceMode, next === "locked");
-            }}
-            options={[
-              { value: "active", label: "Active" },
-              { value: "all", label: "All" },
-              { value: "locked", label: s?.locked ? `Locked (${s.locked})` : "Locked" },
-            ]}
-          />
-          <label className="toolbar-field">
-            <span>Source</span>
-            <select
-              className="toolbar-select"
-              aria-label="Processlist source"
-              value={sourceMode}
-              onChange={(e) => {
-                const mode = e.target.value as "auto" | "show_processlist";
-                setSourceMode(mode);
-                if (report) void load(scope === "active", true, mode, scope === "locked");
-              }}
-            >
-              <option value="auto">Auto (P_S / I_S)</option>
-              <option value="show_processlist">SHOW PROCESSLIST</option>
-            </select>
-          </label>
-          <label className="toolbar-field">
-            <span>Running at least</span>
-            <NumberField
-              min={0}
-              step={1}
-              unit="s"
-              label="Running at least (seconds)"
-              value={minSeconds}
-              onChange={(v) => onMinSecondsChange(Math.max(0, Math.round(+v) || 0))}
-            />
-          </label>
           <button
             type="button"
             className="button"
@@ -616,7 +574,6 @@ export function SessionsView({
           >
             Mass kill
           </button>
-          {report && <SearchField label="Filter sessions" value={search} onChange={setSearch} placeholder="Filter" />}
           <AutoRefresh value={auto} options={AUTO_INTERVALS} disabled={!report} onChange={setAuto} />
         </>
       }
@@ -701,6 +658,53 @@ export function SessionsView({
               </div>
             </Disclosure>
             <section className="view-section" aria-label="Sessions">
+            {/* The list's filters sit on the row above it, like Indexes and
+                Tables, so the view toolbar keeps one row at 1440 px. */}
+            <div className="report-table-tools sessions-tools" role="group" aria-label="Session filters">
+              <Segmented
+                label="Sessions to list"
+                value={scope}
+                onChange={(v) => {
+                  const next = v as "active" | "all" | "locked";
+                  onScopeChange(next);
+                  // Latest wins: a read still running for the other scope is replaced.
+                  if (report) void load(next === "active", false, sourceMode, next === "locked");
+                }}
+                options={[
+                  { value: "active", label: "Active" },
+                  { value: "all", label: "All" },
+                  { value: "locked", label: s?.locked ? `Locked (${s.locked})` : "Locked" },
+                ]}
+              />
+              <label className="toolbar-field">
+                <span>Source</span>
+                <select
+                  className="toolbar-select"
+                  aria-label="Processlist source"
+                  value={sourceMode}
+                  onChange={(e) => {
+                    const mode = e.target.value as "auto" | "show_processlist";
+                    setSourceMode(mode);
+                    if (report) void load(scope === "active", true, mode, scope === "locked");
+                  }}
+                >
+                  <option value="auto">Auto (P_S / I_S)</option>
+                  <option value="show_processlist">SHOW PROCESSLIST</option>
+                </select>
+              </label>
+              <label className="toolbar-field">
+                <span>Running at least</span>
+                <NumberField
+                  min={0}
+                  step={1}
+                  unit="s"
+                  label="Running at least (seconds)"
+                  value={minSeconds}
+                  onChange={(v) => onMinSecondsChange(Math.max(0, Math.round(+v) || 0))}
+                />
+              </label>
+              <SearchField label="Filter sessions" value={search} onChange={setSearch} placeholder="Filter" />
+            </div>
               <PriorityTable
                 id="sessions.sessions"
                 detailColumns={["user", "db", "command", "statement", "lock", "flags"]}

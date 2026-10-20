@@ -223,6 +223,18 @@ try {
   assert.ok(waits.some((w) => /row lock X,REC_NOT_GAP \(record only\) on lk\.t index PRIMARY \[1\]/.test(w)), waits.join("|"));
   assert.ok(waits.some((w) => /insert intention/.test(w)));
   assert.ok(waits.some((w) => /metadata SHARED_READ on table lk\.m, queued behind a waiting request/.test(w)));
+  // Waits for is capped (full text in the tooltip and inspector) so Statement
+  // keeps real width at 1440 px and ends in an ellipsis instead of the frame edge.
+  const tree = await page.$eval(`${view} .lock-tree`, (wrap) => ({
+    overflow: wrap.scrollWidth - wrap.clientWidth,
+    statement: Math.round(wrap.querySelector("td.tree-statement").getBoundingClientRect().width),
+    waits: Math.max(...[...wrap.querySelectorAll("td.cell-flex .cell-truncate")].map((e) => e.getBoundingClientRect().width)),
+    titled: [...wrap.querySelectorAll("td.cell-flex .cell-truncate")].every((e) => e.title === e.textContent),
+  }));
+  assert.equal(tree.overflow, 0, "the blocking tree fits at 1440 px");
+  assert.ok(tree.statement >= 200, `Statement keeps at least 200 px (${tree.statement})`);
+  assert.ok(tree.waits < 360, `Waits for is capped (${tree.waits})`);
+  assert.ok(tree.titled, "each capped wait carries its full text as a tooltip");
   // Disclosure triangles: Left collapses a blocker's chain, Right expands it again.
   await page.focus(treeRow(23));
   await page.keyboard.press("ArrowLeft");

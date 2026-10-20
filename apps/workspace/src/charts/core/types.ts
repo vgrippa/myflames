@@ -1,4 +1,4 @@
-// chart-data-1.0 (docs/schemas/chart-data-1.0.json), emitted by
+// chart-data-1.0 and chart-data-2.0 (docs/schemas/chart-data-*.json), emitted by
 // myflames/chart_data.py. Python owns every MySQL/MariaDB decision; the
 // bundle only lays out, formats, and wires interaction.
 
@@ -44,7 +44,10 @@ export interface ChartNode {
   join_algorithm: string;
   complexity: Record<string, unknown> | null;
   teach_index: number | null;
-  highlight: string | null;
+  /** Version 1 inline message; retained for saved/external charts. */
+  highlight?: string | null;
+  /** Version 2 index into ChartData.highlight_messages; null means no warning. */
+  highlight_id?: number | null;
   metrics: Record<MetricName, MetricValue>;
   details_text: string;
   /** Flame-graph tooltip lines for exactly this operator (may be empty). */
@@ -59,7 +62,9 @@ export interface ChartProjection {
 }
 
 export interface ChartData {
-  schema_version: "chart-data-1.0";
+  schema_version: "chart-data-1.0" | "chart-data-2.0";
+  /** Version 2 interns full messages here rather than in every node. */
+  highlight_messages?: string[];
   title: string;
   engine: string;
   display_unit: string;

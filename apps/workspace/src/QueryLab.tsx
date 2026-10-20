@@ -75,6 +75,11 @@ function keys(shift: boolean, key: "Enter" | "E" = "Enter") {
 const FLASH_MS = 1600;
 /** Below this width the schema browser and history open as sheets. */
 const NARROW = 720;
+/** The results keep their tabs, result bar, column header and three rows:
+ * in a short window (the 720x520 minimum) the editor gives way to them. */
+const RESULTS_KEEP = 208;
+/** The editor itself keeps three lines. */
+const EDITOR_FLOOR = 72;
 type Tab = QueryTab;
 /** Options for adding a captured plan: `open: false` keeps the current screen. */
 export type CaptureOptions = { open?: boolean };
@@ -91,7 +96,7 @@ export type QueryLabHandle = {
    * connectionKey), nothing opens or runs unless that is still the
    * connection in use. */
   openDigest: (row: TopStatement, rank: number, action: DigestAction, expect?: string) => void;
-  /** Switch to the Query Digest (pt-query-digest) view */
+  /** Switch to the Query digest mode (in the style of pt-query-digest) */
   openDigestView?: () => void;
   /** Add an empty query tab and put the cursor in it (Home's New query tab). */
   newTab: () => void;
@@ -421,6 +426,35 @@ export const QueryLab = forwardRef<
   const [trace, setTrace] = useState(start.trace);
   const [conditions, setConditions] = useState(start.conditions);
   const [layout, setLayout] = useState<EditorLayout>(() => normalizeEditorLayout(start.editor_layout ?? defaultEditorLayout()));
+  // The room for the editor and the results under it: from the editor's top
+  // to the bottom of the tab panel, less the splitter and the operation
+  // feedback line under the results. Measured after every render (a banner,
+  // a note or a wrapped toolbar moves the editor) and on resize.
+  const tabPanel = useRef<HTMLDivElement>(null);
+  const [editorRoom, setEditorRoom] = useState(0);
+  const measureEditorRoom = useCallback(() => {
+    const panel = tabPanel.current;
+    const wrap = panel?.querySelector<HTMLElement>(".sql-editor-wrap");
+    // A hidden panel (another place, Query Digest, table data) keeps the last room.
+    if (!panel || !wrap || !panel.offsetHeight) return;
+    const splitter = panel.querySelector<HTMLElement>(".editor-splitter");
+    const feedback = panel.querySelector<HTMLElement>(".editor-feedback");
+    const room = Math.floor(panel.getBoundingClientRect().bottom - wrap.getBoundingClientRect().top
+      - (splitter?.offsetHeight || 0) - (feedback?.offsetHeight || 0));
+    setEditorRoom((r) => (r === room ? r : room));
+  }, []);
+  useLayoutEffect(measureEditorRoom);
+  useEffect(() => {
+    const panel = tabPanel.current;
+    if (!panel) return;
+    const observer = new ResizeObserver(measureEditorRoom);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [measureEditorRoom]);
+  /** The tallest editor that leaves the results their rows; the editor shows
+   * the height the splitter set, up to this. */
+  const editorCap = editorRoom > 0 ? Math.max(EDITOR_FLOOR, editorRoom - RESULTS_KEEP) : 2000;
+  const editorHeight = Math.min(layout.height, editorCap);
   const privileges = usePrivileges();
   const privilegeRef = useRef(privileges);
   privilegeRef.current = privileges;
@@ -854,14 +888,15 @@ export const QueryLab = forwardRef<
   const runGate = editorPrivilegeGate(runPreview);
   const allGate = editorPrivilegeGate(allPreview);
   const previewWarning = runPreview?.aggregate.warning || allPreview?.aggregate.warning;
-  // One explanation for the run group. A pending preview is quiet; only
-  // its current answer can add the unknown note. Keep mixed batches runnable.
+  // One explanation for the run group, shown only when something is denied
+  // (or a mixed batch has denied statements). Unverified privileges stay
+  // quiet: the server decides, and each button keeps its reason for
+  // assistive technology. Keep mixed batches runnable.
   const privilegeReasons = [...new Set(
     [runGate, allGate, explainGate, analysisGate].map(gate => gate.disabledReason)
       .filter(reason => reason && !previewWarning?.includes(reason)),
   )];
-  const privilegeNotice = [previewWarning, ...privilegeReasons].filter(Boolean).join(" ") ||
-    (runPreview?.aggregate.state === "unknown" ? "Privileges not verified for this statement" : "");
+  const privilegeNotice = [previewWarning, ...privilegeReasons].filter(Boolean).join(" ");
   const privilegeNoticeId = privilegeNotice ? `${privilegeId}-notice` : undefined;
   const scopeLabel = describeTarget(tab.sql, target);
   const selecting = target.scope === "selection";
@@ -1586,8 +1621,15 @@ export const QueryLab = forwardRef<
 
   // ---- Layout: splitter and panes -------------------------------------------
 
+  /** The splitter sets the editor height. A drag past the cap stores the cap
+   * (a taller window then opens no larger than what was seen); a taller
+   * height stored in a taller window is kept. */
   function setHeight(height: number) {
-    setLayout((l) => ({ ...l, height: Math.round(Math.max(120, Math.min(2000, height))) }));
+    const next = Math.round(Math.max(120, Math.min(2000, height)));
+    setLayout((l) => {
+      const value = next < editorCap ? next : Math.max(l.height, editorCap);
+      return value === l.height ? l : { ...l, height: value };
+    });
   }
   function togglePane(pane: "browser" | "history") {
     if (narrow) setSheet((s) => (s === pane ? "" : pane));
@@ -1629,10 +1671,12 @@ export const QueryLab = forwardRef<
       ? statusSession.ended ? "Session ended"
         : `${running ? "Running" : statusSession.state === "starting" ? "Session starting" : "Session open"}${statusSession.connection_id !== null ? ` · connection ${statusSession.connection_id}` : ""}${statusSession.read_only_transactions ? " · read-only" : ""}`
       : rt.probed && !session ? "No session" : undefined,
-    transaction,
+    // The transaction state is in the editor toolbar, and the rows and time
+    // of the run in its result tabs: the footer does not repeat them. The
+    // Query digest mode hides the toolbar, so there the footer keeps the
+    // transaction state (an open transaction may hold locks).
+    transaction: workspaceMode === "digest" ? transaction : undefined,
     lastRunAt: statusRun?.finished_at ? Date.parse(statusRun.finished_at) : undefined,
-    durationMs: statusRun?.duration_ms,
-    rows: statusRun?.counts.rows,
   });
   const planPane =
     lastRun?.tabId === tab.id || (jobBusy && lastRun?.tabId === tab.id) ? (
@@ -1695,7 +1739,7 @@ export const QueryLab = forwardRef<
                 onClick={() => setWorkspaceMode("editor")}
               >
                 <Icon name="query" size={13} />
-                <span>SQL Editor</span>
+                <span>Editor</span>
               </button>
               <button
                 type="button"
@@ -1703,10 +1747,10 @@ export const QueryLab = forwardRef<
                 aria-selected={workspaceMode === "digest"}
                 className={`mode-tab ${workspaceMode === "digest" ? "is-active" : ""}`}
                 onClick={() => setWorkspaceMode("digest")}
-                title="pt-query-digest workload analysis report and slow query inspector"
+                title="Workload profile of statement digests, in the style of pt-query-digest"
               >
                 <Icon name="statements" size={13} />
-                <span>Query Digest (pt-query-digest)</span>
+                <span>Query digest</span>
               </button>
             </div>
             {workspaceMode === "editor" && (
@@ -1817,6 +1861,7 @@ export const QueryLab = forwardRef<
             </div>
           )}
           <div
+            ref={tabPanel}
             role="tabpanel" tabIndex={0}
             id="query-tab-panel"
             className="query-tab-panel"
@@ -2055,10 +2100,11 @@ export const QueryLab = forwardRef<
                   />
                 </span>
               )}
+              {/* In the toolbar row, so a late preview never pushes the editor down. */}
+              {privilegeNotice && <p id={privilegeNoticeId} title={privilegeNotice}
+                className={`editor-privilege-note${previewWarning || privilegeReasons.length ? " is-warning" : ""}`}
+                role="status">{privilegeNotice}</p>}
             </div>
-            {privilegeNotice && <p id={privilegeNoticeId}
-              className={`editor-privilege-note${previewWarning || privilegeReasons.length ? " is-warning" : ""}`}
-              role="status">{privilegeNotice}</p>}
             {tab.source && (
               <p className="hint tab-source">
                 From Top statements, digest{" "}
@@ -2138,7 +2184,7 @@ export const QueryLab = forwardRef<
               statement={statementMark}
               flash={lit}
               error={errorMark}
-              height={layout.height}
+              height={editorHeight}
               describedBy={scopeLabel ? "run-scope" : undefined}
               placeholder="Write SQL. Run sends the statement at the cursor."
               onKeyDown={(e) => {
@@ -2159,14 +2205,14 @@ export const QueryLab = forwardRef<
               role="separator"
               aria-orientation="horizontal"
               aria-label="Height of the SQL editor"
-              aria-valuemin={120}
-              aria-valuemax={2000}
-              aria-valuenow={layout.height}
+              aria-valuemin={Math.min(120, editorHeight)}
+              aria-valuemax={Math.max(120, Math.min(2000, editorCap))}
+              aria-valuenow={editorHeight}
               tabIndex={0}
               title="Drag to resize the editor and the results"
               onPointerDown={(e) => {
                 e.preventDefault();
-                const from = layout.height;
+                const from = editorHeight;
                 const y = e.clientY;
                 const handle = e.currentTarget;
                 handle.setPointerCapture?.(e.pointerId);
@@ -2180,8 +2226,8 @@ export const QueryLab = forwardRef<
               }}
               onKeyDown={(e) => {
                 const step = e.shiftKey ? 64 : 16;
-                if (e.key === "ArrowDown") setHeight(layout.height + step);
-                else if (e.key === "ArrowUp") setHeight(layout.height - step);
+                if (e.key === "ArrowDown") setHeight(editorHeight + step);
+                else if (e.key === "ArrowUp") setHeight(editorHeight - step);
                 else return;
                 e.preventDefault();
               }}

@@ -207,6 +207,37 @@ class TestLiveReplay(IndexCase):
 
 
 class TestRules(IndexCase):
+    def test_setup_objects_read_once_for_all_tables(self):
+        """Both engines resolve the same snapshot without rescanning it per table."""
+        class CountedRows(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super(CountedRows, self).__iter__()
+
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                rules = CountedRows([
+                    ['%', '%', 'YES'], ['shop', '%', 'NO'],
+                    ['shop', 'keep', 'yes'], ['shop', 'keep', 'NO'],
+                    ['shop', 'off', None], ['shop', 'off', 'YES'],
+                    ['%', 'global', 'NO'], ['malformed'],
+                ])
+                names = [('shop', 'keep'), ('shop', 'off'), ('other', 'global')]
+                names += [('shop', 't%d' % i) for i in range(100)]
+                rows = [stat(t, 'k', 1, 'id', schema=s, engine=engine) for s, t in names]
+                usage = [[s, t, 'k', '1', '1', '1'] for s, t in names]
+                report = indexes.compute_indexes(server(engine), raw(rows, usage=usage, objects=rules))
+                self.assertEqual({(n['schema'], n['table'], n['reason']) for n in report['no_data']},
+                                 {(s, t, 'not_instrumented') for s, t in names
+                                  if (s, t) not in (('shop', 'keep'), ('other', 'global'))})
+                self.assertEqual(rules.iterations, 1, 'setup_objects must be read once per report')
+                for objects, expected in ((None, []), ([], ['not_instrumented'])):
+                    result = indexes.compute_indexes(server(engine), raw(rows[:1], usage=usage[:1],
+                                                                         objects=objects))
+                    self.assertEqual([n['reason'] for n in result['no_data']], expected)
+
     def test_redundant_indexes_match_the_advisor(self):
         tables = indexes._tables(ADVISOR_ROWS, 'mysql')
         parsed = parse_show_create_table(ADVISOR_DDL)
@@ -309,12 +340,12 @@ class TestRules(IndexCase):
 
     def test_setup_objects_precedence(self):
         # The server never consults a ('%', table) row.
-        self.assertTrue(indexes._object_enabled([['%', '%', 'YES'], ['%', 'x', 'NO']], 'shop', 'x'))
-        objects = [['%', '%', 'YES'], ['shop', '%', 'NO'], ['shop', 'keep', 'YES']]
+        self.assertTrue(indexes._object_enabled({('%', '%'): True, ('%', 'x'): False}, 'shop', 'x'))
+        objects = {('%', '%'): True, ('shop', '%'): False, ('shop', 'keep'): True}
         self.assertFalse(indexes._object_enabled(objects, 'shop', 'x'))
         self.assertTrue(indexes._object_enabled(objects, 'shop', 'keep'))
         self.assertTrue(indexes._object_enabled(objects, 'other', 'x'))
-        self.assertFalse(indexes._object_enabled([['shop', '%', 'YES']], 'other', 'x'), 'no match: not instrumented')
+        self.assertFalse(indexes._object_enabled({('shop', '%'): True}, 'other', 'x'), 'no match: not instrumented')
         self.assertTrue(indexes._object_enabled(None, 'a', 'b'))
 
     def test_setup_actors_and_instrument_off(self):

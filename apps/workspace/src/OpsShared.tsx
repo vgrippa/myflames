@@ -55,10 +55,16 @@ function factValue(value: Json | undefined) {
  * with names a person reads. Per-domain lists repeat the position text next to
  * them, so they are left out. */
 export function FactsList({ facts }: { facts: Facts }) {
-  const rows = Object.entries(facts)
-    .filter(([key]) => !key.endsWith("_domains"))
-    .map(([key, value]): [string, React.ReactNode] => [factLabel(key), <span className="ops-wrap">{factValue(value)}</span>]);
+  const rows = factRows(facts);
   return rows.length ? <Fields rows={rows} /> : <p className="hint">Not reported by this server.</p>;
+}
+/** The rows of FactsList, for callers that join several fact groups into one
+ * list (one label column, one value column). *labels* names keys whose
+ * generated label would be ambiguous out of context. */
+export function factRows(facts: Facts, labels: Record<string, string> = {}): [string, React.ReactNode][] {
+  return Object.entries(facts)
+    .filter(([key]) => !key.endsWith("_domains"))
+    .map(([key, value]): [string, React.ReactNode] => [labels[key] || factLabel(key), <span className="ops-wrap">{factValue(value)}</span>]);
 }
 
 /** The replication channel (MySQL) or connection (MariaDB) as a table cell. */

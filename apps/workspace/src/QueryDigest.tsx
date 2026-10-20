@@ -311,9 +311,9 @@ export function QueryDigestView({
               <Icon name="statements" size={18} />
             </div>
             <div>
-              <h2 className="query-digest-title">Query Digest Profile</h2>
+              <h2 className="query-digest-title">Query digest</h2>
               <p className="query-digest-subtitle">
-                pt-query-digest style workload analysis &amp; slow query performance review
+                Statement digests ranked by total time, in the style of pt-query-digest
               </p>
             </div>
           </div>
@@ -330,13 +330,13 @@ export function QueryDigestView({
             </button>
             <button
               type="button"
-              className="query-digest-btn-sm primary"
+              className="query-digest-btn-sm"
               onClick={() => setExportModalOpen(true)}
               disabled={!bound}
-              title="Export pt-query-digest formatted report or CSV"
+              title="Export a pt-query-digest style text report or CSV"
             >
               <Icon name="export" size={13} />
-              <span>Export pt-query-digest Report</span>
+              <span>Export</span>
             </button>
           </div>
         </div>
@@ -352,7 +352,7 @@ export function QueryDigestView({
               onClick={() => setFilter("time")}
             >
               <Icon name="health" size={13} />
-              <span>All Heavy Queries</span>
+              <span>By total time</span>
             </button>
             <button
               type="button"
@@ -362,7 +362,7 @@ export function QueryDigestView({
               onClick={() => setFilter("scans")}
             >
               <Icon name="table" size={13} />
-              <span>Full Table Scans</span>
+              <span>Full scans</span>
             </button>
             <button
               type="button"
@@ -372,7 +372,7 @@ export function QueryDigestView({
               onClick={() => setFilter("full_join")}
             >
               <Icon name="diagram" size={13} />
-              <span>Full Joins Without Index</span>
+              <span>Joins without an index</span>
             </button>
             <button
               type="button"
@@ -382,7 +382,7 @@ export function QueryDigestView({
               onClick={() => setFilter("tmp_tables")}
             >
               <Icon name="database" size={13} />
-              <span>Disk Temp Tables</span>
+              <span>Temp tables on disk</span>
             </button>
             <button
               type="button"
@@ -392,7 +392,7 @@ export function QueryDigestView({
               onClick={() => setFilter("locks")}
             >
               <Icon name="lock" size={13} />
-              <span>High Lock Time</span>
+              <span>Lock time</span>
             </button>
             <button
               type="button"
@@ -402,7 +402,7 @@ export function QueryDigestView({
               onClick={() => setFilter("slow_queries")}
             >
               <Icon name="warning" size={13} />
-              <span>Slow Queries (&gt;1s)</span>
+              <span>Slow queries (over 1 s)</span>
             </button>
           </div>
 
@@ -435,29 +435,29 @@ export function QueryDigestView({
       {/* Aggregate Stats Strip */}
       <div className="query-digest-summary-strip">
         <div className="query-digest-stat-card">
-          <span className="query-digest-stat-label">Total Workload Time</span>
+          <span className="query-digest-stat-label">Total time</span>
           <span className="query-digest-stat-value">{time(aggregates.totalWorkloadMs)}</span>
           <span className="query-digest-stat-sub">Across {statements.length} digests</span>
         </div>
         <div className="query-digest-stat-card">
-          <span className="query-digest-stat-label">Total Executions</span>
+          <span className="query-digest-stat-label">Executions</span>
           <span className="query-digest-stat-value">{aggregates.totalCalls.toLocaleString()}</span>
           <span className="query-digest-stat-sub">Cumulative calls</span>
         </div>
         <div className="query-digest-stat-card">
-          <span className="query-digest-stat-label">Rows Examined</span>
+          <span className="query-digest-stat-label">Rows examined</span>
           <span className="query-digest-stat-value">{number(aggregates.totalExamined)}</span>
           <span className="query-digest-stat-sub">
             {formatRatio(aggregates.totalExamined, aggregates.totalSent).text} overall scan ratio
           </span>
         </div>
         <div className="query-digest-stat-card">
-          <span className="query-digest-stat-label">Rows Sent</span>
+          <span className="query-digest-stat-label">Rows sent</span>
           <span className="query-digest-stat-value">{number(aggregates.totalSent)}</span>
           <span className="query-digest-stat-sub">Result payload rows</span>
         </div>
         <div className="query-digest-stat-card">
-          <span className="query-digest-stat-label">Total Lock Time</span>
+          <span className="query-digest-stat-label">Lock time</span>
           <span className="query-digest-stat-value">{time(aggregates.totalLockMs)}</span>
           <span className="query-digest-stat-sub">Cumulative lock waits</span>
         </div>
@@ -485,21 +485,21 @@ export function QueryDigestView({
               <thead>
                 <tr>
                   <th style={{ width: 44, textAlign: "center" }}>Rank</th>
-                  <th>Query Digest / Fingerprint</th>
+                  <th>Digest</th>
                   <th className="num-col" style={{ width: 140 }}>
-                    Response Time
+                    Total time
                   </th>
                   <th className="num-col" style={{ width: 80 }}>
                     Calls
                   </th>
                   <th className="num-col" style={{ width: 120 }}>
-                    Latency (Avg / Max)
+                    Latency (avg / max)
                   </th>
                   <th className="num-col" style={{ width: 140 }}>
-                    Rows (Examined : Sent)
+                    Rows (examined : sent)
                   </th>
                   <th className="num-col" style={{ width: 85 }}>
-                    Temp Tables
+                    Temp tables
                   </th>
                   <th style={{ width: 190, textAlign: "right" }}>Actions</th>
                 </tr>
@@ -539,17 +539,17 @@ export function QueryDigestView({
                           )}
                           {(s.select_scan || s.no_index_used) ? (
                             <span className="query-digest-badge danger" title="Full table or index scan">
-                              Full Scan
+                              Full scan
                             </span>
                           ) : null}
                           {s.select_full_join ? (
                             <span className="query-digest-badge warning" title="Join without usable index">
-                              Full Join
+                              Full join
                             </span>
                           ) : null}
                           {s.tmp_disk_tables ? (
                             <span className="query-digest-badge warning" title="Created on-disk temporary table">
-                              Disk Temp ({s.tmp_disk_tables})
+                              Disk temp ({s.tmp_disk_tables})
                             </span>
                           ) : null}
                           {s.avg_ms >= 1000 ? (
@@ -582,7 +582,7 @@ export function QueryDigestView({
                         <div style={{ fontWeight: 600, fontFeatureSettings: "tnum" }}>
                           {time(s.avg_ms)}
                         </div>
-                        <div style={{ fontSize: 11, color: "var(--text-muted, #86868b)", fontFeatureSettings: "tnum" }}>
+                        <div className="query-digest-subvalue">
                           Max: {time(s.max_ms)}
                         </div>
                       </td>
@@ -597,13 +597,13 @@ export function QueryDigestView({
                       <td className="num-col">
                         <div style={{ fontFeatureSettings: "tnum" }}>
                           {s.tmp_disk_tables > 0 ? (
-                            <span style={{ color: "#d70015", fontWeight: 600 }}>
+                            <span className="query-digest-tmp-disk">
                               {s.tmp_disk_tables} disk
                             </span>
                           ) : s.tmp_tables ? (
                             <span>{s.tmp_tables} mem</span>
                           ) : (
-                            <span style={{ color: "var(--text-muted, #86868b)" }}>0</span>
+                            <span className="query-digest-zero">0</span>
                           )}
                         </div>
                       </td>
@@ -613,27 +613,27 @@ export function QueryDigestView({
                             type="button"
                             className="query-digest-btn-sm"
                             disabled={actionsOff}
-                            title="Generate and view Visual Explain & FlameGraph plan"
+                            title="Explain this statement and open its plan"
                             onClick={(e) => {
                               e.stopPropagation();
                               openRow(s, rank, onExplain);
                             }}
                           >
                             <Icon name="plan" size={12} />
-                            <span>EXPLAIN Plan</span>
+                            <span>Explain</span>
                           </button>
                           <button
                             type="button"
                             className="query-digest-btn-sm primary"
                             disabled={actionsOff}
-                            title="Open in SQL Query Editor"
+                            title="Open in the Query editor"
                             onClick={(e) => {
                               e.stopPropagation();
                               openRow(s, rank, onOpenInEditor);
                             }}
                           >
                             <Icon name="query" size={12} />
-                            <span>Open in Editor</span>
+                            <span>Open in editor</span>
                           </button>
                         </div>
                       </td>
@@ -647,7 +647,7 @@ export function QueryDigestView({
 
         {/* Side Inspector Pane */}
         {selectedRow && (
-          <aside className="query-digest-inspector" aria-label="Statement Inspector">
+          <aside className="query-digest-inspector" aria-label="Statement inspector">
             <div className="query-digest-inspector-header">
               <h3 className="query-digest-inspector-title">
                 {digestName(
@@ -679,7 +679,7 @@ export function QueryDigestView({
                   onClick={() => openRow(selectedRow, filteredStatements.indexOf(selectedRow) + 1, onOpenInEditor)}
                 >
                   <Icon name="query" size={13} />
-                  <span>Open in Query Editor</span>
+                  <span>Open in Query editor</span>
                 </button>
                 <button
                   type="button"
@@ -689,13 +689,13 @@ export function QueryDigestView({
                   onClick={() => openRow(selectedRow, filteredStatements.indexOf(selectedRow) + 1, onExplain)}
                 >
                   <Icon name="plan" size={13} />
-                  <span>EXPLAIN Plan</span>
+                  <span>Explain</span>
                 </button>
               </div>
 
               {/* pt-query-digest Attributes Card */}
               <div className="query-digest-card">
-                <h4 className="query-digest-card-title">pt-query-digest Attributes</h4>
+                <h4 className="query-digest-card-title">Attributes</h4>
                 <table className="pt-attributes-table">
                   <thead>
                     <tr>
@@ -707,25 +707,25 @@ export function QueryDigestView({
                   </thead>
                   <tbody>
                     <tr>
-                      <td>Exec Time</td>
+                      <td>Exec time</td>
                       <td>{time(selectedRow.total_ms)}</td>
                       <td>{time(selectedRow.avg_ms)}</td>
                       <td>{time(selectedRow.max_ms)}</td>
                     </tr>
                     <tr>
-                      <td>Lock Time</td>
+                      <td>Lock time</td>
                       <td>{time(selectedRow.lock_time_ms || 0)}</td>
                       <td>—</td>
                       <td>—</td>
                     </tr>
                     <tr>
-                      <td>Rows Examined</td>
+                      <td>Rows examined</td>
                       <td>{number(selectedRow.rows_examined)}</td>
                       <td>{number(Math.round(selectedRow.rows_examined / Math.max(1, selectedRow.count)))}</td>
                       <td>—</td>
                     </tr>
                     <tr>
-                      <td>Rows Sent</td>
+                      <td>Rows sent</td>
                       <td>{number(selectedRow.rows_sent)}</td>
                       <td>{number(Math.round(selectedRow.rows_sent / Math.max(1, selectedRow.count)))}</td>
                       <td>—</td>
@@ -739,7 +739,7 @@ export function QueryDigestView({
                       </td>
                     </tr>
                     <tr>
-                      <td>Temp Tables</td>
+                      <td>Temp tables</td>
                       <td colSpan={3}>
                         {selectedRow.tmp_disk_tables > 0
                           ? `${selectedRow.tmp_disk_tables} on disk (${selectedRow.tmp_tables || selectedRow.tmp_disk_tables} total)`
@@ -756,7 +756,7 @@ export function QueryDigestView({
                     )}
                     {selectedRow.digest && (
                       <tr>
-                        <td>Digest Hash</td>
+                        <td>Digest hash</td>
                         <td colSpan={3} style={{ fontFamily: "monospace", fontSize: 11 }}>
                           0x{selectedRow.digest}
                         </td>
@@ -764,7 +764,7 @@ export function QueryDigestView({
                     )}
                     {selectedRow.first_seen && (
                       <tr>
-                        <td>First Seen</td>
+                        <td>First seen</td>
                         <td colSpan={3} style={{ fontSize: 11 }}>
                           {selectedRow.first_seen}
                         </td>
@@ -772,7 +772,7 @@ export function QueryDigestView({
                     )}
                     {selectedRow.last_seen && (
                       <tr>
-                        <td>Last Seen</td>
+                        <td>Last seen</td>
                         <td colSpan={3} style={{ fontSize: 11 }}>
                           {selectedRow.last_seen}
                         </td>
@@ -784,7 +784,7 @@ export function QueryDigestView({
 
               {/* Full Statement SQL */}
               <div className="query-digest-card">
-                <h4 className="query-digest-card-title">Normalized SQL Fingerprint</h4>
+                <h4 className="query-digest-card-title">Normalized SQL</h4>
                 <div className="query-digest-code-box">
                   <pre>{digestQuery(selectedRow).text}</pre>
                 </div>
@@ -792,7 +792,7 @@ export function QueryDigestView({
 
               {selectedRow.sample_text && selectedRow.sample_text !== selectedRow.digest_text && (
                 <div className="query-digest-card">
-                  <h4 className="query-digest-card-title">Query Sample</h4>
+                  <h4 className="query-digest-card-title">Query sample</h4>
                   <div className="query-digest-code-box">
                     <pre>{selectedRow.sample_text}</pre>
                   </div>
@@ -817,7 +817,7 @@ export function QueryDigestView({
           >
             <div className="query-digest-modal-header">
               <h3 id="export-modal-title" className="query-digest-modal-title">
-                Export pt-query-digest Report
+                Export the digest report
               </h3>
               <button
                 type="button"
@@ -829,7 +829,7 @@ export function QueryDigestView({
               </button>
             </div>
             <div className="query-digest-modal-content">
-              <p style={{ fontSize: 13, color: "var(--text-secondary, #6e6e73)", margin: "0 0 12px 0" }}>
+              <p className="query-digest-preview-lead">
                 Preview of the formatted pt-query-digest report generated from live Performance Schema statement digests:
               </p>
               <pre className="query-digest-preview-pre">{generatePtReportText()}</pre>
@@ -846,7 +846,7 @@ export function QueryDigestView({
                 }
               >
                 <Icon name="copy" size={13} />
-                <span>{copiedNote || "Copy to Clipboard"}</span>
+                <span>{copiedNote || "Copy to clipboard"}</span>
               </button>
               <button
                 type="button"
@@ -874,7 +874,7 @@ export function QueryDigestView({
                 }
               >
                 <Icon name="export" size={13} />
-                <span>Download Text Report (.txt)</span>
+                <span>Download text report (.txt)</span>
               </button>
             </div>
           </div>

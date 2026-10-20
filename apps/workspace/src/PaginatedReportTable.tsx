@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { DataTable, sortRows, useStableRows, type SortState } from "./kit";
+import { DataTable, ExportMenu, sortRows, useStableRows, type SortState } from "./kit";
 import { csvReport, downloadReport, htmlReport, printReport, type ExportColumn } from "./reportTableExport";
 import "./report-table.css";
 
@@ -49,9 +49,11 @@ export function PaginatedReportTable<T>({ exportColumns, exportContext, resetKey
       <label>Rows <select aria-label={`Rows per page for ${props.label}`} value={size} onChange={e => { setSize(Number(e.target.value)); setPage(0); }}>
         {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n}</option>)}
       </select></label>
-      <select aria-label={`Export ${props.label}`} value="" disabled={!sorted.length} onChange={e => exportRows(e.target.value)}>
-        <option value="">Export…</option><option value="csv">CSV</option><option value="html">HTML</option><option value="pdf">PDF…</option>
-      </select>
+      <ExportMenu label={`Export ${props.label}`} title="Export every filtered row" disabled={!sorted.length} formats={[
+        { key: "csv", label: "CSV", onSelect: () => exportRows("csv") },
+        { key: "html", label: "HTML", onSelect: () => exportRows("html") },
+        { key: "pdf", label: "PDF…", onSelect: () => exportRows("pdf") },
+      ]} />
     </div>
     {pages > 1 && (
       <nav className="report-table-pages" aria-label={`Pages for ${props.label}`}>

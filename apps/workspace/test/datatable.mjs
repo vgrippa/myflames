@@ -128,7 +128,7 @@ try {
   // Every header has a resize handle with its value, minimum and maximum.
   const handles = await page.$$eval(`${unused} thead [role=separator]`, (els) =>
     els.map((e) => [e.getAttribute("aria-label"), +e.getAttribute("aria-valuenow"), +e.getAttribute("aria-valuemin"), +e.getAttribute("aria-valuemax"), e.tabIndex]));
-  assert.deepEqual(handles.map((x) => x[0]), ["Width of Verdict", "Width of Table", "Width of Index", "Width of Actions"]);
+  assert.deepEqual(handles.map((x) => x[0]), ["Width of Verdict", "Width of Table", "Width of Index"]);
   for (const [label, now, min, max, tab] of handles)
     assert.ok(min <= now && now <= max && tab === 0, `${label}: ${now} in [${min}, ${max}]`);
 
@@ -166,25 +166,25 @@ try {
   const sorted = await order();
   await menu();
   const names = await page.$$eval(`${dialog} label`, (els) => els.map((e) => e.textContent.trim()));
-  assert.deepEqual(names, ["Verdict", "Table", "Index", "Actions"]);
+  // Row actions are the ⋯ menu in the trailing column, not a column to hide.
+  assert.deepEqual(names, ["Verdict", "Table", "Index"]);
   await toggle("table");
-  assert.deepEqual(await visibleKeys(), ["verdict", "index", "actions"]);
+  assert.deepEqual(await visibleKeys(), ["verdict", "index"]);
   assert.deepEqual(await order(), sorted, "hiding the sorted column keeps the order");
   // The hidden column is still in the menu, unchecked, and comes back.
   assert.equal(await page.$eval(`${dialog} input[data-col="table"]`, (e) => e.checked), false);
   await toggle("table");
-  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index", "actions"]);
+  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index"]);
   // The last visible column cannot be hidden.
   await toggle("table");
   await toggle("index");
-  await toggle("actions");
   assert.deepEqual(await visibleKeys(), ["verdict"]);
   assert.equal(await page.$eval(`${dialog} input[data-col="verdict"]`, (e) => e.disabled), true);
   await page.$eval(`${dialog} input[data-col="verdict"]`, (e) => e.click());
   assert.deepEqual(await visibleKeys(), ["verdict"], "the last column stays");
   await closeMenu();
-  const hiddenSaved = await h.savedSlow((s) => (s.columns_v1?.["indexes.unused"]?.hidden || []).length === 3);
-  assert.deepEqual(hiddenSaved.state.query_lab.slow.columns_v1["indexes.unused"].hidden.sort(), ["actions", "index", "table"]);
+  const hiddenSaved = await h.savedSlow((s) => (s.columns_v1?.["indexes.unused"]?.hidden || []).length === 2);
+  assert.deepEqual(hiddenSaved.state.query_lab.slow.columns_v1["indexes.unused"].hidden.sort(), ["index", "table"]);
 
   // Kept across a reload: the hidden columns and the Verdict width come back.
   await page.reload({ waitUntil: "networkidle0" });
@@ -193,8 +193,7 @@ try {
   await menu();
   await toggle("table");
   await toggle("index");
-  await toggle("actions");
-  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index", "actions"]);
+  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index"]);
   assert.equal(await width("verdict"), min + 16);
   // Reset: default widths and every column, and the stored entry is gone.
   await page.click(`${dialog} .columns-reset`);
@@ -220,7 +219,7 @@ try {
   }, token);
   await page.reload({ waitUntil: "networkidle0" });
   await loadIndexes();
-  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index", "actions"], "zero visible columns is never restored");
+  assert.deepEqual(await visibleKeys(), ["verdict", "table", "index"], "zero visible columns is never restored");
   assert.equal(await page.$eval(separator("verdict"), (e) => +e.getAttribute("aria-valuenow")), 1200, "clamped to the maximum");
   // The table scrolls sideways inside its frame; the page never does.
   assert.ok(await page.$eval(`${view} .data-table-wrap[aria-label="Unused indexes"]`, (e) => e.scrollWidth > e.clientWidth));

@@ -338,3 +338,30 @@
   display: flex;
   gap: var(--space-2);
 }
+/* A short window (the 720x520 minimum has 492 px of content): the dialog
+   scrolls between its title and its actions, which stay in view. */
+@media (max-height: 700px) {
+  .mass-kill-dialog {
+    max-height: calc(100dvh - var(--space-4));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .mass-kill-dialog > * {
+    flex: none;
+  }
+  .mass-kill-header,
+  .mass-kill-footer {
+    position: sticky;
+    z-index: 2;
+  }
+  .mass-kill-header {
+    top: 0;
+  }
+  .mass-kill-footer {
+    bottom: 0;
+  }
+  .mass-kill-preview-section {
+    min-height: 0;
+    max-height: 280px;
+  }
+}

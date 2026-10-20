@@ -1,14 +1,9 @@
-// Top-level Replication Place: Elevates MySQL & MariaDB replication monitoring
-// and disaster recovery (skip transaction & skip loops) to a first-class place.
+// Top-level Replication place: MySQL and MariaDB replication monitoring and
+// recovery (skip one transaction, skip until stopped) as a place of its own.
 //
-// Features 4 sub-tabs:
-//   - Channels & Status: Channel overview, I/O & SQL thread states, error tracking
-//   - Lag & Heartbeats: Seconds_Behind_Source metrics, delay configs, worker lag signals
-//   - GTID Coordinates: GTID sets, source & executed log positions, AGAT settings
-//   - Recovery & Skip: Failing transaction diagnostics, safe single skip & automated loops
-//
-// Follows Apple standard design school aesthetics with metric cards, clear hierarchy,
-// and write-policy confirmation sheets for all mutating actions.
+// Sections: Topology, Channels (Connections on MariaDB), Lag, GTID and
+// Recovery, under the shared summary line and metric tiles. Every change goes
+// through a write-policy confirmation sheet.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Connection } from "./api";
 import { connectionKey, type Bound } from "./binding";
@@ -79,7 +74,7 @@ export function ReplicationPlace({
       onBadgeChange?.(<NavMarker tone="unknown" text="no replica channels" />);
     } else if (rep.summary.failed > 0) {
       const n = rep.summary.failed;
-      onBadgeChange?.(<NavMarker tone="problem" count={n} countTone="danger" text={`${n} failed`} />);
+      onBadgeChange?.(<NavMarker compact tone="problem" count={n} countTone="danger" text={`Problem, ${n} failed`} />);
     } else {
       const judged = rep.channels.filter((c) => c.judged);
       const worst = judged.length ? worstTone(judged.map((c) => c.status)) : "unknown";

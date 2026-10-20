@@ -103,7 +103,10 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   const blocked = staleReason || (disabled ? "Wait for the current capture to finish." : "") ||
     (connection.read_only ? "This connection is read-only." : "") || policy?.blocked || (!policy ? "Connection write policy is unavailable." : "");
   const createBlocked = blocked || (busy || review ? "Finish the current review first." : "");
-  const createReason = (gate: PrivilegeGateResult) => gate.available ? createBlocked || gate.disabledReason || (gate.state === "unknown" ? gate.reason : "") : "";
+  // Only a reason that stops New user or New role is shown under the toolbar.
+  // An unverified answer leaves them enabled; its reason stays in the button's
+  // description and the review dialog, where the server decides.
+  const createReason = (gate: PrivilegeGateResult) => gate.available ? createBlocked || gate.disabledReason : "";
   const userReason = createReason(createUser), roleReason = createReason(createRole);
   const createNote = userReason && userReason === roleReason ? `New user and New role: ${userReason}` :
     [userReason && `New user: ${userReason}`, roleReason && `New role: ${roleReason}`].filter(Boolean).join(" ");
@@ -245,7 +248,7 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     {createNote && <p className="account-note account-create-note" role="note">{createNote}</p>}
     {!report ? <EmptyState icon="server" title="Users and roles" action={<button className="button primary" disabled={disabled || !!reads.loading} onClick={() => void load()}>Load users and roles</button>}>Read accounts from the connection in use.</EmptyState> : <>
       <SummaryLine tone="info" toneLabel={report.complete ? "Accounts read" : "Partial list"} notes={report.warnings}>
-        {report.accounts.length - roles} users · {roles} roles
+        {`${(report.accounts.length - roles).toLocaleString()} ${report.accounts.length - roles === 1 ? "user" : "users"} · ${roles.toLocaleString()} ${roles === 1 ? "role" : "roles"}`}
       </SummaryLine>
       <DataTable label="Users and roles" columns={columns} rows={rows} rowKey={accountKey} selection={selection} empty="No matching accounts." />
     </>}

@@ -90,7 +90,7 @@ import re
 from .connector import ConnectorError, MySQLConnection
 from .live import capture_problem
 # Compatibility exports for one release; these primitives no longer belong to discovery.
-from .perf_common import _denied, _reason, _server, _version_tuple, text_rows
+from .perf_common import SERVER_STATE_SQL, _denied, _reason, _server, _version_tuple, text_rows
 
 ORDERS = {
     "total": "SUM_TIMER_WAIT",
@@ -146,6 +146,19 @@ IDLE_COMMANDS = ("Sleep", "Daemon", "Binlog Dump", "Binlog Dump GTID")
 CAPTURE_TAG = "/*myflames:"
 #: Discovery statements carry the same prefix so they exclude themselves.
 DISCOVER_TAG = "/*myflames:discover*/ "
+_CONSUMERS_SQL = ("SELECT NAME, ENABLED FROM performance_schema.setup_consumers "
+                  "WHERE NAME IN ('global_instrumentation', 'statements_digest')")
+_MAX_TEXT_SQL = "SELECT @@performance_schema_max_sql_text_length"
+_OVERFLOW_SQL = ("SELECT COUNT_STAR, SUM_TIMER_WAIT FROM performance_schema.events_statements_summary_by_digest "
+                 "WHERE DIGEST IS NULL")
+_COVERAGE_SQL = "SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Performance_schema_digest_lost')"
+#: What every digest list reads besides its digest rows, exactly as sent:
+#: server state, the two consumers, the sample text limit, the overflow row
+#: and the coverage counters. None depends on the list's order or filter, so
+#: a caller that reads several lists in one pass (Full analysis attribution,
+#: report._AttributionContext) may share one reply to each.
+SHARED_METADATA_SQL = frozenset(DISCOVER_TAG + sql for sql in (
+    SERVER_STATE_SQL, _CONSUMERS_SQL, _MAX_TEXT_SQL, _OVERFLOW_SQL, _COVERAGE_SQL))
 LOW_SELECTIVITY = 0.5
 _PICO_PER_MS = 1e9
 
@@ -250,8 +263,7 @@ def _excluded(digest_text, sample_text):
 
 def _check_digest_consumer(conn):
     try:
-        rows = _rows(conn, "SELECT NAME, ENABLED FROM performance_schema.setup_consumers "
-                           "WHERE NAME IN ('global_instrumentation', 'statements_digest')")
+        rows = _rows(conn, _CONSUMERS_SQL)
     except ConnectorError as exc:
         if _denied(exc):
             raise ValueError(
@@ -454,7 +466,7 @@ def _coverage(conn, items, overflow):
     coverage = {"uptime_s": None, "first_seen": min(seen) if seen else None, "digest_lost": None,
                 "overflow": {"executions": overflow[0], "total_ms": round(overflow[1], 3)} if overflow else None}
     try:
-        rows = _rows(conn, "SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Performance_schema_digest_lost')")
+        rows = _rows(conn, _COVERAGE_SQL)
     except Exception:
         return coverage
     values = {row[0]: row[1] for row in rows if len(row) >= 2}
@@ -474,9 +486,7 @@ def _digest_overflow(conn):
     row, so report it. Best effort: any error or unexpected shape is ignored.
     """
     try:
-        rows = _rows(conn, "SELECT COUNT_STAR, SUM_TIMER_WAIT FROM "
-                           "performance_schema.events_statements_summary_by_digest "
-                           "WHERE DIGEST IS NULL")
+        rows = _rows(conn, _OVERFLOW_SQL)
     except Exception:
         return None
     if len(rows) != 1 or len(rows[0]) != 2:
@@ -507,7 +517,7 @@ def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False):
     max_text = 0
     if has_sample:
         try:
-            rows = _rows(conn, "SELECT @@performance_schema_max_sql_text_length")
+            rows = _rows(conn, _MAX_TEXT_SQL)
             max_text = _int(rows[0][0]) if rows and rows[0] else 0
         except ConnectorError:
             max_text = 0

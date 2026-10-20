@@ -582,7 +582,15 @@ try {
   assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\), refresh to load this server\./);
   await page.click("#tuning-tab-scorecard");
   await page.waitForSelector("#tuning-panel-scorecard .tuning-score");
-  assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\), refresh to load this server\./, "the scorecard names the server the report came from");
+  // The scorecard has no Refresh: its note offers the read that loads this
+  // server (Run full analysis), and its export is off until then.
+  assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\)\. Run full analysis to load this server\./, "the scorecard names the server the report came from");
+  assert.equal(await page.$eval(`${view} .other-connection .gate-action button`, (e) => e.textContent), "Run full analysis");
+  assert.equal(await page.$eval(`${view} .report-export button.button`, (e) => e.disabled), true, "the scorecard of another server is not exported");
+  // A check's full-width details keep the note and its action.
+  await h.select(`${view} .tuning-check[data-check]`);
+  await page.waitForFunction((v) => [...document.querySelectorAll(`${v} .other-connection .gate-action button`)].some((b) => b.offsetParent && b.textContent === "Run full analysis"), {}, view);
+  await page.click(`${view} .detail-back`);
   await h.fullAnalysis();
   await h.select(`${view} .report-first li`);
   await inspectorTitle("Joins without an index");

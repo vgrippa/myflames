@@ -81,7 +81,10 @@ try {
   await page.select(`${view} .health-window select`, "10");
   assert.equal(state.seen.length, 1, "choosing a window does not read");
   const summary = await text(`${view} .summary-line`);
-  assert.match(summary, /Problem\s*3 problems, 1 to watch, 12 ok · diagnostics: 1 problem, 1 to watch/);
+  // One count across tiles and diagnostics (3 + 1 problems, 1 + 1 to watch), so
+  // it agrees with its tone; the Diagnostics heading breaks its share down.
+  assert.match(summary, /Problem\s*4 problems, 2 to watch, 18 ok · /);
+  assert.doesNotMatch(summary, /diagnostics:/);
   assert.match(summary, /10\.0 s window at/);
   const facts = await text(`${view} .fact-strip`);
   assert.match(facts, /MySQL 8\.4\.11/);
@@ -166,7 +169,9 @@ try {
   assert.equal((await page.$$(`${tile("select_full_join")} .status-dot`)).length, 1);
   assert.match(await text(`${tile("bp_dirty")} .tile-value`), /^\d+\.\d%$/);
   assert.match(await text(`${tile("redo_generated")} .tile-value`), /KiB\/s/);
-  assert.match(await text(`${tile("questions")} .status-pill`), /No threshold/);
+  // A tile without a threshold draws no marker (no lone dash); the inspector names it.
+  assert.equal(await page.$(`${tile("questions")} .status-pill`), null);
+  assert.equal(await page.$$eval(`${view} .tile-item.is-info .status-pill`, (els) => els.length), 0);
   const tileHeights = await page.$$eval(`${view} .metric-tile`, (els) => els.map((e) => e.getBoundingClientRect().height));
   assert.ok(Math.max(...tileHeights) <= 120, `tiles stay at most 120 px (${Math.max(...tileHeights)})`);
   // The tile's inspector: what it measures, the rule, the source variables. Enter opens it.

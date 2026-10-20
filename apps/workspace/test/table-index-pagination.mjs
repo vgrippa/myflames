@@ -14,6 +14,8 @@ indexes.more.indexes=0;
 indexes.available=false; // Inventory must not depend on Performance Schema usage counters.
 const h=await open('/api/live/tables','table-pagination',{'/api/live/schemas':{status:200,body:catalog},'/api/live/indexes':{status:200,body:indexes}});
 const {page,state}=h;
+// Export is the shared pull-down (kit ExportMenu): open it, then choose a format.
+const exportAs=async(wrap,format)=>{await page.click(`${wrap} button.export-button`);const item=`${wrap} [role=menuitem][data-format="${format}"]`;await page.waitForSelector(item);await page.click(item);};
 state.fallback={status:200,body:tables};
 try {
  await h.server(); await h.view('tables'); await h.refresh();
@@ -29,17 +31,17 @@ try {
  await page.waitForFunction(s=>document.querySelectorAll(`${s} tbody tr`).length===50,{},wrap);
  assert.equal(await page.$eval(`${wrap} tbody tr`,e=>e.dataset.table),'mftab.table_250');
  await page.evaluate(()=>{window.__exports=[];const old=URL.createObjectURL;URL.createObjectURL=b=>{b.text().then(t=>window.__exports.push(t));return old(b);};});
- await page.select(`${wrap} select[aria-label^="Export"]`,'csv');
+ await exportAs(wrap,'csv');
  await page.waitForFunction(()=>window.__exports?.length===1);
  const csv=await page.evaluate(()=>window.__exports[0]);
  assert.equal(csv.trim().split('\r\n').length,252);
  assert.ok(csv.indexOf('table_250')<csv.indexOf('table_000'));
- await page.select(`${wrap} select[aria-label^="Export"]`,'html');
+ await exportAs(wrap,'html');
  await page.waitForFunction(()=>window.__exports?.length===2);
  assert.equal(await page.evaluate(()=>(window.__exports[1].match(/<tr>/g)||[]).length),252);
  // Exercise the real export iframe path, substituting only the blocking system dialog.
  await page.evaluate(()=>{const append=document.body.append.bind(document.body);document.body.append=(...nodes)=>{for(const node of nodes){if(node instanceof HTMLIFrameElement){const load=node.onload;node.onload=event=>{node.contentWindow.print=()=>{window.__printRows=node.contentDocument.querySelectorAll('tbody tr').length;};load.call(node,event);};}}append(...nodes);};});
- await page.select(`${wrap} select[aria-label^="Export"]`,'pdf');
+ await exportAs(wrap,'pdf');
  await page.waitForFunction(()=>window.__printRows===251);
  const printPage=await page.browser().newPage();
  await printPage.setContent(await page.evaluate(()=>window.__exports[1]));

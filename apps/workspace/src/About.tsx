@@ -82,10 +82,7 @@ export function AboutDialog({
       <div className="about-body">
         <img className="about-mark" src={logo} alt="" width="48" height="48" />
         <h2 id={titleId}>myflames</h2>
-        <p className="about-subtitle">Performance workspace</p>
-        <p className="about-tagline" id={taglineId}>
-          MySQL and MariaDB performance workspace
-        </p>
+        <p className="about-subtitle" id={taglineId}>Performance workspace</p>
         <div className="about-facts"><Fields label="Application details" rows={[
           Boolean(version) && ["Version", <span key="version" className="about-version">{version}</span>],
           ["Workspace", "Runs on this computer"],
@@ -119,20 +116,20 @@ export function AboutDialog({
         <section className="about-section about-license">
           <p>Releases up to and including 2.3.0 remain available under CDDL 1.0 (see NOTICE).</p>
         </section>
-        <div className="about-actions" style={{ display: "flex", gap: "var(--space-2)", marginTop: "var(--space-5)", justifyContent: "center" }}>
-          <a
-            href="https://github.com/myflames/myflames/issues/new"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="button ghost"
-            style={{ textDecoration: "none" }}
-          >
-            Report a bug
-          </a>
-          <button ref={closeButton} type="button" className="button" style={{ minWidth: 96 }} onClick={onClose}>
-            Close
-          </button>
-        </div>
+      </div>
+      {/* The actions stay in view; the body above scrolls in a short window. */}
+      <div className="about-actions">
+        <a
+          href="https://github.com/vgrippa/myflames/issues/new"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="button"
+        >
+          Report a bug
+        </a>
+        <button ref={closeButton} type="button" className="button primary about-close" onClick={onClose}>
+          Close
+        </button>
       </div>
     </dialog>
   );

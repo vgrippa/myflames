@@ -115,10 +115,10 @@ const h = await open("/api/live/replication", "replication", {
 const { page, state, texts } = h;
 /** A channel row in the visible copy of the view (a hidden copy is retained). */
 const waitRow = (name) => page.waitForFunction((v, key) => [...document.querySelectorAll(v)].some((e) => e.offsetParent && e.querySelector(`[data-row-key="channel:${key}"]`)), {}, view, name);
-// A new connection mounts the view again on its default Topology Map tab; the
-// table-based checks below use Channels & Status.
+// A new connection mounts the view again on its default Topology tab; the
+// table-based checks below use Channels (Connections on MariaDB).
 const channelsTab = () => page.evaluate(() => {
-  const tab = [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')].find((b) => b.offsetParent && b.textContent.startsWith("Channels"));
+  const tab = [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')].find((b) => b.offsetParent && /^(Channels|Connections)/.test(b.textContent));
   if (tab) tab.click();
 });
 // The workspace retains a hidden copy of the view: read the visible match.
@@ -209,8 +209,11 @@ try {
   assert.equal(state.seen.length, 0, "Replication reads nothing while its place is not on screen");
   // Opening the view reads once (auto-load); the first answer is the denied one.
   await h.view("replication");
-  // The Topology Map tab is the default; the table-based checks below use Channels & Status.
-  await page.locator('[aria-label="Replication sub-tabs"] button ::-p-text(Channels & Status)').click();
+  // The Topology tab is the default; the table-based checks below use Channels.
+  // Section names are short and sentence case.
+  assert.deepEqual(await page.$$eval('[aria-label="Replication sub-tabs"] button', (els) => els.filter((e) => e.offsetParent).map((e) => e.textContent)),
+    ["Topology", "Channels", "Lag", "GTID", "Recovery"]);
+  await page.locator('[aria-label="Replication sub-tabs"] button ::-p-text(Channels)').click();
   // No privilege: one sentence from the server, no table, no loop status.
   await page.waitForSelector(`${view} .gate`);
   assert.equal(state.seen.length, 1, "one read when the view opens");
@@ -237,7 +240,7 @@ try {
   await pause(2500);
   assert.equal(calls(STATUS).length, 1, "no polling while no loop runs");
 
-  // Topology Map: a static diagram. State is a line style plus a text label; nothing loops.
+  // Topology: a static diagram. State is a line style plus a text label; nothing loops.
   const topology = ".replication-topology-container";
   const tab = (label) => page.evaluate((l) => {
     [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')].find((b) => b.offsetParent && b.textContent.startsWith(l)).click();
@@ -246,7 +249,7 @@ try {
     const root = [...document.querySelectorAll(q)].find((e) => e.offsetParent);
     return document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations === Infinity && root.contains(a.effect.target)).length;
   }, topology);
-  await tab("Topology Map");
+  await tab("Topology");
   await page.waitForFunction((q) => [...document.querySelectorAll(q)].some((e) => e.offsetParent && e.querySelector(".topology-link")), {}, topology);
   const label = () => page.evaluate((q) => {
     const root = [...document.querySelectorAll(q)].find((e) => e.offsetParent);
@@ -272,7 +275,7 @@ try {
   assert.ok(idle.cls.includes("is-stopped") && idle.visible, "stopped thread drawn as a dashed connector with its label");
   assert.equal(await page.evaluate((q) => getComputedStyle([...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelector(".topology-link.is-stopped .topology-line")).borderTopStyle, topology), "dashed");
   assert.equal(await infinite(), 0, "no endless animation while a thread is stopped");
-  await tab("Channels & Status");
+  await tab("Channels");
   state.queue.push({ status: 200, body: error });
   await h.refresh();
   await waitRow("");
@@ -455,7 +458,7 @@ try {
   assert.equal(await text(`${view} .ops-note`), "Stopped when myflames restarted. Skip loops never resume from a restored workspace.");
   // The view reads once on its own when it opens; no skip is sent.
   await h.view("replication");
-  await page.locator('[aria-label="Replication sub-tabs"] button ::-p-text(Channels & Status)').click();
+  await page.locator('[aria-label="Replication sub-tabs"] button ::-p-text(Channels)').click();
   await waitRow("");
   assert.equal(state.seen.length, reads + 1, "one automatic read, nothing more");
   assert.equal(calls(START).length, 2, "a restored workspace never starts a loop");
@@ -523,7 +526,29 @@ try {
   await h.refresh();
   await channelsTab();
   await waitRow("ch80");
-  assert.equal(await text(`${view} .summary-text`), "MySQL 8.4.11 · 2 channels · 1 failed · max lag 0 s");
+  // One channel's lag is unknown, so the maximum is unknown: a measured 0 s
+  // on the healthy channel never reads as caught up.
+  assert.equal(await text(`${view} .summary-text`), "MySQL 8.4.11 · 2 channels · 1 failed · lag unknown");
+  const tiles = await page.evaluate((v) => {
+    const live = [...document.querySelectorAll(v)].find((e) => e.offsetParent);
+    return [...live.querySelectorAll(".replication-tiles .metric-tile")].map((t) => [t.querySelector(".tile-label").textContent, t.querySelector(".tile-value").textContent]);
+  }, view);
+  assert.deepEqual(tiles, [["Replica state", "Failing"], ["Channels", "2"], ["Max applier lag", "Unknown"], ["GTID mode", "ON"]]);
+  // The state tile's pill counts the channels behind the state instead of repeating it.
+  assert.equal(await page.evaluate((v) => {
+    const live = [...document.querySelectorAll(v)].find((e) => e.offsetParent);
+    return live.querySelector(".replication-tiles .tile-item.is-problem .tile-foot")?.textContent.trim();
+  }, view), "1 of 2 channels");
+  assert.equal(await page.evaluate((v) => {
+    const live = [...document.querySelectorAll(v)].find((e) => e.offsetParent);
+    return !!(live.querySelector(".summary-line").compareDocumentPosition(live.querySelector(".replication-tiles")) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }, view), true, "the summary line comes first, as in every view");
+  // A healthy channel has nothing to recover: no skip actions in its inspector.
+  await h.select(row(""));
+  assert.match(await h.inspector(), /Enforce GTID consistencyON/);
+  assert.equal(await page.$$eval(".view-inspector button", (els) => els.filter((e) => /^Skip/.test(e.textContent)).length), 0, "no skip actions on a healthy channel");
+  await h.select(row("ch80"));
+  assert.equal(await page.$$eval(".view-inspector button", (els) => els.filter((e) => /^Skip/.test(e.textContent)).length), 2, "the stopped channel keeps its skip actions");
   state.fallback = { status: 200, body: maria };
   await h.refresh();
   await channelsTab();

@@ -64,6 +64,12 @@ try {
     "Active is the default");
   assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0");
   assert.match(await h.popover("About Processlist"), /Active hides sleeping sessions without a transaction/);
+  // One toolbar row at 1440 px: Mass kill, Auto-refresh and Refresh stay; the
+  // list's filters are in the row above it.
+  assert.ok(await page.$eval(`${view} .view-toolbar`, (e) => e.getBoundingClientRect().height) <= 48, "the toolbar keeps one row");
+  assert.match(await text(`${view} .view-toolbar`), /Mass kill/);
+  for (const sel of ['[aria-label="Sessions to list"]', 'select[aria-label="Processlist source"]', 'input[aria-label="Running at least (seconds)"]', 'input[aria-label="Filter sessions"]'])
+    assert.ok(await page.$(`${view} .sessions-tools ${sel}`) && !(await page.$(`${view} .view-toolbar ${sel}`)), `${sel} is in the filter row`);
 
   // Load: the counter strip, one summary line, the table sorted problems first.
   assert.deepEqual([state.seen[0].active_only, state.seen[0].min_seconds], [true, 0]);

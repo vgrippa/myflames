@@ -39,58 +39,6 @@
 .tables-min-free { display: flex; align-items: center; gap: var(--space-2); color: var(--ink-muted); font-size: var(--text-sm); }
 .tables-min-free input { width: 64px; }
 
-/* Table row action dropdown menu */
-.table-row-actions-wrap {
-  position: relative;
-  display: inline-block;
-}
-.table-actions-trigger {
-  padding: 2px 8px;
-  font-size: var(--text-xs);
-}
-.table-actions-menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 4px;
-  min-width: 170px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  padding: 4px;
-  z-index: 100;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.table-action-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: 6px 10px;
-  font-size: var(--text-xs);
-  text-align: left;
-  border: none;
-  background: none;
-  border-radius: var(--radius-xs);
-  color: var(--ink);
-  cursor: pointer;
-}
-.table-action-item:hover:not(:disabled) {
-  background: var(--surface-muted);
-}
-.table-action-item:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.table-action-divider {
-  height: 1px;
-  background: var(--line);
-  margin: 4px 0;
-}
-
 /* Inspector table actions */
 .table-inspector-actions {
   display: flex;
@@ -98,16 +46,39 @@
   gap: var(--space-1);
 }
 
-/* Table alter dialogs */
-.table-alter-dialog {
-  max-width: 580px;
-  width: 90vw;
-}
+/* Table alter dialogs: Add column and Remove column are confirm sheets
+   (kit.css .confirm-sheet). The form scrolls in the sheet body; the title,
+   Cancel and the review button stay in view in the 720x520 window. */
 .table-alter-form {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-3) 0;
+}
+.table-alter-dialog .dialog-heading h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.table-alter-dialog .sheet-body > .note {
+  margin-bottom: var(--space-3);
+}
+.table-alter-form .field-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.table-alter-form .form-row-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+  align-items: end;
+}
+.table-alter-form .checkbox-field {
+  justify-content: center;
+  min-height: var(--control-h);
+}
+.table-alter-form :is(.text-input, .field-select) {
+  width: 100%;
 }
 .col-info-card {
   background: var(--surface-muted);
@@ -122,6 +93,9 @@
 .col-info-row {
   display: flex;
   justify-content: space-between;
+}
+.col-info-card .note {
+  margin-top: var(--space-2);
 }
 .col-info-row.warn-key {
   color: var(--color-warn-ink, #b45309);

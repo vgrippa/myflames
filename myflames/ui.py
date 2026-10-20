@@ -1351,7 +1351,17 @@ def api_response(path, payload, workspace=None):
             operation = path.rsplit("/", 1)[-1]
             if kind == "profile":
                 return _profile_response(operation, payload, workspace.store)
-            if operation == "list": return {"items": workspace.store.list(kind)}
+            if operation == "list":
+                # Summaries only (investigation-list-1.0); "get" returns a bundle.
+                from .workspace_store import INVESTIGATION_PAGE_SIZE
+                return workspace.store.list_investigations(
+                    limit=payload.get("limit", INVESTIGATION_PAGE_SIZE), cursor=payload.get("cursor"),
+                    search=payload.get("search", ""))
+            if operation == "get":
+                bundle = workspace.store.get(kind, payload.get("id"))
+                if bundle is None:
+                    raise ValueError("This investigation no longer exists.")
+                return bundle
             if operation == "save": return workspace.store.save(kind, payload.get("value"), payload.get("id"))
             if operation == "delete": return workspace.store.delete(kind, payload.get("id"))
         if path in _CONNECTION_PATHS and path not in _WRITE_PATHS:
@@ -1437,17 +1447,23 @@ def api_response(path, payload, workspace=None):
             advise(analysis, schema=capture.get("schema"), stats=capture.get("table_stats"), variables=capture.get("variables"),
                    freshness=capture.get("stats_freshness"), capture=capture)
             query = capture.get("query") or query
-        teach_hooks = build_teach_hooks(root, query_sql=query)
+        # The SQL travels once, as "query" (and the sidecar's query.raw), never
+        # in each teach hook: hooks x SQL length made responses of 100+ MiB.
+        # Export JSON in the workspace puts query_sql back into each hook.
+        teach_hooks = build_teach_hooks(root)
+        sidecar_hooks = build_teach_hooks(root, variables=analysis.get("collected_variables") or {},
+                                          stats=analysis.get("collected_stats") or {})
         # The full canonical tree for the in-page chart runtime. Focus,
         # collapse, selection and metric are applied client-side as a
-        # copy-only projection, so this is built once per plan.
+        # copy-only projection, so this is built once per plan. chart-data-2.0
+        # stores each analysis message once (a grouped warning can name every
+        # table; repeating it per operator grew quadratically).
         chart_data = build_chart_data(
             root, title="Query plan", engine=engine,
             teach_index_by_folded=build_teach_index_maps(teach_hooks)["by_folded_label"],
-            analysis=analysis)
-        return {"analysis": build_sidecar(root, analysis,
-                                          source_type="file", engine=engine,
-                                          query_raw=query),
+            analysis=analysis, compact=True)
+        return {"analysis": build_sidecar(root, analysis, source_type="file", engine=engine,
+                                          query_raw=query, teach_hooks=sidecar_hooks),
                 "operators": _operators(root), "query": query, "teach_hooks": teach_hooks,
                 "capture": capture, "chart_data": chart_data}
     view = payload.get("view", "flamegraph")
@@ -1864,7 +1880,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             return
         if self.path not in ("/api/analyze", "/api/render", "/api/report", "/api/compare",
                              "/api/teach/catalog", "/api/teach/lesson",
-                             "/api/investigations/list", "/api/investigations/save", "/api/investigations/delete",
+                             "/api/investigations/list", "/api/investigations/get", "/api/investigations/save", "/api/investigations/delete",
                              "/api/profiles/list", "/api/profiles/save", "/api/profiles/delete",
                              "/api/profiles/forget-password",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",

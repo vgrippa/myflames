@@ -1388,21 +1388,21 @@ def stage_toolbar(status_text: str = "Ready — press Play") -> str:
 
 
 _LESSON_FAMILY_LABELS = {
-    "bnl": "Join Operator",
-    "hash": "Join Operator",
-    "join": "Join Operator",
-    "nested_loop": "Join Operator",
-    "full_scan": "Scan Operator",
-    "filter": "Filter Operator",
-    "filesort": "Sort Operator",
-    "tmp": "Temp Operator",
-    "btree": "Index Access",
-    "non_unique_lookup": "Index Access",
-    "unique_lookup": "Index Access",
-    "icp": "Index Access",
-    "index_merge": "Index Access",
-    "lru": "Buffer Cache",
-    "derived_table": "Temp Operator",
+    "bnl": "Join operator",
+    "hash": "Join operator",
+    "join": "Join operator",
+    "nested_loop": "Join operator",
+    "full_scan": "Scan operator",
+    "filter": "Filter operator",
+    "filesort": "Sort operator",
+    "tmp": "Temp operator",
+    "btree": "Index access",
+    "non_unique_lookup": "Index access",
+    "unique_lookup": "Index access",
+    "icp": "Index access",
+    "index_merge": "Index access",
+    "lru": "Buffer cache",
+    "derived_table": "Temp operator",
 }
 
 

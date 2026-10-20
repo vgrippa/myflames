@@ -5,6 +5,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api, formatNumber, type Connection, type SchemaCatalog } from "./api";
 import { DataTable, Popover, Select, closePopovers } from "./kit";
 import { connectionKey } from "./binding";
+import { Icon, type IconName } from "./components";
 import "./perf.css";
 
 /** Full-width details replace the list, so opening them never hides columns.
@@ -398,5 +399,45 @@ function SchemaPickerPanel({
         </button>
       </div>
     </div>
+  );
+}
+
+export type RowMenuItem =
+  | { label: string; icon?: IconName; onSelect: () => void; disabled?: boolean; danger?: boolean; title?: string }
+  | "divider";
+
+/** A row's ⋯ menu in the trailing column of a DataTable (its rowAction), the
+ * pattern of Processlist: shown on the hovered, focused or selected row. An
+ * item runs after the menu has closed and handed focus back to ⋯, so a
+ * review dialog it opens returns focus there. */
+export function RowActionMenu({ label, items, disabled = false }: { label: string; items: RowMenuItem[]; disabled?: boolean }) {
+  return (
+    <span className="row-menu-anchor" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+      <Popover menu label={label} buttonTitle={label} buttonClassName="icon-button row-more" disabled={disabled} trigger={<Icon name="more" />}>
+        <div className="row-action-menu">
+          {items.map((item, i) =>
+            item === "divider" ? (
+              <div key={`divider-${i}`} className="row-action-divider" role="separator" />
+            ) : (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                className={item.danger ? "is-danger" : undefined}
+                disabled={item.disabled}
+                title={item.title}
+                onClick={() => {
+                  closePopovers();
+                  window.setTimeout(item.onSelect, 0);
+                }}
+              >
+                {item.icon && <Icon name={item.icon} size={14} />}
+                {item.label}
+              </button>
+            ),
+          )}
+        </div>
+      </Popover>
+    </span>
   );
 }

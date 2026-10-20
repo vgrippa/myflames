@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://myflames.dev/schemas/chart-data-1.0.json",
   "title": "myflames chart data 1.0",
-  "description": "Payload consumed by the myflames-charts.js bundle (myflames/chart_data.py:build_chart_data). Python owns every MySQL/MariaDB decision (operator kind, reported join type, phase, family, metrics, teach index, details text); the bundle only lays out, formats, and wires interaction. Times are canonical milliseconds; display_unit is a hint. Not part of sidecar-v1. Additive optional fields bump the minor version; renamed or removed fields bump the major.",
+  "description": "Payload consumed by the myflames-charts.js bundle (myflames/chart_data.py:build_chart_data). Python owns every MySQL/MariaDB decision (operator kind, reported join type, phase, family, metrics, teach index, details text); the bundle only lays out, formats, and wires interaction. Times are canonical milliseconds; display_unit is a hint. Not part of sidecar-v1. Additive optional fields bump the minor version; renamed or removed fields bump the major. HTML reports and explore pages emit this version; the workspace (/api/analyze) emits chart-data-2.0, which stores each analysis message once. The bundle reads both versions.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "title", "engine", "display_unit", "timing_available", "root_id", "nodes", "projection", "metrics_meta", "labels"],

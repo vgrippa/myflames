@@ -289,7 +289,9 @@ export function TuningView({
         label="Export the tuning scorecard"
         className="report-export"
         buttonClassName="button"
-        buttonTitle="Export the tuning scorecard as a file"
+        // The scorecard on screen belongs to another server until this one is read.
+        disabled={!!other}
+        buttonTitle={other ? `The scorecard is from ${other}: run the full analysis to load this server` : "Export the tuning scorecard as a file"}
         trigger={
           <>
             <Icon name="export" size={15} />
@@ -350,37 +352,20 @@ export function TuningView({
       </Popover>
     ) : null;
 
+  // Scorecard | Full analysis: the shared segmented control in the header row,
+  // with tab semantics (tuning-tab-*/tuning-panel-* ids, one tab stop).
   const tabs = (
-    <div className="view-tabs tuning-tabs" role="tablist" aria-label="Tuning">
-      {(
-        [
-          ["scorecard", "Scorecard"],
-          ["analysis", "Full analysis"],
-        ] as [TuningTab, string][]
-      ).map(([value, label]) => (
-        <button
-          key={value}
-          type="button"
-          role="tab"
-          id={`tuning-tab-${value}`}
-          aria-selected={tab === value}
-          aria-controls={`tuning-panel-${value}`}
-          tabIndex={tab === value ? 0 : -1}
-          className={tab === value ? "active" : undefined}
-          onClick={() => setTab(value)}
-          onKeyDown={(event) => {
-            const next = event.key === "Home" ? "scorecard" : event.key === "End" ? "analysis" :
-              event.key === "ArrowLeft" || event.key === "ArrowRight" ? (value === "scorecard" ? "analysis" : "scorecard") : null;
-            if (!next) return;
-            event.preventDefault();
-            setTab(next);
-            event.currentTarget.parentElement?.querySelector<HTMLElement>(`#tuning-tab-${next}`)?.focus();
-          }}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
+    <Segmented<TuningTab>
+      label="Tuning"
+      tabs="tuning"
+      className="tuning-tabs"
+      value={tab}
+      onChange={setTab}
+      options={[
+        { value: "scorecard", label: "Scorecard" },
+        { value: "analysis", label: "Full analysis" },
+      ]}
+    />
   );
 
   return (
@@ -411,6 +396,7 @@ export function TuningView({
       }
       controls={
         <>
+          {tabs}
           {exportMenu}
           {tab === "scorecard" && onRunReport && (
             <button
@@ -431,6 +417,8 @@ export function TuningView({
       refreshDisabled={disabled || !!runBlocked}
       loading={running}
       otherConnection={tab === "scorecard" ? other : analysisOther}
+      // The scorecard has no Refresh: the full analysis reads this server.
+      otherAction={tab === "scorecard" && onRunReport ? { label: "Run full analysis", onClick: run, disabled: disabled || !!runBlocked || running } : undefined}
       inspector={inspector}
       inspectorEmpty={
         <p>
@@ -440,13 +428,10 @@ export function TuningView({
         </p>
       }
       status={
-        <>
-          {tabs}
-          <ViewStatus
-            loading={running ? `Running every Server view once: ${elapsed} s so far, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
-            error={reads?.error || exportError}
-          />
-        </>
+        <ViewStatus
+          loading={running ? `Running every Server view once: ${elapsed} s so far, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
+          error={reads?.error || exportError}
+        />
       }
     >
       {tab === "scorecard" ? (

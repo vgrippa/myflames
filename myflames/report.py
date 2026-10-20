@@ -281,6 +281,43 @@ def analysis_report(conn, interval=DEFAULT_INTERVAL, schemas=None, require_choic
 # ---- workload attribution ---------------------------------------------------------------------
 
 
+class _AttributionContext(object):
+    """The connection the attribution's digest lists share for one analysis.
+
+    Each ``discover.top_report`` reads the same server state and coverage
+    (``discover.SHARED_METADATA_SQL``) before its own digest rows. Within one
+    attribution pass those replies are read once, an error included, and
+    every other statement (the digest rows) still reaches the connection, so
+    discover's parsing and error handling stay as they are. The lock gives
+    concurrent lists one read per statement.
+    """
+
+    def __init__(self, conn):
+        from .discover import SHARED_METADATA_SQL
+        self._conn = conn
+        self._shared = SHARED_METADATA_SQL
+        self._answers = {}
+        self._lock = threading.Lock()
+
+    def run(self, sql, extra_flags=None, timeout=None):
+        if sql not in self._shared:
+            return self._conn.run(sql, extra_flags=extra_flags, timeout=timeout)
+        key = (sql, tuple(extra_flags or ()), timeout)
+        with self._lock:
+            if key not in self._answers:
+                try:
+                    self._answers[key] = (self._conn.run(sql, extra_flags=extra_flags, timeout=timeout), None)
+                except ConnectorError as exc:
+                    self._answers[key] = (None, str(exc))
+            answer, error = self._answers[key]
+        if error is not None:
+            raise ConnectorError(error)
+        return answer
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 def _attribution_tables(indexes_report):
     """The tables read mostly without an index, by read time without one."""
     if not indexes_report or not indexes_report.get("available"):
@@ -323,7 +360,9 @@ def _attribution(conn, server, runs, workers, cancel, password):
         name = (entry["schema"], entry["table"])
         jobs.append(("table:%s.%s" % name,
                      lambda c, name=name: discover.top_report(c, ATTRIBUTION_LIMIT, None, "no_index", name)))
-    results = _run_all(conn, jobs, workers, cancel, password)
+    # The inner guard checks again after a metadata waiter acquires the
+    # context lock; cancellation must not start a queued server read.
+    results = _run_all(_AttributionContext(_Guarded(conn, cancel)), jobs, workers, cancel, password)
     first = results.get("full_join") or {}
     if first.get("error"):
         out["gate"] = first["error"].split(". ")[0].rstrip(".") + "."

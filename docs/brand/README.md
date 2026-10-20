@@ -3,8 +3,9 @@
 `myflames-icon-v3.png` keeps the five flame segments, with saturated yellow,
 orange and red on white. It is the current desktop, workspace and favicon mark.
 `myflames-icon-v2.png` is preserved for earlier references and the project README.
-`myflames-icon-v3-128.png` is the same mark scaled to 128 px (macOS `sips -Z 128`) for the
-workspace sidebar, About and favicon, so the app does not decode a 1254 px image to draw it at 22 px.
+`myflames-icon-v3-128.png` is the same mark at 128 px with the white background made transparent
+(only white connected to the edges, so the flame is unchanged) for the workspace sidebar, About and
+favicon: the app does not decode a 1254 px image to draw it at 22 px, and dark mode shows no white tile.
 The app renders its name as live text beside the icon. The original
 `myflames.jpeg` stays in the repository root.
 

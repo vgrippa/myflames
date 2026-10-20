@@ -304,3 +304,58 @@
     max-width: 44px;
   }
 }
+
+/* A row's ⋯ menu (RowActionMenu in PerfShared.tsx): menu items like the
+   context menu, an icon and a sentence-case label. */
+.row-menu-anchor {
+  display: inline-flex;
+}
+.row-action-menu {
+  display: grid;
+  gap: 2px;
+}
+.row-action-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-md);
+  text-align: left;
+  white-space: nowrap;
+}
+.row-action-menu [role="menuitem"] svg {
+  flex: none;
+  color: var(--ink-muted);
+}
+.row-action-menu [role="menuitem"].is-danger,
+.row-action-menu [role="menuitem"].is-danger svg {
+  color: var(--danger-text);
+}
+.row-action-menu [role="menuitem"]:is(:hover:not(:disabled), :focus-visible) {
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  outline: none;
+}
+.row-action-menu [role="menuitem"]:is(:hover:not(:disabled), :focus-visible) svg {
+  color: inherit;
+}
+.row-action-menu [role="menuitem"].is-danger:is(:hover:not(:disabled), :focus-visible) {
+  background: var(--danger-fill);
+  color: var(--danger-ink);
+}
+.row-action-menu [role="menuitem"]:disabled {
+  color: var(--ink-faint);
+}
+.row-action-menu [role="menuitem"]:disabled svg {
+  color: inherit;
+}
+.row-action-divider {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--line);
+}

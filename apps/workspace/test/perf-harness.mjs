@@ -192,6 +192,12 @@ export async function open(endpoint, name, extra = {}, { fallback = null } = {})
         await page.waitForSelector('.main-nav button[data-place="tuning"]');
         await page.click('.main-nav button[data-place="tuning"]');
       }
+      // The tabs sit in the header, hidden while a full-width detail is open: go back first.
+      await page.waitForSelector(".server-view[data-view=tuning]", { visible: true });
+      if (!(await page.$eval("#tuning-tab-analysis", (e) => !!e.offsetParent).catch(() => false))) {
+        const back = await page.$$(".server-view[data-view=tuning] .detail-back");
+        for (const b of back) if (await b.evaluate((e) => !!e.offsetParent)) { await b.click(); break; }
+      }
       await page.waitForSelector("#tuning-tab-analysis", { visible: true });
       if (!(await page.$("#tuning-tab-analysis[aria-selected=true]"))) await page.click("#tuning-tab-analysis");
       await page.waitForSelector("#tuning-tab-analysis[aria-selected=true]");

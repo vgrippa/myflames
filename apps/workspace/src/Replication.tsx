@@ -11,13 +11,12 @@ import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "
 import { useWritePolicy } from "./Connections";
 import { InstrumentsLink } from "./Instruments";
 import {
-  Checkbox, ConfirmSheet, DataTable, EmptyState, Fields,
-  InspectorSection, NumberField, PrerequisiteGate, Segmented, StatusPill, SummaryLine,
-  ToolbarButton, ViewLayout, ViewStatus, worstTone,
+  Checkbox, ConfirmSheet, DataTable, Disclosure, EmptyState, FactStrip, Fields,
+  InspectorSection, MetricTile, NumberField, PrerequisiteGate, Segmented, StatusPill, SummaryLine,
+  TileGrid, ToolbarButton, ViewLayout, ViewStatus, worstTone,
   type Column, type InspectorContent, type Selection, type Tone,
 } from "./kit";
-import { Icon } from "./components";
-import { Commands, FactsList, channelCell, channelPhrase, engineName, plural } from "./OpsShared";
+import { Commands, FactsList, channelCell, channelPhrase, engineName, factRows, plural } from "./OpsShared";
 import {
   factText, loopActive, readReplication, readSkipLoops, skipTransaction,
   startSkipLoop, stopSkipLoop, useOpsScope,
@@ -37,6 +36,21 @@ const LOOP_POLL_MS = 2000;
 const COMMON_ERRORS: [number, string][] = [[1062, "Duplicate key"], [1032, "Row not found"], [1452, "Foreign key child row"]];
 const lag = (value: number | null | undefined) => (value === null || value === undefined ? "Not available" : `${value.toLocaleString()} s`);
 const channelKey = (channel: ReplicationChannel) => `channel:${channel.name}`;
+/** Server-wide GTID facts named the way the server names them, so they read
+ * unambiguously beside the channel's own positions. */
+const GTID_LABELS: Record<string, string> = {
+  mode: "GTID mode", gtid_mode: "GTID mode", enforce_consistency: "Enforce GTID consistency",
+  slave_pos: "GTID slave position", current_pos: "GTID current position",
+  domain_id: "GTID domain ID", strict_mode: "GTID strict mode",
+};
+/** "binlog.000003:3720", from either the normalized or the server's own keys. */
+function logPosition(position: ReplicationChannel["position"] | undefined, file: string[], pos: string[]) {
+  const pick = (keys: string[]) => keys.map((k) => position?.[k]).find((v) => v !== undefined && v !== null && v !== "");
+  const f = pick(file);
+  if (f === undefined) return "Unknown";
+  const at = pick(pos);
+  return at === undefined ? String(f) : `${String(f)}:${String(at)}`;
+}
 const SKIP_STATUS: Record<string, [Tone, string]> = {
   skipped: ["ok", "Skipped"],
   refused: ["watch", "Refused"],
@@ -337,10 +351,14 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   // failure to act on is the worker's that failed first.
   const workerError = (chosen?.worker as { error?: { errno?: number; message?: string } } | undefined)?.error;
   const firstFailure = chosen && chosen.sql.error.errno === 3030 && workerError?.errno && workerError.errno !== 3030 ? { errno: workerError.errno, message: workerError.message || "" } : null;
+  // Recovery belongs to a channel whose applier stopped (or has a failure to
+  // skip, or a skip loop of its own): a healthy channel shows no skip actions.
+  const recoverable = !!chosen && chosen.kind !== "group_replication" &&
+    (!!chosen.skip_plan?.available || !!chosen.sql.error.errno || chosen.sql.running === "No" || channelBusy);
   const inspector: InspectorContent | null = chosen ? {
     key: channelKey(chosen), title: channelCell(chosen.name),
     meta: <StatusPill tone={chosen.judged ? chosen.status : "unknown"} label={chosen.judged ? undefined : "Not judged"} />,
-    actions: <>
+    actions: recoverable ? <>
       <VisiblePrivilegeGate action={chosen.skip_plan?.method === "empty_gtid_transaction" ? "skip_gtid" : "skip_counter"} gate={chosenGate}
         blocked={blocked || loopGate || recoveryPrivileges.replication_skip}
         disabled={disabled || !!other || busy || channelBusy || !chosen.skip_plan?.available}
@@ -349,7 +367,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         blocked={blocked || loopGate || recoveryPrivileges.replication_skip_loop}
         disabled={disabled || !!other || busy || channelBusy || !chosen.skip_plan?.available}
         onClick={() => { void open("loop", chosen); }}>Skip until stopped…</VisiblePrivilegeGate>
-    </>,
+    </> : undefined,
     body: <>
       <InspectorSection title="Status">
         <Fields rows={[
@@ -375,9 +393,12 @@ export function ReplicationView({ connection, disabled, selection, report: bound
       </InspectorSection>}
       <InspectorSection title="Lag signals"><FactsList facts={chosen.lag_signals} />{chosen.lag_notes.map((s, i) => <p className="hint" key={i}>{s}</p>)}</InspectorSection>
       <InspectorSection title="GTID and positions">
-        {chosen.agat && <Fields rows={[["Assign GTIDs to anonymous transactions", chosen.agat]]} />}
-        <FactsList facts={chosen.position} />
-        {report && <FactsList facts={report.gtid} />}
+        {/* One list: the channel's positions, then the server's GTID state. */}
+        <Fields rows={[
+          chosen.agat && ["Assign GTIDs to anonymous transactions", chosen.agat],
+          ...factRows(chosen.position),
+          ...(report ? factRows(report.gtid, GTID_LABELS) : []),
+        ]} />
       </InspectorSection>
       {(chosen.skip_plan || blocked) && <InspectorSection title="Recovery">
         {blocked && <p>{blocked}</p>}
@@ -385,7 +406,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         {chosen.skip_plan?.available && <p>{chosen.skip_plan.drift_warning}</p>}
         {chosen.skip_plan?.notes.map((note, i) => <p className="hint" key={i}>{note}</p>)}
       </InspectorSection>}
-      <details className="ops-raw"><summary>Raw channel status</summary><pre className="ops-pre">{JSON.stringify(chosen, null, 2)}</pre></details>
+      <Disclosure className="ops-raw" title="Raw channel status"><pre className="ops-pre">{JSON.stringify(chosen, null, 2)}</pre></Disclosure>
     </>,
   } : null;
   const channelColumns: Column<ReplicationChannel>[] = [
@@ -410,24 +431,17 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
     { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
     { key: "failing_gtid", label: "Failing GTID", render: (r) => r.failing_gtid ? <code className="ops-wrap">{r.failing_gtid}</code> : "None" },
-    { key: "read_pos", label: "Source Position", render: (r) => {
-        const file = (r.position?.Master_Log_File ?? r.position?.Relay_Source_Log_File ?? "") as string;
-        const pos = (r.position?.Read_Master_Log_Pos ?? "") as string | number;
-        return file ? `${file}:${pos}` : "Unknown";
-      }
-    },
-    { key: "exec_pos", label: "Executed Position", render: (r) => {
-        const file = (r.position?.Relay_Master_Log_File ?? "") as string;
-        const pos = (r.position?.Exec_Master_Log_Pos ?? "") as string | number;
-        return file ? `${file}:${pos}` : "Unknown";
-      }
-    },
-    { key: "agat", label: "AGAT", render: (r) => r.agat || "OFF" },
+    { key: "read_pos", label: "Read position", title: "Source binary log position the receiver has read",
+      render: (r) => logPosition(r.position, ["source_log_file", "Master_Log_File", "Source_Log_File"], ["read_source_log_pos", "Read_Master_Log_Pos", "Read_Source_Log_Pos"]) },
+    { key: "exec_pos", label: "Executed position", title: "Source binary log position the applier has executed",
+      render: (r) => logPosition(r.position, ["exec_file", "Relay_Master_Log_File", "Relay_Source_Log_File"], ["exec_pos", "Exec_Master_Log_Pos", "Exec_Source_Log_Pos"]) },
+    // MySQL only: ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS of the channel.
+    ...(engine === "mariadb" ? [] : [{ key: "agat", label: "Assign GTIDs", title: "ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS", render: (r: ReplicationChannel) => r.agat || "Unknown" }]),
   ];
   const recoveryColumns: Column<ReplicationChannel>[] = [
     { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
     { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
-    { key: "error", label: "Last Error", flex: true, sort: (r) => r.sql.error.errno || r.io.error.errno, render: (r) => {
+    { key: "error", label: "Last error", flex: true, sort: (r) => r.sql.error.errno || r.io.error.errno, render: (r) => {
         const err = r.sql.error.errno ? r.sql.error : r.io.error;
         return err.errno ? <span className="error-text" title={err.message || undefined}>Error {err.errno}{err.table ? ` on ${err.table}` : ""}: {err.message ? (err.message.length > 55 ? err.message.slice(0, 55) + "…" : err.message) : ""}</span> : "No errors reported";
       }
@@ -455,18 +469,6 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   const errorCodes = c ? [...new Set([...COMMON_ERRORS.map(([code]) => code), c.plan.error.errno])] : [];
   const validLoop = !!c && c.options.codes.length > 0 && Number.isInteger(c.options.max_skips) && c.options.max_skips >= 1 && c.options.max_skips <= 1000 && Number.isInteger(c.options.max_minutes) && c.options.max_minutes >= 1 && c.options.max_minutes <= 1440;
   const word = engine === "mariadb" ? "connection" : "channel";
-  const summary = report
-    ? !report.available
-      ? "Replication status not available"
-      : !report.replica
-        ? "Not a replica"
-        : [
-            engineName(report.engine, report.server_version),
-            plural(report.summary.channels, word),
-            report.summary.failed ? `${report.summary.failed.toLocaleString()} failed` : "",
-            report.summary.lag_max_s === null ? "lag unknown" : `max lag ${report.summary.lag_max_s.toLocaleString()} s`,
-          ].filter(Boolean).join(" · ")
-    : "";
   const judged = report ? report.channels.filter((r) => r.judged) : [];
   // Loops are read for the connection in use (by endpoint), apart from the report.
   const loopsShown = loops;
@@ -478,13 +480,31 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   const replicaProblem = judged.some(ch => ch.status === "problem");
   const replicaStopped = judged.some(ch => ch.status === "problem" && (ch.io.running === "No" || ch.sql.running === "No"));
   const replicaWatch = judged.some(ch => ch.status === "watch");
+  const problemCount = judged.filter(ch => ch.status === "problem").length;
+  const watchCount = judged.filter(ch => ch.status === "watch").length;
   const unjudged = (report?.channels.length || 0) - judged.length;
   const replicaUnknown = !judged.length || unjudged > 0 || judged.some(ch => ch.status === "unknown");
   const replicaTone: Tone = !report?.replica ? "unknown" : replicaProblem ? "problem" : replicaWatch ? "watch" : replicaUnknown ? "unknown" : "ok";
   const replicaLabel = !report?.replica ? "Standalone" : replicaFailed ? "Failing" : replicaStopped ? "Stopped" : replicaProblem ? "Problem" : replicaWatch ? "Needs attention" : !judged.length ? "Not judged" : replicaUnknown ? "Unknown" : "Running";
   const measuredLag = judged.filter(ch => ch.lag_s != null).length;
   const unknownLag = judged.length - measuredLag;
+  // One unknown channel makes the maximum unknown: a measured 0 s beside a
+  // failed channel never reads as "caught up".
+  const lagUnknown = !report || report.summary.lag_max_s === null || unknownLag > 0;
   const gtidMode = String(report?.gtid?.mode ?? report?.gtid?.gtid_mode ?? "Not available");
+  const failingGtids = report ? report.channels.filter((ch) => ch.failing_gtid).length : 0;
+  const summary = report
+    ? !report.available
+      ? "Replication status not available"
+      : !report.replica
+        ? "Not a replica"
+        : [
+            engineName(report.engine, report.server_version),
+            plural(report.summary.channels, word),
+            report.summary.failed ? `${report.summary.failed.toLocaleString()} failed` : "",
+            lagUnknown ? "lag unknown" : `max lag ${(report.summary.lag_max_s as number).toLocaleString()} s`,
+          ].filter(Boolean).join(" · ")
+    : "";
   const topologyReport = report && replicaProblem
     ? {
         ...report,
@@ -505,15 +525,15 @@ export function ReplicationView({ connection, disabled, selection, report: bound
           value={activeTab}
           onChange={onTabChange}
           options={[
-            { value: "topology", label: "Topology Map" },
-            { value: "channels", label: "Channels & Status" },
-            { value: "lag", label: "Lag & Heartbeats" },
-            { value: "gtid", label: "GTID Coordinates" },
-            { value: "recovery", label: "Recovery & Skip", count: report?.summary?.failed || undefined },
+            { value: "topology", label: "Topology", title: `Sources and this replica, one line per ${word}` },
+            { value: "channels", label: engine === "mariadb" ? "Connections" : "Channels", title: "Thread states, lag and the last error" },
+            { value: "lag", label: "Lag", title: "Lag, configured delay and worker signals" },
+            { value: "gtid", label: "GTID", title: "GTID state and binary log positions" },
+            { value: "recovery", label: "Recovery", title: "Failures and their skip plans", count: report?.summary?.failed || undefined },
           ]}
         />
       ) : undefined}
-      info={<><p>Each replication channel (MySQL) or connection (MariaDB) of the connection in use: thread states, the last error, lag signals and positions. Reading changes nothing.</p><p>Skip this transaction and Skip until stopped are changes: each asks first, shows the exact statements, and is recorded in the Audit log. A skipped transaction is missing on the replica.</p></>}
+      info={<><p>Each replication channel (MySQL) or connection (MariaDB) of the connection in use: thread states, the last error, lag signals and positions. Reading changes nothing.</p><p>Seconds behind the source alone does not show that a replica is caught up: compare heartbeats, receiver and worker lag in the inspector.</p><p>Skip this transaction and Skip until stopped are changes: each asks first, shows the exact statements, and is recorded in the Audit log. A skipped transaction is missing on the replica.</p></>}
       status={<><ViewStatus loading={reads.loading} error={error}>{failure?.key === key && failure.loop && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>{loopsShown.length > 0 && <ReplicationLoopBanner loops={loopsShown} stopping={stopping} onStop={(l) => { void stop(l); }} />}{result && resultTone && <section className="ops-result" aria-label="Skip result" role="status" data-status={result.status}>
           <div className="ops-result-head"><StatusPill tone={resultTone[0]} label={resultTone[1]} /><strong>{channelPhrase(engine, result.channel)}</strong></div>
           <p>{result.message}</p>
@@ -523,62 +543,38 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         </section>}</>}>
 
       {restartNote && <p className="ops-note" role="status">Stopped when myflames restarted. Skip loops never resume from a restored workspace.</p>}
-      {report && report.available && (
-        <div className="replication-overview-cards">
-          <div className="replication-stat-card">
-            <div className="stat-label">Replica State</div>
-            <div className="stat-value">
-              <StatusPill
-                tone={replicaTone}
-                label={replicaLabel}
-              />
-            </div>
-            <div className="stat-hint">{engineName(report.engine, report.server_version)}</div>
-          </div>
-          <div className="replication-stat-card">
-            <div className="stat-label">Channels</div>
-            <div className="stat-value">{report.summary.channels}</div>
-            <div className="stat-hint">{report.summary.channels === 1 ? "1 channel" : `${report.summary.channels} channels`} · {report.summary.ok} ok</div>
-          </div>
-          <div className="replication-stat-card">
-            <div className="stat-label">Max Measured Applier Lag</div>
-            <div className="stat-value">{lag(report.summary.lag_max_s)}</div>
-            <div className="stat-hint">
-              {`${measuredLag} measured · ${unknownLag} unknown${unjudged ? ` · ${unjudged} not judged` : ""}. Check receiver and worker lag.`}
-            </div>
-          </div>
-          <div className="replication-stat-card">
-            <div className="stat-label">GTID Mode</div>
-            <div className="stat-value">{gtidMode}</div>
-            <div className="stat-hint">{report.channels.some((ch) => ch.failing_gtid) ? "Failing GTID detected" : "Replication coordinates"}</div>
-          </div>
-        </div>
-      )}
-      {report && report.available && activeTab === "lag" && (
-        <div className="replication-tab-banner">
-          <Icon name="history" size={14} />
-          <span><strong>Lag analysis:</strong> Seconds_Behind_Source alone does not guarantee a replica is caught up. Network heartbeats, clock skew, and worker queues must be evaluated.</span>
-        </div>
-      )}
-      {report && report.available && activeTab === "gtid" && report.gtid && (
-        <div className="ops-gtid-overview">
-          <Fields rows={[
-            ["GTID Mode", gtidMode],
-            ["Executed GTID Set", <code className="ops-wrap">{String(report.gtid.executed_gtid_set || "None")}</code>],
-            ["Purged GTID Set", <code className="ops-wrap">{String(report.gtid.gtid_purged || "None")}</code>],
-          ]} />
-        </div>
-      )}
-      {report && report.available && activeTab === "recovery" && (
-        <div className="replication-tab-banner">
-          <Icon name="warning" size={14} />
-          <span><strong>Recovery & Skip:</strong> Skipping a transaction advances replication past a failure, but creates data drift. Each skip is verified, executed with write policy confirmation, and audited.</span>
-        </div>
-      )}
       {report ? <>
         <SummaryLine tone={!report.available || !report.replica ? "unknown" : judged.length ? worstTone(judged.map((r) => r.status)) : "unknown"} toneLabel={judged.length || !report.replica ? undefined : "Not judged"} notes={report.notes.length ? report.notes : undefined}>
           {summary}
         </SummaryLine>
+        {report.available && report.replica && (
+          <section className="replication-tiles" aria-label="Replication summary">
+            <TileGrid label="Replication summary">
+              <MetricTile rowKey="replica-state" label="Replica state" value={replicaLabel}
+                tone={replicaTone === "unknown" ? undefined : replicaTone}
+                // The value is the state, so the pill counts the channels behind it
+                // instead of repeating it ("Failing" over "Problem").
+                toneLabel={replicaTone === "problem" ? `${problemCount.toLocaleString()} of ${plural(judged.length, word)}`
+                  : replicaTone === "watch" ? `${watchCount.toLocaleString()} to watch` : undefined} />
+              <MetricTile rowKey="channels" label={engine === "mariadb" ? "Connections" : "Channels"} value={report.summary.channels.toLocaleString()}
+                trend={<span className="tile-hint">{`${report.summary.ok.toLocaleString()} OK`}</span>} />
+              <MetricTile rowKey="lag" label="Max applier lag"
+                value={lagUnknown ? "Unknown" : (report.summary.lag_max_s as number).toLocaleString()} unit={lagUnknown ? undefined : "s"}
+                attrs={{ title: "Seconds behind the source; compare receiver and worker lag in the inspector." }}
+                trend={<span className="tile-hint">{[
+                  measuredLag && lagUnknown && report.summary.lag_max_s !== null ? `${measuredLag} measured (max ${report.summary.lag_max_s.toLocaleString()} s)` : `${measuredLag} measured`,
+                  unknownLag ? `${unknownLag} unknown` : "",
+                  unjudged ? `${unjudged} not judged` : "",
+                ].filter(Boolean).join(" · ")}</span>} />
+              <MetricTile rowKey="gtid" label="GTID mode" value={gtidMode}
+                trend={failingGtids ? <span className="tile-hint">{failingGtids === 1 ? "1 failing GTID" : `${failingGtids} failing GTIDs`}</span> : undefined} />
+            </TileGrid>
+          </section>
+        )}
+        {report.available && report.replica && activeTab === "gtid" && Object.keys(report.gtid || {}).some((k) => k !== "mode" && k !== "gtid_mode") && (
+          // GTID mode is the tile above; the strip carries the rest of the server's GTID state.
+          <FactStrip label="Server GTID state" facts={factRows(Object.fromEntries(Object.entries(report.gtid).filter(([k]) => k !== "mode" && k !== "gtid_mode")), GTID_LABELS)} />
+        )}
         {!report.available || !report.replica ? (
           <PrerequisiteGate>{report.message || "Replication status is not available for this connection."}</PrerequisiteGate>
         ) : activeTab === "topology" ? (

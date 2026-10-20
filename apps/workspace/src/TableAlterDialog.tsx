@@ -1,13 +1,14 @@
 // Table Alter dialogs: Add column and Remove column with workbench-like ease.
 // Generates reviewed ALTER TABLE statements executed safely via ReviewedSqlAction.
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import {
   fetchTableColumns,
   type Connection,
   type TableColumnInfo,
 } from "./api";
 import { Icon } from "./components";
-import { Checkbox } from "./kit";
+import { Checkbox, useFocusScope } from "./kit";
 
 const COMMON_DATA_TYPES = [
   "VARCHAR(255)",
@@ -34,6 +35,94 @@ const COMMON_DATA_TYPES = [
 /** A name in backticks, with any backtick doubled. */
 const bt = (name: string) => "`" + name.replace(/`/g, "``") + "`";
 
+/** Where focus returns when the sheet closes: the control that opened it, or
+ * the button of the menu it was chosen from (that menu closes with the choice).
+ * Null lets the focus scope use whatever holds focus once the sheet opens. */
+function openerOf(): HTMLElement | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || active === document.body) return null;
+  const menu = active.closest<HTMLElement>('[role="menu"]');
+  if (!menu) return active;
+  return menu.parentElement?.querySelector<HTMLElement>(':scope > [aria-haspopup="menu"][aria-expanded="true"]') ?? null;
+}
+
+/** The modal sheet both dialogs share, built like ConfirmSheet: a title, a
+ * body that scrolls, and Cancel plus the action always in view (the 720x520
+ * window has 492 px of content). Focus moves in and stays inside; Escape and
+ * Cancel close it and return focus to the opener. */
+function AlterSheet({
+  title,
+  lead,
+  tone,
+  initialFocus,
+  confirmLabel,
+  confirmDisabled,
+  onConfirm,
+  onClose,
+  children,
+}: {
+  title: ReactNode;
+  lead: ReactNode;
+  tone: "primary" | "danger";
+  /** Focused first; Cancel when absent (a destructive change). */
+  initialFocus?: RefObject<HTMLElement>;
+  confirmLabel: ReactNode;
+  confirmDisabled: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const leadId = useId();
+  const [opener] = useState(openerOf);
+  useFocusScope(dialog, {
+    open: true,
+    onClose,
+    initialFocus: () => initialFocus?.current || cancel.current,
+    returnFocus: () => opener,
+  });
+  return createPortal(
+    <dialog
+      ref={dialog}
+      className="confirm-sheet table-alter-dialog"
+      role={tone === "danger" ? "alertdialog" : "dialog"}
+      tabIndex={-1}
+      aria-labelledby={titleId}
+      aria-describedby={leadId}
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+    >
+      <div className="dialog-heading">
+        <h2 id={titleId}>{title}</h2>
+      </div>
+      <div className="sheet-body">
+        <p id={leadId} className="sheet-lead">
+          {lead}
+        </p>
+        {children}
+      </div>
+      <div className="dialog-actions sheet-actions">
+        <button ref={cancel} type="button" className="button" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className={`button ${tone === "danger" ? "danger-solid" : "primary"}`}
+          disabled={confirmDisabled}
+          onClick={onConfirm}
+        >
+          {confirmLabel}
+        </button>
+      </div>
+    </dialog>,
+    document.body,
+  );
+}
+
 export function AddColumnDialog({
   connection,
   schema,
@@ -54,6 +143,7 @@ export function AddColumnDialog({
   const [defaultValue, setDefaultValue] = useState("");
   const [afterCol, setAfterCol] = useState("");
   const [existingCols, setExistingCols] = useState<TableColumnInfo[]>([]);
+  const nameInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -102,133 +192,107 @@ export function AddColumnDialog({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal-card table-alter-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-col-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-head">
-          <div className="modal-title-wrap">
-            <h3 id="add-col-title">
-              <Icon name="plus" /> Add Column to {schema}.{table}
-            </h3>
-            <p className="modal-sub">
-              Define the new column. The exact ALTER TABLE statement will be reviewed before execution.
-            </p>
-          </div>
-          <button type="button" className="button icon-only close-button" aria-label="Close" onClick={onClose}>
-            <Icon name="close" />
-          </button>
-        </div>
+    <AlterSheet
+      title={`Add column to ${schema}.${table}`}
+      lead="Define the new column. The exact ALTER TABLE statement will be reviewed before execution."
+      tone="primary"
+      initialFocus={nameInput}
+      confirmLabel="Review and apply…"
+      confirmDisabled={!validName || !resolvedType}
+      onConfirm={handleApply}
+      onClose={onClose}
+    >
+      <div className="table-alter-form">
+        <label className="field-group">
+          <span className="field-label">Column name</span>
+          <input
+            ref={nameInput}
+            type="text"
+            className="text-input"
+            value={colName}
+            placeholder="e.g. is_active, total_amount"
+            required
+            onChange={(e) => setColName(e.target.value)}
+          />
+        </label>
 
-        <div className="table-alter-form">
+        <div className="form-row-grid">
           <label className="field-group">
-            <span className="field-label">Column Name *</span>
-            <input
-              type="text"
-              className="text-input"
-              value={colName}
-              placeholder="e.g. is_active, total_amount"
-              autoFocus
-              onChange={(e) => setColName(e.target.value)}
-            />
+            <span className="field-label">Data type</span>
+            <select
+              className="field-select"
+              value={dataType}
+              onChange={(e) => setDataType(e.target.value)}
+            >
+              {COMMON_DATA_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+              <option value="CUSTOM">Custom…</option>
+            </select>
           </label>
 
-          <div className="form-row-grid">
+          {dataType === "CUSTOM" && (
             <label className="field-group">
-              <span className="field-label">Data Type</span>
-              <select
-                className="field-select"
-                value={dataType}
-                onChange={(e) => setDataType(e.target.value)}
-              >
-                {COMMON_DATA_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-                <option value="CUSTOM">Custom…</option>
-              </select>
-            </label>
-
-            {dataType === "CUSTOM" && (
-              <label className="field-group">
-                <span className="field-label">Custom Type</span>
-                <input
-                  type="text"
-                  className="text-input"
-                  value={customType}
-                  placeholder="e.g. ENUM('a','b')"
-                  onChange={(e) => setCustomType(e.target.value)}
-                />
-              </label>
-            )}
-
-            <label className="field-group">
-              <span className="field-label">Position</span>
-              <select
-                className="field-select"
-                value={afterCol}
-                onChange={(e) => setAfterCol(e.target.value)}
-              >
-                <option value="">Default (at end of table)</option>
-                <option value="FIRST">FIRST (first column)</option>
-                {existingCols.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    AFTER {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="form-row-grid">
-            <label className="field-group">
-              <span className="field-label">Default Value (Optional)</span>
+              <span className="field-label">Custom type</span>
               <input
                 type="text"
                 className="text-input"
-                value={defaultValue}
-                placeholder="e.g. 0, active, CURRENT_TIMESTAMP"
-                onChange={(e) => setDefaultValue(e.target.value)}
+                value={customType}
+                placeholder="e.g. ENUM('a','b')"
+                onChange={(e) => setCustomType(e.target.value)}
               />
             </label>
-
-            <div className="field-group checkbox-field">
-              <Checkbox checked={nullable} onChange={setNullable}>
-                Allow NULL (Nullable)
-              </Checkbox>
-            </div>
-          </div>
-
-          {generatedSql && (
-            <div className="sql-preview-box">
-              <span className="sql-preview-label">SQL Preview</span>
-              <pre>
-                <code>{generatedSql}</code>
-              </pre>
-            </div>
           )}
+
+          <label className="field-group">
+            <span className="field-label">Position</span>
+            <select
+              className="field-select"
+              value={afterCol}
+              onChange={(e) => setAfterCol(e.target.value)}
+            >
+              <option value="">Default (at end of table)</option>
+              <option value="FIRST">FIRST (first column)</option>
+              {existingCols.map((c) => (
+                <option key={c.name} value={c.name}>
+                  AFTER {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
 
-        <div className="modal-foot">
-          <button type="button" className="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="button primary"
-            disabled={!validName || !resolvedType}
-            onClick={handleApply}
-          >
-            Review and Apply…
-          </button>
+        <div className="form-row-grid">
+          <label className="field-group">
+            <span className="field-label">Default value (optional)</span>
+            <input
+              type="text"
+              className="text-input"
+              value={defaultValue}
+              placeholder="e.g. 0, active, CURRENT_TIMESTAMP"
+              onChange={(e) => setDefaultValue(e.target.value)}
+            />
+          </label>
+
+          <div className="field-group checkbox-field">
+            <Checkbox checked={nullable} onChange={setNullable}>
+              Allow NULL
+            </Checkbox>
+          </div>
         </div>
+
+        {generatedSql && (
+          <div className="sql-preview-box">
+            <span className="sql-preview-label">SQL preview</span>
+            <pre>
+              <code>{generatedSql}</code>
+            </pre>
+          </div>
+        )}
       </div>
-    </div>
+    </AlterSheet>
   );
 }
 
@@ -284,110 +348,82 @@ export function RemoveColumnDialog({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal-card table-alter-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="remove-col-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-head">
-          <div className="modal-title-wrap">
-            <h3 id="remove-col-title">
-              <Icon name="warning" /> Remove Column from {schema}.{table}
-            </h3>
-            <p className="modal-sub">
-              Select the column to drop. Dropping a column permanently deletes its data.
-            </p>
-          </div>
-          <button type="button" className="button icon-only close-button" aria-label="Close" onClick={onClose}>
-            <Icon name="close" />
-          </button>
-        </div>
+    <AlterSheet
+      title={`Remove column from ${schema}.${table}`}
+      lead="Select the column to drop. Dropping a column permanently deletes its data."
+      tone="danger"
+      confirmLabel="Review and drop column…"
+      confirmDisabled={!selectedCol || loading || isLastCol}
+      onConfirm={handleDrop}
+      onClose={onClose}
+    >
+      {error && <div className="note danger" role="alert">{error}</div>}
 
-        {error && <div className="note danger">{error}</div>}
-
-        <div className="table-alter-form">
-          {loading ? (
-            <p className="hint">Reading table columns…</p>
-          ) : (
-            <>
-              {isLastCol && (
-                <div className="note warn">
-                  Cannot drop the only column: a table must have at least one column.
-                </div>
-              )}
-              <label className="field-group">
-                <span className="field-label">Select Column to Remove</span>
-                <select
-                  className="field-select"
-                  value={selectedCol}
-                  onChange={(e) => setSelectedCol(e.target.value)}
-                >
-                  {columns.map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name} ({c.type}) {c.key ? `[${c.key}]` : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {targetCol && (
-                <div className="col-info-card">
-                  <div className="col-info-row">
-                    <span>Type:</span> <strong>{targetCol.type}</strong>
-                  </div>
-                  <div className="col-info-row">
-                    <span>Nullable:</span> {targetCol.nullable ? "YES" : "NO"}
-                  </div>
-                  {targetCol.default != null && (
-                    <div className="col-info-row">
-                      <span>Default:</span> <code>{targetCol.default}</code>
-                    </div>
-                  )}
-                  {isPrimaryKey ? (
-                    <div className="note danger" style={{ marginTop: 8 }}>
-                      <Icon name="warning" /> <strong>Primary Key Column:</strong> Dropping this column directly will fail because it is part of the primary key!
-                    </div>
-                  ) : targetCol.key ? (
-                    <div className="col-info-row warn-key">
-                      <span>Key:</span> <strong>{targetCol.key}</strong> (Dropping an indexed column may affect constraints or secondary indexes!)
-                    </div>
-                  ) : null}
-                </div>
-              )}
-
-              <div className="note danger">
-                <Icon name="warning" /> <strong>Warning:</strong> This operation will drop the column and all stored values in it.
+      <div className="table-alter-form">
+        {loading ? (
+          <p className="hint" role="status">Reading table columns…</p>
+        ) : (
+          <>
+            {isLastCol && (
+              <div className="note warn">
+                Cannot drop the only column: a table must have at least one column.
               </div>
+            )}
+            <label className="field-group">
+              <span className="field-label">Column to remove</span>
+              <select
+                className="field-select"
+                value={selectedCol}
+                onChange={(e) => setSelectedCol(e.target.value)}
+              >
+                {columns.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name} ({c.type}) {c.key ? `[${c.key}]` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-              {generatedSql && !isLastCol && (
-                <div className="sql-preview-box">
-                  <span className="sql-preview-label">SQL Preview</span>
-                  <pre>
-                    <code>{generatedSql}</code>
-                  </pre>
+            {targetCol && (
+              <div className="col-info-card">
+                <div className="col-info-row">
+                  <span>Type:</span> <strong>{targetCol.type}</strong>
                 </div>
-              )}
-            </>
-          )}
-        </div>
+                <div className="col-info-row">
+                  <span>Nullable:</span> {targetCol.nullable ? "YES" : "NO"}
+                </div>
+                {targetCol.default != null && (
+                  <div className="col-info-row">
+                    <span>Default:</span> <code>{targetCol.default}</code>
+                  </div>
+                )}
+                {isPrimaryKey ? (
+                  <div className="note danger">
+                    <Icon name="warning" /> <strong>Primary Key Column:</strong> Dropping this column directly will fail because it is part of the primary key!
+                  </div>
+                ) : targetCol.key ? (
+                  <div className="col-info-row warn-key">
+                    <span>Key:</span> <strong>{targetCol.key}</strong> (Dropping an indexed column may affect constraints or secondary indexes!)
+                  </div>
+                ) : null}
+              </div>
+            )}
 
-        <div className="modal-foot">
-          <button type="button" className="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="button danger"
-            disabled={!selectedCol || loading || isLastCol}
-            onClick={handleDrop}
-          >
-            Review and Drop Column…
-          </button>
-        </div>
+            <div className="note danger">
+              <Icon name="warning" /> <strong>Warning:</strong> This operation will drop the column and all stored values in it.
+            </div>
+
+            {generatedSql && !isLastCol && (
+              <div className="sql-preview-box">
+                <span className="sql-preview-label">SQL preview</span>
+                <pre>
+                  <code>{generatedSql}</code>
+                </pre>
+              </div>
+            )}
+          </>
+        )}
       </div>
-    </div>
+    </AlterSheet>
   );
 }

@@ -112,6 +112,19 @@ try {
     ["Unused6", "Redundant3", "Full scans1", "No data1"]);
   // The badge counts what to review.
   assert.equal(await text("#server-nav-indexes .count-badge"), "8");
+  // Row actions are a ⋯ menu in the trailing column (no bordered Actions button
+  // per row): hidden at rest, shown on the hovered, focused or selected row.
+  assert.equal(await page.$(`${view} th[data-col=actions]`), null);
+  await page.mouse.move(5, 890);
+  assert.deepEqual([...new Set(await page.$$eval(`${view} tbody td.col-menu .row-more`, (els) => els.map((e) => getComputedStyle(e).opacity)))], ["0"]);
+  await page.hover(`${view} tbody tr:first-child td:nth-child(2)`);
+  assert.equal(await page.$eval(`${view} tbody tr:first-child .row-more`, (e) => getComputedStyle(e).opacity), "1");
+  await page.click(`${view} tbody tr:first-child .row-more`);
+  await page.waitForSelector(".row-action-menu [role=menuitem]", { visible: true });
+  assert.deepEqual(await page.$$eval(".row-action-menu [role=menuitem]", (els) => els.map((e) => e.textContent.trim())),
+    ["Set invisible…", "Drop index…", "Table health"]);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".row-action-menu"));
 
   // Unused: candidates and the FK-backing index to keep; PRIMARY/UNIQUE never listed.
   const unused = await page.$$eval(`${view} [aria-label="Unused indexes"] tbody tr`,

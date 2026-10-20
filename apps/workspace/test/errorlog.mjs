@@ -52,6 +52,12 @@ try {
   assert.match(await text("#server-nav-errorlog"), /2 errors this run, Watch/);
   assert.ok(await page.$("#server-nav-errorlog .count-badge.is-neutral") && await page.$("#server-nav-errorlog .status-dot.is-watch"), "a watch dot beside a neutral count");
   assert.match(await h.notes(), /expired 120 older events/);
+  // One toolbar row at 1440 px: the filters and Export are in the row above the list.
+  assert.ok(await page.$eval(`${view} .view-toolbar`, (e) => e.getBoundingClientRect().height) <= 48, "the toolbar keeps one row");
+  for (const sel of ['[aria-label="Error log grouping"]', '[aria-label="Log level"]', 'input[aria-label="Filter error log"]', 'button[aria-label="Export error log"]'])
+    assert.ok(await page.$(`${view} .errorlog-tools ${sel}`) && !(await page.$(`${view} .view-toolbar ${sel}`)), `${sel} is in the filter row`);
+  const toolsRow = await page.$eval(`${view} .errorlog-tools`, (e) => [e.getBoundingClientRect().height, e.getBoundingClientRect().width, [...e.children].map((c) => Math.round(c.getBoundingClientRect().top)).join(",")]);
+  assert.ok(toolsRow[0] <= 48, `the filter row is one row (${toolsRow.join(" | ")})`);
 
   await level("Error"); assert.equal(await rowCount(), 3);
   assert.equal(await page.$$eval(`${rows} .status-pill.is-problem`, els => els.length), 3);
@@ -106,7 +112,7 @@ try {
   await setInput(`${view} input[aria-label="End time"]`, "2026-10-19T20:26");
   assert.equal(await rowCount(), 5, "5 entries in minute 20:26");
   await page.select(timeSelect, "all");
-  assert.equal(await rowCount(), 12, "all entries shown when All Time selected");
+  assert.equal(await rowCount(), 12, "all entries shown when All time selected");
 
   // Export options: CSV, Log, JSON
   await page.evaluate(() => {

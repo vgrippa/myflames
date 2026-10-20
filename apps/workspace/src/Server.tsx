@@ -49,6 +49,7 @@ import type { AccountsReport } from "./accountsApi";
 import {
   ColumnStoreContext,
   ViewActivityContext,
+  ViewBackLabelContext,
   useWindowStatus,
   useFocusScope,
   NavMarker,
@@ -221,8 +222,12 @@ function toneOf(status: string | null | undefined): Tone {
 function dot(tone: Tone, text: string) {
   return { badge: <NavMarker tone={tone} />, badgeText: text };
 }
+// A count draws a dot and the count only (a list row is narrow); the state
+// word moves into the tooltip and the hidden text ("2 flagged, Watch").
 function count(n: number, tone: BadgeTone, text: string) {
-  return { badge: <NavMarker tone={countState(tone)} count={n} countTone={tone} />, badgeText: text };
+  const state = countState(tone);
+  const word = state ? TONE_TEXT[state] : "";
+  return { badge: <NavMarker compact tone={state} count={n} countTone={tone} />, badgeText: word && !text.includes(word) ? `${text}, ${word}` : text };
 }
 
 export function Server({
@@ -566,6 +571,12 @@ export function Server({
   const sheet = width > 0 && width < SHEET_WIDTH;
   const [pushed, setPushed] = useState(false);
   const showList = compact && !pushed;
+  // A wide window always shows a view beside the list: when it narrows to the
+  // pushed layout, that view stays on screen (Back shows the list).
+  const wide = width > 0 && !compact;
+  useEffect(() => {
+    if (wide) setPushed(true);
+  }, [wide]);
 
   const inspector: InspectorShared = useMemo(
     () => ({
@@ -1431,6 +1442,7 @@ export function Server({
       <InspectorContext.Provider value={inspector}>
         <ColumnStoreContext.Provider value={columnStore}>
         <ViewActivityContext.Provider value={reportActivity}>
+        <ViewBackLabelContext.Provider value={place === "workload" ? "Workload" : "Server"}>
         <section
           className={`server-place${tuningPlace ? " is-tuning-place" : navCollapsed && !compact ? " is-nav-collapsed" : ""}`}
           aria-labelledby={tuningPlace ? "tuning-place-title" : "server-title"}
@@ -1531,7 +1543,6 @@ export function Server({
                 </ToolbarButton>
               ) : (
                 <ToolbarButton
-                  icon="refresh"
                   className="refresh-all-button"
                   data-action="refresh-all"
                   disabled={disabled}
@@ -1722,6 +1733,7 @@ export function Server({
             </div>
           </div>
         </section>
+        </ViewBackLabelContext.Provider>
         </ViewActivityContext.Provider>
         </ColumnStoreContext.Provider>
       </InspectorContext.Provider>

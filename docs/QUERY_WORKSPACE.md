@@ -408,7 +408,7 @@ message. **Go to line N, column M** puts the cursor where the error points.
 After Explain or Run analysis a **Plan** tab shows the capture and the SQL sent.
 
 - The grid is the shared table: resize and hide columns, sort the loaded rows
-  (sorting orders only the rows loaded here), row numbers, and long results
+  (a result cut at the row limit says "Sorting applies to loaded rows"), row numbers, and long results
   drawn as you scroll. NULL is a separate **NULL** token; an empty string is an
   empty cell; the text 'NULL' is plain text. Binary values show as the client's
   `0x…` hex with their size. Big integers and DECIMAL are shown as the server
@@ -477,9 +477,9 @@ and write policy:
 - When only some statements in a script are denied, or when privileges cannot be
   fully proven absent from grants (such as MariaDB role trees or routine bodies),
   the batch remains runnable with an aggregate state of unknown.
-- The editor renders a single quiet note below the toolbar ("Privileges not verified
-  for this statement" or enumerating denied statements) rather than blocking the
-  entire script.
+- The editor shows one line at the end of its toolbar only for denied statements
+  (enumerating them), never for privileges it cannot verify, and never as a new
+  row that pushes the editor down, rather than blocking the entire script.
 - Connection write policy preflights remain the final boundary: read-only
   connections reject writes before execution, and Production connections prompt
   for explicit confirmation.
@@ -1375,7 +1375,8 @@ and never lowers a saved connection's protection.
 | `schema-diagram/read` | `connection`, `database` | `schema-diagram-1.0` with tables, keys, relationships, coverage warnings and incomplete status; metadata reads only |
 | `schema-diagram/import` | `format` (`sql`, `mermaid`, `json`), `text` | Validated diagram; no database connection or SQL execution |
 | `schema-diagram/export` | `format` (`sql`, `mermaid`), `diagram` | `text`, `warnings`; the UI requires review before a lossy download |
-| `investigations/list` | `{}` | `items`: saved bundles |
+| `investigations/list` | optional `limit` (1 to 50, default 25), `cursor` (the previous page's `next_cursor`), `search` (name, tags or notes, ignoring case) | `investigation-list-1.0`: `items` (summaries newest first: `id`, `updated_at`, `name`, `notes`, `tags`, `baseline_id`, plan `id`, `name` and capture mode; never the plans) and `next_cursor` (null on the last page) |
+| `investigations/get` | `id` | The saved bundle with `id`, `updated_at` (what Open, Compare to baseline and Export read) |
 | `investigations/save` | `value`: bundle, optional `id` | Saved bundle with `id`, `updated_at` |
 | `investigations/delete` | `id` | `deleted` |
 | `profiles/list` | `{}` | `items` (settings plus `type` (`production` or `development`), `read_only`, `has_saved_password`, `secret_backend`, `secret_backend_label`) and `secret_store` (`backend`, `label`, `available`) |

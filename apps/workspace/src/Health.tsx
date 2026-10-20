@@ -489,8 +489,10 @@ export function HealthView({
         {report && s && (
           <>
             <SummaryLine tone={s.status} notes={report.notes} >
-              {plural(s.problem, "problem", "problems")}, {s.watch} to watch, {s.ok} ok
-              {d && (d.problem > 0 || d.watch > 0) && <> · diagnostics: {plural(d.problem, "problem", "problems")}, {d.watch} to watch</>}
+              {/* One count for every check, metrics and diagnostics alike, so
+                  the line agrees with its tone; the Diagnostics heading breaks
+                  its own share down. */}
+              {plural(s.problem + (d?.problem || 0), "problem", "problems")}, {s.watch + (d?.watch || 0)} to watch, {s.ok + (d?.ok || 0)} ok
               <span className="summary-muted health-last">
                 {" "}
                 · {(report.elapsed_s ?? report.interval).toFixed(1)} s window at {new Date(report.taken_at).toLocaleTimeString()}

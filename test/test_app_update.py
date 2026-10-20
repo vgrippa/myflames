@@ -52,11 +52,11 @@ class TestAppUpdate(unittest.TestCase):
         self.assertEqual(matched_win["name"], "myflames-win-x64.zip")
 
     def test_check_for_updates_simulated(self):
-        with patch.dict("os.environ", {"MYFLAMES_TEST_UPDATE": "3.1.0"}), \
+        with patch.dict("os.environ", {"MYFLAMES_TEST_UPDATE": "99.0.0"}), \
                 patch.dict("myflames.app_update._CACHE", clear=True):
             res = check_for_updates(force=True)
             self.assertEqual(res["schema_version"], "app-update-1.0")
-            self.assertEqual(res["latest_version"], "3.1.0")
+            self.assertEqual(res["latest_version"], "99.0.0")
             self.assertTrue(res["update_available"])
 
     def test_download_binary_update_without_asset(self):

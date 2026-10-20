@@ -169,7 +169,9 @@ function extract(svgRoot) {
     [t.textContent, Number(t.getAttribute('x')), Number(t.getAttribute('y'))]);
   const viewport = svgRoot.querySelector('.wb-viewport');
   const graph = svgRoot.querySelector('.wb-graph');
-  const terminal = Array.from(graph.children).filter((el) => el.tagName === 'rect').map((r) => nums(r.getAttribute('x') + ' ' + r.getAttribute('y')));
+  const terminal = Array.from(graph.children).filter((el) => el.tagName === 'rect' && !el.classList.contains('wb-edge-chip')).map((r) => nums(r.getAttribute('x') + ' ' + r.getAttribute('y')));
+  // The opaque chip behind each rows label: position and estimated width.
+  const chips = Array.from(graph.querySelectorAll('.wb-edge-chip')).map((r) => ['x', 'y', 'width', 'height'].map((k) => Number(r.getAttribute(k))));
   const legend = Array.from(svgRoot.children).filter((el) => el.tagName === 'rect' && el.getAttribute('width') === '10').map((r) => r.getAttribute('fill'));
   return {
     size: [svgRoot.getAttribute('width'), svgRoot.getAttribute('height'), svgRoot.getAttribute('viewBox')],
@@ -177,7 +179,7 @@ function extract(svgRoot) {
     viewport: ['x', 'y', 'width', 'height'].map((name) => viewport.getAttribute(name)),
     actions: Array.from(svgRoot.querySelectorAll('[data-action]')).map((b) => [b.getAttribute('data-action'), b.getAttribute('data-action') === 'reset' ? 'live' : b.getAttribute('aria-label')]),
     texts: Array.from(svgRoot.children).filter((el) => el.tagName === 'text').map((t) => t.textContent),
-    nodes, edges, labels, terminal, legend,
+    nodes, edges, labels, terminal, legend, chips,
   };
 }
 
@@ -263,6 +265,10 @@ try {
       assert.ok(near(edge.d[3], target.x + target.w / 2) && near(ty + 5, target.y), where + ': edge reaches target bounds ' + tx);
     }
     assert.deepEqual(ts.labels.map((l) => l[0]).sort(), python.labels.map((l) => l[0]).sort(), where + ': edge labels');
+    // One chip per rows label, at the same place and width in both renderers.
+    const chipKey = (c) => c.map((v) => v.toFixed(1)).join(' ');
+    assert.equal(ts.chips.length, ts.labels.filter((l) => l[0].startsWith('Rows/loop')).length, where + ': a chip behind every rows label');
+    assert.deepEqual(ts.chips.map(chipKey).sort(), python.chips.map(chipKey).sort(), where + ': edge label chips');
     assert.deepEqual(ts.terminal.length, python.terminal.length, where + ': output terminal');
     ts.terminal.forEach((point, k) => point.forEach((v, j) => assert.ok(near(v, python.terminal[k][j]), where + ': terminal position')));
     for (let i = 0; i < ts.nodes.length; i++) {
@@ -340,9 +346,8 @@ try {
     if (item.view === 'tree') {
       // An unmeasured plan reads "Total: —" instead of Python's 0.001 ms scaling floor.
       const header = (texts) => texts.map((t, k) => (k === 1 && !item.measured_total ? [t[0].replace(/Total: [^·]*·/, 'Total: ·'), t[1], t[2], t[3]] : t));
-      // "Expand All" is end-anchored in TS so it no longer overlaps "Collapse All".
-      const links = (texts) => texts.map((t) => (t[0] === 'Expand All' ? [t[0], 0, t[2], ''] : t));
-      sameTexts(links(header(ts.texts)), links(header(python.texts)), where + ' header');
+      // Both renderers end-anchor "Expand all" 80 px before "Collapse all".
+      sameTexts(header(ts.texts), header(python.texts), where + ' header');
       assert.equal(ts.rows.length, item.visible, where + ': one row per visible operator');
       assert.deepEqual(ts.rows.map((r) => r.id), python.rows.map((r) => r.id), where + ': row identity and pre-order');
       python.rows.forEach((expected, k) => {

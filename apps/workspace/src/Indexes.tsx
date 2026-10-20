@@ -21,7 +21,7 @@ import {
 import { StatementsBehind, type DigestAction, type LabSettings, type OpenTop } from "./SlowQueries";
 import { uptime } from "./Health";
 import { useConnectionReads, type Bound } from "./binding";
-import { CompactNumber, CopySql, SchemaPicker, count, engineLabel, ms, percent, useSchemaCatalog } from "./PerfShared";
+import { CompactNumber, CopySql, RowActionMenu, SchemaPicker, count, engineLabel, ms, percent, useSchemaCatalog, type RowMenuItem } from "./PerfShared";
 import { InstrumentsLink } from "./Instruments";
 import type { TableFocus } from "./Tables";
 import {
@@ -46,7 +46,6 @@ import {
 
 import { PaginatedReportTable } from "./PaginatedReportTable";
 import { ReviewedSqlAction, ReviewedSqlBridger, ReviewedSqlProvider, ReviewedSqlStatus, useReviewedSql } from "./ReviewedSqlAction";
-import { Icon } from "./components";
 
 const SOURCES: Record<string, string> = {
   performance_schema: "Performance Schema",
@@ -96,23 +95,10 @@ function IndexRowActions({
   onTableHealth?: () => void;
   disabled: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
   const reviewedSql = useReviewedSql();
   const isMaria = (engine || "").toLowerCase() === "mariadb";
   const canInvisible = supportsInvisibleIndexes(engine, serverVersion);
   const isPrimary = index.toUpperCase() === "PRIMARY";
-
-  useEffect(() => {
-    if (!open) return;
-    const handleOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", handleOutside);
-    return () => window.removeEventListener("mousedown", handleOutside);
-  }, [open]);
 
   const isCurrentlyVisible = visible !== false;
   const toggleVisibilitySql = isMaria
@@ -126,67 +112,20 @@ function IndexRowActions({
     ? `ALTER TABLE \`${schema}\`.\`${table}\` DROP PRIMARY KEY`
     : `ALTER TABLE \`${schema}\`.\`${table}\` DROP INDEX \`${index}\``;
 
-  return (
-    <div className="table-row-actions-wrap" ref={ref} onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        className="button small table-actions-trigger"
-        disabled={disabled}
-        onClick={() => setOpen(!open)}
-        title={`Actions for ${schema}.${table}.${index}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        Actions ▾
-      </button>
-      {open && (
-        <div className="table-actions-menu" role="menu">
-          {!isPrimary && canInvisible && (
-            <button
-              type="button"
-              className="table-action-item"
-              role="menuitem"
-              disabled={reviewedSql?.blocked}
-              onClick={() => {
-                setOpen(false);
-                reviewedSql?.start(toggleVisibilitySql, `${toggleVisibilityLabel} (${index})`);
-              }}
-            >
-              <Icon name="view" /> {toggleVisibilityLabel}
-            </button>
-          )}
-          <button
-            type="button"
-            className="table-action-item"
-            role="menuitem"
-            disabled={reviewedSql?.blocked}
-            onClick={() => {
-              setOpen(false);
-              reviewedSql?.start(dropSql, isPrimary ? "Drop primary key" : `Drop index ${index}`);
-            }}
-          >
-            <Icon name="trash" /> Drop Index
-          </button>
-          {onTableHealth && (
-            <>
-              <div className="table-action-divider" />
-              <button
-                type="button"
-                className="table-action-item"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onTableHealth();
-                }}
-              >
-                <Icon name="statements" /> Table health
-              </button>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
+  const items: RowMenuItem[] = [
+    ...(!isPrimary && canInvisible ? [{
+      label: `${toggleVisibilityLabel}…`, icon: "view" as const, disabled: reviewedSql?.blocked,
+      onSelect: () => reviewedSql?.start(toggleVisibilitySql, `${toggleVisibilityLabel} (${index})`, isCurrentlyVisible
+        ? "The query optimizer will ignore this index, but writes will still maintain it. Use this to safely test index removal."
+        : "The query optimizer will now consider this index in query plans."),
+    }] : []),
+    {
+      label: isPrimary ? "Drop primary key…" : "Drop index…", icon: "trash", danger: true, disabled: reviewedSql?.blocked,
+      onSelect: () => reviewedSql?.start(dropSql, isPrimary ? "Drop primary key" : `Drop index ${index}`),
+    },
+    ...(onTableHealth ? ["divider" as const, { label: "Table health", icon: "statements" as const, onSelect: onTableHealth }] : []),
+  ];
+  return <RowActionMenu label={`Actions for ${schema}.${table}.${index}`} disabled={disabled} items={items} />;
 }
 
 function IndexInspectorActions({
@@ -348,7 +287,7 @@ export function IndexesView({
       ...(!isPrimary && canInvisible
         ? [
             {
-              label: toggleVisibilityLabel,
+              label: `${toggleVisibilityLabel}…`,
               icon: "view",
               disabled: runner?.blocked,
               onClick: () => {
@@ -364,7 +303,7 @@ export function IndexesView({
           ]
         : []),
       {
-        label: "Update index statistics (Analyze)",
+        label: "Update index statistics (Analyze)…",
         icon: "statements",
         disabled: runner?.blocked,
         onClick: () => {
@@ -372,7 +311,7 @@ export function IndexesView({
         },
       },
       {
-        label: "Rebuild index / table (Optimize)",
+        label: "Rebuild index / table (Optimize)…",
         icon: "optimize",
         disabled: runner?.blocked,
         onClick: () => {
@@ -496,23 +435,19 @@ export function IndexesView({
       {r.schema}.{r.table}
     </code>
   );
-  const makeIndexActionsCol = <T extends { schema: string; table: string; index: string; visible?: boolean }>(): Column<T> => ({
-    key: "actions",
-    label: "Actions",
-    width: 96,
-    render: (r) => (
-      <IndexRowActions
-        schema={r.schema}
-        table={r.table}
-        index={r.index}
-        visible={r.visible}
-        engine={report?.engine || ""}
-        serverVersion={report?.server_version}
-        disabled={!!other}
-        onTableHealth={() => bound && onOpenTables(r.schema, r.table, bound.key)}
-      />
-    ),
-  });
+  // Each row's ⋯ menu in the table's trailing column (rowAction), as in Processlist.
+  const indexRowAction = (r: { schema: string; table: string; index: string; visible?: boolean }) => (
+    <IndexRowActions
+      schema={r.schema}
+      table={r.table}
+      index={r.index}
+      visible={r.visible}
+      engine={report?.engine || ""}
+      serverVersion={report?.server_version}
+      disabled={!!other}
+      onTableHealth={() => bound && onOpenTables(r.schema, r.table, bound.key)}
+    />
+  );
   const inventoryColumns: Column<IndexInventoryRow>[] = [
     {key:"table",label:"Table",sort:r=>`${r.schema}.${r.table}`,render:tableName},
     {key:"index",label:"Index",sort:r=>r.index,render:r=><code>{r.index}</code>},
@@ -520,7 +455,6 @@ export function IndexesView({
     {key:"type",label:"Type",sort:r=>r.type,render:r=>r.type},
     {key:"unique",label:"Unique",sort:r=>Number(r.unique),render:r=>r.unique?"Yes":"No"},
     {key:"visible",label:"Optimizer",sort:r=>Number(r.visible),render:r=>r.visible?"Visible":report?.engine==="mariadb"?"Ignored":"Invisible"},
-    makeIndexActionsCol<IndexInventoryRow>(),
   ];
   const unusedColumns: Column<UnusedIndex>[] = [
     {
@@ -545,7 +479,6 @@ export function IndexesView({
         </span>
       ),
     },
-    makeIndexActionsCol<UnusedIndex>(),
   ];
   const redundantColumns: Column<RedundantIndex>[] = [
     { key: "table", label: "Table", sort: (r) => `${r.schema}.${r.table}`, render: tableName },
@@ -570,7 +503,6 @@ export function IndexesView({
         </>
       ),
     },
-    makeIndexActionsCol<RedundantIndex>(),
   ];
   const scanColumns: Column<FullScanTable>[] = [
     {
@@ -940,6 +872,7 @@ export function IndexesView({
                 <>
                   {current === "all" && (
                     <PaginatedReportTable id="indexes.inventory" label="All indexes" columns={inventoryColumns} rows={inventory}
+                      rowAction={indexRowAction}
                       filters={listFilters}
                       rowKey={r=>`index:${r.schema}.${r.table}.${r.index}`} selection={selection} defaultSort={{key:"table",dir:"asc"}}
                       rowAttrs={r=>({"data-index":`${r.table}.${r.index}`})} exportContext={exportContext} resetKey={resetKey}
@@ -957,6 +890,7 @@ export function IndexesView({
                       columns={unusedColumns}
                       rows={unused}
                       rowKey={(u) => `unused:${u.schema}.${u.table}.${u.index}`}
+                      rowAction={indexRowAction}
                       selection={selection}
                       rowAttrs={(u) => ({ "data-index": `${u.table}.${u.index}` })}
                       rowContextMenu={u => getIndexRowContextMenu(u.schema, u.table, u.index, u.visible)}
@@ -973,6 +907,7 @@ export function IndexesView({
                       columns={redundantColumns}
                       rows={redundant}
                       rowKey={(r) => `redundant:${r.schema}.${r.table}.${r.index}`}
+                      rowAction={indexRowAction}
                       selection={selection}
                       rowAttrs={(r) => ({ "data-index": `${r.table}.${r.index}` })}
                       rowContextMenu={r => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible)}

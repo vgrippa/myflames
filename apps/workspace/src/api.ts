@@ -28,6 +28,9 @@ export type Analysis = {
   primary_action?: { ref: string };
   warnings: Finding[];
   suggestions: Suggestion[];
+  query?: { raw?: string };
+  /** Sidecar teach hooks; the workspace leaves `query_sql` to Export JSON. */
+  teach_hooks?: (Record<string, unknown> & { query_sql?: string })[];
 };
 export type Operator = {
   node_id: string;
@@ -51,7 +54,7 @@ export type Plan = {
   teach_hooks?: TeachHook[];
   capture?: Capture;
   notes?: string;
-  /** chart-data-1.0 for the full tree; drawn in-page by PlanChart. */
+  /** chart-data-2.0 for the full tree (the bundle also reads 1.0); drawn in-page by PlanChart. */
   chart_data?: ChartData;
 };
 export type Comparison = {
@@ -358,6 +361,47 @@ export type Bundle = {
   }[];
   updated_at?: string;
 };
+/**
+ * investigation-summary-1.0: one row of `investigations/list`. Everything
+ * Home and Library show, without the saved plans; `getInvestigation` returns
+ * the complete bundle for Open, Compare and Export.
+ */
+export type InvestigationSummary = Omit<Bundle, "schema_version" | "plans"> & {
+  schema_version: "investigation-summary-1.0";
+  id: string;
+  plans: { id: string; name: string; capture?: { mode?: string | null } }[];
+};
+export type InvestigationCursor = { updated_at: string; id: string };
+/** investigation-list-1.0: newest first; `next_cursor` is null on the last page. */
+export type InvestigationPage = {
+  schema_version: "investigation-list-1.0";
+  items: InvestigationSummary[];
+  next_cursor: InvestigationCursor | null;
+};
+/** One page of saved investigations (1 to 50), filtered like Library's search. */
+export function listInvestigations(limit: number, cursor: InvestigationCursor | null = null,
+  search = "", signal?: AbortSignal) {
+  return api<InvestigationPage>("investigations/list", { limit, cursor, search }, signal);
+}
+/** The complete saved bundle; a bundle read from a file is already complete. */
+export function getInvestigation(item: InvestigationSummary | Bundle, signal?: AbortSignal): Promise<Bundle> {
+  return item.schema_version === "investigation-1.0" ? Promise.resolve(item) :
+    api<Bundle>("investigations/get", { id: item.id }, signal);
+}
+/**
+ * The analysis as Export JSON writes it. `/api/analyze` sends the SQL once
+ * (`query.raw`) instead of in every teach hook; the exported sidecar keeps
+ * `query_sql` on each hook, as the CLI's does.
+ */
+export function exportedAnalysis(analysis: Analysis): Analysis {
+  const sql = analysis.query?.raw;
+  if (!sql || !Array.isArray(analysis.teach_hooks)) return analysis;
+  return {
+    ...analysis,
+    teach_hooks: analysis.teach_hooks.map((hook) =>
+      "query_sql" in hook ? hook : { ...hook, query_sql: sql }),
+  };
+}
 export type MatchDelta = {
   before_node_id: string | null;
   after_node_id: string | null;

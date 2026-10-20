@@ -594,9 +594,11 @@ export function Connections({
     { key: "endpoint", label: "user@host:port", width: 200, sort: row => connectionTarget(row.fields),
       render: row => <span className="cell-truncate" title={connectionTarget(row.fields)}>{connectionTarget(row.fields)}</span> },
     { key: "schema", label: "Default schema", width: 140, sort: row => row.fields.database,
-      render: row => <span className="cell-truncate" title={row.fields.database || "None"}>{row.fields.database || "None"}</span> },
+      render: row => row.fields.database
+        ? <span className="cell-truncate" title={row.fields.database}>{row.fields.database}</span>
+        : <span className="cell-truncate cell-empty" title="No default schema">—<span className="visually-hidden">No default schema</span></span> },
     { key: "password", label: "Password", width: 96, sort: row => row.profile?.has_saved_password ? 1 : 0,
-      render: row => <span className="cell-truncate" title={passwordStatus(row.profile)}>{row.profile?.has_saved_password ? "Saved" : "None"}</span> },
+      render: row => <span className="cell-truncate" title={passwordStatus(row.profile)}>{row.profile?.has_saved_password ? "Saved" : "Not saved"}</span> },
     { key: "last-used", label: "Last used", width: 140, title: "Usage observed during this window; earlier use is not recorded.",
       sort: row => lastUsed.get(row.key) || "", render: row => row.profile?.id === active.id || row.key === "active" ? <span title="In use">In use</span>
         : lastUsed.has(row.key) ? <time className="cell-truncate" title={new Date(lastUsed.get(row.key)!).toLocaleString()} dateTime={lastUsed.get(row.key)}>{relativeTime(lastUsed.get(row.key)!)}</time>

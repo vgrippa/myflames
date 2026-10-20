@@ -8,7 +8,7 @@ import { ensurePanelStyles } from "./styles";
 import type { ChartData, ChartHandle, MetricName, MountOptions } from "./types";
 import type { PanelRenderer, ViewInstance, ViewRenderer } from "./view";
 
-const SCHEMA = "chart-data-1.0";
+const SCHEMAS = ["chart-data-1.0", "chart-data-2.0"];
 const views = new Map<string, ViewRenderer>();
 const panels = new Map<string, PanelRenderer>();
 let instances = 0;
@@ -27,8 +27,8 @@ export function availableViews(): string[] {
 
 /** Render one chart into *element*; returns a handle scoped to it. */
 export function mount(element: HTMLElement, data: ChartData, options: MountOptions): ChartHandle {
-  if (!data || data.schema_version !== SCHEMA) {
-    throw new Error("Unsupported chart data; expected " + SCHEMA + ".");
+  if (!data || !SCHEMAS.includes(data.schema_version)) {
+    throw new Error("Unsupported chart data; expected " + SCHEMAS.join(" or ") + ".");
   }
   const doc = element.ownerDocument;
   const win = (doc.defaultView || window) as unknown as BridgeWindow;

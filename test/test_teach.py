@@ -1427,5 +1427,45 @@ class TestJoinOrderLesson(unittest.TestCase):
         self.assertIn("100000", self.html)
 
 
+
+class TestLessonTitlesSentenceCase(unittest.TestCase):
+    """Learn lists the catalog titles and family labels, and every lesson page
+    shows its own title: all in sentence case. Product, engine and optimizer
+    names keep their spelling (InnoDB, MySQL, FirstMatch, B+tree)."""
+
+    # Words that keep a capital inside a sentence-case title.
+    PROPER = {"InnoDB", "MySQL", "MariaDB", "FirstMatch", "B+tree", "EXPLAIN",
+              "WHERE", "LRU", "BKA", "MRR", "BNL"}
+
+    def assertSentenceCase(self, text, where):
+        # Quoted EXPLAIN output ("Using index") is quoted, not titled.
+        unquoted = re.sub(r'"[^"]*"', "", text)
+        words = re.findall(r"[A-Za-z][A-Za-z+'-]*", unquoted)
+        self.assertTrue(words and words[0][0].isupper(), f"{where}: {text!r} starts with a capital")
+        for word in words[1:]:
+            bare = word.split("'")[0]
+            titled = bare[:1].isupper() and bare[1:].islower() and len(bare) > 1
+            self.assertFalse(titled and bare not in self.PROPER,
+                             f"{where}: {text!r} capitalizes {bare!r}; use sentence case")
+
+    def test_catalog_titles_and_family_labels(self):
+        from myflames.teach import LESSONS, _FAMILY_LABELS
+        for key, lesson in LESSONS.items():
+            self.assertSentenceCase(lesson["title"], f"catalog title of {key}")
+            self.assertNotIn("`", lesson["summary"], f"{key}: the summary is plain text, not Markdown")
+        for key, label in _FAMILY_LABELS.items():
+            self.assertSentenceCase(label, f"family label {key}")
+
+    def test_lesson_page_titles(self):
+        from myflames.teach import LESSONS, render_lesson
+        import html as html_lib
+        for key in LESSONS:
+            page = render_lesson(key)
+            title = re.search(r"<title>(.*?)</title>", page, re.S)
+            self.assertIsNotNone(title, key)
+            self.assertSentenceCase(html_lib.unescape(title.group(1)), f"page title of {key}")
+            for chip in re.findall(r'<span class="family-chip">.*?</span>([^<]*)</span>', page):
+                self.assertSentenceCase(chip, f"family chip of {key}")
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,20 @@ const largeCatalog = { ...catalog, user_tables: 5000,
   schemas: catalog.schemas.map((x) => (x.name === "mftab" ? { ...x, tables: 4999 } : x)) };
 
 const schemasMock = { status: 200, body: catalog };
-const h = await open("/api/live/tables", "tables", { "/api/live/schemas": schemasMock });
+const tableColumns = (body) => ({ status: 200, body: { schema: body.schema, table: body.table, columns: [
+  { name: "a", type: "int", nullable: true, default: null, key: "", extra: "" },
+  { name: "b", type: "varchar(20)", nullable: false, default: "x", key: "MUL", extra: "" },
+] } });
+// Review and apply hands the statements to the reviewed-SQL sheet: the run
+// asks for confirmation, and a decline sends nothing.
+const editorRun = (body) => body.decline
+  ? { status: 200, body: { status: "declined" } }
+  : { status: 200, body: { status: "needs_confirmation", confirmation: { token: "t1", text: "Review the statements.", tone: "primary",
+      connection: { user: "root", host: "127.0.0.1", port: 3306 }, connection_type: "development", warnings: [],
+      statements: body.sql.split(";\n"), typed_target: null } } };
+const h = await open("/api/live/tables", "tables", { "/api/live/schemas": schemasMock, "/api/live/table-columns": tableColumns,
+  "/api/editor/preview": { status: 400, body: { error: "Not checked in this test." } }, "/api/editor/run": editorRun,
+  "/api/editor/close": { status: 200, body: { closed: true, session: null } } });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: fresh };
 const view = ".server-view[data-view=tables]";
@@ -276,6 +289,110 @@ try {
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=missing]`);
   await h.select(`${view} tr[data-table="mftab.no_key"]`);
+
+  // Add column and Remove column are modal sheets: labelled by their title,
+  // focus moves in and stays inside, Escape and Cancel close them and return
+  // focus to the control that opened them, and Cancel and the review button
+  // stay in view in the 720x520 window (492 px of content).
+  const sheet = "dialog.table-alter-dialog";
+  const sheetState = () => page.$eval(sheet, (d) => ({
+    modal: d.open && d.matches(":modal"),
+    role: d.getAttribute("role"),
+    title: document.getElementById(d.getAttribute("aria-labelledby") || "")?.textContent || "",
+    described: !!document.getElementById(d.getAttribute("aria-describedby") || "")?.textContent,
+    focused: d.contains(document.activeElement) ? (document.activeElement.closest("label")?.querySelector(".field-label")?.textContent || document.activeElement.textContent) : null,
+    actions: Array.from(d.querySelectorAll(".sheet-actions button"), (b) => {
+      const r = b.getBoundingClientRect();
+      return [b.textContent, r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth];
+    }),
+  }));
+  const tabStaysInside = async (presses) => {
+    for (let i = 0; i < presses; i++) {
+      await page.keyboard.press("Tab");
+      assert.equal(await page.$eval(sheet, (d) => d.contains(document.activeElement)), true, "Tab stays in the sheet");
+    }
+    await page.keyboard.down("Shift");
+    for (let i = 0; i < 3; i++) {
+      await page.keyboard.press("Tab");
+      assert.equal(await page.$eval(sheet, (d) => d.contains(document.activeElement)), true, "Shift+Tab stays in the sheet");
+    }
+    await page.keyboard.up("Shift");
+  };
+  const addButton = ".view-inspector button ::-p-text(Add column)";
+  await page.locator(addButton).click();
+  await page.waitForSelector(sheet);
+  await page.waitForFunction((s) => document.querySelector(s)?.contains(document.activeElement), {}, sheet);
+  let alter = await sheetState();
+  assert.equal(alter.modal, true, "Add column is a modal dialog");
+  assert.equal(alter.role, "dialog");
+  assert.equal(alter.title, "Add column to mftab.no_key");
+  assert.equal(alter.described, true);
+  assert.equal(alter.focused, "Column name", "focus starts in the column name");
+  await tabStaysInside(10);
+  await page.setViewport({ width: 720, height: 492 });
+  await page.waitForFunction((s) => document.querySelector(s)?.getBoundingClientRect().height <= innerHeight, {}, sheet);
+  assert.deepEqual((await sheetState()).actions, [["Cancel", true], ["Review and apply…", true]], "actions stay in view at 720x492");
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Add column", "Escape returns focus to Add column");
+
+  // Remove column: Cancel first (a destructive change), actions in view at 720x492.
+  await page.locator(".view-inspector button ::-p-text(Remove column)").click();
+  await page.waitForSelector(`${sheet} .col-info-card`);
+  alter = await sheetState();
+  assert.equal(alter.modal, true, "Remove column is a modal dialog");
+  assert.equal(alter.role, "alertdialog");
+  assert.equal(alter.title, "Remove column from mftab.no_key");
+  assert.equal(alter.focused, "Cancel", "Cancel is focused first");
+  await tabStaysInside(6);
+  await page.setViewport({ width: 720, height: 492 });
+  await page.waitForFunction((s) => document.querySelector(s)?.getBoundingClientRect().height <= innerHeight, {}, sheet);
+  alter = await sheetState();
+  assert.deepEqual(alter.actions, [["Cancel", true], ["Review and drop column…", true]], "actions stay in view at 720x492");
+  await (await page.$(sheet)).screenshot({ path: path.join(h.shots, "tables-remove-column-720.png") });
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.locator(`${sheet} button ::-p-text(Cancel)`).click();
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Remove column", "Cancel returns focus to Remove column");
+
+  // Review and apply closes the column sheet and hands the exact statements to
+  // the reviewed-SQL sheet, which takes focus; declining it returns focus to
+  // Add column and sends nothing.
+  await page.locator(addButton).click();
+  await page.waitForFunction((s) => document.querySelector(s + " input")?.matches(":focus"), {}, sheet);
+  await page.keyboard.type("is_active");
+  await page.locator(`${sheet} button ::-p-text(Review and apply)`).click();
+  await page.waitForFunction(() => /ADD COLUMN `is_active`/.test(document.querySelector("dialog.confirm-sheet .sql-preview")?.textContent || ""));
+  assert.equal(await page.$(sheet), null, "the column sheet closes");
+  const sent = state.other.filter((o) => o.path === "/api/editor/run").at(-1).body;
+  assert.equal(sent.sql, "SET SESSION lock_wait_timeout = 5;\nALTER TABLE `mftab`.`no_key` ADD COLUMN `is_active` VARCHAR(255) NULL");
+  assert.equal(sent.require_confirmation, true);
+  await page.waitForFunction(() => document.querySelector("dialog.confirm-sheet")?.contains(document.activeElement));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"));
+  assert.equal(state.other.filter((o) => o.path === "/api/editor/run").at(-1).body.decline, true, "Escape declines the review");
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Add column", "focus returns to Add column after the review");
+
+  // From the row's Actions menu, focus returns to the menu button (the menu
+  // closes with the choice). The table shows once the row's details close.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  // The row's ⋯ menu (shown on the hovered, focused or selected row).
+  const trigger = `${view} tr[data-table="mftab.no_key"] .row-more`;
+  await page.waitForSelector(trigger);
+  await page.$eval(trigger, (b) => { b.scrollIntoView({ block: "nearest", inline: "nearest" }); b.focus(); b.click(); });
+  await page.waitForSelector(".row-action-menu [role=menuitem]");
+  await page.$$eval(".row-action-menu [role=menuitem]", (items) => {
+    const add = items.find((i) => /^Add column/.test((i.textContent || "").trim()));
+    add.focus(); add.click();
+  });
+  await page.waitForSelector(sheet);
+  assert.equal((await sheetState()).title, "Add column to mftab.no_key");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  assert.equal(await page.$eval(trigger, (b) => b === document.activeElement), true, "focus returns to the row's ⋯ button");
+  await h.select(`${view} tr[data-table="mftab.no_key"]`);
+
   await page.locator(".view-inspector button ::-p-text(Indexes)").click();
   await page.waitForSelector("#server-nav-indexes[aria-current=page]");
   for (let i = 0; i < 50 && !state.other.some((o) => o.path === "/api/live/indexes"); i++) await pause(50);

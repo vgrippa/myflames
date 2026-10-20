@@ -16,7 +16,10 @@
 //
 // Click (or Enter/Space) selects a frame and zooms to it: its subtree fills
 // the width, ancestors stay dimmed at full width (click one to zoom out),
-// everything else hides, and labels are refitted. The inline toolbar
+// everything else hides, and labels are refitted. The zoomed frame's id is
+// kept in the root's data-zoom attribute, and options.zoom_id opens the chart
+// zoomed to that frame (the workspace redraws a chart for a new width this
+// way); an unknown id leaves it unzoomed. The inline toolbar
 // searches by regex (Ctrl+F / Cmd+F / F3 only while focus is inside this
 // chart); Escape clears the search first, then the zoom. When
 // options.workspace is true, the standalone title and bottom details bar are
@@ -259,7 +262,7 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
   const footerH = workspace ? SIDE_MARGIN : FOOTER_H;
   const height = headerH + rows * pitch + footerH;
 
-  const toolbar = createToolbar(doc, container, "Search frames (regex)", true);
+  const toolbar = createToolbar(doc, container, undefined, true);
   if (toolbar.ignoreCase) toolbar.ignoreCase.checked = true;
   const root = svg(doc, "svg", {
     width, height, viewBox: "0 0 " + width + " " + height, class: "mfc-flame",
@@ -330,6 +333,7 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
       item.g.classList.remove("fg-hidden", "fg-ancestor");
     }
     zoomed = null;
+    root.removeAttribute("data-zoom");
     resetControl.classList.add("fg-off");
   };
   const zoom = (target: Item) => {
@@ -348,6 +352,7 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
       }
     }
     zoomed = target;
+    root.setAttribute("data-zoom", target.node.id);
     resetControl.classList.remove("fg-off");
   };
 
@@ -368,6 +373,8 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
     listen(item.g, "focus", () => describe(item.info));
     listen(item.g, "blur", idle);
   }
+  const opening = typeof options.zoom_id === "string" ? byId.get(options.zoom_id) : undefined;
+  if (opening) zoom(opening);
   const resetFromControl = (event: Event) => { event.stopPropagation(); reset(); };
   listen(resetControl, "click", resetFromControl);
   listen(resetControl, "keydown", (event: KeyboardEvent) => {

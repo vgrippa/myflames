@@ -1,14 +1,14 @@
 // Home is a launcher: the shell owns its title and toolbar, Connections owns
 // server settings, and recent work uses the same compact rows as other places.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, appVersion, time, type Bundle, type Plan } from "./api";
+import { appVersion, getInvestigation, listInvestigations, time, type Bundle, type InvestigationSummary, type Plan } from "./api";
 import { Icon } from "./components";
 
 import { defaultLab, relativeTime, type QueryTab } from "./session";
 import "./home.css";
 
 export function Home({
-  busy, plans, connections, onImport, onDropFile, onSample,
+  busy, plans, connections, onDropFile, onSample,
   onOpenPlan, onOpenBundle, onInvestigations, queryTabs = [], onOpenQuery,
   onQuery, onServer, onDiagram,
 }: {
@@ -17,7 +17,6 @@ export function Home({
   plans: Plan[];
   /** App supplies the existing Connections component, including its editor. */
   connections: ReactNode;
-  onImport: () => void;
   onDropFile: (file?: File) => void;
   onSample: () => void;
   onOpenPlan: (id: string) => void;
@@ -30,7 +29,7 @@ export function Home({
   onServer: () => void;
   onDiagram: () => void;
 }) {
-  const [saved, setSaved] = useState<Bundle[] | null>(null);
+  const [saved, setSaved] = useState<InvestigationSummary[] | null>(null);
   const [error, setError] = useState("");
   const [opening, setOpening] = useState("");
   const openingRef = useRef(false);
@@ -38,7 +37,7 @@ export function Home({
   useEffect(() => {
     const controller = new AbortController();
     setError("");
-    api<{ items: Bundle[] }>("investigations/list", {}, controller.signal)
+    listInvestigations(6, null, "", controller.signal)
       .then((r) => {
         if (!controller.signal.aborted)
           setSaved([...r.items].sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || "")));
@@ -52,12 +51,12 @@ export function Home({
     queryTabs[0].name === initialTab.name && queryTabs[0].sql === initialTab.sql &&
     queryTabs[0].parameters === initialTab.parameters;
   const queries = onlyInitialQuery ? [] : queryTabs;
-  async function open(bundle: Bundle) {
+  async function open(bundle: InvestigationSummary) {
     if (openingRef.current) return;
     openingRef.current = true;
     setOpening(bundle.id || bundle.name);
     setError("");
-    try { await onOpenBundle(bundle); }
+    try { await onOpenBundle(await getInvestigation(bundle)); }
     catch (e) { setError((e as Error).message); }
     finally { openingRef.current = false; setOpening(""); }
   }
@@ -86,10 +85,9 @@ export function Home({
           {saved === null && !error && <p className="empty-small" role="status">Loading investigations…</p>}
           {!plans.length && !recent.length && !queries.length && saved !== null && (
             <div className="home-start" aria-label="Get started">
-              <p>No recent work. Import a plan to get started.</p>
+              <p>No recent work yet. Import a plan from the top bar, or start with the sample.</p>
               <div className="home-start-actions">
-                <button className="button" disabled={busy} onClick={onImport}>Import plan</button>
-                <button className="text-button sample-card" disabled={busy} onClick={onSample}>Explore sample plan</button>
+                <button className="button sample-card" disabled={busy} onClick={onSample}>Explore sample plan</button>
               </div>
             </div>
           )}

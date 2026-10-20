@@ -296,9 +296,12 @@ try {
   const [beforeSel, afterSel] = await selectedIds();
   assert.equal(beforeSel.length, 1);
   assert.deepEqual(afterSel, []);
+  // A pair with the same label on both sides is titled once; its badge says
+  // it was matched (not Added or Removed).
   const matched = await page.$$eval(".comparison-row", (els) =>
     els.findIndex((el) =>
-      el.textContent.includes("Nested loop inner join → Nested loop inner join"),
+      el.querySelector("strong").textContent === "Nested loop inner join" &&
+      !["added", "removed"].includes(el.querySelector(".match-badge").dataset.status),
     ),
   );
   assert.ok(matched > 0);

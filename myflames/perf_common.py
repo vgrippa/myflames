@@ -142,10 +142,14 @@ def text_rows(conn, sql, tag):
             for line in text.split("\n") if line]
 
 
+#: The statement _server sends; discover.SHARED_METADATA_SQL lists it.
+SERVER_STATE_SQL = "SELECT @@version, @@performance_schema"
+
+
 def _server(conn, tag="/*myflames:discover*/ "):
     """Return (engine, version string, version tuple, performance_schema on)."""
     try:
-        rows = text_rows(conn, "SELECT @@version, @@performance_schema", tag)
+        rows = text_rows(conn, SERVER_STATE_SQL, tag)
     except ConnectorError as exc:
         if "performance_schema" in str(exc) and "nknown system variable" in str(exc):
             version = conn.server_version()

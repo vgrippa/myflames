@@ -44,10 +44,34 @@ let items = [
   },
 ];
 let investigations = [];
+/** pathname -> { when(body), promise }: matching replies wait for the promise (slow-reply cases). */
+const gates = {};
+const hold = (pathname, when = () => true) => {
+  let release;
+  gates[pathname] = { when, promise: new Promise((resolve) => { release = resolve; }) };
+  return () => { delete gates[pathname]; release(); };
+};
 const rawPlan = await fs.readFile(path.join(root, "test/mysql-explain-json-sample.json"), "utf8");
 const seen = {};
 const handlers = {
-  "/api/investigations/list": () => ({ items: investigations }),
+  // Like ui.py: summaries newest first (updated_at, then id), filtered, in
+  // keyset pages; "get" returns the bundle.
+  "/api/investigations/list": (body) => {
+    const needle = (body.search || "").trim().toLowerCase();
+    const key = (b) => [b.updated_at, b.id];
+    const before = (a, b) => a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
+    const rows = investigations
+      .filter((b) => `${b.name} ${b.tags.join(" ")} ${b.notes}`.toLowerCase().includes(needle))
+      .filter((b) => !body.cursor || before(key(b), [body.cursor.updated_at, body.cursor.id]))
+      .sort((a, b) => (before(key(a), key(b)) ? 1 : -1))
+      .map(({ plans, ...rest }) => ({ ...rest, schema_version: "investigation-summary-1.0",
+        plans: plans.map((p) => ({ id: p.id, name: p.name })) }));
+    const items = rows.slice(0, body.limit);
+    const last = items[items.length - 1];
+    return { schema_version: "investigation-list-1.0", items,
+      next_cursor: rows.length > body.limit ? { updated_at: last.updated_at, id: last.id } : null };
+  },
+  "/api/investigations/get": (body) => investigations.find((b) => b.id === body.id),
   "/api/investigations/delete": (body) => {
     investigations = investigations.filter((b) => b.id !== body.id);
     return { deleted: true };
@@ -106,13 +130,17 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.setRequestInterception(true);
-  page.on("request", (request) => {
+  page.on("request", async (request) => {
     const pathname = new URL(request.url()).pathname;
     const handler = handlers[pathname];
     if (!handler) return request.continue();
     const body = JSON.parse(request.postData() || "{}");
     (seen[pathname] = seen[pathname] || []).push(body);
-    request.respond({ status: 200, contentType: "application/json", body: JSON.stringify(handler(body)) });
+    const reply = JSON.stringify(handler(body));
+    const gate = gates[pathname];
+    if (gate && gate.when(body)) await gate.promise;
+    try { await request.respond({ status: 200, contentType: "application/json", body: reply }); }
+    catch { /* the page aborted the request while it was held */ }
   });
   await page.setViewport({ width: 1440, height: 1000 });
   await page.goto(url, { waitUntil: "networkidle0" });
@@ -146,7 +174,12 @@ try {
   assert.match(await text(".topbar-title"), /^Home/);
   await page.waitForSelector('.home [aria-label="Get started"]');
   assert.equal((await page.$$('.topbar button[aria-label="Import plan"]')).length, 1);
-  assert.equal((await page.$$('.home-start button ::-p-text(Import plan)')).length, 1, "empty state offers import");
+  // Home has one Import plan (the top bar, also with recent work) and one
+  // primary action (Add connection); the empty state offers the sample.
+  assert.equal(await page.$$eval('button', (els) => els.filter((el) => el.textContent.trim() === 'Import plan' && el.getClientRects().length).length), 1, "one Import plan on Home");
+  assert.equal(await page.$('.topbar [aria-label="Import plan"].primary'), null, "Import plan is secondary on Home");
+  assert.deepEqual(await page.$$eval('.home button.primary, .topbar button.primary', (els) => els.filter((el) => el.getClientRects().length).map((el) => el.textContent.trim())), ["Add connection"], "one primary action on Home");
+  assert.equal((await page.$$('.home-start button ::-p-text(Explore sample plan)')).length, 1, "empty state offers the sample");
   assert.equal(await page.$('.topbar [aria-label="New query tab"]'), null, "New query tab belongs to the editor");
   assert.equal((await page.$$('.home [aria-label="Recent work"]')).length, 1, "one recent list");
   assert.equal(await page.$('.home-capabilities'), null);
@@ -164,6 +197,7 @@ try {
     Learn: ".teach-workspace",
     Home: ".home",
   };
+  const sidebarWidths = new Set();
   for (const [label, selector] of Object.entries(screens)) {
     await go(label);
     await page.waitForFunction(
@@ -192,6 +226,29 @@ try {
     // A mouse click leaves no focus ring on the place.
     assert.equal(await page.$eval(".main-nav button.active", (e) => e.matches(":focus-visible") || getComputedStyle(e).outlineStyle !== "none"), false,
       `${label}: no focus ring after a click`);
+    // One sidebar width for every place: the chrome never shifts.
+    sidebarWidths.add(await page.$eval(".sidebar", (e) => Math.round(e.getBoundingClientRect().width)));
+    // The Local badge is in the top bar of every place.
+    assert.equal(await page.$eval(".topbar .local-badge", (e) => e.getClientRects().length > 0), true, `${label}: Local badge shown`);
+    // Server and Workload: Refresh all follows the connection picker in the
+    // top bar, above the bar's hairline, and never sits over a view's Refresh.
+    if (label === "Server" || label === "Workload") {
+      const geometry = await page.evaluate(() => {
+        const box = (s) => { const e = [...document.querySelectorAll(s)].find((x) => x.getClientRects().length); return e ? e.getBoundingClientRect() : null; };
+        const all = box(".server-place [data-action=refresh-all]");
+        const own = box(".server-view [data-action=refresh]");
+        const bar = box(".window-toolbar");
+        const picker = box(".window-toolbar .connection-picker");
+        return { all: all && { left: all.left, right: all.right, bottom: all.bottom, icon: !!document.querySelector(".server-place [data-action=refresh-all] svg") },
+          own: own && { left: own.left, right: own.right }, barBottom: bar.bottom, pickerRight: picker && picker.right,
+          toolbarBottom: box(".server-place > .place-toolbar").bottom };
+      });
+      assert.ok(geometry.all, `${label}: Refresh all is shown`);
+      assert.equal(geometry.all.icon, false, `${label}: Refresh all is a text button, unlike a view's Refresh`);
+      if (geometry.pickerRight !== null) assert.ok(geometry.all.left >= geometry.pickerRight, `${label}: Refresh all follows the picker ${JSON.stringify(geometry)}`);
+      if (geometry.own) assert.ok(geometry.all.right <= geometry.own.left || geometry.all.left >= geometry.own.right, `${label}: Refresh all is not stacked over Refresh ${JSON.stringify(geometry)}`);
+      assert.ok(geometry.toolbarBottom <= geometry.barBottom - 1, `${label}: the top bar keeps its hairline ${JSON.stringify(geometry)}`);
+    }
     // Tuning is a place of its own: no Server list of views, no Server toolbar.
     if (label === "Tuning") {
       assert.equal(await page.$eval(".server-place.is-tuning-place", (e) => !!e.querySelector(".source-list, .place-toolbar")), false,
@@ -199,6 +256,26 @@ try {
       assert.ok(await page.$('.window-statusbar[aria-label="Workspace status"] [data-status="safety"]'), "Tuning has the window footer");
     }
   }
+  assert.equal(sidebarWidths.size, 1, `one sidebar width: ${[...sidebarWidths]}`);
+  // The command palette lists the places in the sidebar's order, Compare
+  // under Plans (a mode, not a place) and the Audit log with its own icon.
+  await page.keyboard.down("Meta"); await page.keyboard.press("k"); await page.keyboard.up("Meta");
+  await page.waitForSelector("dialog.command-palette[open]");
+  const commands = await page.$$eval(".command-option", (els) => els.map((e) => [e.querySelector("span")?.textContent, e.querySelector("small")?.textContent]));
+  assert.deepEqual(commands.filter(([, g]) => g === "Places").map(([l]) => l), places, "palette places follow the sidebar");
+  assert.deepEqual(commands.find(([l]) => l === "Compare"), ["Compare", "Plans"]);
+  assert.equal(commands.some(([l]) => l === "Compare plans"), false);
+  await page.type('input[aria-label="Search commands"]', "audit");
+  assert.deepEqual(await texts(".command-option span"), ["Audit log"]);
+  const auditIcon = await page.$eval(".command-option svg", (e) => e.innerHTML);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.command-palette"));
+  await page.click('button[aria-label="Settings"]');
+  await page.waitForSelector("#settings-popover");
+  assert.equal(await page.$$eval("#settings-popover .settings-item", (els) => els.find((e) => e.textContent.trim() === "Audit log")?.querySelector("svg")?.innerHTML),
+    auditIcon, "the palette uses the Audit log's own icon");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
   // The keyboard focus ring is visible and is not the selection fill.
   await page.focus('.main-nav button[data-place="server"]');
   await page.keyboard.press("ArrowDown");
@@ -228,7 +305,7 @@ try {
   assert.equal((await page.$$(".local-badge")).length, 1);
   assert.equal(await page.evaluate(() => document.body.textContent.includes("Local workspace")), false);
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
-  assert.equal(await text(".session-status"), "Workspace autosaved");
+  assert.equal(await text(".session-status"), "All changes saved");
 
   // 4. Settings: a popover with the startup option; Escape returns focus.
   const settings = 'button[aria-label="Settings"]';
@@ -237,7 +314,8 @@ try {
   await page.waitForSelector("#settings-popover[role=dialog]");
   assert.equal(await page.$eval(settings, (e) => e.getAttribute("aria-expanded")), "true");
   assert.match(await text("#settings-popover"), /Restore workspace on startup/);
-  assert.match(await text("#session-toggle-hint"), /passwords are never saved/);
+  // Saved passwords exist (Keychain); they are never part of the workspace.
+  assert.match(await text("#session-toggle-hint"), /Passwords are never part of the workspace\./);
   assert.equal(await page.$eval("#settings-popover .session-toggle input", (e) => e.checked), true);
   assert.equal(
     await page.evaluate(() => document.activeElement?.closest("#settings-popover") !== null),
@@ -292,8 +370,10 @@ try {
     "the same app mark as the sidebar",
   );
   const aboutText = await text(about);
-  assert.match(aboutText, /Performance workspace/);
-  assert.match(aboutText, /MySQL and MariaDB performance workspace/);
+  // Each fact once: the subtitle names the product, the facts the databases.
+  assert.equal(aboutText.split("Performance workspace").length - 1, 1, "Performance workspace appears once");
+  assert.equal(aboutText.split("MySQL and MariaDB").length - 1, 1, "MySQL and MariaDB appears once");
+  assert.equal(await page.$eval(about + " .about-close", (e) => e.classList.contains("primary")), true, "Close is the default button");
   const version = await page.$eval('meta[name="myflames-version"]', (e) => e.content);
   assert.match(version, /^\d+\.\d+/, "the server fills in the package version");
   // About lists the version as a labelled field ("Version" row), the span holds the number.
@@ -517,6 +597,23 @@ try {
     catch { await new Promise((resolve) => setTimeout(resolve, 50)); }
   }
   assert.deepEqual(exported, investigations.find((b) => b.id === "newer"), "export preserves notes, tags, plans, and baseline");
+  // The list carries summaries in bounded pages; Export reads the complete bundle.
+  assert.ok(seen["/api/investigations/list"].every((b) => Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 50));
+  assert.equal(last("/api/investigations/get").id, "newer");
+  // After a short typing pause the server searches every saved investigation.
+  let listReads;
+  for (let attempt = 0; attempt < 100 && last("/api/investigations/list").search !== "customer"; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  listReads = seen["/api/investigations/list"].length;
+  assert.equal(last("/api/investigations/list").search, "customer", "the server searches every saved investigation");
+  // The server gets the search trimmed as the list filters it (JavaScript trim, U+FEFF included).
+  await page.locator('[aria-label="Search investigations"]').fill("\uFEFF customer ");
+  const trimmedRead = () => seen["/api/investigations/list"].slice(listReads).some((b) => b.search === "customer");
+  for (let attempt = 0; attempt < 100 && !trimmedRead(); attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(trimmedRead(), "the search is sent trimmed");
+  assert.ok(seen["/api/investigations/list"].slice(listReads).every((b) => b.search === b.search.trim()));
+  assert.deepEqual(await texts(".library-item strong"), ["Orders review"]);
   await button("Compare to baseline", ".library-actions ");
   await page.waitForSelector('iframe[title="Baseline comparison"]');
   assert.equal(await page.$eval('iframe[title="Baseline comparison"]', (e) => e.getAttribute("sandbox")), "allow-scripts");
@@ -535,8 +632,10 @@ try {
   assert.equal((seen["/api/investigations/delete"] || []).length, 0);
   // Selecting an investigation never opens its plans; Open all does so explicitly.
   assert.deepEqual(await active(), ["Investigations"]);
+  const reads = (seen["/api/investigations/get"] || []).length;
   await button("Open all", ".library-actions ");
   await page.waitForSelector(".plan-heading");
+  assert.equal(seen["/api/investigations/get"].length, reads + 1, "Open all reads the complete bundle");
   assert.deepEqual(await active(), ["Plans"]);
   assert.deepEqual(await texts(".plan-select strong"), ["before.json", "after.json"]);
   await go("Home");
@@ -554,6 +653,7 @@ try {
   assert.equal(await page.$('.topbar [aria-label="Import plan"].primary'), null, "Import is secondary while plans are open");
   assert.equal(await page.$$eval('button', (els) => els.filter((el) => el.textContent.trim() === 'Import plan').length), 1);
   assert.deepEqual(await texts('[aria-label="Recent work"] [data-kind="investigation"] strong'), ["Orders review", "Inventory review"]);
+  assert.equal(last("/api/investigations/list").limit, 6, "Home reads only the six recent investigations");
   await page.setViewport({ width: 390, height: 844 });
   assert.equal(await overflow(), false, "Home with recent work fits at 390 px");
   await page.screenshot({ path: path.join(directory, "home-populated-mobile.png") });
@@ -586,6 +686,49 @@ try {
   assert.deepEqual(await active(), ["Plans"]);
   assert.ok(await page.$(".topbar button ::-p-text(Save investigation)"), "the imported plan can now be saved as an investigation");
 
+  // Investigations arrive in pages of 25, newest first, with Load more.
+  investigations = Array.from({ length: 30 }, (_, i) => ({
+    schema_version: "investigation-1.0", id: `bulk-${String(i).padStart(2, "0")}`,
+    name: `Bulk ${String(i).padStart(2, "0")}`, notes: "", tags: [], baseline_id: "p",
+    updated_at: new Date(Date.UTC(2026, 8, 1) + i * 60000).toISOString(),
+    plans: [{ id: "p", name: "p.json", raw: rawPlan }] }));
+  const libraryRows = () => page.$$eval(".library-item", (els) => els.map((e) => e.dataset.rowKey));
+  const waitFor = async (check, message) => {
+    for (let attempt = 0; attempt < 250 && !(await check()); attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(await check(), message);
+  };
+  await go("Investigations");
+  await waitFor(async () => (await libraryRows()).length === 25, "the first page holds 25 investigations");
+  assert.equal((await libraryRows())[0], "bulk-29", "newest first");
+  // A page that arrives while a delete is pending keeps both: no row is lost.
+  const releasePage = hold("/api/investigations/list", (body) => !!body.cursor);
+  await button("Load more investigations", ".library ");
+  await waitFor(() => !!last("/api/investigations/list").cursor, "Load more asks for the next page");
+  const releaseDelete = hold("/api/investigations/delete");
+  await button("Delete", ".library-actions ");
+  await button("Delete permanently", "dialog.confirm-sheet ");
+  await waitFor(() => (seen["/api/investigations/delete"] || []).some((b) => b.id === "bulk-29"), "the delete is sent");
+  releasePage();
+  await waitFor(async () => (await libraryRows()).length === 30, "the next page arrives during the delete");
+  releaseDelete();
+  await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"));
+  const remaining = await libraryRows();
+  assert.equal(remaining.length, 29, "the delete removes one row and keeps the page that arrived meanwhile");
+  assert.ok(!remaining.includes("bulk-29") && remaining.includes("bulk-00"));
+  assert.equal(await page.$(".library button ::-p-text(Load more investigations)"), null, "no more pages");
+  // A search typed before the first reply is a search with no match, not an empty library.
+  await go("Home");
+  const releaseFirst = hold("/api/investigations/list", (body) => !body.search);
+  await go("Investigations");
+  await page.locator('[aria-label="Search investigations"]').fill("zzz");
+  await waitFor(async () => /No matching investigations/.test(await text(".library")), "no match while the first page is pending");
+  assert.doesNotMatch(await text(".library-detail"), /No investigations yet/);
+  releaseFirst();
+  await button("Clear search", ".library ");
+  await waitFor(async () => (await libraryRows()).length === 25, "clearing the search lists the first page");
+  investigations = [];
+
   // 6. Home Connections: rows with settings and where the password is kept.
   await go("Home");
   await page.waitForSelector(".connection-row");
@@ -595,9 +738,10 @@ try {
   const stagingRow = connectionRow("Staging");
   assert.match(await text(prodRow), /analyst@db\.prod:3306shop/);
   assert.equal(await page.$eval(prodRow + " [data-col=password] span", el => el.title), "Password saved in macOS Keychain");
-  assert.match(await text(stagingRow), /dev@db\.staging:3307None/);
-  // The cell reads "None"; its tooltip keeps the full status.
-  assert.equal(await text(stagingRow + " [data-col=password]"), "None");
+  // No default schema reads as a dash (named for screen readers).
+  assert.match(await text(stagingRow), /dev@db\.staging:3307—No default schemaNot saved/);
+  // The cell reads "Not saved"; its tooltip keeps the full status.
+  assert.equal(await text(stagingRow + " [data-col=password]"), "Not saved");
   assert.equal(await page.$eval(stagingRow + " [data-col=password] span", el => el.title), "No saved password");
   // The unsaved default connection is in use until another is chosen.
   assert.match(await text(".connection-row.is-active"), /Local MySQL.*In use/);
@@ -737,10 +881,10 @@ try {
   await connectionAction(page, "Prod", "Forget password");
   await page.waitForFunction(() => document.querySelector(".connections .notice")?.textContent.includes("Saved password forgotten"));
   assert.equal(last("/api/profiles/forget-password").id, "p1");
-  // Forget password opens the form (compact columns); the row shows None once it closes.
+  // Forget password opens the form (compact columns); the row shows Not saved once it closes.
   await page.click(".connections .inspector-close");
   await page.waitForSelector(prodRow + " [data-col=password] span");
-  assert.equal(await text(prodRow + " [data-col=password]"), "None");
+  assert.equal(await text(prodRow + " [data-col=password]"), "Not saved");
   assert.equal(await page.$eval(prodRow + " [data-col=password] span", el => el.title), "No saved password");
 
   // 8. Keyboard: arrows move between places, Enter opens one.

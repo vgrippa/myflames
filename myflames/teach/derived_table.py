@@ -164,7 +164,7 @@ def render():
 
     return _html.render_page(
         lesson_id="derived_table",
-        title="Derived Table Materialization",
+        title="Derived table materialization: a subquery becomes a temp table",
         subtitle=(
             "Watch a FROM-clause subquery materialize into a temp table, "
             "get an auto-index, and then get probed by the outer query."

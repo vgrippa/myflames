@@ -18,16 +18,16 @@
   margin: 0 0 var(--space-2);
 }
 /* Session starts at 140 px and grows to fit identities and role pills.
-   Long lock modes and nested chains scroll inside the outline, including
-   when the inspector is open; no badge gives up its width. */
+   The outline fills its frame: Statement takes the room left and truncates
+   down to 200 px; below that (nested chains, a narrow window, the inspector
+   open) the outline scrolls inside its frame. No badge gives up its width. */
 .lock-tree {
   min-width: 0;
   overflow: auto;
 }
 .lock-tree-table {
   table-layout: auto;
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
 }
 .lock-col-session {
   width: 140px;
@@ -42,7 +42,7 @@
   width: 100%;
 }
 .lock-tree-table .tree-statement {
-  min-width: 260px;
+  min-width: 200px;
 }
 .lock-tree-table th,
 .lock-tree-table td {
@@ -51,14 +51,19 @@
 .lock-tree-table td:first-child {
   min-width: 140px;
 }
+/* Waits for is capped so Statement keeps real width at 1440 px; the full
+   lock description is in the tooltip and the inspector. */
 .lock-tree-table .cell-flex .cell-truncate {
-  max-width: none;
-  overflow: visible;
-  text-overflow: clip;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+/* The statement adds nothing to the column's intrinsic width (width 0), so
+   the column keeps its 200 px minimum and takes the room left. */
 .lock-tree-table .tree-statement .cell-truncate {
-  min-width: 260px;
-  max-width: 60ch;
+  width: 0;
+  min-width: 100%;
+  max-width: none;
 }
 .lock-tree .tree-cell {
   display: flex;
@@ -287,6 +292,9 @@
   border-radius: var(--radius-md);
 }
 .kill-dialog .lock-sql {
+  margin: 0 0 var(--space-3);
+}
+.kill-review-error {
   margin: 0 0 var(--space-3);
 }
 .kill-blocking {

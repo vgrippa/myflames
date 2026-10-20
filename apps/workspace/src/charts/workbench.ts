@@ -10,14 +10,18 @@
 // keep the "unknown" (unshaded) symbol.
 import { createDetails } from "./core/details";
 import { f1, html, svg } from "./core/dom";
-import { fitLabel, fmt, time } from "./core/format";
+import { cpLength, fitLabel, fmt, time } from "./core/format";
 import { bindSearch } from "./core/search";
 import { WORKBENCH_CSS } from "./core/styles";
+import { SEARCH_LABEL } from "./core/toolbar";
 import type { ChartNode, WorkbenchKind } from "./core/types";
 import type { ViewContext, ViewInstance } from "./core/view";
 import { createZoom } from "./core/zoom";
 
 export const BOX_W = 256;
+/** Width of the chip behind an edge's rows label: 5.6 px per code point at
+ * 11 px plus 8 px padding (output_workbench._edge_chip_width, keep in step). */
+export const edgeChipWidth = (text: string) => cpLength(text) * 5.6 + 8;
 export const BOX_H = 126;
 export const JOIN_H = 186;
 export const H_GAP = 76;
@@ -144,11 +148,13 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
   const controls = html(doc, "div", { class: "wb-controls" }, controlsObject);
   const button = (action: string, text: string, label?: string) =>
     html(doc, "button", { type: "button", "data-action": action, "aria-label": label, title: action === "reset" ? label : undefined }, controls, text);
-  const fitButton = button("fit", "Fit plan");
-  const inButton = button("in", "+", "Zoom in");
+  // Zoom out, readout, zoom in, then Fit: the macOS order, as in the
+  // Database diagram (output_workbench keeps the same order).
   const outButton = button("out", "−", "Zoom out");
   const resetButton = button("reset", "100%", "Reset zoom to 100%");
-  const search = html(doc, "input", { type: "search", "aria-label": "Search plan nodes", placeholder: "Search plan nodes" }, controls);
+  const inButton = button("in", "+", "Zoom in");
+  const fitButton = button("fit", "Fit", "Fit plan");
+  const search = html(doc, "input", { type: "search", "aria-label": SEARCH_LABEL, placeholder: SEARCH_LABEL }, controls);
   const status = html(doc, "span", { class: "wb-search-status", "aria-live": "polite" }, controls);
   // Workspace chrome is HTML, so legend text remains readable when the
   // canvas narrows. Reports retain their original SVG geometry for export.
@@ -208,8 +214,10 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
     const source = edge.from;
     const sy = source.y + source.height;
     const child = source.node;
-    svg(doc, "text", { x: f1(source.x + 8), y: f1(sy + 23), class: "wb-edge-label" }, graph,
-      "Rows/loop: " + fmt(child.actual_rows) + " actual · " + fmt(child.estimated_rows) + " est.");
+    const rows = "Rows/loop: " + fmt(child.actual_rows) + " actual · " + fmt(child.estimated_rows) + " est.";
+    svg(doc, "rect", { x: f1(source.x + 4), y: f1(sy + 11), width: f1(edgeChipWidth(rows)), height: 16, rx: 3,
+      class: "wb-edge-chip", fill: "#f8fafb" }, graph);
+    svg(doc, "text", { x: f1(source.x + 8), y: f1(sy + 23), class: "wb-edge-label" }, graph, rows);
     if (edge.phase) svg(doc, "text", { x: f1(source.x + 8), y: f1(sy + 41), class: "wb-edge-label" }, graph, edge.phase);
   }
 

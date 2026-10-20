@@ -416,7 +416,9 @@ try {
   assert.equal((await page.$$(".plan-item")).length, 0);
   await page.waitForSelector('.home [aria-label="Get started"]');
   assert.equal((await page.$$('.topbar [aria-label="Import plan"]')).length, 1);
-  assert.equal((await page.$$('.home-start button ::-p-text(Import plan)')).length, 1);
+  // One Import plan on Home (the top bar); the empty state offers the sample.
+  assert.equal((await page.$$('.home-start button ::-p-text(Import plan)')).length, 0);
+  assert.equal((await page.$$('.home-start button ::-p-text(Explore sample plan)')).length, 1);
   assert.equal(await page.$('.topbar [aria-label="New query tab"]'), null);
   await place(page, "Query editor");
   assert.deepEqual(

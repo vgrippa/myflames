@@ -283,16 +283,13 @@ def _object_enabled(objects, schema, table):
     """setup_objects decides per table. The server tries (schema, table), then
     (schema, '%'), then ('%', '%'); a ('%', table) row is never consulted
     (M/storage/perfschema/pfs_setup_object.cc:340-369). No match means not
-    instrumented."""
+    instrumented. *objects* is the {(schema, table): enabled} lookup that
+    _usage builds once per report (None when setup_objects was not read)."""
     if objects is None:
         return True
-    rows = {}
-    for row in objects:
-        if len(row) >= 3:
-            rows.setdefault((row[0], row[1]), (row[2] or "").upper() == "YES")
     for key in ((schema, table), (schema, "%"), ("%", "%")):
-        if key in rows:
-            return rows[key]
+        if key in objects:
+            return objects[key]
     return False
 
 
@@ -410,8 +407,13 @@ def _usage(server, raw, tables, backing, source, available):
     unused, full_scans, no_data = [], [], []
     if not available:
         return unused, full_scans, no_data
-    objects = raw.get("objects")
+    objects = None
     if source == "performance_schema":
+        if raw.get("objects") is not None:
+            objects = {}
+            for row in raw["objects"]:
+                if len(row) >= 3:
+                    objects.setdefault((row[0], row[1]), (row[2] or "").upper() == "YES")
         usage = {}
         for row in raw["usage"]:
             if len(row) < 6 or not row[0] or not row[1]:

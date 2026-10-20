@@ -593,9 +593,10 @@ function ResultView({
           {[
             cut ? <span key="cut" className="result-cut">{result.label || `first ${rowsText(result.row_count)}`}</span> : null,
             result.warnings ? <span key="warn">{`${count(result.warnings)} ${result.warnings === 1 ? "warning" : "warnings"}`}</span> : null,
-            result.row_count > 1 ? (
-              <span key="sort" className="result-sortnote" title="Sorting a column orders the rows loaded here, not the whole table">
-                Sorting orders loaded rows only
+            // Only a cut result has rows the sort cannot see.
+            cut && result.row_count > 1 ? (
+              <span key="sort" className="result-sortnote" title="Sorting a column reorders the rows loaded here; rows past the limit are not included">
+                Sorting applies to loaded rows
               </span>
             ) : null,
           ]

@@ -8,7 +8,8 @@
 // Geometry and text match the Python SVG (parity-tested); the in-SVG
 // "Search" link is replaced by the toolbar input above the chart.
 import { svg } from "./core/dom";
-import { cpLength, cpSlice, estimateText, pyFixed, treeTime } from "./core/format";
+import { cpLength, cpSlice, estimateText, fitLabel, pyFixed, treeTime } from "./core/format";
+import { highlightText } from "./core/highlights";
 import { TREE_CSS } from "./core/styles";
 import { bindKeys, compile, createToolbar, isTyping } from "./core/toolbar";
 import type { ChartNode } from "./core/types";
@@ -23,6 +24,20 @@ const LABEL_W = 440;
 const SELF_W = 90;
 const TOTAL_W = 90;
 const PCT_W = 55;
+// Workspace charts fit their pane (PlanChart draws them again when it
+// resizes): below the full layout the bar gives up room down to BAR_MIN,
+// then the operator column down to LABEL_MIN with a tighter indent; labels
+// end in "…" with the full name as a tooltip, and the number columns keep
+// their width. BAR_MIN keeps the bar column's header inside the chart.
+// Standalone SVG keeps output_tree.py's geometry.
+const BAR_MIN = 64;
+const LABEL_MIN = 140;
+const NARROW_INDENT = 12;
+/** Label room the deepest row keeps in a narrow layout (an ellipsis and a few characters). */
+const DEEP_LABEL_ROOM = 40;
+const NUMBERS_W = SELF_W + TOTAL_W + PCT_W + 20;
+/** Narrowest workspace layout; a narrower pane scrolls it sideways. */
+export const MIN_WORKSPACE_WIDTH = 2 * LEFT + 10 + LABEL_MIN + NUMBERS_W + BAR_MIN;
 const DETAIL_LINES = 6;
 const DETAIL_LINE_H = 16;
 const DETAILS_H = 20 + DETAIL_LINES * DETAIL_LINE_H;
@@ -88,16 +103,25 @@ export function renderTree(context: ViewContext): ViewInstance {
   const top = projection.root;
   const measuredTotal = totalMs(top);
   const rootTotal = measuredTotal || 0.001;
-  const barX = LEFT + LABEL_W + SELF_W + TOTAL_W + PCT_W + 20;
-  const barMax = Math.max(80, width - barX - LEFT - 10);
-  const selfX = LEFT + LABEL_W;
+  const labelW = workspace ? Math.max(LABEL_MIN, Math.min(LABEL_W, width - 2 * LEFT - 10 - NUMBERS_W - BAR_MIN)) : LABEL_W;
+  const narrow = labelW < LABEL_W;
+  // In the workspace a narrow layout tightens the indent, and a very deep
+  // plan tightens it further, so the deepest row's toggle and label end
+  // before the number columns.
+  const deepest = visible.reduce((most, node) => Math.max(most, node.depth - top.depth), 0);
+  const indent = workspace
+    ? Math.min(narrow ? NARROW_INDENT : INDENT, Math.max(0, labelW - TOGGLE_W - 6 - DEEP_LABEL_ROOM) / Math.max(1, deepest))
+    : INDENT;
+  const barX = LEFT + labelW + NUMBERS_W;
+  const barMax = Math.max(workspace ? BAR_MIN : 80, width - barX - LEFT - 10);
+  const selfX = LEFT + labelW;
   const totalX = selfX + SELF_W;
   const pctX = totalX + TOTAL_W;
   const headerH = workspace ? 30 : HEADER_H;
   const bottomY = headerH + visible.length * ROW_H + (workspace ? 8 : 12);
   const height = workspace ? bottomY : bottomY + DETAILS_H + 16;
 
-  const toolbar = createToolbar(doc, container, "Search operators (regex)");
+  const toolbar = createToolbar(doc, container);
   const root = svg(doc, "svg", {
     width, height, viewBox: "0 0 " + width + " " + height, class: "mfc-tree",
     role: "group", "aria-label": "Execution tree",
@@ -117,16 +141,16 @@ export function renderTree(context: ViewContext): ViewInstance {
   }, root, text);
   // End-anchored with a gap in standalone SVG; left-aligned in the operator
   // header column in workspace mode.
-  const expandLink = workspace ? link(LEFT, "start", "Expand All") : link(width - LEFT - 80, "end", "Expand All");
-  const collapseLink = workspace ? link(LEFT + 72, "start", "Collapse All") : link(width - LEFT, "end", "Collapse All");
+  const expandLink = workspace ? link(LEFT, "start", "Expand all") : link(width - LEFT - 80, "end", "Expand all");
+  const collapseLink = workspace ? link(LEFT + 72, "start", "Collapse all") : link(width - LEFT, "end", "Collapse all");
   const rule = (y: number, stroke: string) =>
     svg(doc, "line", { class: "mfc-rule", x1: LEFT, y1: y, x2: width - LEFT, y2: y, stroke, "stroke-width": 1 }, root);
   if (!workspace) rule(52, "#ddd");
   const hdrY = workspace ? 20 : 65;
-  svg(doc, "text", { x: selfX + SELF_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "SELF");
-  svg(doc, "text", { x: totalX + TOTAL_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "TOTAL");
+  svg(doc, "text", { x: selfX + SELF_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "Self");
+  svg(doc, "text", { x: totalX + TOTAL_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "Total");
   svg(doc, "text", { x: pctX + PCT_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "%");
-  svg(doc, "text", { x: barX, y: hdrY, "text-anchor": "start", class: "col-hdr" }, root, "SELF TIME BAR");
+  svg(doc, "text", { x: barX, y: hdrY, "text-anchor": "start", class: "col-hdr" }, root, "Self time bar");
   rule(workspace ? 25 : 68, "#ddd");
 
   const rows: Row[] = [];
@@ -139,16 +163,19 @@ export function renderTree(context: ViewContext): ViewInstance {
     const pct = (self / rootTotal) * 100;
     let label = node.short_label || "";
     if (cpLength(label) > 46) label = cpSlice(label, 0, 45) + "…";
-    const warn = node.highlight !== null && node.highlight !== undefined;
+    const warn = highlightText(data, node) !== null;
+    if (workspace) label = fitLabel(label, labelW - depth * indent - TOGGLE_W - 6 - (warn ? 16 : 0), 11, 0.59, false);
     const info = rowInfo(node, rootTotal);
     const textY = y + ROW_H - 8;
-    const indentX = LEFT + depth * INDENT;
+    const indentX = LEFT + depth * indent;
     const group = svg(doc, "g", {
       class: "tree-row", "data-node-id": node.id, "data-idx": idx, "data-depth": depth,
       "data-has-children": hasChildren ? 1 : 0, "data-teach-index": node.teach_index,
       role: "button", tabindex: 0, "aria-label": node.short_label || node.full_label || "Operator",
       "aria-expanded": hasChildren ? "true" : null,
     }, root);
+    // A shortened label shows the whole name on hover (the inspector has it too).
+    if (workspace && label !== (node.short_label || "")) svg(doc, "title", undefined, group, node.short_label || "");
     svg(doc, "rect", { class: "row-bg", x: LEFT, y, width: width - 2 * LEFT, height: ROW_H, fill: "transparent", "data-info": info }, group);
     if (warn) svg(doc, "rect", { x: LEFT, y, width: 4, height: ROW_H, fill: "#e65100", "pointer-events": "none" }, group);
     if (idx % 2 === 1) {

@@ -178,18 +178,23 @@ export function CountBadge({ count, tone = "neutral", label }: { count: number; 
  * places): one system everywhere. A dot and word carry state (OK draws
  * nothing), and a count is always a neutral pill beside it. The
  * words reach screen readers through `text` (or the row's own hidden text). */
-export function NavMarker({ tone, count, countTone = "neutral", text }: {
+export function NavMarker({ tone, count, countTone = "neutral", text, compact = false }: {
   tone?: Tone;
   count?: number;
   countTone?: BadgeTone;
   text?: string;
+  /** Narrow rows (sidebar places, lists of views): with a count, the dot and the count
+   * stand alone and the state word moves to the tooltip and `text`. */
+  compact?: boolean;
 }) {
   const state = tone || countState(countTone);
+  const word = state && state !== "ok" ? TONE_TEXT[state] : "";
+  const terse = compact && count !== undefined;
   return (
     <>
-      <span className="nav-marker" aria-hidden="true">
+      <span className="nav-marker" aria-hidden="true" title={terse && word ? word : undefined}>
         {state && <span className={`status-dot is-${state}`} />}
-        {state && state !== "ok" && <span>{TONE_TEXT[state]}</span>}
+        {word && !terse && <span>{word}</span>}
         {count !== undefined && <CountBadge count={count} />}
       </span>
       {text && <span className="visually-hidden">, {text}</span>}
@@ -227,6 +232,7 @@ export function Popover({
   buttonTitle,
   disabled = false,
   menu = false,
+  width: panelWidth,
   children,
 }: {
   /** Accessible name of the button and the popover. */
@@ -243,6 +249,8 @@ export function Popover({
   disabled?: boolean;
   /** Action menus use arrow navigation; forms keep dialog navigation. */
   menu?: boolean;
+  /** Panel width in px for a compact menu (default 320, or 400 when wide). */
+  width?: number;
   children: ReactNode;
 }) {
   const id = useId();
@@ -276,7 +284,7 @@ export function Popover({
       const b = button.current?.getBoundingClientRect();
       const p = panel.current;
       if (!b || !p) return;
-      const width = Math.min(wide ? 400 : 320, window.innerWidth - 16);
+      const width = Math.min(panelWidth || (wide ? 400 : 320), window.innerWidth - 16);
       const left = Math.max(8, Math.min(b.left - 12, window.innerWidth - width - 8));
       const height = p.offsetHeight;
       const below = b.bottom + 6;
@@ -291,7 +299,7 @@ export function Popover({
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, wide]);
+  }, [open, wide, panelWidth]);
   return (
     <span className={`popover-anchor ${className}`}>
       <button
@@ -318,6 +326,37 @@ export function Popover({
       )}
     </span>
   );
+}
+
+/** One format in an Export menu. */
+export type ExportFormat = { key: string; label: string; onSelect: () => void; disabled?: boolean };
+
+/** The one Export control: export icon, "Export" and a chevron-down pull-down
+ * menu of formats (a macOS pull-down button). With a single format it is a
+ * plain button without the chevron. Every place that exports uses this. */
+export function ExportMenu({ label, formats, disabled = false, className = "", title }: {
+  /** Accessible name, e.g. "Export plan". */
+  label: string;
+  formats: ExportFormat[];
+  disabled?: boolean;
+  className?: string;
+  /** Tooltip; defaults to the accessible name. */
+  title?: string;
+}) {
+  const face = <><Icon name="export" size={14} /><span>Export</span></>;
+  if (formats.length === 1) {
+    const only = formats[0];
+    return <button type="button" className={`button export-button ${className}`} aria-label={label} title={title || label}
+      disabled={disabled || only.disabled} onClick={only.onSelect}>{face}</button>;
+  }
+  return <Popover menu width={200} label={label} buttonTitle={title || label} disabled={disabled}
+    className={`export-menu ${className}`} buttonClassName="button export-button"
+    trigger={<>{face}<Icon name="chevron-down" size={12} /></>}>
+    <div className="export-menu-items">
+      {formats.map((format) => <button key={format.key} type="button" role="menuitem" data-format={format.key}
+        disabled={format.disabled} onClick={() => { closePopovers(); format.onSelect(); }}>{format.label}</button>)}
+    </div>
+  </Popover>;
 }
 
 /** Close every open popover (after an action inside one moved on). */
@@ -365,38 +404,49 @@ export type Segment<T extends string> = {
   disabled?: boolean;
   title?: string;
 };
-/** Modes of the same content (Active / All, Unused / Redundant…). */
+/** Modes of the same content (Active / All, Unused / Redundant…). With
+ * *tabs* (an id prefix) the same control switches tab panels: a tablist of
+ * tabs `${tabs}-tab-${value}` controlling `${tabs}-panel-${value}`, one tab
+ * stop, arrows, Home and End. */
 export function Segmented<T extends string>({
   label,
   value,
   options,
   onChange,
   className = "",
+  tabs,
 }: {
   label: string;
   value: T;
   options: Segment<T>[];
   onChange: (value: T) => void;
   className?: string;
+  tabs?: string;
 }) {
   const group = useRef<HTMLDivElement>(null);
   function onKey(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
-    if (!step) return;
-    event.preventDefault();
     const enabled = options.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0);
     const at = enabled.indexOf(index);
-    const next = enabled[(at + step + enabled.length) % enabled.length];
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    const next = step ? enabled[(at + step + enabled.length) % enabled.length]
+      : tabs && event.key === "Home" ? enabled[0]
+      : tabs && event.key === "End" ? enabled[enabled.length - 1]
+      : undefined;
+    if (next === undefined) return;
+    event.preventDefault();
     onChange(options[next].value);
     group.current?.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
   }
   return (
-    <div ref={group} className={`segmented ${className}`} role="group" aria-label={label}>
+    <div ref={group} className={`segmented ${className}`} role={tabs ? "tablist" : "group"} aria-label={label}>
       {options.map((o, i) => (
         <button
           key={o.value}
           type="button"
-          aria-pressed={o.value === value}
+          {...(tabs
+            ? { role: "tab", id: `${tabs}-tab-${o.value}`, "aria-selected": o.value === value,
+                "aria-controls": `${tabs}-panel-${o.value}`, tabIndex: o.value === value ? 0 : -1 }
+            : { "aria-pressed": o.value === value })}
           disabled={o.disabled}
           title={o.title}
           data-value={o.value}
@@ -823,6 +873,10 @@ export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string;
 /** ViewLayout reports its existing loading state to Server, without new reads
  * or DOM observers. The owner binds the callback to the active connection. */
 export const ViewActivityContext = createContext<((view: string, loading: boolean) => void) | null>(null);
+
+/** The name of the place whose list of views a narrow layout's back button
+ * returns to ("Server", "Workload"). */
+export const ViewBackLabelContext = createContext("Server");
 
 // ---- Rows: keyboard movement shared by tables, grouped lists and tiles -----
 
@@ -1928,7 +1982,8 @@ export function GroupedRow({
     <>
       {tone && <StatusPill tone={tone} label={toneLabel} quiet />}
       <span className="row-label">
-        <span className="row-title">{label}</span>
+        {/* A narrow view can cut a long label: hovering shows it whole. */}
+        <span className="row-title" title={typeof label === "string" ? label : undefined}>{label}</span>
         {detail && <span className="row-detail">{detail}</span>}
       </span>
       {(value !== undefined || secondary) && (
@@ -1996,7 +2051,9 @@ export function MetricTile({
         {unit && <span className="tile-unit">{unit === "%" || unit.startsWith("/") ? unit : ` ${unit}`}</span>}
       </span>
       <span className="tile-foot">
-        {tone && <StatusPill tone={tone} label={toneLabel} quiet />}
+        {/* A tile without a threshold (info, no label of its own) draws no
+            marker: a lone dash in most tiles read as missing data. */}
+        {tone && !(tone === "info" && !toneLabel) && <StatusPill tone={tone} label={toneLabel} quiet />}
         {trend}
       </span>
     </>
@@ -2263,12 +2320,16 @@ export function ConfirmSheet({
           <h2 id={titleId}>{title}</h2>
         </div>
       </div>
-      {description && (
-        <p id={descId} className="sheet-lead">
-          {description}
-        </p>
-      )}
-      {children}
+      {/* The body scrolls in a short window; the title and the actions stay
+          in view (the 720x520 minimum window has 492 px of content). */}
+      <div className="sheet-body">
+        {description && (
+          <p id={descId} className="sheet-lead">
+            {description}
+          </p>
+        )}
+        {children}
+      </div>
       <div className="dialog-actions sheet-actions">
         <button ref={cancel} type="button" className="button" disabled={busy} onClick={onCancel}>
           Cancel
@@ -2500,6 +2561,7 @@ export function ViewLayout({
   children,
   className = "",
   otherConnection,
+  otherAction,
 }: {
   id: string;
   title: string;
@@ -2523,8 +2585,12 @@ export function ViewLayout({
   /** The report on screen was read from another connection (its label):
    * it is greyed, and the view turns its actions off. */
   otherConnection?: string | null;
+  /** The read that loads this server, when it is not Refresh (Tuning's
+   * scorecard runs the full analysis). Named in the note and its button. */
+  otherAction?: { label: string; onClick: () => void; disabled?: boolean };
 }) {
   const reportActivity = useContext(ViewActivityContext);
+  const backLabel = useContext(ViewBackLabelContext);
   useEffect(() => {
     reportActivity?.(id, !!loading);
     return () => reportActivity?.(id, false);
@@ -2565,7 +2631,7 @@ export function ViewLayout({
         {onBack && (
           <button type="button" className="server-back" onClick={onBack}>
             <Icon name="back" size={14} />
-            Server
+            {backLabel}
           </button>
         )}
         <div className="view-title">
@@ -2601,13 +2667,26 @@ export function ViewLayout({
         </div>
       </header>
       {status}
-      {detailOpen&&otherConnection&&<div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}, refresh to load this server.</p></div>}
+      {detailOpen&&otherConnection&&(otherAction
+        ? <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}. {otherAction.label} to load this server.</p>
+            <span className="gate-action"><button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>{otherAction.label}</button></span></div>
+        : <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}, refresh to load this server.</p></div>)}
       <div
         className={`view-split${open && !shared?.sheet && !detailOpen ? " has-inspector" : ""}`}
         style={open && !shared?.sheet && !detailOpen ? ({ "--inspector-w": `${shared?.width ?? INSPECTOR_DEFAULT}px` } as CSSProperties) : undefined}
       >
         <div className="view-main" ref={main} hidden={detailOpen}>
-          {otherConnection && (
+          {otherConnection && otherAction ? (
+            <div className="gate other-connection" role="note">
+              <Icon name="connection" size={18} />
+              <p>From {otherConnection}. {otherAction.label} to load this server.</p>
+              <span className="gate-action">
+                <button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>
+                  {otherAction.label}
+                </button>
+              </span>
+            </div>
+          ) : otherConnection && (
             <div className="gate other-connection" role="note">
               <Icon name="connection" size={18} />
               <p>From {otherConnection}, refresh to load this server.</p>

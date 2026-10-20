@@ -1,18 +1,22 @@
 // Bar chart, the TypeScript twin of myflames/output_bargraph.py: one bar per
 // visible operator with measurable self time, sorted by self time (stable,
-// so ties keep pre-order), an 8-color cycle, a 3px minimum width, and an
-// 8-line details strip with the optimizer estimate ratio. Times arrive in
-// milliseconds; the µs display_unit only scales what is printed.
+// so ties keep pre-order), a heat color by share of the plan's time (each
+// step halves the share), a 3px minimum width, and an 8-line details strip
+// with the optimizer estimate ratio. Times arrive in milliseconds and print
+// like the execution tree (treeTime); the µs display_unit only scales bar
+// lengths. The label column narrows with the chart width (Compare panes).
 //
 // Hover shows details, click pins (and selects), regex search highlights
 // matches with n/N to step and Esc to clear. Everything is instance-scoped.
 import { svg } from "./core/dom";
-import { commas, cpSlice, estimateText, fitLabel, pyFixed } from "./core/format";
+import { commas, cpSlice, estimateText, fitLabel, pyFixed, treeTime } from "./core/format";
+import { highlightText } from "./core/highlights";
 import { BAR_CSS } from "./core/styles";
 import { bindKeys, compile, createToolbar, isTyping } from "./core/toolbar";
 import type { ChartNode } from "./core/types";
 import type { ViewContext, ViewInstance } from "./core/view";
 
+/** Hottest first: output_bargraph.COLORS (keep in step). */
 export const COLORS = [
   "rgb(255,90,90)", "rgb(255,130,70)", "rgb(255,165,50)", "rgb(255,200,50)",
   "rgb(255,220,80)", "rgb(200,200,100)", "rgb(150,200,150)", "rgb(100,180,180)",
@@ -24,15 +28,36 @@ const MARGIN = 10;
 const DETAIL_LINES = 8;
 const DETAIL_LINE_H = 14;
 const BOTTOM = 16 + DETAIL_LINES * DETAIL_LINE_H + 12;
-const LABEL_W = 320;
+const FULL_LABEL_W = 320;
 const LOOPS_W = 80;
 const TIME_W = 120;
+// Workspace charts fit their pane (PlanChart draws them again when it
+// resizes): below the full layout the bar area gives up room down to
+// AREA_MIN, then the operator column down to LABEL_MIN; labels end in "…"
+// with the full name as the bar's tooltip, and loops and values keep their
+// columns. Standalone SVG keeps output_bargraph.py's geometry.
+const LABEL_MIN = 150;
+const AREA_MIN = 90;
+const FIXED_W = MARGIN * 2 + LOOPS_W + TIME_W + 20;
+/** Narrowest workspace layout; a narrower pane scrolls it sideways. */
+export const MIN_WORKSPACE_WIDTH = FIXED_W + LABEL_MIN + AREA_MIN;
 const SEP = "  ·  ";
 const HINT = "Hover a bar for details; click to pin  ·  Ctrl+F to search";
 
 export interface Bar { node: ChartNode; self: number; total: number }
 
-const fixed = (value: number) => (value >= 1 ? pyFixed(value, 0) : pyFixed(value, 3));
+
+/** Heat by share of the plan's time: >= 1/2 hottest, each step halves the
+ * share, the coolest below 1/128 (output_bargraph.bar_color). */
+export function barColor(share: number): string {
+  let step = 0;
+  let threshold = 0.5;
+  while (step < COLORS.length - 1 && share < threshold) {
+    step++;
+    threshold /= 2;
+  }
+  return COLORS[step];
+}
 
 /** Visible operators in display units, sorted and filtered like Python. */
 export function bars(visible: ChartNode[], multiplier: number): Bar[] {
@@ -43,11 +68,11 @@ export function bars(visible: ChartNode[], multiplier: number): Bar[] {
 }
 
 /** Details text: output_bargraph._build_bar_info. */
-export function barInfo(bar: Bar, pct: number, unit: string): string {
+export function barInfo(bar: Bar, pct: number): string {
   const { node } = bar;
   const parts = [node.full_label || node.short_label || ""];
-  parts.push("Self: " + fixed(bar.self) + " " + unit + " (" + pyFixed(pct, 1) + "%)");
-  if (Math.abs(bar.total - bar.self) > 0.001) parts.push("Total: " + fixed(bar.total) + " " + unit);
+  parts.push("Self: " + treeTime(node.self_ms ?? 0) + " (" + pyFixed(pct, 1) + "%)");
+  if (Math.abs(bar.total - bar.self) > 0.001) parts.push("Total: " + treeTime(node.total_ms ?? 0));
   const rows = node.actual_rows ?? 0;
   // No row counter reads "not measured", never 0; null rows and loops (a
   // MySQL operator that never ran) read "not executed" (output_bargraph._build_bar_info).
@@ -70,6 +95,9 @@ export function renderBargraph(context: ViewContext): ViewInstance {
   const { doc, data, projection, selection, container } = context;
   const workspace = context.options.workspace === true;
   const width = Math.trunc(context.width || 1200);
+  // This render's operator column (see FULL_LABEL_W).
+  // Standalone charts follow output_bargraph.label_width exactly (parity).
+  const LABEL_W = workspace ? Math.max(LABEL_MIN, Math.min(FULL_LABEL_W, width - FIXED_W - AREA_MIN)) : Math.min(FULL_LABEL_W, Math.max(160, Math.trunc(width * 0.38)));
   const unit = data.display_unit === "µs" ? "µs" : "ms";
   const multiplier = unit === "µs" ? 1000 : 1;
   const list = bars(projection.visible, multiplier);
@@ -84,7 +112,7 @@ export function renderBargraph(context: ViewContext): ViewInstance {
   const timeX = barX + area + 10;
   const sepY = height - BOTTOM + 6;
 
-  const toolbar = createToolbar(doc, container, "Search operators (regex)");
+  const toolbar = createToolbar(doc, container);
   const root = svg(doc, "svg", {
     width, height, viewBox: "0 0 " + width + " " + height, class: "mfc-bar",
     role: "group", "aria-label": "Bar chart of self time per operator",
@@ -95,13 +123,13 @@ export function renderBargraph(context: ViewContext): ViewInstance {
   if (!workspace) {
     svg(doc, "text", { x: width / 2, y: 28, "text-anchor": "middle", class: "title" }, root, data.title || "");
     svg(doc, "text", { x: width / 2, y: 46, "text-anchor": "middle", class: "subtitle" }, root,
-      "Self-time per operation" + SEP + "Total: " + fixed(total) + " " + unit);
+      "Self time per operation" + SEP + "Total: " + treeTime(total / multiplier));
   }
   const hdrY = workspace ? 20 : 68;
   const ruleY = workspace ? 24 : 72;
-  svg(doc, "text", { x: MARGIN + LABEL_W - 10, y: hdrY, "text-anchor": "end", class: "col-header" }, root, "OPERATION");
-  svg(doc, "text", { x: loopsX + LOOPS_W / 2, y: hdrY, "text-anchor": "middle", class: "col-header" }, root, "LOOPS");
-  svg(doc, "text", { x: barX + area / 2, y: hdrY, "text-anchor": "middle", class: "col-header" }, root, "SELF-TIME");
+  svg(doc, "text", { x: MARGIN + LABEL_W - 10, y: hdrY, "text-anchor": "end", class: "col-header" }, root, "Operation");
+  svg(doc, "text", { x: loopsX + LOOPS_W / 2, y: hdrY, "text-anchor": "middle", class: "col-header" }, root, "Loops");
+  svg(doc, "text", { x: barX + area / 2, y: hdrY, "text-anchor": "middle", class: "col-header" }, root, "Self time");
   svg(doc, "line", { x1: MARGIN, y1: ruleY, x2: width - MARGIN, y2: ruleY, class: "mfc-rule", stroke: "#e0e0e0", "stroke-width": 1 }, root);
   const lines: SVGTextElement[] = [];
   if (!workspace) {
@@ -119,19 +147,24 @@ export function renderBargraph(context: ViewContext): ViewInstance {
     const pct = (bar.self / total) * 100;
     const barWidth = bar.self > 0 ? Math.max(3, (bar.self / total) * area) : 0;
     const textY = y + BAR_H / 2 + 4;
-    const info = barInfo(bar, pct, unit);
-    const highlight = node.highlight ? cpSlice(node.highlight, 0, 400) : "";
+    const info = barInfo(bar, pct);
+    const message = highlightText(data, node);
+    const highlight = message ? cpSlice(message, 0, 400) : "";
     svg(doc, "text", { x: MARGIN + LABEL_W - 10, y: textY, "text-anchor": "end", class: "label" }, root,
       fitLabel(node.short_label || "", LABEL_W - 14, 11, 0.55));
     svg(doc, "text", { x: loopsX + LOOPS_W / 2, y: textY, "text-anchor": "middle", class: "loops" }, root, commas(node.loops || 1));
     const label = node.short_label || node.full_label || "";
     const rect = svg(doc, "rect", {
       class: highlight ? "bar in-query-analysis" : "bar", x: barX, y, width: barWidth, height: BAR_H,
-      fill: COLORS[i % COLORS.length], rx: 3, ry: 3, "data-node-id": node.id, "data-info": info,
+      fill: barColor(bar.self / total), rx: 3, ry: 3, "data-node-id": node.id, "data-info": info,
       "data-label": label, "data-analysis-msg": highlight || null, "data-teach-index": node.teach_index,
       role: "button", tabindex: 0, "aria-label": label,
     }, root);
-    svg(doc, "text", { x: timeX, y: textY, class: "value" }, root, fixed(bar.self) + " " + unit + " (" + pyFixed(pct, 1) + "%)");
+    // A shortened label shows the whole name on the bar's hover (and in the inspector).
+    if (workspace && fitLabel(node.short_label || "", LABEL_W - 14, 11, 0.55) !== (node.short_label || "")) {
+      svg(doc, "title", undefined, rect, node.short_label || "");
+    }
+    svg(doc, "text", { x: timeX, y: textY, class: "value" }, root, treeTime(node.self_ms ?? 0) + " (" + pyFixed(pct, 1) + "%)");
     items.push({ node, rect, info: highlight ? info + SEP + "⚠ In Query Analysis: " + highlight : info, label });
   });
 

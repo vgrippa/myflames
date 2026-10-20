@@ -55,7 +55,7 @@ The sidebar separates where you go from what you have open:
 
 | Place | What it holds |
 | --- | --- |
-| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** stays in the top bar and is primary when no plan is open; the empty Recent work list also offers import and the sample. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
+| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. The version line sits at the bottom of Home. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
 | **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes |
 | **Query editor** | SQL tabs that run any SQL in a session of their own (Run, Run all, Stop, results per result set, Messages, export, transactions), Explain and Run analysis, the schema browser, the run history, and the connection in use |
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
@@ -88,10 +88,12 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   never reads on its own). The arrow keys move between items.
 - **Toolbar.** The view's title with an ⓘ that explains it, its controls (a
   sampling window, auto-refresh, a database picker, a filter) and **Refresh**.
-  List controls wait on the list while details are open. The place's own controls, at the
-  end of the top bar beside the connection picker, are an ⓘ with what Server does, one
-  control for the list of views (dock or float it; in a narrow window a **Views** menu
-  instead), and **Refresh all**.
+  List controls wait on the list while details are open. Refresh stays at the
+  end of the toolbar, also on a detail page. The place's own controls follow the
+  connection picker in the top bar: **Refresh all** (a text button, so it never
+  reads as a second copy of a view's Refresh), an ⓘ with what Server does, and
+  one control for the list of views (dock or float it; in a narrow window a
+  **Views** menu instead).
 - **One summary line**, with the status and a **N notes** button for engine
   differences, privileges, and caveats.
 - **A table or one-line rows.** Tables sort by any column, keep the header in
@@ -107,6 +109,7 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   rows draw only the rows in view. In a status column only what needs a look
   is drawn: Problem and Watch show a dot and the word, No threshold a faint
   dash, and an OK row leaves the cell empty (screen readers still hear OK).
+  A metric tile without a threshold draws no marker at all.
   Metric tiles in a group all have the same width: up to six share one row,
   and a row that does not fit becomes balanced rows of three or two.
 - **Columns.** Drag a header's right edge to resize any column, or focus the
@@ -121,11 +124,21 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Top statements, and Lock structs and Isolation in Locks transactions.
   Processlist rows have no buttons: each row's ⋯ menu holds **Show plan** and
   **Kill…**, which opens the same confirmation sheet as Kill in the details.
+  Indexes and Tables use the same ⋯ row menu (Set invisible…, Drop index…,
+  Table health; Add column…, Remove column…, Optimize, Analyze and Check
+  table…, View indexes), with the labels of the row's right-click menu; an
+  item that opens a review ends in an ellipsis. A row's ⋯ shows on the row being pointed at, the
+  focused or selected row and the row whose menu is open, so Tab reaches it
+  from a focused row; touch screens always show it.
   Short numeric headers (Time, Avg (ms)) give the full name on hover and in
   the Columns menu.
   Modes of one view are a segmented control (Active / All, Unused / Redundant,
   Events / Classes); rarely used detail waits behind a disclosure (Advanced,
-  Breakdown, Not instrumented).
+  Breakdown, Not instrumented). A list's filters sit in the row above it, as
+  in Indexes and Tables: Error log (Entries / By code, levels, Time, the text
+  filter, This run only, Export) and Processlist (Active / All / Locked,
+  Source, Running at least, the filter), so the view toolbar keeps one row
+  with Refresh, Auto-refresh and Mass kill.
 - **Details.** The selected row's explanation, rule, numbers, statements and
   actions (Explain, Show plan, Kill, links to other views) occupy the full work
   area on both wide and narrow windows. Back or Escape returns to the same
@@ -147,7 +160,7 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   actions. Connection write policies remain authoritative: read-only connections
   refuse writes, and Production connections ask for explicit confirmation.
 
-**Refresh all** (place toolbar, ⌥⌘R or Alt+Ctrl+R) reads every Server section,
+**Refresh all** (top bar, after the connection picker; ⌥⌘R or Alt+Ctrl+R) reads every Server section,
 including sections not yet opened, using each view's window, databases and scope.
 At most three section reads run at once, with Health, Waits and I/O first.
 Full analysis runs in a separate phase because it manages its own bounded reads.
@@ -173,7 +186,11 @@ section has been loaded.
 or Refresh all. On MySQL it reads `performance_schema.error_log`: the newest
 entries with their level (System, Error, Warning, Note), code and subsystem,
 the most frequent codes under **By code**, and entries the server reloaded from
-its previous run (hide them with **This run only**). The summary says how much
+its previous run (hide them with **This run only**). **Time** limits the list
+to All time, the last hour, 6 or 24 hours, or a custom range. The summary is
+Watch when this run logged an Error-level event; it is never Problem, because
+an Error-level line alone does not tell how serious it is (an InnoDB assertion
+failure ends the server, so after the restart it is marked previous run). The summary says how much
 of the server's 5 MB error log buffer is in use and how many older events
 expired; when `log_error_verbosity` hides warnings or notes, a note says so.
 MariaDB has no SQL access to its error log, so the view reads the log file
@@ -217,7 +234,9 @@ Statements are for you to copy or open in the Query editor (SET PERSIST on
 MySQL; SET GLOBAL and an option-file line on MariaDB); the page never runs
 them. Encrypted connections is read from Parameters, which lists every global
 variable. Only reports of the connection in use are scored; after a switch the
-scorecard stays greyed. The **Full analysis** tab shows the report described
+scorecard stays greyed, its note offers **Run full analysis** to load the
+server in use, and its **Export** is off until then. **Scorecard | Full
+analysis** is the segmented control in the header row. The **Full analysis** tab shows the report described
 above. **Export** saves the scorecard as HTML, Markdown or JSON.
 
 **Parameters** (Setup, formerly Configuration) is modelled on an AWS RDS
@@ -282,11 +301,19 @@ on screen, once per connection (when it is opened after another connection was
 chosen elsewhere it reads once for that one); **Refresh** reads again, and the Server
 place's **Refresh all** feeds this place too, so opening Replication afterwards shows
 that answer without another read. Choosing another connection while Replication stays
-on screen greys the old report until **Refresh**. The inspector shows the threads, the last error once (code, time,
+on screen greys the old report until **Refresh**. The header switches between
+**Topology**, **Channels** (**Connections** on MariaDB), **Lag**, **GTID** and
+**Recovery**. Under the summary line four tiles show the replica state, the
+channel count, the maximum applier lag (**Unknown** whenever any judged
+channel's lag is unknown, so a measured 0 s beside a failed channel never reads
+as caught up) and the GTID mode. The inspector shows the threads, the last error once (code, time,
 table, failing GTID, the server's text), the lag signals with their caveats
 (Seconds_Behind_Source alone never says a replica is caught up), the
-positions and GTID sets, and what recovery needs. Group Replication channels
-are listed as Not judged and cannot be skipped here. When the applier stopped
+positions and GTID state in one list (GTID mode and Enforce GTID consistency
+named in full), what recovery needs, and the raw channel status behind a
+disclosure. Group Replication channels
+are listed as Not judged and cannot be skipped here. A healthy channel shows no
+recovery actions. When the applier stopped
 on an error, the inspector offers two changes, each with its own confirmation
 sheet that reads the failure again before it opens and shows the exact
 statements, the privileges they need, and the drift warning (a skipped
@@ -359,7 +386,9 @@ the uptime, the oldest first-seen time, the overflow row, and lost digests.
 
 Below about 1,040 pixels of width the inspector becomes a sheet that slides up
 from the bottom; below about 720 pixels the list of views becomes a screen of
-its own and choosing a view pushes it on screen, with **Server** to go back.
+its own and choosing a view pushes it on screen, with **Server** (or
+**Workload**) to go back. A view already on screen stays there when the window
+narrows.
 
 Under the places, **Open plans** lists every open plan with its time (or
 **Estimated plan**), and **Baseline** on the plan others are compared against
@@ -369,14 +398,25 @@ screen is highlighted; an open plan is highlighted while Plans shows it.
 The footer holds one status: **All changes saved**, **Saving…**, or **Not
 saved:** with the reason. **Settings**, next to it, opens a compact menu (Escape
 or a click outside closes it) with the appearance (System, Light, Dark),
-**Restore workspace on startup**, the **Audit log** (see [Audit log](#audit-log)), and **About
-myflames**, a window with the version, the license, and the
-credits (Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs). The
+**Restore workspace on startup** (passwords are never part of the workspace),
+the **Audit log** (see [Audit log](#audit-log)), and **About myflames**, a window
+with the version, the license, and the credits (Brendan Gregg's FlameGraph and
+Tanel Poder's SQL Plan FlameGraphs). Close is its default button, and in a
+short window its text scrolls while Close stays in view. The
 top bar names the place once (Server and Workload name the view in the view
 header, Plans names the plan in the plan header, and Replication and Tuning,
 one view each, name the place in their view header only) and has one sidebar
 toggle. With plans open it also shows **Save investigation** with **Unsaved
-changes** or **Investigation saved**, and one **Local** badge.
+changes** or **Investigation saved**. One **Local** badge ends the top bar of
+every place; below about 1,100 pixels the places that send to a connection give
+its room to the connection picker. The sidebar keeps one width in every place.
+The light appearance uses a white window, like the dark one uses its content
+color: gray is for the sidebar and side panes only.
+
+The command palette (⌘K or **Search…** in the top bar) lists the places in the
+sidebar's order, then what belongs to one of them (Full analysis under Tuning,
+**Compare** under Plans), the Server and Workload views, and actions such as
+Import plan and the Audit log.
 
 Use the Up and Down arrow keys to move between places, and Home or End to jump
 to the first or last. Below 650 pixels the sidebar becomes a compact bar with
@@ -393,8 +433,9 @@ first, **Read-only** · changes refused, **Development** · risky changes ask
 first, or **Production assumed** · reading settings / settings not loaded (with
 **Retry**). Its tooltip and accessible name are the full sentence ("Production:
 every change on NAME asks first"). Then come the database engine and version,
-the connection, session state, transaction status, the last run, its duration,
-row counts and refresh status. On phones it stays one line at the bottom: the
+the connection, session state, the last run and refresh status. The Query
+editor's transaction state stays in its toolbar, and the rows and time of a run
+in its result tabs, so the footer does not repeat them. On phones it stays one line at the bottom: the
 safety state comes first and stays visible, and later facts scroll inside the
 bar. Home, Plans, Investigations, Learn and the Audit log show no safety state.
 
@@ -429,17 +470,25 @@ Dialogs, confirmation sheets, popovers, and drawers use scoped focus trapping:
 ### Responsive and phone layout
 
 On phone and narrow screens (below 720 px):
-- Below 650 px, flame graphs, execution trees and bar charts scroll horizontally
-  at their full text size. Swipe sideways or focus the chart and use arrow keys.
+- Flame graphs, execution trees and bar charts are redrawn for the width of
+  their pane. Execution trees and bar charts shorten operator names (the full
+  name shows on hover and in the inspector) and keep their numbers; below
+  about 480 px (360 px for a flame graph) they scroll horizontally at their
+  full text size. Swipe sideways or focus the chart and use arrow keys.
 - Toolbars and segmented controls wrap onto multiple lines without clipping
   buttons or dropping controls offscreen.
 - The sidebar collapses into a compact bar with a **Menu** drawer.
 - Below 650 px the connection pill gives up width first (its dot and a few
   characters of the name stay, the rest ends in an ellipsis) and **Privileges**
   becomes a key icon button, named Privileges for screen readers and in its
-  tooltip, so the two never overlap.
+  tooltip, so the two never overlap. In the Server and Workload top bar, which
+  also holds the place's own actions, this starts below 800 px (the 720 px
+  window), and the pill leaves the connection type to its dot, its accessible
+  name and the window footer, keeping the connection name readable.
 - The Server place presents the view list as a separate screen, pushing selected
-  views into view with a **Server** button to return. The top bar names the place
+  views into view with a button named after the place (**Server** or
+  **Workload**) to return; a view shown before the window narrowed stays on
+  screen. A view's controls move to rows under its title. The top bar names the place
   only (the view header names the view). In a narrow window (the 720 px minimum
   with the sidebar shown) the Server and Workload toolbar has a **Views** menu
   that switches views without going back to the list; in a wide window the same
@@ -478,11 +527,18 @@ write safety:
   the button remains enabled with a separate visible explanation, including on
   keyboard focus, rather than a badge inside its label. This ensures users are not
   blocked by incomplete catalog data, leaving the server as the final arbiter.
-- **Query editor quiet notice**: statement privilege analysis checks statements
+  Toolbar actions that sit beside a summary (Explain top N in Top statements,
+  New user and New role in Users and roles) keep an unverified reason in the
+  button's description and the review dialog only; their visible note appears
+  when the action is denied or blocked.
+- **Query editor privilege note**: statement privilege analysis checks statements
   against the connection model and write policy. Rather than disabling the editor,
-  it displays a single quiet note below the toolbar ("Privileges not verified for
-  this statement" or specific warnings), keeping mixed batches runnable unless
-  every statement is definitively denied.
+  it shows one line at the end of the editor toolbar only when something is
+  denied (or a mixed batch has denied statements), so a late answer never moves
+  the editor; the full text is its tooltip and each action's description. A
+  statement whose privileges cannot be verified shows no note (the server
+  decides; the reason stays in each action's accessible description). Mixed
+  batches stay runnable unless every statement is definitively denied.
 - **Write safety precedence**: explicit connection safety rules (Read-only
   refusals and Production confirmations) always override privilege states.
 
@@ -584,7 +640,9 @@ statements, the connection, the result, the identity you confirmed, what was
 checked before sending, and the write policy. **Export** saves every record
 that matches the filters as CSV or JSON. **Kept 90 days** in the toolbar
 changes how long records stay (1 to 3,650 days; a shorter period deletes older
-records at once). From the command line: `myflames audit`.
+records at once). With nothing recorded yet the screen says so ("No changes
+recorded yet. Every change myflames sends, refuses or you decline is listed
+here.") and **Export** waits for a record. From the command line: `myflames audit`.
 
 ## Inspect a plan
 
@@ -593,10 +651,20 @@ records at once). From the command line: `myflames audit`.
    empty Plans screen, loads a bundled example.
 2. Review execution time, estimated rows examined, findings, and suggestions.
 3. Switch between Visual Explain, flame graph, execution tree, and bar chart.
+   In every view the chart and the inspector fill the window; findings and the
+   execution context follow below it. Every chart's search field reads
+   **Search operators**. The bar chart prints times like the execution tree
+   (4.66 ms, 3.57 s) and colors each bar by its share of the plan's time, so
+   only the bars that dominate are red. Resizing the window draws the flame
+   graph, tree and bar chart again for the new width and keeps the selection.
 4. Search the operator list and select an operator to inspect its measurements
-   and raw fields. Findings with a matching operator include an inspection link.
-5. Use **Export HTML** for a portable report or **Export JSON** for the existing
-   versioned analysis sidecar.
+   and raw fields. A plan with findings opens the inspector on **Findings**
+   until you choose an operator. Findings with a matching operator include an
+   inspection link.
+5. Choose **Export** (export icon and a pull-down) and then **HTML report** for
+   a portable report or **JSON** for the existing versioned analysis sidecar.
+   The same Export pull-down saves Tables and Indexes inventories as CSV, HTML
+   or PDF.
 
 The UI accepts the same MySQL and MariaDB plan formats as the Python engine,
 including MySQL's `query_plan` wrapper. It checks plan size and nesting before
@@ -616,7 +684,8 @@ are self-contained; links to additional teaching pages may require the adjacent
 Choose **Visual Explain** above the chart for operator colors, larger Venn-style
 join symbols (drawn with the appearance's colors, so their L and R labels stay
 readable in dark mode), and arrows sized by estimated row counts. Drag to pan, scroll gently to
-zoom, or choose **Fit plan**. Search within the chart and select a node to update
+zoom, or choose **Fit** (the controls read **−**, the percentage, **+**,
+**Fit**, like the Database diagram). Search within the chart and select a node to update
 both its chart details and the workspace operator inspector. HTML export keeps
 the interactive view. The percentage shows the current zoom; click it to reset
 to 100%. See [Visual Explain](WORKBENCH_VIEW.md) for measurement
@@ -626,7 +695,15 @@ semantics and differences from Workbench.
 
 Import two plans, choose **Compare** in the Plans bar, and choose the before and after versions.
 The workspace shows timing changes and the existing operator comparison report.
-Export HTML or JSON from that view to save the comparison.
+**Change** reads as a ratio from 100% on ("750× slower", "2× faster"), otherwise
+as a percentage; the exact percentage is in its tooltip. Each pane names its
+plan's total time, and each chart is scaled to that total, so compare the
+printed times rather than bar lengths across plans. A pane's inspector opens
+when you select an operator in it, and both inspectors start on the same line.
+**Operator changes** names each pair once when both sides match, says how it
+was matched in words ("Same operator · high confidence", "No counterpart") and
+marks it Added, Removed, Changed, Unchanged or Uncertain. Choose **Export**,
+then **HTML report** or **JSON**, to save the comparison.
 
 Operators are matched by structure and semantic identity. Ambiguous repeated
 operators are marked uncertain and excluded from regression counts. Compare measurements collected
@@ -642,7 +719,8 @@ grouped rows by family, ordered by the learning path, each with its summary and
 
 An open lesson has one compact toolbar (**All lessons**, **Previous lesson**,
 **Step n of 16**, **Next lesson**, **2D | 3D** when available, **Download
-lesson**) and fills the remaining height; the top bar shows the lesson title
+lesson**) that stays under the top bar while the lesson scrolls, and fills
+the window edge to edge like every other place; the top bar shows the lesson title
 (lesson titles use a colon, such as "B+tree lookup: how InnoDB finds a row").
 The workspace adds `data-embedded="true"` to the lesson page, which hides its
 own header and footer. Topics outside the learning path can be opened directly
@@ -780,7 +858,9 @@ token. There is no CORS access. See the [authentication and limits contract](DEV
 | --- | --- | --- |
 | `/api/teach/catalog` | Empty object | `lessons`, `families`, `curriculum` |
 | `/api/teach/lesson` | `lesson`: registered lesson key; optional `view`: `2d` (default) or `3d` when the catalog lists it | `html`: original self-contained lesson, or the prebuilt 3D page |
-| `/api/analyze` | `plan`: raw plan text | `analysis`, `operators`, `query`, `chart_data` (`chart-data-1.0`, drawn in the page by the chart runtime) |
+| `/api/analyze` | `plan`: raw plan text | `analysis`, `operators`, `query`, `teach_hooks`, `chart_data` (`chart-data-2.0`, drawn in the page by the chart runtime). The SQL is sent once, in `query` and `analysis.query.raw`; teach hooks leave out `query_sql`, which Export JSON adds back |
+| `/api/investigations/list` | optional `limit` (1 to 50, default 25), `cursor`, `search` | `investigation-list-1.0`: `items` (summaries, newest first, no plans) and `next_cursor` (null on the last page) |
+| `/api/investigations/get` | `id` | the saved `investigation-1.0` bundle |
 | `/api/render` | `plan`, `view` | `html`: standalone chart document (kept for compatibility; the workspace draws from `chart_data`) |
 | `/api/report` | `plan`, `view` | `html`: portable report |
 | `/api/compare` | `before`, `after`: raw plan text | `analysis`, `html` |

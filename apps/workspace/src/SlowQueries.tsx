@@ -1115,8 +1115,11 @@ export function TopStatementsView({
                       Cancel Explain top {batchSize}
                     </button>
                   )}
-                  <span className={explainGate.state === "allowed" ? "account-sr" : "account-note"} id={privilegeId}>
-                    {explainGate.state !== "allowed" && "Explain top: "}{explainGate.reason}
+                  {/* Visible only when the server account is denied: an
+                      unverified answer stays in the button's description and
+                      the summary keeps its width. */}
+                  <span className={explainGate.state === "denied" ? "account-note" : "account-sr"} id={privilegeId}>
+                    {explainGate.state === "denied" && "Explain top: "}{explainGate.reason}
                   </span>
                   <span className="visually-hidden" id="batch-hint">
                     Estimated plans only: runs EXPLAIN, never executes the statements. Skips statements that are not a

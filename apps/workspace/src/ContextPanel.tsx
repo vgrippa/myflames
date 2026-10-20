@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { number, time, type Operator, type Plan } from "./api";
 import { Disclosure, Fields, InspectorSection, Segmented, StatusPill } from "./kit";
+import { severityText } from "./compareText";
 
 /** The inspector owns operator detail and the linked list, leaving the canvas
  * height independent of the operator count. The runtime owns metric values. */
@@ -21,7 +22,13 @@ export function ContextPanel({
   visibleOperators?: Operator[];
   onSelect: (id: string) => void;
 }) {
-  const [tab, setTab] = useState("measurements");
+  // A plan with findings opens on them until an operator is chosen; a
+  // section the reader picks stays picked.
+  const [tab, setTabState] = useState(() => !selected && plan.analysis.warnings.length ? "findings" : "measurements");
+  const picked = useRef(false);
+  const setTab = (value: string) => { picked.current = true; setTabState(value); };
+  const selectedId = selected?.node_id;
+  useEffect(() => { if (selectedId && !picked.current) setTabState("measurements"); }, [selectedId]);
   const findings = plan.analysis.warnings.filter((w) => !selected ||
     w.node_ids?.includes(selected.node_id) || w.node_labels?.includes(selected.label));
   const measured = typeof selected?.details.actual_last_row_ms === "number";
@@ -65,12 +72,12 @@ export function ContextPanel({
           <Disclosure title="All operator fields" className="raw-fields">
             <pre>{JSON.stringify(selected.details, null, 2)}</pre>
           </Disclosure>
-        </> : <p className="inspector-empty">Choose a node in the chart or the Operators list.</p>}
+        </> : <p className="inspector-empty">Choose an operator in the chart or the Operators list.</p>}
       </div>
       <div className="plan-inspector-body" hidden={tab !== "findings"}>
         <InspectorSection title={selected ? "Related findings" : "Plan findings"}>
           {findings.length ? findings.map((w, i) => <div className="inspector-finding" key={i}>
-            <StatusPill tone={w.severity === "critical" ? "problem" : "watch"} label={w.severity} />
+            <StatusPill tone={w.severity === "critical" ? "problem" : "watch"} label={severityText(w.severity)} />
             <p>{w.text}</p>
             {w.node_ids?.[0] && <button className="text-button" onClick={() => onSelect(w.node_ids![0])}>Inspect operator</button>}
           </div>) : <p>{selected ? "No findings are linked to this operator." : "No findings in this plan."}</p>}

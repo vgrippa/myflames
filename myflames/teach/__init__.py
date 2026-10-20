@@ -325,11 +325,11 @@ def render_lesson_3d(name: str) -> str:
 
 
 _FAMILY_LABELS = {
-    "join_family": "Join Family",
-    "index_family": "Index Access Family",
-    "scan_family": "Scan / Sort / Temp Family",
-    "cache_family": "Cache / Memory Family",
-    "planner_family": "Planner / Optimizer Family",
+    "join_family": "Join family",
+    "index_family": "Index access family",
+    "scan_family": "Scan, sort and temp family",
+    "cache_family": "Cache and memory family",
+    "planner_family": "Planner and optimizer family",
 }
 
 

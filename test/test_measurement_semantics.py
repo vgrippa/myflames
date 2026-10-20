@@ -613,7 +613,7 @@ class TestUnmeasuredRowsInChartText(unittest.TestCase):
         from myflames.output_tree import _row_info
         root = parse_explain(_text(_fixture("mariadb-13.0-analyze-join-3t.json")))
         self.assertIn("Rows: not measured", _row_info(root, root["total_time"], "ms"))
-        self.assertIn("Rows: not measured", _build_bar_info(root, "0.1", 10.0, "ms"))
+        self.assertIn("Rows: not measured", _build_bar_info(root, 10.0))
         table = _by_label(root, "Table scan [c]")[0]
         self.assertIn("Rows: 12", _row_info(table, root["total_time"], "ms"))
 
@@ -973,7 +973,7 @@ class TestReviewCorrections(unittest.TestCase):
         never = [n for n in flatten_nodes(root) if n["details"]["actual_loops"] is None]
         self.assertTrue(never)
         self.assertIn("Rows: not executed", _row_info(never[0], root["total_time"], "ms"))
-        self.assertIn("Rows: not executed", _build_bar_info(never[0], "0", 0.0, "ms"))
+        self.assertIn("Rows: not executed", _build_bar_info(never[0], 0.0))
         estimated = parse_explain(ESTIMATED_SCAN)
         self.assertIn("Rows: not measured", _row_info(estimated, 0, "ms"))
 
@@ -999,6 +999,64 @@ class TestReviewGateRegressions(unittest.TestCase):
         warning = [w for w in analysis["warnings"] if "temp table" in w]
         self.assertTrue(warning)
         self.assertNotIn("up to", warning[0])
+
+class TestBarChartReadsLikeTheTree(unittest.TestCase):
+    """The bar chart prints times like the execution tree, colors a bar by its
+    share of the plan's time (not its rank), uses sentence-case headers, and
+    narrows its label column in a narrow chart (charts/bargraph.ts in step)."""
+
+    def test_heat_color_follows_share_not_rank(self):
+        from myflames.output_bargraph import COLORS, bar_color
+        self.assertEqual(bar_color(1.0), COLORS[0])
+        self.assertEqual(bar_color(0.5), COLORS[0])
+        self.assertEqual(bar_color(0.4999), COLORS[1])
+        self.assertEqual(bar_color(0.25), COLORS[1])
+        self.assertEqual(bar_color(0.1), COLORS[3])
+        self.assertEqual(bar_color(1 / 128), COLORS[6])
+        self.assertEqual(bar_color(1 / 129), COLORS[7])
+        self.assertEqual(bar_color(0.0), COLORS[-1])
+        # Nine operators: the ninth bar no longer wraps back to the hottest color.
+        from myflames.output_bargraph import render_bargraph
+        children = [{'operation': 'Table scan on t%d' % i, 'table_name': 't%d' % i,
+                     'actual_rows': 1, 'actual_loops': 1, 'actual_last_row_ms': 0.01 * (9 - i)}
+                    for i in range(9)]
+        root = P.parse_explain(json.dumps({'operation': 'Append', 'actual_rows': 9, 'actual_loops': 1,
+                                           'actual_last_row_ms': 10.0, 'inputs': children}))
+        doc = ET.fromstring(render_bargraph(root, total_time=root['total_time']))
+        fills = [n.get('fill') for n in doc.iter() if (n.get('class') or '').startswith('bar')]
+        self.assertEqual(fills[0], COLORS[0])
+        self.assertEqual(fills[-1], COLORS[-1])
+        self.assertNotIn(COLORS[0], fills[1:])
+
+    def test_values_print_like_the_tree_with_separators(self):
+        from myflames.output_bargraph import render_bargraph
+        from myflames.output_tree import _format_time
+        root = P.parse_explain(json.dumps({'operation': 'Nested loop inner join', 'actual_rows': 1,
+            'actual_loops': 1, 'actual_last_row_ms': 3600.0, 'inputs': [
+                {'operation': 'Table scan on a', 'table_name': 'a', 'actual_rows': 1, 'actual_loops': 1,
+                 'actual_last_row_ms': 3568.25},
+                {'operation': 'Table scan on b', 'table_name': 'b', 'actual_rows': 1, 'actual_loops': 1,
+                 'actual_last_row_ms': 4.66}]}))
+        doc = ET.fromstring(render_bargraph(root, total_time=root['total_time']))
+        values = [n.text for n in doc.iter() if n.get('class') == 'value']
+        self.assertEqual(values[0], _format_time(3568.25) + ' (99.1%)')
+        self.assertEqual(values[0], '3.57 s (99.1%)')
+        self.assertTrue(any(v.startswith('4.66 ms') for v in values), values)
+        headers = [n.text for n in doc.iter() if n.get('class') == 'col-header']
+        self.assertEqual(headers, ['Operation', 'Loops', 'Self time'])
+
+    def test_label_column_narrows_with_width(self):
+        from myflames.output_bargraph import label_width
+        self.assertEqual(label_width(1200), 320)
+        self.assertEqual(label_width(616), 234)
+        self.assertEqual(label_width(300), 160)
+
+    def test_tree_headers_and_links_are_sentence_case(self):
+        from myflames.output_tree import render_tree
+        root = P.parse_explain(_text(_fixture("mariadb-13.0-analyze-join-3t.json")))
+        doc = ET.fromstring(render_tree(root))
+        texts = [n.text for n in doc.iter() if n.get('class') in ('col-hdr', 'ctrl-link')]
+        self.assertEqual(texts, ['Expand all', 'Collapse all', 'Self', 'Total', '%', 'Self time bar'])
 
 
 if __name__ == "__main__":

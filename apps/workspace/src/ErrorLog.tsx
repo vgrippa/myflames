@@ -23,11 +23,11 @@ const LEVELS: Segment<Level>[] = [
 ];
 
 export const TIME_PRESETS: [TimePreset, string][] = [
-  ["all", "All Time"],
-  ["1h", "Last 1 Hour"],
-  ["6h", "Last 6 Hours"],
-  ["24h", "Last 24 Hours"],
-  ["custom", "Custom Range"],
+  ["all", "All time"],
+  ["1h", "Last hour"],
+  ["6h", "Last 6 hours"],
+  ["24h", "Last 24 hours"],
+  ["custom", "Custom range"],
 ];
 
 const levelTone = (prio: string): Tone => prio === "Error" ? "problem" : prio === "Warning" ? "watch" : "info";
@@ -283,14 +283,13 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
     </>,
   };
 
-  return <ViewLayout id="errorlog" title="Error log" onBack={onBack}
-    info={<><p>MySQL reads performance_schema.error_log. MariaDB reads the error log file only when the server runs on this computer.</p>
-      <p>Filters apply to the loaded entries. By code uses the server's grouped counts across the source, including previous runs.</p></>}
-    controls={report?.available && <>
+  // The filters sit on the row above the list, like Indexes and Tables, so
+  // the view toolbar keeps one row at 1440 px; Export ends the row.
+  const tools = <div className="report-table-tools errorlog-tools" role="group" aria-label="Error log filters">
       <Segmented<Grouping> label="Error log grouping" value={grouping} onChange={setGrouping}
         options={[{ value: "entries", label: "Entries" }, { value: "codes", label: "By code" }]} />
       <Segmented<Level> label="Log level" value={selectedLevel} onChange={setLevel}
-        options={LEVELS.filter(l => report.engine !== "mariadb" || l.value !== "System")} />
+        options={LEVELS.filter(l => !mariadb || l.value !== "System")} />
       <ToolbarSelect
         label="Time"
         className="errorlog-time-select"
@@ -320,7 +319,7 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
           </label>
         </div>
       )}
-      <SearchField label="Filter error log" placeholder="Message, code, subsystem" value={filter} onChange={setFilter} />
+      <SearchField label="Filter error log" placeholder="Filter entries" value={filter} onChange={setFilter} />
       <Checkbox checked={thisRun} onChange={setThisRun} disabled={grouping === "codes"}
         title={grouping === "codes" ? "Grouped counts include previous runs; use Entries to filter by run." : undefined}>This run only</Checkbox>
       <Popover
@@ -357,7 +356,11 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
           </p>
         )}
       </Popover>
-    </>}
+  </div>;
+
+  return <ViewLayout id="errorlog" title="Error log" onBack={onBack}
+    info={<><p>MySQL reads performance_schema.error_log. MariaDB reads the error log file only when the server runs on this computer.</p>
+      <p>Filters apply to the loaded entries; the text filter matches the message, code and subsystem. By code uses the server's grouped counts across the source, including previous runs.</p></>}
     onRefresh={() => void load()} refreshDisabled={disabled} loading={!!reads.loading} otherConnection={other}
     inspector={inspector} inspectorEmpty={<p>Select an entry or code to see the full message and details.</p>}
     status={<ViewStatus loading={reads.loading} error={reads.error} />}>
@@ -383,6 +386,7 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
         </section>}
       </> : <>
         <section className="view-section" aria-label="Error log rows">
+          {tools}
           {grouping === "entries" ? <DataTable key="entries" id="errorlog.entries" label="Error log entries" columns={entryColumns}
             rows={visibleEntries} rowKey={e => e.key} selection={selection} defaultSort={{ key: "time", dir: "desc" }}
             rowAttrs={e => ({ "data-previous-run": String(e.previous_run), "data-level": e.prio })}

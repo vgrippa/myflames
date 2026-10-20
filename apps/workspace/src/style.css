@@ -19,7 +19,9 @@
   --sidebar-w: 208px;
   /* Window footer: one line, tall enough for its Retry button (24 px). */
   --statusbar-h: 26px;
-  --bg: #f5f5f7;
+  /* The window background is the content surface, as in Dark: gray belongs
+     to the sidebar and side panes only (--surface-muted, --surface-pane). */
+  --bg: #ffffff;
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-muted: #f5f5f7;
@@ -161,7 +163,7 @@
 /* Explicit Light appearance override: Apple standard design school */
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f5f5f7;
+  --bg: #ffffff;
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-muted: #f5f5f7;
@@ -706,16 +708,39 @@ details > p {
   background: var(--surface-hover);
 }
 
-/* About myflames: a centered window like a desktop app's About. */
+/* About myflames: a centered window like a desktop app's About. The body
+   scrolls inside a short window and the actions stay in view under it. */
 .about-dialog::backdrop {
   background: var(--scrim);
 }
-.about-body {
+/* The body scrolls inside a short window; the actions below it stay in view. */
+.about-dialog[open] {
   display: flex;
   flex-direction: column;
+}
+.about-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   align-items: center;
+  min-height: 0;
+  overflow-y: auto;
   text-align: center;
-  padding: var(--space-6) var(--space-5) var(--space-5);
+  padding: var(--space-6) var(--space-5) var(--space-1);
+}
+.about-actions {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--line);
+}
+.about-actions .button {
+  text-decoration: none;
 }
 .about-subtitle,
 .about-version {
@@ -725,11 +750,6 @@ details > p {
 }
 .about-version {
   font-variant-numeric: tabular-nums;
-}
-.about-tagline {
-  margin-top: var(--space-3);
-  font-size: var(--text-md);
-  line-height: var(--leading-md);
 }
 .about-section {
   width: 100%;
@@ -751,10 +771,20 @@ details > p {
 .about-section p + p {
   margin-top: var(--space-1);
 }
-.about-close {
-  margin-top: var(--space-5);
-  min-width: 96px;
+.about-actions {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5) var(--space-5);
 }
+.about-actions a.button {
+  text-decoration: none;
+}
+.about-close {
+  min-width: 80px;
+}
+
 
 /* Workspace column and top bar. */
 /* The top bar and, under it, the safety strip stay at the top together. */
@@ -1091,10 +1121,11 @@ main.is-flush > :is(.error, .notice) {
   font-weight: 500;
   color: var(--ink-muted);
 }
-.segmented button:hover:not(:disabled):not([aria-pressed="true"]) {
+.segmented button:hover:not(:disabled):not([aria-pressed="true"]):not([aria-selected="true"]) {
   color: var(--ink);
 }
-.segmented button[aria-pressed="true"] {
+.segmented button[aria-pressed="true"],
+.segmented button[aria-selected="true"] {
   background: var(--surface);
   color: var(--ink);
   font-weight: 500;
@@ -1324,8 +1355,9 @@ details[open] > summary > .strip-text {
 }
 /* A narrow plan (the 720 px window): the plan header keeps one row for the
    name, Plan summary, SQL and Export (the engine and operator count move
-   into the Plan summary panel, Copy SQL keeps its icon), and the
-   measurements wrap below it instead of overflowing. */
+   into the Plan summary panel, Copy SQL keeps its icon), and the four
+   measurements sit below it as columns, label over value, so none of them
+   wraps alone onto a line of its own. */
 .plan-screen {
   container: plan-screen / inline-size;
 }
@@ -1335,9 +1367,8 @@ details[open] > summary > .strip-text {
   .plan-header-tools .sql-copy > svg { display: block; }
   .plan-header-tools .sql-copy-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .plan-heading .plan-stats { display: flex; flex-wrap: wrap; row-gap: var(--space-1); }
-  .plan-heading .plan-stats > div { padding-inline: var(--space-1-5); }
+  .plan-heading .plan-stats > div { flex-direction: column; align-items: flex-start; gap: 0; padding-inline: var(--space-3); }
   .plan-heading .plan-stats > div:first-child { padding-left: 0; }
-  .plan-heading .plan-stats dd { font-size: var(--text-sm); line-height: var(--leading-sm); }
 }
 .plan-header-panel {
   position: absolute;
@@ -1409,23 +1440,33 @@ details[open] > summary > .strip-text {
   position: relative;
   min-width: 0;
 }
-/* The header, strips and the chart fill the window; the chart keeps at least
-   70% of its height. Findings, context and notes follow below the fold. */
+/* The header, strips and the chart fill the window in every chart view; the
+   chart keeps at least 70% of its height and the inspector runs the full
+   height beside it. Findings, context and notes follow below the fold. */
 .plan-screen {
   display: flex;
   flex-direction: column;
   min-height: calc(100dvh - var(--topbar-height) - var(--toolbar-h));
 }
-.plan-screen:has(.plan-chart:not([data-view="workbench"])) {
-  min-height: 0;
-}
 .plan-fold {
   flex: 1 0 auto;
   min-height: calc(70dvh + var(--toolbar-h));
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
 }
-.plan-fold:has(.plan-chart:not([data-view="workbench"])) {
-  flex: 0 0 auto;
-  min-height: 320px;
+/* The canvas and its chart grow with the fold, so a short chart leaves a
+   plain surface below it (never the window background) and Visual Explain's
+   viewport reaches the bottom edge. */
+.plan-fold > .plan-canvas,
+.plan-fold .plan-chart {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.plan-fold .plan-chart > .mfc-chart {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .plan-canvas {
   min-width: 0;
@@ -1520,6 +1561,10 @@ details[open] > summary > .strip-text {
 .plan-chart .chart-toolbar .wb-controls button { white-space: nowrap; }
 .plan-chart .chart-toolbar .wb-controls button:hover:not(:disabled) { background: var(--surface-hover); }
 .plan-chart .chart-toolbar .wb-controls button.wb-activated:not(:disabled) { color: var(--accent-text); background: var(--accent-soft); }
+/* The zoom readout reads as text between − and + (as in the Database
+   diagram); it stays a button that resets to 100%. */
+.plan-chart .chart-toolbar .wb-controls button[data-action="reset"]:not(.wb-activated) { min-width: 44px; border-color: transparent; background: transparent; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.plan-chart .chart-toolbar .wb-controls button[data-action="reset"]:hover:not(:disabled) { color: var(--ink); background: var(--surface-hover); }
 .plan-chart .chart-toolbar input[type="search"] { min-width: 120px; width: 144px; flex: 1 1 120px; max-width: 240px; }
 .plan-chart .chart-toolbar :is(.wb-search-status, .mfc-search-status) {
   white-space: nowrap;
@@ -1538,8 +1583,8 @@ details[open] > summary > .strip-text {
 .plan-fold .plan-chart:not([data-view="workbench"]) {
   height: auto;
   min-height: 320px;
-  max-height: calc(70dvh + var(--toolbar-h));
 }
+.plan-fold .plan-chart:not([data-view="workbench"]) > .mfc-chart { max-height: none; }
 .plan-chart > .mfc-chart {
   display: flex;
   flex-direction: column;
@@ -1977,6 +2022,7 @@ details[open] > summary > .strip-text {
 .compare-tools > .segmented { min-width: 0; max-width: 100%; flex-wrap: wrap; }
 .compare-pane-heading { display: flex; align-items: center; gap: var(--space-2); padding-right: var(--space-3); border-bottom: 1px solid var(--line); }
 .compare-pane-heading h3 { flex: 1; min-width: 0; border: 0; }
+.compare-pane-total { flex: none; color: var(--ink-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .compare-pane > .plan-inspector { border-top: 1px solid var(--line); max-height: 340px; }
 .comparison-canvases {
   display: grid;
@@ -1988,6 +2034,14 @@ details[open] > summary > .strip-text {
 .compare-pane {
   min-width: 0;
   overflow: hidden;
+}
+/* Side by side, both panes share rows (heading, chart, inspector), so the
+   two inspectors start on one line whatever each chart's height. */
+@media (min-width: 1001px) {
+  .comparison-canvases { grid-template-rows: auto auto auto; }
+  .compare-pane { display: grid; grid-row: span 3; grid-template-rows: subgrid; align-content: start; }
+  .compare-pane > .plan-chart { align-self: stretch; }
+  .compare-pane > .plan-inspector { align-self: start; }
 }
 .compare-pane + .compare-pane {
   border-left: 1px solid var(--line);
@@ -2041,12 +2095,17 @@ details[open] > summary > .strip-text {
   margin-top: 5px;
 }
 .match-badge {
-  font-size: var(--text-xs);
+  justify-self: start;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
   background: var(--surface-muted);
-  padding: 5px 8px;
+  padding: 0 var(--space-2);
   border-radius: var(--radius-sm);
   text-align: center;
 }
+.match-badge:is([data-status="added"], [data-status="removed"], [data-status="changed"]) { color: var(--ink); }
+.match-badge[data-status="uncertain"] { color: var(--warn-text); }
 .check-field {
   display: flex;
   gap: 8px;
@@ -2253,6 +2312,36 @@ main:has(> .library) { padding: 0; max-width: none; }
   font-size: var(--text-sm);
   color: var(--muted);
 }
+/* Dialogs that scroll as a whole keep their actions on the bottom edge in a
+   short window (the 720x520 minimum has 492 px of content): the actions
+   stick, cover their own padding, and the content scrolls under them. */
+.import-dialog {
+  --dialog-pad: 28px;
+}
+.notebook-sheet {
+  --dialog-pad: var(--space-5);
+}
+@media (max-height: 700px) {
+  :is(.import-dialog, .notebook-sheet) > .dialog-actions:last-child {
+    position: sticky;
+    bottom: calc(-1 * var(--dialog-pad));
+    z-index: 1;
+    margin-bottom: calc(-1 * var(--dialog-pad));
+    padding: var(--space-3) 0 var(--dialog-pad);
+    border-top: 1px solid var(--line);
+    background: inherit;
+  }
+  .import-dialog {
+    --dialog-pad: var(--space-5);
+    padding: var(--dialog-pad);
+  }
+  .import-dialog .file-picker {
+    margin-bottom: var(--space-3);
+  }
+  .import-dialog textarea {
+    min-height: 140px;
+  }
+}
 .file-choice,
 .file-picker {
   padding: 14px;
@@ -2312,7 +2401,11 @@ main:has(> .library) { padding: 0; max-width: none; }
   min-height: calc(100dvh - var(--topbar-height));
   background: var(--surface);
 }
+/* The lesson toolbar stays under the top bar while a lesson scrolls. */
 .teach-toolbar {
+  position: sticky;
+  top: var(--topbar-height);
+  z-index: 3;
   flex: none;
   justify-content: space-between;
   padding: var(--space-2) var(--space-5);
@@ -3027,10 +3120,11 @@ main:has(> .library) { padding: 0; max-width: none; }
 .home-launcher {
   display: grid;
   /* Recent work is a list of names: it needs less room than the
-     connections table beside it. */
+     connections table beside it. Both panes run down to the version
+     footer, so the divider between them is full height. */
   grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
-  align-items: start;
-  border-bottom: 1px solid var(--line);
+  align-items: stretch;
+  flex: 1 1 auto;
 }
 .home-pane {
   min-width: 0;
@@ -3360,6 +3454,7 @@ button, .plan-item, .main-nav button {
   gap: 2px;
 }
 .main-nav button {
+  min-width: 0;
   border: 0;
   background: transparent;
   text-align: left;
@@ -3521,14 +3616,6 @@ button, .plan-item, .main-nav button {
 .workspace[data-place="query"] .query-lab {
   height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }
-/* Narrow windows stack the editor and its results and scroll the page
-   (editor.css); a fixed height here let the results run past the page end,
-   under the footer. */
-@media (max-width: 720px) {
-  .workspace[data-place="query"] .query-lab {
-    height: auto;
-  }
-}
 .workspace:is([data-place="server"], [data-place="workload"], [data-place="tuning"]) .server-view {
   min-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }
@@ -3566,8 +3653,16 @@ button, .plan-item, .main-nav button {
   min-width: 0;
   width: auto;
 }
-.workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar {
-  padding-right: calc(var(--place-actions-width) + var(--space-4));
+/* Server and Workload: the place toolbar (Refresh all, then the ⓘ and the
+   list toggle) is drawn into the top bar over .place-actions-slot, right
+   after the connection picker, so Refresh all never sits over a view's own
+   Refresh. It stops above the bar's hairline. Without anchor positioning it
+   falls back to the end of the bar. */
+.place-actions-slot {
+  flex: none;
+  width: var(--place-actions-width);
+  height: 1px;
+  anchor-name: --place-actions;
 }
 .workspace:is([data-place="server"], [data-place="workload"]) .place-toolbar {
   position: fixed;
@@ -3579,11 +3674,29 @@ button, .plan-item, .main-nav button {
   flex-wrap: nowrap;
   width: max-content;
   max-width: 45vw;
-  height: 38px;
-  min-height: 38px;
+  height: calc(var(--topbar-row) - 1px);
+  min-height: 0;
   border: 0;
   background: var(--surface);
   gap: var(--space-1);
+}
+.workspace:is([data-place="server"], [data-place="workload"]) .place-toolbar .refresh-all {
+  order: -1;
+}
+@supports (anchor-name: --place-actions) {
+  .workspace:is([data-place="server"], [data-place="workload"]) .place-toolbar {
+    position-anchor: --place-actions;
+    left: anchor(left);
+    right: auto;
+  }
+}
+@supports not (anchor-name: --place-actions) {
+  .place-actions-slot {
+    display: none;
+  }
+  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar {
+    padding-right: calc(var(--place-actions-width) + var(--space-4));
+  }
 }
 .workspace:is([data-place="server"], [data-place="workload"]) .place-toolbar .place-title {
   order: 0;
@@ -3611,11 +3724,16 @@ button, .plan-item, .main-nav button {
 .workspace:is([data-place="server"], [data-place="workload"]) .refresh-all-status {
   max-width: 120px;
 }
+/* Wide windows have room for the whole "16 of 16 views refreshed". */
+@media (min-width: 1280px) {
+  .workspace:is([data-place="server"], [data-place="workload"]) .refresh-all-status {
+    max-width: 176px;
+  }
+}
 .workspace .editor-heading {
   display: none;
 }
-.workspace:is([data-place="query"], [data-place="server"], [data-place="workload"], [data-place="replication"], [data-place="tuning"]) .save-state,
-.workspace:is([data-place="query"], [data-place="server"], [data-place="workload"], [data-place="replication"], [data-place="tuning"]) .local-badge {
+.workspace:is([data-place="query"], [data-place="server"], [data-place="workload"], [data-place="replication"], [data-place="tuning"]) .save-state {
   display: none;
 }
 .connection-picker {
@@ -3806,7 +3924,7 @@ button, .plan-item, .main-nav button {
 .about-dialog {
   width: min(360px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
-  overflow-y: auto;
+  overflow: hidden;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -3814,6 +3932,30 @@ button, .plan-item, .main-nav button {
   box-shadow: var(--shadow-dialog);
   color: var(--ink);
   animation: chrome-panel-in var(--motion-panel);
+}
+/* The minimum window (720x520, 492 px of content under the title bar):
+   tighter spacing keeps the whole window, credits included, on screen. */
+@media (max-height: 600px) {
+  .about-body {
+    padding-top: var(--space-4);
+  }
+  .about-mark {
+    width: 40px;
+    height: 40px;
+    margin-bottom: var(--space-2);
+  }
+  .about-tagline {
+    margin-top: var(--space-2);
+  }
+  .about-facts,
+  .about-section {
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+  }
+  .about-actions {
+    padding-top: var(--space-3);
+    padding-bottom: var(--space-4);
+  }
 }
 @keyframes chrome-panel-in {
   from {
@@ -3838,11 +3980,51 @@ button, .plan-item, .main-nav button {
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  .connection-pill .picker-target {
+  /* The pill keeps the connection's name and its type dot; the type in
+     words is the first item of the window footer on these places. */
+  .connection-pill .picker-target,
+  .window-toolbar .connection-pill .safety-tags {
     display: none;
+  }
+  .window-toolbar .connection-pill-name {
+    min-width: 6ch;
   }
   .workspace:is([data-place="server"], [data-place="workload"]) .refresh-all-status {
     max-width: 72px;
+  }
+  /* The places that send to a connection give the picker the room: Local
+     steps aside (the window footer names the connection) and Privileges
+     keeps its key icon, named for screen readers and in its tooltip. */
+  .workspace:is([data-place="query"], [data-place="server"], [data-place="workload"], [data-place="replication"], [data-place="tuning"]) .window-toolbar .local-badge,
+  .window-toolbar .privileges-button-label {
+    display: none;
+  }
+  .window-toolbar .privileges-button {
+    flex: none;
+    width: var(--control-h);
+    padding: 0;
+    justify-content: center;
+  }
+}
+/* The 720 px window: Server and Workload draw their own actions into the top
+   bar, so the connection pill keeps its name (the type stays on its dot, in
+   its accessible name and first in the window footer) and Privileges keeps
+   its key icon, named for screen readers and in its tooltip. */
+@media (max-width: 800px) {
+  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .connection-pill .safety-tags {
+    display: none;
+  }
+  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .connection-pill-name {
+    min-width: 4ch;
+  }
+  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .privileges-button {
+    flex: none;
+    width: var(--control-h);
+    padding: 0;
+    justify-content: center;
+  }
+  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .privileges-button-label {
+    display: none;
   }
 }
 @media (max-width: 650px) {
@@ -3902,7 +4084,8 @@ button, .plan-item, .main-nav button {
   .connection-pill .safety-tags {
     display: none;
   }
-  .window-toolbar .local-badge {
+  .window-toolbar .local-badge,
+  .place-actions-slot {
     display: none;
   }
   /* Phones: the top bar keeps the place name and the connection; Server's
@@ -4033,6 +4216,10 @@ button, .plan-item, .main-nav button {
   .compare-tools > .segmented { display: none; }
   .compare-tools > .compare-phone-view { display: block; }
   .compare-tools { flex-wrap: wrap; }
+  /* The two plan pickers take a row of their own under the title and
+     Export, so both plan names stay readable. */
+  .page-heading.compare-heading { flex-wrap: wrap; padding-inline: var(--space-4); }
+  .compare-heading .compare-selectors { order: 3; flex: 1 1 100%; }
 }
 /* A narrow plan (the 720 px window): the chart's view, metric and branch
    become one select and an Options menu, and the legend a popover, so the
@@ -4046,6 +4233,9 @@ button, .plan-item, .main-nav button {
   .chart-phone-options { display: flex; align-items: center; gap: var(--space-1); flex: none; }
   .chart-toolbar .chart-options { flex: none; }
   .plan-chart .chart-toolbar input[type="search"] { min-width: 72px; width: auto; flex: 1 1 96px; }
+  /* Fit, zoom out, zoom in and the zoom level read as one control. */
+  .plan-chart .chart-toolbar .wb-controls > button + button { margin-left: calc(-1 * var(--space-1) - 1px); border-top-left-radius: 0; border-bottom-left-radius: 0; }
+  .plan-chart .chart-toolbar .wb-controls > button:has(+ button) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
   .wb-legend { display: none; }
   .wb-legend-popover { display: block; flex: none; }
 }
@@ -4056,7 +4246,7 @@ button, .plan-item, .main-nav button {
 @media (max-width: 650px) {
   .compare-heading h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .page-heading.compare-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1) var(--space-2); min-height: 0; padding: var(--space-1) var(--space-2); }
-  .page-heading.compare-heading .compare-selectors { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-2); width: 100%; }
+  .page-heading.compare-heading .compare-selectors { order: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-2); width: 100%; }
   .page-heading.compare-heading .compare-selectors > svg { display: none; }
   .page-heading.compare-heading .compare-selectors .toolbar-field { display: grid; gap: 0; min-width: 0; }
   .page-heading.compare-heading .compare-selectors .toolbar-field > span { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--ink-muted); }
@@ -4107,6 +4297,7 @@ button, .plan-item, .main-nav button {
 /* Home uses the kit's data table and inspector. The right column stays in
    place while the form opens, so editing never pushes Recent work below it. */
 .home .connections { min-height: 0; padding-bottom: 0; }
+.connections .cell-empty { color: var(--ink-muted); }
 .home .connections > .view-toolbar { min-height: var(--space-7); }
 .home .connections .view-title h2 { font-size: var(--text-lg); line-height: var(--leading-lg); }
 .home .connections .toolbar-controls { margin-left: auto; }
@@ -4255,18 +4446,6 @@ button, .plan-item, .main-nav button {
 }
 .brand-name {
   font-weight: 600;
-}
-.brand-version {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 1px 5px;
-  margin-left: 4px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-button, rgba(255, 255, 255, 0.08));
-  color: var(--ink-muted, #9aa0a6);
-  font-family: var(--font-mono, monospace);
-  line-height: 1.2;
 }
 /* Icon-only, so the icon uses the warning text color (at least 3:1 on its
    tint over the sidebar in both appearances). */

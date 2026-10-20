@@ -95,9 +95,13 @@ try {
   // Time preset options and Export button in available state
   assert.match(available, /aria-label="Export error log"/);
   assert.match(available, /<span>Time<\/span>/);
-  assert.match(available, /All Time/);
-  assert.match(available, /Last 24 Hours/);
-  assert.match(available, /Custom Range/);
+  assert.match(available, /All time/);
+  assert.match(available, /Last 24 hours/);
+  assert.match(available, /Custom range/);
+  assert.doesNotMatch(available, /All Time|Last 24 Hours|Custom Range/, "sentence case");
+  // The filters and Export sit in the row above the list, not in the view toolbar.
+  assert.match(available, /class="report-table-tools errorlog-tools"[^>]*aria-label="Error log filters"/);
+  assert.doesNotMatch(available.slice(0, available.indexOf("errorlog-tools")), /aria-label="Export error log"/);
 
   // Helper unit tests
   assert.ok(!isNaN(parseLogTimestamp("2026-10-19 20:25:59.999999")));

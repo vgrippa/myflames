@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport, type TableInventoryRow } from "./api";
-import { CompactNumber, CopySql, SchemaPicker, bytes, count, engineLabel, useSchemaCatalog } from "./PerfShared";
+import { CompactNumber, CopySql, RowActionMenu, SchemaPicker, bytes, count, engineLabel, useSchemaCatalog, type RowMenuItem } from "./PerfShared";
 import { uptime } from "./Health";
 import { useConnectionReads, type Bound } from "./binding";
 import {
@@ -37,7 +37,6 @@ import {
 import "./tables.css";
 import { PaginatedReportTable } from "./PaginatedReportTable";
 import { ReviewedSqlAction, ReviewedSqlBridger, ReviewedSqlProvider, ReviewedSqlStatus, useReviewedSql } from "./ReviewedSqlAction";
-import { Icon } from "./components";
 import { AddColumnDialog, RemoveColumnDialog } from "./TableAlterDialog";
 
 export type TableFocus = { schema: string; table: string } | null;
@@ -98,111 +97,22 @@ function TableRowActions({
   onIndexes: () => void;
   disabled: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
   const reviewedSql = useReviewedSql();
-
-  useEffect(() => {
-    if (!open) return;
-    const handleOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", handleOutside);
-    return () => window.removeEventListener("mousedown", handleOutside);
-  }, [open]);
-
-  return (
-    <div className="table-row-actions-wrap" ref={ref} onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        className="button small table-actions-trigger"
-        disabled={disabled}
-        onClick={() => setOpen(!open)}
-        title={`Actions for ${schema}.${table}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        Actions ▾
-      </button>
-      {open && (
-        <div className="table-actions-menu" role="menu">
-          <button
-            type="button"
-            className="table-action-item"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onAddColumn();
-            }}
-          >
-            <Icon name="plus" /> Add Column
-          </button>
-          <button
-            type="button"
-            className="table-action-item"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onRemoveColumn();
-            }}
-          >
-            <Icon name="close" /> Remove Column
-          </button>
-          <div className="table-action-divider" />
-          <button
-            type="button"
-            className="table-action-item"
-            role="menuitem"
-            disabled={reviewedSql?.blocked}
-            onClick={() => {
-              setOpen(false);
-              reviewedSql?.start(`OPTIMIZE TABLE \`${schema}\`.\`${table}\``, `Optimize ${table}`);
-            }}
-          >
-            <Icon name="optimize" /> Optimize Table
-          </button>
-          <button
-            type="button"
-            className="table-action-item"
-            role="menuitem"
-            disabled={reviewedSql?.blocked}
-            onClick={() => {
-              setOpen(false);
-              reviewedSql?.start(`ANALYZE TABLE \`${schema}\`.\`${table}\``, `Analyze ${table}`);
-            }}
-          >
-            <Icon name="statements" /> Analyze Table
-          </button>
-          <button
-            type="button"
-            className="table-action-item"
-            role="menuitem"
-            disabled={reviewedSql?.blocked}
-            onClick={() => {
-              setOpen(false);
-              reviewedSql?.start(`CHECK TABLE \`${schema}\`.\`${table}\``, `Check ${table}`);
-            }}
-          >
-            <Icon name="shield" /> Check Table
-          </button>
-          <div className="table-action-divider" />
-          <button
-            type="button"
-            className="table-action-item"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onIndexes();
-            }}
-          >
-            <Icon name="index" /> View Indexes
-          </button>
-        </div>
-      )}
-    </div>
-  );
+  const blocked = reviewedSql?.blocked;
+  const items: RowMenuItem[] = [
+    { label: "Add column…", icon: "plus", disabled: blocked, onSelect: onAddColumn },
+    { label: "Remove column…", icon: "minus", disabled: blocked, onSelect: onRemoveColumn },
+    "divider",
+    { label: "Optimize table…", icon: "optimize", disabled: blocked,
+      onSelect: () => reviewedSql?.start(`OPTIMIZE TABLE \`${schema}\`.\`${table}\``, `Optimize ${table}`) },
+    { label: "Analyze table…", icon: "statements", disabled: blocked,
+      onSelect: () => reviewedSql?.start(`ANALYZE TABLE \`${schema}\`.\`${table}\``, `Analyze ${table}`) },
+    { label: "Check table…", icon: "shield", disabled: blocked,
+      onSelect: () => reviewedSql?.start(`CHECK TABLE \`${schema}\`.\`${table}\``, `Check ${table}`) },
+    "divider",
+    { label: "View indexes", icon: "index", onSelect: onIndexes },
+  ];
+  return <RowActionMenu label={`Actions for ${schema}.${table}`} disabled={disabled} items={items} />;
 }
 
 function TableAlterRunner({
@@ -299,7 +209,7 @@ export function TablesView({
       ...(onOpenSql
         ? [
             {
-              label: "Open in Query Editor",
+              label: "Open in Query editor",
               icon: "query",
               onClick: () => {
                 onOpenSql(`SELECT * FROM ${qTable} LIMIT 100;`);
@@ -316,7 +226,7 @@ export function TablesView({
           ]
         : []),
       {
-        label: "Optimize table",
+        label: "Optimize table…",
         icon: "optimize",
         disabled: runner?.blocked,
         onClick: () => {
@@ -324,7 +234,7 @@ export function TablesView({
         },
       },
       {
-        label: "Analyze table",
+        label: "Analyze table…",
         icon: "statements",
         disabled: runner?.blocked,
         onClick: () => {
@@ -332,7 +242,7 @@ export function TablesView({
         },
       },
       {
-        label: "Check table",
+        label: "Check table…",
         icon: "shield",
         disabled: runner?.blocked,
         onClick: () => {
@@ -340,7 +250,7 @@ export function TablesView({
         },
       },
       {
-        label: "Checksum table",
+        label: "Checksum table…",
         icon: "check",
         disabled: runner?.blocked,
         onClick: () => {
@@ -349,7 +259,7 @@ export function TablesView({
       },
       { divider: true as const },
       {
-        label: "Add column",
+        label: "Add column…",
         icon: "plus",
         disabled: runner?.blocked,
         onClick: () => {
@@ -357,7 +267,7 @@ export function TablesView({
         },
       },
       {
-        label: "Remove column",
+        label: "Remove column…",
         icon: "minus",
         disabled: runner?.blocked,
         onClick: () => {
@@ -508,28 +418,23 @@ export function TablesView({
       {r.partitioned && <Pill>partitioned</Pill>}
     </span>
   );
-  const makeActionsCol = <T extends { schema: string; table: string }>(): Column<T> => ({
-    key: "actions",
-    label: "Actions",
-    width: 96,
-    render: (r) => (
-      <TableRowActions
-        schema={r.schema}
-        table={r.table}
-        disabled={!!other}
-        onAddColumn={() => setTableAlter({ mode: "add", schema: r.schema, table: r.table })}
-        onRemoveColumn={() => setTableAlter({ mode: "remove", schema: r.schema, table: r.table })}
-        onIndexes={() => bound && onOpenIndexes(r.schema, r.table, bound.key)}
-      />
-    ),
-  });
+  // Each row's ⋯ menu in the table's trailing column (rowAction), as in Processlist.
+  const tableRowAction = (r: { schema: string; table: string }) => (
+    <TableRowActions
+      schema={r.schema}
+      table={r.table}
+      disabled={!!other}
+      onAddColumn={() => setTableAlter({ mode: "add", schema: r.schema, table: r.table })}
+      onRemoveColumn={() => setTableAlter({ mode: "remove", schema: r.schema, table: r.table })}
+      onIndexes={() => bound && onOpenIndexes(r.schema, r.table, bound.key)}
+    />
+  );
   const inventoryColumns: Column<TableInventoryRow>[] = [
     { key: "table", label: "Table", sort: r => `${r.schema}.${r.table}`, render: tableCell },
     { key: "engine", label: "Engine", sort: r => r.engine, render: r => r.engine || "Unknown" },
     { key: "rows", label: "Rows (est.)", num: true, sort: r => r.rows, render: r => <CompactNumber value={r.rows} /> },
     { key: "data", label: "Data", num: true, sort: r => r.data_bytes, render: r => bytes(r.data_bytes) },
     { key: "indexes", label: "Indexes", num: true, sort: r => r.index_bytes, render: r => bytes(r.index_bytes) },
-    makeActionsCol<TableInventoryRow>(),
   ];
   const missingColumns: Column<MissingPrimaryKey>[] = [
     {
@@ -565,7 +470,6 @@ export function TablesView({
           <span className="cell-muted">no clustered index</span>
         ),
     },
-    makeActionsCol<MissingPrimaryKey>(),
   ];
   const freeColumns: Column<FreeSpaceRow>[] = [
     {
@@ -593,7 +497,6 @@ export function TablesView({
       sort: (f) => f.free_pct,
       render: (f) => (f.status === "shared" || f.status === "unknown" || f.free_pct === null ? "Unknown" : `${Math.round(f.free_pct)}%`),
     },
-    makeActionsCol<FreeSpaceRow>(),
   ];
 
   let inspector: InspectorContent | null = null;
@@ -929,7 +832,7 @@ export function TablesView({
               return currentList === "all" ? (
                 <PaginatedReportTable id="tables.inventory" label="All tables" columns={inventoryColumns} rows={inventory}
                   filters={listFilters}
-                  rowKey={r => `table:${r.schema}.${r.table}`} selection={selection} defaultSort={{key:"table",dir:"asc"}}
+                  rowAction={tableRowAction} rowKey={r => `table:${r.schema}.${r.table}`} selection={selection} defaultSort={{key:"table",dir:"asc"}}
                   rowAttrs={r => ({"data-table": `${r.schema}.${r.table}`})} empty="No tables match these filters."
                   rowContextMenu={r => getTableRowContextMenu(r.schema, r.table)}
                   exportContext={exportContext} resetKey={resetKey} exportColumns={[
@@ -947,6 +850,7 @@ export function TablesView({
                     columns={missingColumns}
                     rows={missing}
                     rowKey={(m) => `missing:${m.schema}.${m.table}`}
+                    rowAction={tableRowAction}
                     selection={selection}
                     defaultSort={{ key: "status", dir: "asc" }}
                     rowAttrs={(m) => ({ "data-table": `${m.schema}.${m.table}` })}
@@ -983,6 +887,7 @@ export function TablesView({
                     columns={freeColumns}
                     rows={free}
                     rowKey={(f) => `free:${f.schema}.${f.table}`}
+                    rowAction={tableRowAction}
                     selection={selection}
                     defaultSort={{ key: "status", dir: "asc" }}
                     rowAttrs={(f) => ({ "data-table": `${f.schema}.${f.table}` })}

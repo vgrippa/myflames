@@ -25,7 +25,7 @@ LESSONS = {
         "render": filter.render,
     },
     "derived_table": {
-        "title": "Derived Table Materialization",
+        "title": "Derived table materialization: a subquery becomes a temp table",
         "summary": "FROM-clause subquery materialized into temp table, auto-indexed, then probed.",
         "render": derived_table.render,
     },

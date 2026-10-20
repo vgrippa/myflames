@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { downloadAppUpdate, type AppUpdateInfo } from "./api";
+import { appVersion, downloadAppUpdate, type AppUpdateInfo } from "./api";
 import { Icon } from "./components";
 import { useFocusScope } from "./kit";
 
@@ -45,7 +45,7 @@ export function UpdateDialog({
     }
   }
 
-  const current = updateInfo?.current_version || "3.0.0";
+  const current = updateInfo?.current_version || appVersion();
   const latest = updateInfo?.latest_version || current;
   const isNewer = updateInfo?.update_available ?? false;
 
@@ -75,13 +75,13 @@ export function UpdateDialog({
       <div className="update-body">
         <div className="update-versions">
           <div className="version-box current">
-            <span className="version-label">Current Version</span>
-            <strong className="version-value">v{current}</strong>
+            <span className="version-label">Current version</span>
+            <strong className="version-value">{current ? `v${current}` : "Unknown"}</strong>
           </div>
           <Icon name="chevron" size={16} />
           <div className={`version-box latest${isNewer ? " is-newer" : ""}`}>
-            <span className="version-label">Latest Release</span>
-            <strong className="version-value">v{latest}</strong>
+            <span className="version-label">Latest release</span>
+            <strong className="version-value">{latest ? `v${latest}` : "Unknown"}</strong>
           </div>
         </div>
 

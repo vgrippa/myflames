@@ -7,6 +7,7 @@ import { ConfirmSheet, Disclosure, EmptyState, Fields, InspectorSection, Popover
 import { autoLayout, boundedCoordinate, COLUMN_HEIGHT, conceptualRelationship, diagramBounds, diagramPositions, diagramSvg,
   MAX_IMPORT_BYTES, relationshipPath, relationshipEndpoints, cardinalityLabel, TABLE_WIDTH, tableHeight, tableLabel, validateDiagram, withDiagramLayout, rebuildDiagramLayout,
   type DiagramDocument, type DiagramRelationship, type Point, type SchemaDiagram } from "./schemaDiagramModel";
+import { Icon } from "./components";
 import "./schema-diagram.css";
 
 type Format = "sql" | "mermaid" | "json";
@@ -477,7 +478,7 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   return <ViewLayout id="diagram" title="Database diagram" className="diagram-view" onBack={onBack}
     info="Read a database schema or import SQL, Mermaid or diagram JSON. Imported SQL is never executed. Drag tables to arrange them; arrow keys move a focused table."
     controls={<><Segmented label="Diagram view" value={view} options={[{value:"diagram",label:"Diagram"},{value:"mermaid",label:"Mermaid"}]} onChange={setView}/><button className="button" onClick={()=>{setImportOpen(true);setError("");}} disabled={!!busy}>Import</button>
-      <Popover label="Export diagram" trigger="Export" buttonClassName="button" disabled={!d||!!busy}>
+      <Popover label="Export diagram" trigger={<><Icon name="export" size={15}/><span>Export</span></>} buttonClassName="button" disabled={!d||!!busy}>
         <div className="diagram-export-menu">{([["json","Editable JSON"],["svg","SVG image"],["sql","SQL schema"],["mermaid","Mermaid"]] as const).map(([value,label])=>
           <button className="button ghost" key={value} onClick={()=>void exportDiagram(value)}>{label}</button>)}</div>
       </Popover></>}

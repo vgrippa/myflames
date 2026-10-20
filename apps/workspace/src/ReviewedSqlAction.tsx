@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type Connection, type EditorConfirmation, type EditorReply } from "./api";
 import { connectionKey } from "./binding";
-import { ConfirmSheet } from "./kit";
+import { ConfirmSheet, Disclosure } from "./kit";
 import { editorPrivilegeGate, PrivilegeGate, type EditorPrivilegePreview } from "./privileges";
 
 type Request = { tab_id: string; connection: Connection; sql: string; require_confirmation: true; wait: number; limit: number };
@@ -205,7 +205,7 @@ export function ReviewedSqlStatus() {
     <span>{action.message}</span>{" "}
     {(action.phase === "running" || action.phase === "unknown") && <button className="button small" onClick={context.stop}>Stop</button>}
     {action.reply?.run && action.phase === "done" && action.reply.run.results.some(result => result.type === "rows") &&
-      <details><summary>Server messages</summary><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{action.reply.run.results.flatMap(result => result.type === "rows" ? result.rows.map(row => row.map(value => value ?? "NULL").join(" · ")) : []).join("\n")}</pre></details>}
+      <Disclosure className="reviewed-messages" title="Server messages"><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{action.reply.run.results.flatMap(result => result.type === "rows" ? result.rows.map(row => row.map(value => value ?? "NULL").join(" · ")) : []).join("\n")}</pre></Disclosure>}
     {action.phase === "done" && <button className="text-button" onClick={context.dismiss}>Dismiss</button>}
   </div>;
 }

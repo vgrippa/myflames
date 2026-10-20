@@ -29,7 +29,7 @@ from myflames.chart_assets import chart_embed
 from myflames.chart_data import build_chart_data
 from myflames.exploration import render_exploration
 from myflames.output_workbench import _fmt, _time
-from myflames.parser import parse_explain, flatten_nodes
+from myflames.parser import analyze_plan, parse_explain, flatten_nodes
 from myflames.teach_hooks import build_teach_hooks, build_teach_index_maps
 out = Path(sys.argv[1])
 page = lambda body: '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' + body + '</body></html>'
@@ -61,6 +61,14 @@ fixtures = {'values': [[v, '%.3g' % v, '%.2f' % v, '%.1f' % v, _fmt(v), _time(v)
                 ('emoji \\U0001F600\\U0001F600\\U0001F600 tail', 50, 12), ('a.b', 5, 12), ('', 10, 12),
                 ('Covering index skip scan for grouping on t1 using idx_long_name.with_dot', 232, 12)]]}
 (out / 'expected.json').write_text(json.dumps(fixtures))
+compact_cases = []
+for name in ('mysql-explain-hash-join.json', 'mariadb-explain-block-nl-join.json'):
+    tree = parse_explain(Path('test', name).read_text())
+    analysis = analyze_plan(tree)
+    compact_cases.append({'name': name,
+                          'legacy': build_chart_data(tree, analysis=analysis),
+                          'compact': build_chart_data(tree, analysis=analysis, compact=True)})
+(out / 'compact.json').write_text(json.dumps(compact_cases))
 `, directory], { cwd: root });
 execFileSync(process.env.PYTHON || 'python3', ['-c', `
 import json, sys
@@ -103,7 +111,14 @@ small = parse_explain(json.dumps({'operation': 'Nested loop inner join', 'access
 reference = ET.fromstring(_render_svg(small, 'flamegraph', 1200, 'Query plan', 'ms', node_identity=True).encode('utf-8'))
 ns = '{http://www.w3.org/2000/svg}'
 small_frames = [[g.get('data-node-id'), g.find(ns + 'title').text.split(chr(10))[0]] for g in reference.find(ns + 'g').findall(ns + 'g')]
+# 24 levels of operators with long names: the workspace tree must keep every
+# label and toggle before its number columns at any width.
+deep = {'operation': 'Table scan on t24 with a rather long operator description', 'access_type': 'table', 'table_name': 't24', 'actual_last_row_ms': 0.5}
+for level in range(23, 0, -1):
+    deep = {'operation': 'Nested loop inner join number %d with long text' % level, 'access_type': 'join',
+            'actual_last_row_ms': 25.0 - level, 'inputs': [deep]}
 flames = {'twins': build_chart_data(twins), 'micro': build_chart_data(micro), 'plan': first,
+          'deep': build_chart_data(parse_explain(json.dumps(deep))),
           'small': build_chart_data(small), 'smallFrames': small_frames,
           'zero': build_chart_data(parse_explain('{"operation":"Table scan","actual_last_row_ms":0}')),
           'unmeasured': build_chart_data(parse_explain('{"operation":"Table scan"}'))}
@@ -144,6 +159,24 @@ const charts = vm.runInContext('MyflamesCharts', context);
 assert.match(bundle.slice(0, 200), /sources-sha256=[0-9a-f]{64}/);
 assert.equal(charts.sourcesSha, bundle.match(/sources-sha256=([0-9a-f]{64})/)[1]);
 assert.deepEqual([...charts.availableViews()].sort(), ['bargraph', 'diagram', 'flamegraph', 'tree', 'workbench']);
+const compactCases = JSON.parse(await fs.readFile(path.join(directory, 'compact.json'), 'utf8'));
+for (const { name, legacy, compact } of compactCases) {
+  const before = JSON.stringify(compact);
+  for (let i = 0; i < legacy.nodes.length; i++) {
+    assert.equal(charts.internals.highlightText(compact, compact.nodes[i]), legacy.nodes[i].highlight,
+      name + ': compact message resolves verbatim');
+    assert.equal(charts.internals.highlightText(legacy, legacy.nodes[i]), legacy.nodes[i].highlight,
+      name + ': legacy inline message still works');
+  }
+  assert.equal(JSON.stringify(compact), before, 'resolving never expands or mutates the payload');
+}
+const messageTable = { schema_version: 'chart-data-2.0', highlight_messages: ['', '</script> 日本語', 'x'.repeat(2000)] };
+for (const id of [0, 1, 2]) {
+  assert.equal(charts.internals.highlightText(messageTable, { highlight_id: id }), messageTable.highlight_messages[id]);
+}
+for (const id of [null, undefined, -1, 0.5, 3, '0', NaN, Infinity]) {
+  assert.equal(charts.internals.highlightText(messageTable, { highlight_id: id }), null, 'invalid message reference is absent');
+}
 const expected = JSON.parse(await fs.readFile(path.join(directory, 'expected.json'), 'utf8'));
 for (const [value, g3, f2, f1, compact, duration] of expected.values) {
   const v = Object.is(value, 0) && 1 / value < 0 ? -0 : value;
@@ -312,6 +345,33 @@ try {
   assert.equal(consoleErrors.length, 1, 'the broken chart is reported once');
   page.off('console', onConsole);
   assert.equal(await page.evaluate(() => MyflamesCharts.mountAll(document).length), 0, 'mountAll is idempotent');
+
+  // Both supported wire formats produce identical charts and selection state.
+  // Saved/external 1.0 charts and fresh compact 2.0 charts can share a page.
+  for (const { name, legacy, compact } of compactCases) {
+    for (const view of ['tree', 'bargraph', 'flamegraph', 'workbench']) {
+      const rendered = await page.evaluate((legacy, compact, view) => {
+        const draw = (data) => {
+          const host = document.createElement('div');
+          document.body.appendChild(host);
+          const before = JSON.stringify(data);
+          const handle = MyflamesCharts.mount(host, data, { view, bridge: false, width: 1200 });
+          const svg = () => host.querySelector('svg').outerHTML.replace(/mfc-arrow-\d+/g, 'mfc-arrow-instance');
+          const initial = svg();
+          const selected = handle.select(data.nodes[1].id);
+          const selection = [selected, handle.selected(), svg()];
+          handle.destroy();
+          const cleaned = !host.hasAttribute('data-mfc-mounted') && !host.children.length;
+          host.remove();
+          return { initial, selection, cleaned, unchanged: JSON.stringify(data) === before };
+        };
+        return [draw(legacy), draw(compact)];
+      }, legacy, compact, view);
+      assert.deepEqual(rendered[1], rendered[0], name + ': ' + view + ' is identical for both schemas');
+      assert.equal(rendered[1].cleaned, true);
+      assert.equal(rendered[1].unchanged, true);
+    }
+  }
 
   // Two charts on one page are fully independent.
   await load('two.html');
@@ -492,9 +552,9 @@ async function viewSuite(browser, page, errors) {
   assert.equal(await shown('#tree1'), afterNested, 'a collapsed descendant stays collapsed when its ancestor reopens');
   const positions = await page.$$eval('#tree1 .tree-row', (rows) => rows.filter((r) => r.style.display !== 'none').map((r) => r.getBoundingClientRect().top));
   positions.slice(1).forEach((top, i) => assert.ok(top > positions[i], 'visible rows reflow without gaps'));
-  await page.$$eval('#tree1 .ctrl-link', (links) => links.find((l) => l.textContent === 'Collapse All').dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await page.$$eval('#tree1 .ctrl-link', (links) => links.find((l) => l.textContent === 'Collapse all').dispatchEvent(new MouseEvent('click', { bubbles: true })));
   assert.equal(await shown('#tree1'), 1);
-  await page.$$eval('#tree1 .ctrl-link', (links) => links.find((l) => l.textContent === 'Expand All').dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await page.$$eval('#tree1 .ctrl-link', (links) => links.find((l) => l.textContent === 'Expand all').dispatchEvent(new MouseEvent('click', { bubbles: true })));
   assert.equal(await shown('#tree1'), total);
   // Keyboard: arrows collapse/expand, Enter pins, Esc releases.
   await focusOn('#tree1 .tree-row');
@@ -559,7 +619,7 @@ async function viewSuite(browser, page, errors) {
     const host = document.createElement('div');
     document.body.appendChild(host);
     const handle = MyflamesCharts.mount(host, JSON.parse(source), { view: 'tree' });
-    Array.from(host.querySelectorAll('.ctrl-link')).find((l) => l.textContent === 'Collapse All').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    Array.from(host.querySelectorAll('.ctrl-link')).find((l) => l.textContent === 'Collapse all').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     const last = host.querySelector('.tree-row:last-of-type');
     const ok = handle.select(last.dataset.nodeId);
     const result = { ok, display: last.style.display, selected: last.classList.contains('is-selected') };
@@ -744,6 +804,64 @@ async function viewSuite(browser, page, errors) {
   assert.ok(depthOf(normal.frames, childId) < depthOf(normal.frames, rootId), 'flame: inputs stack upward');
   assert.ok(depthOf(icicle.frames, childId) > depthOf(icicle.frames, rootId), 'icicle: inputs hang downward');
 
+  // Workspace layout (PlanChart redraws a chart for its pane's width): at its
+  // narrowest and at full width the tree keeps every label and toggle before
+  // its numbers and the bar column's header inside the chart; shortened
+  // labels have a tooltip; a flame graph can open zoomed to a frame.
+  const fit = await page.evaluate((data) => {
+    const out = [];
+    for (const [view, width] of [['tree', MyflamesCharts.internals.treeMinWidth], ['tree', 912], ['bargraph', MyflamesCharts.internals.barMinWidth], ['bargraph', 912]]) {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const handle = MyflamesCharts.mount(host, data, { view, width, options: { workspace: true } });
+      const svg = host.querySelector('svg');
+      const right = (el) => { const b = el.getBBox(); return b.x + b.width; };
+      const result = { view, width, drawn: Number(svg.getAttribute('width')), overlaps: 0, inside: true, titled: 0, shortened: 0 };
+      if (view === 'tree') {
+        for (const row of svg.querySelectorAll('.tree-row')) {
+          const label = row.querySelector('.row-label');
+          const numbers = Array.from(row.querySelectorAll('.row-time, .row-pct'), (t) => t.getBBox().x);
+          if (Math.max(right(label), right(row.querySelector('.toggle, .leaf-indicator'))) > Math.min(...numbers) - 2) result.overlaps++;
+          if (label.textContent.endsWith('…')) { result.shortened++; if (row.querySelector(':scope > title')) result.titled++; }
+        }
+      } else {
+        for (const label of svg.querySelectorAll('.label')) {
+          if (label.getBBox().x < 0) result.overlaps++;
+          if (label.textContent.includes('…')) result.shortened++;
+        }
+        result.titled = svg.querySelectorAll('.bar > title').length;
+      }
+      for (const text of svg.querySelectorAll('text')) if (right(text) > result.drawn + 0.5) result.inside = false;
+      handle.destroy();
+      host.remove();
+      out.push(result);
+    }
+    return out;
+  }, flames.deep);
+  for (const r of fit) {
+    assert.equal(r.drawn, r.width, r.view + ' ' + r.width + ': drawn at the width asked for');
+    assert.equal(r.overlaps, 0, r.view + ' ' + r.width + ': labels end before the numbers');
+    assert.ok(r.inside, r.view + ' ' + r.width + ': every text inside the chart');
+    assert.equal(r.titled, r.shortened, r.view + ' ' + r.width + ': every shortened label has a tooltip');
+  }
+  assert.ok(fit[0].shortened > 0, 'the narrowest tree shortens deep labels');
+  const zoomed = await page.evaluate((data) => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const target = data.nodes[3].id;
+    const handle = MyflamesCharts.mount(host, data, { view: 'flamegraph', width: 600, options: { workspace: true, zoom_id: target } });
+    const svg = host.querySelector('svg');
+    const frame = svg.querySelector('.frames > g[data-node-id="' + target + '"] rect');
+    const result = { zoom: svg.getAttribute('data-zoom') === target, full: Number(frame.getAttribute('width')) > 570,
+      reset: !!host.querySelector('.fg-reset:not(.fg-off)') };
+    host.querySelector('.fg-reset').click();
+    result.cleared = !svg.hasAttribute('data-zoom');
+    handle.destroy();
+    host.remove();
+    return result;
+  }, flames.deep);
+  assert.deepEqual(zoomed, { zoom: true, full: true, reset: true, cleared: true }, 'zoom_id opens the flame graph zoomed to that frame');
+
   // HTML reports for every view: teach CTA, Export SVG, JSON-LD, noscript.
   for (const view of ['tree', 'bargraph', 'flamegraph', 'workbench', 'diagram']) {
     const file = 'report-' + view + '.html';
@@ -781,7 +899,7 @@ async function viewSuite(browser, page, errors) {
   }
   await page.setContent(await fs.readFile(path.join(directory, 'report-micro.html'), 'utf8'));
   const microInfo = await page.$$eval('#chart-panel rect.bar', (bars) => bars.map((b) => b.dataset.info));
-  assert.ok(microInfo.some((info) => info.includes('Self: 300 µs') && info.includes('Total: 500 µs')), 'report bar chart scales ms for µs display only');
+  assert.ok(microInfo.some((info) => info.includes('Self: 300.0 µs') && info.includes('Total: 500.0 µs')), 'report bar chart prints times like the execution tree');
   for (const view of ['tree', 'bargraph']) {
     await page.setContent(await fs.readFile(path.join(directory, 'report-scan-' + view + '.html'), 'utf8'));
     const flagged = view === 'tree'

@@ -39,6 +39,38 @@ class TestWorkbench(unittest.TestCase):
         self.assertEqual(controls['reset'].attrib['aria-label'], 'Reset zoom to 100%')
         self.assertIn('wb-activated', document.find(SVG+'style').text)
 
+    def test_zoom_controls_read_out_readout_in_fit(self):
+        # The macOS order, as in the Database diagram: −, 100%, +, Fit.
+        document = ET.fromstring(render_workbench(plan('Table scan on t')))
+        actions = [item.attrib['data-action'] for item in document.iter() if 'data-action' in item.attrib]
+        self.assertEqual(actions, ['out', 'reset', 'in', 'fit'])
+        fit = next(item for item in document.iter() if item.attrib.get('data-action') == 'fit')
+        self.assertEqual((fit.text, fit.attrib['aria-label']), ('Fit', 'Fit plan'))
+        search = next(item for item in document.iter() if item.tag.endswith('input'))
+        self.assertEqual(search.attrib['placeholder'], 'Search operators')
+
+    def test_rows_label_sits_on_an_opaque_chip_wider_than_its_text(self):
+        root = plan('Nested loop inner join', [
+            {'operation': 'Table scan on a', 'table_name': 'a', 'actual_rows': 10000, 'actual_loops': 1,
+             'actual_last_row_ms': 1, 'estimated_rows': 9920},
+            {'operation': 'Table scan on b', 'table_name': 'b', 'actual_rows': 3, 'actual_loops': 10000,
+             'actual_last_row_ms': 1}])
+        document = ET.fromstring(render_workbench(root))
+        graph = next(g for g in document.iter(SVG+'g') if g.attrib.get('class') == 'wb-graph')
+        children = list(graph)
+        labels = [i for i, el in enumerate(children) if el.attrib.get('class') == 'wb-edge-label'
+                  and el.text.startswith('Rows/loop')]
+        self.assertEqual(len(labels), 2)
+        for index in labels:
+            chip, text = children[index - 1], children[index]
+            self.assertEqual(chip.attrib['class'], 'wb-edge-chip')
+            # Drawn after the edges, before its text, starting left of it and
+            # wide enough (11 px text is under 5.6 px per character).
+            self.assertLess(float(chip.attrib['x']), float(text.attrib['x']))
+            self.assertGreaterEqual(float(chip.attrib['width']), len(text.text) * 5.6)
+            self.assertLess(float(chip.attrib['y']), float(text.attrib['y']) - 11)
+        self.assertIn('.wb-edge-chip{fill:', document.find(SVG+'style').text)
+
     def test_every_operator_and_edge_survives_complex_plans(self):
         for filename in ('fixtures/explain-044-join-3t-products-category-reviews.json',
                          'fixtures/explain-065-complex-join-agg-sort.json',

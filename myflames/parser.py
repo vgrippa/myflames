@@ -3529,14 +3529,14 @@ def _how_to_read_lines(view_type):
     """Return (title, lines) for the 'How to read' section of the consolidated info panel."""
     if view_type == "bargraph":
         return "How to read", [
-            "Bar width = self-time (time in this operation only). Darker bars = slower.",
+            "Bar width = self time (time in this operation only). Red and orange bars hold the largest share of the plan's time.",
             "Where a warning applies: hover the bar — it will show \u201cIn Query Analysis\u201d and the info panel lists the bar label.",
         ]
     if view_type in ("diagram", "workbench"):
         return "How to read", [
             "Data flows downward. Colors identify operators; arrow width represents estimated rows on a log scale.",
             "Join circles show the reported join type: left joins include the whole left circle; inner joins highlight the overlap.",
-            "Select a node for details. Drag to pan, scroll gently to zoom, or use Fit plan and the zoom buttons.",
+            "Select a node for details. Drag to pan, scroll gently to zoom, or use Fit and the zoom buttons.",
         ]
     if view_type == "flamegraph":
         return "How to read", [

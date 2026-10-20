@@ -71,11 +71,21 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         status, listed, _ = self.request('/api/investigations/list')
         self.assertEqual(status, 200)
-        self.assertEqual(listed['items'], [changed])
+        # A summary page; the complete bundle comes from investigations/get.
+        self.assertEqual(listed, {'schema_version': 'investigation-list-1.0', 'next_cursor': None, 'items': [{
+            'id': first['id'], 'updated_at': changed['updated_at'], 'schema_version': 'investigation-summary-1.0',
+            'name': 'After index', 'notes': '', 'tags': [], 'baseline_id': 'base',
+            'plans': [{'id': 'base', 'name': 'Original'}]}]})
+        status, bundle, _ = self.request('/api/investigations/get', {'id': first['id']})
+        self.assertEqual((status, bundle), (200, changed))
         self.assertEqual(changed['name'], 'After index')
         status, body, _ = self.request('/api/investigations/delete', {'id': first['id']})
         self.assertEqual((status, body), (200, {'deleted': True}))
-        self.assertEqual(self.request('/api/investigations/list')[1], {'items': []})
+        self.assertEqual(self.request('/api/investigations/list')[1],
+                         {'schema_version': 'investigation-list-1.0', 'items': [], 'next_cursor': None})
+        status, body, _ = self.request('/api/investigations/get', {'id': first['id']})
+        self.assertEqual(status, 400)
+        self.assertIn('no longer exists', body['error'])
 
     def test_profile_save_drops_secrets_and_kind_isolation_holds(self):
         value = {'name': 'Reporting', 'host': 'db.example', 'port': '3307', 'user': 'reader',
@@ -92,7 +102,7 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(self.request('/api/profiles/list')[1]['items'], [])
 
     def test_workspace_routes_require_current_token_and_same_origin(self):
-        routes = ('/api/investigations/list', '/api/investigations/save', '/api/profiles/save',
+        routes = ('/api/investigations/list', '/api/investigations/get', '/api/investigations/save', '/api/profiles/save',
                   '/api/live/start', '/api/live/status', '/api/live/cancel', '/api/connection/test')
         with patch.object(self.server.jobs, 'start') as start, \
                 patch('myflames.connector.MySQLConnection') as connect:

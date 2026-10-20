@@ -17,15 +17,16 @@ from pathlib import Path
 
 from myflames import chart_assets
 from myflames.chart_assets import chart_embed, chart_runtime, script_json
-from myflames.chart_data import SCHEMA_VERSION, build_chart_data
+from myflames.chart_data import COMPACT_SCHEMA_VERSION, SCHEMA_VERSION, build_chart_data
 from myflames.exploration import METRICS, metric_value
 from myflames.output_workbench import COLORS, _arrow_width, _details, _join_type, _kind, _phase
-from myflames.parser import enhance_tooltip_flame, flatten_nodes, operator_family, parse_explain
+from myflames.parser import analyze_plan, enhance_tooltip_flame, flatten_nodes, operator_family, parse_explain
 from myflames.teach_hooks import build_teach_hooks, build_teach_index_maps
 
 TEST = Path(__file__).resolve().parent
 REPO = TEST.parent
 SCHEMA = json.loads((REPO / 'docs' / 'schemas' / 'chart-data-1.0.json').read_text(encoding='utf-8'))
+COMPACT_SCHEMA = json.loads((REPO / 'docs' / 'schemas' / 'chart-data-2.0.json').read_text(encoding='utf-8'))
 FIXTURES = sorted(glob.glob(str(TEST / 'fixtures' / '*.json')) + glob.glob(str(TEST / '*.json')))
 WORKSPACE = REPO / 'apps' / 'workspace'
 JOIN_KINDS = ('nested_loop', 'hash', 'bka')
@@ -129,6 +130,67 @@ def sources_sha():
 
 
 class ChartDataFixtureTests(unittest.TestCase):
+    def test_compact_chart_roundtrips_exact_legacy_semantics_for_every_fixture(self):
+        """MySQL and MariaDB share a transport optimization, never new findings."""
+        for name in FIXTURES:
+            with self.subTest(fixture=os.path.basename(name)):
+                root = parse_explain(Path(name).read_text(encoding='utf-8'))
+                analysis = analyze_plan(root)
+                legacy = build_chart_data(root, analysis=analysis)
+                compact = build_chart_data(root, analysis=analysis, compact=True)
+                validate(compact, COMPACT_SCHEMA)
+                self.assertEqual(compact['schema_version'], COMPACT_SCHEMA_VERSION)
+                restored = json.loads(json.dumps(compact, allow_nan=False))
+                messages = restored.pop('highlight_messages')
+                self.assertEqual(len(messages), len(set(messages)))
+                # Every message is used, numbered in the order nodes first use it.
+                first_use = []
+                for row in restored['nodes']:
+                    if row['highlight_id'] is not None and row['highlight_id'] not in first_use:
+                        first_use.append(row['highlight_id'])
+                self.assertEqual(first_use, list(range(len(messages))))
+                for row in restored['nodes']:
+                    self.assertNotIn('highlight', row)
+                    ref = row.pop('highlight_id')
+                    row['highlight'] = messages[ref] if ref is not None else None
+                restored['schema_version'] = SCHEMA_VERSION
+                self.assertEqual(restored, legacy)
+
+    def test_compact_highlights_preserve_first_match_empty_and_untrusted_text(self):
+        root = plan()
+        label = root['short_label']
+        for message in ('', '</script><img src=x onerror=alert(1)>\n日本語'):
+            with self.subTest(message=message):
+                analysis = {'node_highlights': [
+                    {'short_label': label, 'message': message},
+                    {'short_label': label, 'message': 'Later match must not win'}]}
+                data = build_chart_data(root, analysis=analysis, compact=True)
+                self.assertEqual(data['highlight_messages'], [message])
+                self.assertEqual(data['nodes'][0]['highlight_id'], 0)
+                self.assertEqual(json.loads(script_json(data)), data)
+        data = build_chart_data(root, compact=True)
+        self.assertEqual(data['highlight_messages'], [])
+        self.assertIsNone(data['nodes'][0]['highlight_id'])
+
+    def test_grouped_scan_warning_serialization_grows_linearly(self):
+        sizes = []
+        for count in (800, 1600):
+            root = parse_explain(json.dumps({'operation': 'Union all', 'inputs': [
+                {'operation': 'Table scan on t%d' % i, 'table_name': 't%d' % i,
+                 'access_type': 'table', 'actual_rows': 100, 'actual_loops': 1,
+                 'actual_last_row_ms': 1} for i in range(count)]}))
+            analysis = analyze_plan(root)
+            data = build_chart_data(root, analysis=analysis, compact=True)
+            warning = analysis['warnings'][0]
+            self.assertTrue(warning.startswith('Full table scan:'))
+            self.assertEqual(data['highlight_messages'], [warning])
+            self.assertEqual(sum(row['highlight_id'] == 0 for row in data['nodes']), count)
+            serialized = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+            self.assertEqual(serialized.count(warning), 1)
+            sizes.append(len(serialized.encode('utf-8')))
+        self.assertLess(sizes[1], sizes[0] * 2.1,
+                        'doubling scans must not repeat a growing warning on every node')
+
     def test_every_fixture_matches_schema_tree_and_python_semantics(self):
         self.assertGreater(len(FIXTURES), 100)
         for name in FIXTURES:
