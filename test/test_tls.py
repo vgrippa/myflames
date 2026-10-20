@@ -1,5 +1,7 @@
 """myflames.tls: the HTTPS context used by release checks, tool update checks and news."""
+import hashlib
 import os
+import plistlib
 import ssl
 import subprocess
 import sys
@@ -11,98 +13,182 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from myflames import app_update, news, tls, tool_updates  # noqa: E402
 
-PEM = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
+FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures', 'tls', 'test-root-ca.pem')
+with open(FIXTURE) as _handle:
+    ROOT_PEM = _handle.read().strip()
+#: Stands in for an exported intermediate or identity: not a root in any trust domain.
+OTHER_PEM = '-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----'
 
 
-def _context(ca_count):
-    context = mock.MagicMock(spec=ssl.SSLContext)
-    context.cert_store_stats.return_value = {'x509': ca_count, 'crl': 0, 'x509_ca': ca_count}
-    return context
+def fingerprint(pem):
+    return hashlib.sha1(ssl.PEM_cert_to_DER_cert(pem)).hexdigest().upper()
 
 
-def _done(returncode=0, stdout=PEM.encode('ascii')):
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=b'')
+class FakeSecurity:
+    """/usr/bin/security: keychain exports and trust settings per domain (None = export fails)."""
+
+    def __init__(self, keychains=None, trust=None, fail=None):
+        self.keychains = keychains if keychains is not None else {tls.KEYCHAINS[0]: ROOT_PEM + '\n' + OTHER_PEM + '\n'}
+        self.trust = trust if trust is not None else {'-s': {fingerprint(ROOT_PEM): {}}, '-d': None, '-u': None}
+        self.fail = fail
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((list(argv), kwargs))
+        if self.fail is not None:
+            raise self.fail
+        self.assert_safe(argv, kwargs)
+        if argv[1] == 'find-certificate':
+            text = self.keychains.get(argv[-1])
+            return subprocess.CompletedProcess(argv, 0 if text is not None else 44, (text or '').encode('ascii'), b'')
+        flags = argv[2:-1]
+        domain = flags[0] if flags else '-u'
+        listed = self.trust.get(domain)
+        if listed is None:
+            return subprocess.CompletedProcess(argv, 1, b'', b'')
+        entries = {}
+        for key, settings in listed.items():
+            entry = {'issuerName': b'', 'serialNumber': b''}
+            if settings != {}:
+                entry['trustSettings'] = settings
+            entries[key] = entry
+        with open(argv[-1], 'wb') as handle:
+            plistlib.dump({'trustList': entries, 'trustVersion': 1}, handle)
+        return subprocess.CompletedProcess(argv, 0, b'', b'')
+
+    @staticmethod
+    def assert_safe(argv, kwargs):
+        assert argv[0] == '/usr/bin/security', argv
+        assert not kwargs.get('shell'), kwargs
+        assert kwargs.get('timeout') == tls.EXPORT_TIMEOUT, kwargs
 
 
-class HttpsContextTests(unittest.TestCase):
+def empty_client_context():
+    """What the packaged app gets on a Mac without the build machine's certificate files."""
+    return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
+class TlsTestCase(unittest.TestCase):
 
     def setUp(self):
         tls._ROOTS = None
         self.addCleanup(setattr, tls, '_ROOTS', None)
 
-    def test_default_trust_is_used_as_is(self):
-        context = _context(150)
-        with mock.patch.object(tls.ssl, 'create_default_context', return_value=context), \
-                mock.patch.object(tls.sys, 'platform', 'darwin'), \
-                mock.patch.object(tls.subprocess, 'run') as run:
-            self.assertIs(tls.https_context(), context)
-        run.assert_not_called()
-        context.load_verify_locations.assert_not_called()
+    def roots(self, fake):
+        with mock.patch.object(tls.subprocess, 'run', side_effect=fake):
+            return tls._system_roots()
 
-    def test_empty_trust_off_macos_is_left_alone(self):
-        context = _context(0)
-        with mock.patch.object(tls.ssl, 'create_default_context', return_value=context), \
-                mock.patch.object(tls.sys, 'platform', 'linux'), \
-                mock.patch.object(tls.subprocess, 'run') as run:
-            self.assertIs(tls.https_context(), context)
-        run.assert_not_called()
-        context.load_verify_locations.assert_not_called()
 
-    def test_empty_trust_on_macos_loads_each_system_keychain(self):
-        context = _context(0)
-        with mock.patch.object(tls.ssl, 'create_default_context', return_value=context), \
-                mock.patch.object(tls.sys, 'platform', 'darwin'), \
-                mock.patch.object(tls.subprocess, 'run', return_value=_done()) as run:
-            tls.https_context()
-        self.assertEqual(
-            [c[0][0] for c in run.call_args_list],
-            [['/usr/bin/security', 'find-certificate', '-a', '-p', keychain] for keychain in tls.KEYCHAINS])
-        for c in run.call_args_list:
-            self.assertEqual(c[1]['timeout'], tls.EXPORT_TIMEOUT)
-            self.assertFalse(c[1].get('shell', False))
-        self.assertEqual(context.load_verify_locations.call_args_list, [mock.call(cadata=PEM)] * len(tls.KEYCHAINS))
+class TrustSettingsEntryTests(unittest.TestCase):
 
-    def test_system_roots_are_exported_once_per_process(self):
-        with mock.patch.object(tls.ssl, 'create_default_context', side_effect=lambda: _context(0)), \
-                mock.patch.object(tls.sys, 'platform', 'darwin'), \
-                mock.patch.object(tls.subprocess, 'run', return_value=_done()) as run:
-            tls.https_context()
-            tls.https_context()
-        self.assertEqual(run.call_count, len(tls.KEYCHAINS))
+    def test_unconstrained_settings_are_a_trusted_root(self):
+        for settings in (None, [], [{'kSecTrustSettingsResult': tls.TRUST_ROOT}],
+                         [{'kSecTrustSettingsResult': tls.TRUST_AS_ROOT}], [{}]):
+            with self.subTest(settings=settings):
+                self.assertIs(tls._entry_trusted(settings), True)
 
-    def test_export_failures_leave_a_verifying_context(self):
+    def test_a_deny_for_any_policy_marks_the_certificate_denied(self):
+        for settings in ([{'kSecTrustSettingsResult': tls.DENY}],
+                         [{'kSecTrustSettingsPolicyName': 'sMIME', 'kSecTrustSettingsResult': tls.TRUST_ROOT},
+                          {'kSecTrustSettingsPolicyName': 'sslServer', 'kSecTrustSettingsResult': tls.DENY}]):
+            with self.subTest(settings=settings):
+                self.assertIsNone(tls._entry_trusted(settings))
+
+    def test_restricted_or_unspecified_settings_are_not_trusted_here(self):
+        for settings in ([{'kSecTrustSettingsPolicyName': 'sslServer', 'kSecTrustSettingsResult': tls.TRUST_ROOT}],
+                         [{'kSecTrustSettingsApplication': b'app', 'kSecTrustSettingsResult': tls.TRUST_ROOT}],
+                         [{'kSecTrustSettingsResult': 4}], 'not a list', ['not a dict']):
+            with self.subTest(settings=settings):
+                self.assertIs(tls._entry_trusted(settings), False)
+
+
+class SystemRootsTests(TlsTestCase):
+
+    def test_only_roots_listed_as_trusted_are_kept(self):
+        fake = FakeSecurity()
+        self.assertEqual(self.roots(fake), ROOT_PEM)
+        commands = [call[0][1:3] for call in fake.calls]
+        self.assertIn(['trust-settings-export', '-s'], commands)
+        self.assertIn(['trust-settings-export', '-d'], commands)
+        self.assertIn(['find-certificate', '-a'], commands)
+
+    def test_admin_keychain_certificate_needs_trust_settings(self):
+        keychains = {tls.KEYCHAINS[0]: '', tls.KEYCHAINS[1]: ROOT_PEM + '\n'}
+        self.assertEqual(self.roots(FakeSecurity(keychains=keychains)), ROOT_PEM)
+        tls._ROOTS = None
+        untrusted = {'-s': {'00': {}}, '-d': None, '-u': None}
+        self.assertEqual(self.roots(FakeSecurity(keychains=keychains, trust=untrusted)), '')
+
+    def test_admin_or_user_deny_overrides_system_trust(self):
+        for domain in ('-d', '-u'):
+            tls._ROOTS = None
+            trust = {'-s': {fingerprint(ROOT_PEM): {}}, '-d': None, '-u': None}
+            trust[domain] = {fingerprint(ROOT_PEM): [{'kSecTrustSettingsResult': tls.DENY}]}
+            with self.subTest(domain=domain):
+                self.assertEqual(self.roots(FakeSecurity(trust=trust)), '')
+
+    def test_unreadable_system_trust_settings_add_nothing(self):
+        trust = {'-s': None, '-d': {fingerprint(ROOT_PEM): {}}, '-u': None}
+        fake = FakeSecurity(trust=trust)
+        self.assertEqual(self.roots(fake), '')
+        self.assertNotIn('find-certificate', [call[0][1] for call in fake.calls])
+
+    def test_security_failures_add_nothing(self):
         for failure in (OSError('no such file'), subprocess.TimeoutExpired('security', 10)):
             tls._ROOTS = None
-            context = _context(0)
-            with self.subTest(failure=type(failure).__name__), \
-                    mock.patch.object(tls.ssl, 'create_default_context', return_value=context), \
-                    mock.patch.object(tls.sys, 'platform', 'darwin'), \
-                    mock.patch.object(tls.subprocess, 'run', side_effect=failure):
-                self.assertIs(tls.https_context(), context)
-            context.load_verify_locations.assert_not_called()
+            with self.subTest(failure=type(failure).__name__):
+                self.assertEqual(self.roots(FakeSecurity(fail=failure)), '')
 
-    def test_failed_or_empty_exports_are_skipped(self):
-        context = _context(0)
-        outputs = [_done(returncode=44, stdout=PEM.encode('ascii')), _done(stdout=b'')]
-        with mock.patch.object(tls.ssl, 'create_default_context', return_value=context), \
-                mock.patch.object(tls.sys, 'platform', 'darwin'), \
-                mock.patch.object(tls.subprocess, 'run', side_effect=outputs):
-            tls.https_context()
-        context.load_verify_locations.assert_not_called()
+    def test_roots_are_read_once_per_process(self):
+        fake = FakeSecurity()
+        with mock.patch.object(tls.subprocess, 'run', side_effect=fake):
+            tls._system_roots()
+            count = len(fake.calls)
+            tls._system_roots()
+        self.assertEqual(len(fake.calls), count)
 
-    def test_one_unreadable_keychain_does_not_cost_the_other(self):
-        context = _context(0)
-        context.load_verify_locations.side_effect = [ssl.SSLError('bad entry'), None]
-        with mock.patch.object(tls.ssl, 'create_default_context', return_value=context), \
-                mock.patch.object(tls.sys, 'platform', 'darwin'), \
-                mock.patch.object(tls.subprocess, 'run', return_value=_done()):
-            self.assertIs(tls.https_context(), context)
-        self.assertEqual(context.load_verify_locations.call_count, 2)
 
-    def test_real_context_verifies_certificates_and_host_names(self):
-        context = tls.https_context()
+class HttpsContextTests(TlsTestCase):
+
+    def assertVerifies(self, context):
         self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(context.check_hostname)
+
+    def test_empty_trust_on_macos_loads_the_trusted_roots(self):
+        with mock.patch.object(tls.ssl, 'create_default_context', side_effect=empty_client_context), \
+                mock.patch.object(tls.sys, 'platform', 'darwin'), \
+                mock.patch.object(tls.subprocess, 'run', side_effect=FakeSecurity()):
+            context = tls.https_context()
+        self.assertEqual(context.cert_store_stats()['x509_ca'], 1)
+        self.assertVerifies(context)
+
+    def test_failed_fallback_still_verifies(self):
+        for roots in ('', '-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydA==\n-----END CERTIFICATE-----'):
+            with self.subTest(roots=roots[:20]), \
+                    mock.patch.object(tls.ssl, 'create_default_context', side_effect=empty_client_context), \
+                    mock.patch.object(tls.sys, 'platform', 'darwin'), \
+                    mock.patch.object(tls, '_system_roots', return_value=roots):
+                context = tls.https_context()
+            self.assertEqual(context.cert_store_stats()['x509_ca'], 0)
+            self.assertVerifies(context)
+
+    def test_default_trust_is_used_as_is(self):
+        with mock.patch.object(tls.sys, 'platform', 'darwin'), \
+                mock.patch.object(tls, '_trusts_nothing', return_value=False), \
+                mock.patch.object(tls, '_system_roots') as roots:
+            self.assertVerifies(tls.https_context())
+        roots.assert_not_called()
+
+    def test_empty_trust_off_macos_is_left_alone(self):
+        with mock.patch.object(tls.ssl, 'create_default_context', side_effect=empty_client_context), \
+                mock.patch.object(tls.sys, 'platform', 'linux'), \
+                mock.patch.object(tls, '_system_roots') as roots:
+            context = tls.https_context()
+        roots.assert_not_called()
+        self.assertVerifies(context)
+
+    def test_real_context_verifies_certificates_and_host_names(self):
+        self.assertVerifies(tls.https_context())
 
 
 class CallSitesUseHttpsContextTests(unittest.TestCase):

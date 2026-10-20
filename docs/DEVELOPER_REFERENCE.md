@@ -130,12 +130,18 @@ standard library's default context, with certificate and host name checks on.
 The packaged macOS app's bundled OpenSSL looks for certificate authorities only
 at paths on the build machine (Homebrew's `/opt/homebrew/etc/openssl@3/cert.pem`),
 so on a Mac without them the default context trusts nothing. When it holds no
-CA certificate on macOS, `https_context()` also loads the PEM that
-`/usr/bin/security find-certificate -a -p` exports from
+CA certificate on macOS, `https_context()` also loads the roots macOS trusts,
+read once per process with `/usr/bin/security` (10 s limit per call): the
+certificates `find-certificate -a -p` exports from
 `/System/Library/Keychains/SystemRootCertificates.keychain` and
-`/Library/Keychains/System.keychain`, once per process (10 s limit per
-keychain; a failed export or an unreadable entry is skipped). `SSL_CERT_FILE`
-and `SSL_CERT_DIR` keep their OpenSSL meaning. Tests: `test/test_tls.py`.
+`/Library/Keychains/System.keychain`, kept only when their SHA-1 is listed by
+`trust-settings-export` (system `-s`, admin `-d` or user domain) as a trusted
+root with no policy, application or host restriction, and no domain denies it
+for any policy. The exports also hold intermediates (Developer ID, WWDR) and
+System Identity certificates, which have no trust settings and are left out.
+If the system trust settings cannot be read, nothing is added. `SSL_CERT_FILE`
+and `SSL_CERT_DIR` keep their OpenSSL meaning. Tests: `test/test_tls.py` (with
+`test/fixtures/tls/test-root-ca.pem`, a throwaway CA whose key was discarded).
 
 Home news (`myflames/news.py`, `/api/news` and `/api/news/settings`, `news-1.0`)
 reads the two feeds in `news.SOURCES` and nothing else: Planet MySQL

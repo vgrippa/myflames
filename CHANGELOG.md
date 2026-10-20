@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Keep popovers above the window footer: an ⓘ panel opened near the bottom of a 720x520 window ended under the footer, which hid its last lines; it now stops at the footer's top edge and scrolls.
 - Replication Topology: the connector's details popover is no longer cut off below the map.
-- HTTPS reads (Check for updates, the update download, tool update checks and Home news) verify certificates in the packaged macOS app on a Mac without Homebrew's OpenSSL: its bundled OpenSSL only looked for certificate authorities at the build machine's paths, so every read failed verification there. When OpenSSL finds none, myflames now also trusts the roots macOS trusts, exported from the system keychains with `/usr/bin/security`; `SSL_CERT_FILE` still applies (`myflames/tls.py`).
+- HTTPS reads (Check for updates, the update download, tool update checks and Home news) verify certificates in the packaged macOS app on a Mac without Homebrew's OpenSSL: its bundled OpenSSL only looked for certificate authorities at the build machine's paths, so every read failed verification there. When OpenSSL finds none, myflames now also trusts the roots macOS trusts: certificates from the system root and System keychains that the system, admin or user trust settings list as an unrestricted trusted root and no domain denies, read with `/usr/bin/security`; intermediates and identities in those keychains are left out, and nothing is added when the trust settings cannot be read. `SSL_CERT_FILE` still applies (`myflames/tls.py`).
 
 ## [3.1.0] - 2026-10-20
 
