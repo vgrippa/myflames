@@ -2,12 +2,20 @@
   "appId": "com.myflames.desktop",
   "productName": "myflames",
   "asar": true,
+  "electronFuses": {
+    "runAsNode": false, "enableNodeOptionsEnvironmentVariable": false, "enableNodeCliInspectArguments": false,
+    "onlyLoadAppFromAsar": true, "enableEmbeddedAsarIntegrityValidation": true,
+    "grantFileProtocolExtraPrivileges": false, "resetAdHocDarwinSignature": true
+  },
   "directories": { "output": "dist" },
   "files": ["main.cjs", "backend.cjs", "package.json"],
   "extraResources": [
     { "from": "build/backend/myflames-backend", "to": "backend" },
     { "from": "../../LICENSE", "to": "licenses/MyFlames-LICENSE" },
-    { "from": "../../NOTICE", "to": "licenses/MyFlames-NOTICE" }
+    { "from": "../../NOTICE", "to": "licenses/MyFlames-NOTICE" },
+    { "from": "node_modules/electron/dist/LICENSE", "to": "licenses/Electron-LICENSE" },
+    { "from": "node_modules/electron/dist/LICENSES.chromium.html", "to": "licenses/Chromium-LICENSES.html" },
+    { "from": "build/backend/Python-LICENSE.txt", "to": "licenses/Python-LICENSE.txt" }
   ],
   "mac": {
     "target": ["dir"], "category": "public.app-category.developer-tools",

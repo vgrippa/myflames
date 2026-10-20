@@ -205,7 +205,7 @@ try {
   assert.equal(await page.$(".save-prompt"), null);
   // Server reads with the connection in use, by id, without a password.
   await place("Workload");
-  await page.click("#server-nav-top");
+  await page.locator("#server-nav-top").click();
   await button("Load top statements");
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   assert.equal(last("/api/live/top").connection.profile_id, "p1");
@@ -314,7 +314,7 @@ try {
     await page.waitForSelector(".window-toolbar .connection-picker");
     await page.waitForSelector(safety);
     const result = await page.evaluate((s) => ({
-      strip: document.querySelector(s)?.getAttribute("aria-label") || "",
+      strip: document.querySelector(`${s} [role=note]`)?.getAttribute("aria-label") || "",
       kind: document.querySelector(s)?.dataset.safety || "",
       dot: document.querySelector(".window-toolbar .connection-picker .type-dot")?.getAttribute("aria-label") || "",
     }), safety);
@@ -392,7 +392,7 @@ try {
     bold: Number(getComputedStyle(e.querySelector("strong")).fontWeight) >= 600,
   })), {
     // Words, not color alone: a danger dot plus "Production".
-    text: "Production· changes ask first",
+    text: "Production · changes ask first",
     dot: await page.evaluate(() => {
       const probe = document.createElement("div");
       probe.style.background = "var(--danger)";
@@ -440,10 +440,10 @@ try {
   await place("Query editor");
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await page.waitForSelector(`${safety}[data-safety="unknown"]`);
-  assert.match(await text(safety), /^Production assumed· settings not loadedRetry$/);
-  assert.match(await page.$eval(safety, (e) => e.getAttribute("aria-label")), /^Production assumed: could not read the settings of Dev box \(.+\); changes stay off until they load$/);
+  assert.match(await text(safety), /^Production assumed · settings not loadedRetry$/);
+  assert.match(await page.$eval(`${safety} [role=note]`, (e) => e.getAttribute("aria-label")), /^Production assumed: could not read the settings of Dev box \(.+\); changes stay off until they load$/);
   await place("Workload");
-  await page.click("#server-nav-sessions");
+  await page.locator("#server-nav-sessions").click();
   await page.click(".server-view[data-view=sessions] [data-action=refresh]");
   await page.waitForSelector('.server-view[data-view=sessions] tbody tr[data-session="93"]');
   await page.click('.server-view[data-view=sessions] tbody tr[data-session="93"]');
@@ -458,7 +458,7 @@ try {
   listFails = false;
   await page.locator(`${safety} button ::-p-text(Retry)`).click();
   await page.waitForSelector(`${safety}[data-safety="production"]`);
-  assert.match(await page.$eval(safety, (e) => e.getAttribute("aria-label")), /every change on Dev box asks first/);
+  assert.match(await page.$eval(`${safety} [role=note]`, (e) => e.getAttribute("aria-label")), /every change on Dev box asks first/);
   // The report was read under the old policy: it is greyed with its actions
   // off until it is read again.
   await page.waitForSelector('.server-view[data-view=sessions][data-other-connection="true"]');
@@ -513,7 +513,7 @@ try {
   assert.equal(await rowType(".connection-row.is-active"), "Production, read-only");
   assert.deepEqual(await strip(), { strip: "Read-only: myflames refuses every change on Scratch", kind: "read-only", dot: "Production, read-only" });
   await place("Workload");
-  await page.click("#server-nav-top");
+  await page.locator("#server-nav-top").click();
   await page.click(".server-view [data-action=refresh]");
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   const sent = last("/api/live/top").connection;

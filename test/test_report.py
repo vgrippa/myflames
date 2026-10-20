@@ -1749,5 +1749,49 @@ class TestAdditionalCheckFamilies(ReportShape):
         self.assertIn('Performance Schema is off', finding(result, 'checks.memory_budget')['verdict'])
 
 
+class TestUnknownVersionSupportText(unittest.TestCase):
+    """Live review: GA MariaDB 12.3 and 13.0 and MySQL 26.7 have no proved
+    maintenance date, so Version support is unknown. The text report showed
+    it in a WATCH section line beside the titles to watch ("1 to watch, 1
+    unknown: Slow query log, Version support"); it must read as not judged."""
+
+    def report_for(self, version, name):
+        def support(server, as_of=None):
+            fake = Server(dict(server.variables, version=version), {})
+            return ORIGINAL_VERSION_SUPPORT(fake, datetime.date(2026, 10, 15))
+        clock = FakeTime()
+        conn, data = replay('report', name, clock=clock)
+        conn.password = PASSWORD
+        with mock.patch.object(server_checks, '_version_support', side_effect=support):
+            return ORIGINAL_ANALYSIS(conn, data['args']['interval'], workers=1, sleep=clock.sleep,
+                                     clock=clock.monotonic)
+
+    def test_unknown_version_support_is_never_watch_in_text(self):
+        for version, name in (('12.3.1-MariaDB', 'mariadb-11.4'), ('13.0.2-MariaDB', 'mariadb-11.4'),
+                              ('26.7.0', 'mysql-8.4-replica')):
+            with self.subTest(version=version):
+                result = self.report_for(version, name)
+                check = finding(result, 'checks.version_support')
+                self.assertEqual(check['status'], 'unknown')
+                self.assertIn('support unknown (unverified)', check['verdict'])
+                section = next(s for s in result['sections'] if s['key'] == 'observability')
+                # Each title sits under its own status, unknown after watch.
+                self.assertIn('1 unknown: Version support', section['summary'])
+                watch = re.search(r'\d+ to watch: ([^;]*)', section['summary'])
+                if watch:
+                    self.assertNotIn('Version support', watch.group(1))
+                text = report.format_text(result)
+                lines = text.splitlines()
+                self.assertIn('  ?  Version support', lines)
+                not_judged = text.split('NOT JUDGED (unknown)\n', 1)[1].split('\n\n', 1)[0]
+                self.assertIn('Version support', not_judged)
+                findings = text.split('FINDINGS (problem and watch, ranked)\n', 1)
+                if len(findings) == 2:
+                    self.assertNotIn('Version support', findings[1].split('\n\n', 1)[0])
+                self.assertFalse([l for l in lines if 'WATCH' in l and re.search(
+                    r'to watch: [^;]*Version support', l)])
+                self.assertIn('[unknown] checks.version_support', report.format_digest(result))
+
+
 if __name__ == '__main__':
     unittest.main()

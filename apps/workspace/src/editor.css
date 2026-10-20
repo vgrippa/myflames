@@ -254,10 +254,10 @@
   overflow-wrap: anywhere;
 }
 .editor-privilege-note.is-warning {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .editor-feedback {
-  color: var(--info);
+  color: var(--info-text);
 }
 
 /* Banners: the session ended, or it is on another connection. */
@@ -274,12 +274,12 @@
 .editor-banner.is-warn {
   border: 1px solid var(--warn-line);
   background: var(--warn-soft);
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .editor-banner.is-danger {
   border: 1px solid var(--danger-line);
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .editor-banner .button {
   flex: none;
@@ -340,7 +340,7 @@
   font-weight: 600;
 }
 .sql-gutter-lines > .is-error {
-  color: var(--danger);
+  color: var(--danger-text);
   font-weight: 600;
 }
 .sql-surface {
@@ -609,7 +609,7 @@
 }
 .tab-count.is-error {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .results-running {
   display: inline-flex;
@@ -644,14 +644,14 @@
   font-variant-numeric: tabular-nums;
 }
 .result-cut {
-  color: var(--warn);
+  color: var(--warn-text);
   font-weight: 500;
 }
 .result-sortnote {
   color: var(--ink-faint);
 }
 .result-note {
-  color: var(--info);
+  color: var(--info-text);
 }
 .result-actions {
   display: inline-flex;
@@ -767,7 +767,7 @@
   font-variant-numeric: tabular-nums;
 }
 .messages-note {
-  color: var(--warn);
+  color: var(--warn-text);
   margin-bottom: var(--space-2);
 }
 .message-list {
@@ -807,7 +807,7 @@
   align-items: baseline;
   gap: var(--space-1) var(--space-3);
   margin-top: var(--space-1);
-  color: var(--danger);
+  color: var(--danger-text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -851,7 +851,7 @@
   font-variant-numeric: tabular-nums;
 }
 .statusbar-note.is-error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 /* ---- Side panes: schema browser and history ------------------------------- */
@@ -921,7 +921,7 @@
   overflow-wrap: anywhere;
 }
 .browser-status.is-error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .browser-tree {
   flex: 1 1 auto;
@@ -1004,7 +1004,7 @@
   white-space: normal;
 }
 .tree-row.is-error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .browser-resize {
   position: absolute;
@@ -1089,11 +1089,7 @@
   color: var(--ink);
   white-space: nowrap;
 }
-.context-menu [role="menuitem"]:hover,
-.context-menu [role="menuitem"]:focus-visible {
-  background: var(--accent-soft);
-  outline: none;
-}
+/* The highlighted item's fill and words are set once, in kit.css. */
 
 /* The confirmation sheet for a write. */
 .editor-confirm .sheet-facts {
@@ -1114,7 +1110,7 @@
   padding: var(--space-2) var(--space-3) var(--space-2) var(--space-6);
   border: 1px solid var(--danger-line);
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-text);
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
 }

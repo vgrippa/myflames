@@ -150,6 +150,10 @@ try {
     await page.$eval(M + ".is-selected", (e) => e.textContent),
     /Limit: 20 rows/,
   );
+  // The notebook is a sheet opened by Save investigation, not a form under the chart.
+  assert.equal(await page.$(".investigation-notes"), null, "no notebook form under the chart");
+  await button("Save investigation", ".topbar ");
+  await page.waitForSelector("dialog.notebook-sheet[open] .investigation-notes");
   await page
     .locator(".notebook-grid .field:nth-child(1) input")
     .fill("Index investigation");
@@ -160,10 +164,11 @@ try {
     .locator(".notebook-grid .field:nth-child(4) input")
     .fill("index, review");
   assert.equal(await page.$eval(".save-state", (e) => e.textContent), "Unsaved changes");
-  await button("Save investigation", ".topbar ");
+  await button("Save", "dialog.notebook-sheet .sheet-actions ");
   await page.waitForFunction(
     () => document.querySelector(".save-state")?.textContent === "Investigation saved",
   );
+  await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
   // Autosave restores the open plan and notebook after a reload.
   await page.waitForFunction(async () => {
     const token = (await (await fetch("/api/auth/session", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" }, body: "{}" })).json()).token;
@@ -179,10 +184,14 @@ try {
   await page.waitForSelector(".session-notice");
   await frame();
   assert.equal((await page.$$(".plan-item")).length, 1);
+  await button("Save investigation", ".topbar ");
+  await page.waitForSelector("dialog.notebook-sheet[open]");
   assert.equal(
     await page.$eval(".investigation-notes textarea", (e) => e.value),
     "Baseline and candidate. Check warm-cache timings.",
   );
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
   await button("Investigations", ".main-nav ");
   await page.waitForSelector(".library-item");
   await page.locator('[aria-label="Search investigations"]').fill('no-matching-audit');
@@ -199,6 +208,8 @@ try {
   await button("Open all", ".library-actions ");
   await frame();
   assert.equal((await page.$$(".plan-item")).length, 1);
+  await button("Save investigation", ".topbar ");
+  await page.waitForSelector("dialog.notebook-sheet[open]");
   assert.equal(
     await page.$eval(".investigation-notes textarea", (e) => e.value),
     "Baseline and candidate. Check warm-cache timings.",
@@ -211,6 +222,8 @@ try {
   assert.equal(bundle.schema_version, "investigation-1.0");
   assert.equal(bundle.plans.length, 1);
   assert.equal(bundle.baseline_id, bundle.plans[0].id);
+  await button("Close", "dialog.notebook-sheet ");
+  await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
   await button("Import plan", ".plans-bar ");
   await page.waitForSelector("dialog");
   await (

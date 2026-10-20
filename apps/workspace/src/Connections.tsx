@@ -161,10 +161,12 @@ export function SafetyStatus({
         ? ["production", "Production", "changes ask first", `Production: every change on ${name} asks first`]
         : ["development", "Development", "risky changes ask first", `Development: changes on ${name} ask first only when risky`];
   return (
-    <span className={`safety-status is-${state}`} data-status="safety" data-safety={state} role="note" aria-label={sentence} title={sentence}>
+    <span className={`safety-status is-${state}`} data-status="safety" data-safety={state} title={sentence}>
       <span className="safety-status-dot" aria-hidden="true" />
-      <strong>{word}</strong>
-      <span className="safety-status-detail" aria-hidden="true">· {detail}</span>
+      <span className="safety-status-text" role="note" aria-label={sentence}>
+        <strong>{word}</strong>{" "}
+        <span className="safety-status-detail" aria-hidden="true">· {detail}</span>
+      </span>
       {!safety.known && !loading && onRetry && (
         <button type="button" className="safety-retry" onClick={onRetry} aria-label={`Retry reading the settings of ${name}`}>
           Retry
@@ -1028,7 +1030,7 @@ export function ConnectionPicker({
       : "No password entered";
   return (
     <div className="connection-picker" role="group" aria-label="Connection in use">
-      <Popover label={hasConnection ? `Connection in use: ${name} · ${connectionTarget(active.fields)}` : "No connection"}
+      <Popover label={hasConnection ? `Connection in use: ${name} · ${connectionTarget(active.fields)} · ${safety.known ? `${TYPE_LABEL[safety.type]}${safety.read_only ? " · Read-only" : ""}` : "Production assumed · settings not loaded"}` : "No connection"}
         className="connection-popover" buttonClassName="connection-pill" wide
         trigger={<>
           {hasConnection && (safety.known ? <TypeDot type={safety.type} readOnly={safety.read_only} /> : <span className="status-dot is-unknown" aria-label="Policy unknown" role="img" />)}

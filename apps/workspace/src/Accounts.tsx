@@ -79,11 +79,7 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   const privileges = usePrivileges();
   const [detail, setDetail] = useState<Bound<AccountDetail> | null>(null);
   const [search, setSearch] = useState("");
-  // A denied New user or New role says why in visible text, not only a tooltip.
   const createUser = usePrivilege("create_user"), createRole = usePrivilege("create_role");
-  const createNote = createUser.disabledReason && createUser.disabledReason === createRole.disabledReason
-    ? `New user and New role: ${createUser.disabledReason}`
-    : [createUser.disabledReason && `New user: ${createUser.disabledReason}`, createRole.disabledReason && `New role: ${createRole.disabledReason}`].filter(Boolean).join(" ");
   const [form, setForm] = useState<Form | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [busy, setBusy] = useState("");
@@ -106,6 +102,11 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   const currentDetail = detail?.key === reads.key && accountKey(detail.report) === selection.key && !other ? detail.report : null;
   const blocked = staleReason || (disabled ? "Wait for the current capture to finish." : "") ||
     (connection.read_only ? "This connection is read-only." : "") || policy?.blocked || (!policy ? "Connection write policy is unavailable." : "");
+  const createBlocked = blocked || (busy || review ? "Finish the current review first." : "");
+  const createReason = (gate: PrivilegeGateResult) => gate.available ? createBlocked || gate.disabledReason || (gate.state === "unknown" ? gate.reason : "") : "";
+  const userReason = createReason(createUser), roleReason = createReason(createRole);
+  const createNote = userReason && userReason === roleReason ? `New user and New role: ${userReason}` :
+    [userReason && `New user: ${userReason}`, roleReason && `New role: ${roleReason}`].filter(Boolean).join(" ");
 
   useEffect(() => {
     mounted.current = true;
@@ -231,9 +232,9 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     info="Review users, roles and grants. Pending changes run only after you review the server's exact statements and confirm."
     onRefresh={() => void load()} refreshDisabled={disabled || !!busy || !!reads.loading || !!review} loading={!!reads.loading}
     controls={<><SearchField value={search} onChange={setSearch} label="Find an account" />
-      <AccountGate action="create_user" blocked={blocked || (busy || review ? "Finish the current review first." : "")}
+      <AccountGate action="create_user" blocked={createBlocked}
         onClick={() => setForm({ operation: "create", target: { name: "", host: "%", role: false } })}>New user</AccountGate>
-      <AccountGate action="create_role" blocked={blocked || (busy || review ? "Finish the current review first." : "")}
+      <AccountGate action="create_role" blocked={createBlocked}
         onClick={() => setForm({ operation: "create", target: { name: "", host: engine === "mariadb" ? "" : "%", role: true } })}>New role</AccountGate></>}
     status={<>
       <ViewStatus loading={busy || reads.loading} error={error || reads.error} />
@@ -406,11 +407,17 @@ function GrantMatrix({ detail, connection, draft, setDraft, pending, blocked, gr
     !!scope?.cells.some(c => c.grantable && !detail.model?.dynamic.includes(c.privilege)) : !!scope?.cells.some(c => c.grantable);
   const scopeOptionChecked = scopeOption ? scopeOption.edit.operation === "grant" : staticGrantable;
   const scopeOptionReason = blocked || scopeReason || (scopeOptionChecked ? revokeReason : grantReason);
+  const addScopeReason = blocked || (!catalog?.length ? "The server must supply the privilege catalog for new scopes." : "");
+  const addScopeReasonId = useId();
   return <InspectorSection title="Privileges">
     <Select label="Grant level" value={level} options={LEVELS} onChange={v => update({ level: v as GrantLevel, chosen: "", newScope: false })} />
     {!!scopes.length && <Select label="Grant scope" value={scope?.id || ""} options={scopes.map(s => [s.id, s.label])} onChange={chosen => update({ chosen })} />}
-    {level !== "global" && <button className="button" disabled={!!blocked || !catalog?.length} title={blocked || (!catalog ? "The server must supply the privilege catalog for new scopes." : "")}
-      aria-expanded={newScope} onClick={() => update({ newScope: !newScope })}>Add scope</button>}
+    {level !== "global" && <>
+      <button type="button" className="button privilege-action" aria-disabled={!!addScopeReason}
+        aria-describedby={addScopeReason ? addScopeReasonId : undefined} title={addScopeReason || undefined}
+        aria-expanded={newScope} onClick={() => { if (!addScopeReason) update({ newScope: !newScope }); }}>Add scope</button>
+      {addScopeReason && <p id={addScopeReasonId} className="account-note">{addScopeReason}</p>}
+    </>}
     {newScope && <ScopeForm key={level} level={level} connection={connection} engine={detail.engine} version={detail.version} scopes={all} blocked={blocked}
       onCancel={() => update({ newScope: false })} onAdd={s => {
         const existing = all.find(o => grantScopeKey(o) === grantScopeKey(s));

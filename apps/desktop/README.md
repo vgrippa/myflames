@@ -1,11 +1,15 @@
 # myflames desktop development
 
 This launcher opens the existing React/TypeScript workspace in Electron and
-starts its own Python backend. The CLI and browser workspace remain available.
+starts its own Python backend. The workspace ships only as this macOS app; there
+is no browser version and `myflames ui` is deprecated (the launcher still uses it
+as the backend entry point). The Python CLI remains available for command-line use.
 
-The current implementation and verification target is macOS on Apple Silicon.
-An unsigned `.app` bundles Electron, Python and the workspace, and opens directly
-from Finder. Windows and Linux distribution are deferred.
+The implementation and verification target is macOS on Apple Silicon. An
+unsigned `.app` bundles Electron, Python and the workspace, and opens directly
+from Finder. Windows and Linux distribution are deferred, and the Windows notes
+below describe unfinished groundwork, not a supported platform.
+The window opens at 1440 by 960 pixels and cannot be smaller than 720 by 520.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph)
 and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
@@ -46,13 +50,32 @@ popups and permission requests are denied. Native Edit menu copy/paste remains
 available; clipboard permissions and additional desktop integrations need
 separate review before release.
 
-Closing the final window quits this development app. Normal shutdown sends a
-signal to its owned process group on macOS/Linux and cleans up descendants. On
+Closing the final window quits this development app. On macOS/Linux, quitting
+sends SIGINT to the backend's own process group. The backend first stops its
+dump, restore and clone tools, which run in process groups of their own:
+SIGTERM, then SIGKILL after one second, with `KILL QUERY` for their server
+sessions started at the same time. Each interrupted operation is audited as
+cancelled with outcome unknown, as for Cancel; slower cleanup follows. The
+backend lists those tool groups in a fresh owner-only file in the data
+directory's `runtime` folder (`MYFLAMES_TOOL_GROUPS_FILE`, `tool-groups-1.0`);
+a tool whose group it cannot record is stopped at once. If the backend has not
+exited after 5 seconds, the launcher kills the listed groups, kills the
+backend's process group, then kills any group in the backend's last list that
+it has not already seen gone. Quitting finishes only when the backend and every
+listed tool group are gone, within 7 seconds. Otherwise, or when the list is
+missing or unreadable, a dialog says that owned processes may remain. Lists
+from an earlier launch are deleted, never used. On
 Windows it uses `taskkill` for the owned process tree, checks the child exited,
 and reports cleanup failures. **Windows crash cleanup is incomplete:** once the
 backend parent has already exited, descendants may survive. A Windows Job Object
 supervisor and native Windows validation are release prerequisites. Force-killing
-the Electron main process also bypasses normal cleanup. Do not use this foundation
+the Electron main process bypasses normal cleanup; on macOS the packaged backend
+notices within about a second that its parent is gone, stops like Ctrl+C and then
+removes its own process group, including database clients still running
+(`scripts/backend-entry.py`; only when the desktop started it and named its pid in
+`MYFLAMES_DESKTOP_PARENT`). Tools started in their own session, such as a dump,
+are not in that group. The development
+`python3 -m myflames ui` child has no such watch. Do not use this foundation
 for unattended production operations.
 
 ## Verify
@@ -63,7 +86,9 @@ npm run smoke
 ```
 
 The Node tests cover launch parsing, origin checks, link restrictions, isolated
-environments, symlink rejection, startup failure/timeout and owned shutdown.
+environments, symlink rejection, startup failure/timeout, owned shutdown
+(including the tool process groups of a backend that has to be killed, also with
+real processes) and the backend entry stopping after its parent is killed.
 The smoke opens a real Electron window using a temporary data directory, checks
 an authenticated API request, renderer isolation, command navigation and SQL
 keyword completion, captures the window, quits,
@@ -82,7 +107,7 @@ The included PyInstaller script builds a backend directory on the target OS.
 Use a disposable virtual environment and install PyInstaller there, then run:
 
 ```sh
-python scripts/build-backend.py
+npm run build:backend
 npm run package:dir
 ```
 
@@ -111,20 +136,35 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm --prefix apps/desktop run package:mac
 node apps/desktop/scripts/smoke.cjs apps/desktop/dist/mac-arm64/myflames.app
 ```
 
+`npm run build:backend` runs the same `scripts/build-backend.py` with `python3`;
+use the virtual environment's Python as shown so PyInstaller is available.
+`package:mac` produces the Apple Silicon `.app` only. To publish it, zip the
+bundle as `myflames-<version>-macos-arm64.zip` (for example with
+`ditto -c -k --keepParent myflames.app myflames-3.1.0-macos-arm64.zip`) and attach
+it to the GitHub release.
+
 Copy `apps/desktop/dist/mac-arm64/myflames.app` to your Applications folder and
-double-click it. No terminal, Node.js or separately installed Python is required
-to run the bundle. Its data lives under `~/Library/Application Support/myflames-desktop`,
+double-click it (Control-click and Open the first time, because the app is
+unsigned; or `xattr -dr com.apple.quarantine` on the copy). No terminal, Node.js
+or separately installed Python is required to run the bundle. Its data lives under `~/Library/Application Support/myflames-desktop`,
 separate from development data and the CLI workspace. Connections must be added
 there independently.
 
 The macOS configuration explicitly disables Developer ID signing and
 notarization. Apple Silicon executables retain local ad-hoc signatures required
 to run; these do not certify a publisher. The app includes the project's LICENSE
-and NOTICE under `Contents/Resources/licenses`, with the original inspiration
-credit retained in About.
+and NOTICE under `Contents/Resources/licenses`, with the Electron, Chromium and
+bundled Python license notices beside them, and the original inspiration credit
+retained in About. Electron fuses turn off `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS`
+and `--inspect`, load the app only from its asar archive and validate that
+archive's integrity. `build-backend.py` collects the myflames modules and package
+data but not distribution metadata, so a leftover development `myflames.egg-info`
+cannot ship. Run with the system `python3`, it hands over to
+`local/desktop-build-venv` when that venv exists.
 
 The packaged smoke uses a temporary app-data directory, a minimal Finder-style
-PATH and an invalid system Python override. It verifies the bundled backend,
+PATH and an invalid system Python override. Run it after every build and before
+attaching the zip to a release. It verifies the bundled backend,
 authentication, reload, renderer isolation, command search, keyword completion
 and owned-process shutdown. It does not connect to a database. Packaged test mode
 requires both `--smoke` and `MYFLAMES_DESKTOP_SMOKE=1`; normal Finder launches do

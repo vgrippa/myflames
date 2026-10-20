@@ -50,7 +50,7 @@ try {
   assert.match(await text(`${view} .fact-strip`), /MySQL 8\.4\.11.*performance_schema.error_log.*2026-10-19 20:26:06.*12 events/s);
   assert.equal(await rowCount(), 12);
   assert.match(await text("#server-nav-errorlog"), /2 errors this run, Watch/);
-  assert.ok(await page.$("#server-nav-errorlog .count-badge.is-warn"));
+  assert.ok(await page.$("#server-nav-errorlog .count-badge.is-neutral") && await page.$("#server-nav-errorlog .status-dot.is-watch"), "a watch dot beside a neutral count");
   assert.match(await h.notes(), /expired 120 older events/);
 
   await level("Error"); assert.equal(await rowCount(), 3);
@@ -186,7 +186,7 @@ try {
   quiet.entries.forEach(e => { if (e.prio === "Error") e.previous_run = true; });
   quiet.summary = { status: "ok", text: "No errors recorded since server start." };
   await refresh(quiet);
-  assert.ok(await page.$("#server-nav-errorlog .count-badge.is-ok"));
+  assert.ok(await page.$("#server-nav-errorlog .count-badge.is-neutral"), "OK draws no colored count");
   assert.match(await text("#server-nav-errorlog"), /0 errors this run, OK/);
   // A failed Refresh keeps the accepted report and displays the failure.
   state.queue.push({ status: 400, body: { error: "Could not read the error log: lost connection" } });

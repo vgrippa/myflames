@@ -65,7 +65,7 @@
 .diagram-mermaid-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .diagram-mermaid-panel > .disclosure, .diagram-mermaid-panel > .hint { margin: var(--space-2); }
 .diagram-mermaid-panel li, .diagram-mermaid-error { overflow-wrap: anywhere; font-size: var(--text-sm); }
-.diagram-mermaid-error { color: var(--danger); white-space: pre-wrap; padding: var(--space-3); }
+.diagram-mermaid-error { color: var(--danger-text); white-space: pre-wrap; padding: var(--space-3); }
 .diagram-mermaid-world { position: absolute; top: 0; left: 0; pointer-events: none; }
 .diagram-mermaid-world > svg { display: block; }
 @media (max-width: 1040px) {

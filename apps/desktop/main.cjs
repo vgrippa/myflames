@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { backendEnvironment, startBackend, sameOrigin, externalLink, dataPath, isolatedBackendHome } = require('./backend.cjs');
+const { backendEnvironment, startBackend, sameOrigin, externalLink, dataPath, isolatedBackendHome, toolGroupsFile } = require('./backend.cjs');
 
 app.setName('myflames');
 process.on('SIGTERM', () => app.quit());
@@ -43,6 +43,8 @@ async function start() {
   const env = backendEnvironment(dataDirectory);
   env.HOME = isolatedBackendHome(dataDirectory, os.homedir());
   env.USERPROFILE = env.HOME;
+  // The packaged backend entry stops itself if this process dies uncleanly.
+  env.MYFLAMES_DESKTOP_PARENT = String(process.pid);
   fs.mkdirSync(env.HOME, { recursive: true, mode: 0o700 });
   const root = path.resolve(__dirname, '../..');
   const binary = path.join(process.resourcesPath, 'backend', 'myflames-backend' + (process.platform === 'win32' ? '.exe' : ''));
@@ -50,6 +52,9 @@ async function start() {
     command: app.isPackaged ? binary : (process.env.MYFLAMES_DESKTOP_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')),
     args: [...(app.isPackaged ? [] : ['-m', 'myflames']), 'ui', '--port', '0', '--no-browser'],
     cwd: app.isPackaged ? process.resourcesPath : root, env,
+    // Where the backend lists the dump, restore and clone tool process groups
+    // it owns, so quitting stops them even if the backend must be killed.
+    groupsFile: process.platform === 'win32' ? null : toolGroupsFile(dataDirectory),
   });
   backend = await launching;
   if (quitting) { await backend.stop(); return; }
@@ -129,6 +134,11 @@ async function smokeWindow(origin) {
       }
       const externalBlocked = await window.webContents.executeJavaScript(`fetch('http://127.0.0.1:65534/').then(() => false, () => true)`);
       if (!externalBlocked || blockedSmokeRequests < 1) throw new Error('Desktop origin restriction failed.');
+      // A smoke started from a terminal or CI does not make the window key, so
+      // Chromium withholds focus events and the editor never opens completion.
+      // Emulate page focus for this test mode instead of stealing the user's.
+      window.webContents.debugger.attach('1.3');
+      await window.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
       // Exercise the actual shared shell in Electron, not just its HTTP health.
       await window.webContents.executeJavaScript(`document.querySelector('.command-trigger').click()`);
       await waitForSmoke(`!!document.querySelector('dialog.command-palette[open]')`);

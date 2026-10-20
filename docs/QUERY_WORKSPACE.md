@@ -1190,6 +1190,10 @@ part of that name, not a schema separator. Typed binary values use hex literals
 stderr and unsent refusals preserve the file. DROP DATABASE/SCHEMA requires the
 exact name from a terminal prompt or `--yes --confirm-target NAME`. DDL and ALTER
 review follow the editor rules, including the same-session lock-wait guard.
+Live results carry no column types (the mysql and mariadb clients print none
+with `--xml`, and myflames sends no second metadata query), so `json` keeps
+numbers as strings, `table` quotes them, and `insert` writes numbers and
+hex-shown binary values as quoted text. NULL stays NULL in every format.
 
 `top` shows the first 12 characters of each digest in its DIGEST column (the
 JSON has the full value). `capture --statement-digest HASH` (with `--digest` as a

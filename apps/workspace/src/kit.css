@@ -62,10 +62,10 @@
   color: var(--ink-faint);
 }
 .status-pill.is-watch {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .status-pill.is-problem {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .count-badge {
   display: inline-block;
@@ -82,15 +82,15 @@
 }
 .count-badge.is-warn {
   background: var(--warn-soft);
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .count-badge.is-danger {
-  background: var(--danger);
-  color: var(--accent-ink);
+  background: var(--danger-fill);
+  color: var(--danger-ink);
 }
 .count-badge.is-ok {
   background: var(--ok-soft);
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .pill {
   display: inline-flex;
@@ -106,19 +106,19 @@
 }
 .pill.is-warn {
   background: var(--warn-soft);
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .pill.is-danger {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .pill.is-ok {
   background: var(--ok-soft);
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .pill.is-info {
   background: var(--info-soft);
-  color: var(--info);
+  color: var(--info-text);
 }
 .pill-list {
   display: inline-flex;
@@ -1046,6 +1046,11 @@
   background: var(--surface);
   box-shadow: -1px 0 0 var(--line);
 }
+/* A row menu open in this column draws above the sticky cells of the rows
+   below it and above the header's Columns button. */
+.data-table.is-sized tbody tr > td.col-menu:has([aria-expanded="true"]) {
+  z-index: 4;
+}
 /* Sticky cells must stay opaque in hover/selection states as well. The
    separate colgroup slot lets the last value scroll completely into view. */
 .data-table tbody tr[tabindex]:hover td.col-menu,
@@ -1615,12 +1620,12 @@ button.metric-tile.is-selected:hover {
   justify-content: flex-end;
 }
 .button.danger-solid {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: var(--accent-ink);
+  background: var(--danger-fill);
+  border-color: var(--danger-fill);
+  color: var(--danger-ink);
 }
 .button.danger-solid:hover:not(:disabled) {
-  background: var(--danger);
+  background: var(--danger-fill);
   filter: brightness(0.92);
 }
 
@@ -1795,7 +1800,7 @@ button.metric-tile.is-selected:hover {
   font-size: var(--text-sm);
 }
 .form-error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .form-row.has-error :is(input, select, textarea) {
   border-color: var(--danger);
@@ -2065,10 +2070,13 @@ button.metric-tile.is-selected:hover {
   width: 100%;
   box-sizing: border-box;
 }
-.context-menu [role="menuitem"]:hover,
+/* The highlighted item (pointer or keyboard) is a filled row with white
+   words, like a macOS menu: the accent fill, or the danger fill for a
+   destructive item. Its icon and shortcut take the same color. */
+.context-menu [role="menuitem"]:hover:not(:disabled),
 .context-menu [role="menuitem"]:focus-visible {
-  background: var(--accent-soft);
-  color: var(--accent-ink, var(--ink));
+  background: var(--accent-fill);
+  color: var(--accent-ink);
   outline: none;
 }
 .context-menu [role="menuitem"]:disabled {
@@ -2076,11 +2084,14 @@ button.metric-tile.is-selected:hover {
   cursor: not-allowed;
 }
 .context-menu [role="menuitem"].is-danger {
-  color: var(--danger);
+  color: var(--danger-text);
 }
-.context-menu [role="menuitem"].is-danger:hover {
-  background: var(--danger-soft);
-  color: var(--danger);
+.context-menu [role="menuitem"].is-danger:is(:hover:not(:disabled), :focus-visible) {
+  background: var(--danger-fill);
+  color: var(--danger-ink);
+}
+.context-menu [role="menuitem"]:is(:hover:not(:disabled), :focus-visible) .context-menu-shortcut {
+  color: inherit;
 }
 .context-menu-divider {
   height: 1px;

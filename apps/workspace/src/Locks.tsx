@@ -73,7 +73,7 @@ export function VisiblePrivilegeConfirmLabel(props: ComponentProps<typeof Privil
   useLayoutEffect(() => { setActions(label.current?.closest<HTMLElement>(".sheet-actions") || null); }, []);
   const note = props.gate.disabledReason || (props.gate.state === "unknown" ? "Unverified" : "");
   return <>
-    <span ref={label} className="visible-privilege-confirm"><PrivilegeConfirmLabel {...props} /></span>
+    <span ref={label} className="visible-privilege-confirm"><PrivilegeConfirmLabel {...props} showStatus={false} /></span>
     {actions && note && createPortal(<span className="privilege-confirm-note" aria-hidden="true">{note}</span>, actions)}
   </>;
 }
@@ -1211,7 +1211,7 @@ export function LocksView({
 
   const trxColumns: Column<LockTransaction>[] = [
     { key: "trx", label: "Transaction", sort: (t) => t.trx_id, render: (t) => t.trx_id },
-    { key: "conn", label: "Connection", num: true, sort: (t) => t.connection_id, render: (t) => t.connection_id ?? "—" },
+    { key: "conn", label: "Connection", title: "Connection ID (the processlist ID)", num: true, sort: (t) => t.connection_id, render: (t) => t.connection_id ?? "—" },
     {
       key: "stmt",
       label: "Statement",
@@ -1230,15 +1230,15 @@ export function LocksView({
         ),
     },
     { key: "state", label: "State", sort: (t) => t.state || "", render: (t) => t.state || "—" },
-    { key: "age", label: "Open (s)", num: true, sort: (t) => t.age_s, render: (t) => <CompactNumber value={t.age_s} /> },
+    { key: "age", label: "Open (s)", title: "Seconds since the transaction started", num: true, sort: (t) => t.age_s, render: (t) => <CompactNumber value={t.age_s} /> },
     {
       key: "session",
       label: "Session",
       render: (t) => (t.idle_in_transaction ? <Pill tone="warn">Idle {seconds(t.time_s)}</Pill> : t.command || "—"),
     },
-    { key: "locked", label: "Rows locked", num: true, sort: (t) => t.rows_locked, render: (t) => <CompactNumber value={t.rows_locked} /> },
-    { key: "structs", label: "Lock structs", num: true, sort: (t) => t.lock_structs, render: (t) => <CompactNumber value={t.lock_structs} /> },
-    { key: "iso", label: "Isolation", render: (t) => t.isolation_level || "—" },
+    { key: "locked", label: "Rows locked", title: "Row locks the transaction holds (trx_rows_locked, approximate)", num: true, sort: (t) => t.rows_locked, render: (t) => <CompactNumber value={t.rows_locked} /> },
+    { key: "structs", label: "Lock structs", title: "Lock structures the transaction holds (trx_lock_structs); one can cover many rows of a page", num: true, sort: (t) => t.lock_structs, render: (t) => <CompactNumber value={t.lock_structs} /> },
+    { key: "iso", label: "Isolation", title: "Transaction isolation level", sort: (t) => t.isolation_level || "", render: (t) => t.isolation_level || "—" },
   ];
   type IndexedRowLock = RowLock & { at: number };
   const rowColumns: Column<IndexedRowLock>[] = [
@@ -1503,6 +1503,9 @@ export function LocksView({
                   <PriorityTable
                     id="locks.transactions"
                     detailColumns={["trx", "state", "session", "locked", "structs", "iso"]}
+                    // Lock structs and Isolation start off so the list fits at
+                    // 1440 px; the Columns menu shows them and the details list both.
+                    defaultHidden={["structs", "iso"]}
                     label="Transactions"
                     columns={trxColumns}
                     rows={transactions}

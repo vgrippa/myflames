@@ -365,8 +365,17 @@ export function TuningView({
           id={`tuning-tab-${value}`}
           aria-selected={tab === value}
           aria-controls={`tuning-panel-${value}`}
+          tabIndex={tab === value ? 0 : -1}
           className={tab === value ? "active" : undefined}
           onClick={() => setTab(value)}
+          onKeyDown={(event) => {
+            const next = event.key === "Home" ? "scorecard" : event.key === "End" ? "analysis" :
+              event.key === "ArrowLeft" || event.key === "ArrowRight" ? (value === "scorecard" ? "analysis" : "scorecard") : null;
+            if (!next) return;
+            event.preventDefault();
+            setTab(next);
+            event.currentTarget.parentElement?.querySelector<HTMLElement>(`#tuning-tab-${next}`)?.focus();
+          }}
         >
           {label}
         </button>

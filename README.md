@@ -18,6 +18,8 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 - **Plan Comparisons**: Pair before and after plans to pinpoint operator regressions, cost changes, and row volume drifts.
 - **Server Diagnostics**: Continuous health sampling, parsed InnoDB status, the server error log, table and file I/O statistics, wait event rankings, and full analysis reports.
 - **Contention and Lock Tracking**: Track metadata lock blockers, waiting transactions, and deadlocks with single-session kill actions.
+- **macOS app**: The workspace runs as an unsigned Apple Silicon desktop app with its own data, and the CLI stays available for scripts and CI.
+- **Tuning**: A health scorecard and Full analysis for MySQL and MariaDB, with remediation SQL you can copy or open in the Query editor.
 - **Query Editor**: SQL completion from the connected catalog, persistent tabs and sessions, transaction controls, cancellation, and schema browsing.
 - **Table data**: Browse a table, stage row changes, review exact SQL, and apply a batch with stale-row checks. Tables without a supported reliable key remain read-only.
 - **Guarded Operations**: Three-tier write-safety model (Production, Development, Read-only), shared CLI confirmation prompts, and an audited local trail.
@@ -32,7 +34,27 @@ Try a [MySQL plan demo](https://vgrippa.github.io/myflames/demos/live-mysql/live
 
 ## Quick start
 
-### 1. Installation
+The workspace ships as a macOS desktop app. The Python package provides the command-line tools. Install either or both.
+
+### 1. Install the macOS app (workspace)
+
+1. Download `myflames-3.1.0-macos-arm64.zip` from the [GitHub release](https://github.com/vgrippa/myflames/releases) (Apple Silicon Macs).
+2. Unzip it and move `myflames.app` to your Applications folder.
+3. Open it from Finder. No terminal, Node.js or separately installed Python is needed.
+
+The app is not signed with a Developer ID or notarized, so macOS blocks the first launch. Do one of the following once:
+
+- Control-click `myflames.app`, choose **Open**, then **Open** again in the dialog.
+- Or open **System Settings > Privacy & Security**, scroll to the message about myflames and choose **Open Anyway**.
+- Or, from a terminal, remove the quarantine flag: `xattr -dr com.apple.quarantine /Applications/myflames.app`
+
+Where it keeps its data: under `~/Library/Application Support/myflames-desktop`, separate from the CLI's `~/.myflames`. Connections and saved passwords added in the CLI do not appear in the app, and the reverse. The minimum window size is 720 by 520 pixels.
+
+How it finds database clients: the app does not bundle `mysql`, `mariadb`, MySQL Shell or dump tools. It looks in your PATH and in the standard macOS locations (Homebrew under `/opt/homebrew` and `/usr/local`, Oracle MySQL under `/usr/local/mysql/bin`, and MacPorts under `/opt/local/bin`), so Finder launches work without shell startup files. Install a client, for example `brew install mysql-client`, and use Maintenance > Detect tools to confirm it is found.
+
+There is no browser version of the workspace. See [Desktop app](docs/DESKTOP.md) for building the app from source.
+
+### 2. Install the command-line tools
 
 Install via pipx:
 
@@ -46,32 +68,32 @@ Or install with pip in any Python 3.7+ environment:
 pip install myflames
 ```
 
-### 2. Launch the workspace
+The CLI works on its own. It is also the engine behind the app, and it keeps its own data in `~/.myflames`.
 
-The standalone desktop binary (`myflames.app`) in `apps/desktop` is the primary desktop application. It bundles the Python engine and performance workspace directly into an unsigned macOS `.app` that launches from Finder with its own isolated application data. See [Desktop app](docs/DESKTOP.md).
+### 3. `myflames ui` is deprecated
 
-The legacy browser version (`myflames ui`) is deprecated:
+`myflames ui` starts the old browser workspace. It is deprecated in favor of the macOS app, and prints a warning to stderr. The desktop app uses it internally as its backend launcher.
 
 ```bash
 myflames ui
 ```
 
-Running `myflames ui` outputs a deprecation notice and prints a one-time local launch URL on `127.0.0.1`:
+It prints a one-time local launch URL on `127.0.0.1`:
 
 ```
 warning: 'myflames ui' (browser workspace) is deprecated; use the standalone desktop application (myflames.app).
 myflames UI: http://127.0.0.1:8765/#launch=<token>
 ```
 
-- To run without opening a browser window (used by backend launchers): `myflames ui --no-browser`
-- To run on a specific local port: `myflames ui --port 8765`
-- To start with a clean workspace without restoring saved sessions: `myflames ui --no-restore`
+- `--no-browser` runs without opening a browser window (used by backend launchers).
+- `--port 8765` selects a local port.
+- `--no-restore` starts without restoring saved sessions.
 
 ---
 
 ## Engine compatibility
 
-The core package requires Python 3.7+ and standard library modules only. Live database interactions require a local `mysql` or `mariadb` client binary in your PATH.
+The core package requires Python 3.7+ and standard library modules only. Live database interactions require a local `mysql` or `mariadb` client binary in your PATH (the macOS app also searches the standard Homebrew, Oracle MySQL and MacPorts locations).
 
 | Database engine | Plan views and analysis | Server diagnostics and sessions | Guarded operations |
 | --- | --- | --- | --- |
@@ -211,8 +233,8 @@ Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
 
 | Command | Primary options | Purpose |
 | --- | --- | --- |
-| `ui` | `[--port PORT] [--no-browser] [--no-restore]` | Deprecated: launch the browser performance workspace (use `myflames.app`). |
-| `sql` | `[-e SQL \| -f FILE] [--format FORMAT] [--insert-table NAME] [-o PATH] [--yes]` | Run SQL statements inside an editor session with safety policies. |
+| `ui` | `[--port PORT] [--no-browser] [--no-restore]` | Deprecated: launch the browser performance workspace (use the macOS app, `myflames.app`). |
+| `sql` | `[-e SQL \| -f FILE] [--format FORMAT] [--insert-table NAME] [-o PATH] [--yes]` | Run SQL statements inside an editor session with safety policies. Results carry no column types, so JSON keeps numbers as strings, table quotes them and INSERT writes them as quoted text (NULL stays NULL). |
 | `capture` | `[-e SQL \| --statement-digest HASH] [--mode {explain,analyze}] [--trace] [-o PATH]` | Capture estimated or analyzed plans and metadata as JSON. |
 | `explore` | `PLAN [--type TYPE] [--metric METRIC] [--focus ID] [-o PATH]` | Export an interactive plan visualization HTML file. |
 | `compare` | `before.json after.json [--digest \| --json] [-o PATH]` | Compare two execution plans and report operator differences. |

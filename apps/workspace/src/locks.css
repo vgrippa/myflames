@@ -9,7 +9,7 @@
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   line-height: var(--leading-sm);
-  color: var(--warn);
+  color: var(--warn-text);
   background: var(--warn-soft);
   border: 1px solid var(--warn-line);
   border-radius: var(--radius-md);
@@ -144,7 +144,7 @@
   font-weight: 600;
 }
 .lock-status.waiting {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .lock-status.granted {
   color: var(--ink-muted);
@@ -253,7 +253,7 @@
   background: var(--danger-soft);
 }
 .kill-result li.still {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 /* The Kill confirmation sheet (ConfirmSheet with these details). */
 .kill-facts {
@@ -281,7 +281,7 @@
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   line-height: var(--leading-sm);
-  color: var(--warn);
+  color: var(--warn-text);
   background: var(--warn-soft);
   border: 1px solid var(--warn-line);
   border-radius: var(--radius-md);

@@ -6,6 +6,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
 
 - [Commands Reference](#commands-reference)
   - [Local UI](#local-ui)
+  - [Bundle and lazy loading](#bundle-and-lazy-loading)
   - [Local authentication and request limits](#local-authentication-and-request-limits)
   - [Client and local-storage boundaries](#client-and-local-storage-boundaries)
   - [Reviewed actions and session ownership](#reviewed-actions-and-session-ownership)
@@ -56,6 +57,13 @@ separate app data and retains the same API authentication and write contracts.
 The unsigned Apple Silicon package bundles its Python backend and opens through
 Finder. Build with `package:mac`; validate the delivered `.app` using the packaged
 smoke, which removes system Python from the startup path and checks owned cleanup.
+Quitting sends SIGINT to the backend's process group and waits 5 s; `backend.cjs`
+then kills the dump, restore and clone tool groups the backend listed in its
+`runtime/tool-groups-<launch id>.json` file, kills the backend's group and stops
+any group in its last list, never signalling an id it already saw gone. The
+file is opened without following links or blocking, and a missing, oversized or
+malformed list counts as unconfirmed. `stop()` resolves only when all are gone
+(7 s in total) and otherwise rejects, which shows the shutdown-incomplete dialog.
 Client discovery appends fixed macOS installation directories without shell
 startup scripts. Packaged app data is separate from development and CLI data.
 See [Desktop app](DESKTOP.md) and the desktop package README for launch and test
@@ -151,7 +159,7 @@ download falls back to the browser.
   tokens on `:root` in `style.css` (web-design skill). Browser test for the
   shell: `apps/workspace/test/navigation.mjs`; `apps/workspace/test/server-nav.mjs`
   covers the Server place. The app mark is
-  `docs/brand/myflames-icon-v3.png` (while `docs/brand/myflames-icon-v2.png` is preserved for README references), shared by the sidebar, Home, and favicon. Vite emits the stable
+  `docs/brand/myflames-icon-v3.png` (the app icon; the workspace sidebar, Home, About and favicon use its 128 px copy `myflames-icon-v3-128.png`, while `docs/brand/myflames-icon-v2.png` is preserved for README references). Vite emits the stable
   `/assets/myflames-logo.png` URL; retain earlier logo URL aliases in `ui.py`. `npm ci && npm run build` there regenerates committed
   `myflames/ui_assets/` files shipped in the wheel. Python users need no Node.js.
   The UI API reuses the parser, sidecars, and renderers. Investigations are
@@ -205,6 +213,64 @@ download falls back to the browser.
   accessible; verify open/error states at desktop and narrow, short viewports.
   Use `docs/UI_TESTING.md` for the interaction matrix. Check contextual Learn
   links after navigating to a different lesson and returning to the plan.
+### Bundle and lazy loading
+
+The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
+in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
+connections, the command palette, Learn and the shared kit (about 365 KB,
+1.1 MB before the split). Other places and views load their own chunk the
+first time they mount, through `lazyComponent` in `src/lazy.tsx` (React.lazy
+with its own Suspense boundary; the fallback shows nothing for 300 ms, then one
+"Loading…" line, and a chunk that cannot be read shows "This part of the
+workspace did not load." with Reload):
+
+- `main.tsx`: the Query editor (mounted hidden at startup; its chunk starts
+  loading with sign-in and the session read, and calls to its handle made
+  before it mounts wait in `withLab`), Server (with Workload and Tuning),
+  Replication, Investigations, the Audit log, and the Plans chart and
+  execution context. Once the first screen is up, `preloadWhenIdle` loads
+  Server, Replication and the Plans chart in idle time, one chunk at a time.
+- `Server.tsx`: the views it uses only as components (InnoDB, Tuning,
+  Processlist, Waits, I/O, Indexes, Tables, Parameters, Database diagram,
+  Users and roles), preloaded in idle time once the place has mounted. Health,
+  Error log, Top statements, Locks, Instruments, Maintenance and Replication
+  share helpers with `Server.tsx` and come with its chunk.
+- `QueryLab.tsx`: Table data and the Query Digest mode. Mermaid keeps its own
+  chunks (Database diagram).
+
+Rules for code that splits:
+
+- A part keeps the form it mounted with: before its chunk arrived it renders
+  through Suspense, after that directly. A mounted place is never remounted
+  because its chunk arrived, so mounting rules hold (Server and Replication
+  mount on first visit and stay mounted, views read on open only while on
+  screen, Back keeps the mounted list) and `QueryLab`'s ref handle is
+  forwarded.
+- Import a lazily loaded module only through `lazyComponent` (type imports are
+  fine); one static value import puts it back in the entry chunk. The shell
+  reads the lists of Server and Workload views from `serverViews.ts`.
+- Styles are not split. `src/styles.ts` imports every stylesheet in cascade
+  order (`style.css` last) and `main.tsx` imports it first, so the order never
+  depends on which chunk loads first; the built stylesheet is identical to the
+  unsplit build. Add a new stylesheet to `styles.ts` too.
+- Code that looks up a lazy part's elements right after switching to it must
+  wait for them: the Server toolbar measurement in `main.tsx` watches for the
+  strip to appear, and `focusWhenMounted` in `Server.tsx` focuses a view's
+  heading once it exists.
+- `test/bundle-split.mjs` (`npm run test:bundle-split`) checks the stylesheet
+  list, that no lazily loaded module is also imported statically, one built
+  stylesheet, and an entry chunk under 450 KB. The chart runtime has its own
+  80 KB budget (`test_chart_data.py`).
+
+Large tables: `DataTable` and `PaginatedReportTable` sort and measure only when
+their rows change. `useStableRows` (`kit.tsx`) keeps the previous array while
+it holds the same objects, so a view that filters its report on every render
+(Processlist, Indexes) neither sorts again nor measures its columns again on a
+selection or a keystroke elsewhere; a table that could not be measured while
+hidden measures at its next render. `sortRows` reads each row's value once.
+`formatNumber` (`api.ts`) reuses one `Intl.NumberFormat` per options for
+`time`, `number`, `count` and `CompactNumber`: `toLocaleString` with options
+builds a new formatter on every call.
 ### Local authentication and request limits
 
 `WorkspaceServer.launch_url` carries a random, one-use `#launch=` secret, valid
@@ -1101,7 +1167,7 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
 - Output directories (`_output_path`, `_empty_directory`): parent links resolved once and bound in the plan (macOS `/tmp`, `/var`), the directory itself must not be a link, a parent swapped for a link after the preflight refuses; absent or empty only. Dump writes `myflames-manifest.json` (`lifecycle-manifest-1.0`: files with SHA-256, exact `COUNT(*)` of up to 3 tables under 1 MiB, the object catalog, `complete`); `read_manifest` re-hashes every file before a restore, capped by `MAX_RESTORE_FILES` (10,000), `MAX_RESTORE_BYTES` (10 GiB), and `MAX_RESTORE_DIRECTORIES` (10,000). Exceeding a limit refuses preflight with the limit named. Bytes are counted while reading as well as checked against file size, so growth during hashing also refuses. Successful logical dumps hash files once and reuse those records for verification and the manifest. Interrupted dumps skip further hashing and retain an incomplete manifest. Confirmed dump manifest creation is not capped by these restore preflight limits; larger backups require another restore tool.
 - Restore: API and direct restore callers reject a mismatched typed target synchronously, before creating or registering a job or opening its connection; the API checks before saved-password lookup. The CLI checks before job creation. A mismatch says `Nothing was restored: the typed target does not match <target>.`, is audited as unsent, and never carries a partial-restore warning. Policy checks retain precedence, and all server identity and preflight rechecks still run for a matching target. Shell dumps through `util.loadDump` (`local_infile=ON` is a failed check, never set; progress file beside the dump; `--resume`; `--existing ignore|drop`), SQL dumps through the client with `--binary-mode --comments` reading a staged copy whose hash is checked again. Verification: object presence and the recorded row counts (`passed`, `failed`, `not_checked`; a successful child process is never evidence).
 - CLONE (MySQL only): `clone_preflight` (engine, version series, plugin on both, BACKUP_ADMIN donor, CLONE_ADMIN recipient or BACKUP_ADMIN with DATA DIRECTORY, platform and character set variables, collations, plugins, `max_allowed_packet`, `clone_valid_donor_list` containing the donor address, different servers; DATA DIRECTORY absolute and not under `@@datadir` as text, existence `not_checked` without a recipient-host probe because the server refuses an existing or in-datadir path before copying). `donor_address` (`--donor-address`) is the donor as the recipient reaches it, used in the statement and the donor-list check. The statement goes on the client's stdin (`clone_statement(..., redact=False)`), shown and audited redacted. Clone plans add `expect` with `donor` and `recipient` objects (`endpoint`, `connection_key`, `type`, `read_only`), `donor_address` and `require_ssl`, all included in the binding. The workspace evaluates both saved profiles with `dbops.connection_safety`; a read-only donor is allowed. Before sending a remembered donor password, it verifies negotiated TLS on the recipient connection. Start checks the reviewed pair before retrieving the saved donor password, and rejects TLS downgrades when the donor profile requires TLS. Both passwords are scrubbed from errors, audit records, logs and manifest free text. Progress: a second connection polls `performance_schema.clone_progress` (job `progress` percent and `detail`). In place: ERROR 3707 (no supervisor, the server shuts down) or a lost connection is expected; the job waits up to `restart_wait` (`--restart-wait`, default `RESTART_WAIT` 180 s) and then reads `clone_status`, tied to this clone by `BEGIN_TIME`, `SOURCE` and `DESTINATION` (the table keeps the previous clone's row); result `needs_restart` when it does not come back, `needs_verification` when the recipient account is refused (it now has the donor's accounts). GTID: donor `gtid_executed` at preflight against `clone_status.GTID_EXECUTED` (empty for DATA DIRECTORY clones, `not_checked`).
-- Jobs (`LifecycleJob`, `lifecycle-job-1.0`: `id, operation, state queued|running|done|failed|refused|cancelled, progress, detail, events[] (last 200), result {status, verification[], partial_state, cancel_error, audit_id}, error`): tool output drained on threads, CR progress parsed, ANSI colors stripped, secrets redacted. Cancel: SIGTERM then SIGKILL to the process group (EPERM from a zombie group tolerated), and `KILL QUERY` on the session the job printed on its own stdout (marker line; mysqlsh's `print` needs an explicit line break). `partial_state` names what may remain. `LifecycleJobs` (the workspace's registry: two running at most, never two on one target, finished ones kept an hour, closed with the server).
+- Jobs (`LifecycleJob`, `lifecycle-job-1.0`: `id, operation, state queued|running|done|failed|refused|cancelled, progress, detail, events[] (last 200), result {status, verification[], partial_state, cancel_error, audit_id}, error`): tool output drained on threads, CR progress parsed, ANSI colors stripped, secrets redacted. Cancel: SIGTERM then SIGKILL to the process group (EPERM from a zombie group tolerated), and `KILL QUERY` on the session the job printed on its own stdout (marker line; mysqlsh's `print` needs an explicit line break). `partial_state` names what may remain. `LifecycleJobs` (the workspace's registry: two running at most, never two on one target, finished ones kept an hour, closed with the server). Shutdown: `LifecycleJobs.shutdown()` runs first in `WorkspaceServer.server_close`, before replication loops, table data, live jobs and editor sessions (whose cleanup can block on `KILL QUERY`). It refuses new jobs and preflight runners, cancels every running job and runner, starts `KILL QUERY` on threads with the session id read before the tool stops, sends SIGTERM to every tool process group and SIGKILL after 1 s, then gives jobs 1.5 s to write their audit record (cancelled, outcome unknown, as for Cancel); `close()` finishes the rest. `ToolGroups` lists a tool's process group from just after it starts until the group is gone. Tools start through `ToolGroups.start`, serialized with shutdown (`close_spawning`): a tool being started is listed before shutdown's snapshot, and none starts afterwards. With `MYFLAMES_TOOL_GROUPS_FILE` (set only by the desktop app, in a 0700 directory it owns; a missing or shared directory refuses startup with exit 2) the list is also kept in an owner-only `tool-groups-1.0` file (`{"schema_version", "groups"}`), written before the launch line, replaced atomically and kept (empty) after a clean close. When it cannot be rewritten it is removed, so it never names a group that may have ended, and the desktop treats a missing file after launch as unconfirmed; a tool whose group cannot be recorded is stopped at once and reported as cancelled. Shell dryRun and upgrade check tools run under `LifecycleJobs.runner()`, so shutdown stops them too.
 - Writes: dump, restore and clone are `risky` for `dbops.decide` (a read-only connection refuses, Production and Development confirm). CLI: policy from `--profile` before any prompt or connection; plan and commands on stderr; dump asks `[y/N]`, restore and clone ask to type the target; non-TTY needs `--yes` (plus `--confirm-target TARGET` for restore and clone); `--preflight` prints the plan (exit 0 ready, 1 not); Ctrl+C cancels the job. Exit 0 completed, 1 a started job failed, was cancelled or was not verified, 2 an unsent refusal, decline, bad input or connection failure. Failed-job text names the reason once in the operation heading, omits duplicate or empty `not_checked operation` rows and repeated status words, and retains distinct verification and partial-state guidance; JSON evidence is unchanged. UI: `POST /api/lifecycle/start` (`operation`, `plan`, `typed_target`, `confirmed: true`, `connection`, and `donor` for clone) is in `ui._WRITE_PATHS`: `dbops.gate` first (refused envelope with `audit_id`), then saved passwords (`connection.profile_id`, `donor.profile_id`), then the job; `POST /api/lifecycle/status` and `/api/lifecycle/cancel` take `id` and `connection`. Every attempt has an `AuditTrail` record (`surface` cli or ui; refused, declined, `unknown` after a cancel, `ok` or `error`). `POST /api/lifecycle/jobs` (`connection`; `lifecycle-jobs-1.0`, `_lifecycle_jobs_response`) lists the jobs this workspace holds for the connection's endpoint (`dbops.identity_endpoint`, recorded by `_lifecycle_add` before the job starts and dropped when `LifecycleJobs` lets the job go); it opens no connection and starts nothing (`test/test_lifecycle_cli.py`). Status and cancel check this same owner before looking up or cancelling a job and return “No such job.” for missing, expired or mismatched jobs. They open no connection and read no saved password. A change to type or read-only preserves access to the original job.
 - Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone; Run preflight only reads and opens the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s); Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
 - Not wired to the CLI or UI yet: `prepare_physical_backup` / `physical_backup_job` (MariaDB `mariadb-backup --backup` then `--prepare`, only with a matching local socket and an explicit same-host confirmation); `clone` on MariaDB prints the `mariadb-backup` steps instead.

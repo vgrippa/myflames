@@ -424,7 +424,10 @@ try {
   assert.equal(await page.evaluate(() => window.killCalls || 0), 0);
   await page.click('[data-privilege-action="explain"]');
   assert.equal(await page.evaluate(() => window.explainCalls), 1);
-  assert.match(await h.text('[data-privilege-action="explain"]'), /Unverified/);
+  assert.doesNotMatch(await h.text('[data-privilege-action="explain"]'), /Unverified/);
+  await page.focus('[data-privilege-action="explain"]');
+  assert.match(await page.$eval('[data-privilege-action="explain"]', e =>
+    document.getElementById(e.getAttribute('aria-describedby')).textContent), /Unverified/);
   const probes = await page.evaluate(() => ({
     read: window.accountTest.privilegeResult({ state: "denied", missing: ["PROCESS"], reason: "Needs PROCESS", grey_out: false }),
     missing: window.accountTest.privilegeResult(),

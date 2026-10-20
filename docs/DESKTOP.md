@@ -2,11 +2,23 @@
 
 The desktop app uses Electron to host the existing React and TypeScript
 workspace, with Python providing the same engine and CLI. Download size is
-secondary to consistent rendering, reliable native integration and a simple
-installation on Windows and macOS.
+secondary to consistent rendering and reliable native integration.
 
-The current delivery scope is macOS. Windows packaging and validation are
-deferred while the working interface, completion and table editing are built.
+The workspace ships only as this macOS app (unsigned, Apple Silicon). There is
+no browser version, and `myflames ui` is deprecated; the app uses it
+internally to start its backend. The Python CLI (`pip install myflames`) remains
+for the command-line tools. Windows and Linux packaging and validation are
+deferred.
+
+## Install and first launch
+
+Download `myflames-3.1.0-macos-arm64.zip` from the GitHub release, unzip it and
+move `myflames.app` to Applications. Because the app has no Developer ID
+signature or notarization, macOS blocks the first launch. Control-click the app
+and choose Open, or use System Settings > Privacy & Security > Open Anyway, or
+run `xattr -dr com.apple.quarantine /Applications/myflames.app`. App data lives
+under `~/Library/Application Support/myflames-desktop`, separate from the CLI's
+`~/.myflames`. The minimum window size is 720 by 520 pixels.
 
 `apps/desktop` is the development foundation. It opens the real workspace;
 `docs/design/desktop-workspace.html` is a separate interactive design preview
@@ -85,7 +97,7 @@ signed releases, updates and support. Pricing and the free/paid feature matrix
 are not defined by this development foundation. No payment or entitlement
 checks have been added.
 
-Bundle the Python engine with PyInstaller on each target operating system.
+Bundle the Python engine with PyInstaller on the target operating system (macOS only for now).
 The unsigned Apple Silicon `.app` bundles Python and opens directly from Finder;
 see [build instructions](../apps/desktop/README.md#build-an-unsigned-macos-app).
 It has no Developer ID signature or notarization. Before distributing
@@ -97,6 +109,11 @@ available independently.
 
 Electron renderer code must stay sandboxed, with context isolation and no Node
 integration. The main process owns its Python child and launch secret; it must
-not expose a generic filesystem or process bridge. Existing API authentication,
+not expose a generic filesystem or process bridge. Quitting also stops the
+backend's dump, restore and clone tools, which run in their own process groups.
+The backend stops them first and audits each interrupted operation as
+cancelled with outcome unknown. It lists their groups in a private file so the
+main process can stop them when it has to kill the backend. Quitting waits at
+most 7 seconds and reports processes it could not confirm stopped. Existing API authentication,
 write policy, privilege checks and audit remain enforced. Desktop development
 uses a separate data directory and must not open the user's CLI workspace.

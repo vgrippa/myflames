@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { DataTable, sortRows, type SortState } from "./kit";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { DataTable, sortRows, useStableRows, type SortState } from "./kit";
 import { csvReport, downloadReport, htmlReport, printReport, type ExportColumn } from "./reportTableExport";
 import "./report-table.css";
 
@@ -17,10 +17,17 @@ export function PaginatedReportTable<T>({ exportColumns, exportContext, resetKey
   const [sort, setSort] = useState<SortState | null>(props.defaultSort ?? null);
   const [message, setMessage] = useState("");
   useEffect(() => { setPage(0); setMessage(""); }, [resetKey, exportContext]);
-  const sorted = sortRows(props.rows, sort, props.columns.find(c => c.key === sort?.key)?.sort);
+  // Sorted once per rows and order, not on every render (a selection, a
+  // keystroke elsewhere); the accessor is the column's as of now.
+  const columns = useRef(props.columns);
+  columns.current = props.columns;
+  const rows = useStableRows(props.rows);
+  const signature = props.columns.map(c => c.key).join("\u0000");
+  const sorted = useMemo(() => sortRows(rows, sort, columns.current.find(c => c.key === sort?.key)?.sort), [rows, sort, signature]);
   const pages = Math.max(1, Math.ceil(sorted.length / size));
   const current = Math.min(page, pages - 1);
   const start = current * size;
+  const pageRows = useMemo(() => sorted.slice(start, start + size), [sorted, start, size]);
   function changeSort(next: SortState) { setSort(next); setPage(0); }
   function exportRows(format: string) {
     if (!format) return;
@@ -55,7 +62,7 @@ export function PaginatedReportTable<T>({ exportColumns, exportContext, resetKey
         <button type="button" className="button" disabled={current + 1 >= pages} onClick={() => setPage(pages - 1)}>Last</button>
       </nav>
     )}
-    <DataTable {...props} rows={sorted.slice(start, start + size)} sort={sort} onSortChange={changeSort} />
+    <DataTable {...props} rows={pageRows} sort={sort} onSortChange={changeSort} />
     {message && <p className="hint" role="status">{message}</p>}
   </div>;
 }

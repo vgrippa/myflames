@@ -44,20 +44,20 @@ import type {
   WaitsReport,
 } from "./api";
 import { api } from "./api";
-import { AccountsView } from "./Accounts";
-import { SchemaDiagramView } from "./SchemaDiagram";
 import { validateDiagram, rebuildDiagramLayout, type DiagramDocument, type SchemaDiagram } from "./schemaDiagramModel";
 import type { AccountsReport } from "./accountsApi";
 import {
   ColumnStoreContext,
   ViewActivityContext,
   useWindowStatus,
+  useFocusScope,
   NavMarker,
   countState,
   type BadgeTone,
   InfoPopover,
   InspectorContext,
   Popover,
+  closePopovers,
   SourceList,
   StatusPill,
   TONE_TEXT,
@@ -72,7 +72,7 @@ import {
   type SourceItem,
   type Tone,
 } from "./kit";
-import { Icon, type IconName } from "./components";
+import { Icon } from "./components";
 import { serverKind, type ServerKind, type SlowState } from "./session";
 import {
   connectionKey,
@@ -86,10 +86,8 @@ import {
   type Bound,
 } from "./binding";
 import { HealthView, emptyHealth, rememberHealth, type HealthMemory } from "./Health";
-import { InnodbView } from "./InnoDB";
 import { ErrorLogView, ERROR_LOG_READ, errorLogBody } from "./ErrorLog";
 import { analysisSource as reportSource } from "./Report";
-import { TuningView } from "./Tuning";
 import {
   TopStatementsView,
   clearStatementsBehind,
@@ -98,16 +96,11 @@ import {
   type DigestAction,
   type LabSettings,
 } from "./SlowQueries";
-import { SessionsView } from "./Sessions";
-import { WaitsView } from "./Waits";
-import { IoView } from "./IoStats";
 import { LocksView } from "./Locks";
-import { IndexesView } from "./Indexes";
-import { TablesView, type TableFocus } from "./Tables";
-import { ConfigView } from "./Config";
+import type { TableFocus } from "./Tables";
 import { InstrumentsLinkContext, InstrumentsView } from "./Instruments";
 import { MaintenanceView, emptyMaintenance, type MaintenanceMemory, type MaintenanceSection } from "./Maintenance";
-import { ReplicationLoopBanner, ReplicationView } from "./Replication";
+import { ReplicationLoopBanner } from "./Replication";
 import {
   jobActive,
   loopActive,
@@ -118,35 +111,41 @@ import {
   type SkipLoop,
 } from "./opsApi";
 import { ViewOnScreenContext } from "./viewOnScreen";
+import { ALL_SERVER_VIEWS, SERVER_GROUPS, SERVER_VIEWS, WORKLOAD_GROUPS, WORKLOAD_KINDS, WORKLOAD_VIEWS } from "./serverViews";
+import { lazyComponent, preloadWhenIdle } from "./lazy";
 import "./server.css";
 
-export const SERVER_VIEWS: { id: ServerKind; label: string; icon: IconName; group: string }[] = [
-  { id: "health", label: "Health", icon: "health", group: "Overview" },
-  { id: "innodb", label: "InnoDB", icon: "engine", group: "Overview" },
-  { id: "errorlog", label: "Error log", icon: "errorlog", group: "Overview" },
-  { id: "locks", label: "Locks", icon: "lock", group: "Contention" },
-  { id: "indexes", label: "Indexes", icon: "index", group: "Schema" },
-  { id: "tables", label: "Tables", icon: "table", group: "Schema" },
-  { id: "diagram", label: "Database diagram", icon: "diagram", group: "Schema" },
-  { id: "config", label: "Parameters", icon: "configuration", group: "Setup" },
-  { id: "instruments", label: "Instruments", icon: "instruments", group: "Setup" },
-  { id: "maintenance", label: "Maintenance", icon: "maintenance", group: "Setup" },
-  { id: "accounts", label: "Users and roles", icon: "users", group: "Security" },
-];
-export const WORKLOAD_VIEWS: { id: ServerKind; label: string; icon: IconName; group: string }[] = [
-  { id: "top", label: "Top statements", icon: "statements", group: "Queries" },
-  { id: "sessions", label: "Processlist", icon: "sessions", group: "Queries" },
-  { id: "waits", label: "Waits", icon: "waits", group: "Resources" },
-  { id: "io", label: "I/O", icon: "io", group: "Resources" },
-];
-export const WORKLOAD_KINDS: ServerKind[] = ["top", "sessions", "waits", "io"];
-export const ALL_SERVER_VIEWS = [...SERVER_VIEWS, ...WORKLOAD_VIEWS];
+// Views that Server uses only as components load their chunk on first open
+// (lazy.tsx); the rest share helpers with Server and come with it. Once the
+// place is open, the others load in idle time, so switching views does not
+// wait.
+const InnodbView = lazyComponent(() => import("./InnoDB").then((m) => m.InnodbView));
+const TuningView = lazyComponent(() => import("./Tuning").then((m) => m.TuningView));
+const SessionsView = lazyComponent(() => import("./Sessions").then((m) => m.SessionsView));
+const WaitsView = lazyComponent(() => import("./Waits").then((m) => m.WaitsView));
+const IoView = lazyComponent(() => import("./IoStats").then((m) => m.IoView));
+const IndexesView = lazyComponent(() => import("./Indexes").then((m) => m.IndexesView));
+const TablesView = lazyComponent(() => import("./Tables").then((m) => m.TablesView));
+const ConfigView = lazyComponent(() => import("./Config").then((m) => m.ConfigView));
+const SchemaDiagramView = lazyComponent(() => import("./SchemaDiagram").then((m) => m.SchemaDiagramView));
+const AccountsView = lazyComponent(() => import("./Accounts").then((m) => m.AccountsView));
+const LAZY_VIEWS = [InnodbView, TuningView, SessionsView, WaitsView, IoView, IndexesView, TablesView, ConfigView, SchemaDiagramView, AccountsView];
+/** Focuses the element with *id* after this task, or once it appears: a view
+ * whose chunk is still loading mounts its heading a moment later (up to 2 s). */
+function focusWhenMounted(id: string) {
+  let tries = 0;
+  const attempt = () => {
+    const element = document.getElementById(id);
+    if (element) element.focus();
+    else if (tries++ < 40) window.setTimeout(attempt, 50);
+  };
+  window.setTimeout(attempt);
+}
+
 /** Names of what Refresh all reads that is not a view in a list: the Full
  * analysis lives in the Tuning place. */
 const READ_LABELS: Partial<Record<ServerKind, string>> = { report: "Full analysis", tuning: "Tuning", replication: "Replication" };
 
-export const SERVER_GROUPS = ["Overview", "Contention", "Schema", "Setup", "Security"];
-export const WORKLOAD_GROUPS = ["Queries", "Resources"];
 /** Below this width the sub-navigation becomes a screen of its own. */
 const COMPACT_WIDTH = 720;
 /** Below this width the inspector is a bottom sheet instead of a pane. */
@@ -259,7 +258,7 @@ export function Server({
   /** The place is on screen (not hidden behind another place). Views read on
    * open only while it is (viewOnScreen.ts). */
   onScreen?: boolean;
-  onNavigatePlace?: (place: "server" | "workload" | "tuning", view: ServerKind) => void;
+  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "replication", view: ServerKind) => void;
   /** Command palette navigation: changes the visible view without reading it. */
   navigation?: { view: ServerKind; n: number };
   navCollapsed?: boolean;
@@ -299,11 +298,12 @@ export function Server({
   // chosen inside Server: an earlier session that saved either as the Server
   // view opens Health there.
   const [serverSelectedKind, setServerSelectedKind] = useState<ServerKind>(() => {
-    return initial?.kind && !WORKLOAD_KINDS.includes(initial.kind) && initial.kind !== "tuning" && initial.kind !== "report" ? initial.kind : "health";
+    return initial?.kind && !WORKLOAD_KINDS.includes(initial.kind) && !["tuning", "report", "replication"].includes(initial.kind) ? initial.kind : "health";
   });
   const [workloadSelectedKind, setWorkloadSelectedKind] = useState<ServerKind>(() => {
     return initial?.kind && WORKLOAD_KINDS.includes(initial.kind) ? initial.kind : "top";
   });
+  useEffect(() => preloadWhenIdle(LAZY_VIEWS), []);
   const tuningPlace = place === "tuning";
   const kind: ServerKind = place === "workload" ? workloadSelectedKind : tuningPlace ? "tuning" : serverSelectedKind;
   // The Tuning place saves the Server view under it, so Server opens where it was.
@@ -352,6 +352,8 @@ export function Server({
     });
   }, [propOnToggleNavCollapsed]);
   const [floatingMenuOpen, setFloatingMenuOpen] = useState(false);
+  const floatingMenuRef = useRef<HTMLDivElement>(null);
+  const floatingMenuButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!floatingMenuOpen) return;
     const onDown = (e: MouseEvent) => {
@@ -360,14 +362,9 @@ export function Server({
         setFloatingMenuOpen(false);
       }
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setFloatingMenuOpen(false);
-    };
     document.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
     };
   }, [floatingMenuOpen]);
   // Column widths and hidden columns of every Server table, by table id,
@@ -560,6 +557,12 @@ export function Server({
     return () => observer.disconnect();
   }, []);
   const compact = width > 0 && width < COMPACT_WIDTH;
+  const floatingNavOpen = !tuningPlace && onScreen && navCollapsed && !compact && floatingMenuOpen;
+  useFocusScope(floatingMenuRef, {
+    open: floatingNavOpen, onClose: () => setFloatingMenuOpen(false),
+    returnFocus: () => floatingMenuButton.current,
+    initialFocus: () => floatingMenuRef.current?.querySelector<HTMLElement>('[aria-current="page"]'),
+  });
   const sheet = width > 0 && width < SHEET_WIDTH;
   const [pushed, setPushed] = useState(false);
   const showList = compact && !pushed;
@@ -592,6 +595,10 @@ export function Server({
   /** Choose a view from the list (narrow layouts push it on screen). Tuning
    * has one home, its own place: a route to it goes there. */
   function choose(view: ServerKind) {
+    if (view === "replication") {
+      onNavigatePlace?.("replication", "replication");
+      return;
+    }
     if (view === "tuning" || view === "report") {
       // The Full analysis is the Tuning place's second tab.
       if (view === "report") setFullAnalysisRequest((n) => n + 1);
@@ -608,7 +615,7 @@ export function Server({
     keepMounted(view);
     // Once a view is chosen it stays on screen if the window narrows.
     setPushed(true);
-    if (compact) window.setTimeout(() => document.getElementById(`${view}-title`)?.focus());
+    if (compact) focusWhenMounted(`${view}-title`);
   }
   const keepInspectorOnNavigation = useRef(false);
   useEffect(() => {
@@ -628,17 +635,19 @@ export function Server({
   /** These views run operations (reviewed SQL, a skip loop, a dump) that
    * must survive a view switch, so each is mounted on first visit and kept
    * mounted, hidden, after that. */
-  // A restored workspace that had a skip loop running mounts Replication at
-  // once (hidden), so its status read finds a loop still running in this
-  // myflames, or says it stopped when myflames restarted. It never starts one.
+  // Replication is a place of its own (ReplicationPlace, mounted by the
+  // shell, which also mounts it at once for a restored skip loop so its
+  // status read finds a loop still running in this myflames, or says it
+  // stopped when myflames restarted; it never starts one): Server keeps no
+  // hidden copy of it. Its report and loops are shared through the
+  // shell, so Refresh all and the loop banner below still cover it.
   const [keptViews, setKeptViews] = useState<ServerKind[]>(() => {
     const list: ServerKind[] = [];
-    if (initial?.kind && ["maintenance", "tables", "instruments", "replication"].includes(initial.kind)) list.push(initial.kind);
-    if (initial?.replication_loop_active) list.push("replication");
+    if (initial?.kind && ["maintenance", "tables", "instruments"].includes(initial.kind)) list.push(initial.kind);
     return list;
   });
   function keepMounted(view: ServerKind) {
-    if (["maintenance", "tables", "instruments", "replication"].includes(view))
+    if (["maintenance", "tables", "instruments"].includes(view))
       setKeptViews((list) => (list.includes(view) ? list : [...list, view]));
   }
   /** A link from a report may read with that report's schema or table only
@@ -668,7 +677,7 @@ export function Server({
     window.setTimeout(() => {
       const nav = document.getElementById(`server-nav-${target}`);
       if (nav && nav.offsetParent !== null) nav.focus({ preventScroll: true });
-      else document.getElementById(`${target}-title`)?.focus();
+      else focusWhenMounted(`${target}-title`);
     });
   }
   const returningToViews = useRef(false);
@@ -1406,8 +1415,9 @@ export function Server({
       case "config":
         return <ConfigView {...common} selection={selection("config")} report={config} onReport={setConfig} onOpenSql={onOpenSql} />;
       // Operations views mount once and stay mounted, hidden, in
-      // .server-keep below: an open preflight, a running job or a skip loop
-      // survives switching views and keeps its polls and control paths.
+      // .server-keep below: an open preflight or a running job survives
+      // switching views and keeps its polls and control paths. Replication
+      // is its own place (choose() routes there).
       case "replication":
       case "maintenance":
       case "tables":
@@ -1464,12 +1474,48 @@ export function Server({
                   </>
                 )}
               </InfoPopover>
+              {/* One control for the list of views: dock or float it in a
+                  wide window; in a narrow one, where the list is a screen of
+                  its own, a Views menu switches views without going back. */}
+              {compact && (
+                <Popover
+                  label={place === "workload" ? "Workload views" : "Server views"}
+                  menu
+                  buttonClassName="icon-button server-views-menu"
+                  buttonTitle={`Switch ${place === "workload" ? "Workload" : "Server"} view`}
+                  trigger={<Icon name="menu" size={14} />}
+                >
+                  <div className="topbar-menu-dropdown views-dropdown">
+                    {groups.map((group) => (
+                      <div key={group.label} className="topbar-menu-group" role="group" aria-label={group.label}>
+                        <div className="topbar-menu-section-title" aria-hidden="true">{group.label}</div>
+                        {group.items.map((v) => (
+                          <button
+                            key={v.id}
+                            type="button"
+                            role="menuitem"
+                            className={`topbar-menu-item${kind === v.id ? " is-active" : ""}`}
+                            aria-current={kind === v.id ? "page" : undefined}
+                            onClick={() => {
+                              closePopovers();
+                              choose(v.id as ServerKind);
+                            }}
+                          >
+                            <Icon name={v.icon} size={14} />
+                            <span>{v.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </Popover>
+              )}
               {!compact && (
                 <button
                   type="button"
                   className="icon-button server-sidebar-toggle"
-                  aria-label={navCollapsed ? "Expand sidebar (dock views)" : "Collapse sidebar (float views)"}
-                  title={navCollapsed ? "Expand sidebar (dock views)" : "Collapse sidebar (float views)"}
+                  aria-label={navCollapsed ? "Dock the list of views" : "Float the list of views"}
+                  title={navCollapsed ? "Dock the list of views" : "Float the list of views"}
                   onClick={toggleNavCollapsed}
                 >
                   <Icon name={navCollapsed ? "browser" : "split-pane"} size={14} />
@@ -1541,10 +1587,11 @@ export function Server({
           <div className={`server-layout${compact ? " is-compact" : ""}${showList && !tuningPlace ? " show-list" : ""}${navCollapsed && !compact && !tuningPlace ? " is-nav-collapsed" : ""}`}>
             {!tuningPlace && (!navCollapsed || compact || floatingMenuOpen) && (
               <div
+                ref={floatingMenuRef}
+                tabIndex={-1}
+                role={floatingNavOpen ? "dialog" : undefined}
+                aria-label={floatingNavOpen ? (place === "workload" ? "Workload views" : "Server views") : undefined}
                 className={`server-source-wrap${navCollapsed && !compact ? " is-floating" : ""}`}
-                onMouseLeave={() => {
-                  if (navCollapsed && !compact) setFloatingMenuOpen(false);
-                }}
               >
                 {navCollapsed && !compact && (
                   <div className="server-floating-header">
@@ -1573,6 +1620,7 @@ export function Server({
                   }}
                   idPrefix="server-nav-"
                   pushed={compact}
+                  selectOnFocus={!compact && !floatingNavOpen}
                 />
               </div>
             )}
@@ -1580,12 +1628,13 @@ export function Server({
               {!tuningPlace && navCollapsed && !compact && (
                 <div className="server-floating-trigger-container">
                   <button
+                    ref={floatingMenuButton}
                     type="button"
                     className={`server-floating-nav-btn${floatingMenuOpen ? " active" : ""}`}
                     aria-label="Toggle views menu"
+                    aria-haspopup="dialog"
                     aria-expanded={floatingMenuOpen}
                     onClick={() => setFloatingMenuOpen((o) => !o)}
-                    onMouseEnter={() => setFloatingMenuOpen(true)}
                   >
                     <Icon name="menu" size={14} />
                     <span>{ALL_SERVER_VIEWS.find((v) => v.id === kind)?.label || "Views"}</span>
@@ -1603,7 +1652,7 @@ export function Server({
                       : `Refresh all stopped before ${viewFailure.label}. ${viewFailure.report ? "This is the previous report." : "No report has been loaded yet."}`}
                 </p>
               )}
-              {kind !== "replication" && loopsHere.some((l) => loopActive(l)) && (
+              {loopsHere.some((l) => loopActive(l)) && (
                 <ReplicationLoopBanner loops={loopsHere.filter((l) => loopActive(l))} stopping={loopStopping} onStop={(l) => void stopLoopNow(l)} />
               )}
               {kind !== "maintenance" && jobsHere.length > 0 && (
@@ -1667,26 +1716,6 @@ export function Server({
                     memory={maintenance}
                     onMemory={setMaintenance}
                   />
-                  </ViewOnScreenContext.Provider>
-                </div>
-              )}
-              {keptViews.includes("replication") && (
-                <div className="server-keep" hidden={kind !== "replication"}>
-                  <ViewOnScreenContext.Provider value={onScreen && kind === "replication" && !(compact && showList)}>
-                  <InspectorContext.Provider value={{ ...inspector, open: inspector.open && kind === "replication" }}>
-                    <ReplicationView
-                      {...common}
-                      selection={selection("replication")}
-                      report={replication}
-                      onReport={setReplication}
-                      loops={effectiveLoops}
-                      onLoops={setReplicationLoops}
-                      restoredLoop={initial?.replication_loop_active === true}
-                      onLoopActivity={(active) => {
-                        if (active) setLocalReplicationLoops((prev) => prev);
-                      }}
-                    />
-                  </InspectorContext.Provider>
                   </ViewOnScreenContext.Provider>
                 </div>
               )}

@@ -592,6 +592,33 @@ class TestReviewGate(unittest.TestCase):
                 self.assertEqual(self.kind(sql), 'write')
                 self.assertEqual(dbops.decide(dbops.classify(sql), 'development', True)['action'], 'refuse')
 
+    def test_15c2_set_statement_splits_at_the_for_that_ends_the_assignments(self):
+        """MariaDB SET STATEMENT ... FOR <statement>: NEXT VALUE FOR and
+        PREVIOUS VALUE FOR inside a value are not the FOR that starts the
+        statement (sql_yacc.yy column_default_non_parenthesized_expr)."""
+        split = dbops._set_statement_for
+        for sql, statement in (
+                ('SET STATEMENT max_statement_time = NEXT VALUE FOR s FOR SELECT 1', 'SELECT 1'),
+                ('SET STATEMENT max_statement_time = next  value  for db.s FOR DELETE FROM t', 'DELETE FROM t'),
+                ('SET STATEMENT max_statement_time = PREVIOUS VALUE FOR s, sql_select_limit = 5 FOR SELECT 2',
+                 'SELECT 2'),
+                ('SET STATEMENT max_statement_time = 1 FOR SELECT 3', 'SELECT 3'),
+                ('SET STATEMENT max_statement_time = (SUBSTRING(x FROM 1 FOR 2)) FOR SELECT 4', 'SELECT 4')):
+            with self.subTest(sql=sql):
+                upper = sql.upper()
+                found = split(dbops._flat(upper))
+                self.assertIsNotNone(found)
+                self.assertEqual(upper[found.end():].strip(), statement.upper())
+        self.assertIsNone(split('SET STATEMENT MAX_STATEMENT_TIME = NEXT VALUE FOR S'))
+        # The split now reads the value (a sequence advance is a write) and
+        # the real statement, instead of judging "s FOR SELECT 1" as unknown.
+        verdict = dbops.classify('SET STATEMENT max_statement_time = NEXT VALUE FOR s FOR SELECT 1')
+        self.assertEqual((verdict['kind'], verdict['category']), ('write', 'session'))
+        self.assertEqual(dbops.decide(verdict, 'development', True)['action'], 'refuse')
+        self.assertEqual(self.kind('SET STATEMENT max_statement_time = NEXT VALUE FOR s FOR DELETE FROM t'), 'risky')
+        self.assertEqual(self.kind('SET STATEMENT max_statement_time = PREVIOUS VALUE FOR s FOR SELECT 1'), 'read')
+        self.assertEqual(self.kind('SET STATEMENT max_statement_time = NEXT VALUE FOR s'), 'risky')
+
     def test_15d_reads_myflames_sends_stay_reads(self):
         """Plain values, and myflames' own hex text literal (the exact
         CONVERT(X'..' USING utf8mb4) form), stay reads, so Parameters session

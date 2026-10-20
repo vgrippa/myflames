@@ -37,6 +37,9 @@ const SOURCES: Record<string, string> = {
   status: "server-wide counters only",
 };
 
+/** Key server-wide InnoDB I/O figures shown as a compact summary row above the table. */
+const SUMMARY_GLOBAL_KEYS = ["data_read", "data_written", "redo_written", "data_fsyncs"] as const;
+
 /** A server-wide rate as value and unit: ["1.5", "MiB/s"], ["12", "/s"]. */
 function rate(metric: IoGlobal): [string, string] {
   if (metric.rate === null) return ["—", ""];
@@ -119,6 +122,9 @@ export function IoView({
   const current: Show = !showFiles && show !== "tables" ? "tables" : show;
   const tablesOmitted = report?.collection?.omitted.some((kind) => kind === "tables" || kind === "userstat");
   const filesOmitted = report?.collection?.omitted.includes("files");
+  const summaryGlobal = report
+    ? SUMMARY_GLOBAL_KEYS.map((k) => report.global.find((m) => m.key === k)).filter((m): m is IoGlobal => !!m)
+    : [];
 
   const tableColumns: Column<IoTable>[] = [
     { key: "table", flex: true, label: "Table", sort: (t) => `${t.schema}.${t.table}`, render: (t) => <code>{t.schema}.{t.table}</code> },
@@ -354,10 +360,13 @@ export function IoView({
             {report.scope.schema ? ` · schema ${report.scope.schema}` : ""}
           </SummaryLine>
           <FactStrip label="Server" facts={[["Server", engineLabel(report)], ["Uptime", uptime(report.uptime_s)]]} />
-          {report.global.length > 0 && (
-            <Disclosure title="Server-wide InnoDB I/O" className="io-global-rates" open={!perTable}>
-              <TileGrid label="Server-wide InnoDB I/O">
-                {report.global.map((m) => {
+          {perTable && summaryGlobal.length > 0 && (
+            <section className="tile-section io-summary-tiles" aria-labelledby="io-summary-h">
+              <div className="tile-section-head">
+                <h3 id="io-summary-h">Server-wide InnoDB I/O</h3>
+              </div>
+              <TileGrid label="Server-wide InnoDB I/O summary">
+                {summaryGlobal.map((m) => {
                   const [value, unit] = rate(m);
                   return (
                     <MetricTile
@@ -372,7 +381,7 @@ export function IoView({
                   );
                 })}
               </TileGrid>
-            </Disclosure>
+            </section>
           )}
           {perTable && (
             <section className="view-section io-detail" aria-labelledby="io-detail-h">
@@ -449,6 +458,26 @@ export function IoView({
                 />
               )}
             </section>
+          )}
+          {report.global.length > 0 && (
+            <Disclosure title="Server-wide InnoDB I/O" className="io-global-rates" open={!perTable}>
+              <TileGrid label="Server-wide InnoDB I/O">
+                {report.global.map((m) => {
+                  const [value, unit] = rate(m);
+                  return (
+                    <MetricTile
+                      key={m.key}
+                      rowKey={`global:${m.key}`}
+                      selection={selection}
+                      label={m.label}
+                      value={value}
+                      unit={unit}
+                      attrs={{ "data-metric": m.key }}
+                    />
+                  );
+                })}
+              </TileGrid>
+            </Disclosure>
           )}
         </>
       )}

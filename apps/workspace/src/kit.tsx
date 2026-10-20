@@ -55,7 +55,8 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     const dialog = root instanceof HTMLDialogElement ? root : null;
     if (dialog && !dialog.open) dialog.showModal();
     focusScopes.push(root);
-    const visible = (el: HTMLElement) => !el.matches(':disabled, [aria-disabled="true"]') &&
+    // aria-disabled actions remain focusable so their restriction can be read.
+    const visible = (el: HTMLElement) => !el.matches(':disabled') &&
       !el.closest('[hidden], [inert], [aria-hidden="true"]') && !!el.getClientRects().length &&
       getComputedStyle(el).visibility !== 'hidden';
     const items = () => Array.from(root.querySelectorAll<HTMLElement>(latest.current.menu ? '[role="menuitem"]' : FOCUSABLE))
@@ -165,17 +166,17 @@ export function StatusPill({ tone, label, title, quiet = false }: { tone: Tone; 
 
 export type BadgeTone = "neutral" | "warn" | "danger" | "ok";
 export function CountBadge({ count, tone = "neutral", label }: { count: number; tone?: BadgeTone; label?: string }) {
+  const state = tone === "danger" ? "Problem" : tone === "warn" ? "Watch" : tone === "ok" ? "OK" : "";
   return (
-    <span className={`count-badge is-${tone}`} title={label}>
-      {count.toLocaleString()}
+    <span className={`count-badge is-${tone}`} role="img" aria-label={label || `${count.toLocaleString()} ${state}`.trim()} title={label}>
+      {count.toLocaleString()}{state && ` ${state}`}
     </span>
   );
 }
 
 /** The marker beside a navigation row (Server and Workload views, sidebar
- * places): one system everywhere. A status dot carries state (problem red,
- * watch amber, unknown and off a gray ring; OK draws nothing), and a count is
- * always a neutral pill beside it, so color means state and only state. The
+ * places): one system everywhere. A dot and word carry state (OK draws
+ * nothing), and a count is always a neutral pill beside it. The
  * words reach screen readers through `text` (or the row's own hidden text). */
 export function NavMarker({ tone, count, countTone = "neutral", text }: {
   tone?: Tone;
@@ -183,11 +184,13 @@ export function NavMarker({ tone, count, countTone = "neutral", text }: {
   countTone?: BadgeTone;
   text?: string;
 }) {
+  const state = tone || countState(countTone);
   return (
     <>
       <span className="nav-marker" aria-hidden="true">
-        {tone && <span className={`status-dot is-${tone}`} />}
-        {count !== undefined && <CountBadge count={count} tone={countTone} />}
+        {state && <span className={`status-dot is-${state}`} />}
+        {state && state !== "ok" && <span>{TONE_TEXT[state]}</span>}
+        {count !== undefined && <CountBadge count={count} />}
       </span>
       {text && <span className="visually-hidden">, {text}</span>}
     </>
@@ -892,17 +895,33 @@ export type Column<T> = {
 };
 export type SortState = { key: string; dir: "asc" | "desc" };
 
+/** *rows*, kept as the array of the previous render while it holds the same
+ * objects in the same order. A view that filters its report on every render
+ * (a keystroke elsewhere, a selection) then passes a table the same rows, so
+ * the table neither sorts again nor measures its columns again; rows of a new
+ * report are new objects, so they still do. */
+export function useStableRows<T>(rows: T[]): T[] {
+  const last = useRef(rows);
+  const previous = last.current;
+  if (previous !== rows && (previous.length !== rows.length || rows.some((row, i) => row !== previous[i]))) last.current = rows;
+  return last.current;
+}
+
 export function sortRows<T>(rows: T[], sort: SortState | null, value: ((row: T) => string | number | null) | undefined) {
   if (!sort || !value) return rows;
   const sign = sort.dir === "asc" ? 1 : -1;
-  return [...rows].sort((a, b) => {
-    const x = value(a);
-    const y = value(b);
+  // Each row's value is read once, not twice per comparison (accessors may
+  // build a string per call); the stable sort keeps the same order.
+  const keyed = rows.map((row) => ({ row, key: value(row) }));
+  keyed.sort((a, b) => {
+    const x = a.key;
+    const y = b.key;
     if (x === y) return 0;
     if (x === null || x === undefined) return 1;
     if (y === null || y === undefined) return -1;
     return (x < y ? -1 : 1) * sign;
   });
+  return keyed.map((entry) => entry.row);
 }
 
 /** One table's column layout as the user left it: widths in px by column
@@ -1121,10 +1140,11 @@ export function DataTable<T>({
   const sort = controlledSort === undefined ? localSort : controlledSort;
   const latestColumns = useRef(columns);
   latestColumns.current = columns;
+  const stableRows = useStableRows(rows);
   const sorted = useMemo(() => {
     const column = latestColumns.current.find((c) => c.key === sort?.key);
-    return sortRows(rows, sort, column?.sort);
-  }, [rows, sort, signature]);
+    return sortRows(stableRows, sort, column?.sort);
+  }, [stableRows, sort, signature]);
   const latestRowKey = useRef(rowKey);
   latestRowKey.current = rowKey;
   const rowKeys = useMemo(() => sorted.map((r) => latestRowKey.current(r)), [sorted]);
@@ -1160,7 +1180,13 @@ export function DataTable<T>({
     col?: Column<T>;
     cellText?: string;
     rowCells: string[];
+    opener: HTMLElement | null;
   } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useFocusScope(menuRef, {
+    open: !!contextMenu, onClose: () => setContextMenu(null), menu: true,
+    returnFocus: () => contextMenu?.opener,
+  });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -1188,14 +1214,9 @@ export function DataTable<T>({
         setContextMenu(null);
       }
     };
-    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") setContextMenu(null);
-    };
     window.addEventListener("mousedown", handleOutside);
-    window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("mousedown", handleOutside);
-      window.removeEventListener("keydown", handleKeyDown);
     };
   }, [contextMenu]);
   const natural = measured.sig === signature ? measured.natural : {};
@@ -1294,11 +1315,17 @@ export function DataTable<T>({
 
   // Measure once the rows change: each column's max-content width (table
   // laid out automatically for a moment, before paint) and its header label.
+  // A table that cannot be measured then (hidden behind full-width details or
+  // in another view) measures at its next render instead.
   const hiddenSig = [...hidden].join("\u0000");
+  const measuredFor = useRef<{ rows: T[]; signature: string; hidden: string } | null>(null);
   useLayoutEffect(() => {
+    const done = measuredFor.current;
+    if (done && done.rows === sorted && done.signature === signature && done.hidden === hiddenSig) return;
     const t = table.current;
     const el = wrap.current;
     if (!t || !el || !t.tHead || el.clientWidth === 0) return;
+    measuredFor.current = { rows: sorted, signature, hidden: hiddenSig };
     const left = el.scrollLeft;
     t.classList.add("is-measuring");
     const next: Record<string, number> = measured.sig === signature ? { ...measured.natural } : {};
@@ -1345,7 +1372,7 @@ export function DataTable<T>({
     t.classList.remove("is-measuring");
     el.scrollLeft = left;
     if (changed) setMeasured({ sig: signature, natural: next, min: nextMin, flags: nextFlags });
-  }, [sorted, signature, hiddenSig]);
+  });
   // Row and header heights, for the spacers of a long table.
   useLayoutEffect(() => {
     const t = table.current;
@@ -1422,6 +1449,7 @@ export function DataTable<T>({
         col: visible[0],
         cellText: rowCells[0],
         rowCells,
+        opener: tr,
       });
       return;
     }
@@ -1724,6 +1752,7 @@ export function DataTable<T>({
                       col,
                       cellText,
                       rowCells,
+                      opener: selection ? tr : document.activeElement as HTMLElement | null,
                     });
                   } : undefined}
                   {...(rowAttrs ? rowAttrs(row) : {})}
@@ -1747,6 +1776,7 @@ export function DataTable<T>({
       </div>
       {contextMenu && (
         <div
+          ref={menuRef}
           className="context-menu"
           role="menu"
           aria-label="Row actions"
@@ -2732,6 +2762,7 @@ export function SourceList({
   onSelect,
   idPrefix,
   pushed,
+  selectOnFocus = !pushed,
 }: {
   label: string;
   groups: { label: string; items: SourceItem[] }[];
@@ -2740,6 +2771,8 @@ export function SourceList({
   idPrefix: string;
   /** Narrow layouts: the list is a screen of its own (selection pushes the view). */
   pushed?: boolean;
+  /** Drawers keep arrow navigation local until Enter chooses a view. */
+  selectOnFocus?: boolean;
 }) {
   const ids = groups.flatMap((g) => g.items.map((i) => i.id));
   function onKey(event: KeyboardEvent<HTMLButtonElement>, id: string) {
@@ -2758,7 +2791,7 @@ export function SourceList({
     event.preventDefault();
     const target = document.getElementById(`${idPrefix}${ids[next]}`);
     target?.focus();
-    if (!pushed) onSelect(ids[next]);
+    if (selectOnFocus) onSelect(ids[next]);
   }
   return (
     <nav className={`source-list${pushed ? " is-pushed" : ""}`} aria-label={label}>

@@ -144,6 +144,15 @@ try {
   assert.match(full, /data-status="rows">1 row</);
   assert.match(full, /data-status="duration">1.?234 ms</);
   assert.match(full, /data-status="refreshed">Refreshed <time dateTime="2026-10-15T12:05:00.000Z"/);
+  // sortRows reads each row's value once, keeps equal values in their order,
+  // and puts missing values last in both directions.
+  const sortable = [{ id: 'a', v: 2 }, { id: 'b', v: null }, { id: 'c', v: 1 }, { id: 'd', v: 2 }, { id: 'e', v: null }, { id: 'f', v: 0 }];
+  let reads = 0;
+  const byV = (r) => { reads++; return r.v; };
+  assert.deepEqual(kit.sortRows(sortable, { key: 'v', dir: 'asc' }, byV).map(r => r.id), ['f', 'c', 'a', 'd', 'b', 'e']);
+  assert.equal(reads, sortable.length, 'one read per row');
+  assert.deepEqual(kit.sortRows(sortable, { key: 'v', dir: 'desc' }, byV).map(r => r.id), ['a', 'd', 'c', 'f', 'b', 'e']);
+  assert.equal(kit.sortRows(sortable, null, byV), sortable, 'unsorted rows are returned as they are');
   console.log('Kit static render contracts passed.');
 } finally {
   console.error = originalError;

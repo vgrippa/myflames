@@ -249,3 +249,58 @@
     max-width: none;
   }
 }
+/* Waits: inline decorative proportion bar beside the right-aligned wait number. */
+.waits-bar-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.waits-bar {
+  flex: 1 1 36px;
+  min-width: 16px;
+  max-width: 72px;
+  height: var(--space-1-5);
+  border-radius: var(--radius-xs);
+  background: var(--line);
+  overflow: hidden;
+}
+.data-table.is-measuring .waits-bar {
+  flex: 0 0 24px;
+  width: 24px;
+}
+.waits-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-xs);
+  background: var(--accent);
+}
+.waits-bar-value {
+  flex: none;
+  min-width: 5.5ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* I/O: compact KPI summary tiles matching Health's tile density. */
+.io-panel .metric-tile {
+  height: 64px;
+  min-height: 64px;
+  max-height: 64px;
+  gap: 2px;
+  justify-content: center;
+  padding-block: var(--space-1);
+}
+.io-panel .tile-value {
+  line-height: var(--leading-lg);
+}
+.io-panel .tile-foot:empty {
+  display: none;
+}
+@media (max-width: 650px) {
+  .waits-bar {
+    flex-basis: 24px;
+    min-width: 12px;
+    max-width: 44px;
+  }
+}

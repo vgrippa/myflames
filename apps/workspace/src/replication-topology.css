@@ -176,6 +176,11 @@
 .tone-unknown .topology-dot { background: var(--ink-faint); }
 
 /* Connector: a button laid out as name, line, state and lag. */
+.topology-link-wrap {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
 .topology-link {
   position: relative;
   display: grid;
@@ -263,7 +268,7 @@
 }
 
 .topology-link.is-error .topology-link-state {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .topology-link-lag {
@@ -277,12 +282,12 @@
   left: 50%;
   top: 100%;
   z-index: 5;
-  display: none;
+  display: flex;
   flex-direction: column;
   gap: 4px;
   width: 300px;
   max-width: calc(100cqw - 2 * var(--space-4));
-  margin-top: var(--space-1);
+  margin-top: 0;
   padding: var(--space-3);
   text-align: left;
   color: var(--ink);
@@ -290,12 +295,7 @@
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-popover);
   transform: translateX(-50%);
-  pointer-events: none;
-}
-
-.topology-link:hover .topology-detail,
-.topology-link:focus-visible .topology-detail {
-  display: flex;
+  pointer-events: auto;
 }
 
 .topology-detail-row {
@@ -322,7 +322,7 @@
 }
 
 .topology-detail-row.is-error > :last-child {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 /* Narrow: stack source, connector (vertical) and replica. */
@@ -363,5 +363,4 @@
   }
   .topology-link-name { grid-column: 2; grid-row: 1; align-self: end; padding: 0; }
   .topology-link-info { grid-column: 2; grid-row: 2; align-items: flex-start; align-self: start; padding: 0; }
-  .topology-detail { display: none !important; }
 }

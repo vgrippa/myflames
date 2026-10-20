@@ -233,18 +233,33 @@ try {
 
   // The root blocker in the inspector: its last statement, no plan, and KILL to copy (never sent).
   await select(treeRow(23));
+  // Lock structs and Isolation start off so the list fits beside the list of
+  // views at 1440 px; the Columns menu shows them and the details list both.
   assert.deepEqual(await page.$$eval(`${view} table[aria-label="Transactions"] th[data-col]`, (els) => els.map((e) => e.dataset.col)),
-    ["trx", "conn", "stmt", "state", "age", "session", "locked", "structs", "iso"], "full-width lists retain their columns");
+    ["trx", "conn", "stmt", "state", "age", "session", "locked"], "full-width lists retain their columns");
   assert.match(await text(`${view} th[data-col=age]`), /Open \(s\)/);
   if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  assert.equal(await page.$eval(`${view} .data-table-wrap[aria-label="Transactions"]`, (e) => e.scrollWidth - e.clientWidth), 0,
+    "Transactions fit at 1440 px");
+  await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
+  assert.deepEqual(await page.$$eval('.popover input[data-col=structs], .popover input[data-col=iso]', (els) => els.map((e) => e.checked)), [false, false]);
+  await page.click('.popover input[data-col=iso]');
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(`${view} th[data-col=iso]`);
+  assert.match(await text(`${view} table[aria-label="Transactions"] tbody`), /REPEATABLE READ/, "Columns shows isolation");
   await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
   await page.click('.popover input[data-col=iso]');
   await page.keyboard.press("Escape");
   assert.equal(await page.$(`${view} th[data-col=iso]`), null, "Columns can hide isolation explicitly");
-  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
+  await page.click('.popover input[data-col=structs]');
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(`${view} th[data-col=structs]`);
   await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
   await page.click('.popover .columns-reset');
   await page.keyboard.press("Escape");
+  assert.equal(await page.$(`${view} th[data-col=structs]`), null, "Reset turns Lock structs off again");
 
   await select(treeRow(23));
   await inspectorHas(/Connection 23/);

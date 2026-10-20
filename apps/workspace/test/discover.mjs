@@ -229,6 +229,26 @@ try {
   await page.waitForFunction(()=>!document.querySelector(".view-inspector.is-detail"));
   assert.ok(await page.$(`${view} th[data-col=examined]`), "full-width list retains its detail columns");
   assert.match(await text(`${view} th[data-col=total]`), /Total \(ms\)/);
+  // The list fits beside the list of views at 1440 px, two flags included:
+  // Avg is short (its full name is in the Columns menu and the tooltip), and
+  // Rows sent and Schema start off (both are in the details).
+  assert.equal(await text(`${view} th[data-col=avg]`), "Avg (ms)");
+  assert.equal(await page.$eval(`${view} th[data-col=avg]`, (e) => e.title), "Average latency per call, in milliseconds");
+  assert.equal(await page.$(`${view} th[data-col=sent]`), null, "Rows sent starts off");
+  assert.equal(await page.$(`${view} th[data-col=schema]`), null, "Schema starts off");
+  assert.equal(await page.$eval(`${view} .data-table-wrap`, (e) => e.scrollWidth - e.clientWidth), 0, "no sideways scroll at 1440 px");
+  assert.ok(await page.$eval(`${view} th[data-col=statement]`, (e) => e.getBoundingClientRect().width) >= 260, "the statement keeps 260 px");
+  await page.click(`${view} .table-columns-button`);
+  assert.deepEqual(await page.$$eval('.popover .columns-list label', (els) => els.map((e) => e.textContent.trim())),
+    ["#", "Statement", "Calls", "Total (ms)", "Average (ms)", "Rows examined", "Rows sent", "Schema", "Flags"]);
+  await page.click('.popover input[data-col=sent]');
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(`${view} th[data-col=sent]`);
+  await page.click(`${view} .table-columns-button`);
+  await page.click('.popover .columns-reset');
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$(`${view} th[data-col=sent]`), null, "Reset turns Rows sent off again");
+  assert.equal(await page.$(`${view} th[data-col=schema]`), null);
   await page.click(`${view} .table-columns-button`);
   await page.click('.popover input[data-col=examined]');
   assert.equal(await page.$(`${view} th[data-col=examined]`), null, "Columns can hide a detail column");
@@ -322,7 +342,7 @@ try {
     body: { error: "Could not complete the request: Performance Schema is off." },
   };
   await button("Workload", ".main-nav ");
-  await page.click("#server-nav-top");
+  await page.locator("#server-nav-top").click();
   await page.click(`${view} [data-action=refresh]`);
   await page.waitForSelector(`${view} .gate`);
   assert.match(await text(`${view} .gate`), /Performance Schema is off, so there are no statement digests/);

@@ -706,6 +706,23 @@ def _set_items(rest, idents, scoped=True):
     return found
 
 
+# The FOR that ends a MariaDB SET STATEMENT assignment list. Values are
+# expressions (sql_yacc.yy set_stmt_option), and the only FOR an expression
+# can hold outside parentheses is the sequence form NEXT VALUE FOR s or
+# PREVIOUS VALUE FOR s (sql_yacc.yy column_default_non_parenthesized_expr).
+_SET_STATEMENT_FOR = re.compile(r"(?<![@$])\bFOR\b")
+_SEQUENCE_VALUE_FOR = re.compile(r"\b(?:NEXT|PREVIOUS)\s+VALUE\s*$")
+
+
+def _set_statement_for(flat):
+    """The match of the FOR that starts the statement after SET STATEMENT's
+    assignments in *flat* (code with parentheses blanked), or None."""
+    for found in _SET_STATEMENT_FOR.finditer(flat):
+        if not _SEQUENCE_VALUE_FOR.search(flat[:found.start()]):
+            return found
+    return None
+
+
 def _set_checks(upper, idents):
     rest = upper[re.match(r"\s*SET\b", upper).end():]
     if re.match(r"\s*PASSWORD\b", rest):
@@ -725,7 +742,7 @@ def _set_checks(upper, idents):
             return _verdict("write", "session", "READ WRITE lets this session's next transactions change data.")
         return _verdict("read", "session", "Sets this session's next transactions only.")
     if re.match(r"\s*STATEMENT\b", rest):
-        found = re.search(r"\bFOR\b", _flat(upper))
+        found = _set_statement_for(_flat(upper))
         if not found:
             return _verdict("risky", "unknown", "myflames could not read this SET STATEMENT.")
         statement_at = re.match(r"\s*STATEMENT\b", rest).end() + (len(upper) - len(rest))

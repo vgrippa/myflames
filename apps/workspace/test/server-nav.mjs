@@ -293,6 +293,38 @@ try {
   await phone.waitForFunction(() => document.activeElement?.id === "server-nav-config");
   await phone.close();
 
+  // The top bar names the place once; the place toolbar has one control for
+  // the list of views: dock/float when wide, a Views menu at the 720 px window.
+  assert.equal(await page.$(".topbar-title button"), null, "no breadcrumb menus in the top bar");
+  assert.ok(await page.$(".place-toolbar .server-sidebar-toggle"), "wide: dock or float the list of views");
+  assert.equal(await page.$(".place-toolbar .server-views-menu"), null, "wide: no Views menu beside the docked list");
+  const narrow = await page.browser().newPage();
+  await narrow.setViewport({ width: 720, height: 520 });
+  await narrow.setRequestInterception(true);
+  narrow.on("request", (r) => {
+    const p = new URL(r.url()).pathname;
+    if (p === "/api/live/config") return r.respond({ status: 200, contentType: "application/json", body: JSON.stringify(config) });
+    if (p.startsWith("/api/live/")) return r.respond({ status: 400, contentType: "application/json", body: '{"error":"Not mocked"}' });
+    return r.continue();
+  });
+  await narrow.goto(page.url(), { waitUntil: "networkidle0" });
+  await narrow.locator(".main-nav button ::-p-text(Server)").click();
+  await narrow.waitForSelector(".server-layout.is-compact");
+  assert.equal(await narrow.$(".place-toolbar .server-sidebar-toggle"), null, "narrow: the list is a screen, nothing to dock");
+  await narrow.click(".place-toolbar .server-views-menu");
+  await narrow.waitForSelector('.popover[role=menu][aria-label="Server views"]');
+  assert.ok((await narrow.$$eval('.popover[role=menu] [role=menuitem]', (els) => els.map((e) => e.textContent))).includes("Parameters"));
+  await narrow.locator('.popover[role=menu] [role=menuitem] ::-p-text(Parameters)').click();
+  await narrow.waitForSelector(".server-layout:not(.show-list) .server-view[data-view=config]");
+  assert.equal(await narrow.$('.popover[role=menu]'), null, "choosing a view closes the menu");
+  await narrow.click(".place-toolbar .server-views-menu");
+  await narrow.waitForSelector('.popover[role=menu] [role=menuitem][aria-current=page]');
+  assert.equal(await narrow.$eval('.popover[role=menu] [aria-current=page]', (e) => e.textContent), "Parameters");
+  await narrow.keyboard.press("Escape");
+  await narrow.waitForFunction(() => !document.querySelector(".popover[role=menu]"));
+  assert.equal(await narrow.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await narrow.close();
+
   assert.deepEqual(h.errors, []);
   console.log("server navigation: ok");
 } finally {

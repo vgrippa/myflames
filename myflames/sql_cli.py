@@ -295,9 +295,18 @@ def _run(args, payload):
         registry.close()
 
 
+#: Results come from the client's --xml output, which has no column types
+#: (mysql and mariadb print --column-type-info only in table mode), and a
+#: second metadata query per statement is not acceptable.
+TYPES_NOTE = ("Column types: results carry no column types (the mysql and mariadb clients print none with --xml), "
+              "so every value arrives as text. json keeps numbers as strings, table quotes them, and insert writes "
+              "numbers and hex-shown binary values as quoted text. NULL stays NULL in every format.")
+
+
 def cmd_sql(argv):
     parser = argparse.ArgumentParser(prog="myflames sql", add_help=False,
-                                     description="Run SQL in one Query editor session; stop at the first error.")
+                                     description="Run SQL in one Query editor session; stop at the first error.",
+                                     epilog=TYPES_NOTE)
     parser.add_argument("--help", action="help", help="Show this help message and exit.")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("-e", "--execute", metavar="SQL", help="Run this SQL script.")

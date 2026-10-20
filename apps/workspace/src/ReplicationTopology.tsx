@@ -11,7 +11,7 @@
 // Selecting a connector selects the channel in the inspector, and the filter
 // narrows the channels shown. Hover or keyboard focus on a connector shows the
 // thread states, positions and last error as a plain popover.
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { Connection } from "./api";
 import { Icon } from "./components";
 import { channelCell, engineName } from "./OpsShared";
@@ -60,6 +60,23 @@ function worstTone(channels: ReplicationChannel[], failed: number): Tone {
 
 export function ReplicationTopology({ report, connection, selection, onSelectChannel, compact = false }: ReplicationTopologyProps) {
   const [filterText, setFilterText] = useState("");
+  const detailPrefix = useId();
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const detailKey = hovered || focused;
+  useEffect(() => {
+    if (!detailKey || detailKey === dismissed) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDismissed(detailKey);
+    };
+    // Also dismiss a pointer-opened tooltip when focus is elsewhere.
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [detailKey, dismissed]);
 
   const channels = useMemo(() => {
     const q = filterText.trim().toLowerCase();
@@ -112,6 +129,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
             <div className="topology-rows">
             {channels.map((c) => {
               const key = `channel:${c.name}`;
+              const detailId = `${detailPrefix}-${encodeURIComponent(c.name)}`;
               const state = linkState(c);
               const read = position(c.position?.source_log_file ?? c.position?.Master_Log_File, c.position?.read_source_log_pos ?? c.position?.Read_Master_Log_Pos);
               const exec = position(c.position?.exec_file ?? c.position?.Relay_Master_Log_File, c.position?.exec_pos ?? c.position?.Exec_Master_Log_Pos);
@@ -127,10 +145,16 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
                     {read && <code className="topology-coord" title="Binary log position read by the replica">{read}</code>}
                   </div>
 
+                  <div className="topology-link-wrap"
+                    onMouseEnter={() => { setHovered(key); setDismissed(null); }}
+                    onMouseLeave={() => setHovered(null)}
+                    onFocus={() => { setFocused(key); setDismissed(null); }}
+                    onBlur={() => setFocused(null)}>
                   <button
                     type="button"
                     className={`topology-link is-${state.kind} tone-${c.status}${selection?.key === key ? " is-selected" : ""}`}
                     aria-pressed={selection?.key === key}
+                    aria-describedby={detailId}
                     onClick={() => select(c.name)}
                   >
                     <span className="topology-link-name">{channelCell(c.name)}</span>
@@ -142,7 +166,8 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
                       </span>
                       <span className="topology-link-lag">{lagText(c.lag_s)}</span>
                     </span>
-                    <span className="topology-detail" role="tooltip">
+                  </button>
+                    <span id={detailId} className={detailKey === key && dismissed !== key ? "topology-detail" : "visually-hidden"} role="tooltip">
                       <span className="topology-detail-row"><span>IO thread</span><span>{c.io.running || "Unknown"}{c.io.state ? `, ${c.io.state}` : ""}</span></span>
                       <span className="topology-detail-row"><span>SQL thread</span><span>{c.sql.running || "Unknown"}{c.sql.state ? `, ${c.sql.state}` : ""}</span></span>
                       {c.sql.delay_s ? <span className="topology-detail-row"><span>Configured delay</span><span>{c.sql.delay_s} s</span></span> : null}
@@ -151,7 +176,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
                       {c.io.error.errno ? <span className="topology-detail-row is-error"><span>IO error {c.io.error.errno}</span><span>{c.io.error.message}</span></span> : null}
                       {c.sql.error.errno ? <span className="topology-detail-row is-error"><span>SQL error {c.sql.error.errno}</span><span>{c.sql.error.message}</span></span> : null}
                     </span>
-                  </button>
+                  </div>
                 </div>
               );
             })}

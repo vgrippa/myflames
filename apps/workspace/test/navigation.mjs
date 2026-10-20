@@ -174,6 +174,10 @@ try {
     assert.deepEqual(await active(), [label], `${label} is the only active place`);
     assert.deepEqual(await current(), [label]);
     assert.match(await text(".topbar-title"), new RegExp("^" + label));
+    // The place is named once: the top bar title is not a menu of places or
+    // views (the sidebar and the list of views are), and there is one sidebar toggle.
+    assert.equal(await page.$$eval(".topbar-title button", (els) => els.length), 0, `${label}: the top bar title is plain text`);
+    assert.equal(await page.$$eval(".topbar .icon-button[aria-controls=workspace-sidebar]", (els) => els.length), 1, `${label}: one sidebar toggle`);
     // Exactly one place looks selected: the current one has the selection
     // fill, every other place (a badge dot included) keeps a clear background.
     // (Hover and selection fade in 120 ms; the mouse moves off the list first.)
@@ -192,7 +196,6 @@ try {
     if (label === "Tuning") {
       assert.equal(await page.$eval(".server-place.is-tuning-place", (e) => !!e.querySelector(".source-list, .place-toolbar")), false,
         "Tuning shows no Server navigation");
-      assert.equal(await page.$eval(".topbar-title", (e) => !!e.querySelector(".topbar-breadcrumb")), false, "Tuning has no Server breadcrumb");
       assert.ok(await page.$('.window-statusbar[aria-label="Workspace status"] [data-status="safety"]'), "Tuning has the window footer");
     }
   }
@@ -370,7 +373,8 @@ try {
     await page.waitForSelector(`${safety}.is-production`);
     assert.equal(await text(`${safety} strong`), "Production");
     assert.match(await text(safety), /^Production\s*· changes ask first$/);
-    assert.equal(await page.$eval(safety, (e) => e.getAttribute("aria-label")), "Production: every change on Local MySQL asks first");
+    // The sentence names the note; Retry sits outside it as its own button.
+    assert.equal(await page.$eval(`${safety} [role=note]`, (e) => e.getAttribute("aria-label")), "Production: every change on Local MySQL asks first");
     assert.equal(await page.$eval(safety, (e) => e.getAttribute("data-safety")), "production");
     assert.equal(await page.$$eval(".window-toolbar", (els) => els.length), 1);
     assert.equal(await page.$eval(".workspace", (e) => e.classList.contains("has-safety-strip")), false);
@@ -400,7 +404,37 @@ try {
   await button("Explore sample plan");
   await page.waitForFunction(() => document.querySelector(".plan-heading h1")?.textContent === "sample-plan.json");
   assert.deepEqual(await active(), ["Plans"]);
-  assert.match(await text(".topbar-title"), /Plans.*sample-plan\.json/);
+  // The top bar names the place once; the plan header names the plan, and
+  // the Explore | Compare switch and Import plan sit in the top bar.
+  assert.equal(await text(".topbar-title"), "Plans");
+  assert.ok(await page.$(".topbar .plans-bar .segmented"), "Explore | Compare is in the top bar");
+  assert.ok(await page.$(".topbar .plans-bar .plans-import"), "Import plan is in the top bar");
+  // The plan summary and SQL are disclosures in the plan header, not bands.
+  assert.ok(await page.$(".plan-heading .primary-finding > summary"));
+  assert.equal(await page.$(".plan-screen > .plan-strip"), null, "no strip below the plan header");
+  // Each opens a panel in one click and closes like a popover: the other
+  // panel, a click elsewhere, or Escape (focus returns to its summary).
+  const openPanel = (sel) => page.$eval(sel, (e) => e.open);
+  await page.click(".plan-heading .primary-finding > summary");
+  assert.equal(await openPanel(".plan-heading .primary-finding"), true);
+  assert.ok(await page.$eval(".plan-heading .primary-finding .plan-header-panel", (e) => e.getBoundingClientRect().right <= innerWidth), "the panel stays on screen");
+  if (await page.$(".plan-heading .sql-card")) {
+    await page.click(".plan-heading .sql-card > summary");
+    assert.equal(await openPanel(".plan-heading .sql-card"), true);
+    assert.equal(await openPanel(".plan-heading .primary-finding"), false, "opening SQL closes the summary");
+    await page.keyboard.press("Escape");
+    assert.equal(await openPanel(".plan-heading .sql-card"), false);
+    assert.equal(await page.evaluate(() => document.activeElement?.closest(".sql-card") !== null), true, "focus returns to the SQL summary");
+    // The keyboard gets the same one-panel rule.
+    await page.focus(".plan-heading .sql-card > summary");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector(".plan-heading .sql-card").open);
+    await page.focus(".plan-heading .primary-finding > summary");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector(".plan-heading .primary-finding").open && !document.querySelector(".plan-heading .sql-card").open);
+  }
+  await page.click(".plan-heading h1");
+  assert.equal(await openPanel(".plan-heading .primary-finding"), false, "a click elsewhere closes the panel");
   assert.equal(await page.$(".save-state"), null, "sample plan is not an edited investigation");
   assert.match(await text(".open-plans .section-label"), /Open plans\s*1/i);
   assert.match(await text(".plan-item .plan-select small"), /ms/);
@@ -641,7 +675,7 @@ try {
   assert.equal(await page.$(picker + " select"), null, "connection options start closed");
   await openConnectionPicker(page);
   assert.equal(await page.$eval(picker + " select", (e) => e.selectedOptions[0].textContent), "Prod");
-  assert.equal(await page.$eval('.window-statusbar [data-status="safety"]', (e) => [e.dataset.safety, e.getAttribute("aria-label")].join(" ")),
+  assert.equal(await page.$eval('.window-statusbar [data-status="safety"]', (e) => [e.dataset.safety, e.querySelector('.safety-status-text').getAttribute("aria-label")].join(" ")),
     "production Production: every change on Prod asks first");
   assert.match(await text(picker), /analyst@db\.prod:3306 · shop/);
   assert.match(await text(picker + " .picker-state"), /Password saved in macOS Keychain/);

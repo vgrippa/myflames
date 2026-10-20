@@ -195,6 +195,12 @@ if mode == 'cr':
     while True: signal.pause()
 if mode == 'long':
     print('x'*8200+"secret'with spaces",file=sys.stderr,flush=True)
+if mode == 'tree':
+    # A helper in the tool's process group that also ignores SIGTERM.
+    import subprocess
+    helper = subprocess.Popen([sys.executable, '-c', 'import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nwhile True: time.sleep(1)'])
+    (root/'grandchild').write_text(str(helper.pid))
+    mode = 'slow'
 if mode == 'slow':
     marker = re.search(r"(myflames_job_[a-z0-9]+:)", stdin)
     if marker: print(marker.group(1)+'41',flush=True)
@@ -1541,6 +1547,244 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(job.thread.is_alive())
         with self.assertRaises(ValueError):
             registry.add(lc.LifecycleJob('test', lambda j: None), 'target')
+
+    def private_groups_file(self):
+        runtime = self.root / 'runtime'
+        runtime.mkdir(mode=0o700, exist_ok=True)
+        runtime.chmod(0o700)
+        return str(runtime / 'tool-groups-test.json')
+
+    @staticmethod
+    def listed_groups(path):
+        if not os.path.exists(path):
+            return None
+        value = json.loads(Path(path).read_text())
+        assert value['schema_version'] == 'tool-groups-1.0', value
+        return value['groups']
+
+    def close_workspace_during(self, operation):
+        """Close the workspace (WorkspaceServer.server_close) while a tool runs.
+
+        The fake tool ignores SIGTERM and has a helper in its process group
+        that ignores it too. Editor cleanup stands in for the slow cleanup that
+        used to run first (it can block on KILL QUERY); it records what it sees.
+        """
+        from myflames.ui import WorkspaceServer
+        if operation == 'dump':
+            conn, tools = self.conn, self.native_tools()
+            plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=tools)
+            make = lc.dump_job
+        else:
+            self.make_dump()
+            conn, tools = self.target(), self.native_tools()
+            plan = lc.prepare_restore(conn, CONNECTION, self.output, tools=tools)
+            make = lc.restore_job
+        (self.bin / 'mode').write_text('tree')
+        groups_file = self.private_groups_file()
+        registry = lc.LifecycleJobs(groups_file)
+        self.assertEqual(self.listed_groups(groups_file), [])
+        ready = threading.Event()
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            job = make(CONNECTION, plan, True, plan['target'], self.audit(operation),
+                       factory=lambda **kw: conn, start=False)
+            self.jobs.append(job)
+            emit = job.emit
+            def observed(text, stream='status'):
+                emit(text, stream)
+                if '25% waiting' in text:
+                    ready.set()
+            job.emit = observed
+            registry.add(job, plan['target'])
+            self.assertTrue(ready.wait(8), job.snapshot())
+            for unused in range(400):
+                if operation == 'dump' or job.connection_id == 41:
+                    break
+                threading.Event().wait(0.01)
+            pgid = job.process.pid
+            self.assertEqual(self.listed_groups(groups_file), [pgid])
+            self.assertTrue((self.bin / 'grandchild').exists())
+            server = object.__new__(WorkspaceServer)
+            server.lifecycle, server.jobs = registry, mock.Mock()
+            seen = {}
+            def editor_close():
+                seen['tool_alive'] = lc._group_alive(pgid)
+                seen['listed'] = self.listed_groups(groups_file)
+                seen['audit'] = [(r['status'], r['outcome']) for r in self.store.audit_records()
+                                 if r['operation'] == operation]
+            server.editor = mock.Mock(**{'close.side_effect': editor_close})
+            with mock.patch('http.server.ThreadingHTTPServer.server_close'):
+                server.server_close()
+        # The tool group, helper included, was gone before the slower cleanup
+        # began, and the job had recorded the cancel exactly like a user's.
+        self.assertFalse(seen['tool_alive'])
+        self.assertEqual(seen['listed'], [])
+        self.assertEqual(seen['audit'], [('unknown', 'cancelled')])
+        self.assertFalse(lc._group_alive(pgid))
+        self.assertEqual(self.listed_groups(groups_file), [])
+        snapshot = job.snapshot()
+        self.assertEqual(snapshot['state'], 'cancelled', snapshot)
+        self.assertNotEqual(snapshot['result']['status'], 'completed')
+        self.assertFalse(job.thread.is_alive())
+        with self.assertRaises(ValueError):
+            registry.add(lc.LifecycleJob('test', lambda j: None), 'other')
+        return conn
+
+    @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
+    def test_closing_workspace_mid_dump_stops_tool_group_before_slow_cleanup(self):
+        self.close_workspace_during('dump')
+        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text())['complete'])
+
+    @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
+    def test_closing_workspace_mid_restore_stops_tool_and_its_server_session(self):
+        target = self.close_workspace_during('restore')
+        # Read before the tool stopped, so the server-side statement is cancelled too.
+        self.assertTrue(any(sql == lc.TAG + 'KILL QUERY 41' for sql, unused in target.calls))
+
+    @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
+    def test_tool_groups_file_is_private_and_lists_only_live_groups(self):
+        import subprocess
+        path = self.private_groups_file()
+        groups = lc.ToolGroups(path)
+        self.assertEqual(json.loads(Path(path).read_text()), {'schema_version': 'tool-groups-1.0', 'groups': []})
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        child = subprocess.Popen([sys.executable, '-c', 'import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                                  'print("ready", flush=True)\ntime.sleep(60)'],
+                                 stdout=subprocess.PIPE, start_new_session=True)
+        self.addCleanup(child.stdout.close)
+        self.addCleanup(lambda: child.poll() is None and child.kill())
+        self.assertEqual(child.stdout.readline().strip(), b'ready')
+        # The job thread reaps its leader; here a helper thread does.
+        threading.Thread(target=child.wait, daemon=True).start()
+        groups.add(child.pid)
+        self.assertEqual(self.listed_groups(path), [child.pid])
+        self.assertEqual(groups.terminate(term_wait=0.2, kill_wait=5), [])
+        self.assertEqual(child.wait(5), -9)
+        self.assertEqual(self.listed_groups(path), [])
+        groups.close()
+        self.assertEqual(self.listed_groups(path), [])
+        shared = self.root / 'shared'
+        shared.mkdir()
+        shared.chmod(0o755)
+        (self.root / 'alias').symlink_to(self.root / 'runtime')
+        for refused in (str(shared / 'groups.json'), str(self.root / 'alias' / 'groups.json'),
+                        str(self.root / 'missing' / 'groups.json'), 'relative-groups.json'):
+            with self.subTest(path=refused), self.assertRaises(ValueError):
+                lc.ToolGroups(refused)
+        self.assertEqual(os.listdir(str(shared)), [])
+
+    @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
+    def test_tool_that_cannot_be_recorded_is_stopped_at_once(self):
+        """If the desktop's record cannot be written, a force-killed workspace would orphan the tool."""
+        import subprocess
+        path = self.private_groups_file()
+        registry = lc.LifecycleJobs(path)
+        job = lc.LifecycleJob('dump', lambda j: None, CONNECTION)
+        job.groups = registry.groups
+        started = []
+        real_popen = subprocess.Popen
+        def popen(*args, **kwargs):
+            started.append(real_popen(*args, **kwargs))
+            return started[-1]
+        script = 'import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)'
+        with mock.patch.object(registry.groups, '_write', side_effect=OSError('disk full')), \
+                mock.patch.object(lc.subprocess, 'Popen', side_effect=popen):
+            with self.assertRaisesRegex(lc.LifecycleError, 'Could not record the tool process'):
+                job.process_tool([sys.executable, '-c', script], dict(os.environ))
+        self.assertIsNotNone(started[0].poll())
+        self.assertFalse(lc._group_alive(started[0].pid))
+        self.assertTrue(job.cancelled.is_set())
+        self.assertIsNone(job.process)
+        # Removed, not stale: the desktop treats a missing record as unconfirmed.
+        self.assertIsNone(self.listed_groups(path))
+        self.assertEqual(registry.groups.snapshot(), [])
+
+    @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
+    def test_unwritable_record_is_never_left_readable(self):
+        path = self.private_groups_file()
+        groups = lc.ToolGroups(path)
+        groups.add(4242)
+        self.assertEqual(self.listed_groups(path), [4242])
+        # Neither replace nor unlink works: the list is emptied in place.
+        with mock.patch.object(groups, '_write', side_effect=OSError('read-only')), \
+                mock.patch.object(lc.os, 'unlink', side_effect=PermissionError('read-only')):
+            groups.discard(4242)
+        self.assertEqual(Path(path).read_text(), '')
+
+    def test_tool_start_is_serialized_with_shutdown(self):
+        """A start in progress is listed before shutdown's snapshot; none starts afterwards."""
+        groups = lc.ToolGroups()
+        entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+        def slow_spawn():
+            entered.set()
+            release.wait(5)
+            return types.SimpleNamespace(pid=987654)
+        starter = threading.Thread(target=groups.start, args=(slow_spawn,), daemon=True)
+        starter.start()
+        self.assertTrue(entered.wait(5))
+        closer = threading.Thread(target=lambda: (groups.close_spawning(timeout=5), closed.set()), daemon=True)
+        closer.start()
+        self.assertFalse(closed.wait(0.2))
+        release.set()
+        self.assertTrue(closed.wait(5))
+        self.assertEqual(groups.snapshot(), [987654])
+        spawn = mock.Mock()
+        with self.assertRaisesRegex(lc.LifecycleError, 'closing'):
+            groups.start(spawn)
+        spawn.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
+    def test_shutdown_stops_preflight_runner_tools_and_refuses_new_ones(self):
+        registry = lc.LifecycleJobs()
+        started, errors = threading.Event(), []
+        script = ('import signal, sys, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                  'sys.stderr.write("25% waiting\\n"); sys.stderr.flush()\ntime.sleep(60)')
+        def preflight():
+            with registry.runner('upgrade_check', CONNECTION) as runner:
+                emit = runner.emit
+                def observed(text, stream='status'):
+                    emit(text, stream)
+                    if '25% waiting' in text:
+                        started.set()
+                runner.emit = observed
+                try:
+                    runner.process_tool([sys.executable, '-c', script], dict(os.environ))
+                except lc.LifecycleError as exc:
+                    errors.append(str(exc))
+        thread = threading.Thread(target=preflight, daemon=True)
+        thread.start()
+        self.assertTrue(started.wait(8))
+        pgid = next(iter(registry.runners)).process.pid
+        self.assertEqual(registry.groups.snapshot(), [pgid])
+        self.assertEqual(registry.shutdown(term_wait=0.2), [])
+        thread.join(8)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(lc._group_alive(pgid))
+        self.assertTrue(errors and errors[0].startswith('Cancelled'), errors)
+        self.assertEqual(registry.groups.snapshot(), [])
+        with self.assertRaises(ValueError):
+            with registry.runner('dump_preflight', CONNECTION):
+                pass
+        registry.close()
+
+    @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
+    def test_workspace_server_keeps_tool_groups_file_only_where_the_desktop_asked(self):
+        from myflames import ui
+        path = self.private_groups_file()
+        server = ui.WorkspaceServer(store_path=str(self.root / 'ws.sqlite3'), tool_groups_file=path)
+        try:
+            self.assertEqual(self.listed_groups(path), [])
+        finally:
+            server.server_close()
+        self.assertEqual(self.listed_groups(path), [])
+        assets = self.root / 'assets'
+        assets.mkdir()
+        (assets / 'index.html').write_text('<html></html>')
+        with mock.patch.object(ui, 'ASSET_DIR', assets), \
+                mock.patch.dict(os.environ, {'MYFLAMES_TOOL_GROUPS_FILE': str(self.root / 'missing' / 'g.json')}), \
+                mock.patch('sys.stderr'):
+            with self.assertRaises(SystemExit) as caught:
+                ui.cmd_ui(['--no-browser', '--no-restore'])
+        self.assertEqual(caught.exception.code, 2)
 
     def test_review_tool_connection_failure_category_survives_password_redaction(self):
         # The password overlaps the numeric error; the display is redacted

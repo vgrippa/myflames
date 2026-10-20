@@ -3,7 +3,7 @@
 // from recordings of live MySQL 8.4 and MariaDB 11.4 servers (fixtures/, see
 // server-fixtures.py): an idle transaction holding a row lock, sessions waiting
 // for it and for a metadata lock, long statements, and a load. Show plan and
-// the guarded Kill are in the inspector.
+// the guarded Kill are in the inspector and in each row's ⋯ menu.
 import assert from "node:assert/strict";
 import path from "node:path";
 import { assertPrivilege, privilegeAnswer, load, open, pause, SERVER_GROUPS, WORKLOAD_GROUPS } from "./perf-harness.mjs";
@@ -79,12 +79,22 @@ try {
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.session)),
     active.sessions.map((s) => String(s.id)));
   assert.equal(await page.$eval(row(93), (e) => e.dataset.status), "problem");
-  assert.deepEqual(await page.$$eval(`${row(94)} .pill`, (els) => els.map((e) => e.textContent)), ["Long running", "Lock wait"]);
-  assert.deepEqual(await page.$$eval(`${row(93)} .pill`, (els) => els.map((e) => e.textContent)), ["Idle in transaction"]);
+  // The list fits beside the list of views at 1440 px: Kill and Show plan
+  // live in the row menu, and Flags starts off with its words on the status.
+  assert.deepEqual(await page.$$eval(`${view} thead th[data-col]`, els => els.map(e => e.dataset.col)),
+    ["status", "id", "user", "db", "command", "time", "statement", "lock"]);
+  assert.equal(await page.$eval(`${view} .data-table-wrap`, (e) => e.scrollWidth - e.clientWidth), 0, "no sideways scroll at 1440 px");
+  assert.equal(await text(`${view} th[data-col=time]`), "Time");
+  assert.equal(await page.$eval(`${view} th[data-col=time]`, (e) => e.title), "Time in the current state, in seconds");
+  assert.equal(await page.$eval(`${row(94)} td[data-col=status] [title]`, (e) => e.title), "Long running, Lock wait");
+  assert.equal(await page.$eval(`${row(93)} td[data-col=status] [title]`, (e) => e.title), "Idle in transaction");
+  assert.equal(await page.$(`${row(93)} td[data-col=actions]`), null, "no per-row Kill button");
   assert.match(await text(row(93)), /Last: SELECT \* FROM u WHERE id = 1/);
   // The badge: active sessions, in red while something is a problem.
   assert.equal(await text("#server-nav-sessions .count-badge"), "9");
-  assert.equal(await page.$eval("#server-nav-sessions .count-badge", (e) => e.className), "count-badge is-danger");
+  // State is the dot and its word beside a neutral count (one marker system).
+  assert.equal(await page.$eval("#server-nav-sessions .count-badge", (e) => e.className), "count-badge is-neutral");
+  assert.ok(await page.$("#server-nav-sessions .status-dot.is-problem"), "problem dot beside the count");
   assert.match(await h.notes(), /holding back purge|history list/);
   // The breakdown waits behind a disclosure.
   assert.equal(await page.$eval(`${view} .sessions-breakdown`, (e) => e.open), false);
@@ -108,8 +118,15 @@ try {
   await page.click(".detail-back");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.deepEqual(await page.$$eval(`${view} thead th[data-col]`, els => els.map(e => e.dataset.col)),
-    ["status", "id", "user", "db", "command", "time", "statement", "lock", "flags", "actions"]);
+    ["status", "id", "user", "db", "command", "time", "statement", "lock"]);
   const readsBeforeColumns = state.seen.length;
+  // Flags is in the Columns menu, off by default; showing it brings the pills back.
+  await page.click(`${view} .table-columns-button`);
+  assert.equal(await page.$eval('.popover input[data-col=flags]', (e) => e.checked), false);
+  await page.click('.popover input[data-col=flags]');
+  await page.keyboard.press("Escape");
+  assert.deepEqual(await page.$$eval(`${row(94)} .pill`, (els) => els.map((e) => e.textContent)), ["Long running", "Lock wait"]);
+  assert.deepEqual(await page.$$eval(`${row(93)} .pill`, (els) => els.map((e) => e.textContent)), ["Idle in transaction"]);
   await page.click(`${view} .table-columns-button`);
   await page.click('.popover input[data-col=db]');
   await page.keyboard.press("Escape");
@@ -121,6 +138,11 @@ try {
   await page.click('.popover .columns-reset');
   await page.keyboard.press("Escape");
   assert.ok(await page.$(`${view} th[data-col=db]`), "Reset restores every column");
+  assert.equal(await page.$(`${view} th[data-col=flags]`), null, "Reset turns Flags off again");
+  await page.click(`${view} .table-columns-button`);
+  await page.click('.popover input[data-col=flags]');
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(`${view} th[data-col=flags]`);
   assert.equal(state.seen.length, readsBeforeColumns, "column choices never read the server");
   await page.focus(row(93));
   // A lock wait says what it waits for and opens Locks.
@@ -189,6 +211,36 @@ try {
   assert.match(await text(`${view} .kill-result`), /Ended\. Ended connection 93/);
   await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
 
+  // The row menu (⋯): Show plan when the statement can be explained, and
+  // Kill, which opens the same sheet. With the keyboard: the sheet starts on
+  // Cancel, Escape sends nothing (recorded as declined) and focus returns to ⋯.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  const more = (id) => `${row(id)} button[aria-label="Actions for connection ${id}"]`;
+  const menuItems = () => page.$$eval('.popover[role=menu] [role=menuitem]', (els) => els.map((e) => e.textContent.trim()));
+  await page.click(more(100));
+  await page.waitForSelector('.popover[role=menu]');
+  assert.deepEqual(await menuItems(), ["Show plan", "Kill…"]);
+  assert.equal(await page.$(".view-inspector"), null, "the menu does not open the details");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => document.activeElement?.matches(s), {}, more(100));
+  await page.focus(more(93));
+  await page.keyboard.press("Enter");
+  await page.waitForSelector('.popover[role=menu]');
+  assert.deepEqual(await menuItems(), ["Kill…"], "an idle session has no plan");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitem");
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Kill…");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  assert.match(await text("dialog.kill-dialog"), /End connection 93\?/);
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Cancel");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
+  await page.waitForFunction((s) => document.activeElement?.matches(s), {}, more(93));
+  while (declined().length < 3) await pause(25);
+  assert.equal(declined()[2].target.connection_id, 93);
+  assert.equal(state.other.filter((o) => o.path === "/api/live/kill").length, 1, "the row menu sends nothing until the confirm button");
+
   // Show plan for a running statement opens it in Plans.
   await h.select(row(100));
   await page.click('.view-inspector [aria-label="Show plan for connection 100"]');
@@ -210,6 +262,13 @@ try {
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.deepEqual(await page.$$eval(`${row(5)} .pill`, (els) => els.map((e) => e.textContent)), ["Server thread"]);
+  // With Flags off, an OK row still names its informational flags in Status.
+  assert.equal(await page.$eval(`${row(5)} td[data-col=status] [title]`, (e) => [e.textContent, e.title].join("|")), "Server thread|Server thread");
+  await page.click(more(5));
+  await page.waitForSelector('.popover[role=menu]');
+  assert.deepEqual(await page.$eval('.popover[role=menu] .is-danger', (e) => [e.disabled, e.title]),
+    [true, "A server thread, not a client session: myflames does not end it."], "the row menu never kills a server thread");
+  await page.keyboard.press("Escape");
   await h.select(row(5));
   await inspectorHas(/Connection 5/);
   assert.equal(await page.$eval('.view-inspector [aria-label="Kill: connection 5"]', (e) => e.disabled), true);

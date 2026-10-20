@@ -2,14 +2,23 @@
 // sampling window, the database picker, and copyable SQL. Layout components
 // (tables, grouped lists, inspector) are in kit.tsx.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { api, type Connection, type SchemaCatalog } from "./api";
+import { api, formatNumber, type Connection, type SchemaCatalog } from "./api";
 import { DataTable, Popover, Select, closePopovers } from "./kit";
 import { connectionKey } from "./binding";
 import "./perf.css";
 
 /** Full-width details replace the list, so opening them never hides columns.
- * Explicit column choices remain under DataTable's existing persistence rules. */
-export function PriorityTable<T>({ detailColumns, ...props }: Parameters<typeof DataTable<T>>[0] & { detailColumns: string[] }) {
+ * Explicit column choices remain under DataTable's existing persistence rules.
+ * *defaultHidden* columns start off so a wide list fits beside the list of
+ * views at 1440 px: the Columns menu shows one (its width is then kept with
+ * the workspace) and Reset columns turns it off again. Their values stay in
+ * the inspector. */
+export function PriorityTable<T>({
+  detailColumns,
+  defaultHidden,
+  ...props
+}: Parameters<typeof DataTable<T>>[0] & { detailColumns: string[]; defaultHidden?: string[] }) {
+  if (defaultHidden?.length) return <DataTable {...props} detailColumns={defaultHidden} compact />;
   return <DataTable {...props} detailColumns={detailColumns} compact={false} />;
 }
 
@@ -41,7 +50,7 @@ export function bytes(value: number | null | undefined) {
 export function count(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   const digits = Number.isInteger(value) || Math.abs(value) >= 100 ? 0 : Math.abs(value) >= 10 ? 1 : 2;
-  return value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return formatNumber(value, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 /** Large counts, compact: "159.0B", "1.78B", "14.2M", "927.2M" (three or
@@ -67,9 +76,9 @@ export function compact(value: number | null | undefined) {
  * separators as its tooltip and accessible name. Sort on the raw number. */
 export function CompactNumber({ value }: { value: number | null | undefined }) {
   const tiny = value != null && Number.isFinite(value) && value !== 0 && Math.abs(value) < 0.01;
-  const text = tiny ? value.toLocaleString(undefined, { maximumSignificantDigits: 3 }) : compact(value);
+  const text = tiny ? formatNumber(value, { maximumSignificantDigits: 3 }) : compact(value);
   const exact = value != null && Number.isFinite(value)
-    ? value.toLocaleString(undefined, { maximumFractionDigits: 20 }) : "—";
+    ? formatNumber(value, { maximumFractionDigits: 20 }) : "—";
   if (text === exact) return <>{text}</>;
   return (
     <abbr className="compact-number" title={exact} aria-label={exact}>

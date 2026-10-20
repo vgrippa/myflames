@@ -2,7 +2,7 @@
 // Inspired by Percona Toolkit pt-kill (busy-time, idle-time, match-user,
 // ignore-user, match-host, match-db, match-command, match-info, lock-wait).
 // Excludes server/system threads and current connection for safety.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   prepareBulkKill,
   killBulkSessions,
@@ -18,7 +18,7 @@ import { connectionKey } from "./binding";
 import { useWritePolicy } from "./Connections";
 import { Icon } from "./components";
 import { CompactNumber } from "./PerfShared";
-import { ConfirmSheet, NumberField, Segmented } from "./kit";
+import { ConfirmSheet, NumberField, Segmented, useFocusScope } from "./kit";
 
 export function MassKillDialog({
   sessions,
@@ -57,10 +57,10 @@ export function MassKillDialog({
   // The reviewed KILL statements, shown in a confirmation sheet before anything is sent.
   const [pending, setPending] = useState<{ review: BulkKillReview; targets: BulkKillTarget[]; label: string } | null>(null);
 
-  useEffect(() => {
-    const d = dialog.current;
-    if (d && !d.open) d.showModal();
-  }, []);
+  useFocusScope(dialog, {
+    open: true, onClose: () => { if (!busy && !pending) onClose(); },
+    initialFocus: () => closeButton.current,
+  });
 
   // Distinct users and databases from eligible client sessions
   const clientSessions = useMemo(
@@ -303,13 +303,14 @@ export function MassKillDialog({
     <dialog
       ref={dialog}
       className="mass-kill-dialog"
+      tabIndex={-1}
       aria-labelledby="mass-kill-title"
       onCancel={(e) => {
         e.preventDefault();
-        onClose();
+        if (!busy && !pending) onClose();
       }}
       onClick={(e) => {
-        if (e.target === dialog.current) onClose();
+        if (e.target === dialog.current && !busy && !pending) onClose();
       }}
     >
       <div className="mass-kill-header">
@@ -336,6 +337,7 @@ export function MassKillDialog({
             type="button"
             className="icon-button"
             aria-label="Close dialog"
+            disabled={busy || !!pending}
             onClick={onClose}
           >
             <Icon name="close" size={14} />
@@ -348,6 +350,7 @@ export function MassKillDialog({
         <button
           type="button"
           className={`button small${activePreset === "runaway" ? " active" : " ghost"}`}
+          aria-pressed={activePreset === "runaway"}
           onClick={() => applyPreset("runaway")}
         >
           Runaway queries (&gt; 30s)
@@ -355,6 +358,7 @@ export function MassKillDialog({
         <button
           type="button"
           className={`button small${activePreset === "sleep" ? " active" : " ghost"}`}
+          aria-pressed={activePreset === "sleep"}
           onClick={() => applyPreset("sleep")}
         >
           Idle sleeping (&gt; 60s)
@@ -362,6 +366,7 @@ export function MassKillDialog({
         <button
           type="button"
           className={`button small${activePreset === "locks" ? " active" : " ghost"}`}
+          aria-pressed={activePreset === "locks"}
           onClick={() => applyPreset("locks")}
         >
           Lock waiters
@@ -369,6 +374,7 @@ export function MassKillDialog({
         <button
           type="button"
           className={`button small${activePreset === "custom" ? " active" : " ghost"}`}
+          aria-pressed={activePreset === "custom"}
           onClick={() => applyPreset("custom")}
         >
           All clients
@@ -402,6 +408,7 @@ export function MassKillDialog({
               </select>
               <div style={{ width: 100 }}>
                 <NumberField
+                  label="Minimum duration in seconds"
                   value={minSeconds}
                   min={0}
                   step={5}
@@ -570,7 +577,7 @@ export function MassKillDialog({
             <table className="mass-kill-table">
               <thead>
                 <tr>
-                  <th style={{ width: 36 }}></th>
+                  <th scope="col" style={{ width: 36 }}><span className="visually-hidden">Select</span></th>
                   <th style={{ width: 70 }}>ID</th>
                   <th style={{ width: 150 }}>User@host</th>
                   <th style={{ width: 100 }}>DB</th>

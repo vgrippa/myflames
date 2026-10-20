@@ -53,11 +53,15 @@ import { useWritePolicy, TYPE_LABEL } from "./Connections";
 import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults } from "./ResultsPane";
 import { SchemaBrowser } from "./SchemaBrowser";
-import { TableData } from "./TableData";
 import { HistoryPanel } from "./HistoryPanel";
 import { editorPrivilegeGate, isPrivilegeDenial, privilegeButtonProps, usePrivilege, usePrivileges, type EditorPrivilegePreview } from "./privileges";
-import { QueryDigestView } from "./QueryDigest";
+import { lazyComponent } from "./lazy";
 import "./editor.css";
+
+// Opened on request (Table data, the Query Digest mode): their chunks load
+// the first time they open (lazy.tsx).
+const TableData = lazyComponent(() => import("./TableData").then((m) => m.TableData));
+const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => m.QueryDigestView));
 
 const MAC =
   typeof navigator !== "undefined" &&

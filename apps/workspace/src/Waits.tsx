@@ -41,6 +41,33 @@ function linkFor(eventClass: string): { view: ServerKind; label: string } | null
   return null;
 }
 
+function maxWait<T>(rows: T[], pick: (row: T) => number | null | undefined): number {
+  let max = 0;
+  for (const row of rows) {
+    const v = pick(row);
+    if (typeof v === "number" && Number.isFinite(v) && v > max) max = v;
+  }
+  return max;
+}
+
+/** Inline decorative bar showing a row's share of the largest shown row, beside the tabular number. */
+function WaitProportionCell({ value, max }: { value: number | null | undefined; max: number }) {
+  const ratio =
+    typeof value === "number" && Number.isFinite(value) && value > 0 && max > 0
+      ? Math.min(1, value / max)
+      : 0;
+  return (
+    <span className="waits-bar-cell">
+      <span className="waits-bar" aria-hidden="true">
+        <span className="waits-bar-fill" style={{ width: `${ratio * 100}%` }} />
+      </span>
+      <span className="waits-bar-value">
+        <CompactNumber value={value} />
+      </span>
+    </span>
+  );
+}
+
 type Grouping = "events" | "classes";
 type Scope = "window" | "since";
 
@@ -105,6 +132,9 @@ export function WaitsView({
   const windowOk = !!w && w.status === "ok";
   const events: WaitEvent[] = scope === "window" ? (windowOk ? w!.events : []) : since?.events || [];
   const classes: WaitClass[] = scope === "window" ? (windowOk ? w!.classes : []) : since?.classes || [];
+  const maxEventWait = maxWait(events, (e) => e.wait_ms);
+  const maxEventRate = maxWait(events, (e) => e.wait_ms_per_s);
+  const maxClassWait = maxWait(classes, (c) => c.wait_ms);
 
   const eventColumns: Column<WaitEvent>[] = [
     {
@@ -120,7 +150,13 @@ export function WaitsView({
       ),
     },
     { key: "count", label: "Waits", num: true, sort: (e) => e.count, render: (e) => <CompactNumber value={e.count} /> },
-    { key: "wait", label: "Total wait (ms)", num: true, sort: (e) => e.wait_ms, render: (e) => <CompactNumber value={e.wait_ms} /> },
+    {
+      key: "wait",
+      label: "Total wait (ms)",
+      num: true,
+      sort: (e) => e.wait_ms,
+      render: (e) => <WaitProportionCell value={e.wait_ms} max={maxEventWait} />,
+    },
     ...(scope === "window"
       ? [
           {
@@ -129,7 +165,7 @@ export function WaitsView({
             title: "Milliseconds of waiting per second of wall time, summed across threads",
             num: true,
             sort: (e: WaitEvent) => e.wait_ms_per_s ?? null,
-            render: (e: WaitEvent) => <CompactNumber value={e.wait_ms_per_s} />,
+            render: (e: WaitEvent) => <WaitProportionCell value={e.wait_ms_per_s} max={maxEventRate} />,
           },
         ]
       : []),
@@ -152,7 +188,13 @@ export function WaitsView({
     },
     { key: "events", label: "Events", num: true, sort: (c) => c.events, render: (c) => <CompactNumber value={c.events} /> },
     { key: "count", label: "Waits", num: true, sort: (c) => c.count, render: (c) => <CompactNumber value={c.count} /> },
-    { key: "wait", label: "Total wait (ms)", num: true, sort: (c) => c.wait_ms, render: (c) => <CompactNumber value={c.wait_ms} /> },
+    {
+      key: "wait",
+      label: "Total wait (ms)",
+      num: true,
+      sort: (c) => c.wait_ms,
+      render: (c) => <WaitProportionCell value={c.wait_ms} max={maxClassWait} />,
+    },
   ];
 
   let inspector: InspectorContent | null = null;

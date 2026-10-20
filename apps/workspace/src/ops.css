@@ -50,7 +50,7 @@
 .ops-target { display: flex; flex-direction: column; gap: var(--space-1); }
 .ops-target > span { font-size: var(--text-sm); color: var(--ink-muted); }
 .ops-target > strong { font-size: var(--text-lg); overflow-wrap: anywhere; }
-.ops-warning { color: var(--danger); max-width: 70ch; }
+.ops-warning { color: var(--danger-text); max-width: 70ch; }
 /* Notes, warnings and job details read as secondary text, like the rest of a view. */
 .ops-view .ops-note,
 .ops-view .ops-warning,
@@ -117,12 +117,12 @@
 .ops-confirm .ops-warning {
   margin: 0 0 var(--space-3);
   padding: var(--space-2) var(--space-3);
-  color: var(--warn);
+  color: var(--warn-text);
   background: var(--warn-soft);
   border: 1px solid var(--warn-line);
   border-radius: var(--radius-md);
 }
-.ops-notice { color: var(--info); font-weight: 600; }
+.ops-notice { color: var(--info-text); font-weight: 600; }
 .ops-confirm .ops-plan-note { margin: 0 0 var(--space-2); }
 .ops-commands { margin-bottom: var(--space-3); }
 .ops-loop-options legend { padding: 0 var(--space-1); font-weight: 600; }
@@ -143,7 +143,7 @@
 .ops-folder-input { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .ops-folder-input input { flex: 1; min-width: 0; }
 .ops-folder-input button { flex: none; }
-.ops-tool-updates { padding: var(--space-2) var(--space-4); color: var(--warn); font-size: var(--text-sm); }
+.ops-tool-updates { padding: var(--space-2) var(--space-4); color: var(--warn-text); font-size: var(--text-sm); }
 .ops-tool-link { color: var(--accent-text); text-decoration: underline; text-underline-offset: var(--space-1); }
 .ops-dump-options[open] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
 .ops-dump-options > summary { grid-column: 1 / -1; }

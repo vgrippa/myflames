@@ -217,7 +217,12 @@ try {
     els.find((e) => e.textContent.includes("Table scan [categories]")).click(),
   );
   await page.waitForSelector(".operator-detail");
+  // Notes are edited in the Save investigation sheet; Close keeps them unsaved.
+  await page.locator('.topbar [aria-label="Save investigation"]').click();
+  await page.waitForSelector("dialog.notebook-sheet[open]");
   await page.locator(".investigation-notes textarea").fill("Draft notes, not saved as an investigation.");
+  await page.locator("dialog.notebook-sheet .sheet-actions button ::-p-text(Close)").click();
+  await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
 
   // An unsaved connection, set up on Home and put in use with its password.
   await place(page, "Home");
@@ -252,7 +257,7 @@ try {
   await page.$eval(".execution-options input[type=checkbox]", (e) => e.click());
   await page.keyboard.press("Escape");
   await place(page, "Workload");
-  await page.click("#server-nav-sessions");
+  await page.locator("#server-nav-sessions").click();
   await place(page, "Plans");
   await chart(page);
   const before = await until(
@@ -288,10 +293,14 @@ try {
     );
     assert.equal(await p.$eval('[aria-label="Operator metric"]', (e) => e.value), "rows");
     assert.match(await p.$eval(".operator-detail h3", (e) => e.textContent), /categories/);
+    await p.locator('.topbar [aria-label="Save investigation"]').click();
+    await p.waitForSelector("dialog.notebook-sheet[open]");
     assert.equal(
       await p.$eval(".investigation-notes textarea", (e) => e.value),
       "Draft notes, not saved as an investigation.",
     );
+    await p.keyboard.press("Escape");
+    await p.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
     await place(p, "Query editor");
     await p.waitForSelector(".query-lab");
     assert.deepEqual(

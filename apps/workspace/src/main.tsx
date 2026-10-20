@@ -1,5 +1,7 @@
+// First: the stylesheets, in cascade order (styles.ts).
+import "./styles";
 import { PrivilegesProvider } from "./privileges";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   api,
@@ -21,11 +23,10 @@ import {
 import { Icon, ImportDialog } from "./components";
 import { CommandPalette, type WorkspaceCommand } from "./CommandPalette";
 import { Teach } from "./Teach";
-import { QueryLab, type EditorState, type QueryLabHandle } from "./QueryLab";
-import { Library } from "./Library";
+import type { EditorState, QueryLabHandle } from "./QueryLab";
 import { Home } from "./Home";
-import { Server, SERVER_VIEWS, WORKLOAD_VIEWS, SERVER_GROUPS, WORKLOAD_GROUPS, WORKLOAD_KINDS } from "./Server";
-import { ReplicationPlace } from "./ReplicationPlace";
+import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS } from "./serverViews";
+import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import type { ReplicationReport, SkipLoop } from "./opsApi";
 import { WindowStatusBar, WindowStatusProvider } from "./kit";
@@ -43,11 +44,8 @@ import {
   recordConnectionUse,
   type ActiveConnection,
 } from "./Connections";
-import { AuditLog } from "./Audit";
 import type { DigestAction } from "./SlowQueries";
-import { ContextPanel, ExecutionContext } from "./ContextPanel";
-import { closePopovers, Disclosure, NotesButton, Popover, Segmented, Select } from "./kit";
-import { PlanChart } from "./PlanChart";
+import { closePopovers, Disclosure, NotesButton, Popover, Segmented, Select, useFocusScope } from "./kit";
 import {
   defaultLab,
   hasContent,
@@ -68,8 +66,22 @@ import {
   type SlowState,
 } from "./session";
 import example from "./example.json";
-import logo from "../../../docs/brand/myflames-icon-v2.png";
-import "./style.css";
+import logo from "../../../docs/brand/myflames-icon-v3-128.png";
+// Places and views that are not on the first screen load their chunk when
+// they first mount (lazy.tsx); Home, the sidebar and the shell stay here.
+// The Query editor mounts at startup, hidden; its chunk loads beside the
+// first render instead of delaying it.
+const QueryLab = lazyComponent(() => import("./QueryLab").then((m) => m.QueryLab));
+// Start loading it now, alongside sign-in and the session read, so it is
+// usually ready when the first screen renders.
+void QueryLab.preload().catch(() => {});
+const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
+const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
+const Library = lazyComponent(() => import("./Library").then((m) => m.Library));
+const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
+const PlanChart = lazyComponent(() => import("./PlanChart").then((m) => m.PlanChart));
+const ContextPanel = lazyComponent(() => import("./ContextPanel").then((m) => m.ContextPanel));
+const ExecutionContext = lazyComponent(() => import("./ContextPanel").then((m) => m.ExecutionContext));
 const views: [View, string][] = [
   ["workbench", "Visual Explain"],
   ["flamegraph", "Flame graph"],
@@ -189,10 +201,13 @@ function App() {
   const active = plans.find((p) => p.id === activeId);
   const activeSource = digestSource(active?.capture);
   const [mode, setMode] = useState<Mode>("home");
+  /** The investigation notebook sheet, opened by Save investigation. */
+  const [notebookOpen, setNotebookOpen] = useState(false);
   // Plans remembers whether it was exploring or comparing.
   const [plansView, setPlansView] = useState<"inspect" | "compare">("inspect");
   useEffect(() => {
     if (mode === "inspect" || mode === "compare") setPlansView(mode);
+    else setNotebookOpen(false);
   }, [mode]);
   const [view, setView] = useState<View>("workbench");
   const [metric, setMetric] = useState("self_time");
@@ -311,7 +326,18 @@ function App() {
   const [connectRevision, setConnectRevision] = useState(0);
   const [labBusy, setLabBusy] = useState(false);
   const [batchRunning, setBatchRunning] = useState(false);
-  const labRef = useRef<QueryLabHandle>(null);
+  const labRef = useRef<QueryLabHandle | null>(null);
+  // Calls to the Query editor made before its chunk has loaded (lazy.tsx)
+  // wait for it instead of being dropped.
+  const labWaiting = useRef<((lab: QueryLabHandle) => void)[]>([]);
+  const withLab = useCallback((call: (lab: QueryLabHandle) => void) => {
+    if (labRef.current) call(labRef.current);
+    else labWaiting.current.push(call);
+  }, []);
+  const setLab = useCallback((lab: QueryLabHandle | null) => {
+    labRef.current = lab;
+    if (lab) for (const call of labWaiting.current.splice(0)) call(lab);
+  }, []);
   const labStateRef = useRef(labState);
   labStateRef.current = labState;
   const refreshProfiles = useCallback(async () => {
@@ -1078,7 +1104,7 @@ function App() {
       setError(message(e));
     }
   }
-  async function save() {
+  async function save(): Promise<boolean> {
     setBusy(true);
     setError("");
     try {
@@ -1089,8 +1115,10 @@ function App() {
       setSavedId(r.id);
       setDirty(false);
       setNotice("Investigation saved on this computer.");
+      return true;
     } catch (e) {
       setError(message(e));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1154,7 +1182,40 @@ function App() {
     active?.analysis.primary_action?.ref.match(/\[(\d+)\]/)?.[1] ?? -1,
   );
   const primary = active?.analysis.suggestions[primaryIndex];
-  /** The one line under the plan title: the first thing to investigate, or
+  // The header's Plan summary and SQL panels close like popovers: a click
+  // elsewhere, the other panel, or Escape (focus returns to its summary).
+  const planHeaderTools = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const openPanels = () => Array.from(planHeaderTools.current?.querySelectorAll<HTMLDetailsElement>("details[open]") || []);
+    const down = (e: MouseEvent) => {
+      for (const d of openPanels()) if (!d.contains(e.target as Node)) d.open = false;
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const open = openPanels();
+      if (!open.length || document.querySelector("dialog[open]")) return;
+      const focused = open.find((d) => d.contains(document.activeElement));
+      for (const d of open) d.open = false;
+      focused?.querySelector("summary")?.focus();
+    };
+    document.addEventListener("mousedown", down);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("mousedown", down);
+      document.removeEventListener("keydown", key);
+    };
+  }, []);
+  /** One header panel at a time, however it is opened: a summary's click
+   * (Enter and Space on a summary click it too) closes the other panels
+   * before its own opens. The toggle event comes later, out of order. */
+  const exclusivePanel = (e: SyntheticEvent<HTMLElement>) => {
+    const opening = e.currentTarget.parentElement;
+    if (!(opening instanceof HTMLDetailsElement) || opening.open) return;
+    planHeaderTools.current?.querySelectorAll<HTMLDetailsElement>("details[open]").forEach((d) => {
+      if (d !== opening) d.open = false;
+    });
+  };
+  /** The Plan summary line in the plan header: the first thing to investigate, or
    * what the plan does. */
   const planSummaryText = primary
     ? primary.action
@@ -1252,6 +1313,12 @@ function App() {
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
+  // Once the first screen is up, load the code of the places opened most
+  // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
+  // so their first visit does not wait. Nothing mounts or reads a server.
+  useEffect(() => {
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, PlanChart, ContextPanel]);
+  }, [ready]);
   // Replication's "How to turn it on" opens Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
   const openInstrumentsRow = useCallback((row: string) => {
@@ -1315,7 +1382,7 @@ function App() {
   }, []);
   const openDigest = useCallback(
     (row: TopStatement, rank: number, action: DigestAction, expect?: string) => {
-      labRef.current?.openDigest(row, rank, action, expect);
+      withLab((lab) => lab.openDigest(row, rank, action, expect));
       setMode("query");
       setError("");
       setNotice("");
@@ -1352,13 +1419,25 @@ function App() {
   // the shell reserves exactly that space in the shared toolbar, including
   // the progress menu. This adapter leaves Server's operation lifecycle intact.
   useLayoutEffect(() => {
-    const actions = chrome.current?.querySelector<HTMLElement>(".server-place > .place-toolbar");
-    if (!actions || (mode !== "server" && mode !== "workload")) { setPlaceActionsWidth(0); return; }
-    const measure = () => setPlaceActionsWidth(actions.getBoundingClientRect().width);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(actions);
-    return () => observer.disconnect();
+    const root = chrome.current;
+    if (!root || (mode !== "server" && mode !== "workload")) { setPlaceActionsWidth(0); return; }
+    let observer: ResizeObserver | null = null;
+    const attach = () => {
+      const actions = root.querySelector<HTMLElement>(".server-place > .place-toolbar");
+      if (!actions) return false;
+      const measure = () => setPlaceActionsWidth(actions.getBoundingClientRect().width);
+      measure();
+      observer = new ResizeObserver(measure);
+      observer.observe(actions);
+      return true;
+    };
+    if (attach()) return () => observer?.disconnect();
+    setPlaceActionsWidth(0);
+    // On its first visit the Server place mounts once its chunk has loaded
+    // (lazy.tsx): measure the strip when it appears.
+    const appear = new MutationObserver(() => { if (attach()) appear.disconnect(); });
+    appear.observe(root, { childList: true, subtree: true });
+    return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
     : (mode === "server" || mode === "workload" || mode === "replication" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
@@ -1382,9 +1461,6 @@ function App() {
       return next;
     });
   }, []);
-  const isWorkload = mode === "workload";
-  const activeViewList = isWorkload ? WORKLOAD_VIEWS : SERVER_VIEWS;
-  const currentView = activeViewList.find((v) => v.id === labState.slow.kind) || activeViewList[0];
   function chooseServerView(viewId: ServerKind) {
     if (WORKLOAD_KINDS.includes(viewId)) {
       if (mode !== "workload") go("workload");
@@ -1466,161 +1542,37 @@ function App() {
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
           <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebarOpen((open) => !open)}><Icon name="browser" /></button>
           <div className="topbar-title">
-            {mode === "server" || mode === "workload" ? (
-              <div className="topbar-breadcrumb">
-                <Popover
-                  label="Switch place"
-                  buttonClassName="topbar-crumb-btn is-place"
-                  trigger={
-                    <>
-                      <strong>{placeLabel}</strong>
-                      <Icon name="chevron-down" size={10} />
-                    </>
-                  }
-                >
-                  <div className="topbar-menu-dropdown">
-                    <div className="topbar-menu-section-title">Places</div>
-                    <button
-                      type="button"
-                      className={`topbar-menu-item${mode === "server" ? " is-active" : ""}`}
-                      onClick={() => {
-                        closePopovers();
-                        go("server");
-                      }}
-                    >
-                      <Icon name="server" size={14} />
-                      <span>Server</span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`topbar-menu-item${mode === "workload" ? " is-active" : ""}`}
-                      onClick={() => {
-                        closePopovers();
-                        go("workload");
-                      }}
-                    >
-                      <Icon name="statements" size={14} />
-                      <span>Workload</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="topbar-menu-item"
-                      onClick={() => {
-                        closePopovers();
-                        go("query");
-                      }}
-                    >
-                      <Icon name="query" size={14} />
-                      <span>Query editor</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="topbar-menu-item"
-                      onClick={() => {
-                        closePopovers();
-                        go("replication");
-                      }}
-                    >
-                      <Icon name="replication" size={14} />
-                      <span>Replication</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="topbar-menu-item"
-                      onClick={() => {
-                        closePopovers();
-                        go("tuning");
-                      }}
-                    >
-                      <Icon name="tuning" size={14} />
-                      <span>Tuning</span>
-                    </button>
-                  </div>
-                </Popover>
-
-                <span className="topbar-crumb-separator" aria-hidden="true">
-                  <Icon name="chevron" size={12} />
-                </span>
-
-                <Popover
-                  label={`Select ${placeLabel} view`}
-                  buttonClassName="topbar-crumb-btn is-view"
-                  trigger={
-                    <>
-                      <span>{currentView.label}</span>
-                      <Icon name="chevron-down" size={10} />
-                    </>
-                  }
-                >
-                  <div className="topbar-menu-dropdown views-dropdown">
-                    {(isWorkload ? WORKLOAD_GROUPS : SERVER_GROUPS).map((group) => {
-                      const groupViews = activeViewList.filter((v) => v.group === group);
-                      if (!groupViews.length) return null;
-                      return (
-                        <div key={group} className="topbar-menu-group">
-                          <div className="topbar-menu-section-title">{group}</div>
-                          {groupViews.map((v) => (
-                            <button
-                              key={v.id}
-                              type="button"
-                              className={`topbar-menu-item${currentView.id === v.id ? " is-active" : ""}`}
-                              onClick={() => {
-                                closePopovers();
-                                chooseServerView(v.id);
-                              }}
-                            >
-                              <Icon name={v.icon} size={14} />
-                              <span>{v.label}</span>
-                            </button>
-                          ))}
-                        </div>
-                      );
-                    })}
-                    <div className="topbar-menu-divider" />
-                    <div className="topbar-menu-footer">
-                      <button
-                        type="button"
-                        className="topbar-menu-switch-place"
-                        onClick={() => {
-                          closePopovers();
-                          go(isWorkload ? "server" : "workload");
-                        }}
-                      >
-                        <span>Switch to {isWorkload ? "Server" : "Workload"} views</span>
-                        <Icon name="chevron" size={12} />
-                      </button>
-                    </div>
-                  </div>
-                </Popover>
-
+            {/* The place is named once. Server and Workload name the place
+                here and the view in its header (switch views from their own
+                list, or the Views menu in a narrow window); Plans names its
+                document in the plan header. Replication and Tuning are one
+                view whose header already says the place name, so it stays
+                here for assistive technology only. */}
+            <strong className={mode === "replication" || mode === "tuning" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+          </div>
+          {ready && (mode === "inspect" || mode === "compare") && (
+            <div className={`plans-bar${mode === "inspect" && active ? " has-active-plan" : ""}`}>
+              <div className="segmented" role="group" aria-label="Plans view">
                 <button
-                  type="button"
-                  className={`icon-button topbar-secondary-toggle${serverNavCollapsed ? " is-collapsed" : ""}`}
-                  aria-label={serverNavCollapsed ? "Expand views sidebar (dock menu)" : "Collapse views sidebar (float menu)"}
-                  title={serverNavCollapsed ? "Expand views sidebar (dock menu)" : "Collapse views sidebar (float menu)"}
-                  onClick={toggleServerNavCollapsed}
+                  aria-pressed={mode === "inspect"}
+                  onClick={() => setMode("inspect")}
                 >
-                  <Icon name={serverNavCollapsed ? "browser" : "split-pane"} size={14} />
+                  Explore
+                </button>
+                <button
+                  aria-pressed={mode === "compare"}
+                  title="Compare two open plans side by side"
+                  onClick={() => setMode("compare")}
+                >
+                  Compare
                 </button>
               </div>
-            ) : (
-              <>
-                <strong>{placeLabel}</strong>
-                {mode === "inspect" && active && (
-                  <>
-                    <Icon name="chevron" size={12} />
-                    <span>{active.name}</span>
-                  </>
-                )}
-                {mode === "compare" && (
-                  <>
-                    <Icon name="chevron" size={12} />
-                    <span>Compare</span>
-                  </>
-                )}
-              </>
-            )}
-          </div>
+              <button className={`button small plans-import${plans.length ? "" : " primary"}`} onClick={openImport} title="Import plan">
+                <Icon name="import" size={14} />
+                <span className="topbar-label">Import plan</span>
+              </button>
+            </div>
+          )}
           {ready && connectionPlace && picker}
           <div className="topbar-actions">
             {/* ui-architecture: actions stay with the object they act on;
@@ -1630,7 +1582,7 @@ function App() {
                 {(dirty || savedId) && <span className={`save-state${dirty ? " unsaved" : ""}`}>
                   {dirty ? "Unsaved changes" : "Investigation saved"}
                 </span>}
-                <button className="button small window-save" disabled={busy} onClick={save} aria-label="Save investigation" title="Save investigation">
+                <button className="button small window-save" disabled={busy} onClick={() => { setError(""); setNotebookOpen(true); }} aria-label="Save investigation" title="Save investigation: name, notes and tags" aria-haspopup="dialog" aria-expanded={notebookOpen}>
                   <Icon name="investigation" /><span>Save investigation</span>
                 </button>
               </>
@@ -1832,7 +1784,7 @@ function App() {
               onDiagram={() => chooseServerView("diagram")}
               queryTabs={labState.tabs}
               onOpenQuery={(id) => {
-                labRef.current?.openTab(id);
+                withLab((lab) => lab.openTab(id));
                 go("query");
               }}
             />
@@ -1843,7 +1795,7 @@ function App() {
             <div hidden={mode !== "query"}>
               <WritePolicyContext.Provider value={writePolicy}>
               <QueryLab
-                ref={labRef}
+                ref={setLab}
                 key={resetKey}
                 initial={labInitial}
                 connection={request}
@@ -1869,8 +1821,8 @@ function App() {
                 onScreen={serverOnScreen}
                 onNavigatePlace={(targetPlace, targetView) => {
                   go(targetPlace);
-                  // Tuning shows its one view; Server and Workload choose theirs.
-                  if (targetPlace !== "tuning") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
+                  // Tuning and Replication show their one view; Server and Workload choose theirs.
+                  if (targetPlace !== "tuning" && targetPlace !== "replication") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
                 }}
                 navCollapsed={serverNavCollapsed}
                 onToggleNavCollapsed={toggleServerNavCollapsed}
@@ -1903,7 +1855,7 @@ function App() {
                 onOpenSql={(sql) => {
                   go("query");
                   // After the editor is on screen, so it can take focus and the selection.
-                  window.setTimeout(() => labRef.current?.openSql(sql));
+                  window.setTimeout(() => withLab((lab) => lab.openSql(sql)));
                 }}
               />
               </ViewOnScreenContext.Provider>
@@ -1916,6 +1868,7 @@ function App() {
               <ViewOnScreenContext.Provider value={mode === "replication"}>
                 <ReplicationPlace
                   connection={request}
+                  restoredLoop={restoredLoop}
                   disabled={labBusy}
                   onBadgeChange={setReplicationBadge}
                   onOpenInstruments={openInstrumentsRow}
@@ -1952,28 +1905,11 @@ function App() {
                 : undefined
             }
           />
-          {ready && (mode === "inspect" || mode === "compare") && (
-            <div className={`plans-bar${mode === "inspect" && active ? " has-active-plan" : ""}`}>
-              <div className="segmented" role="group" aria-label="Plans view">
-                <button
-                  aria-pressed={mode === "inspect"}
-                  onClick={() => setMode("inspect")}
-                >
-                  Explore
-                </button>
-                <button
-                  aria-pressed={mode === "compare"}
-                  title="Compare two open plans side by side"
-                  onClick={() => setMode("compare")}
-                >
-                  Compare
-                </button>
-              </div>
-              <button className="button primary plans-import" onClick={openImport}>
-                <Icon name="plus" />
-                Import plan
-              </button>
-              {mode === "inspect" && active && <div className="plans-phone-toolbar">
+          {/* Phones only: the open plan and its actions in one row (the
+              Explore | Compare switch and Import plan live in the top bar). */}
+          {ready && mode === "inspect" && active && (
+            <div className="plans-phone-bar">
+              <div className="plans-phone-toolbar">
                 <Select label="Open plan" value={active.id} onChange={openPlan}
                   options={plans.map((plan): [string, string] => [plan.id, plan.name])} />
                 <Popover label="Plan actions" trigger="More" buttonClassName="button">
@@ -1991,7 +1927,7 @@ function App() {
                     </dl>
                   </div>
                 </Popover>
-              </div>}
+              </div>
             </div>
           )}
           {ready && mode === "inspect" && !active && (
@@ -2051,61 +1987,60 @@ function App() {
                     hint={`${active.analysis.suggestions.length} suggestions to review`}
                   />
                 </dl>
-                <PlanExports onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
-              </header>
-              <details
-                className={`plan-strip primary-finding${primary ? " attention" : ""}`}
-              >
-                <summary>
-                  <Icon name={primary ? "search" : "check"} size={14} />
-                  <strong>
-                    {primary ? "Investigate first" : "Plan summary"}
-                  </strong>
-                  <span className="strip-text">{planSummaryText}</span>
-                </summary>
-                <div className="strip-body">
-                  <p>{planSummaryText}</p>
-                  {activeSource && <p>From Top statements: <code>{activeSource.digest}</code>{activeSource.schema ? ` in schema ${activeSource.schema}` : ""}</p>}
-                  {primary?.why && (
-                    <p>
-                      <strong>Why this matters: </strong>
-                      {primary.why}
-                    </p>
+                {/* The plan summary and its SQL open in place from the
+                    header: one click each, no band of their own. */}
+                <div className="plan-header-tools" ref={planHeaderTools}>
+                  <details
+                    className={`plan-strip primary-finding${primary ? " attention" : ""}`}
+                  >
+                    <summary title={planSummaryText} onClick={exclusivePanel}>
+                      <Icon name={primary ? "search" : "check"} size={14} />
+                      <strong>
+                        {primary ? "Investigate first" : "Plan summary"}
+                      </strong>
+                    </summary>
+                    <div className="strip-body plan-header-panel">
+                      <p className="plan-header-meta">{engineName(active.analysis.source.engine)} · {active.operators.length} operators{active.capture?.captured_at ? ` · captured ${new Date(active.capture.captured_at).toLocaleString()}` : ""}</p>
+                      <p>{planSummaryText}</p>
+                      {activeSource && <p>From Top statements: <code>{activeSource.digest}</code>{activeSource.schema ? ` in schema ${activeSource.schema}` : ""}</p>}
+                      {primary?.why && (
+                        <p>
+                          <strong>Why this matters: </strong>
+                          {primary.why}
+                        </p>
+                      )}
+                    </div>
+                  </details>
+                  {active.query && (
+                    <div className="plan-strip sql-row">
+                      <details className="sql-card">
+                        <summary title={active.capture?.mode === "explain" ? "SQL of this estimated plan" : "Captured statement"} aria-label={`SQL, ${active.capture?.mode === "explain" ? "estimated plan" : "captured statement"}`} onClick={exclusivePanel}>
+                          <Icon name="disclosure" size={14} />
+                          <strong>SQL</strong>
+                        </summary>
+                        <pre className="plan-header-panel" tabIndex={0} aria-label="SQL text">{active.query}</pre>
+                      </details>
+                      <button
+                        className="text-button sql-copy"
+                        aria-label="Copy SQL"
+                        title="Copy SQL"
+                        onClick={() => {
+                          navigator.clipboard
+                            .writeText(active.query)
+                            .then(() => setNotice("Query copied."))
+                            .catch(() =>
+                              setError("Select the query text to copy it."),
+                            );
+                        }}
+                      >
+                        <Icon name="copy" size={13} />
+                        <span className="sql-copy-label">Copy SQL</span>
+                      </button>
+                    </div>
                   )}
                 </div>
-              </details>
-              {active.query && (
-                <div className="plan-strip sql-row">
-                  <details className="sql-card">
-                    <summary>
-                      <Icon name="disclosure" size={14} />
-                      <strong>SQL</strong>
-                      <span className="strip-meta">
-                        {active.capture?.mode === "explain"
-                          ? "Estimated plan"
-                          : "Captured statement"}
-                      </span>
-                      <code className="strip-text" aria-hidden="true">
-                        {active.query}
-                      </code>
-                    </summary>
-                    <pre>{active.query}</pre>
-                  </details>
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      navigator.clipboard
-                        .writeText(active.query)
-                        .then(() => setNotice("Query copied."))
-                        .catch(() =>
-                          setError("Select the query text to copy it."),
-                        );
-                    }}
-                  >
-                    Copy SQL
-                  </button>
-                </div>
-              )}
+                <PlanExports onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
+              </header>
               <div className="exploration-layout plan-fold">
                 <section className="plan-canvas" aria-label="Execution plan">
                   <PlanChart
@@ -2190,96 +2125,101 @@ function App() {
                 </Disclosure>
               )}
               <Disclosure title="Execution context"><ExecutionContext key={active.id} plan={active} /></Disclosure>
-              <section className="card investigation-notes">
-                <div className="card-heading">
-                  <h2>Investigation notebook</h2>
-                  <button
-                    className="text-button"
-                    onClick={() =>
-                      download(
-                        JSON.stringify(makeBundle(), null, 2),
-                        `${name.replace(/[^a-z0-9_-]/gi, "-") || "investigation"}.json`,
-                        "application/json",
-                      )
-                    }
-                  >
-                    Export investigation bundle
-                  </button>
-                </div>
-                <div className="notebook-grid">
-                  <label className="field">
-                    Investigation name
-                    <input
-                      value={name}
-                      onChange={(e) => {
-                        setName(e.target.value);
-                        setDirty(true);
-                      }}
-                    />
-                  </label>
-                  <label className="field">
-                    Plan name
-                    <input
-                      value={active.name}
-                      onChange={(e) => {
-                        setPlans((ps) =>
-                          ps.map((p) =>
-                            p.id === activeId
-                              ? { ...p, name: e.target.value }
-                              : p,
-                          ),
-                        );
-                        setDirty(true);
-                      }}
-                    />
-                  </label>
-                  <label className="field">
-                    Baseline
-                    <select
-                      value={baseline}
-                      onChange={(e) => {
-                        setBaseline(e.target.value);
-                        setBeforeId(e.target.value);
-                        setDirty(true);
-                      }}
-                    >
-                      {plans.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field">
-                    Tags
-                    <input
-                      placeholder="payments, index-review"
-                      value={tags}
-                      onChange={(e) => {
-                        setTags(e.target.value);
-                        setDirty(true);
-                      }}
-                    />
-                  </label>
-                </div>
-                <label className="field">
-                  Notes and conclusions
-                  <textarea
-                    placeholder="What changed? What did the evidence show?"
-                    value={notes}
-                    onChange={(e) => {
-                      setNotes(e.target.value);
-                      setDirty(true);
-                    }}
-                  />
-                </label>
-                <p className="hint">
-                  Save investigation, in the top bar, keeps these plans, notes,
-                  and tags on this computer. Credentials are excluded.
-                </p>
-              </section>
               </div>
             </>
+          )}
+          {ready && notebookOpen && plans.length > 0 && (mode === "inspect" || mode === "compare") && (
+            <NotebookSheet
+              open={notebookOpen}
+              busy={busy}
+              error={notebookOpen ? error : ""}
+              onClose={() => setNotebookOpen(false)}
+              onSave={async () => { if (await save()) setNotebookOpen(false); }}
+              onExport={() =>
+                download(
+                  JSON.stringify(makeBundle(), null, 2),
+                  `${name.replace(/[^a-z0-9_-]/gi, "-") || "investigation"}.json`,
+                  "application/json",
+                )
+              }
+            >
+                <section className="investigation-notes" aria-label="Investigation notebook">
+                  <div className="notebook-grid">
+                    <label className="field">
+                      Investigation name
+                      <input
+                        value={name}
+                        onChange={(e) => {
+                          setName(e.target.value);
+                          setDirty(true);
+                        }}
+                      />
+                    </label>
+                    {active && (
+                      <label className="field">
+                        Plan name
+                        <input
+                          value={active.name}
+                          onChange={(e) => {
+                            setPlans((ps) =>
+                              ps.map((p) =>
+                                p.id === activeId
+                                  ? { ...p, name: e.target.value }
+                                  : p,
+                              ),
+                            );
+                            setDirty(true);
+                          }}
+                        />
+                      </label>
+                    )}
+                    <label className="field">
+                      Baseline
+                      <select
+                        value={baseline}
+                        onChange={(e) => {
+                          setBaseline(e.target.value);
+                          setBeforeId(e.target.value);
+                          setDirty(true);
+                        }}
+                      >
+                        {plans.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Tags
+                      <input
+                        placeholder="payments, index-review"
+                        value={tags}
+                        onChange={(e) => {
+                          setTags(e.target.value);
+                          setDirty(true);
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <label className="field">
+                    Notes and conclusions
+                    <textarea
+                      placeholder="What changed? What did the evidence show?"
+                      value={notes}
+                      onChange={(e) => {
+                        setNotes(e.target.value);
+                        setDirty(true);
+                      }}
+                    />
+                  </label>
+                  <p className="hint">
+                    Save keeps the open plans, these notes and tags on this
+                    computer. Credentials are excluded. Edits here are kept in the
+                    workspace even if you close this sheet without saving.
+                  </p>
+                </section>
+            </NotebookSheet>
           )}
           {mode === "compare" && (
             <section className="compare-screen">
@@ -2476,6 +2416,38 @@ function App() {
       )}
     </div>
     </PrivilegesProvider>
+  );
+}
+/** Save investigation: the notebook (name, plan name, baseline, tags and
+ * notes) in a sheet over the plan, saved with Save. Its fields edit the
+ * workspace directly, so Close keeps them as unsaved changes. */
+function NotebookSheet({ open, busy, error, onClose, onSave, onExport, children }: {
+  open: boolean; busy: boolean; error: string; onClose: () => void; onSave: () => void; onExport: () => void; children: ReactNode;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useFocusScope(dialog, { open, onClose: () => { if (!busy) onClose(); } });
+  return (
+    <dialog
+      ref={dialog}
+      className="notebook-sheet"
+      tabIndex={-1}
+      aria-labelledby="notebook-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        if (!busy) onClose();
+      }}
+    >
+      <div className="dialog-heading">
+        <h2 id="notebook-title">Save investigation</h2>
+      </div>
+      {error && <div className="error" role="alert">{error}</div>}
+      {children}
+      <div className="dialog-actions sheet-actions">
+        <button type="button" className="text-button notebook-export" onClick={onExport}>Export investigation bundle</button>
+        <button type="button" className="button" disabled={busy} onClick={onClose}>Close</button>
+        <button type="button" className="button primary" disabled={busy} onClick={onSave}>Save</button>
+      </div>
+    </dialog>
   );
 }
 /** A single export home for both Plans modes. */

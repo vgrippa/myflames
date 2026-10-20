@@ -56,7 +56,7 @@ The sidebar separates where you go from what you have open:
 | Place | What it holds |
 | --- | --- |
 | **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** stays in the top bar and is primary when no plan is open; the empty Recent work list also offers import and the sample. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
-| **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare** switch between one plan and two plans side by side. **Import plan** is in this screen's bar. The plan's name and a stats strip (time, rows examined, rows returned, findings) sit on one line, the summary and the SQL are one-line strips that expand (SQL with **Copy SQL**), and the chart with the inspector fills the rest of the window; operators, findings, context, and notes follow below |
+| **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes |
 | **Query editor** | SQL tabs that run any SQL in a session of their own (Run, Run all, Stop, results per result set, Messages, export, transactions), Explain and Run analysis, the schema browser, the run history, and the connection in use |
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
 | **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O) |
@@ -88,8 +88,10 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   never reads on its own). The arrow keys move between items.
 - **Toolbar.** The view's title with an ⓘ that explains it, its controls (a
   sampling window, auto-refresh, a database picker, a filter) and **Refresh**.
-  List controls wait on the list while details are open. The place's own toolbar holds the
-  connection picker, **Refresh all**, and an ⓘ with what Server does.
+  List controls wait on the list while details are open. The place's own controls, at the
+  end of the top bar beside the connection picker, are an ⓘ with what Server does, one
+  control for the list of views (dock or float it; in a narrow window a **Views** menu
+  instead), and **Refresh all**.
 - **One summary line**, with the status and a **N notes** button for engine
   differences, privileges, and caveats.
 - **A table or one-line rows.** Tables sort by any column, keep the header in
@@ -113,6 +115,14 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   **Columns** button at the right end of the header lists every column with a
   checkbox to hide or show it (the last visible one stays) and **Reset
   columns**. Widths and hidden columns are kept per table with the workspace.
+  So that the widest lists fit beside the list of views, a few columns start
+  off and stay in the Columns menu, with their values in the details: Flags in
+  Processlist (the Status cell names them on hover), Rows sent and Schema in
+  Top statements, and Lock structs and Isolation in Locks transactions.
+  Processlist rows have no buttons: each row's ⋯ menu holds **Show plan** and
+  **Kill…**, which opens the same confirmation sheet as Kill in the details.
+  Short numeric headers (Time, Avg (ms)) give the full name on hover and in
+  the Columns menu.
   Modes of one view are a segmented control (Active / All, Unused / Redundant,
   Events / Classes); rarely used detail waits behind a disclosure (Advanced,
   Breakdown, Not instrumented).
@@ -131,8 +141,9 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   reflect effective database privileges. Definitive denials disable the button
   with `aria-disabled="true"`, keeping it keyboard focusable while blocking click
   and keyboard triggers, with the required privilege stated in its tooltip and
-  accessible description. Unknown or unverified privileges remain enabled with an
-  "Unverified" indicator so incomplete catalog visibility does not block valid
+  accessible description. The description is also visible beside the action or
+  on keyboard focus, including connection-policy restrictions. Unknown privileges
+  remain enabled with a separate explanation so incomplete catalog visibility does not block valid
   actions. Connection write policies remain authoritative: read-only connections
   refuse writes, and Production connections ask for explicit confirmation.
 
@@ -361,9 +372,11 @@ or a click outside closes it) with the appearance (System, Light, Dark),
 **Restore workspace on startup**, the **Audit log** (see [Audit log](#audit-log)), and **About
 myflames**, a window with the version, the license, and the
 credits (Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs). The
-top bar shows where you are, **Save investigation** with
-**Unsaved changes** or **Investigation saved** when plans are open, and one
-**Local** badge.
+top bar names the place once (Server and Workload name the view in the view
+header, Plans names the plan in the plan header, and Replication and Tuning,
+one view each, name the place in their view header only) and has one sidebar
+toggle. With plans open it also shows **Save investigation** with **Unsaved
+changes** or **Investigation saved**, and one **Local** badge.
 
 Use the Up and Down arrow keys to move between places, and Home or End to jump
 to the first or last. Below 650 pixels the sidebar becomes a compact bar with
@@ -392,13 +405,26 @@ Dialogs, confirmation sheets, popovers, and drawers use scoped focus trapping:
   element or designated control.
 - Keyboard navigation (Tab and Shift+Tab) cycles strictly within the active
   surface, preventing focus from escaping to background elements.
-- Within menu structures and grouped rows, arrow keys move focus between items.
+- Menus focus their first item; ArrowUp/ArrowDown and Home/End move between
+  items. Tuning and result tabs use ArrowLeft/ArrowRight and Home/End, with only
+  the selected tab in the Tab order.
 - Pressing Escape dismisses the active surface and restores focus to the control
   that opened it.
 - Context menus on table rows (in Query editor results grids and schema trees) can
   be opened by right-clicking, by clicking the dedicated "More actions" button on
   the row (`aria-haspopup="menu"`), or by pressing Shift+F10 (or the ContextMenu
   key) on the selected row.
+- In table data, Tab reaches cells and their native editors. Enter or F2 on a
+  cell focuses its value editor (the type selector for NULL or Default).
+  Shift+F10 or the ContextMenu key opens Cell actions from a cell or its editor;
+  Revert change and Set to Default use the same menu keyboard controls.
+- Activate the floating Server or Workload views button to enter its drawer.
+  Arrow keys move between views; Enter opens one. Escape returns to the button.
+- Escape in a nested confirmation, including Mass Kill's review, dismisses that
+  confirmation without closing its parent dialog.
+- Replication connector details appear on hover or focus. The pointer can move
+  onto the details, and Escape dismisses them. Their accessible descriptions
+  remain available at narrow widths too.
 
 ### Responsive and phone layout
 
@@ -414,7 +440,14 @@ On phone and narrow screens (below 720 px):
   tooltip, so the two never overlap.
 - The Server place presents the view list as a separate screen, pushing selected
   views into view with a **Server** button to return. The top bar names the place
-  only (the view header names the view).
+  only (the view header names the view). In a narrow window (the 720 px minimum
+  with the sidebar shown) the Server and Workload toolbar has a **Views** menu
+  that switches views without going back to the list; in a wide window the same
+  spot docks or floats the list of views.
+- In a narrow window a plan's chart view, metric and branch become one view
+  select and an **Options** menu, the Visual Explain legend a **Legend**
+  popover, and Compare's four views one select, so the chart controls do not
+  take extra rows.
 - Inspectors become bottom sheets that slide up and take keyboard focus.
 - In the Query editor, toolbars and parameter inputs wrap, while the secondary
   editor status bar is hidden to avoid duplicate information above the responsive
@@ -438,9 +471,12 @@ write safety:
   so screen readers and keyboard users can discover the restriction, while pointer
   and keyboard clicks are blocked. The tooltip and accessible description
   (`aria-describedby`) state the required privilege and why it is unavailable.
+  The reason is visible beside the action or appears when the action receives
+  keyboard focus; blocked write policies use the same treatment.
 - **Unverified actions**: when grants cannot definitively prove whether an action
   is allowed (such as MariaDB role trees, routine definitions, or partial revokes),
-  the button remains enabled with an "Unverified" badge. This ensures users are not
+  the button remains enabled with a separate visible explanation, including on
+  keyboard focus, rather than a badge inside its label. This ensures users are not
   blocked by incomplete catalog data, leaving the server as the final arbiter.
 - **Query editor quiet notice**: statement privilege analysis checks statements
   against the connection model and write policy. Rather than disabling the editor,
@@ -513,7 +549,7 @@ Tuning starts with the write safety of the connection in use: a red dot and
 "Production · changes ask first" (the full sentence, "Production: every change
 on NAME asks first", is its tooltip and accessible name), an outlined dot and
 "Read-only · changes refused", or a green dot and "Development · risky changes
-ask first". Nothing is drawn under the top bar, so the breadcrumb and view
+ask first". Nothing is drawn under the top bar, so the top bar and view
 headers stay clear. The picker has a dot of the same color (red Production,
 green Development, an outline when read-only) and the PRODUCTION tag. The
 server enforces the type on every write; the footer and the dot only show it. Saved connections are read

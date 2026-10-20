@@ -38,7 +38,7 @@ try {
   assert.equal(await page.$eval(`${view} .io-global-rates`, (e) => e.open), false, "global rates are disclosed on demand");
   await page.click(`${view} .io-global-rates > summary`);
   // Server-wide rates: compact tiles; what each measures is in the inspector.
-  assert.deepEqual(await page.$$eval(`${view} .tile-item`, (els) => els.map((e) => e.dataset.metric)),
+  assert.deepEqual(await page.$$eval(`${view} .io-global-rates .tile-item`, (els) => els.map((e) => e.dataset.metric)),
     ["data_read", "data_written", "data_reads", "data_writes", "data_fsyncs", "redo_written", "pages_read"]);
   assert.match(await text(`${view} .tile-item[data-metric="redo_written"]`), /\/s/);
   const tileHeight = await page.$eval(`${view} .tile-item[data-metric="redo_written"] .metric-tile`, (e) => e.getBoundingClientRect().height);

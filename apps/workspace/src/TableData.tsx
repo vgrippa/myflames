@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { type Connection } from './api';
 import { connectionKey } from './binding';
-import { ConfirmSheet, copyToClipboard } from './kit';
+import { ConfirmSheet, copyToClipboard, useFocusScope } from './kit';
 import { Icon } from './components';
 import { csvCell } from './reportTableExport';
 import { tsv } from './ResultsPane';
@@ -28,7 +28,13 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     rowId: string;
     colIndex: number;
     inserted: boolean;
+    opener: HTMLElement;
   } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useFocusScope(menuRef, {
+    open: !!contextMenu, onClose: () => setContextMenu(null), menu: true,
+    returnFocus: () => contextMenu?.opener,
+  });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -52,14 +58,9 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
         setContextMenu(null);
       }
     };
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setContextMenu(null);
-    };
     window.addEventListener("pointerdown", handleOutside);
-    window.addEventListener("keydown", handleKey);
     return () => {
       window.removeEventListener("pointerdown", handleOutside);
-      window.removeEventListener("keydown", handleKey);
     };
   }, [contextMenu]);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -152,20 +153,38 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     if (unknown || changed) setDiscard(true); else onClose();
   }
   function resetDrafts() { setDrafts({}); setInserts([]); setReview(null); }
-  const onCellContextMenu = (e: React.MouseEvent, rowId: string, colIndex: number, inserted: boolean) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const openCellMenu = (opener: HTMLElement, rowId: string, colIndex: number, inserted: boolean, clientX: number, clientY: number) => {
     const menuW = 240;
     const menuH = 340;
-    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - menuW - 16));
-    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 16));
+    const x = Math.max(8, Math.min(clientX, window.innerWidth - menuW - 16));
+    const y = Math.max(8, Math.min(clientY, window.innerHeight - menuH - 16));
     setContextMenu({
       x,
       y,
       rowId,
       colIndex,
       inserted,
+      opener,
     });
+  };
+  const onCellContextMenu = (e: React.MouseEvent<HTMLTableCellElement>, rowId: string, colIndex: number, inserted: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openCellMenu(e.currentTarget, rowId, colIndex, inserted, e.clientX, e.clientY);
+  };
+  const onCellKey = (e: React.KeyboardEvent<HTMLTableCellElement>, rowId: string, colIndex: number, inserted: boolean) => {
+    if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+      e.preventDefault();
+      e.stopPropagation();
+      const box = e.currentTarget.getBoundingClientRect();
+      openCellMenu(e.target as HTMLElement, rowId, colIndex, inserted, box.left, box.bottom);
+    } else if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === 'F2')) {
+      e.preventDefault();
+      // Native editors already exist. Prefer the value, or its type selector
+      // for NULL/default cells, without bypassing read-only/deleted guards.
+      (e.currentTarget.querySelector<HTMLInputElement>('input:not([readonly])') ||
+        e.currentTarget.querySelector<HTMLSelectElement>('select:not(:disabled)'))?.focus();
+    }
   };
 
   const applyCellUpdate = (rowId: string, colName: string, next: Cell | undefined, inserted: boolean) => {
@@ -207,7 +226,8 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
       }));
       else if (next) update(rowId, column.name, next);
     };
-    return <td key={column.name} className={deleted ? 'table-data-deleted' : ''} onContextMenu={e => onCellContextMenu(e, rowId, index, inserted)}>
+    return <td key={column.name} tabIndex={0} className={deleted ? 'table-data-deleted' : ''}
+      onKeyDown={e => onCellKey(e, rowId, index, inserted)} onContextMenu={e => onCellContextMenu(e, rowId, index, inserted)}>
       <select aria-label={`${column.name} value type for ${rowId}`} disabled={!editable || deleted}
         value={value?.kind || 'default'} onChange={event => set(event.target.value === 'default' ? undefined :
           { kind: event.target.value as Cell['kind'], value: event.target.value === 'null' ? null : '' })}>
@@ -282,13 +302,13 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     </div>
     <div className="table-data-scroll" tabIndex={0} aria-label="Table rows">
       <table><thead><tr><th>Row</th>{page?.columns.map(column => <th key={column.name}>{column.name}<small>{column.type}{page.key.includes(column.name) ? ' · Key' : ''}</small></th>)}</tr></thead>
-        <tbody>{page?.rows.map((row, index) => <tr key={row.id} data-row-id={row.id}><td onContextMenu={e => onCellContextMenu(e, row.id, 0, false)}><span>{page.offset + index + 1}</span>
+        <tbody>{page?.rows.map((row, index) => <tr key={row.id} data-row-id={row.id}><td tabIndex={0} onKeyDown={e => onCellKey(e, row.id, 0, false)} onContextMenu={e => onCellContextMenu(e, row.id, 0, false)}><span>{page.offset + index + 1}</span>
           <button className="text-button" disabled={!editable || (!drafts[row.id] && changed >= 20)} onClick={() => setDrafts(current => {
             if (current[row.id]?.kind === 'delete') { const next = { ...current }; delete next[row.id]; return next; }
             return { ...current, [row.id]: { kind: 'delete', row_id: row.id } };
           })}>{drafts[row.id]?.kind === 'delete' ? 'Undo delete' : 'Delete'}</button></td>
           {row.values.map((value, cellIndex) => renderCell(row.id, cellIndex, value))}</tr>)}
-          {inserts.map(row => <tr key={row.id} data-row-id={row.id}><td onContextMenu={e => onCellContextMenu(e, row.id, 0, true)}>New<button className="text-button" disabled={!editable} onClick={() => setInserts(rows => rows.filter(value => value.id !== row.id))}>Remove</button></td>
+          {inserts.map(row => <tr key={row.id} data-row-id={row.id}><td tabIndex={0} onKeyDown={e => onCellKey(e, row.id, 0, true)} onContextMenu={e => onCellContextMenu(e, row.id, 0, true)}>New<button className="text-button" disabled={!editable} onClick={() => setInserts(rows => rows.filter(value => value.id !== row.id))}>Remove</button></td>
             {page?.columns.map((_column, index) => renderCell(row.id, index, { kind: 'null', value: null }, true))}</tr>)}
         </tbody></table>
     </div>
@@ -306,8 +326,10 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     {toast && <div className="table-copy-toast" role="status">{toast}</div>}
     {contextMenu && activeCol && (
       <div
+        ref={menuRef}
         className="context-menu"
         role="menu"
+        aria-label="Cell actions"
         tabIndex={-1}
         style={{ left: contextMenu.x, top: contextMenu.y }}
       >

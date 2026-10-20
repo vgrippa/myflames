@@ -180,6 +180,26 @@ class SQLTests(unittest.TestCase):
         self.assertEqual(err, '')
         self.assertEqual(self.store.audit_records(), [])
 
+    def test_untyped_live_values_and_documented_limitation(self):
+        """Live results come from --xml, which carries no column types, so
+        numbers stay text in json, table and insert; --help says so."""
+        code, out, err = self.invoke(['-e', 'SELECT 7 AS n', '--json'])
+        self.assertEqual((code, json.loads(out)['results'][0]['rows']), (0, [['7']]))
+        code, out, err = self.invoke(['-e', 'SELECT 7 AS n', '--format', 'table', '-q'])
+        self.assertEqual(code, 0, err)
+        self.assertIn('"7"', out)
+        code, out, err = self.invoke(['-e', 'SELECT 7 AS n', '--format', 'insert', '-q'])
+        self.assertEqual(code, 0, err)
+        self.assertIn("('7')", out)
+        code, out, err = self.invoke(['--help'])
+        self.assertEqual(code, 0)
+        text = ' '.join(out.split())
+        self.assertIn('results carry no column types', text)
+        self.assertIn('json keeps numbers as strings, table quotes them, and insert writes numbers', text)
+        readme = Path(__file__).resolve().parents[1].joinpath('README.md').read_text(encoding='utf-8')
+        row = next(line for line in readme.splitlines() if line.startswith('| `sql` |'))
+        self.assertIn('Results carry no column types', row)
+
     def test_formats_and_null(self):
         for fmt in ('table', 'csv', 'tsv', 'markdown', 'json'):
             with self.subTest(format=fmt):

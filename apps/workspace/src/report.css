@@ -37,7 +37,7 @@
   white-space: nowrap;
 }
 .refresh-all-status.has-failures {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .refresh-all-list {
   display: grid;
@@ -106,7 +106,7 @@
 .source-stale {
   display: inline-flex;
   margin-left: auto;
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .source-item .nav-marker + .source-stale,
 .source-item .status-dot + .source-stale,

@@ -80,15 +80,33 @@
   background-color: rgba(217, 119, 6, 0.15) !important;
 }
 
-/* Row Actions in Sessions Table */
-.session-row-actions {
-  display: flex;
-  align-items: center;
+/* The row menu (⋯ in the trailing column): Show plan and Kill. */
+.session-row-menu-anchor {
+  display: inline-flex;
+}
+.session-row-menu {
+  display: grid;
   gap: var(--space-1);
 }
-.session-row-actions .button.small {
-  padding: 2px 8px;
-  font-size: var(--text-xs);
+.session-row-menu button {
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-md);
+  text-align: left;
+}
+.session-row-menu button.is-danger {
+  color: var(--danger);
+}
+.session-row-menu button:hover:not(:disabled),
+.session-row-menu button:focus-visible {
+  background: var(--accent-soft);
+}
+.session-row-menu button:disabled {
+  color: var(--ink-faint);
 }
 
 /* Mass Kill Dialog */
@@ -162,10 +180,16 @@
   color: var(--ink-muted);
   margin-right: var(--space-1);
 }
+/* The chosen preset is filled like a primary button, hover included, so its
+   white label never sits on the gray hover fill. */
 .mass-kill-presets .button.active {
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
-  border-color: transparent;
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  border-color: var(--accent-fill);
+}
+.mass-kill-presets .button.active:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 .mass-kill-form {
   padding: var(--space-4) var(--space-5);

@@ -29,6 +29,7 @@ export function ReplicationPlace({
   onLoopActivity,
   report: propReport,
   onReport,
+  restoredLoop = false,
 }: {
   connection: Connection;
   disabled?: boolean;
@@ -41,6 +42,9 @@ export function ReplicationPlace({
   /** Owned by the shell so Server's Refresh all feeds this place too. */
   report?: Bound<ReplicationReport> | null;
   onReport?: (report: Bound<ReplicationReport>) => void;
+  /** The restored workspace had a skip loop running: read loop status at
+   * once (it reads no database) and say if it stopped with myflames. */
+  restoredLoop?: boolean;
 }) {
   const [localReport, setLocalReport] = useState<Bound<ReplicationReport> | null>(null);
   const report = propReport !== undefined ? propReport : localReport;
@@ -115,6 +119,7 @@ export function ReplicationPlace({
             onReport={setReport}
             loops={effectiveLoops}
             onLoops={handleLoops}
+            restoredLoop={restoredLoop}
             onLoopActivity={(active) => {
               setLoopActiveNow(active);
               onLoopActivity?.(active);

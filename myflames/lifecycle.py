@@ -21,6 +21,8 @@ Wire contracts:
     replacement, in addition to typed_target and existing_objects=drop.
   lifecycle-manifest-1.0: source, scope, tool, options, started_at, finished_at,
     files[{path,size_bytes,sha256}], samples[], verification[], complete.
+  tool-groups-1.0 (ToolGroups file for a supervising desktop app): groups[]
+    (process group ids of running external tools).
 Verification statuses: passed, failed, not_checked. A successful child process
 alone is never evidence that a restored dataset matches its source.
 
@@ -425,6 +427,181 @@ class _BoundedConnection(object):
                 self.job.check_cancel()
 
 
+def _group_alive(pgid):
+    """True while process group *pgid* has a process that can still run.
+
+    macOS answers EPERM when the group holds only an unreaped zombie; that
+    group runs nothing, and a group of another user is not ours to stop.
+    """
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _signal_group(pgid, sig):
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+class ToolGroups(object):
+    """The process groups of the external tools this process started (POSIX).
+
+    Lifecycle tools run in their own session, outside the workspace's process
+    group, so a supervisor that stops the workspace by signalling that group
+    never reaches them. LifecycleJobs.shutdown terminates these groups first
+    when the workspace closes. With *path* (the desktop app passes one in a
+    private directory it owns), the current list is also kept in that 0600
+    file, {"schema_version": "tool-groups-1.0", "groups": [...]}, so the
+    supervisor can stop the tools if it must kill the workspace itself.
+
+    Tools start through start(), which lists the new group before another
+    tool can start or shutdown can take its snapshot, and refuses once
+    shutdown began. A group stays listed until it is confirmed gone. The file
+    is replaced atomically and kept after a clean close (listing nothing).
+    When it cannot be rewritten it is removed: it never lists a group that
+    may have ended (that id could name another program's group), and the
+    supervisor treats a missing file as unconfirmed. A tool whose group
+    cannot be recorded is stopped at once (LifecycleJob.process_tool).
+    """
+    SCHEMA = 'tool-groups-1.0'
+
+    def __init__(self, path=None):
+        self.lock = threading.Lock()
+        self._spawn_lock = threading.Lock()
+        self.closed = False
+        self.groups = set()
+        self.path = None
+        if path and os.name == 'posix':
+            refusal = 'The tool process group file must be in a private directory owned by this user.'
+            if not os.path.isabs(path):
+                raise ValueError('The tool process group file must be an absolute path.')
+            try:
+                info = os.lstat(os.path.dirname(path))
+            except OSError:
+                raise ValueError(refusal) from None
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError(refusal)
+            self.path = path
+            try:
+                self._write()
+            except OSError:
+                raise ValueError('Could not write the tool process group file.') from None
+
+    def _write(self):
+        directory = os.path.dirname(self.path)
+        fd, temporary = tempfile.mkstemp(prefix='.tool-groups-', dir=directory)
+        try:
+            with os.fdopen(fd, 'w') as handle:
+                json.dump({'schema_version': self.SCHEMA, 'groups': sorted(self.groups)}, handle)
+            os.replace(temporary, self.path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+            raise
+
+    def _publish(self):
+        """Write the current list; False when the file could not be written."""
+        # Callers hold self.lock.
+        if not self.path:
+            return True
+        try:
+            self._write()
+            return True
+        except OSError:
+            self._invalidate()
+            return False
+
+    def _invalidate(self):
+        # Never leave a readable list that may be stale: remove it, or when the
+        # directory refuses that, empty it in place (the supervisor rejects an
+        # empty file as unreadable).
+        try:
+            os.unlink(self.path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            pass
+        with contextlib.suppress(OSError):
+            os.close(os.open(self.path, os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0)))
+
+    def add(self, pgid):
+        with self.lock:
+            self.groups.add(pgid)
+            return self._publish()
+
+    def start(self, spawn):
+        """Run *spawn* (returns a Popen in a new session) and list its group.
+
+        Returns (process, recorded). Serialized with close_spawning(), so a
+        tool started before shutdown is listed before shutdown's snapshot.
+        """
+        with self._spawn_lock:
+            if self.closed:
+                raise LifecycleError('The workspace is closing; the tool was not started.')
+            process = spawn()
+            return process, self.add(process.pid)
+
+    def close_spawning(self, timeout=2.0):
+        """Refuse new tools. Waits up to *timeout* for a start in progress."""
+        acquired = self._spawn_lock.acquire(timeout=timeout)
+        self.closed = True
+        if acquired:
+            self._spawn_lock.release()
+
+    def discard(self, pgid):
+        with self.lock:
+            if pgid in self.groups:
+                self.groups.discard(pgid)
+                self._publish()
+
+    def snapshot(self):
+        with self.lock:
+            return sorted(self.groups)
+
+    def _wait(self, groups, seconds):
+        """Drop the groups that are gone; return those still alive after *seconds*."""
+        deadline = time.monotonic() + seconds
+        while True:
+            alive = [pgid for pgid in groups if _group_alive(pgid)]
+            for pgid in set(groups) - set(alive):
+                self.discard(pgid)
+            if not alive or time.monotonic() >= deadline:
+                return alive
+            groups = alive
+            time.sleep(0.02)
+
+    def settle(self, pgid, wait=1.0):
+        """After a tool's leader exits: stop what is left of its group, then unlist it."""
+        if pgid not in self.snapshot():
+            return
+        if _group_alive(pgid):
+            _signal_group(pgid, 9)  # POSIX SIGKILL
+        self._wait([pgid], wait)
+
+    def terminate(self, term_wait=1.0, kill_wait=1.0):
+        """SIGTERM every listed group, SIGKILL the ones alive after *term_wait*.
+
+        Returns the groups still alive after a further *kill_wait* seconds.
+        """
+        groups = self.snapshot()
+        for pgid in groups:
+            _signal_group(pgid, signal.SIGTERM)
+        alive = self._wait(groups, term_wait)
+        for pgid in alive:
+            _signal_group(pgid, 9)
+        return self._wait(alive, kill_wait)
+
+    def close(self):
+        """Write the final list (empty after a clean shutdown); the supervisor removes the file."""
+        with self.lock:
+            self._publish()
+
+
 class LifecycleJob(object):
     """LiveJob-style owner of one operation, child process group and bounded log.
 
@@ -458,6 +635,8 @@ class LifecycleJob(object):
         self.emitted = 0
         self.audit = None
         self.audit_statements = []
+        #: ToolGroups that records this job's tool process groups (LifecycleJobs sets it).
+        self.groups = None
 
     def emit(self, text, stream='status'):
         # Control data must be consumed before any password replacement. Even
@@ -536,11 +715,12 @@ class LifecycleJob(object):
         if self.cancelled.is_set():
             raise LifecycleError('Cancelled; partial files or server changes may remain. Check the target before retrying.')
 
-    def _kill_query(self):
+    def _kill_query(self, connection_id=None):
         # Only the job-owned session identified on its own stdout. Never use
         # a saved processlist id supplied by a caller. This is cancellation of
         # an already authorized operation, not an arbitrary kill endpoint.
-        connection_id = self.connection_id
+        # Shutdown passes the id it read before stopping the tool.
+        connection_id = connection_id or self.connection_id
         if connection_id:
             try:
                 with _connect(self.factory, self.connection) as conn:
@@ -616,11 +796,30 @@ class LifecycleJob(object):
         Shell scripts containing secrets go only to stdin, on a writer thread.
         """
         self.check_cancel()
-        proc = subprocess.Popen(argv, stdin=input_file if input_file else subprocess.PIPE,
-                                stdout=output_file if output_file else subprocess.PIPE,
-                                stderr=subprocess.PIPE, env=env, start_new_session=os.name == 'posix')
+        def spawn():
+            return subprocess.Popen(argv, stdin=input_file if input_file else subprocess.PIPE,
+                                    stdout=output_file if output_file else subprocess.PIPE,
+                                    stderr=subprocess.PIPE, env=env, start_new_session=os.name == 'posix')
+        # The tool has its own process group: record it for shutdown.
+        groups = self.groups if os.name == 'posix' else None
+        proc, recorded = groups.start(spawn) if groups is not None else (spawn(), True)
         with self.lock:
             self.process = proc
+        if not recorded:
+            # A supervisor that has to kill the workspace could not find this
+            # tool. Stop it now, as a cancel: it may already have begun.
+            self.cancelled.set()
+            _signal_group(proc.pid, 9)
+            proc.wait()
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe:
+                    pipe.close()
+            groups.settle(proc.pid)
+            with self.lock:
+                self.process = None
+            raise LifecycleError('Could not record the tool process for a safe shutdown, so it was stopped right '
+                                 'after it started. Partial files or server changes may remain; check the target '
+                                 'before retrying.')
         captured = {'stdout': bytearray(), 'stderr': bytearray()}
         overflow = threading.Event()
         def drain(pipe, stream):
@@ -695,6 +894,8 @@ class LifecycleJob(object):
         finally:
             # Kill surviving grandchildren before joining their inherited pipes.
             self._signal(signal.SIGTERM)
+            if groups is not None and not _group_alive(proc.pid):
+                groups.discard(proc.pid)  # Reaped and empty: the id may be reused.
             for thread in readers:
                 thread.join(3)
             if any(thread.is_alive() for thread in readers):
@@ -705,6 +906,8 @@ class LifecycleJob(object):
                 writer.join(3)
             with self.lock:
                 self.process, self.connection_id = None, None
+            if groups is not None:
+                groups.settle(proc.pid)
         self.check_cancel()
         from .connector import _client_text
         stdout = _client_text(captured['stdout'])
@@ -905,7 +1108,7 @@ def _native_upgrade(conn, server, target):
 
 
 def upgrade_check(conn, target_version, connection=None, tools=None, config_path=None, timeout=300,
-                  prefer_shell=True):
+                  prefer_shell=True, job=None):
     """Read-only upgrade report. Shell exit status never substitutes for findings.
 
     MySQL Shell runs when it is installed and *prefer_shell*; otherwise the
@@ -954,7 +1157,7 @@ def upgrade_check(conn, target_version, connection=None, tools=None, config_path
                 '--target-version=' + report['target_version'], '--output-format=JSON']
         if config_path:
             args.append('--config-path=' + os.path.abspath(config_path))
-        runner = LifecycleJob('upgrade_check', lambda job: None, connection)
+        runner = job or LifecycleJob('upgrade_check', lambda job: None, connection)
         stdout, unused = _invoke(runner, dict(shell, name='mysqlsh'), connection, args, timeout=timeout)
         report.update(parse_upgrade_json(stdout))
         report.update(method='mysqlsh', partial=False, tool=dict(shell, name='mysqlsh'),
@@ -2335,15 +2538,22 @@ class LifecycleJobs(object):
 
     At most two run at once and never two on the same target; finished jobs
     are kept for an hour (at most 20) so a page can read the result after a
-    reload. close() cancels running jobs when the server stops.
+    reload. When the server stops, shutdown() stops every external tool first
+    (before any slower cleanup) and close() then finishes the jobs.
+    *tool_groups_file* is the supervisor's record of tool process groups (see
+    ToolGroups).
     """
     KEEP, RUNNING, AGE = 20, 2, 3600
 
-    def __init__(self):
+    def __init__(self, tool_groups_file=None):
         self.jobs = collections.OrderedDict()
         self.targets = {}
         self.lock = threading.Lock()
         self.closed = False
+        self.groups = ToolGroups(tool_groups_file)
+        #: Unregistered preflight runners (MySQL Shell dryRun, upgrade check).
+        self.runners = set()
+        self._kill_threads = []
 
     def add(self, job, target):
         with self.lock:
@@ -2363,8 +2573,24 @@ class LifecycleJobs(object):
                 self.targets.pop(key, None)
             self.jobs[job.id] = job
             self.targets[job.id] = resources
+            job.groups = self.groups
             job.start()
         return job.snapshot()
+
+    @contextlib.contextmanager
+    def runner(self, operation, connection):
+        """A LifecycleJob for a request's preflight tools, stopped by shutdown()."""
+        job = LifecycleJob(operation, lambda job: None, connection)
+        job.groups = self.groups
+        with self.lock:
+            if self.closed:
+                raise ValueError('Lifecycle jobs are shutting down; nothing was started.')
+            self.runners.add(job)
+        try:
+            yield job
+        finally:
+            with self.lock:
+                self.runners.discard(job)
 
     def get(self, key):
         with self.lock:
@@ -2373,12 +2599,53 @@ class LifecycleJobs(object):
             raise ValueError('Operation not found. It may have expired.')
         return job
 
-    def close(self):
+    def shutdown(self, term_wait=1.0, kill_wait=1.0, join_wait=1.5):
+        """Stop every owned tool now; the first step when the workspace closes.
+
+        Refuses new jobs, cancels every running job and preflight runner, and
+        starts KILL QUERY for each job-owned session on its own thread (the id
+        is read before the tool stops), so a slow server cannot delay the
+        local termination. Every tool process group gets SIGTERM, then SIGKILL
+        after *term_wait* seconds. Jobs then have *join_wait* seconds to
+        finish their audit record: cancelled with outcome unknown once
+        anything was sent, as for a user's cancel. Bounded; returns the
+        process groups still alive.
+        """
         with self.lock:
             self.closed = True
+            jobs = [job for job in self.jobs.values()
+                    if job.state in ('queued', 'running') or (job.thread is not None and job.thread.is_alive())]
+            jobs.extend(self.runners)
+        sessions = []
+        for job in jobs:
+            with job.lock:
+                sessions.append((job, job.connection_id))
+            job.cancelled.set()
+        # No tool starts from here on; one being started is listed first.
+        self.groups.close_spawning()
+        for job, connection_id in sessions:
+            if connection_id:
+                thread = threading.Thread(target=job._kill_query, args=(connection_id,),
+                                          name='lifecycle-kill-query', daemon=True)
+                thread.start()
+                self._kill_threads.append(thread)
+        alive = self.groups.terminate(term_wait, kill_wait)
+        deadline = time.monotonic() + join_wait
+        for job in jobs:
+            if job.thread is not None:
+                job.thread.join(max(0.0, deadline - time.monotonic()))
+        return alive
+
+    def close(self):
+        self.shutdown()
+        with self.lock:
             jobs = list(self.jobs.values())
         for job in jobs:
             if job.state in ('queued', 'running'):
                 job.cancel()
         for job in jobs:
             job.close()
+        for thread in self._kill_threads:
+            thread.join(6)
+        self.groups.terminate()
+        self.groups.close()

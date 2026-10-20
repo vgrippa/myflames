@@ -171,15 +171,25 @@ export function download(text: string, filename: string, type: string) {
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+const numberFormats = new Map<string, Intl.NumberFormat>();
+/** The same text as value.toLocaleString(undefined, options), with one
+ * formatter per options instead of one per call (building a formatter per
+ * number was the largest cost of drawing a table of numbers). */
+export function formatNumber(value: number, options: Intl.NumberFormatOptions) {
+  const key = JSON.stringify(options);
+  let format = numberFormats.get(key);
+  if (!format) numberFormats.set(key, (format = new Intl.NumberFormat(undefined, options)));
+  return format.format(value);
+}
 export function time(ms: number | null | undefined) {
   if (typeof ms !== "number" || !Number.isFinite(ms)) return "—";
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s`;
   if (ms > 0 && ms < 1) return `${(ms * 1000).toFixed(1)} µs`;
-  return `${ms.toLocaleString(undefined, { maximumFractionDigits: 2 })} ms`;
+  return `${formatNumber(ms, { maximumFractionDigits: 2 })} ms`;
 }
 export function number(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-  return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return formatNumber(value, { maximumFractionDigits: 0 });
 }
 export function safePreview(html: string) {
   // The iframe has an opaque origin. This policy also keeps report/plan content

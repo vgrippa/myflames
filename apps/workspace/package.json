@@ -42,6 +42,7 @@
     "test:connection-binding": "npm run build && node test/connection-binding.mjs",
     "test:session-rules": "node test/session-rules.mjs",
     "test:datatable": "npm run build && node test/datatable.mjs",
+    "test:bundle-split": "npm run build && node test/bundle-split.mjs",
     "test:report": "npm run build && node test/report.mjs",
     "test:audit": "npm run build && node test/audit.mjs",
     "test:editor": "npm run build && node test/editor.mjs",

@@ -712,7 +712,7 @@ export function TopActions({
           data-privilege-state={explainGate.state}
           {...privilegeButtonProps(explainGate, () => onAction("explain", row, rank), "", `${privilegeId}-explain${problem ? ` ${reasonId}` : ""}`)}
         >
-          Explain{explainGate.state === "unknown" && <span className="privilege-unverified">Unverified</span>}
+          Explain
         </button>
         <button
           ref={analyzeButton}
@@ -729,7 +729,7 @@ export function TopActions({
           data-privilege-state={analysisGate.state}
           {...privilegeButtonProps(analysisGate, () => (needsValues ? onAction("analyze", row, rank) : openConfirm()), "", `${privilegeId}-analysis${problem ? ` ${reasonId}` : ""}`)}
         >
-          Run analysis{analysisGate.state === "unknown" && <span className="privilege-unverified">Unverified</span>}
+          Run analysis
         </button>
         {!compact && (
           <button
@@ -742,8 +742,12 @@ export function TopActions({
           </button>
         )}
       </div>
-      <span id={`${privilegeId}-explain`} className="account-sr">{explainGate.reason}</span>
-      <span id={`${privilegeId}-analysis`} className="account-sr">{analysisGate.reason}</span>
+      <span id={`${privilegeId}-explain`} className={explainGate.state === "allowed" ? "account-sr" : "account-note"}>
+        {explainGate.state !== "allowed" && "Explain: "}{explainGate.reason}
+      </span>{" "}
+      <span id={`${privilegeId}-analysis`} className={analysisGate.state === "allowed" ? "account-sr" : "account-note"}>
+        {analysisGate.state !== "allowed" && "Run analysis: "}{analysisGate.reason}
+      </span>
       {row.analysis_warning && !problem && (
         <div className="notice" role="status">
           <p>{row.analysis_warning}</p>
@@ -866,11 +870,11 @@ export function TopStatementsView({
         );
       },
     },
-    { key: "count", label: "Calls", num: true, sort: (r) => r.count, render: (r) => <CompactNumber value={r.count} /> },
-    { key: "total", label: "Total (ms)", num: true, sort: (r) => r.total_ms, render: (r) => <CompactNumber value={r.total_ms} /> },
-    { key: "avg", label: "Average (ms)", num: true, sort: (r) => r.avg_ms, render: (r) => <CompactNumber value={r.avg_ms} /> },
-    { key: "examined", label: "Rows examined", num: true, sort: (r) => r.rows_examined, render: (r) => <CompactNumber value={r.rows_examined} /> },
-    { key: "sent", label: "Rows sent", num: true, sort: (r) => r.rows_sent, render: (r) => <CompactNumber value={r.rows_sent} /> },
+    { key: "count", label: "Calls", title: "Times the statement ran (COUNT_STAR)", num: true, sort: (r) => r.count, render: (r) => <CompactNumber value={r.count} /> },
+    { key: "total", label: "Total (ms)", title: "Total latency of every call, in milliseconds", num: true, sort: (r) => r.total_ms, render: (r) => <CompactNumber value={r.total_ms} /> },
+    { key: "avg", label: "Avg (ms)", name: "Average (ms)", title: "Average latency per call, in milliseconds", num: true, sort: (r) => r.avg_ms, render: (r) => <CompactNumber value={r.avg_ms} /> },
+    { key: "examined", label: "Rows examined", title: "Rows read by every call together", num: true, sort: (r) => r.rows_examined, render: (r) => <CompactNumber value={r.rows_examined} /> },
+    { key: "sent", label: "Rows sent", title: "Rows returned to the client by every call together", num: true, sort: (r) => r.rows_sent, render: (r) => <CompactNumber value={r.rows_sent} /> },
     ...(counter
       ? [
           {
@@ -1111,7 +1115,9 @@ export function TopStatementsView({
                       Cancel Explain top {batchSize}
                     </button>
                   )}
-                  <span className="account-sr" id={privilegeId}>{explainGate.reason}</span>
+                  <span className={explainGate.state === "allowed" ? "account-sr" : "account-note"} id={privilegeId}>
+                    {explainGate.state !== "allowed" && "Explain top: "}{explainGate.reason}
+                  </span>
                   <span className="visually-hidden" id="batch-hint">
                     Estimated plans only: runs EXPLAIN, never executes the statements. Skips statements that are not a
                     SELECT or that need parameter values.
@@ -1138,6 +1144,10 @@ export function TopStatementsView({
             <PriorityTable
               id="top.statements"
               detailColumns={["rank", "count", "avg", "examined", "sent", "schema", "flags"]}
+              // Rows sent and Schema start off so the list fits beside the list
+              // of views at 1440 px with two flags; the details show both (Rows,
+              // with examined per row sent, and the schema in the header).
+              defaultHidden={["sent", "schema"]}
               label="Top statements"
               columns={columns}
               rows={shown}

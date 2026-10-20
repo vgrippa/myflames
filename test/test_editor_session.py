@@ -1605,14 +1605,91 @@ class ProcessTests(unittest.TestCase):
     def test_review_policy_changes_after_session_start(self):
         profile = self.save_profile(type="development")
         original = ed._open_session
+        opened = []
         def opening(*args, **kwargs):
             session = original(*args, **kwargs)
+            opened.append(session)
             self.store.save("profile", dict(profile, read_only=True), profile["id"])
             return session
         with mock.patch.object(ed, "_open_session", side_effect=opening):
             result = self.call("/api/editor/run", sql="INSERT INTO tt VALUES (1, 'x')")
         self.assertEqual(result["status"], "refused")
-        self.assertFalse(self.logged("tab1", "INSERT INTO tt"))
+        # The session this run started is ended, and nothing reached it.
+        self.assertIsNone(self.registry.get("tab1"))
+        log = self.state / ("session-%d.log" % opened[0].connection_id)
+        self.assertFalse(log.exists() and "INSERT INTO tt" in log.read_text())
+
+    def test_review_policy_refusal_ends_only_a_session_the_run_started(self):
+        """The final policy re-read refuses the run. A session this request
+        started is ended and removed (not left open until Close); a session
+        the tab already had is kept."""
+        original = ed._open_session
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                profile = self.save_profile(type="development")
+                tab = "final-%s" % existing
+                if existing:
+                    self.call("/api/editor/open", tab=tab)
+                before = self.registry.get(tab)
+                opened = []
+
+                def opening(*args, **kwargs):
+                    session = original(*args, **kwargs)
+                    opened.append(session)
+                    return session
+
+                def drift(*args, **kwargs):
+                    # The last re-read before start_run sees the new policy.
+                    self.store.save("profile", dict(profile, read_only=True), profile["id"])
+                    return real_run(*args, **kwargs)
+                real_run = ed.Run
+                with mock.patch.object(ed, "_open_session", side_effect=opening), \
+                        mock.patch.object(ed, "Run", side_effect=drift):
+                    result = self.call("/api/editor/run", tab=tab, sql="INSERT INTO tt VALUES (1, 'x')")
+                self.assertEqual(result["status"], "refused")
+                self.assertIn("nothing was sent", result["message"].lower())
+                if existing:
+                    self.assertEqual(opened, [])
+                    self.assertIs(self.registry.get(tab), before)
+                    self.assertFalse(before.ended)
+                    self.assertEqual(result["session"]["state"], "idle")
+                    self.assertFalse(self.logged(tab, "INSERT INTO tt"))
+                else:
+                    self.assertEqual(len(opened), 1)
+                    self.assertTrue(opened[0].ended)
+                    self.assertIsNone(self.registry.get(tab))
+                    self.assertIsNone(result["session"])
+                    log = self.state / ("session-%d.log" % opened[0].connection_id)
+                    self.assertFalse(log.exists() and "INSERT INTO tt" in log.read_text())
+
+    def test_review_policy_refusal_keeps_a_new_session_another_request_holds(self):
+        """Review gate: between creating the session and the final re-read,
+        another request can take the session for its own run (run_lock is held
+        for the whole run). The refused request must not end it."""
+        profile = self.save_profile(type="development")
+        original = ed._open_session
+        real_run = ed.Run
+        opened = []
+
+        def opening(*args, **kwargs):
+            session = original(*args, **kwargs)
+            opened.append(session)
+            return session
+
+        def drift(*args, **kwargs):
+            self.store.save("profile", dict(profile, read_only=True), profile["id"])
+            self.assertTrue(opened[0].run_lock.acquire(False))  # another request's run
+            return real_run(*args, **kwargs)
+        with mock.patch.object(ed, "_open_session", side_effect=opening), \
+                mock.patch.object(ed, "Run", side_effect=drift):
+            result = self.call("/api/editor/run", tab="held", sql="INSERT INTO tt VALUES (1, 'x')")
+        try:
+            self.assertEqual(result["status"], "refused")
+            self.assertFalse(opened[0].ended)
+            self.assertIs(self.registry.get("held"), opened[0])
+            self.assertIsNotNone(result["session"])
+        finally:
+            opened[0].run_lock.release()
 
     def test_review_alter_guard_is_shown_and_sent_in_same_session(self):
         sql = "ALTER TABLE test.tt ADD COLUMN c INT"

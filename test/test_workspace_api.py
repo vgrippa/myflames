@@ -175,7 +175,7 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers['Content-Type'].split(';')[0], 'image/png')
         self.assertEqual(body, logos[0].read_bytes())
-        self.assertEqual(body, (Path(__file__).resolve().parents[1] / 'docs/brand/myflames-icon-v3.png').read_bytes())
+        self.assertEqual(body, (Path(__file__).resolve().parents[1] / 'docs/brand/myflames-icon-v3-128.png').read_bytes())
         self.assertTrue(body.startswith(b'\x89PNG\r\n\x1a\n'))
         self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
 

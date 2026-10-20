@@ -2829,6 +2829,8 @@ def _run_api(payload, workspace, fill_password):
                 else typed_password)
     decision = _requested_review(_decision(plan, safety, session), payload)
     filled = None
+    # A session this request starts; a final policy refusal ends it again.
+    started = {}
     if _alter_unit(plan) is not None and decision["action"] != "refuse" and payload.get("decline") is not True:
         audit = _audit_trail(store, "editor_run", safety, options, password, decision)
         filled = fill_password(payload)
@@ -2840,7 +2842,8 @@ def _run_api(payload, workspace, fill_password):
         if changed:
             return changed
         if session is None:
-            session = _open_session(registry, tab_id, full_options, identity, safety, name, payload)
+            session = _open_session(registry, tab_id, full_options, identity, safety, name, payload,
+                                    created=started)
         plan = _plan_run(payload, session)
         decision = _requested_review(_decision(plan, safety, session), payload)
         if decision["action"] != "refuse":
@@ -2868,7 +2871,8 @@ def _run_api(payload, workspace, fill_password):
     if session is None:
         initial_decision = decision
         try:
-            session = _open_session(registry, tab_id, full_options, identity, safety, name, payload)
+            session = _open_session(registry, tab_id, full_options, identity, safety, name, payload,
+                                    created=started)
         except ConnectorError as exc:
             message = str(exc)
             if password:
@@ -2905,6 +2909,20 @@ def _run_api(payload, workspace, fill_password):
               alter_context=decision.get("alter_preflight"))
     changed = _policy_changed(payload, store, identity, safety, audit, [u["send"] for u in plan["units"]])
     if changed:
+        # Nothing was sent. A session this request started (under the old
+        # policy) is ended instead of being left open until Close; an
+        # existing one is kept, as is one another request holds for a run or
+        # helper (run_lock is held for a whole run, so taking it reserves the
+        # session: a later start_run sees it ended and refuses).
+        if started.get("session") is session and session.run_lock.acquire(False):
+            try:
+                registry.remove(tab_id, session)
+                session.end("policy_changed", quiet=True)
+            finally:
+                session.run_lock.release()
+            changed["session"] = None
+        else:
+            changed["session"] = session.status()
         return changed
     session.start_run(run)
     _wait_run(run, payload, 10)

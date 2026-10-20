@@ -4,7 +4,7 @@
   /* Apple standard design school light mode tokens */
   --ink-secondary: #515154;
   --line-subtle: rgba(0, 0, 0, 0.04);
-  --control-line-hover: rgba(0, 0, 0, 0.28);
+  --control-line-hover: rgba(0, 0, 0, 0.6);
   --accent-subtle: rgba(0, 122, 255, 0.05);
   --selection-border: #007aff;
   --text-base: 13px;
@@ -35,7 +35,9 @@
   --decorative-faint: #d2d2d7;
   --line: rgba(0, 0, 0, 0.08);
   --line-strong: rgba(0, 0, 0, 0.18);
-  --control-line: rgba(0, 0, 0, 0.15);
+  /* Input, select, checkbox and button borders: at least 3:1 against the
+     field and the surface around it (window, pane; dialogs in Dark). */
+  --control-line: rgba(0, 0, 0, 0.44);
   --chart-boundary: #82858c;
   --accent-line: #80bfff;
   /* Source-list selection (sidebar places, Server views, open documents): a
@@ -49,16 +51,24 @@
   --accent-soft: rgba(0, 122, 255, 0.10);
   --accent-ink: #ffffff;
   --focus: var(--accent);
-  --ok: #28cd41;
+  /* Status roles. The base color is for dots, bars, icons and borders (at
+     least 3:1 on the window and panes); -text is for words (at least 4.5:1
+     there, on its -soft tint and on selected rows); -fill carries -ink words. */
+  --ok: #239a3b;
+  --ok-text: #1b7631;
   --ok-soft: rgba(40, 205, 65, 0.12);
-  --warn: #ff9500;
+  --warn: #d27000;
+  --warn-text: #a35200;
   --warn-soft: rgba(255, 149, 0, 0.12);
   --warn-line: rgba(255, 149, 0, 0.25);
   --danger: #ff3b30;
+  --danger-text: #c4261d;
+  --danger-fill: #d93025;
   --danger-soft: rgba(255, 59, 48, 0.12);
   --danger-line: rgba(255, 59, 48, 0.25);
   --danger-ink: #ffffff;
   --info: #0071e3;
+  --info-text: #005fc4;
   --info-soft: rgba(0, 113, 227, 0.12);
   /* Type scale (macOS text styles): 13 px body and navigation rows, 11 px
      secondary text and section headers (sentence case, semibold), 15 px view
@@ -166,9 +176,9 @@
   --line: rgba(0, 0, 0, 0.08);
   --line-subtle: rgba(0, 0, 0, 0.04);
   --line-strong: rgba(0, 0, 0, 0.18);
-  --control-line: rgba(0, 0, 0, 0.15);
+  --control-line: rgba(0, 0, 0, 0.44);
   --chart-boundary: #82858c;
-  --control-line-hover: rgba(0, 0, 0, 0.28);
+  --control-line-hover: rgba(0, 0, 0, 0.6);
   --accent: #007aff;
   --accent-text: #005fc4;
   --accent-fill: #0068d9;
@@ -180,16 +190,21 @@
   --selection-border: #007aff;
   --selection-fill: rgba(0, 122, 255, 0.14);
   --focus: var(--accent);
-  --ok: #28cd41;
+  --ok: #239a3b;
+  --ok-text: #1b7631;
   --ok-soft: rgba(40, 205, 65, 0.12);
-  --warn: #ff9500;
+  --warn: #d27000;
+  --warn-text: #a35200;
   --warn-soft: rgba(255, 149, 0, 0.12);
   --warn-line: rgba(255, 149, 0, 0.25);
   --danger: #ff3b30;
+  --danger-text: #c4261d;
+  --danger-fill: #d93025;
   --danger-soft: rgba(255, 59, 48, 0.12);
   --danger-line: rgba(255, 59, 48, 0.25);
   --danger-ink: #ffffff;
   --info: #0071e3;
+  --info-text: #005fc4;
   --info-soft: rgba(0, 113, 227, 0.12);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
   --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.06);
@@ -219,12 +234,12 @@
     --line: #34383d;
     --line-subtle: #292c30;
     --line-strong: #646c77;
-    --control-line: #656e79;
+    --control-line: #6e7782;
     --chart-boundary: #7b8592;
-    --control-line-hover: #6c6c74;
+    --control-line-hover: #8e97a2;
     --accent: #0a84ff;
     --accent-text: #409cff;
-    --accent-fill: #0068d9;
+    --accent-fill: #006fe3;
     --accent-hover: #005abf;
     --accent-soft: rgba(10, 132, 255, 0.12);
     --accent-subtle: rgba(10, 132, 255, 0.06);
@@ -233,15 +248,20 @@
     --selection-border: #0a84ff;
     --selection-fill: rgba(10, 132, 255, 0.16);
     --ok: #46c487;
+    --ok-text: #46c487;
     --ok-soft: rgba(70, 196, 135, 0.16);
     --warn: #e5a843;
+    --warn-text: #e5a843;
     --warn-soft: rgba(229, 168, 67, 0.16);
     --warn-line: #5b4622;
     --danger: #ff6b5e;
+    --danger-text: #ff8378;
+    --danger-fill: #d93025;
     --danger-soft: rgba(255, 107, 94, 0.16);
     --danger-line: rgba(255, 107, 94, 0.4);
-    --danger-ink: #230805;
+    --danger-ink: #ffffff;
     --info: #63b3ff;
+    --info-text: #63b3ff;
     --info-soft: rgba(99, 179, 255, 0.16);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
@@ -278,12 +298,12 @@
   --line: #34383d;
   --line-subtle: #292c30;
   --line-strong: #646c77;
-  --control-line: #656e79;
+  --control-line: #6e7782;
   --chart-boundary: #7b8592;
-  --control-line-hover: #6c6c74;
+  --control-line-hover: #8e97a2;
   --accent: #0a84ff;
   --accent-text: #409cff;
-  --accent-fill: #0068d9;
+  --accent-fill: #006fe3;
   --accent-hover: #005abf;
   --accent-soft: rgba(10, 132, 255, 0.12);
   --accent-subtle: rgba(10, 132, 255, 0.06);
@@ -292,15 +312,20 @@
   --selection-border: #0a84ff;
   --selection-fill: rgba(10, 132, 255, 0.16);
   --ok: #46c487;
+  --ok-text: #46c487;
   --ok-soft: rgba(70, 196, 135, 0.16);
   --warn: #e5a843;
+  --warn-text: #e5a843;
   --warn-soft: rgba(229, 168, 67, 0.16);
   --warn-line: #5b4622;
   --danger: #ff6b5e;
+  --danger-text: #ff8378;
+  --danger-fill: #d93025;
   --danger-soft: rgba(255, 107, 94, 0.16);
   --danger-line: rgba(255, 107, 94, 0.4);
-  --danger-ink: #230805;
+  --danger-ink: #ffffff;
   --info: #63b3ff;
+  --info-text: #63b3ff;
   --info-soft: rgba(99, 179, 255, 0.16);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
@@ -767,57 +792,6 @@ details > p {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.topbar-breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-}
-.topbar-crumb-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: 2px 6px;
-  cursor: pointer;
-  color: var(--ink-muted);
-  font: inherit;
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
-  transition: all var(--motion-hover);
-}
-.topbar-crumb-btn:hover {
-  background: var(--surface-hover);
-  color: var(--ink);
-  border-color: var(--line);
-}
-.topbar-crumb-btn:focus-visible {
-  outline: 2px solid var(--accent);
-}
-.topbar-crumb-btn.is-place strong {
-  font-weight: 600;
-  color: var(--ink);
-}
-.topbar-crumb-btn.is-view span {
-  font-weight: 500;
-  color: var(--ink);
-}
-.topbar-crumb-separator {
-  color: var(--ink-subtle);
-  flex-shrink: 0;
-}
-.topbar-secondary-toggle {
-  margin-left: var(--space-1);
-  color: var(--ink-muted);
-}
-.topbar-secondary-toggle:hover {
-  color: var(--ink);
-}
-.topbar-secondary-toggle.is-collapsed {
-  color: var(--accent-text);
-}
 .topbar-menu-dropdown {
   min-width: 180px;
   padding: var(--space-1) 0;
@@ -861,34 +835,6 @@ details > p {
   color: var(--accent-text);
   font-weight: 500;
 }
-.topbar-menu-divider {
-  height: 1px;
-  background: var(--line);
-  margin: var(--space-1) 0;
-}
-.topbar-menu-footer {
-  padding: var(--space-1) var(--space-2);
-}
-.topbar-menu-switch-place {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: var(--space-1-5) var(--space-2);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--text-xs);
-  color: var(--ink-muted);
-  transition: all var(--motion-hover);
-}
-.topbar-menu-switch-place:hover {
-  background: var(--surface-hover);
-  color: var(--accent-text);
-  border-color: var(--line-strong);
-}
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -906,7 +852,7 @@ details > p {
   color: var(--ink-muted);
 }
 .save-state.unsaved {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .local-badge {
   font-size: var(--text-xs);
@@ -1063,7 +1009,7 @@ main.is-flush > :is(.error, .notice) {
   color: var(--accent-ink);
 }
 .button.danger {
-  color: var(--danger);
+  color: var(--danger-text);
   border-color: var(--danger-line);
 }
 .button.danger:hover:not(:disabled) {
@@ -1082,7 +1028,7 @@ main.is-flush > :is(.error, .notice) {
   text-decoration: underline;
 }
 .text-button.danger {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 /* Text buttons in a toolbar or a row line up with the controls beside them. */
 :is(.view-toolbar, .place-toolbar, .plans-bar, .chart-toolbar, .connection-picker, .row-actions, .home-toolbar, .editor-toolbar, .plan-strip) .text-button {
@@ -1311,6 +1257,144 @@ details[open] > summary > .strip-text {
 .sql-row .strip-text {
   font-family: var(--font-mono);
   color: var(--ink-muted);
+}
+/* The plan header holds the Plan summary and SQL as compact disclosures
+   (one click each); each opens a panel over the chart, like a popover. */
+.plan-heading {
+  position: relative;
+  z-index: 3;
+}
+.plan-heading .plan-title {
+  flex: 0 1 auto;
+}
+.plan-header-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1 1 0;
+  min-width: 0;
+}
+.plan-header-tools .plan-strip {
+  /* Panels anchor to the header (its right edge), so they stay on screen. */
+  position: static;
+  min-width: 0;
+  border: 0;
+  background: none;
+}
+.plan-header-tools .primary-finding {
+  flex: 0 1 auto;
+}
+.plan-header-tools strong {
+  white-space: nowrap;
+}
+.plan-header-tools .plan-strip > summary,
+.plan-header-tools .sql-row > details > summary {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+}
+.plan-header-tools .plan-strip > summary:hover,
+.plan-header-tools .sql-row > details > summary:hover,
+.plan-header-tools details[open] > summary {
+  background: var(--surface-hover);
+}
+.plan-header-tools .sql-row {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: var(--space-1);
+  padding: 0;
+}
+.plan-header-tools .sql-card {
+  flex: none;
+}
+.plan-header-tools .sql-row > .text-button {
+  flex: none;
+  gap: var(--space-1);
+}
+.plan-header-tools .sql-copy > svg {
+  display: none;
+}
+.plan-header-meta {
+  display: none;
+  color: var(--ink-muted);
+}
+/* A narrow plan (the 720 px window): the plan header keeps one row for the
+   name, Plan summary, SQL and Export (the engine and operator count move
+   into the Plan summary panel, Copy SQL keeps its icon), and the
+   measurements wrap below it instead of overflowing. */
+.plan-screen {
+  container: plan-screen / inline-size;
+}
+@container plan-screen (max-width: 820px) {
+  .plan-heading .plan-meta { display: none; }
+  .plan-header-meta { display: block; }
+  .plan-header-tools .sql-copy > svg { display: block; }
+  .plan-header-tools .sql-copy-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .plan-heading .plan-stats { display: flex; flex-wrap: wrap; row-gap: var(--space-1); }
+  .plan-heading .plan-stats > div { padding-inline: var(--space-1-5); }
+  .plan-heading .plan-stats > div:first-child { padding-left: 0; }
+  .plan-heading .plan-stats dd { font-size: var(--text-sm); line-height: var(--leading-sm); }
+}
+.plan-header-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: var(--space-4);
+  z-index: 20;
+  width: min(560px, calc(100% - 2 * var(--space-4)));
+  max-height: min(360px, 60vh);
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-popover);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  animation: chrome-panel-in var(--motion-panel);
+}
+.plan-header-tools .strip-body.plan-header-panel {
+  max-width: none;
+  padding: var(--space-3) var(--space-4);
+}
+.plan-header-tools .sql-card pre.plan-header-panel {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  max-height: min(360px, 60vh);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Save investigation: the notebook in a sheet. */
+.notebook-sheet {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  box-shadow: var(--shadow-dialog);
+  background: var(--surface);
+  color: var(--ink);
+}
+.notebook-sheet::backdrop {
+  background: var(--scrim);
+}
+.notebook-sheet .dialog-heading {
+  margin-bottom: var(--space-3);
+}
+.notebook-sheet .error {
+  margin: 0 0 var(--space-3);
+}
+.notebook-sheet .sheet-actions {
+  margin-top: var(--space-4);
+}
+.notebook-sheet .notebook-export {
+  margin-right: auto;
 }
 .sql-card pre {
   margin: 0 0 var(--space-3);
@@ -1744,7 +1828,7 @@ details[open] > summary > .strip-text {
 }
 .trace-value code {
   font-size: var(--text-xs);
-  color: var(--info);
+  color: var(--info-text);
   overflow-wrap: anywhere;
   min-width: 0;
 }
@@ -1788,7 +1872,7 @@ details[open] > summary > .strip-text {
 }
 .capture-warnings {
   font-size: var(--text-sm);
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .capture-warnings p {
   white-space: pre-wrap;
@@ -1800,10 +1884,15 @@ details[open] > summary > .strip-text {
   gap: 16px;
 }
 .investigation-notes {
-  padding: 0 20px 20px;
+  display: grid;
+  gap: var(--space-3);
+  padding: 0;
 }
-.investigation-notes .card-heading {
-  padding-inline: 0;
+.investigation-notes .notebook-grid {
+  gap: var(--space-3);
+}
+.investigation-notes textarea {
+  min-height: 120px;
 }
 /* Form field: label above, 32 px control, hint below. */
 .field {
@@ -1856,7 +1945,7 @@ details[open] > summary > .strip-text {
 }
 .severity {
   font-size: var(--text-xs);
-  color: var(--warn);
+  color: var(--warn-text);
   background: var(--warn-soft);
   border: 1px solid var(--warn-line);
   padding: 3px 6px;
@@ -2076,7 +2165,7 @@ main:has(> .library) { padding: 0; max-width: none; }
 }
 .tags span {
   background: var(--surface-muted);
-  color: var(--info);
+  color: var(--info-text);
   border-radius: var(--radius-sm);
   padding: 4px 7px;
   font-size: var(--text-xs);
@@ -2088,7 +2177,7 @@ main:has(> .library) { padding: 0; max-width: none; }
   justify-content: space-between;
   border: 1px solid var(--danger-line);
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: var(--text-sm);
   line-height: var(--leading-sm);
   padding: var(--space-2) var(--space-3);
@@ -2100,7 +2189,7 @@ main:has(> .library) { padding: 0; max-width: none; }
 .notice {
   border: 1px solid var(--accent-line);
   background: var(--info-soft);
-  color: var(--info);
+  color: var(--info-text);
   font-size: var(--text-sm);
   line-height: var(--leading-sm);
   padding: var(--space-2) var(--space-3);
@@ -2565,9 +2654,6 @@ main:has(> .library) { padding: 0; max-width: none; }
     grid-template-columns: 1fr;
     gap: 0;
   }
-  .investigation-notes {
-    padding-inline: 15px;
-  }
   .compare-heading,
   .compare-stats,
   .compare-hint,
@@ -2719,7 +2805,7 @@ main:has(> .library) { padding: 0; max-width: none; }
   background: var(--warn);
 }
 .session-status.error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .session-status.error::before {
   background: var(--danger);
@@ -2835,11 +2921,11 @@ main:has(> .library) { padding: 0; max-width: none; }
 }
 .type-tag.is-production {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .type-tag.is-development {
   background: var(--ok-soft);
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .connection-safety {
   display: flex;
@@ -2870,19 +2956,30 @@ main:has(> .library) { padding: 0; max-width: none; }
   max-width: 70ch;
 }
 .connection-panel .safety-hint.is-warning {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 
-/* Plans: the Explore / Compare switch and Import plan. */
+/* Plans: the Explore / Compare switch beside the place title in the top
+   bar, Import plan at its end (before Save investigation). */
 .plans-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  min-height: var(--toolbar-h);
-  padding: 0 var(--space-5);
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.window-toolbar .plans-bar {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.plans-bar .plans-import {
+  margin-left: auto;
+}
+/* Phones only: the open plan and its actions. */
+.plans-phone-bar {
+  display: none;
 }
 /* Compact empty state (Plans, Server views, Investigations): an icon, a
    title, one line, one action; never taller than 240 px. */
@@ -3050,13 +3147,13 @@ main:has(> .library) { padding: 0; max-width: none; }
   gap: var(--space-1);
 }
 .password-state.saved {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .row-test.ok {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .row-test.failed {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .row-actions {
   display: flex;
@@ -3075,7 +3172,7 @@ main:has(> .library) { padding: 0; max-width: none; }
   background: var(--danger-soft);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .connections-empty {
   padding: var(--space-3) var(--space-5);
@@ -3453,7 +3550,10 @@ button, .plan-item, .main-nav button {
 .window-toolbar .topbar-title {
   font-size: var(--text-base);
   letter-spacing: -0.01em;
-  flex: 1 1 160px;
+  /* The place name keeps its width; the controls after it sit at the end
+     of the bar, and the connection picker gives up width first. */
+  flex: none;
+  margin-right: auto;
 }
 .window-toolbar .topbar-title > span {
   min-width: 0;
@@ -3729,11 +3829,17 @@ button, .plan-item, .main-nav button {
   .window-toolbar .window-save > span, .window-toolbar .save-state {
     display: none;
   }
+  /* Import plan beside it follows suit: its icon, named for screen readers. */
+  .window-toolbar .plans-import .topbar-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
   .connection-pill .picker-target {
     display: none;
-  }
-  .window-toolbar .topbar-title {
-    flex-basis: 100px;
   }
   .workspace:is([data-place="server"], [data-place="workload"]) .refresh-all-status {
     max-width: 72px;
@@ -3757,17 +3863,6 @@ button, .plan-item, .main-nav button {
     gap: var(--space-1);
   }
   .window-toolbar .topbar-title > svg, .window-toolbar .topbar-title > span {
-    display: none;
-  }
-  /* Phones name the place only: the view header names the view, and the
-     list of views is its own screen. */
-  .topbar-breadcrumb :is(.topbar-crumb-separator, .topbar-crumb-btn.is-view, .topbar-secondary-toggle) {
-    display: none;
-  }
-  .topbar-crumb-btn.is-place {
-    padding-inline: var(--space-1);
-  }
-  .topbar-crumb-btn.is-place > svg {
     display: none;
   }
   /* The picker holds the connection pill and the Privileges button: the
@@ -3893,6 +3988,67 @@ button, .plan-item, .main-nav button {
 /* On phones the selected plan and its actions take one row. The chart view
    and runtime controls take two more; findings and SQL stay within reach. */
 .plans-phone-toolbar, .chart-phone-options { display: none; }
+/* The compact Legend popover (Visual Explain): its trigger and menu, shown
+   where the inline legend would take a band of its own. */
+.wb-legend-trigger {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: 0 6px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+.wb-legend-trigger::-webkit-details-marker { display: none; }
+.wb-legend-menu {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  color: var(--ink);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+.wb-legend-menu .wb-pan-hint { grid-column: 1 / -1; color: var(--ink-muted); }
+/* Compare in a narrow window: the four chart views become one select, as
+   in Explore, so the comparison bar does not overflow. */
+.compare-screen {
+  container: compare-screen / inline-size;
+}
+@container compare-screen (max-width: 820px) {
+  .compare-tools > .segmented { display: none; }
+  .compare-tools > .compare-phone-view { display: block; }
+  .compare-tools { flex-wrap: wrap; }
+}
+/* A narrow plan (the 720 px window): the chart's view, metric and branch
+   become one select and an Options menu, and the legend a popover, so the
+   chart controls take one row. */
+.plan-fold {
+  container: plan-fold / inline-size;
+}
+@container plan-fold (max-width: 820px) {
+  .chart-toolbar .chart-views,
+  .chart-toolbar .chart-desktop-option { display: none; }
+  .chart-phone-options { display: flex; align-items: center; gap: var(--space-1); flex: none; }
+  .chart-toolbar .chart-options { flex: none; }
+  .plan-chart .chart-toolbar input[type="search"] { min-width: 72px; width: auto; flex: 1 1 96px; }
+  .wb-legend { display: none; }
+  .wb-legend-popover { display: block; flex: none; }
+}
 .compare-phone-view { display: none; }
 /* Compare on a phone: the same compact header as Explore, so the first chart
    starts in the top third. The page title is the Plans bar's Compare; the two
@@ -3926,7 +4082,9 @@ button, .plan-item, .main-nav button {
   .plans-bar.has-active-plan { min-height: 0; padding: var(--space-1) var(--space-2); }
   .plans-bar.has-active-plan > .segmented,
   .plans-bar.has-active-plan > .plans-import,
-  .plan-screen > .plan-heading { display: none; }
+  .plan-screen > .plan-heading > :is(.plan-title, .plan-stats, .plan-exports) { display: none; }
+  .plan-screen > .plan-heading { min-height: 0; padding: 0 var(--space-2); }
+  .plans-phone-bar { display: flex; padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--line); background: var(--surface); }
   .plans-phone-toolbar { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-width: 0; }
   .plans-phone-toolbar > .select { flex: 1; min-width: 0; }
   .plans-phone-toolbar select { width: 100%; }
@@ -3944,40 +4102,6 @@ button, .plan-item, .main-nav button {
   .plan-chart .chart-toolbar .wb-controls input[type="search"] { min-width: 72px; width: auto; flex: 1 1 72px; }
   .plan-fold .wb-legend, .compare-pane .wb-legend { display: none; }
   .wb-legend-popover { display: block; flex: none; }
-  .wb-legend-trigger {
-    list-style: none;
-    display: inline-flex;
-    align-items: center;
-    min-height: var(--control-h);
-    padding: 0 6px;
-    border: 1px solid var(--control-line);
-    border-radius: var(--radius-sm);
-    background: var(--surface);
-    color: var(--ink);
-    font-size: var(--text-sm);
-    font-weight: 500;
-    cursor: pointer;
-    user-select: none;
-  }
-  .wb-legend-trigger::-webkit-details-marker { display: none; }
-  .wb-legend-menu {
-    position: absolute;
-    top: calc(100% + var(--space-1));
-    right: 0;
-    z-index: 6;
-    display: grid;
-    grid-template-columns: repeat(2, max-content);
-    gap: var(--space-1) var(--space-3);
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
-    box-shadow: var(--shadow-popover);
-    color: var(--ink);
-    font-size: var(--text-xs);
-    line-height: var(--leading-xs);
-  }
-  .wb-legend-menu .wb-pan-hint { grid-column: 1 / -1; color: var(--ink-muted); }
 }
 
 /* Home uses the kit's data table and inspector. The right column stays in
@@ -4144,46 +4268,26 @@ button, .plan-item, .main-nav button {
   font-family: var(--font-mono, monospace);
   line-height: 1.2;
 }
+/* Icon-only, so the icon uses the warning text color (at least 3:1 on its
+   tint over the sidebar in both appearances). */
 .update-badge-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #f59e0b;
-  background: rgba(245, 158, 11, 0.15);
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  border-radius: var(--radius-sm, 4px);
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
   padding: 3px;
   cursor: pointer;
   animation: pulse-update 2.5s infinite ease-in-out;
 }
 .update-badge-button:hover {
-  background: rgba(245, 158, 11, 0.25);
-  color: #fbbf24;
+  border-color: var(--warn);
 }
 @keyframes pulse-update {
-  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
-  50% { transform: scale(1.08); box-shadow: 0 0 8px 2px rgba(245, 158, 11, 0.35); }
-}
-
-/* Topbar crumb dropdown trigger */
-.topbar-crumb-dropdown-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  margin: 0;
-  background: var(--surface-button, rgba(255, 255, 255, 0.06));
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  color: var(--ink);
-  font-size: var(--text-base);
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-.topbar-crumb-dropdown-trigger:hover {
-  background: var(--surface-hover, rgba(255, 255, 255, 0.12));
-  border-color: var(--ink-muted);
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 var(--warn-line); }
+  50% { transform: scale(1.08); box-shadow: 0 0 8px 2px var(--warn-line); }
 }
 
 /* Update dialog */
@@ -4203,7 +4307,7 @@ button, .plan-item, .main-nav button {
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-3);
-  background: var(--surface-card, rgba(255, 255, 255, 0.03));
+  background: var(--surface-subtle);
   border-radius: var(--radius-md);
   border: 1px solid var(--line);
 }
@@ -4222,7 +4326,7 @@ button, .plan-item, .main-nav button {
   color: var(--ink);
 }
 .version-box.latest.is-newer .version-value {
-  color: var(--accent, #60a5fa);
+  color: var(--accent-text);
   font-weight: 700;
 }
 .update-status-badge {
@@ -4234,14 +4338,12 @@ button, .plan-item, .main-nav button {
   border-radius: var(--radius-sm);
 }
 .update-status-badge.available {
-  background: rgba(245, 158, 11, 0.12);
-  color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: var(--warn-soft);
+  color: var(--warn-text);
 }
 .update-status-badge.up-to-date {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: var(--ok-soft);
+  color: var(--ok-text);
 }
 .update-release-title {
   font-size: var(--text-base);
@@ -4264,7 +4366,7 @@ button, .plan-item, .main-nav button {
   font-size: var(--text-xs);
   line-height: 1.4;
   padding: var(--space-2);
-  background: var(--surface-card, rgba(0, 0, 0, 0.2));
+  background: var(--surface-subtle);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   white-space: pre-wrap;
@@ -4276,8 +4378,8 @@ button, .plan-item, .main-nav button {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  background: rgba(16, 185, 129, 0.1);
-  color: #34d399;
+  background: var(--ok-soft);
+  color: var(--ok-text);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
 }

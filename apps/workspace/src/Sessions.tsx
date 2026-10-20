@@ -3,9 +3,10 @@
 // queries. A counter strip and one summary line, Active / All, a breakdown by
 // state, user, host, database and command (collapsed), and a table of
 // sessions; the selected session's statement, transaction, lock wait, Show
-// plan and Kill are in the inspector. Kill asks for confirmation (Cancel is
-// the default) and is never offered for server threads.
-import { useEffect, useRef, useState } from "react";
+// plan and Kill are in the inspector, and Show plan and Kill are also in each
+// row's ⋯ menu. Kill asks for confirmation (Cancel is the default) and is
+// never offered for server threads.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead } from "./viewOnScreen";
 import { api, number, type Connection, type Session, type SessionBreakdown, type SessionFlag, type SessionsReport } from "./api";
 import type { ServerKind } from "./session";
@@ -17,7 +18,9 @@ import { PrivilegeGate, privilegeResult, useLoginUser, usePrivilege } from "./pr
 import { useWritePolicy } from "./Connections";
 import {
   AutoRefresh,
+  closePopovers,
   NumberField,
+  Popover,
   Disclosure,
   EmptyState,
   FactStrip,
@@ -57,6 +60,11 @@ const LOCK_KIND: Record<string, string> = {
 
 function tone(status: string | null | undefined): Tone {
   return status === "ok" || status === "watch" || status === "problem" || status === "info" ? status : "unknown";
+}
+
+/** The flags of a session as words ("Long running, Lock wait"). */
+function flagText(flags: SessionFlag[]) {
+  return flags.map((f) => (FLAGS[f] || [f.replace(/_/g, " ")])[0]).join(", ");
 }
 
 function Breakdown({ title, rows }: { title: string; rows: SessionBreakdown }) {
@@ -227,9 +235,72 @@ export function SessionsView({
     window.setTimeout(() => noteRef.current?.focus(), 0);
   }
 
+  /** Open the Kill sheet for *x*; focus returns to *opener* when it closes. */
+  function openKill(x: Session, opener: HTMLElement | null) {
+    if (other) return;
+    trigger.current = opener;
+    setNote(null);
+    setTarget({ ...killTarget(x), via: killVia(connection), server_identity: report?.server_identity ? { ...report.server_identity } : undefined });
+  }
+  /** Why Kill is off for *x* (empty when it is offered). */
+  function killBlocked(x: Session) {
+    const system = x.thread_kind !== "client";
+    const own = x.flags.includes("own_connection");
+    return policy?.blocked || (connection.read_only ? "This connection is read-only." : "") ||
+      (system ? "A server thread, not a client session: myflames does not end it." : own ? "Another myflames tool is running it." : "");
+  }
+  /** The row menu (the trailing ⋯ column): Show plan and Kill, which used to
+   * be buttons in the row. Kill opens the same confirmation sheet as the
+   * inspector's, after the menu has closed, and Cancel returns focus to ⋯. */
+  function rowMenu(v: Session) {
+    const blocked = killBlocked(v);
+    return (
+      <span className="session-row-menu-anchor" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+        <Popover
+          menu
+          label={`Actions for connection ${v.id}`}
+          buttonTitle={`Actions for connection ${v.id}`}
+          buttonClassName="icon-button row-more"
+          disabled={actionsOff}
+          trigger={<Icon name="more" />}
+        >
+          <div className="session-row-menu">
+            {v.explainable && (
+              <button type="button" role="menuitem" disabled={actionsOff} onClick={() => { closePopovers(); void showPlan(v.id); }}>
+                Show plan
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              className="is-danger"
+              disabled={actionsOff || !!blocked}
+              title={blocked || `Kill connection ${v.id} or its query; asks first`}
+              onClick={(e) => {
+                const opener = e.currentTarget.closest(".popover-anchor")?.querySelector<HTMLElement>("button") || null;
+                const chosenOn = reads.key;
+                closePopovers();
+                // After the menu has closed and handed focus back to ⋯, and
+                // only while the connection in use is still the one the row
+                // was read from (a switch in between opens nothing).
+                window.setTimeout(() => {
+                  if (reads.currentKey() === chosenOn) openKill(v, opener);
+                }, 0);
+              }}
+            >
+              Kill…
+            </button>
+          </div>
+        </Popover>
+      </span>
+    );
+  }
+
   const s = report?.summary;
   const needle = search.trim().toLowerCase();
-  const rows = (report?.sessions || []).filter(
+  // Filtered once per report and search, not on every render (a selection in
+  // thousands of sessions).
+  const rows = useMemo(() => (report?.sessions || []).filter(
     (x) =>
       !needle ||
       [String(x.id), x.user, x.host, x.db, x.command, x.state, x.info_short, x.last_statement]
@@ -237,7 +308,7 @@ export function SessionsView({
         .join(" ")
         .toLowerCase()
         .includes(needle),
-  );
+  ), [report, needle]);
   const noProcess = report?.capabilities.process_privilege === false;
 
   const columns: Column<Session>[] = [
@@ -245,13 +316,22 @@ export function SessionsView({
       key: "status",
       label: <span className="visually-hidden">Status</span>,
       sort: (x) => ({ problem: 0, watch: 1 } as Record<string, number>)[x.status] ?? 2,
+      // The Flags column starts off: a flagged status names its flags on
+      // hover, and an OK row with flags (a server thread, myflames' own
+      // connection) shows them as quiet words. A fixed width keeps a long
+      // word from widening the list; it truncates with the full text on hover.
+      width: 88,
       render: (x) =>
         x.status === "problem" || x.status === "watch" ? (
-          <StatusDot tone={tone(x.status)} label={x.status === "watch" ? "Watch" : "Problem"} />
+          <span title={flagText(x.flags) || undefined}>
+            <StatusDot tone={tone(x.status)} label={x.status === "watch" ? "Watch" : "Problem"} />
+          </span>
+        ) : x.flags.length ? (
+          <span className="cell-truncate cell-muted" title={flagText(x.flags)}>{flagText(x.flags)}</span>
         ) : null,
       className: "cell-dot",
     },
-    { key: "id", label: "ID", num: true, width: 96, sort: (x) => x.id, render: (x) => x.id },
+    { key: "id", label: "ID", title: "Connection ID (the processlist ID that KILL takes)", num: true, width: 96, sort: (x) => x.id, render: (x) => x.id },
     {
       key: "user",
       label: "User@host",
@@ -268,7 +348,7 @@ export function SessionsView({
     },
     { key: "db", label: "Database", sort: (x) => x.db || "", render: (x) => x.db || <span className="cell-muted">—</span> },
     { key: "command", label: "Command", sort: (x) => x.command || "", render: (x) => x.command || "—" },
-    { key: "time", label: "Time (s)", num: true, width: 112, sort: (x) => x.time_s, render: (x) => <CompactNumber value={x.time_s} /> },
+    { key: "time", label: "Time", name: "Time (s)", title: "Time in the current state, in seconds", num: true, width: 112, sort: (x) => x.time_s, render: (x) => <CompactNumber value={x.time_s} /> },
     {
       key: "statement",
       label: "Statement",
@@ -330,48 +410,6 @@ export function SessionsView({
           </ul>
         ) : null,
     },
-    {
-      key: "actions",
-      label: "Actions",
-      width: 110,
-      render: (x) => {
-        const system = x.thread_kind !== "client";
-        const own = x.flags.includes("own_connection");
-        return (
-          <div className="session-row-actions" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              className="button small danger"
-              disabled={actionsOff || system || own}
-              title={system ? "Server thread" : own ? "myflames connection" : `Kill connection ${x.id}`}
-              onClick={(e) => {
-                if (other) return;
-                trigger.current = e.currentTarget;
-                setNote(null);
-                setTarget({
-                  ...killTarget(x),
-                  via: killVia(connection),
-                  server_identity: report?.server_identity ? { ...report.server_identity } : undefined,
-                });
-              }}
-            >
-              Kill
-            </button>
-            {x.explainable && (
-              <button
-                type="button"
-                className="button small"
-                disabled={actionsOff}
-                title={`Show plan for connection ${x.id}`}
-                onClick={() => void showPlan(x.id)}
-              >
-                Plan
-              </button>
-            )}
-          </div>
-        );
-      },
-    },
   ];
 
   let inspector: InspectorContent | null = null;
@@ -404,14 +442,8 @@ export function SessionsView({
           <PrivilegeGate action="kill" gate={killGate} className="danger"
             disabled={actionsOff || system || own}
             aria-label={`Kill: connection ${x.id}`}
-            blocked={policy?.blocked || (connection.read_only ? "This connection is read-only." : "") ||
-              (system ? "A server thread, not a client session: myflames does not end it." : own ? "Another myflames tool is running it." : "")}
-            onClick={(e) => {
-              if (other) return;
-              trigger.current = e.currentTarget;
-              setNote(null);
-              setTarget({ ...killTarget(x), via: killVia(connection), server_identity: report?.server_identity ? { ...report.server_identity } : undefined });
-            }}>Kill</PrivilegeGate>
+            blocked={killBlocked(x)}
+            onClick={(e) => openKill(x, e.currentTarget)}>Kill</PrivilegeGate>
         </>
       ),
       body: (
@@ -529,7 +561,7 @@ export function SessionsView({
             Every connection to the server, from the process list joined with InnoDB transactions: what each runs, how
             long, idle transactions, and lock waits. Active hides sleeping sessions without a transaction.
           </p>
-          <p>Statuses are rules of thumb. Select a session for its statement, transaction, plan, and Kill (it asks first).</p>
+          <p>Statuses are rules of thumb. Select a session for its statement, transaction, plan, and Kill (it asks first); a row's ⋯ menu also has Show plan and Kill.</p>
         </>
       }
       controls={
@@ -671,7 +703,12 @@ export function SessionsView({
             <section className="view-section" aria-label="Sessions">
               <PriorityTable
                 id="sessions.sessions"
-                detailColumns={["user", "db", "command", "statement", "lock", "flags", "actions"]}
+                detailColumns={["user", "db", "command", "statement", "lock", "flags"]}
+                // Flags start off so the list fits beside the list of views at
+                // 1440 px: the Status dot names them on hover, and the details
+                // explain each one (Why it is flagged, Rules).
+                defaultHidden={["flags"]}
+                rowAction={rowMenu}
                 label="Sessions"
                 columns={columns}
                 rows={rows}

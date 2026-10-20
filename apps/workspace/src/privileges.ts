@@ -268,8 +268,7 @@ export function PrivilegeGate({ action, gate: targetGate, blocked = "", write = 
   if (!gate.available) return null;
   return createElement(Fragment, null, createElement("button", { ...props, className: `button privilege-action ${props.className || ""}`, ...privilegeButtonProps(gate, onClick, reason, [props["aria-describedby"], descriptionId].filter(Boolean).join(" ")),
     title: reason || gate.disabledReason || props.title || gate.reason,
-    "data-privilege-action": action, "data-privilege-state": gate.state }, children,
-    gate.state === "unknown" && !reason ? createElement("span", { className: "privilege-unverified" }, "Unverified") : null),
+    "data-privilege-action": action, "data-privilege-state": gate.state }, children),
     createElement("span", { id: descriptionId, className: "account-sr" }, reason || gate.disabledReason || gate.reason));
 }
 

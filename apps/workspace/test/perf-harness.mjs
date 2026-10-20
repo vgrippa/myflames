@@ -46,7 +46,7 @@ export const privilegeAnswer = (state, need = "CONNECTION_ADMIN or SUPER", extra
   missing: state === "denied" ? [need] : [], need, reason: state === "denied" ? `Needs ${need}.` : "",
   grey_out: state === "denied", available: true, ...extra,
 });
-export async function assertPrivilege(page, selector, state, need, { unverifiedBadge = state === "unknown" } = {}) {
+export async function assertPrivilege(page, selector, state, need, { unverifiedBadge = false } = {}) {
   await page.waitForFunction((s, expected) => document.querySelector(s)?.dataset.privilegeState === expected, {}, selector, state);
   const actual = await page.$eval(selector, e => ({ disabled: e.disabled, aria: e.getAttribute("aria-disabled"), title: e.title,
     described: (e.getAttribute("aria-describedby") || "").split(" ").map(id => document.getElementById(id)?.textContent || "").join(" "),
@@ -54,6 +54,7 @@ export async function assertPrivilege(page, selector, state, need, { unverifiedB
   assert.equal(actual.disabled, false, "privilege denial never removes the button from keyboard focus");
   assert.equal(actual.aria, String(state === "denied"));
   assert.equal(actual.unverified, unverifiedBadge);
+  if (state === "unknown") assert.match(actual.described, /Unverified/);
   if (need) { assert.ok(actual.title.includes(need), actual.title); assert.ok(actual.described.includes(need), actual.described); }
   await page.focus(selector);
   assert.equal(await page.$eval(selector, e => document.activeElement === e), true);

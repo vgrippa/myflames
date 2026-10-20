@@ -557,20 +557,22 @@ def _lifecycle_prepare(payload, options, workspace, passwords):
     from . import lifecycle as lc
     operation = payload.get("operation")
     threads = payload.get("threads", 4)
-    with lc._connect(lc.LifecycleConnection, options) as conn:
+    # MySQL Shell dryRun tools belong to a runner that closing the workspace stops.
+    with lc._connect(lc.LifecycleConnection, options) as conn, \
+            workspace.lifecycle.runner("preflight", options) as runner:
         if operation == "dump":
             return lc.prepare_dump(conn, options, payload.get("directory") or "",
                                    schemas=_lifecycle_list(payload.get("schemas"), "schemas"),
                                    tables=_lifecycle_list(payload.get("tables"), "tables"), threads=threads,
                                    prefer_shell=payload.get("prefer_shell") is not False,
-                                   options=payload.get("options"))
+                                   options=payload.get("options"), job=runner)
         if operation == "restore":
             return lc.prepare_restore(conn, options, payload.get("directory") or "",
                                       schema=payload.get("schema") or None,
                                       allow_source_restore=payload.get("allow_source") is True,
                                       existing_objects=payload.get("existing", "refuse"), threads=threads,
                                       resume=payload.get("resume") is True,
-                                      staging_directory=payload.get("staging_directory") or None)
+                                      staging_directory=payload.get("staging_directory") or None, job=runner)
         if operation == "clone":
             donor = _lifecycle_donor(payload, workspace, passwords)
             with lc._connect(lc.LifecycleConnection, donor) as donor_conn:
@@ -771,9 +773,10 @@ def _lifecycle_response(path, payload, workspace):
             return dict(tools, server={k: server[k] for k in ("engine", "version")},
                         offered=lc.offered_tools(server, tools))
         if path == "/api/lifecycle/upgrade-check":
-            with lc._connect(lc.LifecycleConnection, options) as conn:
+            with lc._connect(lc.LifecycleConnection, options) as conn, \
+                    workspace.lifecycle.runner("upgrade_check", options) as runner:
                 report = lc.upgrade_check(conn, payload.get("target_version"), options,
-                                          prefer_shell=payload.get("prefer_shell") is not False)
+                                          prefer_shell=payload.get("prefer_shell") is not False, job=runner)
             report["server"] = {k: report["server"][k] for k in ("engine", "version", "identity")}
             return report
         if path == "/api/lifecycle/prepare":
@@ -1466,7 +1469,7 @@ class WorkspaceServer(ThreadingHTTPServer):
     daemon_threads = True
     MAX_REQUEST_WORKERS = 32
 
-    def __init__(self, port=0, store_path=None, no_restore=False):
+    def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None):
         from .workspace_store import WorkspaceStore
         from .live import LiveJobs
         self.store = WorkspaceStore(store_path)
@@ -1479,8 +1482,9 @@ class WorkspaceServer(ThreadingHTTPServer):
         # ended when the server closes.
         self.editor = EditorSessions()
         from .lifecycle import LifecycleJobs
-        # Dump, restore and clone jobs; running ones are cancelled on close.
-        self.lifecycle = LifecycleJobs()
+        # Dump, restore and clone jobs; their tools are stopped first on close.
+        # tool_groups_file: the desktop app's record of tool process groups.
+        self.lifecycle = LifecycleJobs(tool_groups_file)
         from .table_data import TableData
         self.table_data = TableData()
         # Browser authentication is separate from the CSRF header. Only the
@@ -1522,6 +1526,13 @@ class WorkspaceServer(ThreadingHTTPServer):
             self._worker_slots.release()
 
     def server_close(self):
+        # Lifecycle tools (dump, restore, clone) run in their own process
+        # groups, beyond a supervisor's signal to this process group. Stop them
+        # first and boundedly, before cleanup that can block on the server
+        # (KILL QUERY in editor sessions, replication loops).
+        lifecycle = getattr(self, "lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.shutdown()
         registry = getattr(self, "replication_loops", None)
         if registry is not None:
             registry.stop_all(wait=True)
@@ -1934,7 +1945,11 @@ def cmd_ui(argv):
     if not (ASSET_DIR / "index.html").is_file():
         parser.exit(2, "UI assets are missing. Reinstall myflames or build apps/workspace.\n")
     try:
-        server = WorkspaceServer(args.port, no_restore=args.no_restore)
+        # Set only by the desktop app: a file in its private runtime directory.
+        server = WorkspaceServer(args.port, no_restore=args.no_restore,
+                                 tool_groups_file=os.environ.get("MYFLAMES_TOOL_GROUPS_FILE") or None)
+    except ValueError as exc:
+        parser.exit(2, "Cannot start the UI: %s\n" % exc)
     except OSError as exc:
         parser.exit(2, "Cannot start the UI: %s. Try --port 0.\n" % exc)
     with server:

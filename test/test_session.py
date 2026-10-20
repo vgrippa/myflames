@@ -338,8 +338,9 @@ class TestUiCommand(unittest.TestCase):
             origin = 'http://127.0.0.1:1'
             launch_url = origin + '/#launch=test-only'
 
-            def __init__(self, port, no_restore=False):
+            def __init__(self, port, no_restore=False, tool_groups_file=None):
                 created['no_restore'] = no_restore
+                created['tool_groups_file'] = tool_groups_file
 
             def __enter__(self):
                 return self
@@ -358,6 +359,13 @@ class TestUiCommand(unittest.TestCase):
                 mock.patch('sys.stderr', io.StringIO()):
             cmd_ui(['--no-browser'])
         self.assertFalse(created['no_restore'])
+        self.assertIsNone(created['tool_groups_file'])
+        # Only the desktop app sets this: its record of tool process groups.
+        with mock.patch('myflames.ui.WorkspaceServer', FakeServer), \
+                mock.patch('sys.stderr', io.StringIO()), \
+                mock.patch.dict('os.environ', {'MYFLAMES_TOOL_GROUPS_FILE': '/private/runtime/tool-groups-x.json'}):
+            cmd_ui(['--no-browser'])
+        self.assertEqual(created['tool_groups_file'], '/private/runtime/tool-groups-x.json')
 
 
 class TestClearOrdering(StoreTestCase):

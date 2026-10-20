@@ -982,7 +982,11 @@ def compose_report(server, runs, attribution, interval=DEFAULT_INTERVAL, schemas
             status = "info"
         flagged = [f["title"] for f in items if f["status"] in ("problem", "watch", "unknown")]
         if flagged:
-            text = "%s: %s" % (_counts_text(counts, ("problem", "watch", "unknown")), ", ".join(flagged))
+            # Titles stay under their own status: an unknown (not judged)
+            # finding never reads as one to watch beside a WATCH section.
+            text = "; ".join("%s: %s" % (_counts_text(counts, (s,)),
+                                         ", ".join(f["title"] for f in items if f["status"] == s))
+                             for s in ("problem", "watch", "unknown") if counts[s])
             if counts["ok"]:
                 text += "; %d ok" % counts["ok"]
         elif items and status == "info":

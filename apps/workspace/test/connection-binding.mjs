@@ -209,7 +209,7 @@ try {
     } else {
       await nav("Server");
     }
-    await page.click(`#server-nav-${kind}`);
+    await page.locator(`#server-nav-${kind}`).click();
     await page.waitForSelector(view(kind));
   };
   const disabled = (selector) => page.$eval(selector, (e) => e.disabled);
