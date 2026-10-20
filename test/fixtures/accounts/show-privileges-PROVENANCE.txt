@@ -1,0 +1,30 @@
+SHOW PRIVILEGES and SHOW DATABASES recordings, captured live on 2026-10-15
+
+Same replay form as test/fixtures/accounts: {"server", "captured", "sessions":
+{login: {"login", "calls": [{"sql", "flags", "output"}]}}} plus "client" and
+"scenario". test/_accounts_replay.ReplayConn replays them by exact SQL text.
+
+Client: mysql 8.0.45 (Homebrew), run by a recording myflames MySQLConnection:
+  mysql --defaults-extra-file=<temporary option file> --batch
+        --skip-column-names --silent --default-character-set=utf8mb4
+        "--init-command=SET NAMES utf8mb4" [call flags] -e <sql>
+Each statement is recorded three ways with identical output:
+  "SHOW PRIVILEGES"                          flags null (connector.query_rows)
+  "/*myflames:accounts*/ SHOW PRIVILEGES"    flags ["--comments"] (perf_common.Reader)
+  "/*myflames:privileges*/ SHOW PRIVILEGES"  flags ["--comments"]
+and the same for SHOW DATABASES. Output is exact stdout: tab-separated, no
+header row. Columns: Privilege, Context, Comment (SHOW PRIVILEGES); Database.
+
+Servers (throwaway Docker containers, removed after recording):
+  mysql-8.0.json      mysql:8.0      8.0.46                     69 privileges
+  mysql-8.4.json      mysql:8.4      8.4.11                     73
+  mysql-9.7.json      mysql:9.7      9.7.2                      75
+  mariadb-10.11.json  mariadb:10.11  10.11.19-MariaDB-ubu2204   41
+  mariadb-11.4.json   mariadb:11.4   11.4.13-MariaDB-ubu2404    42
+
+Scenario: databases shop (table orders, procedure p, function f), db_x, dbAx;
+  acct_low   SELECT ON shop.*
+  acct_admin ALL ON *.* WITH GRANT OPTION
+  root       image default
+Sessions: root, acct_admin, acct_low (SHOW PRIVILEGES is the same for all
+three; SHOW DATABASES differs). Passwords are throwaway.

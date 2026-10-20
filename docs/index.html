@@ -102,23 +102,23 @@ claude mcp add myflames -- myflames-mcp</code></pre>
       <div>
         <strong>Storage internals</strong>
         <ul>
-          <li><a href="teach/btree.html" target="_blank" rel="noopener">B+tree lookup</a> — clustered PK vs covering vs non-covering secondary, 16 KiB page fan-out</li>
-          <li><a href="teach/lru.html" target="_blank" rel="noopener">Midpoint-insertion LRU</a> — why MySQL's buffer pool survives full-scan pollution</li>
+          <li><a href="teach/index/btree.html" target="_blank" rel="noopener">B+tree lookup</a> — clustered PK vs covering vs non-covering secondary, 16 KiB page fan-out</li>
+          <li><a href="teach/cache/lru.html" target="_blank" rel="noopener">Midpoint-insertion LRU</a> — why MySQL's buffer pool survives full-scan pollution</li>
         </ul>
         <strong>Join algorithms</strong>
         <ul>
-          <li><a href="teach/bnl.html" target="_blank" rel="noopener">Block Nested Loop</a> — MariaDB 11.x default (MySQL removed it in 8.0.20)</li>
-          <li><a href="teach/hash.html" target="_blank" rel="noopener">Hash join</a> — build, probe, grace-hash spill on <code>join_buffer_size</code> overflow</li>
-          <li><a href="teach/join.html" target="_blank" rel="noopener">BNL vs hash side-by-side</a> — shared sliders, live cost comparison</li>
+          <li><a href="teach/join/bnl.html" target="_blank" rel="noopener">Block Nested Loop</a> — MariaDB 11.x default (MySQL removed it in 8.0.20)</li>
+          <li><a href="teach/join/hash.html" target="_blank" rel="noopener">Hash join</a> — build, probe, grace-hash spill on <code>join_buffer_size</code> overflow</li>
+          <li><a href="teach/join/join.html" target="_blank" rel="noopener">BNL vs hash side-by-side</a> — shared sliders, live cost comparison</li>
         </ul>
       </div>
       <div>
         <strong>Query optimization</strong>
         <ul>
-          <li><a href="teach/filesort.html" target="_blank" rel="noopener">Filesort</a> — sort_buffer_size, sorted runs, k-way merge</li>
-          <li><a href="teach/tmp.html" target="_blank" rel="noopener">Temporary tables</a> — MEMORY to on-disk InnoDB conversion</li>
-          <li><a href="teach/icp.html" target="_blank" rel="noopener">Index Condition Pushdown</a> — filter inside InnoDB, skip unnecessary row fetches</li>
-          <li><a href="teach/index_merge.html" target="_blank" rel="noopener">Index Merge</a> — union, intersection, sort-union of row-ID sets</li>
+          <li><a href="teach/scan/filesort.html" target="_blank" rel="noopener">Filesort</a> — sort_buffer_size, sorted runs, k-way merge</li>
+          <li><a href="teach/scan/tmp.html" target="_blank" rel="noopener">Temporary tables</a> — in-memory to on-disk conversion</li>
+          <li><a href="teach/index/icp.html" target="_blank" rel="noopener">Index Condition Pushdown</a> — filter inside InnoDB, skip unnecessary row fetches</li>
+          <li><a href="teach/index/index_merge.html" target="_blank" rel="noopener">Index Merge</a> — union, intersection, sort-union of row-ID sets</li>
         </ul>
       </div>
     </div>
@@ -141,13 +141,6 @@ claude mcp add myflames -- myflames-mcp</code></pre>
     <a class="view-full" href="demos/mysql-complex/mysql-query-complex-bargraph.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
   </section>
 
-  <section>
-    <h2>Treemap — area proportional to total time</h2>
-    <div class="embed-wrap">
-      <object data="demos/mysql-complex/mysql-query-complex-treemap.svg" type="image/svg+xml" width="100%" height="400" style="min-height: 400px;"></object>
-    </div>
-    <a class="view-full" href="demos/mysql-complex/mysql-query-complex-treemap.html" target="_blank" rel="noopener">Open full page (interactive) →</a>
-  </section>
 
   <section>
     <h2>Diagram — Visual Explain-style flow</h2>
@@ -174,7 +167,6 @@ claude mcp add myflames -- myflames-mcp</code></pre>
         <ul>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-full-scan-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
@@ -184,7 +176,6 @@ claude mcp add myflames -- myflames-mcp</code></pre>
         <ul>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-hash-join-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
@@ -194,7 +185,6 @@ claude mcp add myflames -- myflames-mcp</code></pre>
         <ul>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-bnl-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
@@ -204,7 +194,6 @@ claude mcp add myflames -- myflames-mcp</code></pre>
         <ul>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
           <li><a href="demos/mysql-analysis/mysql-query-analysis-icp-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
@@ -227,7 +216,6 @@ claude mcp add myflames -- myflames-mcp</code></pre>
         <ul>
           <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-cte-window-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
@@ -238,7 +226,6 @@ claude mcp add myflames -- myflames-mcp</code></pre>
         <ul>
           <li><a href="demos/mysql-complex/mysql-query-complex-correlated-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-correlated-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-complex/mysql-query-complex-correlated-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-correlated-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-correlated-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>
@@ -249,7 +236,6 @@ claude mcp add myflames -- myflames-mcp</code></pre>
         <ul>
           <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-flamegraph.html" target="_blank" rel="noopener">Flame graph</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-bargraph.html" target="_blank" rel="noopener">Bar chart</a></li>
-          <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-treemap.html" target="_blank" rel="noopener">Treemap</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-diagram.html" target="_blank" rel="noopener">Diagram</a></li>
           <li><a href="demos/mysql-complex/mysql-query-complex-recursive-cte-tree.html" target="_blank" rel="noopener">Execution tree</a></li>
         </ul>

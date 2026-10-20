@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from myflames import workspace_store
 from myflames.workspace_store import WorkspaceStore, validate_bundle
 
 PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text()
@@ -23,8 +24,123 @@ class TestWorkspaceStore(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        patcher = patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                         'MYFLAMES_SECRET_BACKEND': 'vault'})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
         self.path = Path(self.temp.name) / 'private' / 'workspace.sqlite3'
         self.store = WorkspaceStore(self.path)
+
+    def test_write_lock_timeout_closes_the_connection(self):
+        # BEGIN IMMEDIATE raising (a busy timeout under write contention) must
+        # not leak the connection, which no caller owns yet.
+        self.store.save('investigation', bundle())
+        opened = []
+        real_connect = self.store._connect
+
+        class Busy:
+            def __init__(self, conn):
+                self.conn, self.closed = conn, False
+                self.isolation_level = None
+
+            def execute(self, sql, *args):
+                if sql == 'BEGIN IMMEDIATE':
+                    raise sqlite3.OperationalError('database is locked')
+                return self.conn.execute(sql, *args)
+
+            def close(self):
+                self.closed = True
+                self.conn.close()
+
+        def connect():
+            wrapped = Busy(real_connect())
+            opened.append(wrapped)
+            return wrapped
+
+        with patch.object(self.store, '_connect', connect):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.store._transaction()
+        self.assertEqual(len(opened), 1)
+        self.assertTrue(opened[0].closed)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX storage safety')
+    def test_security_symlinks_are_rejected_without_touching_targets(self):
+        for suffix in ('directory', '', '-wal', '-shm', '-journal'):
+            with self.subTest(suffix=suffix):
+                folder = Path(self.temp.name) / ('case' + (suffix or 'db'))
+                folder.mkdir()
+                path = folder / 'workspace.sqlite3'
+                target = Path(self.temp.name) / ('target' + (suffix or 'db'))
+                if suffix == 'directory':
+                    target.mkdir(mode=0o755)
+                    folder.rmdir()
+                    folder.symlink_to(target, target_is_directory=True)
+                else:
+                    target.write_bytes(b'do not change')
+                    target.chmod(0o644)
+                    Path(str(path) + suffix).symlink_to(target)
+                before = target.stat().st_mode
+                with patch.object(workspace_store.sqlite3, 'connect') as connect:
+                    with self.assertRaises(ValueError):
+                        WorkspaceStore(path)._connect()
+                    connect.assert_not_called()
+                self.assertEqual(target.stat().st_mode, before)
+                if suffix != 'directory':
+                    self.assertEqual(target.read_bytes(), b'do not change')
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX storage ownership')
+    def test_security_foreign_owner_is_rejected_before_chmod_or_sqlite(self):
+        self.store._connect().close()
+        real_lstat = os.lstat
+        targets = [self.path.parent, self.path] + [Path(str(self.path) + suffix)
+                                                  for suffix in ('-wal', '-shm', '-journal')]
+        for target in targets[2:]:
+            target.write_bytes(b'')
+        for target in targets:
+            def foreign(path, *args, **kwargs):
+                result = real_lstat(path, *args, **kwargs)
+                if str(path) == str(target):
+                    fields = list(result)
+                    fields[4] = os.geteuid() + 1
+                    return os.stat_result(fields)
+                return result
+            with self.subTest(target=target), patch.object(os, 'lstat', side_effect=foreign), \
+                    patch.object(workspace_store.sqlite3, 'connect') as connect:
+                with self.assertRaisesRegex(ValueError, 'owner|owned'):
+                    self.store._connect()
+                connect.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX open flags')
+    def test_security_database_creation_is_exclusive_and_does_not_follow_links(self):
+        real_open = os.open
+        with patch.object(workspace_store.os, 'open', wraps=real_open) as opened:
+            self.store._connect().close()
+        flags = [call[0][1] for call in opened.call_args_list if str(call[0][0]) == str(self.path)]
+        self.assertTrue(any(flag & os.O_EXCL and flag & os.O_CREAT for flag in flags))
+        self.assertTrue(all(flag & os.O_NOFOLLOW for flag in flags))
+        with patch.object(workspace_store.os, 'open', wraps=real_open) as opened:
+            self.store._connect().close()
+        flags = [call[0][1] for call in opened.call_args_list if str(call[0][0]) == str(self.path)]
+        self.assertTrue(any(not flag & os.O_CREAT for flag in flags))
+        self.assertTrue(all(flag & os.O_NOFOLLOW for flag in flags))
+
+    def test_security_sqlite_setup_failures_close_the_connection(self):
+        from unittest.mock import MagicMock
+        for fail_at in range(1, 8):
+            conn = MagicMock()
+            calls = [0]
+            def step(*args):
+                calls[0] += 1
+                if calls[0] == fail_at:
+                    raise sqlite3.OperationalError('setup failed')
+                return MagicMock(fetchone=lambda: (1,))
+            conn.execute.side_effect = step
+            conn.commit.side_effect = step
+            with self.subTest(fail_at=fail_at), patch.object(workspace_store.sqlite3, 'connect', return_value=conn):
+                with self.assertRaisesRegex(sqlite3.OperationalError, 'setup failed'):
+                    self.store._connect()
+                conn.close.assert_called_once()
 
     def test_read_and_delete_do_not_create_storage(self):
         self.assertEqual(self.store.list('investigation'), [])
@@ -47,6 +163,73 @@ class TestWorkspaceStore(unittest.TestCase):
             self.assertEqual(self.path.parent.stat().st_mode & 0o777, 0o700)
         self.store.delete('investigation', first['id'])
         self.assertEqual(self.store.list('investigation'), [])
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX mode bits')
+    def test_every_open_protects_existing_default_and_custom_storage(self):
+        with patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                     'MYFLAMES_SECRET_BACKEND': 'vault'}):
+            for store in (WorkspaceStore(), self.store):
+                with self.subTest(path=str(store.path)):
+                    store.save('investigation', bundle())
+                    for _ in range(2):
+                        os.chmod(str(store.path.parent), 0o755)
+                        os.chmod(str(store.path), 0o666)
+                        store.list('investigation')
+                        self.assertEqual(store.path.parent.stat().st_mode & 0o777, 0o700)
+                        self.assertEqual(store.path.stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX mode bits')
+    def test_sqlite_sidecars_are_protected_before_open(self):
+        with patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                     'MYFLAMES_SECRET_BACKEND': 'vault'}):
+            self.store.save('investigation', bundle())
+            paths = [Path(str(self.path) + suffix) for suffix in ('-wal', '-shm', '-journal')]
+            for path in paths:
+                path.write_bytes(b'')
+                os.chmod(str(path), 0o666)
+            connect = sqlite3.connect
+
+            def checked_connect(*args, **kwargs):
+                for path in paths:
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                return connect(*args, **kwargs)
+            with patch.object(workspace_store.sqlite3, 'connect', side_effect=checked_connect):
+                self.store.list('investigation')
+            for path in paths:
+                if path.exists():
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX mode bits')
+    def test_live_wal_and_shm_are_protected_without_vault_access(self):
+        self.store.save('investigation', bundle())
+        conn = sqlite3.connect(str(self.path))
+        self.addCleanup(conn.close)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute("INSERT INTO settings VALUES ('wal-test', '1')")
+        conn.commit()
+        paths = [Path(str(self.path) + suffix) for suffix in ('-wal', '-shm')]
+        for path in paths:
+            self.assertTrue(path.exists())
+            os.chmod(str(path), 0o666)
+        self.store.list('investigation')
+        for path in paths:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX mode bits')
+    def test_permission_failure_prevents_opening_database(self):
+        self.store.save('investigation', bundle())
+        os.chmod(str(self.path.parent), 0o755)
+        with patch.object(workspace_store.os, 'fchmod', side_effect=PermissionError('cannot protect')), \
+                patch.object(workspace_store.sqlite3, 'connect') as connect:
+            with self.assertRaisesRegex(PermissionError, 'cannot protect'):
+                self.store.list('investigation')
+        connect.assert_not_called()
+
+    def test_windows_permission_protection_is_a_noop(self):
+        with patch.object(workspace_store.os, 'name', 'nt'), patch.object(workspace_store.os, 'chmod') as chmod, \
+                patch.object(workspace_store.os, 'stat', side_effect=AssertionError('permission check on Windows')):
+            workspace_store._owner_only(self.path, 0o600)
+        chmod.assert_not_called()
 
     def test_record_kind_isolation(self):
         saved = self.store.save('investigation', bundle(), "id'; DROP TABLE records; --")
@@ -75,14 +258,16 @@ class TestWorkspaceStore(unittest.TestCase):
                 connection.execute('SELECT 1')
 
     def test_profiles_normalize_and_never_persist_password(self):
+        # The value must not collide with field names such as secret_backend.
         saved = self.store.save('profile', {'name': 'Local', 'host': 'localhost',
-            'port': '3307', 'user': 'reader', 'password': 'secret',
-            'ssl_mode': 'REQUIRED', 'arbitrary': {'password': 'secret'}})
+            'port': '3307', 'user': 'reader', 'password': 'hunter2-for-test',
+            'ssl_mode': 'REQUIRED', 'arbitrary': {'password': 'hunter2-for-test'}})
         self.assertEqual(saved['port'], 3307)
         self.assertEqual(saved['ssl_mode'], 'REQUIRED')
         self.assertNotIn('password', saved)
         self.assertNotIn('arbitrary', saved)
-        self.assertNotIn(b'secret', self.path.read_bytes())
+        self.assertNotIn(b'hunter2-for-test', self.path.read_bytes())
+        self.assertFalse(saved['has_saved_password'])
         self.assertEqual(self.store.list('profile'), [saved])
         default = self.store.save('profile', {})
         self.assertEqual(default['host'], '127.0.0.1')

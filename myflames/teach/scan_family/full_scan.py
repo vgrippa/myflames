@@ -94,7 +94,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="full_scan",
-        title="Full table scan — why MySQL reads every row",
+        title="Full table scan: why MySQL reads every row",
         subtitle=(
             "Understand what a full table scan really means: O(n) row reads, "
             "predicate filtering after the read, and why selective predicates "

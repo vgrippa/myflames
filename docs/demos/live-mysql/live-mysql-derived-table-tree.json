@@ -1,14 +1,15 @@
 {
-  "schema_version": "1.0",
-  "generated_at": "2026-04-10T20:15:26Z",
-  "myflames_version": "1.2.0",
+  "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
+  "schema_version": "1.3",
+  "generated_at": "2026-10-15T19:55:06Z",
+  "myflames_version": "2.3.0",
   "source": {
     "type": "live",
     "engine": "mysql",
-    "engine_version": "8.4.8"
+    "engine_version": "8.4.11"
   },
   "plan_summary": {
-    "total_time_ms": 4.076,
+    "total_time_ms": 3.636,
     "rows_sent": 5,
     "rows_examined_estimate": 3000,
     "operator_count": 6,
@@ -18,22 +19,13 @@
     {
       "name": "materialization",
       "value": "on",
-      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.",
+      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. It may spill to disk past tmp_table_size (MySQL's TempTable engine) or the smaller of tmp_table_size and max_heap_table_size (MEMORY engine, MariaDB).",
       "node_labels": [
         "Materialize"
       ]
     }
   ],
   "warnings": [
-    {
-      "severity": "warn",
-      "category": "full_scan",
-      "text": "Full table scan: t (5 rows)",
-      "source": "plan",
-      "node_labels": [
-        "Table scan [t]"
-      ]
-    },
     {
       "severity": "warn",
       "category": "temp_table",
@@ -55,28 +47,23 @@
     {
       "severity": "warn",
       "category": "env",
-      "text": "Filesort detected but sort_buffer_size is only 256.0 KB — the sort will likely spill to disk.",
+      "text": "Filesort detected with sort_buffer_size=256.0 KB. Whether it spills depends on the sort's row count and record size.",
       "source": "environment"
     },
     {
       "severity": "warn",
       "category": "env",
-      "text": "Query materializes 1 temp table(s) but tmp_table_size/max_heap_table_size is capped at 16.0 MB — temp tables will spill to InnoDB disk tables.",
+      "text": "Query materializes 1 temp table(s); tmp_table_size is 16.0 MB. This limit alone does not show whether a table spilled to disk.",
       "source": "environment"
     }
   ],
   "suggestions": [
     {
-      "severity": "high",
-      "category": "index",
-      "action": "Add indexes on filter/join columns to avoid full table scans",
-      "source": "plan"
-    },
-    {
       "severity": "medium",
       "category": "tuning_variable",
-      "action": "Increase tmp_table_size / max_heap_table_size to keep temp tables in memory",
+      "action": "Check internal_tmp_mem_storage_engine and temporary-table disk usage before raising tmp_table_size.",
       "source": "plan",
+      "why": "the default TempTable engine limits each in-memory internal temporary table by tmp_table_size, and max_heap_table_size does not apply to it; only the MEMORY engine also uses max_heap_table_size, taking the smaller of the two. A temporary table in the plan does not by itself show that it spilled to disk.",
       "target_variable": "tmp_table_size"
     },
     {
@@ -89,21 +76,62 @@
     {
       "severity": "medium",
       "category": "tuning_variable",
-      "action": "Raise sort_buffer_size to 2M–8M for this session (SET SESSION sort_buffer_size = 8*1024*1024).",
+      "action": "Check sort merge passes and query timing before increasing sort_buffer_size for this session.",
       "source": "environment",
-      "why": "when the sort set does not fit in sort_buffer_size, MySQL writes multiple sorted runs to tmpdir and merges them back — that is real disk I/O plus a k-way merge. A buffer big enough to hold the result stays in memory and uses the faster in-RAM sort. Caveat: sort_buffer_size is allocated per-connection, so set it per-session rather than globally to avoid multiplying RAM cost across all threads.",
+      "why": "when sort records exceed the buffer, MySQL can write sorted runs and merge them. A larger buffer may avoid that work; small sorts may already fit in memory. Test session-level changes and account for concurrent sorting sessions before changing the global default.",
       "target_variable": "sort_buffer_size"
     },
     {
       "severity": "medium",
       "category": "tuning_variable",
-      "action": "Raise tmp_table_size AND max_heap_table_size together to the same value (64M–256M).",
+      "action": "Check the internal temporary-table engine and disk usage before increasing tmp_table_size for this session.",
       "source": "environment",
-      "why": "once a materialized temp table exceeds min(tmp_table_size, max_heap_table_size), MySQL converts the in-memory MEMORY/TempTable engine to an on-disk InnoDB temp table — scans over the disk version are typically 10–100× slower and generate real I/O. Both variables must be raised together because MySQL always picks the smaller of the two; raising only one has no effect.",
+      "why": "MySQL 8.0.28+ TempTable uses tmp_table_size as its per-table limit; max_heap_table_size does not limit TempTable. Shared TempTable RAM and mmap limits also affect disk usage. If the internal engine is MEMORY, the smaller of tmp_table_size and max_heap_table_size applies instead.",
       "target_variable": "tmp_table_size"
     }
   ],
-  "executive_summary": "Query scans 1 table, materializes 1 temp table and sorts the result; examines ~3,000 rows to return 5 in 4.1 ms. Main finding: the sort will likely spill to disk because sort_buffer_size is too small.",
+  "executive_summary": "Query materializes 1 temp table and sorts the result; examines ~3,000 rows to return 5 in 3.6 ms. Main finding: the sort will likely spill to disk because sort_buffer_size is too small.",
+  "plan_tree": {
+    "node_id": "n:c1019a6ed56c",
+    "short_label": "Sort",
+    "folded_label": "SORT starts=1 rows=5",
+    "children": [
+      {
+        "node_id": "n:beb14d906666",
+        "short_label": "Table scan [t]",
+        "folded_label": "TABLE SCAN [t] starts=1 rows=5",
+        "children": [
+          {
+            "node_id": "n:a1d4f99ec950",
+            "short_label": "Materialize",
+            "folded_label": "MATERIALIZE starts=1 rows=5",
+            "children": [
+              {
+                "node_id": "n:f3a4ee7934b5",
+                "short_label": "Group",
+                "folded_label": "GROUP starts=1 rows=5",
+                "children": [
+                  {
+                    "node_id": "n:83cc7ae0fbe7",
+                    "short_label": "Filter: ((users.status = 'active'))",
+                    "folded_label": "FILTER ((users.status = 'active')) starts=1 rows=2572",
+                    "children": [
+                      {
+                        "node_id": "n:18bb13cfb7fc",
+                        "short_label": "Index scan [users.idx_country]",
+                        "folded_label": "INDEX SCAN [users.idx_country] starts=1 rows=3000",
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
   "query": {
     "raw": "SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC",
     "beautified": "SELECT t.country, t.cnt\nFROM (\nSELECT country, COUNT(*) cnt\nFROM users\nWHERE status='active'\nGROUP BY country) t\nORDER BY t.cnt DESC"
@@ -127,6 +155,7 @@
       "innodb_io_capacity": "10000",
       "innodb_log_buffer_size": "67108864",
       "innodb_log_file_size": "50331648",
+      "internal_tmp_mem_storage_engine": "TempTable",
       "join_buffer_size": "262144",
       "max_allowed_packet": "67108864",
       "max_connections": "151",
@@ -141,7 +170,7 @@
       "table_open_cache": "4000",
       "thread_cache_size": "9",
       "tmp_table_size": "16777216",
-      "version": "8.4.8",
+      "version": "8.4.11",
       "version_comment": "MySQL Community Server - GPL",
       "version_compile_os": "Linux"
     },
@@ -195,19 +224,192 @@
             "name": null,
             "columns": [
               "id"
-            ]
+            ],
+            "parts": [
+              {
+                "name": "id",
+                "length": null,
+                "desc": false,
+                "expression": false
+              }
+            ],
+            "using": null
           },
           {
             "kind": "KEY",
             "name": "idx_country",
             "columns": [
               "country"
-            ]
+            ],
+            "parts": [
+              {
+                "name": "country",
+                "length": null,
+                "desc": false,
+                "expression": false
+              }
+            ],
+            "using": null
           }
         ],
         "engine": "InnoDB",
         "charset": "utf8mb4"
       }
     }
-  }
+  },
+  "teach_hooks": [
+    {
+      "lesson": "filesort",
+      "match": {
+        "folded_label": "SORT starts=1 rows=5",
+        "short_label": "Sort"
+      },
+      "controls": {
+        "rows": 5,
+        "row_size": 200,
+        "sbs": 262144
+      },
+      "note": "Sort: t.cnt DESC",
+      "query_sql": "SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC"
+    },
+    {
+      "lesson": "full_scan",
+      "match": {
+        "folded_label": "TABLE SCAN [t] starts=1 rows=5",
+        "short_label": "Table scan [t]"
+      },
+      "controls": {
+        "rows": 5,
+        "row_size": 200,
+        "selectivity": 100.0
+      },
+      "note": "Table scan on t (t)",
+      "query_sql": "SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC"
+    },
+    {
+      "lesson": "tmp",
+      "match": {
+        "folded_label": "MATERIALIZE starts=1 rows=5",
+        "short_label": "Materialize"
+      },
+      "controls": {
+        "rows": 5,
+        "row_size": 200,
+        "tmp_size": 16777216,
+        "max_heap": 16777216,
+        "engine": "temptable"
+      },
+      "note": "Materialize",
+      "query_sql": "SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC"
+    },
+    {
+      "lesson": "filter",
+      "match": {
+        "folded_label": "FILTER ((users.status = 'active')) starts=1 rows=2572",
+        "short_label": "Filter: ((users.status = 'active'))"
+      },
+      "controls": {
+        "input_rows": 2572,
+        "selectivity": 10.0
+      },
+      "note": "Filter: (users.`status` = 'active')",
+      "query_sql": "SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC"
+    },
+    {
+      "lesson": "btree",
+      "match": {
+        "folded_label": "INDEX SCAN [users.idx_country] starts=1 rows=3000",
+        "short_label": "Index scan [users.idx_country]"
+      },
+      "controls": {
+        "rows": 3000,
+        "key_size": 16,
+        "page_size": 16384,
+        "key_type": "secondary_noncovering"
+      },
+      "note": "Index scan on users using idx_country (users)",
+      "query_sql": "SELECT t.country, t.cnt FROM (SELECT country, COUNT(*) cnt FROM users WHERE status='active' GROUP BY country) t ORDER BY t.cnt DESC"
+    }
+  ],
+  "operator_complexities": [
+    {
+      "node_id": "n:c1019a6ed56c",
+      "folded_label": "SORT starts=1 rows=5",
+      "short_label": "Sort",
+      "complexity": {
+        "big_o": "O(n log n)",
+        "short": "n log n",
+        "severity": "medium",
+        "rationale": "Filesort: MySQL sorts the output in the server layer. Priority-queue filesort (LIMIT) is not detected today — we report the upper bound.",
+        "confidence": "worst_case",
+        "learn_more": "filesort"
+      }
+    },
+    {
+      "node_id": "n:beb14d906666",
+      "folded_label": "TABLE SCAN [t] starts=1 rows=5",
+      "short_label": "Table scan [t]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
+        "confidence": "exact",
+        "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "node_id": "n:a1d4f99ec950",
+      "folded_label": "MATERIALIZE starts=1 rows=5",
+      "short_label": "Materialize",
+      "complexity": {
+        "big_o": "build: O(n)  •  scan: O(1) per probe, O(rows) to fetch all",
+        "short": "build+scan",
+        "severity": "good",
+        "rationale": "Materialize is a two-phase operator. The build pays the inner subquery's cost ONCE; each scan of the temp table is effectively constant time. Don't compound build cost by loops.",
+        "confidence": "exact",
+        "learn_more": "materialization",
+        "build_complexity": {
+          "big_o": "O(n)",
+          "short": "n",
+          "severity": "good",
+          "rationale": "Streaming aggregation: reads each input row once and updates the aggregate values. Any input sorting is a separate child operator with its own cost.",
+          "confidence": "exact"
+        },
+        "scan_complexity": {
+          "big_o": "O(1) per probe, O(rows) to fetch all",
+          "short": "O(1)/probe",
+          "severity": "good",
+          "rationale": "Materialize scan: reads the pre-computed temp table. Each probe is constant time once the table is in memory.",
+          "confidence": "typical",
+          "learn_more": "materialization"
+        }
+      }
+    },
+    {
+      "node_id": "n:f3a4ee7934b5",
+      "folded_label": "GROUP starts=1 rows=5",
+      "short_label": "Group",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "good",
+        "rationale": "Streaming aggregation: reads each input row once and updates the aggregate values. Any input sorting is a separate child operator with its own cost.",
+        "confidence": "exact"
+      }
+    },
+    {
+      "node_id": "n:18bb13cfb7fc",
+      "folded_label": "INDEX SCAN [users.idx_country] starts=1 rows=3000",
+      "short_label": "Index scan [users.idx_country]",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "medium",
+        "rationale": "Index scan: reads every entry of the index in key order. Cheaper than a table scan because the index is smaller, but still O(n).",
+        "confidence": "exact",
+        "learn_more": "index_scan"
+      }
+    }
+  ]
 }

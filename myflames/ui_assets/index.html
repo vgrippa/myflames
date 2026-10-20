@@ -3,16 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="myflames-token" content="__MYFLAMES_TOKEN__" />
+    <meta name="myflames-version" content="__MYFLAMES_VERSION__" />
     <meta name="theme-color" content="#f5f5f7" />
     <link
       rel="icon"
       type="image/png"
-      href="/assets/myflames-logo.png?v=2"
+      href="/assets/myflames-logo.png?v=3"
     />
-    <title>myflames · Plan workspace</title>
-    <script type="module" crossorigin src="/assets/index-BkoNx7Hv.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CHuW7N_a.css">
+    <title>myflames · Performance workspace</title>
+    <script>
+      try {
+        var t = localStorage.getItem("myflames.theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="/assets/index-C_px2vKF.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BzFn3noO.css">
   </head>
   <body>
     <div id="root"></div>

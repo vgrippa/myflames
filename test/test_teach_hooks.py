@@ -77,5 +77,44 @@ class TestTeachHooks(unittest.TestCase):
         self.assertIn("nested_loop", lessons)
 
 
+class TestTmpLessonEngineHook(unittest.TestCase):
+    """The tmp lesson's limit depends on the in-memory engine, so a hook
+    built from a real server must open the lesson on that server's engine."""
+
+    @staticmethod
+    def _tmp_controls(variables):
+        node = {
+            "details": {"operation": "Temporary table with deduplication"},
+            "folded_label": "Temporary table",
+            "rows": 5000, "loops": 1, "children": [],
+        }
+        hooks = build_teach_hooks(node, variables=variables)
+        tmp = [h for h in hooks if h.get("lesson") == "tmp"]
+        assert tmp, hooks
+        return tmp[0]["controls"]
+
+    def test_mysql_temptable_engine(self):
+        c = self._tmp_controls({"version": "8.4.3",
+                                "internal_tmp_mem_storage_engine": "TempTable",
+                                "tmp_table_size": "67108864",
+                                "max_heap_table_size": "16777216"})
+        self.assertEqual(c["engine"], "temptable")
+        self.assertEqual(c["tmp_size"], 64 * 1024 * 1024)
+        self.assertEqual(c["max_heap"], 16 * 1024 * 1024)
+
+    def test_mysql_memory_engine(self):
+        c = self._tmp_controls({"version": "8.4.3",
+                                "internal_tmp_mem_storage_engine": "MEMORY"})
+        self.assertEqual(c["engine"], "memory")
+
+    def test_mariadb_version_wins(self):
+        c = self._tmp_controls({"version": "11.4.4-MariaDB-log"})
+        self.assertEqual(c["engine"], "mariadb")
+
+    def test_unknown_engine_leaves_lesson_default(self):
+        self.assertNotIn("engine", self._tmp_controls({"version": "8.4.3"}))
+        self.assertNotIn("engine", self._tmp_controls(None))
+
+
 if __name__ == "__main__":
     unittest.main()

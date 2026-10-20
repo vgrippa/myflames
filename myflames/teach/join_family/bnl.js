@@ -35,7 +35,7 @@ function buildStage(numBlocks) {
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
   var headerOuter = anim.svgEl("text", {
-    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "#92400e"
+    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   headerOuter.textContent = "customers \u2192 join_buffer (" + numBlocks + " block" + (numBlocks === 1 ? "" : "s") + ")";
   svg.appendChild(headerOuter);
@@ -57,18 +57,18 @@ function buildStage(numBlocks) {
     for (var bc = 0; bc < blockCustomers.length; bc++) names.push(blockCustomers[bc].name);
     var rect = anim.svgEl("rect", {
       x: x, y: 42, width: bw, height: 56, rx: 6, ry: 6,
-      fill: "#fffbeb", stroke: "#d1d5db", "stroke-width": 1.5
+      fill: "var(--svg-build-soft)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5
     });
     svg.appendChild(rect);
     var lbl = anim.svgEl("text", {
       x: x + bw/2, y: 62, "text-anchor": "middle",
-      "font-size": 11, "font-weight": 700, fill: "#92400e"
+      "font-size": 11, "font-weight": 700, fill: "var(--svg-build-ink)"
     });
     lbl.textContent = "Block " + (i + 1);
     svg.appendChild(lbl);
     var contentLbl = anim.svgEl("text", {
       x: x + bw/2, y: 80, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 600, fill: "#78350f"
+      "font-size": 9, "font-weight": 600, fill: "var(--svg-build-ink)"
     });
     contentLbl.textContent = names.join(", ");
     svg.appendChild(contentLbl);
@@ -81,7 +81,7 @@ function buildStage(numBlocks) {
   if (numBlocks > cap) {
     var more = anim.svgEl("text", {
       x: W - 20, y: 80, "text-anchor": "end",
-      "font-size": 11, "font-weight": 600, fill: "#9ca3af", "font-style": "italic"
+      "font-size": 11, "font-weight": 600, fill: "var(--svg-ink-muted)", "font-style": "italic"
     });
     more.textContent = "\u2026 and " + (numBlocks - cap) + " more blocks (each one is another full scan of orders)";
     svg.appendChild(more);
@@ -94,14 +94,14 @@ function buildStage(numBlocks) {
 
   // Inner table header
   var innerLbl = anim.svgEl("text", {
-    x: innerX, y: innerY - 8, "font-size": 13, "font-weight": 700, fill: "#0c4a6e"
+    x: innerX, y: innerY - 8, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   innerLbl.textContent = "orders \u2014 re-scanned once per customers block";
   svg.appendChild(innerLbl);
 
   var innerRect = anim.svgEl("rect", {
     x: innerX, y: innerY, width: innerW, height: innerH, rx: 8, ry: 8,
-    fill: "#f0f9ff", stroke: "#0284c7", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(innerRect);
 
@@ -111,7 +111,7 @@ function buildStage(numBlocks) {
     var ox = innerX + 16 + j * ((innerW - 32) / ORDERS.length);
     var oy = innerY + 12;
     var oLbl = anim.svgEl("text", {
-      x: ox, y: oy + 12, "font-size": 8, "font-weight": 600, fill: "#0c4a6e",
+      x: ox, y: oy + 12, "font-size": 8, "font-weight": 600, fill: "var(--svg-token-ink)",
       transform: "rotate(-35," + ox + "," + (oy + 12) + ")"
     });
     oLbl.textContent = "#" + ORDERS[j].id + " " + ORDERS[j].month;
@@ -121,20 +121,20 @@ function buildStage(numBlocks) {
     // Faint stripe
     var stripe = anim.svgEl("line", {
       x1: ox, y1: innerY + 28, x2: ox, y2: innerY + innerH - 8,
-      stroke: "#dbeafe", "stroke-width": 1
+      stroke: "var(--svg-token-soft)", "stroke-width": 1
     });
     svg.appendChild(stripe);
   }
 
   var sweep = anim.svgEl("rect", {
     x: innerX, y: innerY, width: 4, height: innerH,
-    fill: "#ca8a04", opacity: 0
+    fill: "var(--svg-build)", opacity: 0
   });
   svg.appendChild(sweep);
 
   var statusLbl = anim.svgEl("text", {
     x: W/2, y: innerY + innerH + 30, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#1f2937"
+    "font-size": 13, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -149,8 +149,8 @@ function buildStage(numBlocks) {
 function resetStage() {
   if (!stage) return;
   stage.blocks.forEach(function(b) {
-    b.rect.setAttribute("fill", "#fffbeb");
-    b.rect.setAttribute("stroke", "#d1d5db");
+    b.rect.setAttribute("fill", "var(--svg-build-soft)");
+    b.rect.setAttribute("stroke", "var(--svg-node-stroke)");
     b.rect.setAttribute("stroke-width", 1.5);
   });
   stage.sweep.setAttribute("opacity", 0);
@@ -164,12 +164,12 @@ function spawnLabeledTuple(text, color, cx, cy) {
   var tw = Math.max(84, text.length * 6 + 16);
   var bg = anim.svgEl("rect", {
     x: -tw/2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
-    fill: color, stroke: "#1f2937", "stroke-width": 1
+    fill: color, stroke: "var(--svg-ink)", "stroke-width": 1
   });
   g.appendChild(bg);
   var lbl = anim.svgEl("text", {
     x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 8, "font-weight": 700, fill: "#ffffff"
+    "font-size": 8, "font-weight": 700, fill: "var(--svg-on-solid)"
   });
   lbl.textContent = text;
   g.appendChild(lbl);
@@ -195,8 +195,8 @@ function buildTimeline(totalBlocksReal) {
 
       tl.mark("Block " + (idx + 1) + ": scan orders");
       tl.call(function() {
-        block.rect.setAttribute("fill", "#fde725");
-        block.rect.setAttribute("stroke", "#ca8a04");
+        block.rect.setAttribute("fill", "var(--svg-highlight)");
+        block.rect.setAttribute("stroke", "var(--svg-build)");
         block.rect.setAttribute("stroke-width", 2.5);
         phase.textContent = "Scanning orders for " + blockLabel;
       });
@@ -206,7 +206,7 @@ function buildTimeline(totalBlocksReal) {
         for (var k = 0; k < block.customers.length; k++) {
           (function(kk, cust) {
             var label = cust.name + " (" + cust.month + ")";
-            var tuple = spawnLabeledTuple(label, "#ca8a04", block.cx, block.cy + 4);
+            var tuple = spawnLabeledTuple(label, "var(--svg-build)", block.cx, block.cy + 4);
             var targetX = stage.innerX + 40 + (kk * (stage.innerW - 80) / Math.max(1, block.customers.length));
             var targetY = stage.innerY + 20;
             var pathFn = anim.path(
@@ -262,8 +262,8 @@ function buildTimeline(totalBlocksReal) {
         },
         onComplete: function() {
           stage.sweep.setAttribute("opacity", 0);
-          block.rect.setAttribute("fill", "#e5e7eb");
-          block.rect.setAttribute("stroke", "#9ca3af");
+          block.rect.setAttribute("fill", "var(--svg-node-muted)");
+          block.rect.setAttribute("stroke", "var(--svg-node-stroke)");
           block.rect.setAttribute("stroke-width", 1);
         }
       });
@@ -299,9 +299,9 @@ function renderChart(innerRows, rowSize, jbs, currentOuter) {
     xMin: 100, xMax: 1e7,
     xLabel: "customers row count", yLabel: "Row-pair comparisons",
     curves: [
-      { label: "BNL: O(customers\u00b7orders/buf) = O(n\u00b7m/b)", color: "#ca8a04",
+      { label: "BNL: O(customers\u00b7orders/buf) = O(n\u00b7m/b)", color: "var(--svg-build)",
         fn: function(n) { return bnlCost(n, innerRows, rowSize, jbs).cmp; } },
-      { label: "Indexed join: O(customers+orders) = O(n+m)", color: "#0d9488",
+      { label: "Indexed join: O(customers+orders) = O(n+m)", color: "var(--svg-probe)",
         fn: function(n) { return n + innerRows; } }
     ],
     current: { x: currentOuter },

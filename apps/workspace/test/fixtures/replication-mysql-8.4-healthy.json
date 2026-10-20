@@ -1,0 +1,202 @@
+{
+ "schema_version": "replication-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "captured_at": "2026-10-15T18:16:14.816437+00:00",
+ "uptime_s": 826,
+ "available": true,
+ "message": null,
+ "replica": true,
+ "statement": "SHOW REPLICA STATUS",
+ "gtid": {
+  "mode": "ON",
+  "enforce_consistency": "ON"
+ },
+ "settings": {
+  "read_only": "OFF",
+  "super_read_only": "OFF",
+  "parallel_workers": 4,
+  "preserve_commit_order": "ON"
+ },
+ "channels": [
+  {
+   "name": "",
+   "kind": "replication",
+   "judged": true,
+   "source": {
+    "host": "mf-repl-g-src",
+    "port": 3306,
+    "uuid": "7256d98a-c8b1-11f1-be59-aa9276ea306a",
+    "server_id": 1
+   },
+   "io": {
+    "running": "Yes",
+    "state": "Waiting for source to send event",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    }
+   },
+   "sql": {
+    "running": "Yes",
+    "state": "Replica has read all relay log; waiting for more updates",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null,
+     "table": null,
+     "end_log_pos": null
+    },
+    "delay_s": 0,
+    "remaining_delay_s": null
+   },
+   "lag_s": 0,
+   "lag_notes": [
+    "Seconds_Behind_Source is 0 because the applier has caught up with what the receiver has, which is also true when the receiver is far behind the source."
+   ],
+   "lag_signals": {
+    "applying_lag_s": null,
+    "last_apply_lag_s": null,
+    "heartbeat_interval_s": 30.0,
+    "heartbeats_received": 12,
+    "heartbeat_age_s": 20.763,
+    "last_queued_age_s": 50.771,
+    "receiver_idle_s": 20.763
+   },
+   "position": {
+    "auto_position": true,
+    "retrieved_gtid_set": "7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18",
+    "executed_gtid_set": "7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18,\n726f0649-c8b1-11f1-a91e-f6c08cc89039:1-11,\n72de0ef8-c8b1-11f1-9ec5-5695642bff44:1-14",
+    "source_log_file": "binlog.000003",
+    "read_source_log_pos": 3720,
+    "exec_file": "binlog.000003",
+    "exec_pos": 3720,
+    "relay_log_file": "f8b13f9003b4-relay-bin.000003",
+    "relay_log_pos": 3931,
+    "skip_counter": 0
+   },
+   "worker": {
+    "workers": 4,
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    },
+    "failing_worker_id": null,
+    "failing_applying_transaction": null,
+    "applying_transactions": [],
+    "last_applied_transaction": null,
+    "last_applied_end_apply": null
+   },
+   "agat": "OFF",
+   "failing_gtid": null,
+   "relay": null,
+   "status": "ok",
+   "status_why": [],
+   "receiver": {
+    "service_state": "ON",
+    "last_queued_transaction": "7256d98a-c8b1-11f1-be59-aa9276ea306a:18"
+   }
+  },
+  {
+   "name": "ch80",
+   "kind": "replication",
+   "judged": true,
+   "source": {
+    "host": "mf-repl-80-src",
+    "port": 3306,
+    "uuid": "72de0ef8-c8b1-11f1-9ec5-5695642bff44",
+    "server_id": 5
+   },
+   "io": {
+    "running": "Yes",
+    "state": "Waiting for source to send event",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    }
+   },
+   "sql": {
+    "running": "Yes",
+    "state": "Replica has read all relay log; waiting for more updates",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null,
+     "table": null,
+     "end_log_pos": null
+    },
+    "delay_s": 0,
+    "remaining_delay_s": null
+   },
+   "lag_s": 0,
+   "lag_notes": [
+    "Seconds_Behind_Source is 0 because the applier has caught up with what the receiver has, which is also true when the receiver is far behind the source."
+   ],
+   "lag_signals": {
+    "applying_lag_s": null,
+    "last_apply_lag_s": null,
+    "heartbeat_interval_s": 30.0,
+    "heartbeats_received": 1,
+    "heartbeat_age_s": 8.291,
+    "last_queued_age_s": null,
+    "receiver_idle_s": 8.291
+   },
+   "position": {
+    "auto_position": true,
+    "retrieved_gtid_set": null,
+    "executed_gtid_set": "7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18,\n726f0649-c8b1-11f1-a91e-f6c08cc89039:1-11,\n72de0ef8-c8b1-11f1-9ec5-5695642bff44:1-14",
+    "source_log_file": "binlog.000003",
+    "read_source_log_pos": 2574,
+    "exec_file": "binlog.000003",
+    "exec_pos": 2574,
+    "relay_log_file": "f8b13f9003b4-relay-bin-ch80.000002",
+    "relay_log_pos": 412,
+    "skip_counter": 0
+   },
+   "worker": {
+    "workers": 4,
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    },
+    "failing_worker_id": null,
+    "failing_applying_transaction": null,
+    "applying_transactions": [],
+    "last_applied_transaction": null,
+    "last_applied_end_apply": null
+   },
+   "agat": "OFF",
+   "failing_gtid": null,
+   "relay": null,
+   "status": "ok",
+   "status_why": [],
+   "receiver": {
+    "service_state": "ON",
+    "last_queued_transaction": null
+   }
+  }
+ ],
+ "capabilities": {
+  "status": true,
+  "performance_schema": true,
+  "worker_timestamps": true,
+  "agat": true
+ },
+ "notes": [
+  "Seconds_Behind_Source compares the original timestamp of the event being applied with the replica's clock, adjusted by the clock difference measured when the receiver connected. A clock change on either server after that skews it, and one long transaction shows as a jump, so it is never the only lag signal."
+ ],
+ "summary": {
+  "channels": 2,
+  "judged": 2,
+  "ok": 2,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 0,
+  "failed": 0,
+  "lag_max_s": 0
+ }
+}

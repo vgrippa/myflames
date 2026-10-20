@@ -1,6 +1,36 @@
-"""Generate bar chart SVG from parsed EXPLAIN tree."""
+"""Generate bar chart SVG from parsed EXPLAIN tree.
+
+One bar per operator with measurable self time, sorted by self time. A bar's
+color is a heat step by its share of the plan's time (``bar_color``), its
+times print like the execution tree (``output_tree._format_time``), and the
+label column narrows with the chart width (``label_width``). The TypeScript
+twin is apps/workspace/src/charts/bargraph.ts; keep both in step.
+"""
 from .parser import xml_escape, flatten_nodes, render_info_panel
 from ._labels import fit_label
+from .output_tree import _format_time
+
+#: Hottest first (charts/bargraph.ts COLORS).
+COLORS = (
+    "rgb(255,90,90)", "rgb(255,130,70)", "rgb(255,165,50)", "rgb(255,200,50)",
+    "rgb(255,220,80)", "rgb(200,200,100)", "rgb(150,200,150)", "rgb(100,180,180)",
+)
+
+
+def bar_color(share):
+    """Heat by share of the plan's time: at least 1/2 is the hottest color,
+    each further step halves the share, and below 1/128 is the coolest.
+    Halving is exact in binary, so Python and TypeScript agree on every edge."""
+    step, threshold = 0, 0.5
+    while step < len(COLORS) - 1 and share < threshold:
+        step += 1
+        threshold /= 2
+    return COLORS[step]
+
+
+def label_width(width):
+    """Label column: 320 px at full width, narrower in a narrow chart."""
+    return min(320, max(160, int(width * 0.38)))
 
 
 def format_number(n):
@@ -18,27 +48,35 @@ def format_number(n):
 def _attr_escape(s):
     # For double-quoted XML/SVG attributes. Newlines are encoded (not left raw)
     # so a multi-line SQL condition reads back as one line in the tooltip,
-    # matching the treemap/diagram renderers. ' is escaped to stay safe even if
+    # matching the diagram renderer. ' is escaped to stay safe even if
     # an attribute is ever single-quoted.
     if s is None:
         return ""
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            .replace('"', "&quot;").replace("'", "&#39;")
+    return (xml_escape(s).replace("'", "&#39;")
             .replace("\n", "&#10;").replace("\r", ""))
 
 
-def _build_bar_info(op, st, pct, unit_display):
-    """Build rich info string shown in the details bar on hover."""
+def _build_bar_info(op, pct):
+    """Build rich info string shown in the details bar on hover.
+
+    *op* carries display-unit ``self_time``/``total_time`` plus the original
+    milliseconds in ``self_ms``/``total_ms``, which are what is printed."""
     full_label = op.get("full_label") or op["short_label"] or ""
     tt_val = op["total_time"]
-    tt = f"{tt_val:.0f}" if tt_val >= 1 else f"{tt_val:.3f}"
     loops_t = format_number(op["loops"])
     details = op.get("details") or {}
     parts = [full_label]
-    parts.append(f"Self: {st} {unit_display} ({pct:.1f}%)")
+    parts.append(f"Self: {_format_time(op.get('self_ms', op['self_time']))} ({pct:.1f}%)")
     if abs(tt_val - op["self_time"]) > 0.001:
-        parts.append(f"Total: {tt} {unit_display}")
-    parts.append(f"Rows: {op['rows']:.0f}")
+        parts.append(f"Total: {_format_time(op.get('total_ms', tt_val))}")
+    # An operator without a row counter reads "not measured", never 0; a
+    # MySQL operator that never ran (null rows and loops,
+    # explain_access_path.cc) reads "not executed" (charts/bargraph.ts).
+    if details.get("actual_rows") is None:
+        parts.append("Rows: not executed" if details.get("actual_loops") is None
+                     else "Rows: not measured")
+    else:
+        parts.append(f"Rows: {op['rows']:.0f}")
     parts.append(f"Loops: {loops_t}")
     table = details.get("table_name") or ""
     index = details.get("index_name") or ""
@@ -81,6 +119,8 @@ def render_bargraph(
     all_nodes = []
     for node in flatten_nodes(root):
         display_node = dict(node)
+        display_node["self_ms"] = node["self_time"]
+        display_node["total_ms"] = node["total_time"]
         display_node["self_time"] *= multiplier
         display_node["total_time"] *= multiplier
         all_nodes.append(display_node)
@@ -98,10 +138,10 @@ def render_bargraph(
     details_lines_n = 8          # number of pre-allocated detail text lines
     details_line_h = 14          # px per line
     bottom_margin = 16 + details_lines_n * details_line_h + 12  # ~140px
-    label_width = 320
+    label_w = label_width(width)
     loops_width = 80
     time_width = 120
-    bar_area_width = width - left_margin - right_margin - label_width - loops_width - time_width - 20
+    bar_area_width = width - left_margin - right_margin - label_w - loops_width - time_width - 20
     num_bars = len(all_nodes)
 
     _info_lines, info_panel_h = (
@@ -112,16 +152,11 @@ def render_bargraph(
     info_gap = 8 if analysis is not None else 0
     chart_height = top_margin + (num_bars * (bar_height + bar_gap)) + bottom_margin + info_gap + info_panel_h
 
-    colors = [
-        "rgb(255,90,90)", "rgb(255,130,70)", "rgb(255,165,50)", "rgb(255,200,50)",
-        "rgb(255,220,80)", "rgb(200,200,100)", "rgb(150,200,150)", "rgb(100,180,180)",
-    ]
     col_label_x = left_margin
-    col_loops_x = left_margin + label_width
+    col_loops_x = left_margin + label_w
     col_bar_x = col_loops_x + loops_width
     col_time_x = col_bar_x + bar_area_width + 10
 
-    total_str = f"{total_time:.0f}" if total_time >= 1 else f"{total_time:.3f}"
     sep_y = chart_height - bottom_margin + 6
     details_y_start = sep_y + 12
 
@@ -133,7 +168,7 @@ def render_bargraph(
         "  text { font-family: Arial, sans-serif; font-size: 12px; }",
         "  .title { font-size: 18px; font-weight: bold; }",
         "  .subtitle { font-size: 11px; fill: #666; }",
-        "  .col-header { font-size: 10px; fill: #888; font-weight: bold; letter-spacing: 0.5px; }",
+        "  .col-header { font-size: 12px; fill: #666; font-weight: 600; }",
         "  .label { font-size: 11px; fill: #333; }",
         "  .loops { font-size: 10px; fill: #777; }",
         "  .value { font-size: 11px; font-weight: bold; fill: #222; }",
@@ -148,10 +183,10 @@ def render_bargraph(
         "</style>",
         '<rect width="100%" height="100%" fill="#fafafa"/>',
         f'<text x="{width/2}" y="28" text-anchor="middle" class="title">{xml_escape(title)}</text>',
-        f'<text x="{width/2}" y="46" text-anchor="middle" class="subtitle">Self-time per operation  \u00b7  Total: {total_str} {unit_display}</text>',
-        f'<text x="{col_label_x + label_width - 10}" y="68" text-anchor="end" class="col-header">OPERATION</text>',
-        f'<text x="{col_loops_x + loops_width/2}" y="68" text-anchor="middle" class="col-header">LOOPS</text>',
-        f'<text x="{col_bar_x + bar_area_width/2}" y="68" text-anchor="middle" class="col-header">SELF-TIME</text>',
+        f'<text x="{width/2}" y="46" text-anchor="middle" class="subtitle">Self time per operation  \u00b7  Total: {_format_time(total_time / multiplier)}</text>',
+        f'<text x="{col_label_x + label_w - 10}" y="68" text-anchor="end" class="col-header">Operation</text>',
+        f'<text x="{col_loops_x + loops_width/2}" y="68" text-anchor="middle" class="col-header">Loops</text>',
+        f'<text x="{col_bar_x + bar_area_width/2}" y="68" text-anchor="middle" class="col-header">Self time</text>',
         f'<text id="search" x="{width - right_margin}" y="68" text-anchor="end">Search</text>',
         f'<line x1="{left_margin}" y1="72" x2="{width - right_margin}" y2="72" stroke="#e0e0e0" stroke-width="1"/>',
         f'<line x1="{left_margin}" y1="{sep_y}" x2="{width - right_margin}" y2="{sep_y}" stroke="#e0e0e0" stroke-width="1"/>',
@@ -175,23 +210,22 @@ def render_bargraph(
                 highlight_msg_by_label[lbl] = nh.get("message") or ""
 
     y = top_margin
-    for i, op in enumerate(all_nodes):
+    for op in all_nodes:
         pct = (op["self_time"] / total_time) * 100
         bar_width = max(3, (op["self_time"] / total_time) * bar_area_width) if op["self_time"] > 0 else 0
-        color = colors[i % len(colors)]
+        color = bar_color(op["self_time"] / total_time)
         # Pixel-budget fit via the shared helper (V5). The label column
         # is `label_width` px wide at 11 px Arial (font-width ratio ≈ 0.55);
         # subtract a small gutter so the text never touches the column edge.
         label = fit_label(
             op["short_label"] or "",
-            px_width=label_width - 14,
+            px_width=label_w - 14,
             font_size=11,
             font_width=0.55,
         )
         text_y = y + (bar_height / 2) + 4
-        st = f"{op['self_time']:.0f}" if op["self_time"] >= 1 else f"{op['self_time']:.3f}"
         loops_t = format_number(op["loops"])
-        info = _build_bar_info(op, st, pct, unit_display)
+        info = _build_bar_info(op, pct)
         bar_label_attr = _attr_escape(op.get("short_label") or op.get("full_label") or "")
         info_attr = _attr_escape(info)
         short_lbl = (op.get("short_label") or "").strip()
@@ -202,7 +236,7 @@ def render_bargraph(
         folded = (op.get("folded_label") or "").strip()
         if teach_index_by_folded and folded in teach_index_by_folded:
             teach_attr = f' data-teach-index="{teach_index_by_folded[folded]}"'
-        lines.append(f'<text x="{col_label_x + label_width - 10}" y="{text_y}" text-anchor="end" class="label">{xml_escape(label)}</text>')
+        lines.append(f'<text x="{col_label_x + label_w - 10}" y="{text_y}" text-anchor="end" class="label">{xml_escape(label)}</text>')
         lines.append(f'<text x="{col_loops_x + loops_width/2}" y="{text_y}" text-anchor="middle" class="loops">{loops_t}</text>')
         lines.append(
             f'<rect class="{bar_class}" x="{col_bar_x}" y="{y}" width="{bar_width}" height="{bar_height}" fill="{color}" rx="3" ry="3" '
@@ -211,7 +245,7 @@ def render_bargraph(
             + teach_attr
             + "/>"
         )
-        value_text = f"{st} {unit_display} ({pct:.1f}%)" if op["self_time"] >= 1 else f"{op['self_time']:.3f} {unit_display} ({pct:.1f}%)"
+        value_text = f"{_format_time(op['self_ms'])} ({pct:.1f}%)"
         lines.append(f'<text x="{col_time_x}" y="{text_y}" class="value">{value_text}</text>')
         y += bar_height + bar_gap
 

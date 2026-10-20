@@ -148,7 +148,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="index_merge",
-        title="Index Merge — combining two index scans",
+        title="Index merge: combining two index scans",
         subtitle=(
             "Watch MySQL scan two separate indexes, collect row-IDs, and "
             "merge them with union, intersection, or sort-union."

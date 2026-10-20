@@ -220,11 +220,16 @@ def build_digest(payload):
         vitals += " | depth {}".format(ps["max_depth"])
     if ps.get("total_time_ms"):
         vitals += " | {} ms".format(ps["total_time_ms"])
+    # Null measurements (sidecar 1.4: the plan does not carry them) read
+    # "not measured", never 0.
     rows_sent = ps.get("rows_sent")
     rows_ex = ps.get("rows_examined_estimate")
-    if rows_sent is not None or rows_ex is not None:
-        vitals += " | rows {} sent / {} examined".format(
-            _fmt_int(rows_sent or 0), _fmt_int(rows_ex or 0)
+    if rows_sent is None and rows_ex is None:
+        vitals += " | rows not measured"
+    else:
+        vitals += " | rows {} / {}".format(
+            "{} sent".format(_fmt_int(rows_sent)) if rows_sent is not None else "sent not measured",
+            "{} examined".format(_fmt_int(rows_ex)) if rows_ex is not None else "examined not measured",
         )
 
     out.append("# Query plan analysis (myflames digest)")
@@ -305,7 +310,13 @@ def build_compare_digest(compare_sidecar):
     ta = after.get("total_time_ms")
     pct = summary.get("time_delta_pct")
     def timing_text(value, available=True):
-        return "not measured" if available is False or value is None else "{} ms".format(value)
+        if available is False or value is None:
+            return "not measured"
+        # Four significant digits: float sums like 0.20727341500000002 add
+        # tokens without information.
+        if isinstance(value, float):
+            value = float("{:.4g}".format(value))
+        return "{} ms".format(value)
 
     available_b = before.get("timing_available", tb is not None)
     available_a = after.get("timing_available", ta is not None)

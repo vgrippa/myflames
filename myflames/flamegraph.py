@@ -1,579 +1,721 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Interactive flame graph SVG for myflames.
+
+This module is an original implementation written for myflames from a
+functional specification, licensed under the Apache License 2.0. It turns
+folded stacks (``frame1;frame2;...;frameN <value>``) into a standalone SVG
+that zooms, searches and shows details without any network access.
+
+The browser chart runtime draws the same picture from chart-data-1.0 in
+``apps/workspace/src/charts/flamegraph.ts``: frame geometry, order, label
+fitting and colors match (``apps/workspace/test/parity.mjs``). The color
+tables below must stay identical to the ones in that file
+(``test/test_flamegraph.py`` compares them, ``apps/workspace/test/charts.mjs``
+compares the computed colors).
+
+Layout rules:
+
+* Stacks sharing a prefix are merged. A frame's width is its own value plus
+  everything beneath it; children sit left to right in the order their stacks
+  first appear (the plan's input order, never alphabetical), packed from the
+  parent's left edge, so a parent's own time is the uncovered part on its
+  right.
+* Frames narrower than :data:`MIN_FRAME_PX` are dropped.
+* ``inverted=False`` puts the root row at the bottom (flame graph);
+  ``inverted=True`` puts it at the top (icicle).
+
+Plan callers build folded text with :func:`plan_folded`: whole microseconds
+for any plan with measured time (:func:`flame_scale`), never less than 1 µs
+for positive time (:func:`flame_units`), so widths keep sub-millisecond
+detail and no measured operator disappears to rounding. That count unit
+sets widths only: tooltips print each time in a readable unit
+(:func:`flame_value_text`).
 """
-Generate flame graph SVG from folded stack format.
-Port of flamegraph.pl core logic (flow merge + SVG output).
-"""
+import math
 import re
-import hashlib
 
-# Defaults (match flamegraph.pl)
-XPAD = 10
+from .parser import xml_escape
+
+__all__ = [
+    "folded_to_svg", "frame_color", "label_hash", "fit_frame_label",
+    "flame_scale", "flame_units", "plan_folded", "flame_value_text", "flame_header", "NO_TIME",
+    "FAMILY_COLORS", "SEPARATOR_COLORS", "PALETTES", "MATCH_COLOR",
+]
+
+# ---------------------------------------------------------------------------
+# Geometry and typography (keep in step with flamegraph.ts)
+# ---------------------------------------------------------------------------
+
+SIDE_MARGIN = 10        # px left and right of the frames
+HEADER_H = 36           # title and controls above the first row
+FOOTER_H = 30           # details line and search readout below the last row
+TITLE_Y = 24
+ROW_GAP = 1             # px between rows
 FONT_SIZE = 12
-FONT_WIDTH = 0.59
-NAMETYPE = "Function:"
-SEARCHCOLOR = "rgb(230,0,230)"
-BGCOLOR1 = "#eeeeee"
-BGCOLOR2 = "#eeeeb0"
-BLACK = "rgb(0,0,0)"
-VDGREY = "rgb(160,160,160)"
-DGREY = "rgb(200,200,200)"
+CHAR_RATIO = 0.59       # average glyph width as a fraction of the font size
+CHAR_W = FONT_SIZE * CHAR_RATIO
+LABEL_INSET = 3         # px between a frame's left edge and its label
+MIN_FRAME_PX = 0.1
+DETAILS_RESERVE = 150   # px kept free on the details line for "Matched: …"
+BACKGROUND = "#fafafa"
 
+EMPTY_MESSAGE = "No valid stack counts found."
+HINT = ("Hover a frame for details. Click to zoom, double-click the "
+        "background to reset, Ctrl+F to search.")
 
-def _random_namehash(name):
-    """Stable 'random' value from name for consistent colors."""
-    h = hashlib.md5(name.encode("utf-8", errors="replace")).hexdigest()
-    return int(h[:8], 16) / (16 ** 8)
+# ---------------------------------------------------------------------------
+# Colors (identical tables live in flamegraph.ts)
+# ---------------------------------------------------------------------------
 
-
-def _color_hot(name):
-    """Hot palette (red/orange/yellow)."""
-    v1 = _random_namehash(name)
-    v2 = _random_namehash(name[::-1] if name else "")
-    v3 = _random_namehash(name + "x")
-    r = 205 + int(50 * v3)
-    g = 0 + int(230 * v1)
-    b = 0 + int(55 * v2)
-    return f"rgb({r},{g},{b})"
-
-
-#: Slice 3 / V1 — categorical fill per operator family. Chroma-locked
-#: OKLCH-ish palette kept inside sRGB; families never collide with the
-#: severity red (`--sev-error` #b71c1c) so "red = problem" stays reserved
-#: for advisor chrome.
-_FAMILY_PALETTE = {
-    "table_scan":        "#e67e22",  # warm orange — cost of a full scan
-    "index_scan":        "#f1c40f",  # yellow — unfocused index touch
-    "index_lookup":      "#2ecc71",  # green — the good case (direct fetch)
-    "range":             "#16a085",  # teal — between lookup and scan
-    "nested_loop_join":  "#3498db",  # blue — join structure
-    "hash_join":         "#9b59b6",  # purple — different join strategy
-    "aggregate":         "#1abc9c",  # mint — stream aggregation
-    "sort":              "#e74c3c",  # light-red — expensive sort, but NOT
-                                      # the severity red (reserved for errors)
-    "temp_table":        "#7f8c8d",  # grey — materialization / side table
-    "limit":             "#bdc3c7",  # light grey — cheap
-    "filter":            "#95a5a6",  # grey-blue — cheap
-    "other":             None,       # fall through to _color_hot
+#: Operator family -> fill. Families with a Visual Explain counterpart reuse
+#: ``output_workbench.COLORS`` (table, index, lookup, range, nested_loop,
+#: hash, materialize, operation) so a color means the same thing in both
+#: views. aggregate, sort and limit have no dedicated Visual Explain kind and
+#: get their own muted tones in the same lightness band. ``other`` has no
+#: entry: those frames use the selected palette.
+FAMILY_COLORS = {
+    "table_scan": "#db9292",
+    "index_scan": "#e4b181",
+    "index_lookup": "#9ac59d",
+    "range": "#e3ca83",
+    "nested_loop_join": "#c998b3",
+    "hash_join": "#9ecbcb",
+    "temp_table": "#b4a4d8",
+    "filter": "#d1cfad",
+    "aggregate": "#a8bfdc",
+    "sort": "#c7b49b",
+    "limit": "#c5cfa0",
 }
 
+#: Separator frames are drawn in neutral greys.
+SEPARATOR_COLORS = {"--": "#9aa0a6", "-": "#c4c8cc"}
 
-def _color_family(family):
-    """Return the categorical fill for ``family`` or ``None``."""
-    return _FAMILY_PALETTE.get(family)
+#: Fill of frames matched by a search.
+MATCH_COLOR = "#ff38c8"
 
+#: Palette name -> (red, green, blue) channel ranges, inclusive. Every range
+#: keeps 12 px black labels at a contrast ratio of at least 4.5:1.
+PALETTES = {
+    "hot": ((210, 250), (80, 200), (40, 80)),
+    "mem": ((90, 150), (175, 225), (90, 140)),
+    "io": ((90, 150), (140, 195), (205, 250)),
+    "red": ((215, 250), (90, 150), (90, 150)),
+    "green": ((100, 160), (195, 240), (100, 160)),
+    "blue": ((110, 165), (150, 200), (220, 255)),
+}
 
-def _flow(last, this, v, node_map, tmp):
-    """Merge two stacks into node_map (same algorithm as flamegraph.pl)."""
-    len_a = len(last) - 1
-    len_b = len(this) - 1
-    len_same = 0
-    for i in range(len_a + 1):
-        if i > len_b or last[i] != this[i]:
-            break
-        len_same = i + 1
-    for i in range(len_a, len_same - 1, -1):
-        k = f"{last[i]};{i}"
-        stime = tmp.get(k, {}).get("stime")
-        delta = tmp.get(k, {}).get("delta")
-        if stime is not None:
-            node_id = f"{k};{v}"
-            node_map[node_id] = {"stime": stime}
-            if delta is not None:
-                node_map[node_id]["delta"] = delta
-        if k in tmp:
-            del tmp[k]
-    for i in range(len_same, len_b + 1):
-        k = f"{this[i]};{i}"
-        if k not in tmp:
-            tmp[k] = {"stime": None, "delta": 0}
-        tmp[k]["stime"] = v
-    return this
+_MASK32 = 0xFFFFFFFF
 
 
-def _parse_folded_lines(lines):
-    """Parse folded format: 'frame1;frame2;frame3 count' per line. Returns (node_map, total_time)."""
-    data = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        m = re.match(r"^(.+?)\s+(\d+(?:\.\d*)?)\s*$", line)
-        if not m:
-            continue
-        stack, samples = m.group(1), float(m.group(2))
-        data.append((stack, samples))
-    data.sort(key=lambda x: x[0])
-    node_map = {}
-    tmp = {}
-    last = [""]
-    time = 0
-    for stack, samples in data:
-        this = [""] + [s for s in stack.split(";") if s]
-        last = _flow(last, this, time, node_map, tmp)
-        time += samples
-    _flow(last, [], time, node_map, tmp)
-    return node_map, time
+def label_hash(text):
+    """Stable 32-bit hash of *text* (same result as ``labelHash`` in TS).
+
+    FNV-1a over each code point taken as three little-endian bytes, then a
+    final avalanche so labels that differ only in their last characters
+    still land far apart in the palette.
+    """
+    h = 0x811C9DC5
+    for ch in text:
+        cp = ord(ch)
+        for shift in (0, 8, 16):
+            h = ((h ^ ((cp >> shift) & 0xFF)) * 0x01000193) & _MASK32
+    h ^= h >> 16
+    h = (h * 0x85EBCA6B) & _MASK32
+    h ^= h >> 13
+    h = (h * 0xC2B2AE35) & _MASK32
+    h ^= h >> 16
+    return h
 
 
-def _escape_svg(s):
-    if s is None:
+def _palette_name(colors):
+    name = colors.lower() if isinstance(colors, str) else ""
+    return name if name in PALETTES else "hot"
+
+
+def frame_color(label, family=None, colors="hot"):
+    """Fill for a frame: separator grey, family color, or palette hash."""
+    label = "" if label is None else str(label)
+    if label in SEPARATOR_COLORS:
+        return SEPARATOR_COLORS[label]
+    if isinstance(family, str) and family in FAMILY_COLORS:
+        return FAMILY_COLORS[family]
+    h = label_hash(label)
+    channels = []
+    for i, (low, high) in enumerate(PALETTES[_palette_name(colors)]):
+        byte = (h >> (8 * i)) & 0xFF
+        channels.append(low + (byte * (high - low)) // 255)
+    return "#%02x%02x%02x" % tuple(channels)
+
+
+def fit_frame_label(label, px):
+    """Label text that fits *px* at 12 px, or "" when under 3 characters fit."""
+    room = int(math.floor((px - 2 * LABEL_INSET) / CHAR_W)) if px > 0 else 0
+    if room < 3:
         return ""
-    s = str(s)
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    if len(label) <= room:
+        return label
+    return label[:room - 2] + ".."
 
 
-def _strip_annotation(func):
-    return re.sub(r"_\[[kwij]\]$", "", func)
+def _fit_text(text, px, char_w):
+    room = int(math.floor(px / char_w)) if px > 0 else 0
+    if len(text) <= room:
+        return text
+    return text[:room - 2] + ".." if room >= 3 else ""
 
 
-def folded_to_svg(
-    folded_text,
-    title="Flame Graph",
-    width=1200,
-    height=16,
-    countname="samples",
-    inverted=False,
-    colors="hot",
-    teach_index_by_folded=None,
-    complexity_by_folded=None,
-    family_by_folded=None,
-    frame_labels=None,
-    frame_ids=None,
-):
+# ---------------------------------------------------------------------------
+# Plan times -> whole display units (same rule as flameScale/flameUnits in TS)
+# ---------------------------------------------------------------------------
+
+def _ms(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def flame_scale(self_times_ms, total_ms):
+    """Return ``(unit, multiplier)`` for a plan's flame graph.
+
+    Microseconds (``("µs", 1000)``) whenever the plan has measured time (a
+    positive total or any positive self time), so widths keep their
+    proportions (1.4 ms vs 1.6 ms is 1400:1600, not 1:2). A plan with no
+    measured time at all gets ``(NO_TIME, 1)``: its placeholder frames are
+    drawn, but their text states no time or share (:func:`flame_header`).
     """
-    Convert folded stack input (string) to SVG.
+    if _ms(total_ms) > 0:
+        return "µs", 1000
+    for value in self_times_ms:
+        if _ms(value) > 0:
+            return "µs", 1000
+    return NO_TIME, 1
 
-    ``complexity_by_folded`` is accepted for backwards compatibility but no
-    longer drawn on bars — Big O complexity is now surfaced in the
-    "Learn this operator" teach dialog of the HTML report rather than on
-    the flame-graph bars themselves. The backend sidecar still carries the
-    data under ``operator_complexities``.
+
+def flame_units(self_ms, multiplier):
+    """Whole display units for one self time, rounded half up.
+
+    Zero or unmeasured time is 0; positive time is at least 1 unit.
     """
-    del complexity_by_folded  # intentionally unused; see docstring.
-    lines = folded_text.strip().splitlines() if isinstance(folded_text, str) else folded_text
-    node_map, timemax = _parse_folded_lines(lines)
-    if not timemax or not node_map:
-        return _error_svg(width, "No valid stack counts found.")
+    ms = _ms(self_ms)
+    if ms <= 0:
+        return 0
+    return max(1, int(math.floor(ms * multiplier + 0.5)))
 
-    xpad = XPAD
-    fontsize = FONT_SIZE
-    fontwidth = FONT_WIDTH
-    frameheight = height
-    framepad = 1
-    ypad1 = fontsize * 3
-    ypad2 = fontsize * 2 + 10
-    minwidth_f = 0.1
-    widthpertime = (width - 2 * xpad) / timemax
-    minwidth_time = minwidth_f / widthpertime
 
-    # Prune and get depthmax
-    depthmax = 0
-    for node_id in list(node_map.keys()):
-        parts = node_id.split(";")
-        if len(parts) < 3:
-            continue
-        func, depth_str, etime_str = parts[0], parts[1], parts[2]
-        try:
-            depth = int(depth_str)
-            etime = float(etime_str)
-        except ValueError:
-            continue
-        stime = node_map[node_id].get("stime")
-        if stime is None:
-            del node_map[node_id]
-            continue
-        if (etime - stime) < minwidth_time:
-            del node_map[node_id]
-            continue
-        depthmax = max(depthmax, depth)
+def plan_folded(entries, total_ms, keep_root=False):
+    """Folded text and unit for ``(path, self_ms)`` plan entries.
 
-    imageheight = (depthmax + 1) * frameheight + ypad1 + ypad2
-    titlesize = fontsize + 5
+    *keep_root* gives a root with no self time one unit, so a plan whose
+    operators were never timed still draws its root frame.
+    """
+    entries = list(entries)
+    unit, multiplier = flame_scale([ms for _, ms in entries], total_ms)
+    lines = []
+    for path, ms in entries:
+        units = flame_units(ms, multiplier)
+        if units == 0 and keep_root and len(path) == 1:
+            units = 1
+        if units > 0:
+            lines.append(";".join(path) + " " + str(units))
+    return "\n".join(lines), unit
 
-    # Build JS with placeholders
-    js_placeholders = {
-        "xpad": xpad,
-        "fontsize": fontsize,
-        "fontwidth": fontwidth,
-        "inverted": 1 if inverted else 0,
-        "nametype": NAMETYPE,
-        "searchcolor": SEARCHCOLOR,
+
+#: Count name for a plan without measured time (EXPLAIN without ANALYZE).
+NO_TIME = "no measured time"
+
+#: Count units that are times, as microseconds per count. The count unit only
+#: sets frame widths; values in these units print with flame_value_text.
+TIME_UNITS = {"ms": 1000, "µs": 1}
+
+
+def _half_up(value):
+    return int(math.floor(value + 0.5))
+
+
+def flame_value_text(value, countname):
+    """Visible text for a frame value, e.g. ``"6,357 ms"`` or ``"12 samples"``.
+
+    When *countname* is a time unit ("ms" or "µs") each value reads in its
+    own unit: ``0 ms``; whole microseconds below 1 ms (at least ``1 µs``);
+    2 decimals of ms below 10 ms, 1 decimal below 100 ms, then whole ms with
+    thousands separators. Rounding is half up on the microsecond count, and
+    a value that rounds up to the next band's limit moves to that band, so
+    999.6 µs reads ``1.00 ms``. Any other *countname* keeps the integer with
+    thousands separators. Same rule as ``flameValueText`` in flamegraph.ts.
+    """
+    unit = "" if countname is None else str(countname)
+    per = TIME_UNITS.get(unit)
+    if per is None:
+        return "%s %s" % (_count(value), unit)
+    micros = value * per
+    if not micros > 0:
+        return "0 ms"
+    whole = _half_up(micros)
+    if whole < 1000:
+        return "%d µs" % max(1, whole)
+    hundredths = _half_up(micros / 10.0)
+    if hundredths < 1000:
+        return "%d.%02d ms" % (hundredths // 100, hundredths % 100)
+    tenths = _half_up(micros / 100.0)
+    if tenths < 1000:
+        return "%d.%d ms" % (tenths // 10, tenths % 10)
+    return "{:,} ms".format(_half_up(micros / 1000.0))
+
+
+def flame_header(label, value, total, countname):
+    """Tooltip header (unescaped): ``"<label> (<value>, <percent>%)"``.
+
+    With *countname* :data:`NO_TIME` it is ``"<label> (no measured time)"``:
+    no time and no share. Same text as ``flameHeader`` in flamegraph.ts.
+    """
+    if countname == NO_TIME:
+        return "%s (%s)" % (label, NO_TIME)
+    return "%s (%s, %.2f%%)" % (label, flame_value_text(value, countname), 100.0 * value / total)
+
+
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
+
+_VALUE = re.compile(r"^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
+
+
+def _lines(folded_text):
+    if folded_text is None:
+        return []
+    if isinstance(folded_text, bytes):
+        folded_text = folded_text.decode("utf-8", "replace")
+    if isinstance(folded_text, str):
+        return folded_text.split("\n")
+    return list(folded_text)
+
+
+def _parse(folded_text):
+    """Yield ``(frames, value)`` for every valid folded line."""
+    for raw in _lines(folded_text):
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        if not isinstance(raw, str):
+            continue
+        parts = raw.strip().rsplit(None, 1)
+        if len(parts) != 2 or not _VALUE.match(parts[1]):
+            continue
+        token = parts[1]
+        value = int(token) if token.isdigit() else float(token)
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        yield parts[0].split(";"), value
+
+
+class _Stack(object):
+    """One merged frame: its token, inclusive value and ordered children."""
+
+    __slots__ = ("token", "value", "children")
+
+    def __init__(self, token):
+        self.token = token
+        self.value = 0
+        self.children = {}  # token -> _Stack, in first-appearance order
+
+
+def _merge(stacks):
+    top = _Stack(None)
+    for frames, value in stacks:
+        node = top
+        node.value += value
+        for token in frames:
+            child = node.children.get(token)
+            if child is None:
+                child = _Stack(token)
+                node.children[token] = child
+            child.value += value
+            node = child
+    return top
+
+
+def _place(top, span):
+    """Pre-order ``(stack, depth, start)`` for every frame at least 0.1 px wide."""
+    total = top.value
+    placed = []
+    pending = []
+    cursor = 0
+    for child in top.children.values():
+        pending.append((child, 0, cursor))
+        cursor += child.value
+    pending.reverse()
+    while pending:
+        node, depth, start = pending.pop()
+        if node.value / total * span < MIN_FRAME_PX:
+            continue
+        placed.append((node, depth, start))
+        inner = []
+        cursor = start
+        for child in node.children.values():
+            inner.append((child, depth + 1, cursor))
+            cursor += child.value
+        pending.extend(reversed(inner))
+    return placed
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+def _esc(value):
+    """XML-escape text or an attribute value: the shared
+    :func:`myflames.parser.xml_escape`, which also replaces XML-invalid
+    characters with U+FFFD."""
+    return xml_escape(value)
+
+
+def _count(value):
+    return "{:,}".format(int(math.floor(value + 0.5)))
+
+
+def _px(value):
+    return "%.2f" % value
+
+
+def _lookup(mapping, key):
+    if not mapping:
+        return None
+    value = mapping.get(key)
+    if value is None and isinstance(key, str) and key.strip() != key:
+        value = mapping.get(key.strip())
+    return value
+
+
+STYLE = (
+    '.mfc-flame{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}'
+    ".mfc-flame text{font-size:12px;fill:#1d1d1f}"
+    ".mfc-flame .fg-title{font-size:17px;font-weight:600}"
+    ".mfc-flame .fg-reset,.mfc-flame .fg-search,.mfc-flame .fg-ic{fill:#176aa8;cursor:pointer}"
+    ".mfc-flame .fg-reset:hover,.mfc-flame .fg-search:hover,.mfc-flame .fg-ic:hover{text-decoration:underline}"
+    ".mfc-flame .fg-ic.fg-on{font-weight:700;text-decoration:underline}"
+    ".mfc-flame .fg-off,.mfc-flame .fg-hidden{display:none}"
+    ".mfc-flame .frames>g{cursor:pointer}"
+    ".mfc-flame .frames>g:hover>rect{stroke:#1d1d1f;stroke-width:.6}"
+    ".mfc-flame .frames text{fill:#000;pointer-events:none}"
+    ".mfc-flame .fg-ancestor{opacity:.55}"
+    ".mfc-flame .fg-details{fill:#3a3a3c}"
+    ".mfc-flame .fg-matched{font-weight:600}"
+)
+
+# Standalone behavior. ES5 so any SVG viewer with scripting can run it; it
+# finds its own <svg> (several flame graphs may share an HTML page), never
+# throws when an element is missing, and needs no network.
+SCRIPT = r"""
+(function () {
+  "use strict";
+  var doc = document;
+  var me = doc.currentScript;
+  var svg = me && me.ownerSVGElement ? me.ownerSVGElement : doc.documentElement;
+  if (!svg || !svg.querySelector) return;
+  var holder = svg.querySelector(".frames");
+  if (!holder) return;
+  var MATCH = holder.getAttribute("data-match") || "#ff38c8";
+  var left = Number(holder.getAttribute("data-left")) || 0;
+  var span = Number(holder.getAttribute("data-span")) || 1;
+  var icicle = holder.getAttribute("data-icicle") === "1";
+  // A plan without measured time states no share: count matching frames.
+  var measured = holder.getAttribute("data-measured") !== "0";
+  var CHAR = 12 * 0.59;
+  var EPS = 0.02;
+  var resetBtn = svg.querySelector(".fg-reset");
+  var searchBtn = svg.querySelector(".fg-search");
+  var caseBtn = svg.querySelector(".fg-ic");
+  var details = svg.querySelector(".fg-details");
+  var matched = svg.querySelector(".fg-matched");
+  var hint = details ? details.textContent : "";
+  var frames = [];
+  var groups = [];
+  var zoomed = null;
+  var term = "";
+  var ignoreCase = false;
+
+  function chars(text) { return Array.from ? Array.from(text) : String(text).split(""); }
+  // Same rule as fit_frame_label: under 3 characters of room draws nothing.
+  function fitLabel(label, w) {
+    var list = chars(label);
+    var room = Math.floor((w - 6) / CHAR);
+    if (room < 3) return "";
+    return list.length <= room ? label : list.slice(0, room - 2).join("") + "..";
+  }
+  function fitLine(text, px) {
+    var list = chars(text);
+    var room = Math.floor(px / CHAR);
+    if (list.length <= room) return text;
+    return room >= 3 ? list.slice(0, room - 2).join("") + ".." : "";
+  }
+  function mark(el, name, on) {
+    if (!el) return;
+    var names = (el.getAttribute("class") || "").split(/\s+/).filter(function (n) { return n && n !== name; });
+    if (on) names.push(name);
+    el.setAttribute("class", names.join(" "));
+  }
+  function child(el, tag) {
+    var found = el.getElementsByTagName(tag);
+    return found.length ? found[0] : null;
+  }
+  function num(el, name) { return el ? Number(el.getAttribute(name)) || 0 : 0; }
+
+  var nodes = holder.childNodes;
+  for (var i = 0; i < nodes.length; i++) {
+    var g = nodes[i];
+    if (!g || g.nodeType !== 1) continue;
+    var rect = child(g, "rect");
+    if (!rect) continue;
+    var text = child(g, "text");
+    var tip = child(g, "title");
+    var y = num(rect, "y");
+    groups.push(g);
+    frames.push({
+      g: g, rect: rect, text: text, x: num(rect, "x"), w: num(rect, "width"),
+      level: icicle ? y : -y, label: g.getAttribute("data-label") || "",
+      fill: rect.getAttribute("fill"), shown: text ? text.textContent : "",
+      info: tip ? tip.textContent : ""
+    });
+  }
+
+  function show(text) {
+    if (!details) return;
+    var lines = String(text || "").split("\n").filter(function (l) { return /\S/.test(l); });
+    details.textContent = fitLine(lines.join("  ·  "), span - 150);
+  }
+  function put(f, x, w, label) {
+    f.rect.setAttribute("x", x.toFixed(2));
+    f.rect.setAttribute("width", w.toFixed(2));
+    if (f.text) {
+      f.text.setAttribute("x", (x + 3).toFixed(2));
+      f.text.textContent = label;
     }
+  }
+  function within(outer, inner) {
+    return outer.x - EPS <= inner.x && inner.x + inner.w <= outer.x + outer.w + EPS;
+  }
+  function reset() {
+    frames.forEach(function (f) {
+      put(f, f.x, f.w, f.shown);
+      mark(f.g, "fg-hidden", false);
+      mark(f.g, "fg-ancestor", false);
+    });
+    zoomed = null;
+    mark(resetBtn, "fg-off", true);
+  }
+  function zoom(target) {
+    var ancestors = frames.filter(function (f) { return f.level < target.level && within(f, target); });
+    if (!ancestors.length && target.w >= span - EPS) { reset(); return; }
+    var scale = span / target.w;
+    frames.forEach(function (f) {
+      if (f === target || (f.level > target.level && within(target, f))) {
+        var w = f.w * scale;
+        put(f, left + (f.x - target.x) * scale, w, fitLabel(f.label, w));
+        mark(f.g, "fg-hidden", false);
+        mark(f.g, "fg-ancestor", false);
+      } else if (ancestors.indexOf(f) !== -1) {
+        put(f, left, span, fitLabel(f.label, span));
+        mark(f.g, "fg-hidden", false);
+        mark(f.g, "fg-ancestor", true);
+      } else {
+        mark(f.g, "fg-hidden", true);
+      }
+    });
+    zoomed = target;
+    mark(resetBtn, "fg-off", false);
+  }
+  function coverage(spans) {
+    spans.sort(function (a, b) { return a[0] - b[0]; });
+    var covered = 0, start = null, end = null;
+    spans.forEach(function (s) {
+      if (start === null || s[0] > end + EPS) {
+        if (start !== null) covered += end - start;
+        start = s[0];
+        end = s[1];
+      } else if (s[1] > end) {
+        end = s[1];
+      }
+    });
+    if (start !== null) covered += end - start;
+    return covered;
+  }
+  function search(value) {
+    term = value || "";
+    var pattern = null;
+    if (term) {
+      try { pattern = new RegExp(term, ignoreCase ? "i" : ""); }
+      catch (err) { pattern = null; show("Invalid regular expression: " + term); }
+    }
+    var spans = [];
+    frames.forEach(function (f) {
+      var hit = !!pattern && pattern.test(f.label);
+      f.rect.setAttribute("fill", hit ? MATCH : f.fill);
+      if (hit) spans.push([f.x, f.x + f.w]);
+    });
+    if (matched) {
+      matched.textContent = !pattern ? ""
+        : measured ? "Matched: " + Math.min(100, coverage(spans) / span * 100).toFixed(1) + "%"
+        : "Matched: " + spans.length + (spans.length === 1 ? " frame" : " frames");
+    }
+  }
+  function ask() {
+    var win = doc.defaultView || (typeof window !== "undefined" ? window : null);
+    if (!win || typeof win.prompt !== "function") return;
+    var value = win.prompt("Search frames (regular expression, empty clears)", term);
+    if (value !== null && value !== undefined) search(value);
+  }
+  function frameOf(el) {
+    while (el && el !== holder && el !== svg) {
+      if (el.parentNode === holder) {
+        var at = groups.indexOf(el);
+        return at === -1 ? null : frames[at];
+      }
+      el = el.parentNode;
+    }
+    return null;
+  }
 
-    script_content = _FLAMEGRAPH_SCRIPT % js_placeholders
+  holder.addEventListener("mouseover", function (event) {
+    var f = frameOf(event.target);
+    if (f) show(f.info || f.label);
+  });
+  holder.addEventListener("mouseout", function (event) {
+    var f = frameOf(event.target);
+    if (f && frameOf(event.relatedTarget) !== f) show(hint);
+  });
+  holder.addEventListener("click", function (event) {
+    var f = frameOf(event.target);
+    if (f) zoom(f);
+  });
+  svg.addEventListener("dblclick", function (event) {
+    if (!frameOf(event.target)) reset();
+  });
+  if (resetBtn) resetBtn.addEventListener("click", reset);
+  if (searchBtn) searchBtn.addEventListener("click", ask);
+  if (caseBtn) {
+    caseBtn.addEventListener("click", function () {
+      ignoreCase = !ignoreCase;
+      mark(caseBtn, "fg-on", ignoreCase);
+      if (term) search(term);
+    });
+  }
+  // Standalone: the whole document. Inline in a page: only this chart, so
+  // the browser's own find keeps working elsewhere.
+  var keys = svg === doc.documentElement ? doc : svg;
+  if (keys === svg && !svg.hasAttribute("tabindex")) svg.setAttribute("tabindex", "-1");
+  keys.addEventListener("keydown", function (event) {
+    var key = event.key || "";
+    if (key === "F3" || ((event.ctrlKey || event.metaKey) && !event.altKey && (key === "f" || key === "F"))) {
+      event.preventDefault();
+      ask();
+    } else if (key === "Escape") {
+      if (term) search(""); else if (zoomed) reset();
+    }
+  });
+})();
+"""
+
+
+def _empty_svg(width):
+    height = 60
+    return "\n".join([
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="%d" height="%d" '
+        'viewBox="0 0 %d %d" class="mfc-flame">' % (width, height, width, height),
+        "<style>%s</style>" % STYLE,
+        '<rect x="0" y="0" width="100%%" height="100%%" fill="%s"/>' % BACKGROUND,
+        '<text x="%s" y="34" text-anchor="middle">%s</text>' % (_px(width / 2.0), _esc(EMPTY_MESSAGE)),
+        "</svg>",
+        "",
+    ])
+
+
+def folded_to_svg(folded_text, title="Flame Graph", width=1200, height=16,
+                  countname="samples", inverted=False, colors="hot",
+                  teach_index_by_folded=None, complexity_by_folded=None,
+                  family_by_folded=None, frame_labels=None, frame_ids=None):
+    """Render folded stacks as a standalone interactive SVG string.
+
+    ``frame_labels`` maps a folded token to the label to display and
+    ``frame_ids`` maps a token to a stable node id (``data-node-id``).
+    ``teach_index_by_folded`` and ``family_by_folded`` are keyed by the
+    displayed label. ``complexity_by_folded`` is accepted for compatibility
+    and ignored. Output is deterministic for a given input.
+    """
+    try:
+        width = int(width)
+    except (TypeError, ValueError):
+        width = 1200
+    width = max(1, width)
+    try:
+        row_h = max(1, int(height))
+    except (TypeError, ValueError):
+        row_h = 16
+    span = max(1, width - 2 * SIDE_MARGIN)
+
+    top = _merge(_parse(folded_text))
+    placed = _place(top, span) if top.value > 0 else []
+    if not placed:
+        return _empty_svg(width)
+
+    total = top.value
+    rows = max(depth for _, depth, _ in placed) + 1
+    pitch = row_h + ROW_GAP
+    svg_h = HEADER_H + rows * pitch + FOOTER_H
+    labels = frame_labels or {}
+    ids = frame_ids or {}
 
     out = [
-        '<?xml version="1.0" standalone="no"?>',
-        '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">',
-        f'<svg version="1.1" width="{width}" height="{imageheight}" onload="init(evt)" viewBox="0 0 {width} {imageheight}" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
-        f'<defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="{BGCOLOR1}" offset="5%"/><stop stop-color="{BGCOLOR2}" offset="95%"/></linearGradient></defs>',
-        f'<style type="text/css">text {{ font-family: Verdana; font-size: {fontsize}px; fill: {BLACK}; }}',
-        "#search, #ignorecase { opacity:0.1; cursor:pointer; } #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }",
-        f"#title {{ text-anchor:middle; font-size:{titlesize}px }} #unzoom {{ cursor:pointer; }} #frames > *:hover {{ stroke:black; stroke-width:0.5; cursor:pointer; }} .hide {{ display:none; }} .parent {{ opacity:0.5; }}</style>",
-        f"<script type=\"text/ecmascript\"><![CDATA[\n{script_content}\n]]></script>",
-        f'<rect width="100%" height="100%" fill="url(#background)"/>',
-        f'<text id="title" x="{width // 2}" y="{fontsize * 2}">{_escape_svg(title)}</text>',
-        f'<text id="details" x="{xpad}" y="{imageheight - ypad2 // 2}"> </text>',
-        f'<text id="unzoom" class="hide" x="{xpad}" y="{fontsize * 2}">Reset Zoom</text>',
-        f'<text id="search" x="{width - xpad - 100}" y="{fontsize * 2}">Search</text>',
-        f'<text id="ignorecase" x="{width - xpad - 16}" y="{fontsize * 2}">ic</text>',
-        f'<text id="matched" x="{width - xpad - 100}" y="{imageheight - ypad2 // 2}"> </text>',
-        '<g id="frames">',
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="%d" height="%d" '
+        'viewBox="0 0 %d %d" class="mfc-flame" aria-label="%s">'
+        % (width, svg_h, width, svg_h, _esc(title)),
+        "<style>%s</style>" % STYLE,
+        '<rect x="0" y="0" width="100%%" height="100%%" fill="%s"/>' % BACKGROUND,
+        '<text class="fg-title" x="%s" y="%d" text-anchor="middle">%s</text>'
+        % (_px(width / 2.0), TITLE_Y, _esc(_fit_text("" if title is None else str(title),
+                                                     max(0, width - 240), 17 * CHAR_RATIO))),
+        '<text class="fg-reset fg-off" x="%d" y="%d" role="button">Reset zoom</text>'
+        % (SIDE_MARGIN, TITLE_Y),
+        '<text class="fg-ic" x="%d" y="%d" text-anchor="end" role="button">ic</text>'
+        % (width - SIDE_MARGIN - 60, TITLE_Y),
+        '<text class="fg-search" x="%d" y="%d" text-anchor="end" role="button">Search</text>'
+        % (width - SIDE_MARGIN, TITLE_Y),
+        '<g class="frames" data-left="%d" data-span="%d" data-icicle="%d" data-measured="%d" data-match="%s">'
+        % (SIDE_MARGIN, span, 1 if inverted else 0, 0 if countname == NO_TIME else 1, MATCH_COLOR),
     ]
-
-    for node_id, node_data in sorted(node_map.items()):
-        parts = node_id.split(";")
-        if len(parts) < 3:
-            continue
-        func, depth_str, etime_str = parts[0], parts[1], parts[2]
-        try:
-            depth = int(depth_str)
-            etime = float(etime_str)
-        except ValueError:
-            continue
-        stime = node_data.get("stime")
-        if stime is None:
-            continue
-        if func == "" and depth == 0:
-            etime = timemax
-        x1 = xpad + stime * widthpertime
-        x2 = xpad + etime * widthpertime
-        if inverted:
-            y1 = ypad1 + depth * frameheight
-            y2 = ypad1 + (depth + 1) * frameheight - framepad
-        else:
-            y1 = imageheight - ypad2 - (depth + 1) * frameheight + framepad
-            y2 = imageheight - ypad2 - depth * frameheight
-        frame_token = func
-        if frame_labels:
-            func = frame_labels.get(frame_token, func)
-        samples = int((etime - stime) + 0.5)
-        samples_txt = f"{samples:,}"
-        if func == "" and depth == 0:
-            info = f"all ({samples_txt} {countname}, 100%)"
-        else:
-            pct = f"{100 * samples / timemax:.2f}"
-            esc = _escape_svg(func)
-            info = f"{esc} ({samples_txt} {countname}, {pct}%)"
-        if func == "--":
-            color = VDGREY
-        elif func == "-":
-            color = DGREY
-        else:
-            # V1: categorical fill when we know the family; else legacy hot.
-            fam = family_by_folded.get(func) if family_by_folded else None
-            color = _color_family(fam) if fam else None
-            if not color:
-                color = _color_hot(func)
-        teach_attr = ""
-        if teach_index_by_folded and func in teach_index_by_folded:
-            teach_attr = f' data-teach-index="{teach_index_by_folded[func]}"'
-        identity_attr = ''
-        if frame_ids and frame_token in frame_ids:
-            identity_attr = ' data-node-id="{}"'.format(_escape_svg(frame_ids[frame_token]))
-        out.append(f'<g{teach_attr}{identity_attr}><title>{info}</title>')
-        out.append(f'<rect x="{x1:.1f}" y="{y1:.1f}" width="{x2 - x1:.1f}" height="{y2 - y1:.1f}" fill="{color}" rx="2" ry="2"/>')
-        chars = int((x2 - x1) / (fontsize * fontwidth))
-        text = ""
-        if chars >= 3:
-            text = _strip_annotation(func)[:chars]
-            if len(func) > chars:
-                text = text[:-2] + ".." if len(text) >= 2 else ".."
-            text = _escape_svg(text)
-        out.append(f'<text x="{x1 + 3:.2f}" y="{3 + (y1 + y2) / 2:.2f}">{text}</text>')
+    for node, depth, start in placed:
+        token = node.token
+        label = labels.get(token)
+        label = token if label is None else str(label)
+        x = SIDE_MARGIN + start / total * span
+        w = node.value / total * span
+        row = depth if inverted else rows - 1 - depth
+        y = HEADER_H + row * pitch
+        tip = _esc(flame_header(label, node.value, total, countname))
+        attrs = []
+        node_id = ids.get(token)
+        if node_id is not None:
+            attrs.append('data-node-id="%s"' % _esc(node_id))
+        teach = _lookup(teach_index_by_folded, label)
+        if teach is not None:
+            attrs.append('data-teach-index="%s"' % _esc(teach))
+        attrs.append('data-label="%s"' % _esc(label))
+        fill = frame_color(label, _lookup(family_by_folded, label), colors)
+        out.append("<g %s>" % " ".join(attrs))
+        out.append("<title>%s</title>" % tip)
+        out.append('<rect x="%s" y="%d" width="%s" height="%d" rx="2" ry="2" fill="%s"/>'
+                   % (_px(x), y, _px(w), row_h, fill))
+        out.append('<text x="%s" y="%s">%s</text>'
+                   % (_px(x + LABEL_INSET), _px(y + row_h / 2.0 + 4), _esc(fit_frame_label(label, w))))
         out.append("</g>")
-
     out.append("</g>")
-    out.append("</svg>\n")
+    out.append('<text class="fg-details" x="%d" y="%d">%s</text>'
+               % (SIDE_MARGIN, svg_h - 10, _esc(_fit_text(HINT, span - DETAILS_RESERVE, CHAR_W))))
+    out.append('<text class="fg-matched" x="%d" y="%d" text-anchor="end"></text>'
+               % (width - SIDE_MARGIN, svg_h - 10))
+    out.append('<script type="text/ecmascript"><![CDATA[%s]]></script>' % SCRIPT)
+    out.append("</svg>")
+    out.append("")
     return "\n".join(out)
-
-
-def _error_svg(width, message):
-    h = 60
-    return f'''<?xml version="1.0" standalone="no"?>
-<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="{width}" height="{h}" xmlns="http://www.w3.org/2000/svg">
-<text x="{width//2}" y="30" text-anchor="middle">{message}</text>
-</svg>
-'''
-
-
-# Embedded JavaScript from flamegraph.pl (with placeholders: xpad, fontsize, fontwidth, inverted, nametype, searchcolor)
-_FLAMEGRAPH_SCRIPT = r'''
-	"use strict";
-	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn, pinnedDetails = null;
-	function update_history(params) {
-        // Sandboxed srcdoc reports have an opaque origin and cannot edit
-        // history. Zoom/search still work without a URL bookmark there.
-        try { history.replaceState(null, null, parse_params(params)); }
-        catch (error) { if (error.name !== "SecurityError") throw error; }
-    }
-	function init(evt) {
-		details = document.getElementById("details").firstChild;
-		searchbtn = document.getElementById("search");
-		ignorecaseBtn = document.getElementById("ignorecase");
-		unzoombtn = document.getElementById("unzoom");
-		matchedtxt = document.getElementById("matched");
-		svg = document.getElementsByTagName("svg")[0];
-		searching = 0;
-		currentSearchTerm = null;
-		var params = get_params();
-		if (params.x && params.y)
-			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
-		if (params.s) search(params.s);
-	}
-	window.addEventListener("click", function(e) {
-		var target = find_group(e.target);
-		if (target) {
-			if (target.nodeName == "a") {
-				if (e.ctrlKey === false) return;
-				e.preventDefault();
-			}
-			if (target.classList.contains("parent")) { pinnedDetails = null; unzoom(true); }
-			else {
-			zoom(target);
-			pinnedDetails = "%(nametype)s " + g_to_text(target);
-			}
-			if (!document.querySelector('.parent')) {
-				var params = get_params();
-				if (params.x) delete params.x;
-				if (params.y) delete params.y;
-				update_history(params);
-				unzoombtn.classList.add("hide");
-				return;
-			}
-			var el = target.querySelector("rect");
-			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
-				var params = get_params();
-				params.x = el.attributes._orig_x.value;
-				params.y = el.attributes.y.value;
-				update_history(params);
-			}
-		}
-		else if (e.target.id == "unzoom") clearzoom();
-		else if (e.target.id == "search") search_prompt();
-		else if (e.target.id == "ignorecase") toggle_ignorecase();
-	}, false);
-	window.addEventListener("mouseover", function(e) {
-		var target = find_group(e.target);
-		if (target) details.nodeValue = (pinnedDetails !== null ? pinnedDetails : "%(nametype)s " + g_to_text(target));
-	}, false);
-	window.addEventListener("mouseout", function(e) {
-		var target = find_group(e.target);
-		if (target && pinnedDetails === null) details.nodeValue = ' ';
-	}, false);
-	window.addEventListener("keydown", function(e) {
-		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) { e.preventDefault(); search_prompt(); }
-		else if (e.ctrlKey && e.keyCode === 73) { e.preventDefault(); toggle_ignorecase(); }
-	}, false);
-	function get_params() {
-		var params = {};
-		var paramsarr = window.location.search.substr(1).split('&');
-		for (var i = 0; i < paramsarr.length; ++i) {
-			var tmp = paramsarr[i].split("=");
-			if (!tmp[0] || !tmp[1]) continue;
-			params[tmp[0]] = decodeURIComponent(tmp[1]);
-		}
-		return params;
-	}
-	function parse_params(params) {
-		var uri = "?";
-		for (var key in params) { uri += key + '=' + encodeURIComponent(params[key]) + '&'; }
-		if (uri.slice(-1) == "&") uri = uri.substring(0, uri.length - 1);
-		if (uri == '?') uri = window.location.href.split('?')[0];
-		return uri;
-	}
-	function find_child(node, selector) {
-		var children = node.querySelectorAll(selector);
-		if (children.length) return children[0];
-	}
-	function find_group(node) {
-		var parent = node.parentElement;
-		if (!parent) return;
-		if (parent.id == "frames") return node;
-		return find_group(parent);
-	}
-	function orig_save(e, attr, val) {
-		if (e.attributes["_orig_" + attr] != undefined) return;
-		if (e.attributes[attr] == undefined) return;
-		if (val == undefined) val = e.attributes[attr].value;
-		e.setAttribute("_orig_" + attr, val);
-	}
-	function orig_load(e, attr) {
-		if (e.attributes["_orig_"+attr] == undefined) return;
-		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
-		e.removeAttribute("_orig_"+attr);
-	}
-	function g_to_text(e) {
-		var text = find_child(e, "title");
-		return text ? text.firstChild.nodeValue : "";
-	}
-	function g_to_func(e) { return g_to_text(e); }
-	function update_text(e) {
-		var r = find_child(e, "rect");
-		var t = find_child(e, "text");
-		if (!r || !t) return;
-		var w = parseFloat(r.attributes.width.value) - 3;
-		var txt = (find_child(e, "title") ? find_child(e, "title").textContent : "").replace(/\([^(]*\)$/,"");
-		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
-		if (w < 2 * %(fontsize)s * %(fontwidth)s) { t.textContent = ""; return; }
-		t.textContent = txt;
-		var sl = t.getSubStringLength ? t.getSubStringLength(0, txt.length) : txt.length * 7;
-		if (/^ *$/.test(txt) || sl < w) return;
-		var start = Math.floor((w/sl) * txt.length);
-		for (var x = start; x > 0; x = x-2) {
-			if ((t.getSubStringLength ? t.getSubStringLength(0, x + 2) : (x+2)*7) <= w) {
-				t.textContent = txt.substring(0, x) + "..";
-				return;
-			}
-		}
-		t.textContent = "";
-	}
-	function zoom_reset(e) {
-		if (e.attributes != undefined) { orig_load(e, "x"); orig_load(e, "width"); }
-		if (e.childNodes == undefined) return;
-		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_reset(c[i]);
-	}
-	function zoom_child(e, x, ratio) {
-		if (e.attributes != undefined) {
-			if (e.attributes.x != undefined) {
-				orig_save(e, "x");
-				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - %(xpad)s) * ratio + %(xpad)s;
-				if (e.tagName == "text" && e.parentNode) {
-					var rect = find_child(e.parentNode, "rect[x]") || find_child(e.parentNode, "rect");
-					if (rect) e.attributes.x.value = parseFloat(rect.attributes.x.value) + 3;
-				}
-			}
-			if (e.attributes.width != undefined) {
-				orig_save(e, "width");
-				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
-			}
-		}
-		if (e.childNodes == undefined) return;
-		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_child(c[i], x - %(xpad)s, ratio);
-	}
-	function zoom_parent(e) {
-		if (e.attributes) {
-			if (e.attributes.x != undefined) { orig_save(e, "x"); e.attributes.x.value = %(xpad)s; }
-			if (e.attributes.width != undefined) { orig_save(e, "width"); e.attributes.width.value = parseInt(svg.width.baseVal.value) - (%(xpad)s * 2); }
-		}
-		if (e.childNodes == undefined) return;
-		for (var i = 0, c = e.childNodes; i < c.length; i++) zoom_parent(c[i]);
-	}
-	function zoom(node) {
-		var attr = find_child(node, "rect").attributes;
-		var width = parseFloat(attr.width.value);
-		var xmin = parseFloat(attr.x.value);
-		var xmax = parseFloat(xmin + width);
-		var ymin = parseFloat(attr.y.value);
-		var ratio = (svg.width.baseVal.value - 2 * %(xpad)s) / width;
-		var fudge = 0.0001;
-		unzoombtn.classList.remove("hide");
-		var el = document.getElementById("frames").children;
-		for (var i = 0; i < el.length; i++) {
-			var e = el[i];
-			var a = find_child(e, "rect").attributes;
-			var ex = parseFloat(a.x.value);
-			var ew = parseFloat(a.width.value);
-			var upstack = (%(inverted)s == 0) ? (parseFloat(a.y.value) > ymin) : (parseFloat(a.y.value) < ymin);
-			if (upstack) {
-				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
-					e.classList.add("parent");
-					zoom_parent(e);
-					update_text(e);
-				} else e.classList.add("hide");
-			} else {
-				if (ex < xmin || ex + fudge >= xmax) e.classList.add("hide");
-				else { zoom_child(e, xmin, ratio); update_text(e); }
-			}
-		}
-		search();
-	}
-	function unzoom(dont_update_text) {
-		unzoombtn.classList.add("hide");
-		var el = document.getElementById("frames").children;
-		for (var i = 0; i < el.length; i++) {
-			el[i].classList.remove("parent");
-			el[i].classList.remove("hide");
-			zoom_reset(el[i]);
-			if (!dont_update_text) update_text(el[i]);
-		}
-		search();
-	}
-	function clearzoom() {
-		pinnedDetails = null;
-		unzoom();
-		var params = get_params();
-		if (params.x) delete params.x;
-		if (params.y) delete params.y;
-		update_history(params);
-	}
-	function toggle_ignorecase() {
-		ignorecase = !ignorecase;
-		ignorecaseBtn.classList.toggle("show", ignorecase);
-		reset_search();
-		search();
-	}
-	function reset_search() {
-		var el = document.querySelectorAll("#frames rect");
-		for (var i = 0; i < el.length; i++) orig_load(el[i], "fill");
-		var params = get_params();
-		delete params.s;
-		update_history(params);
-	}
-	function search_prompt() {
-		if (!searching) {
-			var term = prompt("Enter a search term (regexp allowed)" + (ignorecase ? ", ignoring case" : "") + "\\nPress Ctrl-i to toggle case sensitivity", "");
-			if (term != null) search(term);
-		} else {
-			reset_search();
-			searching = 0;
-			currentSearchTerm = null;
-			searchbtn.classList.remove("show");
-			searchbtn.firstChild.nodeValue = "Search";
-			matchedtxt.classList.add("hide");
-			matchedtxt.firstChild.nodeValue = "";
-		}
-	}
-	function search(term) {
-		if (term) currentSearchTerm = term;
-		if (currentSearchTerm === null) return;
-		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
-		var el = document.getElementById("frames").children;
-		var matches = {};
-		var maxwidth = 0;
-		for (var i = 0; i < el.length; i++) {
-			var e = el[i];
-			var func = g_to_func(e);
-			var rect = find_child(e, "rect");
-			if (func == null || rect == null) continue;
-			var w = parseFloat(rect.attributes.width.value);
-			if (w > maxwidth) maxwidth = w;
-			if (func.match(re)) {
-				var x = parseFloat(rect.attributes.x.value);
-				orig_save(rect, "fill");
-				rect.attributes.fill.value = "%(searchcolor)s";
-				matches[x] = (matches[x] === undefined || w > matches[x]) ? w : matches[x];
-				searching = 1;
-			}
-		}
-		if (!searching) return;
-		var params = get_params();
-		params.s = currentSearchTerm;
-		update_history(params);
-		searchbtn.classList.add("show");
-		searchbtn.firstChild.nodeValue = "Reset Search";
-		var count = 0, lastx = -1, lastw = 0, keys = [];
-		for (var k in matches) { if (matches.hasOwnProperty(k)) keys.push(k); }
-		keys.sort(function(a,b){ return a - b; });
-		var fudge = 0.0001;
-		for (var ki = 0; ki < keys.length; ki++) {
-			var x = parseFloat(keys[ki]);
-			var w = matches[keys[ki]];
-			if (x >= lastx + lastw - fudge) { count += w; lastx = x; lastw = w; }
-		}
-		matchedtxt.classList.remove("hide");
-		var pct = 100 * count / maxwidth;
-		if (pct != 100) pct = pct.toFixed(1);
-		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%%";
-	}
-'''

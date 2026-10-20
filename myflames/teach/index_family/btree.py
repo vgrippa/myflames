@@ -163,7 +163,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="btree",
-        title="B+tree lookup — how InnoDB finds a row",
+        title="B+tree lookup: how InnoDB finds a row",
         subtitle=(
             "Clustered primary key, covering vs non-covering secondary "
             "index, and why one extra tree walk doubles your I/O."

@@ -13,10 +13,10 @@ var ROWS = [
 ];
 
 // Color scheme (V1/D4 aware — chart fills stay separate from severity).
-var IDX_COLOR     = "#93c5fd";   // light blue — index page
-var TABLE_COLOR   = "#fde68a";   // yellow — clustered (primary) page
-var MATCH_COLOR   = "#10b981";   // green — row matched the predicate
-var SKIP_COLOR    = "#e5e7eb";   // grey — skipped / not read
+var IDX_COLOR     = "var(--svg-token-soft)";   // light blue — index page
+var TABLE_COLOR   = "var(--svg-hop-soft)";   // yellow — clustered (primary) page
+var MATCH_COLOR   = "var(--svg-ok-soft)";   // green — row matched the predicate
+var SKIP_COLOR    = "var(--svg-node-muted)";   // grey — skipped / not read
 
 var CELL_W = 120, CELL_H = 28, GAP = 6;
 
@@ -29,7 +29,7 @@ function clearSvg(id) {
 function drawIndex(svgId, title, idxFields, rowSubset) {
   var svg = clearSvg(svgId);
   var lbl = anim.svgEl("text", {
-    x: 14, y: 22, "font-size": 12, "font-weight": 700, fill: "#1e40af"
+    x: 14, y: 22, "font-size": 12, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   lbl.textContent = "Secondary index (" + idxFields.join(", ") + ")";
   svg.appendChild(lbl);
@@ -40,14 +40,14 @@ function drawIndex(svgId, title, idxFields, rowSubset) {
     var g = anim.svgEl("g", {});
     var r = anim.svgEl("rect", {
       x: x, y: y, width: CELL_W * idxFields.length, height: CELL_H,
-      rx: 4, ry: 4, fill: IDX_COLOR, stroke: "#60a5fa", "stroke-width": 1
+      rx: 4, ry: 4, fill: IDX_COLOR, stroke: "var(--svg-token)", "stroke-width": 1
     });
     g.appendChild(r);
     var xc = x;
     idxFields.forEach(function(f, fi) {
       var txt = anim.svgEl("text", {
         x: xc + 10, y: y + CELL_H / 2 + 4, "font-size": 11,
-        "font-weight": 600, fill: "#1e3a8a"
+        "font-weight": 600, fill: "var(--svg-token-ink)"
       });
       txt.textContent = f + "=" + row[f];
       g.appendChild(txt);
@@ -63,7 +63,7 @@ function drawIndex(svgId, title, idxFields, rowSubset) {
 function drawTable(svgId, title) {
   var svg = clearSvg(svgId);
   var lbl = anim.svgEl("text", {
-    x: 14, y: 22, "font-size": 12, "font-weight": 700, fill: "#92400e"
+    x: 14, y: 22, "font-size": 12, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   lbl.textContent = "Clustered (primary) index — full rows";
   svg.appendChild(lbl);
@@ -74,14 +74,14 @@ function drawTable(svgId, title) {
     var g = anim.svgEl("g", {});
     var r = anim.svgEl("rect", {
       x: x, y: y, width: CELL_W * TABLE_COLS.length, height: CELL_H,
-      rx: 4, ry: 4, fill: SKIP_COLOR, stroke: "#d1d5db", "stroke-width": 1
+      rx: 4, ry: 4, fill: SKIP_COLOR, stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     g.appendChild(r);
     var xc = x;
     TABLE_COLS.forEach(function(f) {
       var txt = anim.svgEl("text", {
         x: xc + 10, y: y + CELL_H / 2 + 4, "font-size": 11,
-        "font-weight": 500, fill: "#374151"
+        "font-weight": 500, fill: "var(--svg-ink)"
       });
       txt.textContent = f + "=" + row[f];
       g.appendChild(txt);

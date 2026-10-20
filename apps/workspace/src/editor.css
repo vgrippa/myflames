@@ -1,0 +1,1272 @@
+/* The Query editor: a flush IDE layout (schema browser | editor and
+   results | history), divided by hairlines like the Server place. Tokens
+   only (style.css :root, including the --syntax-* colors). */
+
+.query-lab {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--topbar-height));
+  min-width: 0;
+}
+.editor-workbench {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ---- Editor column ---------------------------------------------------------- */
+.query-lab .editor-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+}
+.query-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-pane);
+}
+.query-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface);
+  padding: 2px 3px;
+  margin: 4px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.query-mode-switch .mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.query-mode-switch .mode-tab:hover {
+  color: var(--fg);
+}
+.query-mode-switch .mode-tab.is-active {
+  color: var(--fg);
+  background: var(--surface-pane);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.query-tablist {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+}
+.query-tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  border-right: 1px solid var(--line);
+}
+.query-tab:has(> [role="tab"][aria-selected="true"]) {
+  background: var(--surface);
+  box-shadow: inset 0 2px var(--accent);
+}
+.query-tab:has(> .query-tab-close) > [role="tab"] {
+  padding-right: var(--space-1);
+}
+/* Shown on the active tab and the tab being pointed at; touch screens
+   always show it. Hidden keeps its space, so tabs never shift. */
+.query-tab-close {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-right: var(--space-2);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-faint);
+  visibility: hidden;
+}
+.query-tab:is(:hover, :focus-within, :has(> [aria-selected="true"])) > .query-tab-close {
+  visibility: visible;
+}
+.query-tab-close:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.query-tab-close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+@media (hover: none) {
+  .query-tab-close { visibility: visible; }
+}
+.query-tab-name {
+  width: 160px;
+  margin: var(--space-1);
+  min-height: var(--control-h);
+  font-size: var(--text-sm);
+}
+.editor-connection {
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 60%;
+  margin-left: auto;
+  overflow-x: auto;
+}
+.editor-connection .connection-picker {
+  flex-wrap: nowrap;
+  border: 0;
+  padding: var(--space-1) var(--space-2);
+  background: none;
+}
+.editor-connection :is(.picker-main, .picker-side) {
+  flex: none;
+  flex-wrap: nowrap;
+}
+.query-tab > button[role="tab"],
+.query-tabs > button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 0;
+  background: none;
+  padding: 0 var(--space-4);
+  min-height: var(--control-h);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.query-tabs > button {
+  border-right: 1px solid var(--line);
+}
+.query-tab > button[aria-selected="true"] {
+  color: var(--accent-text);
+}
+.tab-dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: 50%;
+  background: var(--warn);
+}
+.query-tab-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.query-tab-panel > :is(.notice, .error, .hint, .editor-banner) {
+  margin: var(--space-2) var(--space-3) 0;
+}
+.query-tab-panel > .hint {
+  font-size: var(--text-sm);
+}
+
+/* One compact toolbar. Narrow panes scroll controls inside this row. */
+.editor-toolbar {
+  flex: none;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.toolbar-group {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: nowrap;
+}
+.editor-toolbar .editor-actions {
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--line);
+}
+.editor-toolbar .tx-group {
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--line);
+}
+.editor-options-popover .run-settings {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+}
+.editor-options-popover .run-settings .inline-field {
+  justify-content: space-between;
+}
+.editor-toolbar .pane-toggles {
+  gap: 0;
+}
+.icon-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.inline-field .number-field {
+  width: 76px;
+}
+.tx-state {
+  display: inline-flex;
+  align-items: center;
+  font-size: inherit;
+}
+.editor-feedback {
+  flex: none;
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+/* A denial, in the toolbar row: one line (the full text is its tooltip and
+   each action's description), so it never adds a row under the toolbar. */
+.editor-privilege-note {
+  flex: 0 1 auto;
+  min-width: 8em;
+  margin: 0 0 0 var(--space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.editor-privilege-note.is-warning {
+  color: var(--warn-text);
+}
+.editor-feedback {
+  color: var(--info-text);
+}
+
+/* Banners: the session ended, or it is on another connection. */
+.editor-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.editor-banner.is-warn {
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+.editor-banner.is-danger {
+  border: 1px solid var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.editor-banner .button {
+  flex: none;
+}
+
+/* The scope belongs to the toolbar, not a separate title row. */
+.run-scope {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  padding: 0 var(--space-1);
+  font-variant-numeric: tabular-nums;
+}
+.run-scope.is-lit {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* ---- The SQL text area and its layers ------------------------------------ */
+/* Every layer repeats the textarea's text metrics exactly. */
+/* Its height comes from the splitter (QueryLab caps it so the results keep
+   three rows); in a short window it may still give way to the results. */
+.sql-editor-wrap {
+  flex: 0 1 auto;
+  position: relative;
+  display: flex;
+  min-height: 72px;
+  height: 260px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  overflow: hidden;
+}
+.sql-gutter {
+  flex: none;
+  width: 48px;
+  overflow: hidden;
+  background: var(--surface-subtle);
+  border-right: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--editor-line-h);
+  text-align: right;
+  user-select: none;
+}
+.sql-gutter-lines {
+  padding: var(--space-3) var(--space-2) var(--space-6) 0;
+  white-space: pre;
+  will-change: transform;
+}
+.sql-gutter-lines > span {
+  display: block;
+  padding-right: 2px;
+}
+.sql-gutter-lines > .is-current {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.sql-gutter-lines > .is-error {
+  color: var(--danger-text);
+  font-weight: 600;
+}
+.sql-surface {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sql-editor,
+.sql-layer {
+  margin: 0;
+  padding: var(--space-3) var(--space-4) var(--space-6);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: var(--editor-line-h);
+  tab-size: 2;
+  letter-spacing: 0;
+  white-space: pre;
+  overflow-wrap: normal;
+  font-variant-ligatures: none;
+}
+.sql-highlight,
+.sql-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.sql-layer {
+  width: max-content;
+  min-width: 100%;
+  color: var(--ink);
+  will-change: transform;
+}
+.sql-backdrop .sql-layer {
+  color: transparent;
+}
+.sql-editor {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  resize: none;
+  overflow: auto;
+  background: transparent;
+  color: var(--ink);
+  caret-color: var(--ink);
+}
+/* The active line and gutter identify focus without boxing the canvas. */
+.sql-editor:focus-visible {
+  outline: none;
+}
+.sql-editor-wrap:focus-within .sql-current {
+  background: var(--accent-subtle, var(--editor-current));
+}
+/* With colors on, the textarea's own text is invisible: the layer draws it. */
+.sql-editor-wrap.is-colored .sql-editor {
+  color: transparent;
+}
+.sql-editor-wrap.is-colored.is-composing .sql-editor {
+  color: var(--ink);
+}
+.sql-editor::selection {
+  background: var(--editor-selection);
+}
+.sql-editor::placeholder {
+  color: var(--ink-faint);
+}
+.sql-editor-wrap.is-colored .sql-editor::placeholder {
+  color: var(--ink-faint);
+}
+.tok-keyword {
+  color: var(--syntax-keyword);
+  font-weight: 600;
+}
+.tok-string {
+  color: var(--syntax-string);
+}
+.tok-number {
+  color: var(--syntax-number);
+}
+.tok-comment {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+.tok-ident {
+  color: var(--syntax-ident);
+}
+.tok-variable {
+  color: var(--syntax-variable);
+}
+.tok-param {
+  color: var(--syntax-param);
+  font-weight: 600;
+}
+.sql-current {
+  background: var(--editor-current);
+}
+.sql-match {
+  background: var(--editor-match);
+  outline: 1px solid var(--syntax-number);
+}
+.sql-unmatched {
+  background: var(--danger-soft);
+  outline: 1px solid var(--danger);
+}
+.sql-error-mark {
+  text-decoration: wavy underline var(--danger);
+  text-decoration-skip-ink: none;
+}
+/* The statement that runs, highlighted briefly behind the text. */
+.sql-backdrop mark {
+  color: transparent;
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  animation: sql-flash 0.2s ease-out;
+}
+@keyframes sql-flash {
+  from {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+/* Local split buttons until the shared kit supports controlled disclosure. */
+.editor-split-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+.editor-split-button > .button:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.editor-split-button > .editor-options-trigger {
+  margin-left: -1px;
+  padding-inline: var(--space-1);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.editor-options-trigger[aria-expanded="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.editor-options-popover {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.plan-options {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+.plan-options-label {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+.plan-options .field.inline-field {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0;
+  font-weight: 400;
+}
+.plan-options .number-field {
+  width: calc(var(--space-4) * 5);
+}
+.editor-parameters {
+  min-width: 0;
+}
+.editor-parameters summary {
+  cursor: pointer;
+  min-height: var(--control-h);
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent-text);
+}
+.editor-parameters > .field {
+  margin-top: var(--space-2);
+}
+.editor-parameters textarea {
+  width: 100%;
+  min-height: 72px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+/* The splitter between the editor and the results. */
+.editor-splitter {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: 6px;
+  cursor: row-resize;
+  background: var(--surface-pane);
+  border-bottom: 1px solid var(--line);
+  touch-action: none;
+}
+.editor-splitter:hover,
+.editor-splitter:focus-visible {
+  background: var(--accent-soft);
+}
+.editor-splitter:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* ---- Results ----------------------------------------------------------------- */
+.results-pane {
+  flex: 1 1 0;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.results-pane.is-empty {
+  justify-content: center;
+}
+.results-tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+.results-tabs [role="tab"] {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: none;
+  padding: 0 var(--space-3);
+  min-height: 30px;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.results-tabs [role="tab"][aria-selected="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: inset 0 -2px var(--accent);
+}
+.tab-count {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+}
+.tab-count.is-error {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.results-running {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.results-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.result-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.result-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.result-cut {
+  color: var(--warn-text);
+  font-weight: 500;
+}
+.result-sortnote {
+  color: var(--ink-faint);
+}
+.result-note {
+  color: var(--info-text);
+}
+.result-actions {
+  display: inline-flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.result-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  padding: 0 var(--space-3) var(--space-2);
+}
+.result-grid .data-table-frame {
+  flex: 1 1 auto;
+  display: flex;
+}
+.result-grid .data-table-wrap {
+  flex: 1 1 auto;
+  max-height: none;
+}
+.result-table .cell-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.result-table .cell-rownum {
+  color: var(--ink-faint);
+}
+.sql-null {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  font-style: italic;
+}
+.sql-empty {
+  display: inline-block;
+  min-width: 1em;
+}
+.sql-hex {
+  color: var(--syntax-ident);
+}
+.result-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  font-size: var(--text-sm);
+}
+.result-empty code {
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Export popover. */
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+.result-export .popover fieldset,
+.popover :is(.export-sql, .export-binary) {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0 0;
+}
+.popover :is(.export-sql, .export-binary) legend {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--ink-muted);
+  padding: 0 var(--space-1);
+}
+.popover .export-sql {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  align-items: end;
+}
+.popover .export-sql .field {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.popover .export-sql .field input {
+  width: 100%;
+}
+.popover .export-sql .button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.export-guard {
+  font-size: var(--text-sm);
+}
+
+/* Messages: every statement and its outcome. */
+.messages {
+  padding: var(--space-2) var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+}
+.messages-summary {
+  color: var(--ink-muted);
+  margin-bottom: var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+.messages-note {
+  color: var(--warn-text);
+  margin-bottom: var(--space-2);
+}
+.message-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.message-row {
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--line);
+}
+.message-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+.message-title {
+  font-weight: 600;
+}
+.message-facts {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.message-sql {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.message-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-1);
+  color: var(--danger-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.plan-pane {
+  padding: var(--space-2) var(--space-3);
+}
+.plan-pane .capture-status {
+  margin: var(--space-2) 0;
+}
+.sent-sql {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.sent-sql summary {
+  cursor: pointer;
+}
+.sent-sql pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  max-height: 180px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+}
+
+/* This tab's transaction state, at the end of the editor toolbar (the
+   window status bar carries the connection, session and last run). */
+.editor-toolbar .tx-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-sm);
+}
+.result-meta,
+.message-facts,
+.tab-count {
+  font-variant-numeric: tabular-nums;
+}
+.statusbar-note.is-error {
+  color: var(--danger-text);
+}
+
+/* ---- Side panes: schema browser and history ------------------------------- */
+.schema-browser,
+.history-panel {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-pane);
+  font-size: var(--text-sm);
+}
+.schema-browser-slot {
+  display: flex;
+  flex: none;
+  min-height: 0;
+}
+.schema-browser-slot[hidden] {
+  display: none;
+}
+.schema-browser {
+  border-right: 1px solid var(--line);
+}
+.history-panel {
+  width: 300px;
+  border-left: 1px solid var(--line);
+}
+.browser-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 35px;
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+/* Pane titles (Schemas, History) read like every other section label. */
+.browser-head h2 {
+  flex: 1 1 auto;
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  font-weight: var(--section-weight);
+  color: var(--section-ink);
+}
+.browser-filter {
+  flex: none;
+  padding: var(--space-2);
+}
+.browser-filter .toolbar-search {
+  width: 100%;
+}
+.browser-gate {
+  padding: var(--space-4) var(--space-3);
+  color: var(--ink-muted);
+}
+.browser-gate p {
+  margin-bottom: var(--space-2);
+}
+.browser-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+.browser-status.is-error {
+  color: var(--danger-text);
+}
+.browser-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: var(--space-3);
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding-right: var(--space-2);
+  cursor: default;
+  white-space: nowrap;
+  color: var(--ink);
+  user-select: none;
+}
+.tree-row:hover {
+  background: var(--surface-hover);
+}
+.tree-row[aria-selected="true"] {
+  background: var(--accent-soft);
+}
+.tree-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.tree-row > svg {
+  flex: none;
+  color: var(--ink-muted);
+}
+.tree-twisty {
+  flex: none;
+  width: 12px;
+  display: inline-flex;
+  color: var(--ink-faint);
+  transition: transform 0.12s;
+}
+.tree-row[aria-expanded="true"] > .tree-twisty {
+  transform: rotate(90deg);
+}
+.tree-label {
+  flex: 0 1 auto;
+  min-width: 3ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-row.kind-column,
+.tree-row.kind-index {
+  /* Names take their natural width before metadata receives the remainder. */
+  display: grid;
+  /* The fourth track holds the row's actions button on the same line. */
+  grid-template-columns: var(--space-3) minmax(0, max-content) minmax(0, 1fr) auto;
+  column-gap: var(--space-1);
+}
+.tree-row.kind-column .tree-label,
+.tree-row.kind-index .tree-label {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.tree-row.kind-column .tree-meta,
+.tree-row.kind-index .tree-meta {
+  margin-left: 0;
+  padding-left: 0;
+}
+.tree-meta {
+  flex: 0 100 auto;
+  min-width: 0;
+  margin-left: auto;
+  padding-left: var(--space-2);
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.tree-row.kind-status {
+  color: var(--ink-muted);
+  white-space: normal;
+}
+.tree-row.is-error {
+  color: var(--danger-text);
+}
+.browser-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+.browser-resize:hover,
+.browser-resize:focus-visible {
+  background: var(--accent-line);
+  outline: none;
+}
+.history-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--space-3);
+}
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  color: var(--ink);
+}
+.history-item:hover {
+  background: var(--surface-hover);
+}
+.history-sql {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.history-meta > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Context menus (result cells, schema objects). */
+.context-menu {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: var(--space-1);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-raised);
+}
+.context-menu [role="menuitem"] {
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: var(--space-1) var(--space-3);
+  min-height: var(--control-h);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-md);
+  color: var(--ink);
+  white-space: nowrap;
+}
+/* The highlighted item's fill and words are set once, in kit.css. */
+
+/* The confirmation sheet for a write. */
+.editor-confirm .sheet-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: var(--space-3) 0;
+  font-size: var(--text-sm);
+}
+.editor-confirm .sheet-facts > div {
+  display: contents;
+}
+.editor-confirm .sheet-facts dt {
+  color: var(--ink-muted);
+}
+.editor-confirm .sheet-warnings {
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-6);
+  border: 1px solid var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.editor-confirm .sheet-reasons {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.editor-confirm .sheet-statements {
+  max-height: 240px;
+  overflow: auto;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.editor-confirm .sheet-again {
+  margin: var(--space-2) 0 0;
+}
+
+/* ---- Narrow windows ---------------------------------------------------------- */
+/* A narrow editor pane (the 720 px window with the sidebar, or the schema
+   browser open in a window under about 1000 px): the toolbar wraps onto a
+   second row instead of hiding controls in a sideways scroll, and the scope
+   shares that row. */
+.query-lab .editor-panel {
+  container: editor-panel / inline-size;
+}
+@container editor-panel (max-width: 700px) {
+  .editor-toolbar {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  .editor-toolbar > .toolbar-group {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+  /* Wrapped toolbar: the note fills the rest of the last row (one line),
+     so a late answer still never adds a row. */
+  .editor-toolbar .editor-privilege-note {
+    flex: 1 1 8em;
+  }
+  .editor-toolbar .run-scope {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .editor-toolbar .editor-actions,
+  .editor-toolbar .tx-group {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+/* A short window (the 720x520 minimum has 492 px of content): the one-line
+   notes and the result bar take less height, which goes to the editor. */
+@media (max-height: 600px) {
+  .editor-privilege-note,
+  .editor-feedback,
+  .result-bar {
+    padding-block: 2px;
+  }
+}
+/* The 720 px window (the app's minimum): the editor and its results keep
+   one window-high column, split by the splitter. */
+@media (max-width: 720px) {
+  .sql-gutter {
+    width: 36px;
+  }
+  .sql-editor,
+  .sql-layer {
+    padding: var(--space-2) var(--space-3) var(--space-5);
+  }
+  /* With its " · " separator. */
+  .result-meta > span:has(> .result-sortnote) {
+    display: none;
+  }
+  /* The schema browser and the history open as bottom sheets. */
+  .editor-workbench.is-narrow .schema-browser,
+  .editor-workbench.is-narrow .history-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    width: auto;
+    height: min(70dvh, 560px);
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    box-shadow: var(--shadow-dialog);
+  }
+  .editor-workbench.is-narrow .browser-resize {
+    display: none;
+  }
+}
+
+/* Actions show on the row being pointed at, the focused (selected) row and
+   the row whose menu is open, so keyboards need no F10. Touch screens have
+   no hover, so they always show it. Hidden keeps its space: no reflow. */
+.row-more {
+  flex: none;
+  min-width: var(--space-5);
+  min-height: var(--space-5);
+  color: var(--ink-muted);
+}
+.tree-row .row-more {
+  margin-left: auto;
+  min-height: 22px;
+  visibility: hidden;
+}
+.tree-row:is(:hover, :focus-within, [aria-selected="true"]) .row-more,
+.tree-row .row-more[aria-expanded="true"] {
+  visibility: visible;
+}
+@media (hover: none) {
+  .tree-row .row-more { visibility: visible; }
+}
+.browser-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: var(--space-5);
+  min-height: var(--space-5);
+  transform: translateX(-50%);
+}
+.editor-splitter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: var(--space-5);
+  transform: translateY(-50%);
+}
+
+/* A table document replaces the editor work area without losing its session. */
+.editor-workbench[hidden] { display: none; }

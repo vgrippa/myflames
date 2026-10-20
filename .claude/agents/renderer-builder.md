@@ -1,6 +1,6 @@
 ---
 name: renderer-builder
-description: Implements changes to the myflames SVG/HTML renderers (flamegraph.py, output_bargraph.py, output_treemap.py, output_diagram.py, output_html_report.py) and the demos in docs/demos/. Use when adding or modifying a visualization, fixing SVG layout, or wiring renderer output. Knows the SVG invariants (height + viewBox together, _wrap() for panel text).
+description: Implements changes to the myflames SVG/HTML renderers (flamegraph.py, output_bargraph.py, output_diagram.py, output_html_report.py) and the demos in docs/demos/. Use when adding or modifying a visualization, fixing SVG layout, or wiring renderer output. Knows the SVG invariants (height + viewBox together, _wrap() for panel text).
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
@@ -8,7 +8,7 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 
 You implement renderer changes in the Python package. Follow the `viz-specialist` skill for data-density and encoding decisions, and `web-design` for aesthetic polish; this agent is the implementation hands.
 
-## Invariants (from CLAUDE.md — violating these ships broken SVGs)
+## Invariants (from AGENTS.md, violating these ships broken SVGs)
 
 - **Always update `height` AND `viewBox` together.** Changing one without the other clips or distorts the output.
 - Use `_wrap()` for info-panel text; do not hand-break lines.
@@ -26,7 +26,7 @@ Renderer task:
 - [ ] Confirm the categorical palette (join vs scan) stays consistent across views
 ```
 
-Render via `python3 -m myflames --type [flamegraph|bargraph|treemap|diagram] explain.json > out.svg`. Regenerate demos with the `generate-demos` command/skill.
+Render via `python3 -m myflames --type [flamegraph|bargraph|diagram|tree|workbench] explain.json > out.svg`. Regenerate demos with the `generate-demos` command/skill.
 
 ## Out of scope
 

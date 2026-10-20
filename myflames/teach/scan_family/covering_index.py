@@ -154,7 +154,7 @@ SELECT id FROM users WHERE status = 'active';
 
     return _html.render_page(
         lesson_id="covering_index",
-        title="Covering index — why \"Using index\" in EXPLAIN is the goal",
+        title="Covering index: why \"Using index\" in EXPLAIN is the goal",
         subtitle=(
             "Three acts: non-covering plan, covering plan, and the "
             "InnoDB PK-append property that silently covers queries "

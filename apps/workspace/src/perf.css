@@ -1,0 +1,361 @@
+/* Shared pieces of the Server views (PerfShared.tsx): copyable SQL, the
+   database picker, the focus chip and verdict text. Layout components are in
+   kit.css. Tokens only. */
+.perf-caveat {
+  color: var(--ink-muted);
+}
+/* The dense Server lists share a 32 px baseline and flush hairline frames.
+   Other Server screens keep their existing density. */
+:is(.innodb-panel, .waits-panel, .io-panel, .sessions-panel, .top-panel, .locks-panel) {
+  --row-h: var(--space-6);
+}
+:is(.waits-panel, .io-panel, .sessions-panel, .top-panel, .locks-panel) .data-table-frame,
+.locks-panel .lock-tree {
+  border-radius: 0;
+}
+.innodb-panel .innodb-section {
+  margin-top: 0;
+  border-bottom: 1px solid var(--line);
+}
+.innodb-section > summary {
+  display: flex;
+  min-height: var(--space-6);
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  border-radius: 0;
+  color: var(--ink);
+  cursor: pointer;
+}
+.innodb-section > summary > :is(svg, .status-pill) {
+  flex: none;
+}
+/* A quiet OK draws nothing: take back one gap so the summary follows the
+   title at the usual distance. */
+.innodb-section > summary > .status-pill.is-quiet.is-ok {
+  margin-inline-start: calc(-1 * var(--space-2));
+}
+.innodb-section-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 44%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.innodb-section-summary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+.innodb-section > .disclosure-body {
+  margin: 0 0 var(--space-2) var(--space-5);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--line);
+}
+.innodb-section .grouped-rows {
+  border: 0;
+  border-radius: 0;
+}
+.innodb-section .grouped-row {
+  min-height: var(--row-h);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.io-global-rates > .disclosure-body {
+  margin-bottom: var(--space-3);
+}
+.perf-summary-line {
+  font-weight: 500;
+}
+.perf-verdict {
+  white-space: nowrap;
+}
+.perf-sql {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1) var(--space-2);
+  margin-top: var(--space-2);
+  min-width: 0;
+}
+.perf-sql pre {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.perf-sql pre:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.perf-sql .hint {
+  flex-basis: 100%;
+}
+.perf-focus {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 2px var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+}
+.perf-focus code {
+  font-family: var(--font-mono);
+}
+.perf-focus .text-button {
+  padding: 0;
+}
+/* Database picker: a fixed-position kit Popover. Opening the list never
+   changes toolbar height; search and choices scroll inside the floating pane. */
+.perf-picker-control {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.perf-picker-popover {
+  max-width: 100%;
+}
+.perf-picker-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 180px;
+  max-width: 260px;
+  min-height: var(--control-h);
+  padding: 0 26px 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink);
+  text-align: left;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  /* The same chevron as a select. */
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%),
+    linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 52%,
+    calc(100% - 10px) 52%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+.perf-picker-button:disabled {
+  color: var(--ink-faint);
+}
+.perf-picker-search:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.perf-picker-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perf-picker-panel {
+  min-width: 0;
+  color: var(--ink);
+  white-space: normal;
+}
+.perf-picker-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+.perf-picker-search {
+  flex: 1 1 220px;
+  min-width: 0;
+  font-size: var(--text-md);
+}
+.perf-picker-hint {
+  margin: var(--space-2) 0;
+}
+.perf-picker-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.perf-picker-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  min-height: var(--control-h);
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink);
+  cursor: pointer;
+}
+.perf-picker-option input,
+.perf-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+  align-self: center;
+}
+.perf-picker-option code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.perf-picker-all {
+  font-weight: 600;
+}
+.perf-picker-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-2);
+}
+.perf-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+@media (max-width: 650px) {
+  .perf-picker,
+  .perf-picker-button {
+    width: 100%;
+    max-width: none;
+  }
+}
+/* Waits: inline decorative proportion bar beside the right-aligned wait number. */
+.waits-bar-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.waits-bar {
+  flex: 1 1 36px;
+  min-width: 16px;
+  max-width: 72px;
+  height: var(--space-1-5);
+  border-radius: var(--radius-xs);
+  background: var(--line);
+  overflow: hidden;
+}
+.data-table.is-measuring .waits-bar {
+  flex: 0 0 24px;
+  width: 24px;
+}
+.waits-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-xs);
+  background: var(--accent);
+}
+.waits-bar-value {
+  flex: none;
+  min-width: 5.5ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* I/O: compact KPI summary tiles matching Health's tile density. */
+.io-panel .metric-tile {
+  height: 64px;
+  min-height: 64px;
+  max-height: 64px;
+  gap: 2px;
+  justify-content: center;
+  padding-block: var(--space-1);
+}
+.io-panel .tile-value {
+  line-height: var(--leading-lg);
+}
+.io-panel .tile-foot:empty {
+  display: none;
+}
+@media (max-width: 650px) {
+  .waits-bar {
+    flex-basis: 24px;
+    min-width: 12px;
+    max-width: 44px;
+  }
+}
+
+/* A row's ⋯ menu (RowActionMenu in PerfShared.tsx): menu items like the
+   context menu, an icon and a sentence-case label. */
+.row-menu-anchor {
+  display: inline-flex;
+}
+.row-action-menu {
+  display: grid;
+  gap: 2px;
+}
+.row-action-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-md);
+  text-align: left;
+  white-space: nowrap;
+}
+.row-action-menu [role="menuitem"] svg {
+  flex: none;
+  color: var(--ink-muted);
+}
+.row-action-menu [role="menuitem"].is-danger,
+.row-action-menu [role="menuitem"].is-danger svg {
+  color: var(--danger-text);
+}
+.row-action-menu [role="menuitem"]:is(:hover:not(:disabled), :focus-visible) {
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  outline: none;
+}
+.row-action-menu [role="menuitem"]:is(:hover:not(:disabled), :focus-visible) svg {
+  color: inherit;
+}
+.row-action-menu [role="menuitem"].is-danger:is(:hover:not(:disabled), :focus-visible) {
+  background: var(--danger-fill);
+  color: var(--danger-ink);
+}
+.row-action-menu [role="menuitem"]:disabled {
+  color: var(--ink-faint);
+}
+.row-action-menu [role="menuitem"]:disabled svg {
+  color: inherit;
+}
+.row-action-divider {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--line);
+}

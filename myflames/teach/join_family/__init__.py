@@ -13,37 +13,37 @@ from . import (
 
 LESSONS = {
     "bka_join": {
-        "title": "Batched Key Access (BKA) join — batch, sort, MRR",
+        "title": "Batched key access (BKA) join: batch, sort, MRR",
         "summary": "Batch outer keys, sort by rowid, and sweep the inner index sequentially via Multi-Range Read.",
         "render": bka_join.render,
     },
     "bnl": {
-        "title": "Block Nested Loop join — MariaDB's default for non-indexed joins",
-        "summary": "Watch `join_buffer_size` decide how many times the inner table is rescanned.",
+        "title": "Block nested loop join: MariaDB's default for non-indexed joins",
+        "summary": "Watch join_buffer_size decide how many times the inner table is rescanned.",
         "render": bnl.render,
     },
     "hash": {
-        "title": "Hash join — build, probe, and grace-hash spill",
+        "title": "Hash join: build, probe, and grace-hash spill",
         "summary": "MySQL 8.4's default for non-indexed equi-joins; animated build + probe phases.",
         "render": hash.render,
     },
     "join": {
-        "title": "BNL vs hash join — side by side",
+        "title": "BNL vs hash join: side by side",
         "summary": "MariaDB BNL (default) vs MySQL 8.4 hash join; move the sliders and feel the asymptotic difference.",
         "render": join_compare.render,
     },
     "nested_loop": {
-        "title": "Nested Loop Join — dedicated operator view",
+        "title": "Nested loop join: dedicated operator view",
         "summary": "Single-operator view of the outer-driver/inner-probe loop shape from EXPLAIN.",
         "render": nested_loop.render,
     },
     "semijoin_firstmatch": {
-        "title": "Semijoin FirstMatch — stop looking after the first match",
+        "title": "Semijoin FirstMatch: stop looking after the first match",
         "summary": "IN/EXISTS as a semijoin; the inner scan short-circuits the moment one matching row is found.",
         "render": semijoin_firstmatch.render,
     },
     "semijoin_weedout": {
-        "title": "Semijoin Duplicate Weedout — dedup via temp table",
+        "title": "Semijoin duplicate weedout: dedup via temp table",
         "summary": "IN/EXISTS rewritten as inner join; a temp table keyed on outer rowid removes duplicates.",
         "render": semijoin_weedout.render,
     },

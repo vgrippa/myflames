@@ -5,7 +5,8 @@ import re
 import unittest
 from html.parser import HTMLParser
 
-from myflames.exploration import METRICS, VIEWS, metric_value, project_tree, render_exploration
+from myflames.chart_assets import chart_runtime
+from myflames.exploration import BUNDLE_VIEWS, METRICS, VIEWS, metric_value, project_tree, render_exploration
 from myflames.parser import parse_explain, flatten_nodes
 from myflames.output_workbench import _phase
 
@@ -32,24 +33,32 @@ class Tags(HTMLParser):
         self.tags.append((tag, dict(attrs)))
 
 
+def chart_data(text):
+    """The chart-data-1.0 payload of a bundle-rendered page."""
+    payload = re.search(r'<script type="application/json" class="mfc-data">(.*?)</script>', text, re.S)
+    return json.loads(payload.group(1))
+
+
 class ExplorationTests(unittest.TestCase):
-    def test_native_chart_identity_and_metric_list_all_six_views(self):
+    def test_native_chart_identity_and_metric_list_all_views(self):
         root = sample()
         original = copy.deepcopy(root)
-        ids = {node['node_id'] for node in flatten_nodes(root)}
+        self.assertEqual(set(BUNDLE_VIEWS), set(VIEWS), 'every exploration view is drawn by the bundle')
         for view in VIEWS:
             with self.subTest(view=view):
                 text = render_exploration(root, view)
-                tags = Tags(text).tags
-                native_ids = {attrs.get('data-node-id') for tag, attrs in tags
-                              if tag != 'button' and attrs.get('data-node-id')}
-                self.assertEqual(native_ids, ids)
-                self.assertEqual({attrs['data-node-id'] for tag, attrs in tags
-                                  if attrs.get('class') == 'metric-row'}, ids)
-                self.assertIn('myflames-select', text)
-                self.assertIn('myflames-node', text)
-                self.assertIn('event.source !== window.parent', text)
-                self.assertNotIn('__SVG__', text)
+                # Drawn by myflames-charts.js; DOM identity, metric rows and
+                # the bridge are exercised by test/charts.mjs, exploration.mjs
+                # and parity.mjs in apps/workspace.
+                data = chart_data(text)
+                self.assertEqual([n['id'] for n in data['nodes']], [n['node_id'] for n in flatten_nodes(root)])
+                self.assertEqual(text.count(chart_runtime()), 1)
+                self.assertIn('data-mfc-view="%s"' % ('workbench' if view == 'diagram' else view), text)
+                self.assertIn('data-mfc-panels="metrics"', text)
+                self.assertIn('MyflamesCharts.mountAll(document)', text)
+                for name in ('myflames-select', 'myflames-node'):
+                    self.assertIn(name, chart_runtime())
+                self.assertNotIn('__EMBED__', text)
         self.assertEqual(root, original)
 
     def test_diagram_alias_shares_focus_collapse_and_selection(self):
@@ -64,23 +73,28 @@ class ExplorationTests(unittest.TestCase):
     def test_duplicate_flame_labels_have_distinct_identity(self):
         root = sample()
         root['children'][1] = copy.deepcopy(root['children'][0])
-        root['children'][1]['node_id'] = 'n:duplicate'
+        root['children'][1]['node_id'] = 'n:0123456789ab'
         text = render_exploration(root, 'flamegraph')
-        native = [a['data-node-id'] for t, a in Tags(text).tags if t == 'g' and 'data-node-id' in a]
-        self.assertEqual(set(native), {n['node_id'] for n in flatten_nodes(root)})
-        self.assertNotIn('operator:n:', re.sub(r'<script.*?</script>', '', text, flags=re.S))
+        nodes = chart_data(text)['nodes']
+        # The bundle draws one frame per node ID (charts.mjs, parity.mjs).
+        self.assertEqual([n['id'] for n in nodes], [n['node_id'] for n in flatten_nodes(root)])
+        self.assertEqual(nodes[1]['folded_label'], nodes[2]['folded_label'])
+        self.assertNotEqual(nodes[1]['id'], nodes[2]['id'])
+        self.assertNotIn('operator:n:', text)
 
     def test_microsecond_chart_labels_and_zero_time_are_truthful(self):
         root = parse_explain('{"operation":"Table scan","actual_last_row_ms":0.2}')
-        text = render_exploration(root, 'flamegraph')
-        self.assertIn('200 µs', text)
-        self.assertNotIn('(200 ms,', text)
-        self.assertIn('0.2 ms', text)
+        data = chart_data(render_exploration(root, 'flamegraph'))
+        # The flame graph prints "(200 µs, 100.00%)" (charts.mjs); values stay ms.
+        self.assertEqual(data['display_unit'], 'µs')
+        self.assertEqual(data['nodes'][0]['total_ms'], 0.2)
+        self.assertEqual(data['nodes'][0]['metrics']['total_time'], [0.2, '0.2 ms'])
         for value in ('0', 'null'):
             root = parse_explain('{"operation":"Table scan","actual_last_row_ms":' + value + '}')
-            text = render_exploration(root, 'flamegraph')
-            self.assertIn('No positive time', text)
-            self.assertNotIn('(1 ms', text)
+            node = chart_data(render_exploration(root, 'flamegraph'))['nodes'][0]
+            # No whole display unit of time: the bundle shows "No positive time".
+            self.assertIn(node['self_ms'], (0, None))
+            self.assertIn('No positive time', chart_runtime())
 
     def test_projection_preserves_identity_and_measurements(self):
         root = sample()
@@ -142,7 +156,23 @@ class ExplorationTests(unittest.TestCase):
         self.assertEqual(root['children'][2]['details']['input_kind'], 'select_list')
         self.assertEqual(_phase(root, root['children'][2], 2), 'select-list subquery')
         self.assertEqual(len({n['node_id'] for n in flatten_nodes(root)}), 5)
-        self.assertIn('SELECT-list subquery', render_exploration(root, 'workbench'))
+        rows = chart_data(render_exploration(root, 'workbench'))['nodes']
+        self.assertEqual([(r['input_kind'], r['phase']) for r in rows if r['parent_id'] == root['node_id']],
+                         [('input', 'outer'), ('input', 'inner'), ('select_list', 'select-list subquery')])
+        self.assertIn('SELECT-list subquery', render_exploration(root, 'tree'))
+
+    def test_bundle_views_carry_projection_without_rewriting_the_tree(self):
+        root = sample()
+        branch = root['children'][1]['node_id']
+        text = render_exploration(root, 'workbench', focus_id=branch, collapsed_ids=[branch],
+                                  selected_id=branch, metric='estimate_error')
+        data = chart_data(text)
+        self.assertEqual(data['projection'], {'focus_id': branch, 'collapsed_ids': [branch],
+                                              'selected_id': branch, 'metric': 'estimate_error'})
+        self.assertEqual(len(data['nodes']), 4, 'the canonical tree is serialized; the bundle projects a copy')
+        self.assertEqual(data['nodes'][2]['metrics']['self_time'], [3, '3 ms'])
+        with self.assertRaises(ValueError):
+            render_exploration(root, 'workbench', focus_id='n:missing')
 
 
 if __name__ == '__main__':

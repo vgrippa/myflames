@@ -165,7 +165,7 @@ def render():
 
     return _html.render_page(
         lesson_id="bka",
-        title="Batched Key Access (BKA) join \u2014 batch, sort, MRR",
+        title="Batched key access (BKA) join: batch, sort, MRR",
         subtitle=(
             "Watch outer keys collect into a batch, get sorted by rowid, "
             "and sweep the inner index sequentially via Multi-Range Read."

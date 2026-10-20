@@ -46,7 +46,7 @@ function buildBnlPanel(numBlocks) {
   var bw = (totalW - gap * (cap - 1)) / cap;
   var blocks = [];
   var lbl = anim.svgEl("text", {
-    x: 16, y: 18, "font-size": 10, "font-weight": 700, fill: "#92400e"
+    x: 16, y: 18, "font-size": 10, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   lbl.textContent = "customers \u2192 blocks (" + numBlocks + " total)";
   svg.appendChild(lbl);
@@ -60,18 +60,18 @@ function buildBnlPanel(numBlocks) {
     for (var bc = 0; bc < blockCusts.length; bc++) names.push(blockCusts[bc].name);
     var r = anim.svgEl("rect", {
       x: x, y: 26, width: bw, height: 40, rx: 4, ry: 4,
-      fill: "#fffbeb", stroke: "#d1d5db", "stroke-width": 1
+      fill: "var(--svg-build-soft)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(r);
     var t = anim.svgEl("text", {
       x: x + bw/2, y: 42, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 700, fill: "#92400e"
+      "font-size": 9, "font-weight": 700, fill: "var(--svg-build-ink)"
     });
     t.textContent = "B" + (i + 1);
     svg.appendChild(t);
     var cLbl = anim.svgEl("text", {
       x: x + bw/2, y: 56, "text-anchor": "middle",
-      "font-size": 7, "font-weight": 600, fill: "#78350f"
+      "font-size": 7, "font-weight": 600, fill: "var(--svg-build-ink)"
     });
     cLbl.textContent = names.join(", ");
     svg.appendChild(cLbl);
@@ -80,7 +80,7 @@ function buildBnlPanel(numBlocks) {
   if (numBlocks > cap) {
     var more = anim.svgEl("text", {
       x: endX, y: 51, "text-anchor": "end",
-      "font-size": 10, "font-weight": 600, fill: "#9ca3af"
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-ink)"
     });
     more.textContent = "+" + (numBlocks - cap) + " more";
     svg.appendChild(more);
@@ -89,31 +89,31 @@ function buildBnlPanel(numBlocks) {
   var innerY = 100, innerH = 70, innerX = 24, innerW = 352;
   var innerR = anim.svgEl("rect", {
     x: innerX, y: innerY, width: innerW, height: innerH, rx: 6, ry: 6,
-    fill: "#f0f9ff", stroke: "#0284c7", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(innerR);
   var innerLbl = anim.svgEl("text", {
-    x: innerX, y: innerY - 6, "font-size": 10, "font-weight": 700, fill: "#0c4a6e"
+    x: innerX, y: innerY - 6, "font-size": 10, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   innerLbl.textContent = "orders (re-scanned per block)";
   svg.appendChild(innerLbl);
 
   var sweep = anim.svgEl("rect", {
     x: innerX, y: innerY, width: 4, height: innerH,
-    fill: "#ca8a04", opacity: 0
+    fill: "var(--svg-build)", opacity: 0
   });
   svg.appendChild(sweep);
 
   var status = anim.svgEl("text", {
     x: 200, y: 195, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 600, fill: "#374151"
+    "font-size": 9, "font-weight": 600, fill: "var(--svg-ink)"
   });
   status.textContent = "";
   svg.appendChild(status);
 
   var counter = anim.svgEl("text", {
     x: 200, y: 220, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#1f2937", "font-variant-numeric": "tabular-nums"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-ink)", "font-variant-numeric": "tabular-nums"
   });
   counter.textContent = "0 row-pair comparisons";
   svg.appendChild(counter);
@@ -127,8 +127,8 @@ function buildBnlPanel(numBlocks) {
 function resetBnlStage() {
   if (!bnlStage) return;
   bnlStage.blocks.forEach(function(b) {
-    b.rect.setAttribute("fill", "#fffbeb");
-    b.rect.setAttribute("stroke", "#d1d5db");
+    b.rect.setAttribute("fill", "var(--svg-build-soft)");
+    b.rect.setAttribute("stroke", "var(--svg-node-stroke)");
     b.rect.setAttribute("stroke-width", 1);
   });
   bnlStage.sweep.setAttribute("opacity", 0);
@@ -144,12 +144,12 @@ function buildHashPanel() {
   // Build input (left) - customer rows
   var buildRect = anim.svgEl("rect", {
     x: 10, y: 50, width: 82, height: 90, rx: 6, ry: 6,
-    fill: "#fef3c7", stroke: "#d97706", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5
   });
   svg.appendChild(buildRect);
   var buildLbl = anim.svgEl("text", {
     x: 51, y: 44, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "#92400e"
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   buildLbl.textContent = "customers (build)";
   svg.appendChild(buildLbl);
@@ -157,7 +157,7 @@ function buildHashPanel() {
   for (var ci = 0; ci < BNL_CUSTOMERS.length; ci++) {
     var cTxt = anim.svgEl("text", {
       x: 51, y: 64 + ci * 14, "text-anchor": "middle",
-      "font-size": 7, "font-weight": 600, fill: "#78350f"
+      "font-size": 7, "font-weight": 600, fill: "var(--svg-build-ink)"
     });
     cTxt.textContent = BNL_CUSTOMERS[ci].name + " (" + BNL_CUSTOMERS[ci].month + ")";
     svg.appendChild(cTxt);
@@ -167,12 +167,12 @@ function buildHashPanel() {
   var htX = 120, htY = 40, htW = 130, htH = 110;
   var htRect = anim.svgEl("rect", {
     x: htX, y: htY, width: htW, height: htH, rx: 6, ry: 6,
-    fill: "#f3f4f6", stroke: "#6b7280", "stroke-width": 1
+    fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
   });
   svg.appendChild(htRect);
   var htLbl = anim.svgEl("text", {
     x: htX + htW/2, y: htY - 6, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "#1f2937"
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-ink)"
   });
   htLbl.textContent = "Hash table (by month)";
   svg.appendChild(htLbl);
@@ -181,17 +181,17 @@ function buildHashPanel() {
     var by = htY + 8 + i * 25;
     var br = anim.svgEl("rect", {
       x: htX + 8, y: by, width: htW - 16, height: 18, rx: 3, ry: 3,
-      fill: "#ffffff", stroke: "#d1d5db", "stroke-width": 1
+      fill: "var(--svg-node-bg)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(br);
     var bIdx = anim.svgEl("text", {
-      x: htX + 14, y: by + 12, "font-size": 7, "font-weight": 700, fill: "#9ca3af"
+      x: htX + 14, y: by + 12, "font-size": 7, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
     bIdx.textContent = "[" + i + "] " + HASH_MONTHS[i];
     svg.appendChild(bIdx);
     var bContent = anim.svgEl("text", {
       x: htX + htW/2 + 10, y: by + 12, "text-anchor": "middle",
-      "font-size": 7, "font-weight": 600, fill: "#6b7280"
+      "font-size": 7, "font-weight": 600, fill: "var(--svg-ink-muted)"
     });
     bContent.textContent = "";
     svg.appendChild(bContent);
@@ -201,19 +201,19 @@ function buildHashPanel() {
   // Probe input (right) - order rows
   var probeRect = anim.svgEl("rect", {
     x: 284, y: 50, width: 100, height: 90, rx: 6, ry: 6,
-    fill: "#ccfbf1", stroke: "#0d9488", "stroke-width": 1.5
+    fill: "var(--svg-probe-soft)", stroke: "var(--svg-probe)", "stroke-width": 1.5
   });
   svg.appendChild(probeRect);
   var probeLbl = anim.svgEl("text", {
     x: 334, y: 44, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "#115e59"
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-probe)"
   });
   probeLbl.textContent = "orders (probe)";
   svg.appendChild(probeLbl);
   for (var oi = 0; oi < BNL_ORDERS.length; oi++) {
     var oTxt = anim.svgEl("text", {
       x: 334, y: 64 + oi * 12, "text-anchor": "middle",
-      "font-size": 7, "font-weight": 600, fill: "#134e4a"
+      "font-size": 7, "font-weight": 600, fill: "var(--svg-probe)"
     });
     oTxt.textContent = "#" + BNL_ORDERS[oi].id + " " + BNL_ORDERS[oi].month;
     svg.appendChild(oTxt);
@@ -221,14 +221,14 @@ function buildHashPanel() {
 
   var status = anim.svgEl("text", {
     x: 200, y: 175, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 600, fill: "#374151"
+    "font-size": 9, "font-weight": 600, fill: "var(--svg-ink)"
   });
   status.textContent = "";
   svg.appendChild(status);
 
   var counter = anim.svgEl("text", {
     x: 200, y: 220, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#065f46", "font-variant-numeric": "tabular-nums"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)", "font-variant-numeric": "tabular-nums"
   });
   counter.textContent = "0 row comparisons";
   svg.appendChild(counter);
@@ -242,8 +242,8 @@ function buildHashPanel() {
 function resetHashStage() {
   if (!hashStage) return;
   hashStage.buckets.forEach(function(b) {
-    b.rect.setAttribute("fill", "#ffffff");
-    b.rect.setAttribute("stroke", "#d1d5db");
+    b.rect.setAttribute("fill", "var(--svg-node-bg)");
+    b.rect.setAttribute("stroke", "var(--svg-node-stroke)");
     b.contentLbl.textContent = "";
     b.contents = [];
   });
@@ -281,8 +281,8 @@ function buildTimeline(bnlC, hashC, innerRows) {
         custNames.push(block.customers[cn].name);
       }
       tl.call(function() {
-        block.rect.setAttribute("fill", "#fde725");
-        block.rect.setAttribute("stroke", "#ca8a04");
+        block.rect.setAttribute("fill", "var(--svg-highlight)");
+        block.rect.setAttribute("stroke", "var(--svg-build)");
         block.rect.setAttribute("stroke-width", 2);
         bnlStage.status.textContent = "Block " + (idx + 1) + " (" + custNames.join(", ") + ") scanning orders\u2026";
       });
@@ -298,8 +298,8 @@ function buildTimeline(bnlC, hashC, innerRows) {
         },
         onComplete: function() {
           bnlStage.sweep.setAttribute("opacity", 0);
-          block.rect.setAttribute("fill", "#e5e7eb");
-          block.rect.setAttribute("stroke", "#9ca3af");
+          block.rect.setAttribute("fill", "var(--svg-node-muted)");
+          block.rect.setAttribute("stroke", "var(--svg-node-stroke)");
           block.rect.setAttribute("stroke-width", 1);
           bnlRunning += innerRows;
           bnlStage.counter.textContent = teachRuntime.formatInt(bnlRunning) + " row-pair comparisons";
@@ -330,7 +330,7 @@ function buildTimeline(bnlC, hashC, innerRows) {
           hashPhase.textContent = "Build: " + cust.name + " (" + cust.month + ") \u2192 bucket [" + bucketIdx + "]";
           var tuple = anim.svgEl("circle", {
             cx: hashStage.buildCx, cy: hashStage.buildCy, r: 4,
-            fill: "#d97706", stroke: "#78350f", "stroke-width": 1, opacity: 0
+            fill: "var(--svg-build)", stroke: "var(--svg-build)", "stroke-width": 1, opacity: 0
           });
           hashStage.svg.appendChild(tuple);
           hashStage.tuples.push(tuple);
@@ -351,11 +351,11 @@ function buildTimeline(bnlC, hashC, innerRows) {
               tuple.setAttribute("cy", p.y);
             },
             onComplete: function() {
-              bucket.rect.setAttribute("fill", "#fde725");
-              bucket.rect.setAttribute("stroke", "#ca8a04");
+              bucket.rect.setAttribute("fill", "var(--svg-highlight)");
+              bucket.rect.setAttribute("stroke", "var(--svg-build)");
               bucket.contents.push(cust.name);
               bucket.contentLbl.textContent = bucket.contents.join(", ");
-              bucket.contentLbl.setAttribute("fill", "#1f2937");
+              bucket.contentLbl.setAttribute("fill", "var(--svg-ink)");
               anim.tween({
                 from: 1, to: 0, duration: 140, ease: anim.easeInCubic,
                 onUpdate: function(v) { tuple.setAttribute("opacity", v); }
@@ -377,7 +377,7 @@ function buildTimeline(bnlC, hashC, innerRows) {
             hashStage.status.textContent = "Probing: order #" + order.id + " (" + order.month + ") \u2192 bucket [" + bucketIdx + "]";
             var tuple = anim.svgEl("circle", {
               cx: hashStage.probeCx, cy: hashStage.probeCy, r: 4,
-              fill: "#0d9488", stroke: "#134e4a", "stroke-width": 1, opacity: 0
+              fill: "var(--svg-probe)", stroke: "var(--svg-probe)", "stroke-width": 1, opacity: 0
             });
             hashStage.svg.appendChild(tuple);
             hashStage.tuples.push(tuple);
@@ -455,9 +455,9 @@ function renderChart(innerRows, rowSize, jbs, currentOuter) {
     xMin: 100, xMax: 1e7,
     xLabel: "customers row count", yLabel: "Row-pair comparisons",
     curves: [
-      { label: "BNL: O(cust\u00b7ord/buf) = O(n\u00b7m/b)", color: "#ca8a04",
+      { label: "BNL: O(cust\u00b7ord/buf) = O(n\u00b7m/b)", color: "var(--svg-build)",
         fn: function(n) { return bnlCost(n, innerRows, rowSize, jbs).cmp; } },
-      { label: "Hash: O(cust+ord) = O(n+m)", color: "#0d9488",
+      { label: "Hash: O(cust+ord) = O(n+m)", color: "var(--svg-probe)",
         fn: function(n) { return hashCost(Math.min(n, innerRows), Math.max(n, innerRows), rowSize, jbs).cmp; } }
     ],
     current: { x: currentOuter },

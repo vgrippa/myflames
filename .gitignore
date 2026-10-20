@@ -3,7 +3,6 @@
 /query.sql
 /query.svg
 /query-bar.svg
-/query-treemap.svg
 /query-diagram.svg
 /test.svg
 /before.svg
@@ -27,7 +26,8 @@ build/
 
 # Agent skills — kept local only, not part of the distributed package
 .claude/skills/
-.agents/skills/
+# .agents/skills is a symlink to .claude/skills (Codex and Antigravity read it)
+.agents/skills
 
 # Claude Code agent memory — private, machine-local, never committed
 .claude/projects/

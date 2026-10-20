@@ -1,56 +1,97 @@
-import React, { useRef, useEffect, useState } from "react";
-export function Icon({ name, size = 18 }: { name: string; size?: number }) {
-  const paths: Record<string, React.ReactNode> = {
-    book: (
-      <path d="M12 5C8 2 4 3 2 4v16c3-2 7-2 10 0 3-2 7-2 10 0V4c-2-1-6-2-10 1v15" />
-    ),
-    plus: <path d="M12 5v14M5 12h14" />,
-    file: (
-      <>
-        <path d="M14 3H5v18h14V8zM14 3v5h5M8 13h8M8 17h5" />
-      </>
-    ),
-    upload: (
-      <>
-        <path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6" />
-      </>
-    ),
-    chart: (
-      <>
-        <path d="M4 20h16M6 16v-4m6 4V4m6 12V8" />
-      </>
-    ),
-    compare: (
-      <>
-        <path d="M4 7h16l-4-4M20 17H4l4 4M4 7v4m16 6v-4" />
-      </>
-    ),
-    close: <path d="m6 6 12 12M6 18 18 6" />,
-    chevron: <path d="m9 5 7 7-7 7" />,
-    search: (
-      <>
-        <circle cx="10" cy="10" r="6" />
-        <path d="m15 15 5 5" />
-      </>
-    ),
-    check: <path d="m5 12 4 4L19 6" />,
-    flame: (
-      <path d="M12 2c2 5-3 6-1 10 2-1 3-3 3-5 6 5 6 10 2 13-5 4-13 0-12-6 0-3 3-6 4-7-1 5 0 5 1 6-1-5 4-6 3-11Z" />
-    ),
-  };
+import React, { useRef, useState } from "react";
+import { useFocusScope } from "./kit";
+import { icons, type IconShape } from "./icons.generated";
+/**
+ * Icons are named by meaning, and each meaning has its own glyph: a place in
+ * the sidebar never shares a drawing with another place or with an action.
+ * 16 px in rows and navigation; 12 px disclosures and inline status glyphs.
+ */
+export type IconName =
+  | "home"
+  | "plan"
+  | "query"
+  | "server"
+  | "investigation"
+  | "learn"
+  | "connection"
+  | "key"
+  | "settings"
+  | "menu"
+  | "more"
+  | "import"
+  | "export"
+  | "compare"
+  | "plus"
+  | "close"
+  | "chevron"
+  | "search"
+  | "check"
+  // Server views (one glyph each) and view controls.
+  | "health"
+  | "engine"
+  | "analysis"
+  | "tuning"
+  | "errorlog"
+  | "statements"
+  | "sessions"
+  | "waits"
+  | "io"
+  | "lock"
+  | "index"
+  | "table"
+  | "diagram"
+  | "configuration"
+  | "instruments"
+  | "replication"
+  | "maintenance"
+  | "info"
+  | "refresh"
+  | "back"
+  | "disclosure"
+  | "warning"
+  | "columns"
+  | "inspector"
+  | "audit"
+  // Query editor actions and panes.
+  | "run"
+  | "runAll"
+  | "stop"
+  | "history"
+  | "copy"
+  | "browser"
+  | "view"
+  | "baseline"
+  | "database"
+  | "teach"
+  | "users"
+  | "wrench"
+  | "split-pane"
+  | "chevron-down"
+  | "branches"
+  | "edit"
+  | "trash"
+  | "globe"
+  | "optimize"
+  | "shield"
+  | "minus"
+  | "block"
+  | "clean"
+  | "undo";
+// Glyphs are Hugeicons (free Stroke Rounded set, MIT) vendored into
+// icons.generated.ts by scripts/vendor-hugeicons.mjs, drawn on a 24 px grid and
+// scaled to 16 px (rows, navigation) or 12 px (disclosures, inline status).
+const data: Record<IconName, IconShape> = icons;
+export function isIconName(name: string): name is IconName {
+  return Object.prototype.hasOwnProperty.call(data, name);
+}
+export function Icon({ name, size }: { name: IconName; size?: number }) {
+  const inline = ["chevron", "disclosure", "back", "check", "warning"].includes(name);
+  const pixels = size && size > 16 ? size : inline || size === 12 ? 12 : 16;
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {paths[name] || paths.file}
+    <svg width={pixels} height={pixels} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth={pixels <= 12 ? 2 : 1.75}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {data[name].map(([tag, attrs], i) => React.createElement(tag, { key: i, ...attrs }))}
     </svg>
   );
 }
@@ -70,18 +111,18 @@ export function ImportDialog({
   const dialog = useRef<HTMLDialogElement>(null);
   const [raw, setRaw] = useState("");
   const [name, setName] = useState("");
-  useEffect(() => {
-    dialog.current?.showModal();
-  }, []);
+  useFocusScope(dialog, { open: true, onClose: () => { if (!busy) onClose(); } });
   return (
     <dialog
       ref={dialog}
       className="import-dialog"
+      tabIndex={-1}
       onCancel={(e) => {
         e.preventDefault();
         if (!busy) onClose();
       }}
       aria-labelledby="import-title"
+      aria-describedby="import-format-hint"
     >
       <div className="dialog-heading">
         <div>
@@ -97,10 +138,7 @@ export function ImportDialog({
           <Icon name="close" />
         </button>
       </div>
-      <p>
-        Use EXPLAIN ANALYZE FORMAT=JSON output from MySQL, or ANALYZE
-        FORMAT=JSON from MariaDB.
-      </p>
+      <p className="hint" id="import-format-hint">Paste or choose EXPLAIN ANALYZE FORMAT=JSON output, or a myflames capture .json.</p>
       {error && (
         <div className="error" role="alert">
           {error}
@@ -115,7 +153,7 @@ export function ImportDialog({
           if (!busy && file) onFile(file);
         }}
       >
-        <Icon name="upload" size={23} />
+        <Icon name="import" size={22} />
         <strong>Choose a JSON file or drop it here</strong>
         <span>Up to 5 MiB</span>
         <input

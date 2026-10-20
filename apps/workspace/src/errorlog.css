@@ -1,0 +1,54 @@
+/* Server > Error log view styles */
+/* The filter row above the list (report-table-tools); Export ends it. */
+.errorlog-tools .errorlog-export {
+  margin-left: auto;
+}
+
+.errorlog-time-select select {
+  min-width: 110px;
+}
+
+.errorlog-custom-range {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.errorlog-datetime-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.errorlog-datetime-field input[type="datetime-local"] {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  padding: 3px 6px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--ink);
+  transition: border-color var(--motion-hover), box-shadow var(--motion-hover);
+}
+
+.errorlog-datetime-field input[type="datetime-local"]:focus {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+
+.errorlog-export .popover-panel {
+  min-width: 220px;
+}
+
+.errorlog-export-formats {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.errorlog-export-formats .button {
+  flex: 1;
+  text-align: center;
+}

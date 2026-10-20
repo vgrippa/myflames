@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Callable, Dict
+from pathlib import Path
+from typing import Callable, Dict, List
+
+from . import _html
 
 from .cache_family import LESSONS as CACHE_FAMILY_LESSONS
 from .index_family import LESSONS as INDEX_FAMILY_LESSONS
@@ -81,7 +84,7 @@ CURRICULUM = [
 ]
 
 
-def render_catalog_html(title: str = "myflames teach — algorithm catalog") -> str:
+def render_catalog_html(title: str = "myflames teach: algorithm catalog") -> str:
     """Render the full lesson catalog as a self-contained HTML index page.
 
     This is the "myteach" hub — the central entry-point every report
@@ -114,14 +117,14 @@ def render_catalog_html(title: str = "myflames teach — algorithm catalog") -> 
             lesson = LESSONS.get(k) or {}
             title_text = lesson.get("title") or k
             items.append(
-                '<li><span class="step">{n:02d}</span>'
-                '<a href="{href}">{title}</a></li>'.format(
-                    n=i + 1, href=_href_for(k), title=title_text
+                '<li><a class="lesson-row" href="{href}"><span class="step">{n:02d}</span>'
+                '<span>{title}</span></a></li>'.format(
+                    n=i + 1, href=_html.esc(_href_for(k)), title=_html.esc(title_text)
                 )
             )
         track_html = (
             '<section class="curriculum" aria-labelledby="curr-heading">\n'
-            '  <h2 id="curr-heading">Start here — recommended order</h2>\n'
+            '  <h2 id="curr-heading">Start here: recommended order</h2>\n'
             '  <ol class="curriculum-list">\n    '
             + '\n    '.join(items) +
             '\n  </ol>\n'
@@ -140,134 +143,134 @@ def render_catalog_html(title: str = "myflames teach — algorithm catalog") -> 
             title_text = lesson.get("title") or name
             summary = lesson.get("summary") or ""
             rows.append(
-                '<li><a href="{href}">'
+                '<li data-family="{family}"><a class="lesson-row" href="{href}">'
                 '<span class="lesson-title">{title}</span>'
                 '<span class="lesson-summary">{summary}</span>'
                 '</a></li>'.format(
-                    href=_href_for(name), title=title_text, summary=summary,
+                    href=_html.esc(_href_for(name)), title=_html.esc(title_text),
+                    summary=_html.esc(summary), family=_html.esc(family_key),
                 )
             )
         family_sections.append(
-            '<section class="family">\n'
-            '  <h2>{label}</h2>\n'
+            '<section class="family" data-family="{family}">\n'
+            '  <h2>{label}<span class="family-count">{count}</span></h2>\n'
             '  <ul class="lesson-list">\n    {rows}\n  </ul>\n'
             '</section>'.format(
-                label=_FAMILY_LABELS.get(family_key, family_key),
+                label=_html.esc(_FAMILY_LABELS.get(family_key, family_key)),
+                family=_html.esc(family_key), count=len(family_lessons),
                 rows='\n    '.join(rows),
             )
         )
 
     families_html = '\n\n'.join(family_sections)
+    family_options = '<option value="">All families</option>' + ''.join(
+        '<option value="{key}">{label}</option>'.format(
+            key=_html.esc(key), label=_html.esc(_FAMILY_LABELS.get(key, key))
+        ) for key in LESSON_FAMILIES
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
+  <title>{_html.esc(title)}</title>
   <meta name="description" content="Catalog of interactive myflames teach lessons: join strategies, index access, scans, cache.">
   <style>
-    :root {{
-      --bg: #f5f6fa; --card: #fff; --fg: #111827;
-      --muted: #4a5260; --accent: #1a73e8;
-      --accent-soft: #e8eaf6; --border: #dbe4f0;
-      --rad: 10px; --rad-sm: 6px;
-      --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 "Helvetica Neue", Arial, sans-serif;
-    }}
+    {_html._THEME_CSS}
     * {{ box-sizing: border-box; }}
     html, body {{ margin: 0; padding: 0; }}
-    body {{
-      background: var(--bg); color: var(--fg);
-      font-family: var(--font-ui); line-height: 1.55; font-size: 15px;
-    }}
-    :focus-visible {{
-      outline: 2px solid var(--accent); outline-offset: 2px;
-      border-radius: var(--rad-sm);
-    }}
-    header.hub-header {{
-      background: #1a1a2e; color: #fff;
-      padding: 18px 28px;
-    }}
-    header.hub-header h1 {{
-      font-size: 20px; font-weight: 600; margin: 0 0 4px 0;
-    }}
-    header.hub-header p {{
-      margin: 0; opacity: 0.8; font-size: 13px;
-    }}
-    main {{
-      max-width: 1100px; margin: 28px auto; padding: 0 24px;
-      display: flex; flex-direction: column; gap: 24px;
-    }}
-    section.curriculum, section.family {{
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: var(--rad); padding: 18px 22px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-    }}
-    section h2 {{
-      margin: 0 0 12px 0; font-size: 17px; font-weight: 600;
-    }}
-    .curriculum-list, .lesson-list {{
-      list-style: none; padding: 0; margin: 0;
-      display: grid; gap: 8px;
-    }}
-    .curriculum-list {{
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    }}
-    .curriculum-list li {{
-      display: flex; align-items: center; gap: 10px;
-      padding: 8px 12px; background: var(--accent-soft);
-      border-radius: var(--rad-sm);
-    }}
-    .curriculum-list .step {{
-      font-family: ui-monospace, Menlo, monospace;
-      font-size: 11px; color: var(--muted);
-      flex: 0 0 auto;
-    }}
-    .curriculum-list a {{
-      color: var(--accent); text-decoration: none; font-weight: 500;
-    }}
-    .curriculum-list a:hover {{ text-decoration: underline; }}
-    .lesson-list li {{
-      padding: 0;
-    }}
-    .lesson-list a {{
-      display: flex; flex-direction: column; gap: 4px;
-      padding: 12px 14px; border: 1px solid var(--border);
-      border-radius: var(--rad-sm);
-      text-decoration: none; color: inherit;
-      transition: background 0.12s, border-color 0.12s;
-    }}
-    .lesson-list a:hover {{
-      background: var(--accent-soft); border-color: var(--accent);
-    }}
-    .lesson-title {{
-      font-weight: 600; color: var(--accent);
-    }}
-    .lesson-summary {{
-      color: var(--muted); font-size: 13px;
-    }}
-    footer {{
-      max-width: 1100px; margin: 24px auto 48px;
-      padding: 0 24px; color: var(--muted); font-size: 12px;
-    }}
+    body {{ background: var(--bg); color: var(--ink); font: var(--text-md)/1.5 var(--font-sans); }}
+    :focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+    [hidden] {{ display: none !important; }}
+    .hub-header {{ background: var(--surface-muted); border-bottom: 1px solid var(--line); padding: 10px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }}
+    .hub-header h1 {{ font-size: var(--text-lg); font-weight: 600; margin: 0; }}
+    .hub-header p {{ margin: 0; font-size: var(--text-sm); color: var(--ink-muted); }}
+    .catalog-filters {{ display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }}
+    input, select, button {{ font: inherit; font-size: var(--text-sm); min-height: var(--control-h); padding: 3px 8px; border: 1px solid var(--control-line); border-radius: var(--radius-sm); color: var(--ink); background: var(--surface); min-width: 0; max-width: 100%; }}
+    button {{ cursor: pointer; }}
+    select {{ appearance: none; padding-right: 24px; background-image: linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%), linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%); background-position: calc(100% - 12px) 50%, calc(100% - 8px) 50%; background-size: 4px 4px; background-repeat: no-repeat; }}
+    main {{ max-width: 1120px; margin: 14px auto 28px; padding: 0 20px; display: flex; flex-direction: column; gap: 14px; }}
+    section.curriculum, section.family {{ background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }}
+    section h2 {{ margin: 0; padding: 7px 12px; background: var(--surface-muted); border-bottom: 1px solid var(--line); color: var(--ink-secondary); font-size: var(--text-sm); font-weight: 600; display: flex; align-items: center; justify-content: space-between; gap: 8px; }}
+    .family-count {{ color: var(--ink-muted); font-variant-numeric: tabular-nums; }}
+    .curriculum-list, .lesson-list {{ list-style: none; padding: 0; margin: 0; }}
+    .lesson-row {{ display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 8px 12px; border-bottom: 1px solid var(--line-subtle); text-decoration: none; color: var(--ink); }}
+    li:last-child > .lesson-row {{ border-bottom: 0; }}
+    .lesson-row:hover {{ background: var(--surface-subtle); }}
+    .lesson-title {{ flex: 1; font-weight: 500; }}
+    .lesson-summary {{ flex: 1; color: var(--ink-muted); font-size: var(--text-sm); }}
+    .curriculum-list .lesson-row {{ justify-content: flex-start; gap: 12px; }}
+    .step {{ flex: 0 0 auto; color: var(--ink-muted); font: var(--text-xs) var(--font-mono); }}
+    footer {{ max-width: 1120px; margin: 24px auto; padding: 0 20px; color: var(--ink-muted); font-size: var(--text-sm); }}
     footer a {{ color: var(--accent); }}
+    @media (max-width: 650px) {{
+      :root {{ --control-h: 32px; }}
+      .hub-header {{ padding: 12px; }}
+      .catalog-filters, .catalog-filters > * {{ width: 100%; }}
+      main {{ padding: 0 12px; }}
+      .lesson-list .lesson-row {{ flex-direction: column; gap: 2px; }}
+    }}
   </style>
 </head>
 <body>
   <header class="hub-header">
-    <h1>myflames teach</h1>
-    <p>Interactive database algorithm lessons — offline, stdlib-only,
-       each file self-contained.</p>
+    <div>
+      <h1>myflames · Learn</h1>
+      <p>Interactive MySQL 8.4 &amp; MariaDB 10.11+ execution lessons</p>
+    </div>
+    <div class="catalog-filters">
+      <input type="search" id="catalog-search" aria-label="Search lessons" placeholder="Filter lessons…">
+      <select id="catalog-family" aria-label="Lesson family">{family_options}</select>
+    </div>
   </header>
   <main>
     {track_html}
     {families_html}
+    <p id="catalog-empty" hidden>No lessons match. <button id="catalog-clear" type="button">Clear filters</button></p>
+    <p id="catalog-status" role="status" aria-live="polite" hidden></p>
   </main>
   <footer>
     Generated by <a href="https://github.com/vgrippa/myflames">myflames</a>.
     Lessons verified against MySQL 8.4 and MariaDB 11.4 source trees.
   </footer>
+  <script>{_html._THEME_JS}
+  (function() {{
+    var search = document.getElementById("catalog-search");
+    var family = document.getElementById("catalog-family");
+    var groups = document.querySelectorAll("section.family");
+    function filterLessons() {{
+      var query = search.value.trim().toLowerCase();
+      var count = 0;
+      groups.forEach(function(group) {{
+        var matches = 0;
+        group.querySelectorAll("li").forEach(function(row) {{
+          var visible = (!family.value || row.dataset.family === family.value) &&
+            row.textContent.toLowerCase().indexOf(query) !== -1;
+          row.hidden = !visible;
+          if (visible) matches++;
+        }});
+        group.hidden = matches === 0;
+        group.querySelector(".family-count").textContent = matches;
+        count += matches;
+      }});
+      var track = document.querySelector(".curriculum");
+      if (track) track.hidden = !!query || !!family.value;
+      document.getElementById("catalog-empty").hidden = count !== 0;
+      var status = document.getElementById("catalog-status");
+      status.textContent = count + (count === 1 ? " lesson" : " lessons");
+      status.hidden = !query && !family.value;
+    }}
+    search.addEventListener("input", filterLessons);
+    family.addEventListener("change", filterLessons);
+    document.getElementById("catalog-clear").addEventListener("click", function() {{
+      search.value = "";
+      family.value = "";
+      filterLessons();
+      search.focus();
+    }});
+  }})();
+  </script>
 </body>
 </html>
 """
@@ -302,12 +305,31 @@ def render_lesson(name: str) -> str:
     return render_fn()
 
 
+#: Lessons that also have a 3D view. Each is a prebuilt, self-contained page
+#: in myflames/assets/, built from apps/teach-3d (Python users need no Node.js).
+#: The 3D view is an extra option; the 2D lesson stays the default.
+LESSON_3D = {"btree": "teach3d-btree.html"}
+
+
+def lesson_views(name: str) -> List[str]:
+    """The views lesson *name* offers: always ``2d``, plus ``3d`` when it has one."""
+    return ["2d", "3d"] if name in LESSON_3D else ["2d"]
+
+
+def render_lesson_3d(name: str) -> str:
+    """Return the prebuilt 3D page for lesson *name*."""
+    if name not in LESSON_3D:
+        raise KeyError(f"lesson {name!r} has no 3D view")
+    path = Path(__file__).resolve().parent.parent / "assets" / LESSON_3D[name]
+    return path.read_text(encoding="utf-8")
+
+
 _FAMILY_LABELS = {
-    "join_family": "Join Family",
-    "index_family": "Index Access Family",
-    "scan_family": "Scan / Sort / Temp Family",
-    "cache_family": "Cache / Memory Family",
-    "planner_family": "Planner / Optimizer Family",
+    "join_family": "Join family",
+    "index_family": "Index access family",
+    "scan_family": "Scan, sort and temp family",
+    "cache_family": "Cache and memory family",
+    "planner_family": "Planner and optimizer family",
 }
 
 
@@ -344,76 +366,40 @@ def _print_catalog(stream=sys.stdout) -> None:
 
 
 def cmd_teach(argv) -> None:
-    """Dispatch `myflames teach ...`. Called from cli.py."""
-    # --index (or --catalog) emits the HTML hub rather than a single
-    # lesson. Accept the flag without a positional lesson.
-    if argv and argv[0] in ("--index", "--catalog"):
-        # Emit the myteach catalog HTML — a centralized index of every
-        # lesson with links. Canonical save location is
-        # ``teach/index.html`` so the report's myteach section
-        # deep-links work.
-        idx_parser = argparse.ArgumentParser(
-            prog="myflames teach --index",
-            description="Emit the myteach catalog HTML.",
-        )
-        idx_parser.add_argument(
-            "--output", "-o", default=None, metavar="PATH",
-            help="Write the index HTML to PATH. If omitted, stdout.",
-        )
-        # Skip argv[0] (the --index flag itself).
-        args = idx_parser.parse_args(argv[1:])
-        html = render_catalog_html()
-        if args.output:
-            with open(args.output, "w", encoding="utf-8") as f:
-                f.write(html)
-        else:
-            sys.stdout.write(html)
-        sys.exit(0)
-
-    if not argv:
-        _print_catalog()
-        sys.exit(0)
-
+    """Dispatch `myflames teach ...` with the shared artifact-output contract."""
+    import io
+    from ..cli import _add_quiet_flag, _write_output
     parser = argparse.ArgumentParser(
         prog="myflames teach",
-        description="Render an interactive database algorithm lesson as "
-        "self-contained HTML.",
+        description="Render an interactive database algorithm lesson as self-contained HTML.",
     )
-    parser.add_argument(
-        "lesson",
-        choices=sorted(LESSONS.keys()),
-        help="Which lesson to render. Pass --index to emit the catalog hub instead.",
-    )
-    parser.add_argument(
-        "--output",
-        "-o",
-        default=None,
-        metavar="PATH",
-        help="Write HTML to PATH. If omitted, writes to stdout.",
-    )
-    parser.add_argument(
-        "--title",
-        default=None,
-        help="Override the lesson's title (optional).",
-    )
+    parser.add_argument("lesson", nargs="?", choices=sorted(LESSONS.keys()),
+                        help="Which lesson to render. Pass --index for the catalog hub.")
+    parser.add_argument("--index", "--catalog", action="store_true", help="Emit the myteach catalog HTML.")
+    parser.add_argument("--output", "-o", default=None, metavar="PATH",
+                        help="Write HTML to PATH. If omitted, writes to stdout.")
+    parser.add_argument("--title", default=None, help="Override the lesson's title (optional).")
+    _add_quiet_flag(parser)
     try:
         args = parser.parse_args(argv)
+        if args.index and args.lesson:
+            parser.error("choose a lesson or --index, not both")
     except SystemExit as e:
-        # argparse exits 2 on unknown choice — we want the catalog printed first
         if e.code == 2:
             _print_catalog(stream=sys.stderr)
         raise
-
+    if args.index:
+        _write_output(render_catalog_html(), args.output, quiet=args.quiet)
+        return
+    if args.lesson is None:
+        catalog = io.StringIO()
+        _print_catalog(stream=catalog)
+        _write_output(catalog.getvalue(), args.output, quiet=args.quiet)
+        return
     html = render_lesson(args.lesson)
     if args.title:
         html = html.replace(
             f"<title>{LESSONS[args.lesson]['title']}</title>",
-            f"<title>{args.title}</title>",
-            1,
+            f"<title>{args.title}</title>", 1,
         )
-
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(html)
-    else:
-        sys.stdout.write(html)
+    _write_output(html, args.output, quiet=args.quiet)

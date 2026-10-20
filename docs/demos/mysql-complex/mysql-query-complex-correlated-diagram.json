@@ -1,8 +1,8 @@
 {
   "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
   "schema_version": "1.3",
-  "generated_at": "2026-04-25T12:51:25Z",
-  "myflames_version": "1.5.0",
+  "generated_at": "2026-10-15T19:53:24Z",
+  "myflames_version": "2.3.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -11,8 +11,8 @@
   "plan_summary": {
     "total_time_ms": 0.494,
     "rows_sent": 50,
-    "rows_examined_estimate": 2000,
-    "operator_count": 4,
+    "rows_examined_estimate": 2010,
+    "operator_count": 8,
     "max_depth": 4
   },
   "optimizer_switches": [],
@@ -51,7 +51,7 @@
       "target_variable": "sort_buffer_size"
     }
   ],
-  "executive_summary": "Query scans 1 table and sorts the result; examines ~2,000 rows to return 50 in 0.49 ms. Main finding: no index covers (dept_id) on employees.",
+  "executive_summary": "Query scans 1 table and sorts the result; examines ~2,010 rows to return 50 in 0.49 ms. Main finding: no index covers (dept_id) on employees.",
   "plan_tree": {
     "node_id": "n:91695df69435",
     "short_label": "Limit: 50 rows",
@@ -76,6 +76,32 @@
             ]
           }
         ]
+      },
+      {
+        "node_id": "n:c919de315e68",
+        "short_label": "Aggregate",
+        "folded_label": "AGGREGATE starts=50 rows=1",
+        "children": [
+          {
+            "node_id": "n:1b2ca7596339",
+            "short_label": "Index lookup [salary_history.idx_emp]",
+            "folded_label": "INDEX LOOKUP [salary_history.idx_emp] starts=50 rows=5",
+            "children": []
+          }
+        ]
+      },
+      {
+        "node_id": "n:97a11022d26f",
+        "short_label": "Aggregate",
+        "folded_label": "AGGREGATE starts=50 rows=1",
+        "children": [
+          {
+            "node_id": "n:d8919a80b130",
+            "short_label": "Covering index [salary_history.idx_emp]",
+            "folded_label": "COVERING INDEX [salary_history.idx_emp] starts=50 rows=5",
+            "children": []
+          }
+        ]
       }
     ]
   },
@@ -91,6 +117,14 @@
       ],
       "ddl": "CREATE INDEX idx_employees_dept_id ON employees (dept_id);",
       "reason": "Full scan on employees with filter on (dept_id)"
+    },
+    {
+      "table": "employees",
+      "columns": [
+        "salary"
+      ],
+      "ddl": "CREATE INDEX idx_employees_salary ON employees (salary DESC);",
+      "reason": "ORDER BY on employees triggers a filesort; an index on the ORDER BY columns (salary DESC) lets the engine read rows already sorted, skipping the O(n log n) filesort."
     }
   ],
   "primary_action": {
@@ -136,6 +170,34 @@
       },
       "note": "Table scan on e (employees)",
       "query_sql": "/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50"
+    },
+    {
+      "lesson": "non_unique_lookup",
+      "match": {
+        "folded_label": "INDEX LOOKUP [salary_history.idx_emp] starts=50 rows=5",
+        "short_label": "Index lookup [salary_history.idx_emp]"
+      },
+      "controls": {
+        "rows": 250,
+        "selectivity": 40.0,
+        "covering": false
+      },
+      "note": "Index lookup on sh using idx_emp (employee_id=e.id) (salary_history)",
+      "query_sql": "/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50"
+    },
+    {
+      "lesson": "non_unique_lookup",
+      "match": {
+        "folded_label": "COVERING INDEX [salary_history.idx_emp] starts=50 rows=5",
+        "short_label": "Covering index [salary_history.idx_emp]"
+      },
+      "controls": {
+        "rows": 250,
+        "selectivity": 40.0,
+        "covering": true
+      },
+      "note": "Covering index lookup on sh using idx_emp (employee_id=e.id) (salary_history)",
+      "query_sql": "/* select#1 */ select `e`.`name` AS `name`,`e`.`salary` AS `salary`,(/* select#2 */ select max(`sh`.`salary`) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `max_hist`,(/* select#3 */ select count(0) from `demodb`.`salary_history` `sh` where (`sh`.`employee_id` = `e`.`id`)) AS `hist_count` from `demodb`.`employees` `e` where (`e`.`dept_id` in (1,2,3)) order by `e`.`salary` desc limit 50"
     }
   ],
   "operator_complexities": [
@@ -163,6 +225,56 @@
         "rationale": "Full table scan: the storage engine returns every row; cost scales with the table size.",
         "confidence": "exact",
         "learn_more": "full_table_scan"
+      }
+    },
+    {
+      "node_id": "n:c919de315e68",
+      "folded_label": "AGGREGATE starts=50 rows=1",
+      "short_label": "Aggregate",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "good",
+        "rationale": "Streaming aggregation: reads each input row once and updates the aggregate values. Any input sorting is a separate child operator with its own cost.",
+        "confidence": "exact"
+      }
+    },
+    {
+      "node_id": "n:1b2ca7596339",
+      "folded_label": "INDEX LOOKUP [salary_history.idx_emp] starts=50 rows=5",
+      "short_label": "Index lookup [salary_history.idx_emp]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
+      }
+    },
+    {
+      "node_id": "n:97a11022d26f",
+      "folded_label": "AGGREGATE starts=50 rows=1",
+      "short_label": "Aggregate",
+      "complexity": {
+        "big_o": "O(n)",
+        "short": "n",
+        "severity": "good",
+        "rationale": "Streaming aggregation: reads each input row once and updates the aggregate values. Any input sorting is a separate child operator with its own cost.",
+        "confidence": "exact"
+      }
+    },
+    {
+      "node_id": "n:d8919a80b130",
+      "folded_label": "COVERING INDEX [salary_history.idx_emp] starts=50 rows=5",
+      "short_label": "Covering index [salary_history.idx_emp]",
+      "complexity": {
+        "big_o": "O(log n + k)",
+        "short": "log n + k",
+        "severity": "good",
+        "rationale": "Index lookup (ref): one B+tree descent then a sequential walk over k matching index entries. k = matching rows for the indexed predicate.",
+        "confidence": "exact",
+        "learn_more": "index_lookup"
       }
     }
   ]

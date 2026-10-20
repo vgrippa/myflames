@@ -182,7 +182,7 @@ def render():
 
     return _html.render_page(
         lesson_id="semijoin_weedout",
-        title="Semijoin Duplicate Weedout \u2014 dedup via temp table",
+        title="Semijoin duplicate weedout: dedup via temp table",
         subtitle=(
             "MySQL rewrites IN/EXISTS subqueries as inner joins, then uses "
             "a temporary table keyed on the outer rowid to remove duplicates. "

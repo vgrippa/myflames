@@ -17,5 +17,4 @@ See the [main README](../../README.md) for project overview and usage.
 |------|------|
 | [01-parser-and-flamegraph.md](01-parser-and-flamegraph.md) | Parser + flame graph (foundation) |
 | [02-bargraph.md](02-bargraph.md) | Bar chart by self-time |
-| [03-treemap.md](03-treemap.md) | Treemap by total time |
 | [04-diagram-visual-explain.md](04-diagram-visual-explain.md) | Visual Explain–style diagram |

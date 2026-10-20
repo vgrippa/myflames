@@ -1,8 +1,8 @@
 {
   "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
   "schema_version": "1.3",
-  "generated_at": "2026-04-25T12:51:29Z",
-  "myflames_version": "1.5.0",
+  "generated_at": "2026-10-15T19:53:28Z",
+  "myflames_version": "2.3.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -23,19 +23,29 @@
       "node_labels": [
         "Covering index [ss.g]"
       ]
-    },
+    }
+  ],
+  "warnings": [
     {
-      "name": "use_index_extensions",
-      "value": "on",
-      "explanation": "The optimizer treats the primary-key columns appended to every secondary index as additional key parts — enables covering reads that would otherwise need a row fetch.",
+      "severity": "warn",
+      "category": "misestimate",
+      "text": "Row estimate off by 10× or more: ss (estimated 1,666, actual 100 rows per loop, 17× over)",
+      "source": "plan",
       "node_labels": [
         "Covering index [ss.g]"
       ]
     }
   ],
-  "warnings": [],
-  "suggestions": [],
-  "executive_summary": "Query runs 2 operators; returns 100 rows in 0.08 ms. No warnings.",
+  "suggestions": [
+    {
+      "severity": "medium",
+      "category": "statistics",
+      "action": "Refresh statistics with ANALYZE TABLE ss. If a filter on a non-indexed column stays misestimated, add a histogram: on MySQL 8.0+, ANALYZE TABLE ss UPDATE HISTOGRAM ON <column> WITH 100 BUCKETS; on MariaDB, ANALYZE TABLE ss PERSISTENT FOR COLUMNS (<column>) INDEXES ().",
+      "source": "plan",
+      "why": "the optimizer picks join order and access methods from these estimates. InnoDB recalculates persistent statistics on its own only after about 10% of a table's rows change, and on MariaDB, under the default use_stat_tables=PREFERABLY_FOR_QUERIES, ANALYZE TABLE collects column statistics and histograms only when you add PERSISTENT FOR."
+    }
+  ],
+  "executive_summary": "Query runs 2 operators; returns 100 rows in 0.08 ms. Main finding: Row estimate off by 10× or more: ss (estimated 1,666, actual 100 rows per loop, 17× over).",
   "plan_tree": {
     "node_id": "n:73b39ab87252",
     "short_label": "Filter: ((ss.v > 4900))",
@@ -52,6 +62,9 @@
   "query": {
     "raw": "/* select#1 */ select `testdb`.`ss`.`g` AS `g`,`testdb`.`ss`.`v` AS `v` from `testdb`.`ss` where (`testdb`.`ss`.`v` > 4900)",
     "beautified": "select testdb.ss.g AS g,testdb.ss.v AS v\nfrom testdb.ss\nwhere (testdb.ss.v > 4900)"
+  },
+  "primary_action": {
+    "ref": "suggestions[0]"
   },
   "teach_hooks": [
     {

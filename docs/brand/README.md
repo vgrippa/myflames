@@ -1,7 +1,11 @@
 # myflames app mark
 
-`myflames-icon-v2.png` simplifies the original stacked flame into five segments
-for the project README and the local UI's sidebar, welcome screen, and favicon.
+`myflames-icon-v3.png` keeps the five flame segments, with saturated yellow,
+orange and red on white. It is the current desktop, workspace and favicon mark.
+`myflames-icon-v2.png` is preserved for earlier references and the project README.
+`myflames-icon-v3-128.png` is the same mark at 128 px with the white background made transparent
+(only white connected to the edges, so the flame is unchanged) for the workspace sidebar, About and
+favicon: the app does not decode a 1254 px image to draw it at 22 px, and dark mode shows no white tile.
 The app renders its name as live text beside the icon. The original
 `myflames.jpeg` stays in the repository root.
 
@@ -18,5 +22,5 @@ The UI build emits the icon at `/assets/myflames-logo.png`, a stable address
 shared by the sidebar, welcome image, and favicon. Keep this filename stable
 across builds. The server also serves this icon for the earlier hashed logo
 URLs so existing tabs do not encounter a missing image after an update.
-The favicon link adds `?v=2` to refresh browsers' separate tab-icon caches.
+The favicon link adds `?v=3` to refresh browsers' separate tab-icon caches.
 Increment this version when replacing the app mark; retain the stable image path.

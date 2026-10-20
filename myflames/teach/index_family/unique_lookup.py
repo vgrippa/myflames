@@ -136,7 +136,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="unique_lookup",
-        title="Unique Key Lookup — single-row index lookup",
+        title="Unique key lookup: single-row index lookup",
         subtitle=(
             "Descend a UNIQUE B+tree to exactly one leaf entry; if the "
             "index is non-covering, take one PK-hop to the clustered row."

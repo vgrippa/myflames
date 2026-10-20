@@ -1,0 +1,725 @@
+/* pt-query-digest Live Query Digest styles for myflames */
+
+.query-digest-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* Header & Controls Toolbar */
+.query-digest-header {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 20px;
+  background: var(--surface-pane);
+  border-bottom: 1px solid var(--line);
+}
+
+.query-digest-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.query-digest-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.query-digest-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+}
+
+.query-digest-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+.query-digest-subtitle {
+  font-size: 12px;
+  color: var(--ink-muted);
+  margin: 0;
+}
+
+.query-digest-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Quick Filter Tabs / Segmented Control */
+.query-digest-filters-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.query-digest-pill-tabs {
+  display: inline-flex;
+  background: var(--surface-subtle);
+  padding: 3px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.query-digest-pill-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.query-digest-pill-tab:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+
+.query-digest-pill-tab.is-active {
+  color: var(--ink);
+  background: var(--surface-raised);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--control-line), var(--shadow-sm);
+}
+
+.query-digest-tools-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.query-digest-search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-raised);
+  border: 1px solid var(--control-line);
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 13px;
+  width: 220px;
+  color: var(--ink-muted);
+  transition: border-color 0.15s;
+}
+
+.query-digest-search-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.query-digest-search-box input {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 13px;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  color: var(--ink);
+}
+
+.query-digest-search-box input::placeholder {
+  color: var(--ink-muted);
+}
+
+/* Stat Cards Strip */
+.query-digest-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--line);
+}
+
+.query-digest-stat-card {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.query-digest-stat-label {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-weight: 400;
+  color: var(--ink-muted);
+  margin-bottom: 4px;
+}
+
+.query-digest-stat-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  font-feature-settings: "tnum";
+  letter-spacing: -0.02em;
+}
+
+.query-digest-stat-sub {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  margin-top: 2px;
+}
+
+/* Main Split View: Table + Inspector */
+.query-digest-main-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.query-digest-table-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.query-digest-table-wrapper {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+/* pt-query-digest Table */
+.query-digest-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  text-align: left;
+}
+
+.query-digest-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--surface-pane);
+}
+
+.query-digest-table th {
+  padding: 8px 12px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink-muted);
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.query-digest-table th.num-col,
+.query-digest-table td.num-col {
+  text-align: right;
+  font-feature-settings: "tnum";
+}
+
+.query-digest-table tbody tr {
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.query-digest-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.query-digest-table tbody tr.is-selected {
+  background: var(--selection-fill);
+}
+
+.query-digest-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+/* Secondary figures under a value, and temporary tables written to disk. */
+.query-digest-subvalue {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.query-digest-tmp-disk {
+  color: var(--danger-text);
+  font-weight: 600;
+}
+.query-digest-zero {
+  color: var(--ink-muted);
+}
+.query-digest-preview-lead {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  color: var(--ink-secondary);
+}
+
+/* Cell Elements */
+.query-digest-rank {
+  font-weight: 700;
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-feature-settings: "tnum";
+}
+
+.query-digest-sql-cell {
+  max-width: 280px;
+  min-width: 260px;
+}
+
+.query-digest-sql-text {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 0 0 4px 0;
+  display: block;
+}
+
+.query-digest-sql-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.query-digest-schema-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 500;
+  background: var(--surface-pane);
+  color: var(--ink-secondary);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.query-digest-hash-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-muted);
+  letter-spacing: 0.02em;
+}
+
+.query-digest-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.query-digest-badge.danger {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  border: 1px solid var(--danger);
+}
+
+.query-digest-badge.warning {
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  border: 1px solid var(--warn);
+}
+
+.query-digest-badge.info {
+  background: var(--info-soft);
+  color: var(--info-text);
+  border: 1px solid var(--info);
+}
+
+.query-digest-badge.success {
+  background: var(--ok-soft);
+  color: var(--ok-text);
+  border: 1px solid var(--ok);
+}
+
+/* Response Time with Visual Progress Bar */
+.query-digest-time-cell {
+  min-width: 130px;
+}
+
+.query-digest-time-val {
+  font-weight: 600;
+  font-feature-settings: "tnum";
+  color: var(--ink);
+}
+
+.query-digest-time-pct-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.query-digest-progress-track {
+  flex: 1;
+  height: 5px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.query-digest-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.query-digest-progress-fill.high {
+  background: var(--danger);
+}
+
+.query-digest-time-pct-text {
+  font-size: 10.5px;
+  color: var(--ink-secondary);
+  font-feature-settings: "tnum";
+  width: 38px;
+  text-align: right;
+}
+
+/* Rows & Scan Ratio */
+.query-digest-rows-cell {
+  min-width: 140px;
+}
+
+.query-digest-rows-line {
+  font-size: 11.5px;
+  font-feature-settings: "tnum";
+  color: var(--ink-secondary);
+}
+
+.query-digest-ratio-badge {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-top: 3px;
+}
+
+/* Actions in Table */
+.query-digest-action-btns {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.query-digest-btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border: 1px solid var(--control-line);
+  background: var(--surface-raised);
+  color: var(--ink);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s ease;
+}
+
+.query-digest-btn-sm:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.query-digest-btn-sm.primary {
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--accent-ink);
+}
+
+.query-digest-btn-sm.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--accent-ink);
+}
+
+/* Side Inspector Pane */
+.query-digest-inspector {
+  width: 350px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-pane);
+  border-left: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+.query-digest-inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.query-digest-inspector-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--ink);
+}
+
+.query-digest-inspector-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.query-digest-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.query-digest-card-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink-muted);
+  margin: 0 0 10px 0;
+}
+
+/* pt-query-digest Attribute Table in Inspector */
+.pt-attributes-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.pt-attributes-table th {
+  padding: 4px 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+}
+
+.pt-attributes-table th:first-child,
+.pt-attributes-table td:first-child {
+  text-align: left;
+  white-space: nowrap;
+}
+
+.pt-attributes-table td {
+  padding: 6px;
+  border-bottom: 1px solid var(--line);
+  font-feature-settings: "tnum";
+  text-align: right;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* Code Snippet Box */
+.query-digest-code-box {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-radius: 7px;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 220px;
+  border: 1px solid var(--line);
+}
+
+.query-digest-code-box pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Export Modal */
+.query-digest-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.query-digest-modal {
+  width: 720px;
+  max-width: 90vw;
+  max-height: 85vh;
+  background: var(--surface-raised);
+  border-radius: 12px;
+  box-shadow: var(--shadow-dialog);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+}
+
+.query-digest-modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.query-digest-modal-title {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--ink);
+}
+
+.query-digest-modal-content {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.query-digest-preview-pre {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  padding: 14px;
+  border-radius: 8px;
+  overflow-x: auto;
+  max-height: 380px;
+  white-space: pre;
+}
+
+.query-digest-modal-footer {
+  padding: 14px 20px;
+  background: var(--surface-pane);
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (max-width: 1000px) {
+  .query-digest-main-split {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .query-digest-table-pane {
+    flex: none;
+    overflow: visible;
+  }
+
+  .query-digest-inspector {
+    width: 100%;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    overflow-y: visible;
+  }
+}
+
+@media (max-width: 720px) {
+  .query-digest-container {
+    height: auto;
+    overflow: visible;
+  }
+
+  .query-digest-header {
+    padding: 8px 12px;
+    gap: 6px;
+  }
+
+  .query-digest-subtitle {
+    display: none;
+  }
+
+  .query-digest-summary-strip {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+    padding: 8px 12px;
+  }
+
+  .query-digest-stat-card {
+    padding: 6px 8px;
+    min-width: 0;
+  }
+
+  .query-digest-stat-label,
+  .query-digest-stat-sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .query-digest-stat-value {
+    font-size: 14px;
+  }
+
+  .query-digest-tools-row {
+    width: 100%;
+  }
+
+  .query-digest-search-box {
+    flex: 1 1 140px;
+    width: auto;
+  }
+}

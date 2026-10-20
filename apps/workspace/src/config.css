@@ -1,0 +1,275 @@
+/* Parameters catalog, local drafts and the exact-statement review sheets. */
+
+/* Change… and Reset persisted value… under a setting's value in the inspector. */
+.config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-top: 2px;
+}
+.config-actions .text-button {
+  padding: 0;
+  font-size: var(--text-sm);
+}
+
+/* The sheet: facts, when it applies, the value, then the checked statement. */
+.variable-sheet .hint {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.variable-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.variable-facts > div {
+  display: contents;
+}
+.variable-facts dt {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.variable-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.variable-facts code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.variable-modes {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.variable-modes legend {
+  padding: 0 var(--space-1);
+  font-weight: 600;
+}
+.variable-modes label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2);
+  align-items: start;
+  cursor: pointer;
+}
+.variable-modes input {
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.variable-modes .hint {
+  display: block;
+  margin-top: 2px;
+}
+.variable-field {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+.variable-field label {
+  font-weight: 600;
+}
+.variable-input {
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+.variable-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.variable-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+.variable-statement {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.variable-caveats {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-4);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.variable-problems {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+  background: var(--warn-soft);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+ul.variable-problems {
+  padding-left: var(--space-5);
+}
+.variable-alternative {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.variable-alternative p,
+.variable-note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.variable-alternative .perf-sql,
+.variable-plan .perf-sql {
+  width: 100%;
+  margin-bottom: var(--space-3);
+}
+.variable-policy {
+  margin: 0;
+}
+
+/* The answer to a change, above the settings until dismissed. */
+.variable-result {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.variable-result p {
+  margin: 0 0 var(--space-1);
+}
+.variable-result .variable-facts {
+  margin: var(--space-1) 0;
+}
+.variable-result.is-ok {
+  border-left-color: var(--ok);
+  background: var(--ok-soft);
+}
+.variable-result.is-warn {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+.variable-result.is-danger {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+.variable-result:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 650px) {
+  .variable-facts {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .variable-facts dd {
+    margin-bottom: var(--space-1);
+  }
+}
+
+/* Parameter facts and recommendations occupy the inspector's full width. */
+.config-panel .config-explanation,
+.config-panel .parameter-check,
+.config-panel .config-actions {
+  grid-column: 1 / -1;
+}
+.config-explanation p { max-width: 70ch; }
+.config-switch {
+  display: inline-flex;
+  width: max-content;
+  min-height: var(--control-h);
+  align-items: center;
+  gap: var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  cursor: pointer;
+}
+.config-switch-track { display: inline-flex; align-items: center; width: 36px; height: 22px; padding: 2px; border: 1px solid var(--control-line); border-radius: 20px; background: var(--surface-muted); }
+.config-switch-track > span { width: 16px; height: 16px; border-radius: 50%; background: var(--ink-muted); }
+.config-switch[aria-checked="true"] .config-switch-track { background: var(--accent); border-color: var(--accent); justify-content: flex-end; }
+.config-switch[aria-checked="true"] .config-switch-track > span { background: var(--accent-ink); }
+.config-switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: var(--radius-sm); }
+.config-switch:disabled { opacity: .55; cursor: default; }
+
+.parameter-name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.parameter-name code { overflow: hidden; text-overflow: ellipsis; }
+.parameter-name .status-dot { flex: 0 0 auto; }
+.parameter-cell-editor { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.parameter-cell-editor .variable-input,
+.parameter-cell-editor .select { width: 100%; min-width: 0; }
+.parameter-cell-editor > .variable-input,
+.parameter-cell-editor > .select { flex: 1 1 auto; }
+.parameter-cell-editor .text-button { flex: 0 0 auto; padding: 0; font-size: var(--text-sm); }
+.parameter-current { max-width: 8em; overflow: hidden; text-overflow: ellipsis; }
+.parameter-staged td[data-col="value"] { background: var(--accent-soft); }
+.config-panel .data-table-frame { max-width: 100%; min-width: 0; }
+.config-panel .data-table-wrap { max-height: 65dvh; }
+.parameter-preview { margin-bottom: var(--space-4); min-width: 0; }
+.parameter-preview h3 { margin: 0 0 var(--space-2); font-size: var(--text-md); }
+.parameter-preview .data-table-wrap { max-height: 35dvh; }
+.parameter-check { border-top: 1px solid var(--line); padding-top: var(--space-3); margin-top: var(--space-3); }
+.parameter-check-heading,
+.parameter-review-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.parameter-check-heading { justify-content: flex-start; }
+.parameter-check .config-explanation { margin-top: var(--space-2); }
+.parameter-batch-sheet { width: min(760px, calc(100vw - var(--space-6))); }
+.parameter-persist { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); font-size: var(--text-md); }
+.parameter-review-row { padding: var(--space-3) 0; border-top: 1px solid var(--line); min-width: 0; }
+.parameter-review-heading { margin-bottom: var(--space-2); }
+.parameter-review-heading strong { min-width: 0; overflow-wrap: anywhere; }
+.parameter-review-row .hint { margin: var(--space-2) 0; }
+.parameter-review-row .perf-sql { max-width: 100%; }
+.parameter-results li { margin: var(--space-1) 0; overflow-wrap: anywhere; }
+@media (max-width: 650px) {
+  .config-panel .toolbar-controls { flex: 1 1 100%; justify-content: flex-start; }
+  .config-panel .toolbar-search { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+  .config-panel .toolbar-search input { width: 100%; min-width: 0; }
+  .parameter-batch-sheet { width: calc(100vw - var(--space-4)); }
+}
+
+.parameter-result-values { display: block; }
+
+/* The parameter list is long and Edit mode keeps its Review and apply button
+   in the toolbar (AWS keeps the action bar in view): pin it under the top bar. */
+.config-panel > .view-toolbar {
+  position: sticky;
+  top: var(--topbar-height);
+  z-index: 3;
+  background: var(--surface);
+}

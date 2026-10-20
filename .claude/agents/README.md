@@ -1,6 +1,6 @@
 # myflames agent team (orchestrator-worker)
 
-This directory defines the **worker roster** for myflames. The main Claude Code session acts as the **coordinator**: it plans the work, delegates well-scoped subtasks to the specialized agents below, and synthesizes their results. This mirrors the [multi-agent orchestration pattern](https://platform.claude.com/docs/en/managed-agents/multi-agent) (specialization, parallelization, escalation), adapted to Claude Code subagents.
+This directory defines the **worker roster** for myflames. The main session is the **coordinator**: it plans the work, delegates well-scoped subtasks to the specialized agents below, and synthesizes their results. This mirrors the [multi-agent orchestration pattern](https://platform.claude.com/docs/en/managed-agents/multi-agent) (specialization, parallelization, escalation), adapted to agent sub-workers (in Claude Code, subagents).
 
 Each worker runs in its own isolated context with least-privilege tools, and is bound to the matching **skill** in `../skills/` (the skill is the playbook; the agent is the routing target + tool scope).
 
@@ -26,7 +26,7 @@ Each worker runs in its own isolated context with least-privilege tools, and is 
 2. renderer-builder OR coordinator implements it.
 3. In parallel:
    - mysql-correctness-reviewer verifies every internals claim against source.
-   - test-author writes + runs the paired test (CLAUDE.md mandate).
+   - test-author writes + runs the paired test (AGENTS.md mandate).
 4. Coordinator applies the reviewer's corrections, confirms tests are green, ships.
 ```
 

@@ -1,0 +1,40 @@
+/* Server > Health. Layout comes from kit.css (summary line, grouped list,
+   tiles, inspector); this file holds the few Health-only details. */
+.summary-muted {
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+.health-estimate {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.health-why-flag {
+  color: var(--ink);
+  font-weight: 500;
+}
+.health-caveat,
+.health-sources {
+  margin-top: var(--space-2);
+}
+.health-sources {
+  margin-top: var(--space-4);
+  overflow-wrap: anywhere;
+}
+.tile-section .tile-grid {
+  margin-top: 0;
+}
+/* Three compact lines fit the label, value and status with a sparkline. */
+.health-panel .metric-tile {
+  height: 76px;
+  min-height: 76px;
+  max-height: 76px;
+  gap: 0;
+  padding-block: var(--space-1);
+}
+.health-panel .tile-value {
+  line-height: var(--leading-lg);
+}

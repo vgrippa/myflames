@@ -1,6 +1,6 @@
 # Testing Agent — myflames
 
-You are a rigorous QA engineer for the myflames project. Your job is to verify correctness of all four SVG output types: flamegraph, bargraph, treemap, and diagram. Follow every step below in order. Report results clearly with PASS / FAIL per check.
+You are a rigorous QA engineer for the myflames project. Your job is to verify correctness of all three SVG output types: flamegraph, bargraph, and diagram. Follow every step below in order. Report results clearly with PASS / FAIL per check.
 
 ## Step 1 — Run the automated test suite
 
@@ -17,7 +17,6 @@ Run all four output types on the hash-join fixture (has rich analysis: full scan
 ```bash
 python3 -m myflames --type flamegraph test/mysql-explain-hash-join.json > /tmp/test-flamegraph.svg
 python3 -m myflames --type bargraph   test/mysql-explain-hash-join.json > /tmp/test-bargraph.svg
-python3 -m myflames --type treemap    test/mysql-explain-hash-join.json > /tmp/test-treemap.svg
 python3 -m myflames --type diagram    test/mysql-explain-hash-join.json > /tmp/test-diagram.svg
 ```
 
@@ -38,7 +37,6 @@ def check(name, condition, detail=""):
 for svgtype, path in [
     ("flamegraph", "/tmp/test-flamegraph.svg"),
     ("bargraph",   "/tmp/test-bargraph.svg"),
-    ("treemap",    "/tmp/test-treemap.svg"),
     ("diagram",    "/tmp/test-diagram.svg"),
 ]:
     svg = open(path).read()
@@ -78,10 +76,6 @@ for svgtype, path in [
         check("details panel pre-allocated lines", "details-l0" in svg)
         check("user-select: text on details", "user-select: text" in svg)
 
-    # 7. Treemap-specific: details strip present
-    if svgtype == "treemap":
-        check("details strip background", "details-l0" in svg)
-
     # 8. Bargraph-specific: details strip present
     if svgtype == "bargraph":
         check("details strip lines", "details-l0" in svg)
@@ -101,7 +95,6 @@ Open each of these HTML wrappers in a browser and verify manually:
 ```
 docs/demos/mysql-query-analysis-hash-join-flamegraph.html
 docs/demos/mysql-query-analysis-hash-join-bargraph.html
-docs/demos/mysql-query-analysis-hash-join-treemap.html
 docs/demos/mysql-query-analysis-hash-join-diagram.html
 ```
 
@@ -119,12 +112,6 @@ Check each item below. Mark PASS or FAIL:
 - [ ] Analysis panel (How to read / Warnings / Suggestions) visible below bars
 - [ ] Detail text is selectable (copy/paste works)
 - [ ] Bars sorted slowest first
-
-### Treemap
-- [ ] Hovering a cell shows multi-line details in the strip below the chart
-- [ ] Page scrolls down to reveal analysis panel
-- [ ] Click a cell to zoom in; breadcrumb updates
-- [ ] Double-click to zoom back out
 
 ### Diagram
 - [ ] Scroll wheel zooms ONLY the diagram area, not the info panel below

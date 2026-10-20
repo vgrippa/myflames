@@ -1,0 +1,41 @@
+/* Replication place: the shared summary line, metric tiles, table and
+   inspector (kit.css) carry the look; only the pieces below are local. */
+
+.replication-place {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  background: var(--bg);
+}
+
+/* The tiles keep a gap above whatever the section shows under them (the
+   GTID facts, a table); the topology map has its own toolbar padding. */
+.replication-tiles + :is(.fact-strip, .data-table-frame) {
+  margin-top: var(--space-3);
+}
+
+/* One line of context under a tile's value ("1 OK", "1 measured · 1 unknown"). */
+.replication-tiles .tile-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+
+/* A narrow window (the app's 720 px minimum): the five sections take their
+   own row under the title instead of scrolling out of sight. */
+@container view (max-width: 640px) {
+  .server-view[data-view="replication"] .toolbar-controls {
+    flex-basis: 100%;
+    order: 3;
+    justify-content: flex-start;
+  }
+  .server-view[data-view="replication"] .toolbar-end {
+    margin-left: auto;
+  }
+}

@@ -1,0 +1,40 @@
+{
+ "server": "11.4.13-MariaDB",
+ "provenance": "Synthetic SQL replay, derived from documented variable/counter semantics; not a live capture.",
+ "calls": [
+  [
+   "/*myflames:checks*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('aria_block_size', 'aria_pagecache_buffer_size', 'binlog_cache_size', 'binlog_expire_logs_auto_purge', 'binlog_expire_logs_seconds', 'binlog_space_limit', 'binlog_stmt_cache_size', 'expire_logs_days', 'have_query_cache', 'innodb_buffer_pool_size', 'innodb_log_buffer_size', 'internal_tmp_mem_storage_engine', 'join_buffer_size', 'key_buffer_size', 'key_cache_block_size', 'log_bin', 'max_binlog_total_size', 'max_connections', 'max_heap_table_size', 'net_buffer_length', 'performance_schema', 'query_cache_size', 'query_cache_type', 'read_buffer_size', 'read_only', 'read_rnd_buffer_size', 'sort_buffer_size', 'super_read_only', 'temptable_max_mmap', 'temptable_max_ram', 'thread_stack', 'tmp_table_size', 'userstat', 'version', 'version_comment', 'wsrep_on', 'wsrep_provider')",
+   "aria_block_size\t8192\naria_pagecache_buffer_size\t32768\nbinlog_cache_size\t9216\nbinlog_stmt_cache_size\t11264\ninnodb_buffer_pool_size\t1024\ninnodb_log_buffer_size\t2048\ninternal_tmp_mem_storage_engine\tTempTable\njoin_buffer_size\t5120\nkey_buffer_size\t3072\nkey_cache_block_size\t1024\nlog_bin\tOFF\nmax_connections\t20\nmax_heap_table_size\t8192\nnet_buffer_length\t10240\nperformance_schema\tON\nquery_cache_size\t1024\nquery_cache_type\tOFF\nread_buffer_size\t6144\nread_rnd_buffer_size\t7168\nsort_buffer_size\t4096\ntemptable_max_mmap\t65536\ntemptable_max_ram\t32768\nthread_stack\t8192\ntmp_table_size\t16384\nversion\t11.4.13-MariaDB\nversion_comment\tSynthetic replay scenario\nwsrep_on\tON\nwsrep_provider\t/usr/lib/galera/libgalera_smm.so\n"
+  ],
+  [
+   "/*myflames:checks*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Uptime\t3600\n"
+  ],
+  [
+   "/*myflames:checks*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Qcache_hits', 'Qcache_inserts', 'Qcache_not_cached', 'Qcache_lowmem_prunes', 'Qcache_queries_in_cache', 'Qcache_free_memory', 'Com_select', 'Key_blocks_used', 'Key_blocks_unused', 'Key_read_requests', 'Key_reads', 'Aria_pagecache_blocks_used', 'Aria_pagecache_blocks_unused', 'Aria_pagecache_read_requests', 'Aria_pagecache_reads', 'wsrep_cluster_size', 'wsrep_cluster_status', 'wsrep_connected', 'wsrep_ready', 'wsrep_local_state', 'wsrep_local_state_comment', 'wsrep_flow_control_paused', 'wsrep_local_cert_failures', 'Max_used_connections')",
+   "Aria_pagecache_blocks_unused\t2\nAria_pagecache_blocks_used\t4\nAria_pagecache_read_requests\t1000\nAria_pagecache_reads\t20\nKey_blocks_unused\t2\nKey_blocks_used\t4\nKey_read_requests\t1000\nKey_reads\t100\nMax_used_connections\t3\nwsrep_cluster_size\t3\nwsrep_cluster_status\tPrimary\nwsrep_connected\tON\nwsrep_flow_control_paused\t0.2\nwsrep_local_cert_failures\t2\nwsrep_local_state\t4\nwsrep_local_state_comment\tSynced\nwsrep_ready\tON\n"
+  ],
+  [
+   "/*myflames:checks*/ SELECT SUM(CURRENT_NUMBER_OF_BYTES_USED) FROM performance_schema.memory_summary_global_by_event_name WHERE EVENT_NAME LIKE 'memory/performance_schema/%'",
+   "4096\n"
+  ],
+  [
+   "/*myflames:checks*/ SHOW ALL SLAVES STATUS",
+   "<resultset></resultset>"
+  ],
+  [
+   "/*myflames:checks*/ SELECT User, Host, IFNULL(JSON_VALUE(Priv, '$.plugin'), ''), IFNULL(JSON_VALUE(Priv, '$.authentication_string'), '') = '', IF(IFNULL(JSON_VALUE(Priv, '$.account_locked'), '') IN ('1', 'true'), 'Y', 'N'), IF(IFNULL(JSON_VALUE(Priv, '$.is_role'), '') IN ('1', 'true'), 'Y', 'N') FROM mysql.global_priv",
+   ""
+  ]
+ ],
+ "inventory": {
+  "summary": {
+   "engines": []
+  },
+  "scope": {
+   "schemas": [
+    "scenario"
+   ]
+  }
+ }
+}

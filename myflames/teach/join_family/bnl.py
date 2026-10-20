@@ -143,7 +143,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="bnl",
-        title="Block Nested Loop join — MariaDB's default",
+        title="Block nested loop join: MariaDB's default",
         subtitle=(
             "Watch join_buffer_size decide how many times the inner table is "
             "re-scanned. Bigger buffer, fewer blocks, less I/O."

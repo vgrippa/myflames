@@ -34,34 +34,34 @@ function buildStage() {
 
   // Subquery source (top)
   var srcLbl = anim.svgEl("text", {
-    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "#0c4a6e"
+    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   srcLbl.textContent = "Subquery: SELECT dept_id, AVG(salary) FROM employees GROUP BY dept_id";
   svg.appendChild(srcLbl);
 
   var srcRect = anim.svgEl("rect", {
     x: 20, y: 40, width: W - 40, height: 50, rx: 8, ry: 8,
-    fill: "#f0f9ff", stroke: "#0284c7", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(srcRect);
 
   // Temp table (middle)
   var tmpY = 130;
   var tmpLbl = anim.svgEl("text", {
-    x: 20, y: tmpY, "font-size": 13, "font-weight": 700, fill: "#92400e"
+    x: 20, y: tmpY, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   tmpLbl.textContent = "Materialized temp table (stats)";
   svg.appendChild(tmpLbl);
 
   var tmpRect = anim.svgEl("rect", {
     x: 20, y: tmpY + 12, width: W - 40, height: 70, rx: 8, ry: 8,
-    fill: "#fffbeb", stroke: "#d97706", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5
   });
   svg.appendChild(tmpRect);
 
   var tmpContent = anim.svgEl("text", {
     x: W / 2, y: tmpY + 52, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#92400e"
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-build-ink)"
   });
   tmpContent.textContent = "(subquery rows materialize here)";
   svg.appendChild(tmpContent);
@@ -70,17 +70,17 @@ function buildStage() {
   var barX = 30, barY = tmpY + 22, barW = W - 60, barH = 14;
   var barBg = anim.svgEl("rect", {
     x: barX, y: barY, width: barW, height: barH, rx: 3, ry: 3,
-    fill: "#fef3c7", stroke: "#fde68a", "stroke-width": 1
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-highlight)", "stroke-width": 1
   });
   svg.appendChild(barBg);
   var barFill = anim.svgEl("rect", {
     x: barX, y: barY, width: 0, height: barH, rx: 3, ry: 3,
-    fill: "#f59e0b"
+    fill: "var(--svg-highlight)"
   });
   svg.appendChild(barFill);
   var barPct = anim.svgEl("text", {
     x: barX + barW / 2, y: barY + 11, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "#78350f"
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   barPct.textContent = "0%";
   svg.appendChild(barPct);
@@ -88,7 +88,7 @@ function buildStage() {
   // Spill indicator
   var spillLbl = anim.svgEl("text", {
     x: W - 30, y: tmpY + 70, "text-anchor": "end",
-    "font-size": 10, "font-weight": 700, fill: "#dc2626", opacity: 0
+    "font-size": 10, "font-weight": 700, fill: "var(--svg-danger)", opacity: 0
   });
   spillLbl.textContent = "\u26a0 spills to disk";
   svg.appendChild(spillLbl);
@@ -96,12 +96,12 @@ function buildStage() {
   // Index badge on temp table
   var indexBadge = anim.svgEl("rect", {
     x: W - 180, y: tmpY + 12, width: 140, height: 20, rx: 10, ry: 10,
-    fill: "#dbeafe", stroke: "#3b82f6", "stroke-width": 1.5, opacity: 0
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5, opacity: 0
   });
   svg.appendChild(indexBadge);
   var indexLbl = anim.svgEl("text", {
     x: W - 110, y: tmpY + 26, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "#1e40af", opacity: 0
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-token-ink)", opacity: 0
   });
   indexLbl.textContent = "auto-index (dept_id)";
   svg.appendChild(indexLbl);
@@ -109,26 +109,26 @@ function buildStage() {
   // Outer query area (bottom-left)
   var outerY = 260;
   var outerLbl = anim.svgEl("text", {
-    x: 20, y: outerY, "font-size": 13, "font-weight": 700, fill: "#4338ca"
+    x: 20, y: outerY, "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"
   });
   outerLbl.textContent = "Outer query: departments d JOIN stats ON d.id = stats.dept_id";
   svg.appendChild(outerLbl);
 
   var outerRect = anim.svgEl("rect", {
     x: 20, y: outerY + 12, width: 340, height: 50, rx: 8, ry: 8,
-    fill: "#eef2ff", stroke: "#6366f1", "stroke-width": 1.5
+    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5
   });
   svg.appendChild(outerRect);
 
   // Result area (bottom-right)
   var resultRect = anim.svgEl("rect", {
     x: 440, y: outerY + 12, width: 340, height: 50, rx: 8, ry: 8,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5
   });
   svg.appendChild(resultRect);
   var resultLbl = anim.svgEl("text", {
     x: 610, y: outerY + 42, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#065f46"
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)"
   });
   resultLbl.textContent = "Result rows";
   svg.appendChild(resultLbl);
@@ -136,7 +136,7 @@ function buildStage() {
   // Arrow from outer to temp table
   var probeArrow = anim.svgEl("line", {
     x1: 190, y1: outerY + 12, x2: 190, y2: tmpY + 82,
-    stroke: "#6366f1", "stroke-width": 1.5,
+    stroke: "var(--svg-group)", "stroke-width": 1.5,
     "stroke-dasharray": "4,3", "marker-end": "", opacity: 0
   });
   svg.appendChild(probeArrow);
@@ -144,14 +144,14 @@ function buildStage() {
   // Arrow from temp table to result
   var resultArrow = anim.svgEl("line", {
     x1: 610, y1: tmpY + 82, x2: 610, y2: outerY + 12,
-    stroke: "#059669", "stroke-width": 1.5,
+    stroke: "var(--svg-ok)", "stroke-width": 1.5,
     "stroke-dasharray": "4,3", "marker-end": "", opacity: 0
   });
   svg.appendChild(resultArrow);
 
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 20, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#1f2937"
+    "font-size": 13, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
@@ -172,11 +172,11 @@ function buildStage() {
 
 function resetStage() {
   if (!stage) return;
-  stage.tmpRect.setAttribute("fill", "#fffbeb");
-  stage.tmpRect.setAttribute("stroke", "#d97706");
+  stage.tmpRect.setAttribute("fill", "var(--svg-build-soft)");
+  stage.tmpRect.setAttribute("stroke", "var(--svg-build)");
   stage.tmpContent.textContent = "(subquery rows materialize here)";
   stage.barFill.setAttribute("width", 0);
-  stage.barFill.setAttribute("fill", "#f59e0b");
+  stage.barFill.setAttribute("fill", "var(--svg-highlight)");
   stage.barPct.textContent = "0%";
   stage.spillLbl.setAttribute("opacity", 0);
   stage.indexBadge.setAttribute("opacity", 0);
@@ -194,12 +194,12 @@ function spawnTuple(text, color, cx, cy) {
   var tw = Math.max(70, text.length * 5.5 + 14);
   var bg = anim.svgEl("rect", {
     x: -tw / 2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
-    fill: color, stroke: "#1f2937", "stroke-width": 1
+    fill: color, stroke: "var(--svg-ink)", "stroke-width": 1
   });
   g.appendChild(bg);
   var lbl = anim.svgEl("text", {
     x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 8, "font-weight": 700, fill: "#ffffff"
+    "font-size": 8, "font-weight": 700, fill: "var(--svg-on-solid)"
   });
   lbl.textContent = text;
   g.appendChild(lbl);
@@ -254,7 +254,7 @@ function buildTimeline(spillsToDisk, hasIndex) {
 
         var cx = 60 + (idx % 4) * 190;
         var cy = 175;
-        var tuple = spawnTuple(label, "#d97706", cx, cy);
+        var tuple = spawnTuple(label, "var(--svg-build)", cx, cy);
         anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
           onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
       });
@@ -268,8 +268,8 @@ function buildTimeline(spillsToDisk, hasIndex) {
     tl.delay(200);
     tl.call(function() {
       stage.spillLbl.setAttribute("opacity", 1);
-      stage.tmpRect.setAttribute("stroke", "#dc2626");
-      stage.barFill.setAttribute("fill", "#f87171");
+      stage.tmpRect.setAttribute("stroke", "var(--svg-danger)");
+      stage.barFill.setAttribute("fill", "var(--svg-danger-soft)");
       phase.textContent = "Phase 1 \u2014 temp table exceeds 16 MiB, spills to disk!";
     });
     tl.delay(400);
@@ -290,8 +290,8 @@ function buildTimeline(spillsToDisk, hasIndex) {
     tl.call(function() {
       phase.textContent = "Phase 2 \u2014 creating auto-index on temp table (dept_id)";
       // Blue flash on temp table
-      stage.tmpRect.setAttribute("fill", "#dbeafe");
-      stage.tmpRect.setAttribute("stroke", "#3b82f6");
+      stage.tmpRect.setAttribute("fill", "var(--svg-token-soft)");
+      stage.tmpRect.setAttribute("stroke", "var(--svg-token)");
     });
     tl.delay(200);
     tl.call(function() {
@@ -303,14 +303,14 @@ function buildTimeline(spillsToDisk, hasIndex) {
     tl.call(function() {
       anim.tween({from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
         onUpdate: function(v) {
-          var c = anim.lerpColor("#93c5fd", "#dbeafe", v);
+          var c = anim.lerpColor("var(--svg-token-soft)", "var(--svg-token-soft)", v);
           stage.tmpRect.setAttribute("fill", c);
         }});
     });
     tl.delay(400);
     tl.call(function() {
-      stage.tmpRect.setAttribute("fill", "#fffbeb");
-      stage.tmpRect.setAttribute("stroke", "#d97706");
+      stage.tmpRect.setAttribute("fill", "var(--svg-build-soft)");
+      stage.tmpRect.setAttribute("stroke", "var(--svg-build)");
     });
     tl.delay(200);
   }
@@ -331,7 +331,7 @@ function buildTimeline(spillsToDisk, hasIndex) {
 
       tl.call(function() {
         // Probe tuple from outer
-        var probeTuple = spawnTuple(probeLabel, "#6366f1", 190, 278);
+        var probeTuple = spawnTuple(probeLabel, "var(--svg-group)", 190, 278);
         anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
           onUpdate: function(v) { probeTuple.setAttribute("opacity", v); }});
       });
@@ -341,7 +341,7 @@ function buildTimeline(spillsToDisk, hasIndex) {
         // Lookup flash on temp table
         anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
           onUpdate: function(v) {
-            var c = anim.lerpColor("#fffbeb", hasIndex ? "#dbeafe" : "#fef3c7", v);
+            var c = anim.lerpColor("var(--svg-build-soft)", hasIndex ? "var(--svg-token-soft)" : "var(--svg-build-soft)", v);
             stage.tmpRect.setAttribute("fill", c);
           }});
       });
@@ -355,7 +355,7 @@ function buildTimeline(spillsToDisk, hasIndex) {
 
       if (matched) {
         tl.call(function() {
-          var resultTuple = spawnTuple(probeLabel + " \u2713", "#059669", 610, 278);
+          var resultTuple = spawnTuple(probeLabel + " \u2713", "var(--svg-ok)", 610, 278);
           anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
             onUpdate: function(v) { resultTuple.setAttribute("opacity", v); }});
         });
@@ -364,7 +364,7 @@ function buildTimeline(spillsToDisk, hasIndex) {
 
       // Reset temp table color
       tl.call(function() {
-        stage.tmpRect.setAttribute("fill", "#fffbeb");
+        stage.tmpRect.setAttribute("fill", "var(--svg-build-soft)");
         // Fade probe tuples
         stage.tuples.forEach(function(t) {
           if (parseFloat(t.getAttribute("opacity") || 1) > 0.3) {
@@ -409,14 +409,14 @@ function renderChart(currentSubqueryRows, hasIndex) {
     xMin: 100, xMax: 1e6,
     xLabel: "Subquery rows", yLabel: "Total I/O operations",
     curves: [
-      {label: "Materialized + auto-index", color: "#2563eb", fn: function(n) {
+      {label: "Materialized + auto-index", color: "var(--svg-token)", fn: function(n) {
         var h = Math.max(1, Math.ceil(Math.log(Math.max(2, n)) / Math.log(800)));
         return n + 1000 * h;
       }},
-      {label: "Materialized + full scan", color: "#dc2626", fn: function(n) {
+      {label: "Materialized + full scan", color: "var(--svg-danger)", fn: function(n) {
         return n + n;
       }},
-      {label: "Merged (no temp table)", color: "#059669", fn: function(n) {
+      {label: "Merged (no temp table)", color: "var(--svg-ok)", fn: function(n) {
         return 1000;  // just outer_rows, no materialization overhead
       }}
     ],

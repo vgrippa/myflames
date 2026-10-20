@@ -1,0 +1,366 @@
+/* Replication topology: a static map. One row per channel, source on the left,
+   connector in the middle, replica on the right. State is drawn by line style,
+   color and a text label; nothing moves. Tokens only (style.css). */
+
+.replication-topology-container {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.replication-topology-container.is-compact {
+  border-bottom: none;
+}
+
+.topology-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.topology-count {
+  font-size: var(--text-sm);
+  color: var(--ink-secondary);
+}
+
+.topology-search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  width: 220px;
+  max-width: 100%;
+  padding: 0 var(--space-2);
+  color: var(--ink-muted);
+  background: var(--bg);
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--motion-hover);
+}
+
+.topology-search-box:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-soft);
+}
+
+.topology-search-input {
+  width: 100%;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+.topology-search-input::placeholder {
+  color: var(--ink-faint);
+}
+
+.topology-search-clear {
+  padding: 0 2px;
+  font-size: var(--text-lg);
+  line-height: 1;
+  color: var(--ink-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.topology-scroll {
+  padding: var(--space-5) var(--space-4);
+  overflow-x: auto;
+}
+
+.topology-empty {
+  margin: 0;
+  padding: var(--space-5) 0;
+  text-align: center;
+  font-size: var(--text-md);
+  color: var(--ink-secondary);
+}
+
+/* Layout: rows on the left, the one replica on the right, touching the lines. */
+.topology-map {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr);
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+.topology-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.topology-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+/* Nodes */
+.topology-node {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.topology-replica {
+  justify-content: center;
+}
+
+.topology-eyebrow {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-secondary);
+}
+
+.topology-host {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: var(--leading-lg);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.topology-meta {
+  font-size: var(--text-sm);
+  color: var(--ink-secondary);
+}
+
+.topology-coord {
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.topology-lag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-2);
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* Status dot: color by the report's own tone. The label next to it says the same. */
+.topology-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.tone-ok .topology-dot { background: var(--ok); }
+.tone-watch .topology-dot { background: var(--warn); }
+.tone-problem .topology-dot { background: var(--danger); }
+.tone-unknown .topology-dot { background: var(--ink-faint); }
+
+/* Connector: a button laid out as name, line, state and lag. */
+.topology-link-wrap {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+.topology-link {
+  position: relative;
+  display: grid;
+  grid-template-rows: 1fr auto 1fr;
+  justify-items: center;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  text-align: center;
+  cursor: pointer;
+  --link-color: var(--ok);
+  transition: background var(--motion-hover), box-shadow var(--motion-hover);
+}
+
+.topology-link:hover {
+  background: var(--surface-hover);
+}
+
+.topology-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.topology-link.is-selected {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.topology-link.is-stopped { --link-color: var(--ink-secondary); }
+.topology-link.is-error { --link-color: var(--danger); }
+
+.topology-link-name {
+  align-self: end;
+  padding: 0 var(--space-2) var(--space-1);
+  max-width: 100%;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* The line: solid when threads run or an error is recorded, dashed when stopped. */
+.topology-line {
+  position: relative;
+  align-self: center;
+  width: 100%;
+  height: 0;
+  border-top: 2px solid var(--link-color);
+}
+
+.topology-link.is-stopped .topology-line {
+  border-top-style: dashed;
+}
+
+.topology-line::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: -5px;
+  border-left: 7px solid var(--link-color);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+
+.topology-link-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  align-self: start;
+  padding: var(--space-1) var(--space-2) 0;
+}
+
+.topology-link-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.topology-link.is-error .topology-link-state {
+  color: var(--danger-text);
+}
+
+.topology-link-lag {
+  font-size: var(--text-sm);
+  color: var(--ink-secondary);
+}
+
+/* Hover and focus detail: plain text in a small popover. */
+.topology-detail {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 300px;
+  max-width: calc(100cqw - 2 * var(--space-4));
+  margin-top: 0;
+  padding: var(--space-3);
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.topology-detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 400;
+}
+
+.topology-detail-row > :first-child {
+  flex: none;
+  color: var(--ink-secondary);
+}
+
+.topology-detail-row > :last-child {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.topology-detail-row.is-error > :last-child {
+  color: var(--danger-text);
+}
+
+/* Narrow: stack source, connector (vertical) and replica. */
+@container (max-width: 600px) {
+  .topology-scroll { padding: var(--space-4) var(--space-3); }
+  .topology-map { grid-template-columns: minmax(0, 1fr); }
+  .topology-rows { gap: 0; }
+  .topology-row { grid-template-columns: minmax(0, 1fr); }
+  .topology-link {
+    grid-template-rows: none;
+    grid-template-columns: 24px minmax(0, 1fr);
+    column-gap: var(--space-3);
+    justify-items: start;
+    align-items: center;
+    padding: var(--space-3) 0;
+    text-align: left;
+  }
+  .topology-line {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    justify-self: center;
+    align-self: stretch;
+    width: 0;
+    min-height: 44px;
+    border-top: 0;
+    border-left: 2px solid var(--link-color);
+  }
+  .topology-link.is-stopped .topology-line { border-left-style: dashed; }
+  .topology-line::after {
+    right: auto;
+    left: -5px;
+    top: auto;
+    bottom: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 7px solid var(--link-color);
+    border-bottom: 0;
+  }
+  .topology-link-name { grid-column: 2; grid-row: 1; align-self: end; padding: 0; }
+  .topology-link-info { grid-column: 2; grid-row: 2; align-items: flex-start; align-self: start; padding: 0; }
+}

@@ -1,0 +1,21 @@
+/* Home exposes useful entry points without filling the workspace with cards. */
+.home-version { margin-top: auto; display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); padding: var(--space-2) var(--space-4); border-top: 1px solid var(--line); font-size: var(--text-sm); color: var(--ink-muted); }
+.home-version strong { font-weight: 500; color: var(--ink-secondary); }
+.home-version span::before { content: "· "; }
+.home-version a { color: var(--accent-text); margin-left: auto; }
+.home-workflows { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); padding: var(--space-3) var(--space-4); gap: var(--space-2); }
+.home-workflows button { display: flex; align-items: center; text-align: left; gap: var(--space-3); padding: var(--space-3); border: 0; background: transparent; color: var(--ink); border-radius: var(--radius-md); min-width: 0; }
+.home-workflows button:hover { background: var(--surface-hover); }
+.home-workflows button > svg { flex: none; color: var(--accent-text); }
+.home-workflows button > svg:last-child { color: var(--ink-muted); margin-left: auto; }
+.home-workflows span { display: grid; gap: var(--space-1); min-width: 0; }
+.home-workflows strong { font-size: var(--text-md); font-weight: 600; }
+.home-workflows small { font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--ink-muted); }
+.main-nav .nav-group-label { font-size: var(--section-size); line-height: var(--section-leading); font-weight: var(--section-weight); color: var(--section-ink); margin: var(--space-4) var(--space-2) var(--space-1); }
+.brand img { border-radius: var(--radius-sm); }
+@media (max-width: 1040px) {
+  .home-workflows { grid-template-columns: 1fr; }
+}
+@media (max-width: 650px) {
+  .home-workflows { padding: var(--space-2); gap: 0; }
+}

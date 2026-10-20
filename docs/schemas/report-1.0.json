@@ -1,0 +1,438 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myflames.dev/schemas/report-1.0.json",
+  "title": "myflames full analysis report 1.0",
+  "description": "The Full analysis report (myflames/report.py:analysis_report), emitted by `myflames report --json` and POST /api/live/report. One read-only run of every Server view, composed into ranked findings, per-area sections and the statements behind the numbers. Every threshold lives in the module that judges it; a finding's rule names it. Recommendations are text and are never applied. Additive optional fields keep 1.x; renamed or removed fields bump the major version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "myflames_version",
+    "engine",
+    "server_version",
+    "taken_at",
+    "uptime_s",
+    "performance_schema",
+    "header",
+    "summary",
+    "look_first",
+    "findings",
+    "sections",
+    "attribution",
+    "checklist",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {"const": "report-1.0"},
+    "myflames_version": {"type": "string"},
+    "engine": {"type": "string", "enum": ["mysql", "mariadb"]},
+    "server_version": {"type": ["string", "null"]},
+    "taken_at": {"type": "string", "description": "ISO-8601 UTC time the report was composed."},
+    "uptime_s": {
+      "type": ["integer", "number", "null"],
+      "description": "Uptime in seconds; counters since startup cover this much time."
+    },
+    "performance_schema": {"type": "boolean"},
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "started_at", "elapsed_s", "interval", "scope", "views", "failures"],
+      "properties": {
+        "server": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["engine", "version", "version_comment", "uptime_s", "performance_schema"],
+          "properties": {
+            "engine": {"type": "string", "enum": ["mysql", "mariadb"]},
+            "version": {"type": ["string", "null"]},
+            "version_comment": {"type": ["string", "null"]},
+            "uptime_s": {"type": ["integer", "number", "null"]},
+            "performance_schema": {"type": "boolean"}
+          }
+        },
+        "started_at": {"type": ["string", "null"]},
+        "elapsed_s": {"type": ["number", "null"], "description": "Wall time of the whole analysis in seconds."},
+        "interval": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 60,
+          "description": "Window of Health, Waits and I/O in seconds."
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemas", "all_user_schemas", "text"],
+          "properties": {
+            "schemas": {"type": ["array", "null"], "items": {"type": "string"}},
+            "all_user_schemas": {"type": "boolean"},
+            "text": {"type": "string"}
+          }
+        },
+        "views": {"type": "array", "items": {"$ref": "#/$defs/view"}},
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["view", "label", "status", "error"],
+            "properties": {
+              "view": {"$ref": "#/$defs/view_key"},
+              "label": {"type": "string"},
+              "status": {"type": "string", "enum": ["failed", "skipped"]},
+              "error": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["problem", "watch", "unknown", "info", "ok", "findings", "status", "text"],
+      "properties": {
+        "problem": {"type": "integer", "minimum": 0},
+        "watch": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0},
+        "info": {"type": "integer", "minimum": 0},
+        "ok": {"type": "integer", "minimum": 0},
+        "findings": {"type": "integer", "minimum": 0},
+        "status": {
+          "type": "string",
+          "enum": ["problem", "watch", "unknown", "ok"],
+          "description": "problem > watch > unknown > ok: unknown findings or views that did not run keep a report from ok; info never raises it."
+        },
+        "text": {"type": "string"}
+      }
+    },
+    "look_first": {
+      "type": ["string", "null"],
+      "description": "The id of the first problem, else the first watch finding (rank_findings order), or null."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Ranked: status, then family (FAMILY_RANK), then impact.",
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "sections": {"type": "array", "items": {"$ref": "#/$defs/section"}},
+    "attribution": {"$ref": "#/$defs/attribution"},
+    "checklist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["covered", "not_checked"],
+      "properties": {
+        "covered": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "label"],
+            "properties": {"key": {"type": "string"}, "label": {"type": "string"}}
+          }
+        },
+        "not_checked": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "reason"],
+            "properties": {"label": {"type": "string"}, "reason": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "health_metrics": {
+      "type": "array",
+      "description": "Optional (added after the first report-1.0 release): every Health metric of the window with its status (ok, info and unknown included), the health-1.0 metric fields minus link, learn, sources and sparkline. Findings keep only watch and problem metrics; empty when Health did not run.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "status"],
+        "properties": {
+          "key": {"type": "string"},
+          "group": {"type": ["string", "null"]},
+          "label": {"type": ["string", "null"]},
+          "explain": {"type": ["string", "null"]},
+          "unit": {"type": ["string", "null"]},
+          "value": {"type": ["number", "null"]},
+          "delta": {"type": ["number", "null"]},
+          "rate": {"type": ["number", "null"]},
+          "max": {"type": ["number", "null"]},
+          "status": {"type": "string", "enum": ["ok", "watch", "problem", "info", "unknown"]},
+          "why": {"type": ["string", "null"]},
+          "rule": {"type": ["string", "null"]},
+          "detail": {"type": ["string", "null"]},
+          "inputs": {"type": ["object", "null"]}
+        }
+      }
+    },
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional, exports only: the connection the report was read from, as the workspace names it (POST /api/report/export with `source`). Never a password.",
+      "properties": {
+        "label": {"type": "string", "maxLength": 200},
+        "host": {"type": "string", "maxLength": 200},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "user": {"type": "string", "maxLength": 200},
+        "type": {"type": "string", "enum": ["production", "development"]}
+      }
+    }
+  },
+  "$defs": {
+    "status": {"type": "string", "enum": ["problem", "watch", "unknown", "info", "ok"]},
+    "family": {
+      "type": "string",
+      "enum": [
+        "memory",
+        "redo",
+        "connections",
+        "temp_sorts",
+        "caches",
+        "query_cache",
+        "indexes",
+        "schema",
+        "waits",
+        "io",
+        "innodb",
+        "replication",
+        "security",
+        "observability"
+      ]
+    },
+    "view_key": {
+      "type": "string",
+      "enum": [
+        "health",
+        "waits",
+        "io",
+        "config",
+        "innodb",
+        "sessions",
+        "instruments",
+        "checks",
+        "tables",
+        "indexes"
+      ]
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "label",
+        "status",
+        "schema_version",
+        "started_at",
+        "taken_at",
+        "elapsed_s",
+        "error",
+        "notes"
+      ],
+      "properties": {
+        "key": {"$ref": "#/$defs/view_key"},
+        "label": {"type": "string"},
+        "status": {
+          "type": "string",
+          "enum": ["ok", "limited", "failed", "skipped"],
+          "description": "limited: the view ran but could not read its main source (privilege, Performance Schema off)."
+        },
+        "schema_version": {"type": ["string", "null"]},
+        "started_at": {"type": ["string", "null"]},
+        "taken_at": {"type": ["string", "null"]},
+        "elapsed_s": {"type": ["number", "null"]},
+        "error": {"type": ["string", "null"]},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "number": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "text"],
+      "properties": {
+        "label": {"type": "string"},
+        "text": {"type": "string"},
+        "value": {"type": ["integer", "number", "string", "null"]},
+        "unit": {"type": "string"}
+      }
+    },
+    "link": {
+      "type": "object",
+      "required": ["view", "label"],
+      "description": "A Server view to open (health, config, innodb, sessions, locks, top, indexes, tables, waits, io, instruments). Links to top carry order and, for one table, table (schema.table).",
+      "properties": {
+        "view": {"type": "string"},
+        "label": {"type": "string"},
+        "key": {"type": "string"},
+        "order": {"type": "string", "enum": ["full_join", "scan", "no_index"]},
+        "table": {"type": "string"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "family",
+        "status",
+        "title",
+        "headline",
+        "verdict",
+        "why",
+        "rule",
+        "caveat",
+        "action",
+        "numbers",
+        "settings",
+        "links",
+        "source",
+        "learn",
+        "impact",
+        "attribution"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z_]+\\.[a-z_]+$",
+          "description": "<view>.<key>, stable across runs."
+        },
+        "family": {"$ref": "#/$defs/family"},
+        "status": {"$ref": "#/$defs/status"},
+        "state": {"type": ["string", "null"], "description": "Optional Health diagnostic state, preserved from health-1.0 (for example room or not_applicable). Absent in older reports; null when unavailable."},
+        "title": {"type": "string"},
+        "headline": {"type": "string"},
+        "verdict": {"type": "string", "description": "What this server shows, without the rule."},
+        "why": {"type": "string"},
+        "rule": {"type": ["string", "null"], "description": "The rule of thumb behind the status, in words."},
+        "caveat": {"type": ["string", "null"]},
+        "action": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "description": "A suggestion as text; never applied. A SET names its scope and needs the db-operations confirmation.",
+          "properties": {
+            "text": {"type": "string"},
+            "sql": {"type": ["string", "null"]},
+            "config": {"type": "string"}
+          }
+        },
+        "numbers": {"type": "array", "items": {"$ref": "#/$defs/number"}},
+        "settings": {"type": "array", "items": {"type": "object"}},
+        "links": {"type": "array", "items": {"$ref": "#/$defs/link"}},
+        "source": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["view", "kind"],
+          "properties": {"view": {"type": "string"}, "kind": {"type": "string"}, "key": {"type": "string"}}
+        },
+        "learn": {"type": ["string", "null"]},
+        "impact": {
+          "type": ["integer", "number", "null"],
+          "description": "Ranks findings of one status and family; comparable only within a family."
+        },
+        "attribution": {"type": ["string", "null"], "enum": ["full_joins", "full_scans", null]}
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "title", "status", "summary", "counts", "findings", "views", "notes"],
+      "properties": {
+        "key": {"$ref": "#/$defs/family"},
+        "title": {"type": "string"},
+        "status": {
+          "$ref": "#/$defs/status",
+          "description": "problem > watch > unknown > info > ok over its findings; unknown when a view it draws from failed or was skipped."
+        },
+        "summary": {"type": "string"},
+        "counts": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "findings": {"type": "array", "items": {"type": "string"}},
+        "views": {"type": "array", "items": {"$ref": "#/$defs/view_key"}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "statement": {
+      "type": "object",
+      "description": "A top-1.0 statement row (discover.top_report): digest, digest_text, schema, count, total_ms, rows_examined, no_index_used, select_full_join, select_range_check, select_scan, sample_text, first_seen, capture_problem, and with a table filter table_match.",
+      "required": [
+        "digest",
+        "digest_text",
+        "schema",
+        "count",
+        "no_index_used",
+        "select_full_join",
+        "select_range_check",
+        "select_scan"
+      ],
+      "properties": {
+        "table_match": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "table", "kind", "label"],
+          "properties": {
+            "schema": {"type": "string"},
+            "table": {"type": "string"},
+            "kind": {"type": "string", "enum": ["qualified", "unqualified"]},
+            "label": {"const": "text match, not proof"}
+          }
+        }
+      }
+    },
+    "attribution": {
+      "type": "object",
+      "required": [
+        "available",
+        "gate",
+        "fix",
+        "label",
+        "caveats",
+        "full_joins",
+        "full_scans",
+        "coverage",
+        "notes"
+      ],
+      "properties": {
+        "available": {"type": "boolean"},
+        "gate": {
+          "type": ["string", "null"],
+          "description": "One sentence when statements cannot be linked (Performance Schema off, digests not collected, no privilege)."
+        },
+        "fix": {"type": ["string", "null"]},
+        "label": {"const": "text match, not proof"},
+        "caveats": {"type": "array", "items": {"type": "string"}},
+        "health_window": {"type": "object"},
+        "coverage": {
+          "type": ["object", "null"],
+          "properties": {
+            "uptime_s": {"type": ["integer", "null"]},
+            "first_seen": {"type": ["string", "null"]},
+            "digest_lost": {"type": ["integer", "null"]},
+            "overflow": {"type": ["object", "null"]}
+          }
+        },
+        "full_joins": {
+          "type": ["object", "null"],
+          "properties": {
+            "order": {"const": "full_join"},
+            "statements": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
+            "taken_at": {"type": ["string", "null"]}
+          }
+        },
+        "full_scans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["schema", "table", "label", "statements", "error"],
+            "properties": {
+              "schema": {"type": "string"},
+              "table": {"type": "string"},
+              "label": {"const": "text match, not proof"},
+              "statements": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
+              "error": {"type": ["string", "null"]}
+            }
+          }
+        },
+        "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

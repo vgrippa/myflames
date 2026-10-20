@@ -1,0 +1,45 @@
+Account fixtures, recorded live on 2026-10-15
+
+Each <server>.json is a replay recording: every statement myflames sent and
+the exact `mysql --batch` text (or client error) it got back, captured by a
+recording MySQLConnection while running privileges.read_privileges (one
+session per account in "sessions") and accounts.list_accounts and
+accounts.read_account as root ("reads"). Tests replay them by exact SQL.
+
+Servers (throwaway Docker containers, removed after recording; client:
+mysql 8.0.45 from Homebrew):
+  mysql-8.0.json      mysql:8.0      8.0.46
+  mysql-8.4.json      mysql:8.4      8.4.11
+  mysql-9.7.json      mysql:9.7      9.7.2
+  mariadb-10.11.json  mariadb:10.11  10.11.19-MariaDB
+  mariadb-11.4.json   mariadb:11.4   11.4.13-MariaDB
+
+Scenario (same on every server where the engine allows it):
+  databases shop (table orders, procedure p, function f), db_x, dbAx;
+  acct_admin  GRANT ALL ON *.* WITH GRANT OPTION (MySQL: every static and
+              dynamic privilege, SYSTEM_USER included);
+  acct_ops    CREATE USER, PROCESS, RELOAD, SELECT on mysql; MySQL also
+              CONNECTION_ADMIN, ROLE_ADMIN; MariaDB also CONNECTION ADMIN;
+  acct_app    roles r_read (default), r_write (MariaDB: WITH ADMIN OPTION),
+              MySQL r_sys (holds SYSTEM_USER, not active), MySQL mandatory
+              role r_mand (PROCESS; active on 9.7 where
+              activate_mandatory_roles defaults ON, listed but inactive on
+              8.0 and 8.4), MariaDB nested role r_nested under r_read;
+              column grants SELECT (a, b), INSERT (a) and table UPDATE on
+              shop.orders; EXECUTE on PROCEDURE shop.p; EXECUTE, ALTER
+              ROUTINE on FUNCTION shop.f; SELECT on `db\_x` (literal),
+              INSERT on `db_x` and DELETE on `shop%` (wildcards);
+  acct_proxy  PROXY on acct_app@%; on MariaDB 11.4 also expired with
+              MAX_USER_CONNECTIONS 3, MAX_STATEMENT_TIME 2.5 and PASSWORD
+              EXPIRE INTERVAL 30 DAY (two SHOW CREATE USER rows);
+  MySQL only: partial_revokes ON; acct_pr GRANT SELECT, INSERT, UPDATE ON *.*
+              with REVOKE INSERT, UPDATE ON mysql.* and REVOKE SELECT ON db_x.*;
+              acct_cu CREATE USER only;
+  MariaDB only: PUBLIC with SLAVE MONITOR and SELECT on pubdb.*; acct_ed
+              IDENTIFIED VIA ed25519 USING ... OR unix_socket; acct_super
+              SUPER and CREATE USER (on 11.4 its password is expired, so its
+              session records error 1820).
+
+Passwords and hashes in these files belong to throwaway accounts on
+containers that no longer exist. They are kept on purpose: the tests assert
+that no hash, USING string or AS 0x... form ever leaves the parser.

@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -50,15 +51,22 @@ class TestReportRegressions(unittest.TestCase):
         doc = ET.fromstring(svg)
         tooltip = next(n.get('data-info') for n in doc.iter()
                        if (n.get('data-info') or '').startswith('Filter:'))
-        self.assertIn('Self: 300 µs', tooltip)
-        self.assertIn('Total: 500 µs', tooltip)
+        self.assertIn('Self: 300.0 µs', tooltip)
+        self.assertIn('Total: 500.0 µs', tooltip)
 
     def test_microsecond_bargraph_matches_html_and_programmatic_paths(self):
-        for output in [render_explain(PLAN, 'bargraph'),
-                       render_html_report(PLAN, view_type='bargraph')]:
-            with self.subTest(html=output.startswith('<!DOCTYPE')):
-                self.assertIn('Self: 300 µs', output)
-                self.assertIn('Total: 500 µs', output)
+        output = render_explain(PLAN, 'bargraph')
+        self.assertIn('Self: 300.0 µs', output)
+        self.assertIn('Total: 500.0 µs', output)
+        # The HTML report's bar chart is drawn by the chart bundle from
+        # millisecond chart data plus a µs display hint; charts.mjs asserts
+        # it prints the same "Self: 300.0 µs" / "Total: 500.0 µs" details
+        # (the execution tree's format).
+        html = render_html_report(PLAN, view_type='bargraph')
+        data = json.loads(re.search(r'<script type="application/json" class="mfc-data">(.*?)</script>',
+                                    html, re.S).group(1))
+        self.assertEqual(data['display_unit'], 'µs')
+        self.assertEqual([(n['self_ms'], n['total_ms']) for n in data['nodes']], [(0.3, 0.5), (0.2, 0.2)])
 
 
 class TestCliInputRegressions(unittest.TestCase):
@@ -106,8 +114,8 @@ class TestCliInputRegressions(unittest.TestCase):
     def test_cli_microseconds(self):
         result = self.run_cli('--type', 'bargraph', '-', stdin=PLAN)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Self: 300 µs', result.stdout)
-        self.assertIn('Total: 500 µs', result.stdout)
+        self.assertIn('Self: 300.0 µs', result.stdout)
+        self.assertIn('Total: 500.0 µs', result.stdout)
 
 
 class TestCompareRegressions(unittest.TestCase):

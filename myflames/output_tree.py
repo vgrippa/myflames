@@ -38,12 +38,11 @@ def _row_color(self_time, root_total):
 def _attr_escape(s):
     # For double-quoted XML/SVG attributes. Newlines are encoded (not left raw)
     # so a multi-line SQL condition reads back as one line in the tooltip,
-    # matching the treemap/diagram renderers. ' is escaped to stay safe even if
+    # matching the diagram renderer. ' is escaped to stay safe even if
     # an attribute is ever single-quoted.
     if s is None:
         return ""
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            .replace('"', "&quot;").replace("'", "&#39;")
+    return (xml_escape(s).replace("'", "&#39;")
             .replace("\n", "&#10;").replace("\r", ""))
 
 
@@ -62,7 +61,12 @@ def _row_info(node, root_total, unit_display):
     if abs(total_t - self_t) > 0.001:
         parts.append(f"Total: {_format_time(total_t)}")
     rows = node.get("rows")
-    if rows is not None:
+    if details.get("actual_rows") is None:
+        # No row counter: "not measured", never 0; a MySQL operator that
+        # never ran (null rows and loops): "not executed" (charts/tree.ts).
+        parts.append("Rows: not executed" if details.get("actual_loops") is None
+                     else "Rows: not measured")
+    elif rows is not None:
         parts.append(f"Rows: {float(rows):.0f}")
     loops = node.get("loops")
     if loops and loops > 1:
@@ -153,7 +157,7 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         "  text { font-family: Arial, sans-serif; font-size: 11px; }",
         "  .title { font-size: 16px; font-weight: bold; }",
         "  .subtitle { font-size: 11px; fill: #666; }",
-        "  .col-hdr { font-size: 10px; fill: #888; font-weight: bold; }",
+        "  .col-hdr { font-size: 12px; fill: #666; font-weight: 600; }",
         "  .row-label { font-size: 11px; fill: #222; }",
         "  .row-label.warn { fill: #b71c1c; }",
         "  .toggle { font-size: 13px; fill: #333; cursor: pointer; }",
@@ -168,7 +172,7 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         " -webkit-user-select: text; cursor: text; }",
         "  #search-btn { font-size: 11px; fill: #666; cursor: pointer; }",
         "  #search-btn:hover { fill: #0d47a1; }",
-        "  .ctrl-link { font-size: 10px; fill: #1565c0; cursor: pointer; }",
+        "  .ctrl-link { font-size: 12px; fill: #1565c0; cursor: pointer; }",
         "  .ctrl-link:hover { fill: #0d47a1; }",
         "</style>",
         '<rect width="100%" height="100%" fill="#fafafa"/>',
@@ -176,13 +180,13 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         f'<text x="{LEFT}" y="44" text-anchor="start" class="subtitle">'
         f'Execution tree  \u00b7  Total: {_format_time(root_total)}'
         f'  \u00b7  Click row to pin  \u00b7  Ctrl+F to search</text>',
-        f'<text id="expand-all" class="ctrl-link" x="{width - 100}" y="44" text-anchor="start">Expand All</text>',
-        f'<text id="collapse-all" class="ctrl-link" x="{width - LEFT}" y="44" text-anchor="end">Collapse All</text>',
+        f'<text id="expand-all" class="ctrl-link" x="{width - LEFT - 80}" y="44" text-anchor="end">Expand all</text>',
+        f'<text id="collapse-all" class="ctrl-link" x="{width - LEFT}" y="44" text-anchor="end">Collapse all</text>',
         f'<line x1="{LEFT}" y1="52" x2="{width - LEFT}" y2="52" stroke="#ddd" stroke-width="1"/>',
-        f'<text x="{self_col_x + SELF_W - 4}" y="65" text-anchor="end" class="col-hdr">SELF</text>',
-        f'<text x="{total_col_x + TOTAL_W - 4}" y="65" text-anchor="end" class="col-hdr">TOTAL</text>',
+        f'<text x="{self_col_x + SELF_W - 4}" y="65" text-anchor="end" class="col-hdr">Self</text>',
+        f'<text x="{total_col_x + TOTAL_W - 4}" y="65" text-anchor="end" class="col-hdr">Total</text>',
         f'<text x="{pct_col_x + PCT_W - 4}" y="65" text-anchor="end" class="col-hdr">%</text>',
-        f'<text x="{BAR_X}" y="65" text-anchor="start" class="col-hdr">SELF TIME BAR</text>',
+        f'<text x="{BAR_X}" y="65" text-anchor="start" class="col-hdr">Self time bar</text>',
         f'<text id="search-btn" x="{width - LEFT}" y="65" text-anchor="end">Search</text>',
         f'<line x1="{LEFT}" y1="68" x2="{width - LEFT}" y2="68" stroke="#ddd" stroke-width="1"/>',
     ]

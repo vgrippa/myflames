@@ -1,0 +1,821 @@
+{
+ "schema_version": "schema-1.0",
+ "engine": "mariadb",
+ "server_version": "13.0.2-MariaDB-ubu2604",
+ "taken_at": "2026-10-14T16:44:33.004660+00:00",
+ "uptime_s": 2273,
+ "performance_schema": false,
+ "scope": {
+  "schemas": [
+   "mftab",
+   "mfother"
+  ],
+  "all_user_schemas": false,
+  "excluded": []
+ },
+ "statistics": {
+  "fresh_requested": false,
+  "fresh": true,
+  "cache_expiry_s": null,
+  "cached": false
+ },
+ "tablespaces_known": true,
+ "tablespace_collection": {
+  "show_create_limit": 50,
+  "deadline_s": 30.0,
+  "unresolved": 0
+ },
+ "summary": {
+  "tables": 17,
+  "innodb": 16,
+  "other_engines": 1,
+  "no_usable_key": 12,
+  "not_null_unique": 2,
+  "gipk": 0,
+  "free_problem": 0,
+  "free_watch": 0,
+  "free_info": 1,
+  "shared": 2,
+  "unknown_tablespace": 0,
+  "engines": [
+   {
+    "engine": "InnoDB",
+    "tables": 16,
+    "bytes": 86523904
+   },
+   {
+    "engine": "MyISAM",
+    "tables": 1,
+    "bytes": 1024
+   }
+  ],
+  "status": "problem"
+ },
+ "thresholds": {},
+ "rules": {
+  "no_usable_key": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
+  "not_null_unique": "watch: no PRIMARY KEY, but a UNIQUE key on NOT NULL columns stands in for it",
+  "free": "Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report."
+ },
+ "why": [
+  {
+   "key": "replication",
+   "title": "Replicas find each changed row by its key",
+   "text": "With row-based replication each UPDATE or DELETE reaches the replica as the changed rows, and the replica has to find each one. With a primary key or a unique key on NOT NULL columns that is one index lookup. Without one, MariaDB uses the most selective other index if there is one, or else reads the table from the start until it finds the row, for every changed row: deleting 10,000 rows can mean 10,000 table scans, and the replica falls behind."
+  },
+  {
+   "key": "clustering",
+   "title": "InnoDB stores rows in primary key order",
+   "text": "InnoDB keeps each table as a B-tree ordered by the primary key, and every secondary index stores the primary key to reach the row. Without a primary key it uses the first unique key on NOT NULL columns (whole columns, not a prefix, a generated column or a long hash key). Without one it adds a hidden 6-byte row ID."
+  },
+  {
+   "key": "row_id",
+   "title": "The hidden row ID",
+   "text": "Queries and tools cannot see or use the hidden row ID to find, page through or deduplicate rows. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded."
+  },
+  {
+   "key": "clusters",
+   "title": "Galera needs a primary key",
+   "text": "Galera certifies each change by its key. For a table without a primary key it hashes the whole row instead (wsrep_certify_nonPK, on by default). MariaDB's documentation asks for a primary key on every table in a Galera cluster, and wsrep_mode=REQUIRED_PRIMARY_KEY (10.6 and later) refuses to create tables without one."
+  },
+  {
+   "key": "tools",
+   "title": "Online schema change tools need a key",
+   "text": "pt-online-schema-change and gh-ost copy rows in chunks by a primary or unique key; per their documentation they refuse a table without one, so the server's own online ALTER is the only online option left."
+  }
+ ],
+ "missing_primary_keys": [
+  {
+   "schema": "mftab",
+   "table": "long_uk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 32768,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [
+    {
+     "index": "uk_t",
+     "columns": "t",
+     "usable": false,
+     "why_not": "a hash (long) unique key"
+    }
+   ],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Unique keys that cannot stand in: uk_t (t): a hash (long) unique key. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mftab`.`long_uk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mftab`.`long_uk` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`long_uk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "mixed_uk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 32768,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [
+    {
+     "index": "uk_ab",
+     "columns": "a, b",
+     "usable": false,
+     "why_not": "b allows NULL"
+    }
+   ],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Unique keys that cannot stand in: uk_ab (a, b): b allows NULL. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Must return 0 (rows with NULL in b)",
+     "sql": "SELECT COUNT(*) FROM `mftab`.`mixed_uk` WHERE `b` IS NULL;"
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Make uk_ab the primary key (its columns become NOT NULL)",
+     "sql": "ALTER TABLE `mftab`.`mixed_uk` ADD PRIMARY KEY (`a`, `b`), DROP INDEX `uk_ab`, ALGORITHM=INPLACE, LOCK=NONE;"
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`mixed_uk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "no_key",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 32768,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mftab`.`no_key` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mftab`.`no_key` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`no_key` ADD COLUMN `row_id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "nullable_uk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 32768,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [
+    {
+     "index": "uk_a",
+     "columns": "a",
+     "usable": false,
+     "why_not": "a allows NULL"
+    }
+   ],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Unique keys that cannot stand in: uk_a (a): a allows NULL. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Must return 0 (rows with NULL in a)",
+     "sql": "SELECT COUNT(*) FROM `mftab`.`nullable_uk` WHERE `a` IS NULL;"
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Make uk_a the primary key (its columns become NOT NULL)",
+     "sql": "ALTER TABLE `mftab`.`nullable_uk` ADD PRIMARY KEY (`a`), DROP INDEX `uk_a`, ALGORITHM=INPLACE, LOCK=NONE;"
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`nullable_uk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "part_nopk",
+   "engine": "InnoDB",
+   "rows": 2,
+   "size_bytes": 32768,
+   "partitioned": true,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mftab`.`part_nopk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mftab`.`part_nopk` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`part_nopk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first. This table is partitioned: every unique key, the primary key included, must contain all columns of the partitioning function."
+  },
+  {
+   "schema": "mftab",
+   "table": "prefix_uk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 32768,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [
+    {
+     "index": "uk_s10",
+     "columns": "s(10)",
+     "usable": false,
+     "why_not": "a prefix of s (10)"
+    }
+   ],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Unique keys that cannot stand in: uk_s10 (s(10)): a prefix of s (10). Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mftab`.`prefix_uk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mftab`.`prefix_uk` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`prefix_uk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "sg_uk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 32768,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [
+    {
+     "index": "uk_b",
+     "columns": "b",
+     "usable": false,
+     "why_not": "b allows NULL"
+    }
+   ],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Unique keys that cannot stand in: uk_b (b): b allows NULL. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Must return 0 (rows with NULL in b)",
+     "sql": "SELECT COUNT(*) FROM `mftab`.`sg_uk` WHERE `b` IS NULL;"
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Make uk_b the primary key (its columns become NOT NULL)",
+     "sql": "ALTER TABLE `mftab`.`sg_uk` ADD PRIMARY KEY (`b`), DROP INDEX `uk_b`, ALGORITHM=INPLACE, LOCK=NONE;"
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`sg_uk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mfother",
+   "table": "other_nopk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 16384,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mfother`.`other_nopk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mfother`.`other_nopk` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mfother`.`other_nopk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "odd$name",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 16384,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mftab`.`odd$name` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mftab`.`odd$name` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`odd$name` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "sys_nopk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 16384,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mftab`.`sys_nopk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mftab`.`sys_nopk` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`sys_nopk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "versioned_nopk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 16384,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. MariaDB 11.0 and later keep this counter per table, so tables do not contend for it; it is rebuilt from the largest row ID when the table is loaded. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mftab`.`versioned_nopk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mftab`.`versioned_nopk` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`versioned_nopk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "myisam_nopk",
+   "engine": "MyISAM",
+   "rows": 0,
+   "size_bytes": 1024,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": null,
+   "why": "MyISAM has no primary key and no unique key on NOT NULL columns. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `mftab`.`myisam_nopk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `mftab`.`myisam_nopk` ADD PRIMARY KEY (col1, col2);",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `mftab`.`myisam_nopk` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. MyISAM cannot change the table in place, so the table is copied. Writes continue during the copy and are applied at the end, except when the ALTER adds an AUTO_INCREMENT column; then writes wait for the whole copy. The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "two_uk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 49152,
+   "partitioned": false,
+   "kind": "not_null_unique",
+   "status": "watch",
+   "unique_keys": [
+    {
+     "index": "uk_b",
+     "columns": "b",
+     "usable": true,
+     "why_not": null
+    },
+    {
+     "index": "uk_a",
+     "columns": "a",
+     "usable": true,
+     "why_not": null
+    },
+    {
+     "index": "uk_c",
+     "columns": "c",
+     "usable": false,
+     "why_not": "c allows NULL"
+    }
+   ],
+   "clustered_on": "uk_b",
+   "why": "InnoDB clusters the rows on uk_b (b), in key order the first unique key on NOT NULL columns, which acts as the primary key. Replicas and tools that need a unique key can use it, but some checks look for a PRIMARY KEY only. Declaring it as the primary key makes that explicit.",
+   "checks": [],
+   "fixes": [
+    {
+     "label": "Declare uk_b as the primary key",
+     "sql": "ALTER TABLE `mftab`.`two_uk` ADD PRIMARY KEY (`b`), DROP INDEX `uk_b`, ALGORITHM=INPLACE, LOCK=NONE;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  },
+  {
+   "schema": "mftab",
+   "table": "notnull_uk",
+   "engine": "InnoDB",
+   "rows": 0,
+   "size_bytes": 16384,
+   "partitioned": false,
+   "kind": "not_null_unique",
+   "status": "watch",
+   "unique_keys": [
+    {
+     "index": "uk_a",
+     "columns": "a",
+     "usable": true,
+     "why_not": null
+    }
+   ],
+   "clustered_on": "uk_a",
+   "why": "InnoDB clusters the rows on uk_a (a), the first unique key on NOT NULL columns, which acts as the primary key. Replicas and tools that need a unique key can use it, but some checks look for a PRIMARY KEY only. Declaring it as the primary key makes that explicit.",
+   "checks": [],
+   "fixes": [
+    {
+     "label": "Declare uk_a as the primary key",
+     "sql": "ALTER TABLE `mftab`.`notnull_uk` ADD PRIMARY KEY (`a`), DROP INDEX `uk_a`, ALGORITHM=INPLACE, LOCK=NONE;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+  }
+ ],
+ "generated_primary_keys": [],
+ "fragmentation": [
+  {
+   "schema": "mftab",
+   "table": "frag_fpt",
+   "rows": 37125,
+   "data_bytes": 43073536,
+   "index_bytes": 0,
+   "free_bytes": 288358400,
+   "free_pct": 87,
+   "partitioned": false,
+   "tablespace": "file_per_table",
+   "tablespace_name": null,
+   "status": "info",
+   "why": "275.0 MiB reusable space, about 87% of reported data, index and free bytes. Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report.",
+   "fix_sql": "OPTIMIZE TABLE `mftab`.`frag_fpt`;",
+   "online_sql": "ALTER TABLE `mftab`.`frag_fpt` FORCE, ALGORITHM=INPLACE, LOCK=NONE;",
+   "caveat": "Optional maintenance; review and confirm before executing. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with exclusive metadata locks at the start and the end; those wait for transactions that use the table, and queries on it queue behind them. With a FULLTEXT or SPATIAL index, or an index on a virtual column, the rebuild blocks writes. It writes a new copy of the table, so it needs free disk space for one, plus temporary sort files in innodb_tmpdir and an online log of up to innodb_online_alter_log_max_size (128 MiB by default) for the writes made meanwhile. It is written to the binary log, so replicas rebuild too; OPTIMIZE NO_WRITE_TO_BINLOG TABLE keeps it on this server. If the table will grow back, the free space would be reused anyway and a rebuild gains little."
+  },
+  {
+   "schema": "mfother",
+   "table": "other_nopk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 0,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "long_uk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 16384,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "mixed_uk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 16384,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "no_key",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 16384,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "notnull_uk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 0,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "nullable_uk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 16384,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "odd$name",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 0,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "part_nopk",
+   "rows": 2,
+   "data_bytes": 32768,
+   "index_bytes": 0,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": true,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "prefix_uk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 16384,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "sg_uk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 16384,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "two_uk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 32768,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "versioned_nopk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 0,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "with_pk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 0,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "mftab",
+   "table": "frag_sys",
+   "rows": 37125,
+   "data_bytes": 43073536,
+   "index_bytes": 0,
+   "free_bytes": 293601280,
+   "free_pct": 87.2,
+   "partitioned": false,
+   "tablespace": "system",
+   "tablespace_name": "innodb_system",
+   "status": "shared",
+   "why": "In the system tablespace innodb_system: DATA_FREE is that whole tablespace's free space, not this table's."
+  },
+  {
+   "schema": "mftab",
+   "table": "sys_nopk",
+   "rows": 0,
+   "data_bytes": 16384,
+   "index_bytes": 0,
+   "free_bytes": 293601280,
+   "free_pct": 100,
+   "partitioned": false,
+   "tablespace": "system",
+   "tablespace_name": "innodb_system",
+   "status": "shared",
+   "why": "In the system tablespace innodb_system: DATA_FREE is that whole tablespace's free space, not this table's."
+  }
+ ],
+ "shared_tablespaces": [
+  {
+   "name": "innodb_system",
+   "type": "system",
+   "free_bytes": 293601280,
+   "tables": [
+    "mftab.frag_sys",
+    "mftab.sys_nopk"
+   ],
+   "why": "Up to 280.0 MiB free in the system tablespace innodb_system, which holds 2 tables in scope. DATA_FREE shows that tablespace's free space for each table in it, so it is not per table. With innodb_file_per_table=ON (the default), rebuilding a table moves it into its own file; the pages it leaves are reused inside the system tablespace, which shrinks only when innodb_data_file_path has :autoshrink (MariaDB 11.2 and later)."
+  }
+ ],
+ "more": {
+  "missing_primary_keys": 0,
+  "generated_primary_keys": 0,
+  "fragmentation": 0
+ },
+ "notes": [
+  "TABLE_ROWS, DATA_LENGTH and INDEX_LENGTH are InnoDB estimates from its table statistics, recalculated in the background after about 10% of the rows change (persistent statistics, the default) or by ANALYZE TABLE. DATA_FREE is read from the tablespace every time. It counts whole free extents and the unused space at the end of the file (an extent is 1 MiB with 4 to 16 KiB pages, 2 MiB with 32 KiB, 4 MiB with 64 KiB), minus a reserve of 2 extents plus about 1%; free pages in partly used extents and half-empty pages after scattered deletes are not in it, so it understates.",
+  "1 table is not InnoDB: listed under missing primary keys when they lack one, never under free space (DATA_FREE means something else for other engines)."
+ ]
+}

@@ -1,0 +1,109 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "4829.49"
+    },
+    "grouping_operation": {
+      "using_temporary_table": true,
+      "using_filesort": false,
+      "nested_loop": [
+        {
+          "table": {
+            "table_name": "d",
+            "access_type": "ALL",
+            "rows_examined_per_scan": 3,
+            "rows_produced_per_join": 3,
+            "filtered": "100.00",
+            "cost_info": {
+              "read_cost": "2.54",
+              "eval_cost": "0.30",
+              "prefix_cost": "2.84",
+              "data_read_per_join": "48"
+            },
+            "used_columns": [
+              "n"
+            ],
+            "materialized_from_subquery": {
+              "using_temporary_table": true,
+              "dependent": false,
+              "cacheable": true,
+              "query_block": {
+                "union_result": {
+                  "using_temporary_table": false,
+                  "query_specifications": [
+                    {
+                      "dependent": false,
+                      "cacheable": true,
+                      "query_block": {
+                        "select_id": 2,
+                        "message": "No tables used"
+                      }
+                    },
+                    {
+                      "dependent": false,
+                      "cacheable": true,
+                      "query_block": {
+                        "select_id": 3,
+                        "recursive": true,
+                        "cost_info": {
+                          "query_cost": "2.72"
+                        },
+                        "table": {
+                          "table_name": "d",
+                          "access_type": "ALL",
+                          "rows_examined_per_scan": 2,
+                          "rows_produced_per_join": 1,
+                          "filtered": "50.00",
+                          "cost_info": {
+                            "read_cost": "2.62",
+                            "eval_cost": "0.10",
+                            "prefix_cost": "2.73",
+                            "data_read_per_join": "16"
+                          },
+                          "used_columns": [
+                            "n"
+                          ],
+                          "attached_condition": "(`d`.`n` < 31)"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "table": {
+            "table_name": "r",
+            "access_type": "index",
+            "key": "rental_date",
+            "used_key_parts": [
+              "rental_date",
+              "inventory_id",
+              "customer_id"
+            ],
+            "key_length": "10",
+            "rows_examined_per_scan": 16008,
+            "rows_produced_per_join": 48024,
+            "filtered": "100.00",
+            "using_index": true,
+            "using_join_buffer": "hash join",
+            "cost_info": {
+              "read_cost": "24.25",
+              "eval_cost": "4802.40",
+              "prefix_cost": "4829.49",
+              "data_read_per_join": "1M"
+            },
+            "used_columns": [
+              "rental_id",
+              "rental_date"
+            ],
+            "attached_condition": "<if>(is_not_null_compl(r), (dayofmonth(`sakila`.`r`.`rental_date`) = `d`.`n`), true)"
+          }
+        }
+      ]
+    }
+  }
+}

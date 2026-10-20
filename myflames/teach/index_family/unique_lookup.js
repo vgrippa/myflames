@@ -98,7 +98,7 @@ function buildTrees(height, traversals) {
     markerWidth: "5", markerHeight: "5",
     orient: "auto"
   });
-  treeArrow.appendChild(anim.svgEl("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "#d1d5db"}));
+  treeArrow.appendChild(anim.svgEl("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--svg-node-stroke)"}));
   globalDefs.appendChild(treeArrow);
   var treeArrowHi = anim.svgEl("marker", {
     id: "uqTreeArrowHi", viewBox: "0 0 10 10",
@@ -106,7 +106,7 @@ function buildTrees(height, traversals) {
     markerWidth: "5", markerHeight: "5",
     orient: "auto"
   });
-  treeArrowHi.appendChild(anim.svgEl("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "#f97316"}));
+  treeArrowHi.appendChild(anim.svgEl("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--svg-token)"}));
   globalDefs.appendChild(treeArrowHi);
   svg.appendChild(globalDefs);
 
@@ -119,7 +119,7 @@ function buildTrees(height, traversals) {
 
     var heading = anim.svgEl("text", {
       x: ox + treeWidth/2, y: 32, "text-anchor": "middle",
-      "font-size": 13, "font-weight": 700, fill: "#1f2937"
+      "font-size": 13, "font-weight": 700, fill: "var(--svg-ink)"
     });
     heading.textContent = treeNames[t];
     svg.appendChild(heading);
@@ -156,7 +156,7 @@ function buildTrees(height, traversals) {
           var line = anim.svgEl("line", {
             x1: parentNode.cx, y1: parentNode.cy + NODE_H / 2,
             x2: childNode.cx,  y2: childNode.cy - NODE_H / 2,
-            stroke: edgeOnPath ? "#d1d5db" : "#e5e7eb",
+            stroke: edgeOnPath ? "var(--svg-node-stroke)" : "var(--svg-node-muted)",
             "stroke-width": edgeOnPath ? 1.5 : 0.8,
             "marker-end": edgeOnPath ? "url(#uqTreeArrow)" : ""
           });
@@ -173,18 +173,18 @@ function buildTrees(height, traversals) {
         var nd = treeNodes[lv3][n3];
         var rect = anim.svgEl("rect", {
           x: nd.x, y: nd.y, width: NODE_W, height: NODE_H, rx: 4, ry: 4,
-          fill: "#f3f4f6", stroke: "#9ca3af", "stroke-width": 1
+          fill: "var(--svg-node-bg)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
         });
         svg.appendChild(rect);
         var lvLbl = anim.svgEl("text", {
           x: nd.cx, y: nd.cy - 2, "text-anchor": "middle",
-          "font-size": 9, "font-weight": 600, fill: "#6b7280"
+          "font-size": 9, "font-weight": 600, fill: "var(--svg-ink-muted)"
         });
         lvLbl.textContent = (lv3 === 0) ? "root" : (lv3 === levels - 1 ? "leaf" : "L" + lv3);
         svg.appendChild(lvLbl);
         var dataLbl = anim.svgEl("text", {
           x: nd.cx, y: nd.cy + 10, "text-anchor": "middle",
-          "font-size": 7, "font-weight": 700, fill: "#0f172a", opacity: 0
+          "font-size": 7, "font-weight": 700, fill: "var(--svg-ink)", opacity: 0
         });
         svg.appendChild(dataLbl);
         nd.rect = rect;
@@ -197,7 +197,7 @@ function buildTrees(height, traversals) {
     if (height > 4) {
       var more = anim.svgEl("text", {
         x: ox + treeWidth/2, y: 370, "text-anchor": "middle",
-        "font-size": 11, fill: "#9ca3af", "font-style": "italic"
+        "font-size": 11, fill: "var(--svg-ink-muted)", "font-style": "italic"
       });
       more.textContent = "(" + height + " levels total — showing top 4)";
       svg.appendChild(more);
@@ -226,13 +226,13 @@ function buildTrees(height, traversals) {
         markerWidth: "6", markerHeight: "6",
         orient: "auto"
       });
-      pkMarker.appendChild(anim.svgEl("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "#f97316"}));
+      pkMarker.appendChild(anim.svgEl("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--svg-hop)"}));
       pkArrowDefs.appendChild(pkMarker);
       svg.appendChild(pkArrowDefs);
       var pkLink = anim.svgEl("path", {
         d: pathD,
         fill: "none",
-        stroke: "#f97316",
+        stroke: "var(--svg-hop)",
         "stroke-width": 2,
         "stroke-dasharray": "5 3",
         "marker-end": "url(#uqPkArrow)",
@@ -243,7 +243,7 @@ function buildTrees(height, traversals) {
 
       var pkLabel = anim.svgEl("text", {
         x: cx, y: cy - 4, "text-anchor": "middle",
-        "font-size": 11, "font-weight": 700, fill: "#c2410c",
+        "font-size": 11, "font-weight": 700, fill: "var(--svg-hop)",
         opacity: 0
       });
       pkLabel.textContent = "PK=42 → clustered row";
@@ -266,12 +266,12 @@ function buildTrees(height, traversals) {
     var chipGroup = anim.svgEl("g", {opacity: 0});
     var chipRect = anim.svgEl("rect", {
       x: chipX, y: chipY, width: chipW, height: chipH, rx: 11, ry: 11,
-      fill: "#ecfeff", stroke: "#0e7490", "stroke-width": 1.2
+      fill: "var(--svg-probe-soft)", stroke: "var(--svg-probe)", "stroke-width": 1.2
     });
     chipGroup.appendChild(chipRect);
     var chipText = anim.svgEl("text", {
       x: chipX + chipW / 2, y: chipY + 15, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 700, fill: "#155e75"
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-probe)"
     });
     chipText.textContent = "UNIQUE — at most 1 row";
     chipGroup.appendChild(chipText);
@@ -287,12 +287,12 @@ function buildTrees(height, traversals) {
     var badgeGroup = anim.svgEl("g", {opacity: 0});
     var badgeRect = anim.svgEl("rect", {
       x: badgeX, y: badgeY, width: badgeW, height: badgeH, rx: 8, ry: 8,
-      fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.2
+      fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.2
     });
     badgeGroup.appendChild(badgeRect);
     var badgeText = anim.svgEl("text", {
       x: badgeX + badgeW / 2, y: badgeY + 11, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 700, fill: "#047857"
+      "font-size": 9, "font-weight": 700, fill: "var(--svg-ok)"
     });
     badgeText.textContent = "Index-only ✓";
     badgeGroup.appendChild(badgeText);
@@ -303,7 +303,7 @@ function buildTrees(height, traversals) {
   // ---- Query token (red diamond) ----
   var token = anim.svgEl("polygon", {
     points: "0,-9 9,0 0,9 -9,0",
-    fill: "#ff3d3d", stroke: "#991b1b", "stroke-width": 1.5,
+    fill: "var(--svg-danger)", stroke: "var(--svg-danger)", "stroke-width": 1.5,
     opacity: 0, transform: "translate(0,0)"
   });
   svg.appendChild(token);
@@ -311,7 +311,7 @@ function buildTrees(height, traversals) {
 
   var tokenLabel = anim.svgEl("text", {
     x: 0, y: 16, "text-anchor": "middle",
-    "font-size": 8, "font-weight": 700, fill: "#991b1b",
+    "font-size": 8, "font-weight": 700, fill: "var(--svg-ink)",
     opacity: 0
   });
   tokenLabel.textContent = "looking for id=42";
@@ -324,12 +324,12 @@ function resetTreeColors() {
     for (var lv = 0; lv < treeState.nodes[t].length; lv++) {
       var lvlNodes = treeState.nodes[t][lv];
       for (var n = 0; n < lvlNodes.length; n++) {
-        lvlNodes[n].rect.setAttribute("fill", "#f3f4f6");
-        lvlNodes[n].rect.setAttribute("stroke", "#9ca3af");
+        lvlNodes[n].rect.setAttribute("fill", "var(--svg-node-bg)");
+        lvlNodes[n].rect.setAttribute("stroke", "var(--svg-node-stroke)");
         lvlNodes[n].rect.setAttribute("stroke-width", 1);
         var orig = (lv === 0) ? "root" : (lv === treeState.nodes[t].length - 1 ? "leaf" : "L" + lv);
         lvlNodes[n].label.textContent = orig;
-        lvlNodes[n].label.setAttribute("fill", "#6b7280");
+        lvlNodes[n].label.setAttribute("fill", "var(--svg-ink-muted)");
         lvlNodes[n].label.setAttribute("font-weight", 600);
         if (lvlNodes[n].dataLabel) {
           lvlNodes[n].dataLabel.textContent = "";
@@ -340,7 +340,7 @@ function resetTreeColors() {
     var edges = treeState.edges[t] || [];
     for (var e = 0; e < edges.length; e++) {
       var edge = edges[e];
-      edge.line.setAttribute("stroke", edge.onPath ? "#d1d5db" : "#e5e7eb");
+      edge.line.setAttribute("stroke", edge.onPath ? "var(--svg-node-stroke)" : "var(--svg-node-muted)");
       edge.line.setAttribute("stroke-width", edge.onPath ? 1.5 : 0.8);
       edge.line.setAttribute("marker-end", edge.onPath ? "url(#uqTreeArrow)" : "");
     }
@@ -360,7 +360,7 @@ function showNodeData(node, dataText) {
   if (!node || !node.dataLabel) return;
   node.dataLabel.textContent = dataText;
   node.dataLabel.setAttribute("opacity", 1);
-  node.label.setAttribute("fill", "#0f172a");
+  node.label.setAttribute("fill", "var(--svg-ink)");
   node.label.setAttribute("font-weight", 700);
 }
 
@@ -433,8 +433,8 @@ function buildDescentTimeline() {
             tokenLabel.setAttribute("y", p.y + 16);
           },
           onComplete: function() {
-            activeNode.rect.setAttribute("fill", "#fde725");
-            activeNode.rect.setAttribute("stroke", "#ca8a04");
+            activeNode.rect.setAttribute("fill", "var(--svg-highlight)");
+            activeNode.rect.setAttribute("stroke", "var(--svg-highlight-stroke)");
             anim.pulse(activeNode.rect, 3, 1, 360);
             showNodeData(activeNode, nodeDataLabel);
             if (levelIdx > 0) {
@@ -442,7 +442,7 @@ function buildDescentTimeline() {
               for (var ei = 0; ei < edges.length; ei++) {
                 var ed = edges[ei];
                 if (ed.onPath && ed.from === levelIdx - 1 && ed.to === levelIdx) {
-                  ed.line.setAttribute("stroke", "#f97316");
+                  ed.line.setAttribute("stroke", "var(--svg-token)");
                   ed.line.setAttribute("stroke-width", 2.5);
                   ed.line.setAttribute("marker-end", "url(#uqTreeArrowHi)");
                 }
@@ -530,8 +530,8 @@ function buildDescentTimeline() {
           tokenLabel.setAttribute("y", p.y + 16);
         },
         onComplete: function() {
-          clusLeaf.rect.setAttribute("fill", "#fde725");
-          clusLeaf.rect.setAttribute("stroke", "#ca8a04");
+          clusLeaf.rect.setAttribute("fill", "var(--svg-highlight)");
+          clusLeaf.rect.setAttribute("stroke", "var(--svg-highlight-stroke)");
           anim.pulse(clusLeaf.rect, 3, 1, 360);
           showNodeData(clusLeaf, "#42 alice@ex");
         }
@@ -563,13 +563,13 @@ function renderChart(covering, currentRows) {
     xLabel: "Rows in users table", yLabel: "Pages touched",
     curves: [
       { label: "Covering unique lookup: O(log n)",
-        color: "#059669",
+        color: "var(--svg-ok)",
         fn: function(n) { return innodbTreeHeight(n, fanOut); } },
       { label: "Non-covering unique lookup: O(log n + 1)",
-        color: "#2563eb",
+        color: "var(--svg-token)",
         fn: function(n) { return innodbTreeHeight(n, fanOut) + 1; } },
       { label: "Full table scan: O(n)",
-        color: "#dc2626",
+        color: "var(--svg-danger)",
         fn: function(n) { return Math.max(1, n / fanOut); } }
     ],
     current: { x: currentRows },

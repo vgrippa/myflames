@@ -54,6 +54,12 @@ def _time(value):
     return "%.2f ms" % value
 
 
+def _edge_chip_width(text):
+    """Width of the chip behind an edge's rows label: 5.6 px per code point
+    at 11 px plus 8 px padding (charts/workbench.ts edgeChipWidth)."""
+    return len(text) * 5.6 + 8
+
+
 def _kind(node):
     """Use explicit metadata first; operation text covers normalized MariaDB."""
     d = node.get("details") or {}
@@ -256,12 +262,12 @@ def render_workbench(root, width=1200, title="MySQL Query Plan", unit_display="m
     lines = [
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xhtml="http://www.w3.org/1999/xhtml" '
         'width="%d" height="%d" viewBox="0 0 %d %d" class="wb-plan" role="group" aria-label="Visual Explain">' % (width, height, width, height),
-        '<title>%s — Visual Explain</title>' % text(title),
-        '<style>.wb-plan{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:#f8fafb;color:#243341}.wb-plan text{fill:#243341;font-size:12px}.wb-plan .wb-heading{font-size:19px;font-weight:650}.wb-plan .wb-caption{fill:#596a79;font-size:11px}.wb-plan .wb-title{font-size:13px;font-weight:650}.wb-plan .wb-node{cursor:pointer;outline:none}.wb-plan .wb-node:hover .wb-box,.wb-plan .wb-node:focus .wb-box,.wb-plan .wb-node.selected .wb-box{stroke:#176aa8;stroke-width:3}.wb-plan .wb-node.dim{opacity:.25}.wb-plan .wb-controls button,.wb-plan .wb-controls input{font:12px system-ui;margin-right:6px;padding:6px 10px;border:1px solid #bbc8d3;border-radius:5px;background:white;color:#243341}.wb-plan .wb-controls button{cursor:pointer;min-width:32px}.wb-plan .wb-controls button:hover:not(:disabled){background:#e8f1fa;border-color:#176aa8}.wb-plan .wb-controls button:active:not(:disabled),.wb-plan .wb-controls button.wb-activated:not(:disabled){background:#176aa8;border-color:#176aa8;color:#fff}.wb-plan .wb-controls button:disabled{opacity:.4;cursor:default}.wb-plan .wb-controls [data-action="reset"]{min-width:64px;font-variant-numeric:tabular-nums}.wb-plan button:focus-visible,.wb-plan input:focus-visible{outline:2px solid #176aa8}.wb-plan .wb-details{user-select:text;font:12px/1.6 system-ui;color:#243341;white-space:pre-wrap;overflow:auto;height:100%;box-sizing:border-box;padding:12px;border:1px solid #d8e0e5;border-radius:6px;background:#fff}.wb-plan .wb-edge-label{font-size:11px;paint-order:stroke;stroke:#f8fafb;stroke-width:4px;stroke-linejoin:round}</style>',
+        '<title>%sVisual Explain</title>' % (text(title) + ': ' if title else ''),
+        '<style>.wb-plan{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:#f8fafb;color:#243341}.wb-plan text{fill:#243341;font-size:12px}.wb-plan .wb-heading{font-size:19px;font-weight:650}.wb-plan .wb-caption{fill:#596a79;font-size:11px}.wb-plan .wb-title{font-size:13px;font-weight:650}.wb-plan .wb-node{cursor:pointer;outline:none}.wb-plan .wb-node:hover .wb-box,.wb-plan .wb-node:focus .wb-box,.wb-plan .wb-node.selected .wb-box{stroke:#176aa8;stroke-width:3}.wb-plan .wb-node.dim{opacity:.25}.wb-plan .wb-controls{display:flex;align-items:center;height:100%}.wb-plan .wb-controls button,.wb-plan .wb-controls input{box-sizing:border-box;height:28px;margin:0;font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#1d1d1f}.wb-plan .wb-controls button{cursor:pointer;min-width:30px;padding:0 10px;border:1px solid #8e8e98;border-left-width:0;border-radius:0;background:#f2f2f4}.wb-plan .wb-controls [data-action="out"]{border-left-width:1px;border-radius:6px 0 0 6px}.wb-plan .wb-controls [data-action="reset"]{min-width:56px;font-variant-numeric:tabular-nums}.wb-plan .wb-controls [data-action="fit"]{border-radius:0 6px 6px 0}.wb-plan .wb-controls button:hover:not(:disabled){background:#e9e9ed}.wb-plan .wb-controls button:active:not(:disabled),.wb-plan .wb-controls button.wb-activated:not(:disabled){background:#fff;color:#176aa8}.wb-plan .wb-controls button:disabled{opacity:.4;cursor:default}.wb-plan .wb-controls input{width:180px;margin-left:8px;padding:0 8px;border:1px solid #8e8e98;border-radius:4px;background:#fff}.wb-plan .wb-search-status{margin-left:8px;font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#5c5c66}.wb-plan button:focus-visible,.wb-plan input:focus-visible{position:relative;z-index:1;outline:2px solid #176aa8}.wb-plan .wb-details{user-select:text;font:12px/1.6 system-ui;color:#243341;white-space:pre-wrap;overflow:auto;height:100%;box-sizing:border-box;padding:12px;border:1px solid #d8e0e5;border-radius:6px;background:#fff}.wb-plan .wb-edge-label{font-size:11px;paint-order:stroke;stroke:var(--surface,#f8fafb);stroke-width:6px;stroke-linejoin:round}.wb-plan .wb-edge-chip{fill:var(--surface,#f8fafb)}</style>',
         '<rect width="100%" height="100%" fill="#f8fafb"/>',
         '<text x="20" y="29" class="wb-heading">%s</text>' % text(title or "Visual Explain"),
         '<text x="20" y="50" class="wb-caption">Data flows downward · Colors identify operators · Arrow width = estimated rows (log scale)</text>',
-        '<foreignObject x="20" y="61" width="%d" height="42"><div xmlns="http://www.w3.org/1999/xhtml" class="wb-controls"><button type="button" data-action="fit">Fit plan</button><button type="button" data-action="in" aria-label="Zoom in">+</button><button type="button" data-action="out" aria-label="Zoom out">−</button><button type="button" data-action="reset" aria-label="Reset zoom to 100%%" title="Reset zoom to 100%%">100%%</button><input type="search" aria-label="Search plan nodes" placeholder="Search plan nodes"/><span class="wb-search-status" aria-live="polite"></span></div></foreignObject>' % (width - 40),
+        '<foreignObject x="20" y="61" width="%d" height="42"><div xmlns="http://www.w3.org/1999/xhtml" class="wb-controls"><button type="button" data-action="out" aria-label="Zoom out">−</button><button type="button" data-action="reset" aria-label="Reset zoom to 100%%" title="Reset zoom to 100%%">100%%</button><button type="button" data-action="in" aria-label="Zoom in">+</button><button type="button" data-action="fit" aria-label="Fit plan">Fit</button><input type="search" aria-label="Search operators" placeholder="Search operators"/><span class="wb-search-status" aria-live="polite"></span></div></foreignObject>' % (width - 40),
     ]
     for i, (label, kind) in enumerate([("Table scan", "table"), ("Index lookup", "lookup"), ("Index range", "range"), ("Index scan", "index"), ("Join", "nested_loop"), ("Hash", "hash"), ("Operation", "operation"), ("Materialize", "materialize")]):
         x = 20 + i * ((width - 40) / 8)
@@ -279,9 +285,16 @@ def render_workbench(root, width=1200, title="MySQL Query Plan", unit_display="m
         bend = sy + V_GAP * .63
         d = "M%.1f %.1f V%.1f H%.1f V%.1f" % (sx, sy, bend, tx, ty - 5)
         child = source["node"]
-        details = child.get("details") or {}
         lines.append('<path class="wb-edge" data-from="%s" data-to="%s" d="%s" fill="none" stroke="#8795a1" stroke-width="%s" marker-end="url(#wb-arrow)"/>' % (attr(child.get("node_id", "")), attr(target["node"].get("node_id", "")), d, _arrow_width(child)))
+    for edge in edges:
+        source = edge["from"]
+        sy = source["y"] + source["height"]
+        child = source["node"]
+        details = child.get("details") or {}
         rows = "Rows/loop: %s actual · %s est." % (_fmt(details.get("actual_rows")), _fmt(details.get("estimated_rows")))
+        # An opaque chip keeps the edge line out of the gaps between words.
+        lines.append('<rect x="%.1f" y="%.1f" width="%.1f" height="16" rx="3" class="wb-edge-chip" fill="#f8fafb"/>'
+                     % (source["x"] + 4, sy + 11, _edge_chip_width(rows)))
         lines.append('<text x="%.1f" y="%.1f" class="wb-edge-label">%s</text>' % (source["x"] + 8, sy + 23, text(rows)))
         if edge["phase"]:
             lines.append('<text x="%.1f" y="%.1f" class="wb-edge-label">%s</text>' % (source["x"] + 8, sy + 41, text(edge["phase"])))
@@ -304,11 +317,12 @@ def render_workbench(root, width=1200, title="MySQL Query Plan", unit_display="m
             heading = JOIN_LABELS[join_type][0] + " · " + algorithm
             lines.append('<text x="128" y="124" text-anchor="middle" class="wb-title">%s</text>' % text(fit_label(heading, BOX_W - 24, 13)))
         else:
-            lines.append('<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="%s"/>' % COLORS[kind])
-            lines.append('<text x="12" y="23" class="wb-title">%s</text>' % text(fit_label(label, BOX_W - 24, 13)))
             secondary = d.get("table_name") or d.get("condition") or d.get("index_name") or d.get("operation") or ""
             if d.get("table_name") and d.get("index_name"):
                 secondary += " · " + d["index_name"]
+            heading = label.split(" [", 1)[0] if (d.get("table_name") and " [" in label and label.endswith("]")) else ("Filter" if (not d.get("table_name") and d.get("condition") and label.startswith("Filter: ")) else label)
+            lines.append('<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="%s"/>' % COLORS[kind])
+            lines.append('<text x="12" y="23" class="wb-title">%s</text>' % text(fit_label(heading, BOX_W - 24, 13)))
             lines.append('<text x="12" y="57">%s</text>' % text(fit_label(str(secondary), BOX_W - 24, 12)))
         measured = _number(d.get("actual_last_row_ms")) is not None
         timing = "Self %s · total %s" % (_time(node.get("self_time") if measured else None), _time(node.get("total_time") if measured else None))

@@ -1,0 +1,125 @@
+{
+ "schema_version": "replication-skip-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "channel": "",
+ "method": "empty_gtid_transaction",
+ "statements": [
+  "SET GTID_NEXT = '7256d98a-c8b1-11f1-be59-aa9276ea306a:13'",
+  "BEGIN",
+  "COMMIT",
+  "SET GTID_NEXT = 'AUTOMATIC'",
+  "START REPLICA SQL_THREAD FOR CHANNEL ''"
+ ],
+ "status": "skipped",
+ "message": "Skipped transaction 7256d98a-c8b1-11f1-be59-aa9276ea306a:13 on channel '' (error 1062: Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '7256d98a-c8b1-11f1-be59-aa9276ea306a:13' at source log binlog.000003, end_log_pos 2256. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.). The applier is running, 0 s behind. The skipped transaction is missing on this replica now; verify the affected tables.",
+ "verified": [
+  "the skip method",
+  "the error number",
+  "the error message",
+  "the error time",
+  "the failing GTID",
+  "the relay log file",
+  "the relay log position",
+  "the applied source log file",
+  "the applied source position",
+  "the source host",
+  "the source port",
+  "the source UUID"
+ ],
+ "target": {
+  "channel": "",
+  "method": "empty_gtid_transaction",
+  "last_sql_errno": 1062,
+  "last_sql_error": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '7256d98a-c8b1-11f1-be59-aa9276ea306a:13' at source log binlog.000003, end_log_pos 2256. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+  "last_sql_error_timestamp": "261015 16:11:00",
+  "gtid": "7256d98a-c8b1-11f1-be59-aa9276ea306a:13",
+  "position": {
+   "relay_log_file": "f8b13f9003b4-relay-bin.000003",
+   "relay_log_pos": 2210,
+   "exec_file": "binlog.000003",
+   "exec_pos": 1999
+  },
+  "source": {
+   "host": "mf-repl-g-src",
+   "port": 3306,
+   "uuid": "7256d98a-c8b1-11f1-be59-aa9276ea306a"
+  }
+ },
+ "plan": {
+  "channel": "",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "available": true,
+  "message": null,
+  "method": "empty_gtid_transaction",
+  "statements": [
+   "SET GTID_NEXT = '7256d98a-c8b1-11f1-be59-aa9276ea306a:13'",
+   "BEGIN",
+   "COMMIT",
+   "SET GTID_NEXT = 'AUTOMATIC'",
+   "START REPLICA SQL_THREAD FOR CHANNEL ''"
+  ],
+  "identity": {
+   "channel": "",
+   "method": "empty_gtid_transaction",
+   "last_sql_errno": 1062,
+   "last_sql_error": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '7256d98a-c8b1-11f1-be59-aa9276ea306a:13' at source log binlog.000003, end_log_pos 2256. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+   "last_sql_error_timestamp": "261015 16:11:00",
+   "gtid": "7256d98a-c8b1-11f1-be59-aa9276ea306a:13",
+   "position": {
+    "relay_log_file": "f8b13f9003b4-relay-bin.000003",
+    "relay_log_pos": 2210,
+    "exec_file": "binlog.000003",
+    "exec_pos": 1999
+   },
+   "source": {
+    "host": "mf-repl-g-src",
+    "port": 3306,
+    "uuid": "7256d98a-c8b1-11f1-be59-aa9276ea306a"
+   }
+  },
+  "skip": {
+   "gtid": "7256d98a-c8b1-11f1-be59-aa9276ea306a:13",
+   "exec_file": "binlog.000003",
+   "exec_pos": 1999,
+   "end_log_pos": 2287,
+   "error_end_log_pos": 2256,
+   "table": "shop.t",
+   "tables": [
+    "shop.t"
+   ],
+   "relay_checked": true
+  },
+  "error": {
+   "errno": 1062,
+   "message": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '7256d98a-c8b1-11f1-be59-aa9276ea306a:13' at source log binlog.000003, end_log_pos 2256. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+   "timestamp": "261015 16:11:00"
+  },
+  "drift_warning": "A skipped transaction is missing on the replica. Rows it touched now differ from the source, and later transactions on those rows may fail or change different data silently.",
+  "after": [
+   "Find the cause: writes run directly on the replica (check read_only and super_read_only), non-deterministic statements, or a replica restored from an inconsistent backup.",
+   "Verify the affected tables with checksums computed on both sides over the same data (CHECKSUM TABLE on a quiet table, or a chunked checksum tool in the style of pt-table-checksum). myflames recommends this and never runs it for you.",
+   "Resync those tables or rebuild the replica (clone or backup restore)."
+  ],
+  "privileges": "SET GTID_NEXT needs SUPER, SYSTEM_VARIABLES_ADMIN, SESSION_VARIABLES_ADMIN or REPLICATION_APPLIER; START REPLICA needs REPLICATION_SLAVE_ADMIN or SUPER.",
+  "notes": [
+   "The empty transaction takes the failing transaction's GTID, so the applier treats it as already applied and continues with the next one."
+  ]
+ },
+ "after": {
+  "present": true,
+  "io_running": "Yes",
+  "sql_running": "Yes",
+  "last_sql_errno": 0,
+  "last_sql_error": null,
+  "lag_s": 0,
+  "status": "ok",
+  "exec_file": "binlog.000003",
+  "exec_pos": 2287,
+  "skip_counter": 0,
+  "failing_gtid": null,
+  "passed": true,
+  "gtid_executed_has_skipped": true
+ }
+}

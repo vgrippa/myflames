@@ -11,12 +11,12 @@ function scanPageName(scanId) {
 }
 
 // Color scheme
-var HOT_COLOR = "#2563eb";   // blue (OLTP hot)
-var SCAN_COLOR = "#f97316";  // orange (scan)
-var EVICT_COLOR = "#fca5a5"; // light red (about to be evicted)
-var MISS_COLOR = "#ef4444";  // red flash (miss in act 3)
-var HIT_COLOR = "#10b981";   // green flash (hit in act 3)
-var EMPTY_COLOR = "#e5e7eb"; // grey (empty slot)
+var HOT_COLOR = "var(--svg-token)";   // blue (OLTP hot)
+var SCAN_COLOR = "var(--svg-build)";  // orange (scan)
+var EVICT_COLOR = "var(--svg-danger)"; // light red (about to be evicted)
+var MISS_COLOR = "var(--svg-danger)";  // red flash (miss in act 3)
+var HIT_COLOR = "var(--svg-ok)";   // green flash (hit in act 3)
+var EMPTY_COLOR = "var(--svg-node-muted)"; // grey (empty slot)
 
 var CELL_W = 38, CELL_H = 18, GAP = 3;
 
@@ -26,7 +26,7 @@ function buildInnoDB(poolSize, oldPct) {
   var youngCap = Math.max(1, Math.floor(poolSize * (100 - oldPct) / 100));
   var oldCap = poolSize - youngCap;
   // Young label
-  var ylbl = anim.svgEl("text", {x: 16, y: 22, "font-size": 11, "font-weight": 700, fill: "#1e40af"});
+  var ylbl = anim.svgEl("text", {x: 16, y: 22, "font-size": 11, "font-weight": 700, fill: "var(--svg-token-ink)"});
   ylbl.textContent = "Young sublist (" + youngCap + " slots) \u2014 your hot OLTP pages live here";
   svg.appendChild(ylbl);
   // Young slots (with text labels)
@@ -39,14 +39,14 @@ function buildInnoDB(poolSize, oldPct) {
     var r = anim.svgEl("rect", {
       x: 16 + col * (CELL_W + GAP), y: 32 + row * (CELL_H + GAP),
       width: CELL_W, height: CELL_H,
-      rx: 3, ry: 3, fill: EMPTY_COLOR, stroke: "#d1d5db", "stroke-width": 1
+      rx: 3, ry: 3, fill: EMPTY_COLOR, stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(r);
     var tLbl = anim.svgEl("text", {
       x: 16 + col * (CELL_W + GAP) + CELL_W / 2,
       y: 32 + row * (CELL_H + GAP) + CELL_H / 2 + 3,
       "text-anchor": "middle",
-      "font-size": 6, "font-weight": 600, fill: "#ffffff"
+      "font-size": 6, "font-weight": 600, fill: "var(--svg-on-solid)"
     });
     svg.appendChild(tLbl);
     youngSlots.push(r);
@@ -57,18 +57,18 @@ function buildInnoDB(poolSize, oldPct) {
   var midY = 32 + youngRows * (CELL_H + GAP) + 6;
   var mid = anim.svgEl("line", {
     x1: 16, y1: midY, x2: 384, y2: midY,
-    stroke: "#dc2626", "stroke-width": 2, "stroke-dasharray": "5 3"
+    stroke: "var(--svg-danger)", "stroke-width": 2, "stroke-dasharray": "5 3"
   });
   svg.appendChild(mid);
   var midLbl = anim.svgEl("text", {
     x: 384, y: midY - 4, "text-anchor": "end",
-    "font-size": 9, fill: "#dc2626", "font-weight": 700
+    "font-size": 9, fill: "var(--svg-danger)", "font-weight": 700
   });
   midLbl.textContent = "\u2190 midpoint: scan pages enter here, never above";
   svg.appendChild(midLbl);
   // Old label
   var oldLabelY = midY + 16;
-  var olbl = anim.svgEl("text", {x: 16, y: oldLabelY, "font-size": 11, "font-weight": 700, fill: "#374151"});
+  var olbl = anim.svgEl("text", {x: 16, y: oldLabelY, "font-size": 11, "font-weight": 700, fill: "var(--svg-ink)"});
   olbl.textContent = "Old sublist (" + oldCap + " slots) \u2014 scan pages live and die here";
   svg.appendChild(olbl);
   // Old slots (with text labels)
@@ -82,25 +82,25 @@ function buildInnoDB(poolSize, oldPct) {
     var r2 = anim.svgEl("rect", {
       x: 16 + ocol * (CELL_W + GAP), y: oldStartY + orow * (CELL_H + GAP),
       width: CELL_W, height: CELL_H,
-      rx: 3, ry: 3, fill: EMPTY_COLOR, stroke: "#d1d5db", "stroke-width": 1
+      rx: 3, ry: 3, fill: EMPTY_COLOR, stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(r2);
     var oLbl = anim.svgEl("text", {
       x: 16 + ocol * (CELL_W + GAP) + CELL_W / 2,
       y: oldStartY + orow * (CELL_H + GAP) + CELL_H / 2 + 3,
       "text-anchor": "middle",
-      "font-size": 6, "font-weight": 600, fill: "#ffffff"
+      "font-size": 6, "font-weight": 600, fill: "var(--svg-on-solid)"
     });
     svg.appendChild(oLbl);
     oldSlots.push(r2);
     oldLabels.push(oLbl);
   }
   // Stats
-  var statsLbl = anim.svgEl("text", {x: 200, y: 220, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: "#374151"});
+  var statsLbl = anim.svgEl("text", {x: 200, y: 220, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: "var(--svg-ink)"});
   svg.appendChild(statsLbl);
-  var verdictLbl = anim.svgEl("text", {x: 200, y: 245, "text-anchor": "middle", "font-size": 13, "font-weight": 700, fill: "#065f46"});
+  var verdictLbl = anim.svgEl("text", {x: 200, y: 245, "text-anchor": "middle", "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"});
   svg.appendChild(verdictLbl);
-  var actLbl = anim.svgEl("text", {x: 200, y: 270, "text-anchor": "middle", "font-size": 14, "font-weight": 700, fill: "#1e40af"});
+  var actLbl = anim.svgEl("text", {x: 200, y: 270, "text-anchor": "middle", "font-size": 14, "font-weight": 700, fill: "var(--svg-token-ink)"});
   svg.appendChild(actLbl);
   return {
     svg: svg, youngSlots: youngSlots, oldSlots: oldSlots,
@@ -114,7 +114,7 @@ function buildInnoDB(poolSize, oldPct) {
 function buildClassic(poolSize) {
   var svg = document.getElementById("svg-classic");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
-  var lbl = anim.svgEl("text", {x: 16, y: 22, "font-size": 11, "font-weight": 700, fill: "#374151"});
+  var lbl = anim.svgEl("text", {x: 16, y: 22, "font-size": 11, "font-weight": 700, fill: "var(--svg-ink)"});
   lbl.textContent = "Single LRU list (" + poolSize + " slots)";
   svg.appendChild(lbl);
   var slots = [];
@@ -126,24 +126,24 @@ function buildClassic(poolSize) {
     var r = anim.svgEl("rect", {
       x: 16 + col * (CELL_W + GAP), y: 32 + row * (CELL_H + GAP),
       width: CELL_W, height: CELL_H,
-      rx: 3, ry: 3, fill: EMPTY_COLOR, stroke: "#d1d5db", "stroke-width": 1
+      rx: 3, ry: 3, fill: EMPTY_COLOR, stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(r);
     var sLbl = anim.svgEl("text", {
       x: 16 + col * (CELL_W + GAP) + CELL_W / 2,
       y: 32 + row * (CELL_H + GAP) + CELL_H / 2 + 3,
       "text-anchor": "middle",
-      "font-size": 6, "font-weight": 600, fill: "#ffffff"
+      "font-size": 6, "font-weight": 600, fill: "var(--svg-on-solid)"
     });
     svg.appendChild(sLbl);
     slots.push(r);
     slotLabels.push(sLbl);
   }
-  var statsLbl = anim.svgEl("text", {x: 200, y: 220, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: "#374151"});
+  var statsLbl = anim.svgEl("text", {x: 200, y: 220, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: "var(--svg-ink)"});
   svg.appendChild(statsLbl);
-  var verdictLbl = anim.svgEl("text", {x: 200, y: 245, "text-anchor": "middle", "font-size": 13, "font-weight": 700, fill: "#991b1b"});
+  var verdictLbl = anim.svgEl("text", {x: 200, y: 245, "text-anchor": "middle", "font-size": 13, "font-weight": 700, fill: "var(--svg-danger)"});
   svg.appendChild(verdictLbl);
-  var actLbl = anim.svgEl("text", {x: 200, y: 270, "text-anchor": "middle", "font-size": 14, "font-weight": 700, fill: "#6b7280"});
+  var actLbl = anim.svgEl("text", {x: 200, y: 270, "text-anchor": "middle", "font-size": 14, "font-weight": 700, fill: "var(--svg-ink-muted)"});
   svg.appendChild(actLbl);
   return {
     svg: svg, slots: slots, slotLabels: slotLabels, list: [], cap: poolSize,
@@ -346,9 +346,9 @@ function buildCurrentTimeline() {
       if (classPanel.list[m].id < HOT_PAGES) classicSurvived++;
     }
     innoPanel.verdictLbl.textContent = innoSurvived + "/8 hot pages survived the scan \u2713";
-    innoPanel.verdictLbl.setAttribute("fill", "#065f46");
+    innoPanel.verdictLbl.setAttribute("fill", "var(--svg-ok)");
     classPanel.verdictLbl.textContent = classicSurvived + "/8 hot pages survived \u2717";
-    classPanel.verdictLbl.setAttribute("fill", "#991b1b");
+    classPanel.verdictLbl.setAttribute("fill", "var(--svg-danger)");
   });
   // A4: staged fade-in during the act-2 → act-3 pause.
   fadeLabelIn(tl, innoPanel.verdictLbl, 500);
@@ -458,9 +458,9 @@ function buildCurrentTimeline() {
     document.getElementById("out-classic-hits").textContent = act3ClassicHits + "/" + HOT_PAGES;
 
     innoPanel.verdictLbl.textContent = act3InnoHits + "/8 cache hits \u2014 hot set survived! \u2713";
-    innoPanel.verdictLbl.setAttribute("fill", "#065f46");
+    innoPanel.verdictLbl.setAttribute("fill", "var(--svg-ok)");
     classPanel.verdictLbl.textContent = act3ClassicHits + "/8 cache hits \u2014 hot set was wiped \u2717";
-    classPanel.verdictLbl.setAttribute("fill", "#991b1b");
+    classPanel.verdictLbl.setAttribute("fill", "var(--svg-danger)");
 
     var exp = "The scan read " + scanPages + " unique pages. " +
       "InnoDB kept all " + act3InnoHits + " hot pages in the young sublist \u2014 " +

@@ -1,0 +1,185 @@
+{
+ "schema_version": "lifecycle-job-1.0",
+ "id": "e7db44576e1044bf81e01215b085c2d0",
+ "operation": "dump",
+ "state": "done",
+ "progress": 100.0,
+ "detail": null,
+ "events": [
+  {
+   "at": "2026-10-15T18:16:17.506955+00:00",
+   "stream": "stderr",
+   "text": "25% dumped"
+  },
+  {
+   "at": "2026-10-15T18:16:17.506981+00:00",
+   "stream": "stderr",
+   "text": "100% dumped"
+  }
+ ],
+ "result": {
+  "status": "completed",
+  "directory": "/Users/dba/maintenance/backup",
+  "verification": [
+   {
+    "check": "files",
+    "status": "passed",
+    "reason": "Non-empty output and Shell completion marker when applicable."
+   },
+   {
+    "samples": [
+     {
+      "schema": "app",
+      "table": "t",
+      "count": 2
+     }
+    ],
+    "check": "source_sample_stability",
+    "status": "passed",
+    "reason": "Exact counts before/after; concurrent changes may invalidate comparison."
+   },
+   {
+    "check": "dump_rows",
+    "status": "not_checked",
+    "reason": "Restore into an isolated target to compare row counts."
+   }
+  ],
+  "manifest": {
+   "schema_version": "lifecycle-manifest-1.0",
+   "source": {
+    "engine": "mysql",
+    "version": "8.4.3",
+    "variables": {
+     "version": "8.4.3",
+     "version_comment": "mysql",
+     "hostname": "donor",
+     "server_id": "1",
+     "server_uuid": "donor",
+     "port": "3306",
+     "datadir": "/server/data/",
+     "socket": "/server/mysql.sock",
+     "local_infile": "ON",
+     "version_compile_os": "Linux",
+     "version_compile_machine": "x86_64",
+     "character_set_server": "utf8mb4",
+     "character_set_filesystem": "binary",
+     "collation_server": "utf8mb4_0900_ai_ci",
+     "innodb_page_size": "16384",
+     "max_allowed_packet": "4194304",
+     "clone_valid_donor_list": "127.0.0.1:3306",
+     "sql_mode": "STRICT_TRANS_TABLES,NO_ZERO_DATE",
+     "gtid_executed": "a:1-2"
+    },
+    "identity": {
+     "server_uuid": "donor",
+     "server_id": "1",
+     "hostname": "donor",
+     "port": "3306",
+     "version": "8.4.3",
+     "datadir": "/server/data/",
+     "socket": "/server/mysql.sock"
+    }
+   },
+   "scope": {
+    "schemas": [
+     "app"
+    ],
+    "tables": []
+   },
+   "tool": {
+    "available": true,
+    "deprecated": false,
+    "path": "/Users/dba/maintenance/bin/mysqldump",
+    "version": "mysqldump Ver 8.4.3",
+    "version_tuple": [
+     8,
+     4,
+     3
+    ],
+    "engine": "mysql",
+    "name": "mysqldump"
+   },
+   "options": {
+    "consistent": true,
+    "threads": 4,
+    "users": false,
+    "routines": true,
+    "events": true,
+    "triggers": true,
+    "tool_options": [
+     "--single-transaction",
+     "--quick",
+     "--routines",
+     "--events",
+     "--triggers",
+     "--hex-blob",
+     "--add-drop-table",
+     "--set-gtid-purged=OFF",
+     "--databases",
+     "app"
+    ]
+   },
+   "started_at": "2026-10-15T18:16:17.476753+00:00",
+   "finished_at": "2026-10-15T18:16:17.533028+00:00",
+   "files": [
+    {
+     "path": "dump.sql",
+     "size_bytes": 98,
+     "sha256": "c4989a2e1de3f73516916cc8c206484cb9598383a8b188de32bbd0982181d0bf"
+    }
+   ],
+   "samples": [
+    {
+     "schema": "app",
+     "table": "t",
+     "count": 2
+    }
+   ],
+   "object_catalog": [
+    [
+     "app",
+     "t",
+     "BASE TABLE",
+     "InnoDB",
+     "100",
+     "20"
+    ],
+    [
+     "app",
+     "v",
+     "VIEW",
+     null,
+     "0",
+     "0"
+    ]
+   ],
+   "verification": [
+    {
+     "check": "files",
+     "status": "passed",
+     "reason": "Non-empty output and Shell completion marker when applicable."
+    },
+    {
+     "samples": [
+      {
+       "schema": "app",
+       "table": "t",
+       "count": 2
+      }
+     ],
+     "check": "source_sample_stability",
+     "status": "passed",
+     "reason": "Exact counts before/after; concurrent changes may invalidate comparison."
+    },
+    {
+     "check": "dump_rows",
+     "status": "not_checked",
+     "reason": "Restore into an isolated target to compare row counts."
+    }
+   ],
+   "complete": true
+  },
+  "audit_id": "5597458fc25d48d89dbde6a59db4de75"
+ },
+ "error": ""
+}

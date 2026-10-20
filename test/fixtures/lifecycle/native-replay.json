@@ -1,0 +1,10 @@
+{
+  "provenance": "Hand-authored MySQL 5.7.44 -> 8.0.40 metadata replay; no 5.7 server was run. Live recordings: native-8.0.46-*.json.",
+  "responses": [
+    {"contains": "SHOW GLOBAL VARIABLES WHERE Variable_name IN (CONVERT(X'71756572795f63616368655f73697a65'", "result": "query_cache_size\t1048576\nquery_cache_type\tOFF\n"},
+    {"contains": "UPPER(SCHEMA_NAME)", "result": "column\tapp\tt\trank\nbase table\tapp\twindow\t\n"},
+    {"contains": "FROM information_schema.PARTITIONS p", "result": "app\tpartitioned\tMyISAM\n"},
+    {"contains": "CHARACTER_SET_NAME IN", "result": "app\tt\tmessage\n"},
+    {"contains": "COLUMN_DEFAULT LIKE", "result": "app\tt\tcreated_at\n"}
+  ]
+}

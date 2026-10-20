@@ -4,15 +4,14 @@ Native charts retain their existing encodings. The metric list is a separate
 linear comparison, so choosing rows never relabels a time-based flame graph.
 """
 import copy
-import html
 import math
-import re
-from pathlib import Path
 
-from .output_html_report import _render_svg
 from .parser import flatten_nodes
 
-VIEWS = ('diagram', 'workbench', 'tree', 'bargraph', 'treemap', 'flamegraph')
+VIEWS = ('diagram', 'workbench', 'tree', 'bargraph', 'flamegraph')
+#: Views drawn by the myflames-charts.js bundle from chart-data-1.0 (all of
+#: them). 'diagram' is an alias of Visual Explain and renders identically.
+BUNDLE_VIEWS = VIEWS
 METRICS = {
     'self_time': ('Self time', 'ms across loops'),
     'total_time': ('Total time', 'ms across loops; includes inputs'),
@@ -79,6 +78,10 @@ def render_exploration(root, view, width=1200, selected_id='', focus_id='',
                        collapsed_ids=None, metric='self_time'):
     """Return standalone HTML with a native chart, metric list, and selection.
 
+    Every view is drawn by the inlined ``myflames-charts.js`` bundle from
+    ``chart-data-1.0``. The plain ``--type X > out.svg`` path keeps using
+    the Python renderers.
+
     Parent messages: ``{type: 'myflames-select', node_id: 'n:...'}``.
     Child messages: ``{type: 'myflames-node', node_id: 'n:...'}``.
     Unknown IDs and messages from windows other than the parent are ignored.
@@ -88,49 +91,33 @@ def render_exploration(root, view, width=1200, selected_id='', focus_id='',
     if not isinstance(metric, str) or metric not in METRICS:
         raise ValueError('Unknown exploration metric.')
     width = max(720, min(3000, int(width)))
-    projected = project_tree(root, focus_id, collapsed_ids)
-    svg = _render_svg(projected, view, width, 'Query plan', 'ms', node_identity=True)
-    svg = re.sub(r'<\?xml[^>]*\?>|<!DOCTYPE[^>]*>', '', svg)
-    if not svg:
-        svg = '<p role="status" style="padding:20px">No positive time is available at this chart’s resolution. Inspect the operator metrics or use Visual Explain.</p>'
-    visible = list(flatten_nodes(projected))
-    values = [metric_value(node, metric) for node in visible]
-    maximum = max([value for value, _ in values if value is not None] or [1]) or 1
-    label, unit = METRICS[metric]
-    rows = []
+    # Validates focus/collapse exactly as before; the bundle projects a copy.
+    project_tree(root, focus_id, collapsed_ids)
+    return _render_bundle_page(root, view, width, selected_id, focus_id, collapsed_ids, metric)
 
-    def append_rows(node, depth=0):
-        value, display = metric_value(node, metric)
-        proportion = 0 if value is None else min(100, value / maximum * 100)
-        name = node.get('short_label') or node.get('full_label') or 'Operator'
-        hidden = node.get('_hidden_descendants', 0)
-        if hidden:
-            name += ' ({} hidden)'.format(hidden)
-        relationship = ' \u00b7 SELECT-list subquery' if (node.get('details') or {}).get('input_kind') == 'select_list' else ''
-        rows.append('<button class="metric-row" data-node-id="{}" style="--depth:{};--amount:{:.4f}%"><span class="metric-name">{}</span><span class="metric-value">{}</span><span class="metric-track"><span></span></span></button>'.format(
-            html.escape(node['node_id'], quote=True), depth, proportion,
-            html.escape(name + relationship), html.escape(display)))
-        for child in node.get('children', []):
-            append_rows(child, depth + 1)
-    append_rows(projected)
-    note = ('Native chart uses its original time or operation encoding. Metric bars compare the visible operators; total times overlap and must not be summed.')
-    if collapsed_ids:
-        note += ' Collapsed descendants are excluded from the chart; displayed measurements are unchanged.'
-    if any((n.get('details') or {}).get('input_kind') == 'select_list' for n in visible):
-        note += ' SELECT-list subqueries are separate execution branches; their timings are not subtracted from the enclosing iterator.'
-    script = Path(__file__).with_name('exploration.js').read_text(encoding='utf-8')
-    template = '''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Query exploration</title><style>
-body{margin:0;background:#fff;color:#1d1d1f;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.chart{overflow:auto}.chart>svg{max-width:100%;height:auto;display:block}.metric-panel{padding:18px 20px;border-top:1px solid #e5e5ea}
-h2{margin:0 0 4px;font-size:14px}p{color:#6e6e73;font-size:12px;line-height:1.5;margin:4px 0 14px}
-.metric-row{--depth:0;display:grid;grid-template-columns:minmax(150px,1fr) 150px 100px;gap:16px;align-items:center;text-align:left;width:100%;border:0;border-radius:7px;background:transparent;padding:9px 10px;cursor:pointer;color:inherit;font:inherit}
-.metric-row:hover{background:#f5f5f7}.metric-name{padding-left:calc(var(--depth)*14px);overflow-wrap:anywhere}.metric-value{font-variant-numeric:tabular-nums;text-align:right;font-size:12px}.metric-track{height:5px;background:#f0f0f3;border-radius:5px}.metric-track>span{display:block;width:var(--amount);height:100%;border-radius:inherit;background:#007aff}
-.metric-row.is-selected{background:#eaf3ff;box-shadow:inset 0 0 0 1px #007aff}.chart [data-node-id]{cursor:pointer}.chart .is-selected{filter:drop-shadow(0 0 3px #007aff)}.chart rect.is-selected,.chart .is-selected>rect,.chart .is-selected>polygon{stroke:#007aff!important;stroke-width:3!important}
-[data-node-id]:focus-visible{outline:2px solid #007aff;outline-offset:2px}
-@media(max-width:640px){.metric-row{grid-template-columns:minmax(100px,1fr) 110px}.metric-track{display:none}}
-</style></head><body data-selected="__SELECTED__"><div class="chart">__SVG__</div><section class="metric-panel" aria-label="Operator metrics"><h2>__LABEL__ <small>· __UNIT__</small></h2><p>__NOTE__</p>__ROWS__</section><script>__SCRIPT__</script></body></html>'''
-    substitutions = {'__SELECTED__': html.escape(str(selected_id), quote=True),
-                     '__SVG__': svg, '__LABEL__': html.escape(label),
-                     '__UNIT__': html.escape(unit), '__NOTE__': html.escape(note),
-                     '__ROWS__': ''.join(rows), '__SCRIPT__': script}
-    return re.sub('|'.join(substitutions), lambda match: substitutions[match.group(0)], template)
+
+_BUNDLE_PAGE = (
+    '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    '<title>Query exploration</title><style>body{margin:0;background:#fff;color:#1d1d1f;'
+    'font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}</style></head>'
+    '<body>__EMBED__</body></html>')
+
+
+def _render_bundle_page(root, view, width, selected_id, focus_id, collapsed_ids, metric):
+    """Exploration page drawn by the inlined bundle.
+
+    The full canonical tree is serialized once; focus/collapse/selection are a
+    copy-only projection the bundle applies, so measurements never change.
+    Everything is inline for the workspace's sandboxed srcdoc iframe.
+    """
+    from .chart_assets import chart_embed
+    from .chart_data import build_chart_data
+    data = build_chart_data(root, title='Query plan', projection={
+        'focus_id': focus_id or '', 'collapsed_ids': list(collapsed_ids or []),
+        'selected_id': selected_id if isinstance(selected_id, str) else str(selected_id),
+        'metric': metric})
+    # 'diagram' is an alias of Visual Explain and renders identically.
+    embed = chart_embed(data, 'workbench' if view == 'diagram' else view,
+                        width=width, panels=('metrics',))
+    return _BUNDLE_PAGE.replace('__EMBED__', embed)

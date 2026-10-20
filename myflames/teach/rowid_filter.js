@@ -43,14 +43,14 @@ function buildStage() {
   var z1y = 10;
   var z1Title = anim.svgEl("text", {
     x: W / 2, y: z1y + 14, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#1d4ed8"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   z1Title.textContent = "Phase 1: Scan idx_status \u2192 build rowid bitmap";
   svg.appendChild(z1Title);
 
   var bitmapBg = anim.svgEl("rect", {
     x: 40, y: z1y + 24, width: W - 80, height: 36, rx: 6, ry: 6,
-    fill: "#eff6ff", stroke: "#3b82f6", "stroke-width": 1.5
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
   });
   svg.appendChild(bitmapBg);
 
@@ -61,12 +61,12 @@ function buildStage() {
     var cx = 50 + i * cellW;
     var cell = anim.svgEl("rect", {
       x: cx, y: z1y + 30, width: cellW - 4, height: 24, rx: 3, ry: 3,
-      fill: "#e5e7eb", stroke: "#d1d5db", "stroke-width": 1
+      fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(cell);
     var bitLbl = anim.svgEl("text", {
       x: cx + (cellW - 4) / 2, y: z1y + 46,
-      "text-anchor": "middle", "font-size": 11, "font-weight": 700, fill: "#9ca3af"
+      "text-anchor": "middle", "font-size": 11, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
     bitLbl.textContent = "?";
     svg.appendChild(bitLbl);
@@ -77,7 +77,7 @@ function buildStage() {
   var z2y = z1y + 80;
   var z2Title = anim.svgEl("text", {
     x: W / 2, y: z2y + 14, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#7c3aed"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"
   });
   z2Title.textContent = "Phase 2: Scan idx_date \u2192 check bitmap per row";
   svg.appendChild(z2Title);
@@ -90,22 +90,22 @@ function buildStage() {
     var ry2 = rowStartY + j * rowH;
     var bg = anim.svgEl("rect", {
       x: 40, y: ry2, width: W - 80, height: rowH - 3, rx: 4, ry: 4,
-      fill: "#fafafa", stroke: "#e5e7eb", "stroke-width": 1
+      fill: "var(--svg-node-bg)", stroke: "var(--svg-edge)", "stroke-width": 1
     });
     svg.appendChild(bg);
     var idLbl = anim.svgEl("text", {
-      x: 52, y: ry2 + 14, "font-size": 10, "font-weight": 600, fill: "#374151"
+      x: 52, y: ry2 + 14, "font-size": 10, "font-weight": 600, fill: "var(--svg-ink)"
     });
     idLbl.textContent = "id=" + r.id + "  date=" + r.date;
     svg.appendChild(idLbl);
     var statusLbl = anim.svgEl("text", {
-      x: 380, y: ry2 + 14, "font-size": 10, "font-weight": 600, fill: "#6b7280"
+      x: 380, y: ry2 + 14, "font-size": 10, "font-weight": 600, fill: "var(--svg-ink-muted)"
     });
     statusLbl.textContent = "status=" + r.status;
     svg.appendChild(statusLbl);
     var icon = anim.svgEl("text", {
       x: W - 60, y: ry2 + 14, "text-anchor": "end",
-      "font-size": 10, "font-weight": 700, fill: "#9ca3af"
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
     icon.textContent = "";
     svg.appendChild(icon);
@@ -116,18 +116,18 @@ function buildStage() {
   var z3y = rowStartY + SAMPLE_ROWS.length * rowH + 12;
   var resultBox = anim.svgEl("rect", {
     x: 40, y: z3y, width: W - 80, height: 48, rx: 6, ry: 6,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5
   });
   svg.appendChild(resultBox);
   var resultLbl = anim.svgEl("text", {
     x: W / 2, y: z3y + 22, "text-anchor": "middle",
-    "font-size": 14, "font-weight": 700, fill: "#047857"
+    "font-size": 14, "font-weight": 700, fill: "var(--svg-ok)"
   });
   resultLbl.textContent = "Rows fetched: 0 | Skipped random reads: 0";
   svg.appendChild(resultLbl);
   var resultSub = anim.svgEl("text", {
     x: W / 2, y: z3y + 40, "text-anchor": "middle",
-    "font-size": 10, fill: "#065f46"
+    "font-size": 10, fill: "var(--svg-ok)"
   });
   resultSub.textContent = "Only rows in the bitmap proceed to full table fetch";
   svg.appendChild(resultSub);
@@ -141,14 +141,14 @@ function buildStage() {
 function resetStage() {
   if (!stage) return;
   for (var i = 0; i < stage.bitmapCells.length; i++) {
-    stage.bitmapCells[i].cell.setAttribute("fill", "#e5e7eb");
-    stage.bitmapCells[i].cell.setAttribute("stroke", "#d1d5db");
+    stage.bitmapCells[i].cell.setAttribute("fill", "var(--svg-node-muted)");
+    stage.bitmapCells[i].cell.setAttribute("stroke", "var(--svg-node-stroke)");
     stage.bitmapCells[i].lbl.textContent = "?";
-    stage.bitmapCells[i].lbl.setAttribute("fill", "#9ca3af");
+    stage.bitmapCells[i].lbl.setAttribute("fill", "var(--svg-ink-muted)");
   }
   for (var j = 0; j < stage.rowEntries.length; j++) {
-    stage.rowEntries[j].bg.setAttribute("fill", "#fafafa");
-    stage.rowEntries[j].bg.setAttribute("stroke", "#e5e7eb");
+    stage.rowEntries[j].bg.setAttribute("fill", "var(--svg-node-bg)");
+    stage.rowEntries[j].bg.setAttribute("stroke", "var(--svg-edge)");
     stage.rowEntries[j].icon.textContent = "";
   }
   stage.resultLbl.textContent = "Rows fetched: 0 | Skipped random reads: 0";
@@ -175,15 +175,15 @@ function buildTimeline() {
       tl.call(function() {
         var bc = stage.bitmapCells[idx];
         if (row.pass) {
-          bc.cell.setAttribute("fill", "#dbeafe");
-          bc.cell.setAttribute("stroke", "#3b82f6");
+          bc.cell.setAttribute("fill", "var(--svg-token-soft)");
+          bc.cell.setAttribute("stroke", "var(--svg-token)");
           bc.lbl.textContent = "1";
-          bc.lbl.setAttribute("fill", "#1d4ed8");
+          bc.lbl.setAttribute("fill", "var(--svg-token)");
         } else {
-          bc.cell.setAttribute("fill", "#fee2e2");
-          bc.cell.setAttribute("stroke", "#f87171");
+          bc.cell.setAttribute("fill", "var(--svg-danger-soft)");
+          bc.cell.setAttribute("stroke", "var(--svg-danger)");
           bc.lbl.textContent = "0";
-          bc.lbl.setAttribute("fill", "#dc2626");
+          bc.lbl.setAttribute("fill", "var(--svg-danger)");
         }
         phase.textContent = "Bitmap: id=" + row.id + " status=" + row.status +
           " \u2192 " + (row.pass ? "1 (in bitmap)" : "0 (not in bitmap)");
@@ -214,8 +214,8 @@ function buildTimeline() {
         var bc = stage.bitmapCells[idx];
         bc.cell.setAttribute("stroke-width", "3");
         var re = stage.rowEntries[idx];
-        re.bg.setAttribute("fill", "#f5f3ff");
-        re.bg.setAttribute("stroke", "#8b5cf6");
+        re.bg.setAttribute("fill", "var(--svg-group-soft)");
+        re.bg.setAttribute("stroke", "var(--svg-group)");
         phase.textContent = "id=" + row.id + " \u2192 bitmap check: " +
           (row.pass ? "bit=1 \u2192 FETCH row" : "bit=0 \u2192 SKIP (no random I/O)");
       });
@@ -226,16 +226,16 @@ function buildTimeline() {
         bc.cell.setAttribute("stroke-width", "1");
         var re = stage.rowEntries[idx];
         if (row.pass) {
-          re.bg.setAttribute("fill", "#dcfce7");
-          re.bg.setAttribute("stroke", "#22c55e");
+          re.bg.setAttribute("fill", "var(--svg-ok-soft)");
+          re.bg.setAttribute("stroke", "var(--svg-ok)");
           re.icon.textContent = "\u2714 fetched";
-          re.icon.setAttribute("fill", "#16a34a");
+          re.icon.setAttribute("fill", "var(--svg-ok)");
           fetched++;
         } else {
-          re.bg.setAttribute("fill", "#fef2f2");
-          re.bg.setAttribute("stroke", "#fca5a5");
+          re.bg.setAttribute("fill", "var(--svg-danger-soft)");
+          re.bg.setAttribute("stroke", "var(--svg-danger-soft)");
           re.icon.textContent = "\u2718 skipped";
-          re.icon.setAttribute("fill", "#dc2626");
+          re.icon.setAttribute("fill", "var(--svg-danger)");
           skipped++;
         }
         stage.resultLbl.textContent = "Rows fetched: " + fetched +
@@ -272,11 +272,11 @@ function renderChart(mainRows) {
     xMin: 100, xMax: 500000,
     xLabel: "Main index rows scanned", yLabel: "Table-row random I/Os",
     curves: [
-      { label: "Without rowid filter (all rows fetched)", color: "#dc2626",
+      { label: "Without rowid filter (all rows fetched)", color: "var(--svg-danger)",
         fn: function(n) { return n; } },
-      { label: "With rowid filter (20% selectivity)", color: "#059669",
+      { label: "With rowid filter (20% selectivity)", color: "var(--svg-ok)",
         fn: function(n) { return Math.max(1, Math.ceil(n * 0.20)); } },
-      { label: "With rowid filter (5% selectivity)", color: "#0284c7",
+      { label: "With rowid filter (5% selectivity)", color: "var(--svg-token)",
         fn: function(n) { return Math.max(1, Math.ceil(n * 0.05)); } }
     ],
     current: { x: mainRows },

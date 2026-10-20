@@ -1,0 +1,231 @@
+/* Server place: Refresh all in the place toolbar, the marks it leaves in the
+   list of views, the statements behind a number (Health, Indexes, the Full
+   analysis inspector), and the Full analysis view. Layout comes from the kit
+   (ViewLayout, GroupedList, Inspector); this file only places the few pieces
+   the kit has no slot for. Tokens only. */
+
+/* The place toolbar gets a third column for Refresh all. */
+.place-toolbar.has-refresh-all {
+  grid-template-columns: var(--source-w) minmax(0, 1fr) auto;
+}
+.refresh-all {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-4) var(--space-1) 0;
+}
+.refresh-all-button,
+.refresh-all-stop {
+  white-space: nowrap;
+}
+.refresh-all-stop .spinner {
+  width: 13px;
+  height: 13px;
+}
+.refresh-all-anchor {
+  min-width: 0;
+}
+.refresh-all-status {
+  max-width: 220px;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.refresh-all-status.has-failures {
+  color: var(--warn-text);
+}
+.refresh-all-list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.refresh-all-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.refresh-all-list .hint {
+  grid-column: 2;
+}
+.refresh-all-view {
+  font-weight: 500;
+}
+/* Narrow: Refresh all sits under the connection picker, left aligned. The
+   media query applies it as the window narrows, before the place measures
+   itself and switches to its compact layout. */
+@media (max-width: 720px) {
+  .place-toolbar.has-refresh-all {
+    display: flex;
+    align-items: flex-start;
+  }
+  .place-toolbar.has-refresh-all .connection-picker {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+.place-toolbar.has-refresh-all {
+  flex-wrap: wrap;
+}
+@media (max-width: 720px) {
+  .place-toolbar.has-refresh-all .refresh-all {
+    order: 3;
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    padding: 0 var(--space-3) var(--space-2);
+  }
+}
+/* The picker shrinks so the ⓘ stays beside it; Refresh all takes the next row. */
+.place-toolbar.is-compact.has-refresh-all .connection-picker {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.place-toolbar.is-compact .refresh-all {
+  order: 3;
+  flex: 1 1 100%;
+  justify-content: flex-start;
+  padding: 0 var(--space-3) var(--space-2);
+}
+
+/* The list of views: reading during Refresh all, or not refreshed by it. */
+.source-item .source-refreshing {
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  border-width: 2px;
+}
+.source-stale {
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--warn-text);
+}
+.source-item .nav-marker + .source-stale,
+.source-item .status-dot + .source-stale,
+.source-item .count-badge + .source-stale {
+  margin-left: 0;
+}
+/* A view Refresh all could not refresh: one line above it. */
+.refresh-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.refresh-note > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warn);
+}
+
+/* Top statements: the table filter chip in the toolbar. */
+.top-table-chip .text-button {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The statements behind a number, in an inspector. */
+.statements-behind {
+  display: grid;
+  gap: var(--space-2);
+}
+.statements-behind .capture-status,
+.statements-behind .error {
+  margin: 0;
+}
+.statements-behind .gate {
+  margin-bottom: 0;
+}
+.statements-behind-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+}
+.statements-behind-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.statements-behind-list > li {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+.statements-behind-sql {
+  display: block;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.statements-behind-meta {
+  font-variant-numeric: tabular-nums;
+}
+.statements-behind-list .top-actions .button-row {
+  gap: var(--space-1);
+}
+
+/* Full analysis. Link labels name tables and can be long: they truncate
+   inside the inspector (full text on hover). */
+.report-panel .inspector-links .button {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Full analysis. */
+.report-export-formats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+.report-export-formats .spinner {
+  width: 12px;
+  height: 12px;
+}
+.report-notes {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+}
+.report-section-findings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.report-scan-table + .report-scan-table {
+  margin-top: var(--space-3);
+}
+.report-scan-table h5 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--leading-sm);
+}
+.report-scan-table h5 code {
+  font-family: var(--font-mono);
+}
+.report-info {
+  margin-top: var(--space-3);
+}

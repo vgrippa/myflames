@@ -1,0 +1,177 @@
+{
+ "variable": {
+  "schema_version": "variable-1.0",
+  "engine": "mariadb",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "name": "performance_schema",
+  "exists": true,
+  "scope": "global",
+  "scope_source": "information_schema.SYSTEM_VARIABLES",
+  "dynamic": false,
+  "type": "boolean",
+  "values": [
+   "OFF",
+   "ON"
+  ],
+  "min": null,
+  "max": null,
+  "block_size": null,
+  "global_value": "OFF",
+  "session_value": null,
+  "default": "OFF",
+  "set_by": "default",
+  "source": "COMPILE-TIME",
+  "source_path": null,
+  "set_time": null,
+  "set_user": null,
+  "set_host": null,
+  "persisted": {
+   "supported": false,
+   "value": null,
+   "present": false,
+   "load": null
+  },
+  "non_persistent": false,
+  "persist_as_read_only": false,
+  "session_read_only": false,
+  "description": "Enable the performance schema.",
+  "notes": [],
+  "modes": {
+   "global": {
+    "available": false,
+    "reason": "performance_schema is read-only while the server runs.",
+    "recommended": false
+   },
+   "persist": {
+    "available": false,
+    "reason": "MariaDB has no SET PERSIST.",
+    "recommended": false
+   },
+   "persist_only": {
+    "available": false,
+    "reason": "MariaDB has no SET PERSIST_ONLY.",
+    "recommended": false
+   },
+   "reset_persist": {
+    "available": false,
+    "reason": "MariaDB has no RESET PERSIST.",
+    "recommended": false
+   },
+   "session": {
+    "available": false,
+    "reason": "performance_schema is read-only while the server runs.",
+    "recommended": false
+   }
+  }
+ },
+ "plan": {
+  "schema_version": "variable-plan-1.0",
+  "engine": "mariadb",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "name": "performance_schema",
+  "mode": "global",
+  "mode_label": "Now only",
+  "requested": "ON",
+  "value": "ON",
+  "display": "ON",
+  "status": "refused",
+  "problems": [
+   {
+    "code": "mode_unavailable",
+    "message": "performance_schema is read-only while the server runs."
+   }
+  ],
+  "statement": null,
+  "config_line": "performance_schema = ON",
+  "before": {
+   "global": "OFF",
+   "session": null,
+   "persisted": null
+  },
+  "undo": [],
+  "effect": null,
+  "caveats": [],
+  "privileges": null,
+  "classification": null,
+  "expect": null,
+  "variable": {
+   "schema_version": "variable-1.0",
+   "engine": "mariadb",
+   "server_version": "11.4.13-MariaDB-ubu2404",
+   "name": "performance_schema",
+   "exists": true,
+   "scope": "global",
+   "scope_source": "information_schema.SYSTEM_VARIABLES",
+   "dynamic": false,
+   "type": "boolean",
+   "values": [
+    "OFF",
+    "ON"
+   ],
+   "min": null,
+   "max": null,
+   "block_size": null,
+   "global_value": "OFF",
+   "session_value": null,
+   "default": "OFF",
+   "set_by": "default",
+   "source": "COMPILE-TIME",
+   "source_path": null,
+   "set_time": null,
+   "set_user": null,
+   "set_host": null,
+   "persisted": {
+    "supported": false,
+    "value": null,
+    "present": false,
+    "load": null
+   },
+   "non_persistent": false,
+   "persist_as_read_only": false,
+   "session_read_only": false,
+   "description": "Enable the performance schema.",
+   "notes": [],
+   "modes": {
+    "global": {
+     "available": false,
+     "reason": "performance_schema is read-only while the server runs.",
+     "recommended": false
+    },
+    "persist": {
+     "available": false,
+     "reason": "MariaDB has no SET PERSIST.",
+     "recommended": false
+    },
+    "persist_only": {
+     "available": false,
+     "reason": "MariaDB has no SET PERSIST_ONLY.",
+     "recommended": false
+    },
+    "reset_persist": {
+     "available": false,
+     "reason": "MariaDB has no RESET PERSIST.",
+     "recommended": false
+    },
+    "session": {
+     "available": false,
+     "reason": "performance_schema is read-only while the server runs.",
+     "recommended": false
+    }
+   }
+  },
+  "alternative": {
+   "mode": null,
+   "config_line": "performance_schema = ON",
+   "text": "Add performance_schema = ON under [mysqld] (or [mariadb]) in an option file and restart the server; myflames never edits option files."
+  },
+  "policy": {
+   "action": "confirm",
+   "tone": "danger",
+   "title": "Production connection",
+   "text": "This is a Production connection, so myflames asks before every write.",
+   "connection_type": "production",
+   "read_only": false
+  }
+ },
+ "change": null
+}

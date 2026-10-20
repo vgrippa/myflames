@@ -1,0 +1,86 @@
+/* Shared tokens only. The table owns horizontal overflow; the inspector
+   remains usable as the shared bottom sheet at narrow widths. */
+.privilege-action[aria-disabled="true"] { color: var(--ink-faint); background: var(--surface-pane); border-color: var(--line); cursor: not-allowed; }
+.privilege-unverified { margin-inline-start: var(--space-1); color: var(--ink-muted); font-size: var(--text-sm); }
+.accounts-view .view-toolbar { flex-wrap: wrap; }
+.account-inspector, .account-form { display: grid; gap: var(--space-3); min-width: 0; }
+.account-inspector .segmented { display: flex; flex-wrap: wrap; }
+.account-inspector .select { max-width: 100%; margin-block-end: var(--space-2); }
+.account-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+/* One quiet note for the group; per-button "Unverified" notes and chips are hidden here. */
+.account-actions-group { display: grid; gap: var(--space-2); }
+.account-actions-group .privilege-unverified,
+.account-actions-group .account-actions .visible-privilege > .privilege-action[data-privilege-state] ~ .privilege-status-note { display: none; }
+.account-actions .visible-privilege { max-width: 220px; }
+.account-note, .account-cell-note { color: var(--ink-muted); font-size: var(--text-sm); line-height: var(--leading-sm); }
+.account-note { margin: var(--space-2) 0; overflow-wrap: anywhere; }
+.account-matrix-scroll { overflow-x: auto; max-width: 100%; margin-block: var(--space-2); }
+.account-matrix { border-collapse: collapse; width: 100%; font-size: var(--text-sm); }
+.account-matrix th, .account-matrix td { border-bottom: 1px solid var(--line); padding: var(--space-2); text-align: left; vertical-align: top; }
+.account-matrix thead th { font-weight: 600; color: var(--ink-muted); }
+.account-matrix tbody th { font-weight: 500; overflow-wrap: anywhere; }
+.account-matrix .checkbox { margin: 0; }
+.account-cell-note { display: block; font-weight: 400; }
+.account-risk { display: inline-block; margin-inline-start: var(--space-1); color: var(--warn-text); font-size: var(--text-sm); }
+.account-matrix .is-pending, .account-role-row.is-pending { background: var(--accent-soft); }
+.account-pending { border-inline-start: var(--space-1) solid var(--accent); padding: var(--space-2); }
+.account-pending ul { margin-block: var(--space-2); padding-inline-start: var(--space-4); }
+.account-pending .button { margin: var(--space-1); }
+.account-role-list { display: grid; }
+.account-role-row { display: grid; gap: var(--space-2); padding: var(--space-3) 0; border-bottom: 1px solid var(--line); }
+.account-form label:not(.checkbox), .account-typed { display: grid; gap: var(--space-1); font-size: var(--text-md); overflow-wrap: anywhere; }
+.account-form input, .account-typed input { min-width: 0; width: 100%; box-sizing: border-box; }
+.account-review pre, .account-result pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.account-review .fields { min-width: 0; }
+/* Same size as the rest of the sheet (the body text was inheriting the dialog's larger default). */
+.account-warnings { margin-block: var(--space-3); font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--warn-text); }
+.account-warnings ul { padding-inline-start: var(--space-4); }
+.account-warning { color: var(--danger-text); }
+.account-result { border: 1px solid var(--line); padding: var(--space-4); margin-block: var(--space-3); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.account-result ul { padding-inline-start: var(--space-4); }
+.account-result code { white-space: pre-wrap; }
+.account-sr { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Keep the description out of the button's name, but readable on keyboard
+   focus for denied, blocked and unknown actions, including review buttons. */
+.privilege-action:focus-visible + .account-sr {
+  /* A floating note at the button's position: it never moves other controls
+     (a layout shift on focus made the next click land on the wrong button). */
+  position: absolute;
+  z-index: 30;
+  width: max-content;
+  height: auto;
+  max-width: 280px;
+  margin-top: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  overflow: visible;
+  clip: auto;
+  clip-path: none;
+  white-space: normal;
+  pointer-events: none;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-popover);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+@media (max-width: 650px) {
+  .account-review, .account-form { min-width: 0; }
+  .accounts-view .view-toolbar .search-field { max-width: 100%; }
+  .account-matrix th, .account-matrix td { padding: var(--space-1); }
+}
+
+.account-checkbox:has(input[aria-disabled="true"]) { color: var(--ink-faint); cursor: not-allowed; }
+.account-checkbox input[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.account-matrix td { overflow-wrap: anywhere; }
+.account-review .account-matrix { table-layout: fixed; }
+
+.account-review-group { border-top: 1px solid var(--line); padding-block: var(--space-3); min-width: 0; }
+.account-review-group h3 { font-size: var(--text-md); margin: 0 0 var(--space-2); overflow-wrap: anywhere; }
+
+.account-scope-form { border-inline-start: 2px solid var(--line-strong); padding-inline-start: var(--space-3); margin-block: var(--space-2); }
+.account-scope-options, .account-scope-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.account-scope-form .select { margin-block-end: 0; }
+.account-privilege-name { font-weight: 500; }
+.account-privilege-description { max-width: 30ch; margin-block-start: var(--space-1); }

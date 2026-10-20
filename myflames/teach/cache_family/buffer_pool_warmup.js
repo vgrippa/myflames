@@ -14,10 +14,10 @@ var QUERY_PAGES = [   // Pages this query reads (and will re-read).
 var DISK_MS = 6.0;
 var RAM_MS  = 0.06;
 
-var COLD_COLOR  = "#fecaca";  // light red — just read from disk
-var WARM_COLOR  = "#bbf7d0";  // light green — pool hit
-var EMPTY_COLOR = "#e5e7eb";  // grey — empty slot
-var DUMP_COLOR  = "#fde68a";  // yellow — being dumped on shutdown
+var COLD_COLOR  = "var(--svg-danger-soft)";  // light red — just read from disk
+var WARM_COLOR  = "var(--svg-ok-soft)";  // light green — pool hit
+var EMPTY_COLOR = "var(--svg-node-muted)";  // grey — empty slot
+var DUMP_COLOR  = "var(--svg-highlight)";  // yellow — being dumped on shutdown
 
 var CELL_W = 56, CELL_H = 22, GAP = 4;
 
@@ -40,13 +40,13 @@ function buildPool(id) {
     var r = anim.svgEl("rect", {
       x: x, y: y, width: CELL_W, height: CELL_H,
       rx: 4, ry: 4, fill: EMPTY_COLOR,
-      stroke: "#d1d5db", "stroke-width": 1
+      stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(r);
     var t = anim.svgEl("text", {
       x: x + CELL_W / 2, y: y + CELL_H / 2 + 3,
       "text-anchor": "middle", "font-size": 9, "font-weight": 600,
-      fill: "#374151"
+      fill: "var(--svg-ink)"
     });
     svg.appendChild(t);
     cells.push(r);
@@ -54,7 +54,7 @@ function buildPool(id) {
   }
   // Title label above the grid.
   var lbl = anim.svgEl("text", {
-    x: 16, y: 28, "font-size": 12, "font-weight": 700, fill: "#1e40af"
+    x: 16, y: 28, "font-size": 12, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
   lbl.textContent = "InnoDB buffer pool (" + POOL_SIZE + " pages shown)";
   svg.appendChild(lbl);

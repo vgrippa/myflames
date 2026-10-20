@@ -1,0 +1,367 @@
+/* Server > Sessions: the breakdown bars; the rest comes from kit.css. */
+.sessions-breakdown {
+  margin: 0 0 var(--space-3);
+}
+.breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-3) var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.breakdown h4 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+.breakdown ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.breakdown li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px 32px;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.breakdown-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.breakdown-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+.breakdown-bar span {
+  display: block;
+  height: 100%;
+  background: var(--ink-faint);
+}
+.breakdown-count {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+.cell-dot {
+  width: 16px;
+}
+.session-waiting {
+  font-weight: 500;
+}
+.session-rules {
+  display: grid;
+  gap: var(--space-1);
+}
+
+/* Locked transactions row highlighting */
+.row-lock-wait {
+  background-color: rgba(220, 38, 38, 0.08) !important;
+}
+.row-lock-wait:hover {
+  background-color: rgba(220, 38, 38, 0.15) !important;
+}
+.row-lock-holding {
+  background-color: rgba(217, 119, 6, 0.08) !important;
+}
+.row-lock-holding:hover {
+  background-color: rgba(217, 119, 6, 0.15) !important;
+}
+
+/* The row menu (⋯ in the trailing column): Show plan and Kill. */
+.session-row-menu-anchor {
+  display: inline-flex;
+}
+.session-row-menu {
+  display: grid;
+  gap: var(--space-1);
+}
+.session-row-menu button {
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-md);
+  text-align: left;
+}
+.session-row-menu button.is-danger {
+  color: var(--danger);
+}
+.session-row-menu button:hover:not(:disabled),
+.session-row-menu button:focus-visible {
+  background: var(--accent-soft);
+}
+.session-row-menu button:disabled {
+  color: var(--ink-faint);
+}
+
+/* Mass Kill Dialog */
+/* Mass Kill Dialog (pt-kill inspired) */
+.mass-kill-dialog {
+  max-width: 920px;
+  width: min(920px, 95vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-dialog);
+  overflow: hidden;
+}
+.mass-kill-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+}
+.mass-kill-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.mass-kill-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.mass-kill-title-wrap h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+.mass-kill-title-wrap h2 > svg {
+  color: var(--danger);
+}
+.mass-kill-subtitle {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.mass-kill-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+.mass-kill-presets {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-xs);
+  flex-wrap: wrap;
+}
+.mass-kill-presets .presets-label {
+  font-weight: 600;
+  color: var(--ink-muted);
+  margin-right: var(--space-1);
+}
+/* The chosen preset is filled like a primary button, hover included, so its
+   white label never sits on the gray hover fill. */
+.mass-kill-presets .button.active {
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  border-color: var(--accent-fill);
+}
+.mass-kill-presets .button.active:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.mass-kill-form {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.mass-kill-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  align-items: end;
+}
+.mass-kill-grid-full {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: var(--space-3);
+  align-items: end;
+}
+.mass-kill-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.mass-kill-field label,
+.mass-kill-field .field-label {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+.mass-kill-field select,
+.mass-kill-field input[type="text"] {
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  background: var(--surface-pane);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  width: 100%;
+}
+.mass-kill-field input[type="text"].cell-sql {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.mass-kill-time-input {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.mass-kill-time-input select {
+  flex: 1;
+}
+.mass-kill-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  color: var(--ink);
+}
+.mass-kill-preview-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+  max-height: 340px;
+  padding: var(--space-3) var(--space-5);
+  background: var(--surface-pane);
+  overflow: hidden;
+}
+.mass-kill-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+.preview-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.preview-selected-pill {
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.mass-kill-preview-table-wrap {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.empty-preview {
+  padding: var(--space-6);
+  text-align: center;
+  color: var(--ink-muted);
+}
+.mass-kill-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.mass-kill-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-muted);
+  text-align: left;
+  padding: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  border-bottom: 1px solid var(--line);
+  z-index: 1;
+}
+.mass-kill-table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.mass-kill-table tr:hover {
+  background: var(--surface-muted);
+}
+.mass-kill-table tr.is-selected {
+  background: rgba(37, 99, 235, 0.06);
+}
+.mass-kill-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.mass-kill-footer-safety {
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.mass-kill-footer-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+/* A short window (the 720x520 minimum has 492 px of content): the dialog
+   scrolls between its title and its actions, which stay in view. */
+@media (max-height: 700px) {
+  .mass-kill-dialog {
+    max-height: calc(100dvh - var(--space-4));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .mass-kill-dialog > * {
+    flex: none;
+  }
+  .mass-kill-header,
+  .mass-kill-footer {
+    position: sticky;
+    z-index: 2;
+  }
+  .mass-kill-header {
+    top: 0;
+  }
+  .mass-kill-footer {
+    bottom: 0;
+  }
+  .mass-kill-preview-section {
+    min-height: 0;
+    max-height: 280px;
+  }
+}

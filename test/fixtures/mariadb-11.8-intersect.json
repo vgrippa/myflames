@@ -1,0 +1,86 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.5707547
+  },
+  "query_block": {
+    "union_result": {
+      "table_name": "<intersect1,2>",
+      "access_type": "ALL",
+      "r_loops": 1,
+      "r_rows": 1,
+      "query_specifications": [
+        {
+          "query_block": {
+            "select_id": 1,
+            "cost": 0.00311277,
+            "r_loops": 1,
+            "r_total_time_ms": 0.019907616,
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "film_actor",
+                  "access_type": "ref",
+                  "possible_keys": ["idx_fk_film_id"],
+                  "key": "idx_fk_film_id",
+                  "key_length": "2",
+                  "used_key_parts": ["film_id"],
+                  "ref": ["const"],
+                  "loops": 1,
+                  "r_loops": 1,
+                  "rows": 10,
+                  "r_rows": 10,
+                  "cost": 0.00311277,
+                  "r_table_time_ms": 0.007444445,
+                  "r_other_time_ms": 0.009577404,
+                  "r_engine_stats": {
+                    "pages_accessed": 4
+                  },
+                  "filtered": 100,
+                  "r_total_filtered": 100,
+                  "r_filtered": 100,
+                  "using_index": true
+                }
+              }
+            ]
+          }
+        },
+        {
+          "query_block": {
+            "select_id": 2,
+            "operation": "INTERSECT",
+            "cost": 0.002379345,
+            "r_loops": 1,
+            "r_total_time_ms": 0.004056804,
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "film_actor",
+                  "access_type": "ref",
+                  "possible_keys": ["idx_fk_film_id"],
+                  "key": "idx_fk_film_id",
+                  "key_length": "2",
+                  "used_key_parts": ["film_id"],
+                  "ref": ["const"],
+                  "loops": 1,
+                  "r_loops": 1,
+                  "rows": 5,
+                  "r_rows": 5,
+                  "cost": 0.002379345,
+                  "r_table_time_ms": 0.00138015,
+                  "r_other_time_ms": 0.002383895,
+                  "r_engine_stats": {
+                    "pages_accessed": 4
+                  },
+                  "filtered": 100,
+                  "r_total_filtered": 100,
+                  "r_filtered": 100,
+                  "using_index": true
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

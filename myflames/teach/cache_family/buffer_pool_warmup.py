@@ -131,7 +131,7 @@ def render():
 
     return _html.render_page(
         lesson_id="buffer_pool_warmup",
-        title="InnoDB buffer pool — the cold-start problem &amp; dump/load cure",
+        title="InnoDB buffer pool: the cold-start problem & dump/load cure",
         subtitle=(
             "Same query, run twice: why the first run hits disk and "
             "the second runs from RAM — plus the restart story."

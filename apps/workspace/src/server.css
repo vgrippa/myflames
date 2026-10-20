@@ -1,0 +1,306 @@
+/* The Server place: a compact place toolbar (title, ⓘ, connection picker),
+   the grouped sub-navigation, and the selected view. Tokens only. */
+.server-place {
+  --source-w: 200px;
+  min-width: 0;
+}
+/* The place toolbar lines up with the panes below: the place title over the
+   list of views, the connection picker over the view. */
+.place-toolbar {
+  display: grid;
+  grid-template-columns: var(--source-w) minmax(0, 1fr);
+  align-items: center;
+  min-height: var(--toolbar-h);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.place-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: stretch;
+  padding: 0 var(--space-2) 0 var(--space-4);
+  background: var(--surface-pane);
+  border-right: 1px solid var(--line);
+}
+.place-title h1 {
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+  font-weight: 600;
+}
+.place-toolbar .connection-picker {
+  min-width: 0;
+  padding: var(--space-1) var(--space-4) var(--space-1) var(--space-5);
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+/* Two flush panes: the list of views (a gray source list) and the view. */
+.server-layout {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--source-w) minmax(0, 1fr);
+  align-items: start;
+  background: linear-gradient(to right, var(--surface-pane) var(--source-w), var(--surface) var(--source-w));
+}
+.server-source-wrap {
+  position: relative;
+}
+/* The wrap spans the whole row, so the list of views can stay pinned under
+   the top bar while a long view scrolls (in a wrap only as tall as the list,
+   sticky had no room and the list scrolled away). */
+.server-layout:not(.is-compact) > .server-source-wrap:not(.is-floating) {
+  align-self: stretch;
+}
+.server-source-wrap > .source-list {
+  position: sticky;
+  top: var(--topbar-height);
+  max-height: calc(100dvh - var(--topbar-height));
+  overflow: auto;
+  padding: var(--space-3) var(--space-2) var(--space-4);
+}
+.server-content {
+  min-width: 0;
+  border-left: 1px solid var(--line);
+}
+
+/* Secondary menu collapsed / floating */
+.server-place.is-nav-collapsed {
+  --source-w: 0px;
+}
+.server-place.is-nav-collapsed .place-toolbar:not(.is-compact) {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.server-place.is-nav-collapsed .place-title {
+  padding-right: var(--space-3);
+}
+.server-place.is-nav-collapsed .server-layout:not(.is-compact) {
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--surface);
+}
+.server-place.is-nav-collapsed .server-layout:not(.is-compact) .server-content {
+  border-left: 0;
+  width: 100%;
+}
+.server-sidebar-toggle {
+  margin-left: var(--space-2);
+  color: var(--ink-muted);
+}
+.server-sidebar-toggle:hover {
+  color: var(--ink);
+}
+.server-source-wrap.is-floating {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-4);
+  z-index: 30;
+  width: 220px;
+  max-height: calc(100dvh - var(--topbar-height) - var(--toolbar-h) - var(--space-6));
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sheet);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  overflow: auto;
+  animation: serverDrawerFadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.server-source-wrap.is-floating > .source-list {
+  position: static;
+  max-height: none;
+  padding: var(--space-2);
+}
+@keyframes serverDrawerFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.server-floating-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--section-size);
+  font-weight: var(--section-weight);
+  color: var(--section-ink);
+}
+.server-floating-trigger-container {
+  display: flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-4) 0;
+}
+.server-floating-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--motion-hover);
+}
+.server-floating-nav-btn:hover,
+.server-floating-nav-btn.active {
+  background: var(--surface-hover);
+  border-color: var(--line-strong);
+  color: var(--accent-text);
+}
+
+/* The Tuning place: its one view, full width, without the list of views
+   (Tuning is a place of its own, never a Server view). */
+.server-place.is-tuning-place .server-layout,
+.server-place.is-tuning-place .server-layout.is-compact {
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--surface);
+}
+.server-place.is-tuning-place .server-content {
+  border-left: 0;
+}
+
+/* Replication and Maintenance stay mounted (hidden) after their first visit,
+   so an operation in flight survives a view switch. */
+.server-keep {
+  display: contents;
+}
+.server-keep[hidden] {
+  display: none;
+}
+/* Narrow: the list of views is a screen of its own; choosing one pushes it. */
+.server-layout.is-compact {
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--surface);
+}
+/* Narrow: the top bar already names the place, so the title is for screen
+   readers only and its ⓘ sits after the connection picker. */
+.place-toolbar.is-compact {
+  display: flex;
+  align-items: flex-start;
+}
+.place-toolbar.is-compact .place-title {
+  order: 2;
+  padding: var(--space-2) var(--space-2) 0 0;
+  background: none;
+  border-right: 0;
+}
+.place-toolbar.is-compact .place-title h1 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.place-toolbar.is-compact .connection-picker {
+  flex: 1 1 auto;
+}
+.place-toolbar.is-compact .connection-picker {
+  padding: var(--space-2) var(--space-3);
+}
+.server-layout.is-compact .server-content {
+  border-left: 0;
+}
+.server-layout.is-compact .server-view {
+  min-height: 0;
+}
+/* The list of views sits in .server-source-wrap: on narrow layouts it is a
+   screen of its own, and a chosen view replaces it (Back returns). */
+.server-layout.is-compact > .server-source-wrap > .source-list {
+  position: static;
+  max-height: none;
+  padding: var(--space-3);
+}
+.server-layout.is-compact:not(.show-list) > .server-source-wrap,
+.server-layout.show-list > .server-content {
+  display: none;
+}
+.source-list.is-pushed .source-group ul {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.source-list.is-pushed .source-group li + li {
+  border-top: 1px solid var(--line);
+}
+.source-list.is-pushed .source-item {
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 0;
+}
+.source-list.is-pushed .source-item[aria-current="page"] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 400;
+}
+.source-list.is-pushed .source-item[aria-current="page"] > svg {
+  color: var(--ink-muted);
+}
+.source-list.is-pushed .source-chevron {
+  display: inline-flex;
+  color: var(--ink-faint);
+}
+.server-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  padding: 0 var(--space-2) 0 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font-size: var(--text-md);
+}
+.server-back:hover {
+  text-decoration: underline;
+}
+@media (max-width: 650px) {
+  /* One column before the layout is measured (the place may open hidden). */
+  .place-toolbar,
+  .server-layout {
+    grid-template-columns: minmax(0, 1fr);
+    background: var(--surface);
+  }
+  .place-title {
+    padding: var(--space-2) var(--space-3) 0;
+    background: none;
+    border-right: 0;
+  }
+  .place-toolbar:not(.is-compact) .place-title h1 {
+    font-size: var(--text-md);
+  }
+  .place-toolbar .connection-picker {
+    padding: var(--space-2) var(--space-3);
+  }
+  .server-layout > .server-source-wrap > .source-list {
+    position: static;
+    max-height: none;
+  }
+  .server-content {
+    border-left: 0;
+  }
+}
+
+/* A shared value track across Health diagnostics and Full analysis groups.
+   The kit's narrow wrapping rows retain their full-width second line. */
+.server-aligned-values .row-value {
+  width: min(42%, 320px);
+  max-width: 42%;
+}
+.server-aligned-values .row-value > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -1,0 +1,351 @@
+/* Server > Locks (and the Kill sheet Sessions shares). Layout comes from
+   kit.css; this file holds the lock-specific details. Tokens only. */
+.lock-check input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.lock-caution {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+}
+.lock-copied {
+  margin: 0 0 var(--space-2);
+}
+/* Session starts at 140 px and grows to fit identities and role pills.
+   The outline fills its frame: Statement takes the room left and truncates
+   down to 200 px; below that (nested chains, a narrow window, the inspector
+   open) the outline scrolls inside its frame. No badge gives up its width. */
+.lock-tree {
+  min-width: 0;
+  overflow: auto;
+}
+.lock-tree-table {
+  table-layout: auto;
+  width: 100%;
+}
+.lock-col-session {
+  width: 140px;
+}
+.lock-col-target {
+  width: 280px;
+}
+.lock-col-wait {
+  width: calc(var(--space-6) * 3);
+}
+.lock-col-statement {
+  width: 100%;
+}
+.lock-tree-table .tree-statement {
+  min-width: 200px;
+}
+.lock-tree-table th,
+.lock-tree-table td {
+  white-space: nowrap;
+}
+.lock-tree-table td:first-child {
+  min-width: 140px;
+}
+/* Waits for is capped so Statement keeps real width at 1440 px; the full
+   lock description is in the tooltip and the inspector. */
+.lock-tree-table .cell-flex .cell-truncate {
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The statement adds nothing to the column's intrinsic width (width 0), so
+   the column keeps its 200 px minimum and takes the room left. */
+.lock-tree-table .tree-statement .cell-truncate {
+  width: 0;
+  min-width: 100%;
+  max-width: none;
+}
+.lock-tree .tree-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: max-content;
+  white-space: nowrap;
+}
+.lock-tree .tree-cell > :is(.lock-conn, .pill, .tree-toggle, .tree-spacer, .lock-count) {
+  flex: none;
+}
+.lock-tree .pill,
+.lock-tree .num {
+  font-variant-numeric: tabular-nums;
+}
+.tree-toggle,
+.tree-spacer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+.tree-toggle {
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-muted);
+}
+.tree-toggle svg {
+  transition: transform 120ms ease;
+}
+.tree-toggle svg.is-open {
+  transform: rotate(90deg);
+}
+.lock-conn {
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.lock-count {
+  color: var(--ink-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.lock-tree tr.root td {
+  box-shadow: inset 0 1px 0 var(--line);
+}
+.lock-tree tr.root td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.data-table tr.waiting td {
+  background: var(--warn-soft);
+}
+.lock-wait,
+.lock-meta {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.lock-meta {
+  color: var(--ink-muted);
+}
+.lock-sql {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  margin-top: var(--space-3);
+}
+.lock-sql .inspector-sql {
+  max-height: 220px;
+}
+.lock-sql-label {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+.lock-status {
+  font-weight: 600;
+}
+.lock-status.waiting {
+  color: var(--warn-text);
+}
+.lock-status.granted {
+  color: var(--ink-muted);
+}
+.lock-mode {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: baseline;
+}
+.lock-mode-label {
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.lock-rows-note {
+  margin: 0 0 var(--space-2);
+}
+.mdl-waits {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-4);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  overflow-wrap: anywhere;
+}
+.deadlock-locks,
+.ddl-queued,
+.ddl-blocker-list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  overflow-wrap: anywhere;
+}
+.ddl-blocker-list .text-button {
+  padding: 0;
+}
+.deadlock-raw {
+  max-height: 360px;
+  white-space: pre;
+}
+.kill-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+.kill-row .hint {
+  flex: 1 1 220px;
+}
+.kill-commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: var(--space-1) 0;
+}
+.kill-command {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.kill-command code {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.kill-command .text-button {
+  padding: var(--space-1) 2px;
+}
+/* The result of a Kill, shown above the report until dismissed. */
+.kill-result {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.kill-result p {
+  margin: 0;
+  line-height: var(--leading-sm);
+}
+.kill-result ul {
+  display: grid;
+  gap: 2px;
+  margin: var(--space-1) 0 2px;
+  padding-left: var(--space-4);
+}
+.kill-result.killed {
+  border-left-color: var(--ok);
+  background: var(--ok-soft);
+}
+.kill-result.refused,
+.kill-result.gone {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+.kill-result.denied,
+.kill-result.error {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+.kill-result li.still {
+  color: var(--warn-text);
+}
+/* The Kill confirmation sheet (ConfirmSheet with these details). */
+.kill-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+.kill-facts > div {
+  display: contents;
+}
+.kill-facts dt {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.kill-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.kill-warning {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+}
+.kill-dialog .lock-sql {
+  margin: 0 0 var(--space-3);
+}
+.kill-review-error {
+  margin: 0 0 var(--space-3);
+}
+.kill-blocking {
+  display: grid;
+  gap: 2px;
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+.kill-blocking ul {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.kill-choices {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.kill-choices legend {
+  padding: 0 var(--space-1);
+  font-weight: 600;
+}
+.kill-choices label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2);
+  align-items: start;
+  cursor: pointer;
+}
+.kill-choices input {
+  margin: 3px 0 0;
+  accent-color: var(--danger);
+}
+.kill-choices .hint {
+  display: block;
+  margin-top: 2px;
+}
+@media (max-width: 650px) {
+  .kill-facts {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .kill-facts dd {
+    margin-bottom: var(--space-1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tree-toggle svg {
+    transition: none;
+  }
+}

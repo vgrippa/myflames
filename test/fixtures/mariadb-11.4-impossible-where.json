@@ -1,0 +1,11 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.013394419
+  },
+  "query_block": {
+    "select_id": 1,
+    "table": {
+      "message": "Impossible WHERE"
+    }
+  }
+}

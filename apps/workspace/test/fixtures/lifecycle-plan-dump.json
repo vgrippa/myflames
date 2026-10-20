@@ -1,0 +1,92 @@
+{
+ "schema_version": "lifecycle-plan-1.0",
+ "operation": "dump",
+ "request": {
+  "directory": "/Users/dba/maintenance/backup",
+  "schemas": [
+   "app"
+  ],
+  "tables": [],
+  "threads": 4,
+  "prefer_shell": true
+ },
+ "server": {
+  "engine": "mysql",
+  "version": "8.4.3",
+  "variables": {
+   "version": "8.4.3",
+   "version_comment": "mysql",
+   "hostname": "donor",
+   "server_id": "1",
+   "server_uuid": "donor",
+   "port": "3306",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock",
+   "local_infile": "ON",
+   "version_compile_os": "Linux",
+   "version_compile_machine": "x86_64",
+   "character_set_server": "utf8mb4",
+   "character_set_filesystem": "binary",
+   "collation_server": "utf8mb4_0900_ai_ci",
+   "innodb_page_size": "16384",
+   "max_allowed_packet": "4194304",
+   "clone_valid_donor_list": "127.0.0.1:3306",
+   "sql_mode": "STRICT_TRANS_TABLES,NO_ZERO_DATE",
+   "gtid_executed": "a:1-2"
+  },
+  "identity": {
+   "server_uuid": "donor",
+   "server_id": "1",
+   "hostname": "donor",
+   "port": "3306",
+   "version": "8.4.3",
+   "datadir": "/server/data/",
+   "socket": "/server/mysql.sock"
+  }
+ },
+ "connection_key": "[\"\",\"127.0.0.1\",3306,\"operator\",\"\",\"\"]",
+ "tool": {
+  "available": true,
+  "deprecated": false,
+  "path": "/Users/dba/maintenance/bin/mysqldump",
+  "version": "mysqldump Ver 8.4.3",
+  "version_tuple": [
+   8,
+   4,
+   3
+  ],
+  "engine": "mysql",
+  "name": "mysqldump"
+ },
+ "target": "/Users/dba/maintenance/backup",
+ "commands": [
+  "mysqldump --defaults-extra-file=<0600 file> --single-transaction --quick --routines --events --triggers --hex-blob --add-drop-table --set-gtid-purged=OFF --databases app > /Users/dba/maintenance/backup/dump.sql"
+ ],
+ "checks": [
+  {
+   "estimated_bytes": 120,
+   "available_bytes": 147294572544,
+   "check": "free_space",
+   "status": "passed",
+   "reason": "Uncompressed table/index estimate; dump size can differ."
+  },
+  {
+   "missing_any_of": [],
+   "check": "privileges",
+   "status": "passed",
+   "reason": "Privilege hint only; server/tool has the final decision."
+  },
+  {
+   "sessions": [],
+   "check": "long_statements",
+   "status": "passed",
+   "reason": "Review long statements before locks."
+  }
+ ],
+ "warnings": [
+  "A consistent snapshot protects InnoDB data only. Concurrent DDL must be avoided.",
+  "Routines, events and triggers are included by SQL dump tools; user accounts are not included in scoped Shell dumps."
+ ],
+ "ready": true,
+ "binding": "c87f667ef9483397caa37445c45a916f3b8cc6dbdf0a0db2dd6a85ef83b89aa1"
+}
