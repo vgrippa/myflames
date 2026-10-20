@@ -4474,6 +4474,10 @@ button, .plan-item, .main-nav button {
   max-width: 480px;
   width: 90vw;
 }
+/* View on GitHub on the left; Later and Download update together on the right. */
+.update-dialog .action-spacer {
+  flex: 1;
+}
 .update-body {
   display: flex;
   flex-direction: column;

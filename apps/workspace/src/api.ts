@@ -1953,11 +1953,32 @@ export type AppUpdateInfo = {
   asset_name?: string | null;
   asset_url?: string | null;
   asset_size?: number | null;
+  /** When the release metadata was read (UTC, ISO 8601). */
+  checked_at?: string;
   error?: string;
+  /** A short plain reason when the check failed. */
+  reason?: string;
+  /** The outcome kept in the workspace store (present from the workspace). */
+  last_check?: AppUpdateLastCheck | null;
 };
 
+/** The last update check kept on this computer (never release notes or URLs). */
+export type AppUpdateLastCheck = {
+  checked_at: string;
+  outcome: "up_to_date" | "available" | "failed";
+  current_version: string;
+  latest_version: string | null;
+  reason: string | null;
+};
+
+/** Asks GitHub for the latest release: only when the user clicks Check for updates. */
 export const checkAppUpdate = (force = false, signal?: AbortSignal) =>
   api<AppUpdateInfo>("app/update/check", { force }, signal);
+
+/** The stored last check; local only, never the network. */
+export const appUpdateStatus = (signal?: AbortSignal) =>
+  api<{ schema_version: "app-update-status-1.0"; current_version: string; last_check: AppUpdateLastCheck | null }>(
+    "app/update/status", {}, signal);
 
 export const downloadAppUpdate = (asset_url?: string | null, release_url?: string | null, signal?: AbortSignal) =>
   api<{ status: string; download_path?: string; message: string; html_url?: string }>(

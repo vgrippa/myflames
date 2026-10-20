@@ -109,8 +109,7 @@
   color: var(--ink-faint);
 }
 
-/* Mass Kill Dialog */
-/* Mass Kill Dialog (pt-kill inspired) */
+/* Kill sessions dialog (Processlist > Kill sessions…, pt-kill inspired) */
 .mass-kill-dialog {
   max-width: 920px;
   width: min(920px, 95vw);

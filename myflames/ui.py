@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -382,7 +383,7 @@ def _bulk_kill_response(payload, workspace):
     refused_cnt = sum(1 for r in results if r["status"] == "refused")
     denied_cnt = sum(1 for r in results if r["status"] == "denied")
     error_cnt = sum(1 for r in results if r["status"] == "error")
-    msg = "Mass kill completed: %d killed" % killed_cnt
+    msg = "Kill sessions finished: %d killed" % killed_cnt
     if gone_cnt:
         msg += ", %d already gone" % gone_cnt
     if refused_cnt:
@@ -1091,7 +1092,10 @@ from .accounts_api import READ_PATHS as _ACCOUNT_READ_PATHS, WRITE_PATHS as _ACC
 _ACCOUNT_PATHS = _ACCOUNT_READ_PATHS + _ACCOUNT_WRITE_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _ACCOUNT_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
-_APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download')
+#: Application updates (app_update.py). Check reads GitHub only when the
+#: workspace asks (the Check for updates button) and keeps the outcome in the
+#: workspace store; status reads that stored outcome and never the network.
+_APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/app/update/status')
 
 
 
@@ -1324,7 +1328,21 @@ def api_response(path, payload, workspace=None):
                                            lambda value: _with_saved_password(value, workspace))
     if path == "/api/app/update/check":
         from . import app_update
-        return app_update.check_for_updates(force=payload.get("force") is True)
+        result = app_update.check_for_updates(force=payload.get("force") is True)
+        if workspace is not None:
+            record = app_update.last_check_record(result)
+            try:
+                result["last_check"] = workspace.store.set_app_update_last_check(record)
+            except (sqlite3.Error, OSError):
+                # The check itself succeeded or failed on its own terms; a
+                # store that cannot be written must not hide that answer.
+                result["last_check"] = record
+        return result
+    if path == "/api/app/update/status":
+        from . import app_update
+        stored = workspace.store.app_update_last_check() if workspace is not None else None
+        return {"schema_version": "app-update-status-1.0", "current_version": __version__,
+                "last_check": app_update.stored_last_check(stored)}
     if path == "/api/app/update/download":
         from . import app_update
         return app_update.download_binary_update(

@@ -47,6 +47,13 @@ import {
   CATEGORY_ORDER,
   coverageText,
   evaluateTuning,
+  GRADE_RULE,
+  GRADE_SCALE,
+  gradeRangeText,
+  gradeReason,
+  letterGrade,
+  PROBLEM_GRADE_CAP,
+  SCORE_RULE,
   STATUS_TEXT,
   summaryText,
   TUNING_CATEGORIES,
@@ -381,7 +388,8 @@ export function TuningView({
               A score from the checks the Server views already judge: Health, Parameters, Tables and the Full
               analysis. Each check shows what was measured, the rule and what to do.
             </p>
-            <p>{tuning.scoring}</p>
+            <p>{SCORE_RULE}</p>
+            <p>{GRADE_RULE}</p>
             <p>Suggested statements are for you to copy or open in the Query editor; nothing here runs them.</p>
           </>
         ) : (
@@ -581,15 +589,25 @@ function ScoreHeader({
   const unknown = tuning.checks.filter((c) => c.applies && c.status === "unknown");
   const needsAnalysis = unknown.some((c) => c.measureWith.includes("report"));
   const onlyParameters = unknown.length > 0 && unknown.every((c) => c.measureWith.length === 1 && c.measureWith[0] === "config");
+  const reason = gradeReason(tuning);
+  // A problem lowered the grade below the score's own range.
+  const capped = tuning.grade !== null && tuning.score !== null && letterGrade(tuning.score) !== tuning.grade;
   return (
     <section className={`tuning-score is-${tuning.status}`} aria-labelledby="tuning-score-label">
-      <div className="tuning-score-figure" aria-hidden={tuning.score === null ? "true" : undefined}>
-        <span className={`tuning-score-number${tuning.provisional ? " is-provisional" : ""}`} data-score={tuning.score ?? ""}>
+      <div className="tuning-score-figure">
+        <span
+          className={`tuning-score-number${tuning.provisional ? " is-provisional" : ""}`}
+          data-score={tuning.score ?? ""}
+          aria-hidden={tuning.score === null ? "true" : undefined}
+        >
           {tuning.score === null ? "—" : tuning.score}
           {tuning.score !== null && <span className="tuning-score-unit">%</span>}
         </span>
-        <span className="tuning-grade" data-grade={tuning.grade || ""}>
-          {tuning.grade ? `Grade ${tuning.grade}` : tuning.score === null ? "No score" : "Provisional"}
+        <span className="tuning-grade-line">
+          <span className="tuning-grade" data-grade={tuning.grade || ""}>
+            {tuning.grade ? `Grade ${tuning.grade}` : tuning.score === null ? "No score" : "Provisional"}
+          </span>
+          <GradeLegend grade={tuning.grade} />
         </span>
       </div>
       <div className="tuning-score-text">
@@ -597,6 +615,11 @@ function ScoreHeader({
           <span className={`status-dot is-${tuning.status}`} aria-hidden="true" />
           {tuning.label}
         </h3>
+        {reason && (
+          <p className="tuning-grade-reason" data-capped={capped ? "true" : "false"}>
+            {reason}
+          </p>
+        )}
         <p className="tuning-score-coverage">
           {coverageText(tuning)}
           {tuning.counts.problem > 0 && ` · ${tuning.counts.problem} problem${tuning.counts.problem === 1 ? "" : "s"}`}
@@ -622,6 +645,39 @@ function ScoreHeader({
         )}
       </div>
     </section>
+  );
+}
+
+/** ⓘ next to the grade: what each letter means, the cap and when there is no
+ * grade, all from tuningRules.ts (GRADE_SCALE, PROBLEM_GRADE_CAP). */
+function GradeLegend({ grade }: { grade: TuningReport["grade"] }) {
+  return (
+    <Popover label="How the grade works" className="tuning-grade-help" width={300}>
+      <h3 className="popover-title">How the grade works</h3>
+      <table className="tuning-grade-legend">
+        <caption className="visually-hidden">Grades and the scores they cover</caption>
+        <thead>
+          <tr>
+            <th scope="col">Grade</th>
+            <th scope="col">Score</th>
+          </tr>
+        </thead>
+        <tbody>
+          {GRADE_SCALE.map((g) => (
+            <tr key={g.grade} data-grade={g.grade} className={g.grade === grade ? "is-current" : undefined}
+              aria-current={g.grade === grade ? "true" : undefined}>
+              <th scope="row">{g.grade}</th>
+              <td>
+                {gradeRangeText(g.grade)}
+                {g.grade === grade && <span className="tuning-grade-current"> · this server</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p>A problem caps the grade at {PROBLEM_GRADE_CAP}, whatever the score.</p>
+      <p>No grade (provisional) until at least half the checks, and one in each category, are measured.</p>
+    </Popover>
   );
 }
 

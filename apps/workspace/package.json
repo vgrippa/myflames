@@ -57,6 +57,7 @@
     "test:editor-fixes": "node test/editor-fixes.mjs",
     "test:table-data": "npm run build && node test/table-data.mjs",
     "test:home-workspace": "npm run build && node test/home-workspace.mjs",
+    "test:update-check": "npm run build && node test/update-check.mjs",
     "test:report-table-exports": "node test/report-table-export.mjs",
     "test:tuning-rules": "node test/tuning-rules.mjs",
     "test:tuning-browser": "npm run build && node test/tuning-browser.mjs",

@@ -34,8 +34,10 @@ tests and platform limitations.
 ## Design direction
 
 Home shows the installed engine version and a link to published releases.
-Update status remains **Updates not checked**; this unsigned local build does
-not claim to be current or install updates. SQL editing and plan analysis share
+Update status reads **Not checked yet** until you click **Check for updates**
+in Home's version footer or About myflames; the result and its time are kept in
+the app's own workspace store. The app never installs updates: **Download…**
+saves the release file in your Downloads folder for you to install. SQL editing and plan analysis share
 the **SQL workspace** navigation group. Home also opens Server and the diagram
 canvas, including Mermaid ER imports. The app mark uses saturated flame colors
 on white, while the interface retains system light and dark appearances.

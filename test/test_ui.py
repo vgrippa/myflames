@@ -458,6 +458,26 @@ class TestWorkspaceHTTP(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_app_update_status_needs_the_session_and_reads_no_network(self):
+        with mock.patch('myflames.app_update.urllib.request.urlopen', side_effect=AssertionError('network')) as net:
+            status, body, _ = self.request('POST', '/api/app/update/status', {},
+                                           headers={'Cookie': self.server.cookie_name + '=wrong'})
+            self.assertEqual(status, 403)
+            status, body, _ = self.request('POST', '/api/app/update/status', {}, headers={'X-Myflames-Token': 'wrong'})
+            self.assertEqual(status, 403)
+            status, body, _ = self.request('POST', '/api/app/update/status', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['schema_version'], 'app-update-status-1.0')
+            net.assert_not_called()
+        with mock.patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': '99.0.0'}), \
+                mock.patch.dict('myflames.app_update._CACHE', clear=True):
+            status, body, _ = self.request('POST', '/api/app/update/check', {'force': True})
+        self.assertEqual(status, 200)
+        checked = json.loads(body)
+        status, body, _ = self.request('POST', '/api/app/update/status', {})
+        self.assertEqual(json.loads(body)['last_check'], checked['last_check'])
+        self.assertEqual(checked['last_check']['latest_version'], '99.0.0')
+
     def test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr(self):
         import io
         from myflames import ui
@@ -989,6 +1009,7 @@ class TestLiveBulkKillAndTableColumns(unittest.TestCase):
             self.assertEqual(res['gone'], 1)
             self.assertEqual(res['refused'], 0)
             self.assertEqual(len(res['results']), 2)
+            self.assertEqual(res['message'], 'Kill sessions finished: 1 killed, 1 already gone')
 
     def test_table_columns_names_are_hex_encoded(self):
         conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}

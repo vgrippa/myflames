@@ -64,10 +64,11 @@ try {
     "Active is the default");
   assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0");
   assert.match(await h.popover("About Processlist"), /Active hides sleeping sessions without a transaction/);
-  // One toolbar row at 1440 px: Mass kill, Auto-refresh and Refresh stay; the
+  // One toolbar row at 1440 px: Kill sessions…, Auto-refresh and Refresh stay; the
   // list's filters are in the row above it.
   assert.ok(await page.$eval(`${view} .view-toolbar`, (e) => e.getBoundingClientRect().height) <= 48, "the toolbar keeps one row");
-  assert.match(await text(`${view} .view-toolbar`), /Mass kill/);
+  assert.match(await text(`${view} .view-toolbar`), /Kill sessions…/);
+  assert.doesNotMatch(await text(`${view} .view-toolbar`), /Mass kill/i);
   for (const sel of ['[aria-label="Sessions to list"]', 'select[aria-label="Processlist source"]', 'input[aria-label="Running at least (seconds)"]', 'input[aria-label="Filter sessions"]'])
     assert.ok(await page.$(`${view} .sessions-tools ${sel}`) && !(await page.$(`${view} .view-toolbar ${sel}`)), `${sel} is in the filter row`);
 
@@ -82,6 +83,20 @@ try {
   assert.match(facts, /Limit\s*151/);
   assert.match(facts, /Max seen\s*12/);
   assert.match(facts, /History list\s*[\d,]+/);
+  // Kill sessions… opens the review dialog, titled Kill sessions; Escape closes
+  // it without sending anything.
+  const killSessions = `${view} .view-toolbar button[data-action=kill-sessions]`;
+  assert.equal(await text(killSessions), "Kill sessions…");
+  assert.equal(await page.$eval(killSessions, (b) => b.getAttribute("aria-haspopup")), "dialog");
+  await page.click(killSessions);
+  await page.waitForSelector("dialog.mass-kill-dialog[open]");
+  assert.equal(await page.$eval("dialog.mass-kill-dialog", (d) => document.getElementById(d.getAttribute("aria-labelledby"))?.textContent?.trim()),
+    "Kill sessions");
+  assert.equal(await page.$eval("dialog.mass-kill-dialog .segmented", (e) => e.getAttribute("aria-label")), "Kill mode");
+  assert.doesNotMatch(await text("dialog.mass-kill-dialog"), /mass kill/i);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.mass-kill-dialog"));
+  assert.ok(!state.other.some((r) => r.path.startsWith("/api/live/kill")), "nothing sent");
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.session)),
     active.sessions.map((s) => String(s.id)));
   assert.equal(await page.$eval(row(93), (e) => e.dataset.status), "problem");

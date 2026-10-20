@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { appVersion, getInvestigation, listInvestigations, time, type Bundle, type InvestigationSummary, type Plan } from "./api";
 import { Icon } from "./components";
+import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 
 import { defaultLab, relativeTime, type QueryTab } from "./session";
 import "./home.css";
@@ -128,8 +129,11 @@ export function Home({
       </div>
       <footer className="home-version" aria-label="Application version">
         <strong>myflames {appVersion() || "development"}</strong>
-        <span>Updates not checked</span>
-        <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+        <UpdateCheckStatus />
+        <span className="home-version-actions">
+          <CheckForUpdatesButton />
+          <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+        </span>
       </footer>
     </section>
   );

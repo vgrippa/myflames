@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add **Check for updates** to Home's version footer and About myflames. It asks GitHub only when clicked, shows progress, then Up to date, the newer version with **Download…** (the existing update dialog), or why it could not check. The time of the last check is kept in the workspace store across restarts (`/api/app/update/status`, `app-update-status-1.0`) and shown in local time; a result older than 24 hours reads as the last result.
+
+### Changed
+
+- Failed update checks report a short reason and are never shown as up to date; the update dialog uses sentence case.
+- The desktop app saves a downloaded update in the user's Downloads folder (`MYFLAMES_DOWNLOADS_DIR`), not in its isolated backend home.
+### Changed
+
+- Rename the Processlist **Mass kill** button to **Kill sessions…** and its dialog to Kill sessions, with the same exact KILL review, confirmation, policy re-check and declined audit; the bulk result message reads "Kill sessions finished: N killed".
+- Explain the Tuning grade where it is shown: a line beside it says why ("Capped at C: 1 check has a problem (89 is in the B range)" or "Score 84 is in the B range, 80 to 89"), an ⓘ next to it lists the scale (A 90 and above, B 80 to 89, C 70 to 79, D 50 to 69, F below 50), the cap at C and when there is no grade, and the Tuning ⓘ describes the score and the grade. Thresholds come from `GRADE_SCALE` in `tuningRules.ts`.
+
+### Fixed
+
+- Keep popovers above the window footer: an ⓘ panel opened near the bottom of a 720x520 window ended under the footer, which hid its last lines; it now stops at the footer's top edge and scrolls.
+
 ## [3.1.0] - 2026-10-20
 
 ### Added

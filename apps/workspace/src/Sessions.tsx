@@ -570,9 +570,11 @@ export function SessionsView({
             type="button"
             className="button"
             disabled={busy || !report || !report.sessions.length}
+            data-action="kill-sessions"
+            aria-haspopup="dialog"
             onClick={() => setMassKillOpen(true)}
           >
-            Mass kill
+            Kill sessions…
           </button>
           <AutoRefresh value={auto} options={AUTO_INTERVALS} disabled={!report} onChange={setAuto} />
         </>

@@ -1,4 +1,5 @@
-// Mass Kill Sessions dialog: filter and terminate multiple client sessions.
+// Kill sessions dialog (Processlist > Kill sessions…): filter client sessions
+// and kill several after one review of the exact KILL statements.
 // Inspired by Percona Toolkit pt-kill (busy-time, idle-time, match-user,
 // ignore-user, match-host, match-db, match-command, match-info, lock-wait).
 // Excludes server/system threads and current connection for safety.
@@ -256,7 +257,7 @@ export function MassKillDialog({
       const review = await prepareBulkKill(connection, targets);
       setPending({ review, targets, label: via.label });
     } catch (e) {
-      setError((e as Error).message || "Mass kill failed.");
+      setError((e as Error).message || "Kill sessions failed.");
     } finally {
       setBusy(false);
     }
@@ -293,7 +294,7 @@ export function MassKillDialog({
       onClose();
     } catch (e) {
       setPending(null);
-      setError((e as Error).message || "Mass kill failed.");
+      setError((e as Error).message || "Kill sessions failed.");
     } finally {
       setBusy(false);
     }
@@ -316,7 +317,7 @@ export function MassKillDialog({
       <div className="mass-kill-header">
         <div className="mass-kill-title-wrap">
           <h2 id="mass-kill-title">
-            <Icon name="stop" /> Mass Kill
+            <Icon name="stop" /> Kill sessions
           </h2>
           <p className="mass-kill-subtitle">
             Filter and terminate client sessions. System threads and your own connection are excluded.
@@ -324,7 +325,7 @@ export function MassKillDialog({
         </div>
         <div className="mass-kill-header-actions">
           <Segmented
-            label="Kill Mode"
+            label="Kill mode"
             value={mode}
             onChange={(v) => setMode(v as "connection" | "query")}
             options={[
@@ -383,8 +384,8 @@ export function MassKillDialog({
 
       {error && <div className="note danger mass-kill-error" style={{ margin: "var(--space-2) var(--space-5)" }}>{error}</div>}
       {isReadOnly && (
-        <div className="note danger" style={{ margin: "var(--space-2) var(--space-5)" }}>
-          This connection is read-only. Mass kill is disabled.
+        <div className="note danger mass-kill-blocked" style={{ margin: "var(--space-2) var(--space-5)" }}>
+          {connection.read_only ? "This connection is read-only, so no session can be killed from here." : policy?.blocked}
         </div>
       )}
 

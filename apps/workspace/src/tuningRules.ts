@@ -17,7 +17,9 @@
  * categories with at least one measured check (their weights renormalized).
  * The score is provisional, with no letter grade, until at least half of the
  * applicable checks are measured and every category has one. Any problem
- * caps the grade at C.
+ * caps the grade at C. GRADE_SCALE and PROBLEM_GRADE_CAP are the only copy of
+ * these thresholds: the Tuning page renders its grade legend and reason line
+ * (gradeReason) from them.
  *
  * Remediation statements are text to copy or open in the Query editor;
  * nothing on the Tuning page runs them. Global changes are SET PERSIST on
@@ -196,12 +198,43 @@ export interface TuningInput {
   now?: string;
 }
 
-export const SCORING_RULE =
+/** The letter grades, best first: a score at or above `min` earns the grade (letterGrade). Scores are whole numbers. */
+export const GRADE_SCALE: ReadonlyArray<{ grade: TuningGrade; min: number }> = [
+  { grade: "A", min: 90 },
+  { grade: "B", min: 80 },
+  { grade: "C", min: 70 },
+  { grade: "D", min: 50 },
+  { grade: "F", min: 0 },
+];
+/** Any problem caps the grade here, whatever the score. */
+export const PROBLEM_GRADE_CAP: TuningGrade = "C";
+
+/** The scores a grade covers: "90 and above", "80 to 89", "below 50". */
+export function gradeRangeText(grade: TuningGrade): string {
+  const i = GRADE_SCALE.findIndex((g) => g.grade === grade);
+  const { min } = GRADE_SCALE[i];
+  if (i === 0) return `${min} and above`;
+  const max = GRADE_SCALE[i - 1].min - 1;
+  if (i === GRADE_SCALE.length - 1) return `below ${max + 1}`;
+  return `${min} to ${max}`;
+}
+
+/** "A 90 and above, B 80 to 89, C 70 to 79, D 50 to 69, F below 50". */
+export function gradeScaleText(): string {
+  return GRADE_SCALE.map((g) => `${g.grade} ${gradeRangeText(g.grade)}`).join(", ");
+}
+
+/** How the score is computed, in words. */
+export const SCORE_RULE =
   "Each measured check scores 100 when OK, 50 to watch and 0 for a problem. A category scores the mean of its " +
   "measured checks, and the overall score weights the categories that have one (Buffer pool and redo 30%, " +
   "Queries 25%, Connections and threads 20%, Tables and caches 15%, Security 10%). Checks that were not measured " +
-  "are left out. The score is provisional, with no grade, until at least half the checks are measured and every " +
-  "category has one; a problem caps the grade at C.";
+  "are left out.";
+/** How the score becomes a grade, in words. */
+export const GRADE_RULE =
+  `Grades: ${gradeScaleText()}. A problem caps the grade at ${PROBLEM_GRADE_CAP}. The score is provisional, with ` +
+  "no grade, until at least half the checks are measured and every category has one.";
+export const SCORING_RULE = `${SCORE_RULE} ${GRADE_RULE}`;
 
 // ---- Formatting -------------------------------------------------------------------
 
@@ -1384,11 +1417,20 @@ export function overallScore(categories: TuningCategoryResult[]): number | null 
 }
 
 export function letterGrade(score: number): TuningGrade {
-  if (score >= 90) return "A";
-  if (score >= 80) return "B";
-  if (score >= 70) return "C";
-  if (score >= 50) return "D";
-  return "F";
+  return (GRADE_SCALE.find((g) => score >= g.min) || GRADE_SCALE[GRADE_SCALE.length - 1]).grade;
+}
+
+const gradeRank = (g: TuningGrade) => GRADE_SCALE.findIndex((x) => x.grade === g);
+
+/** Why the grade is what it is, in one line; "" without a grade (the coverage hint says why). */
+export function gradeReason(r: Pick<TuningReport, "score" | "grade" | "counts">): string {
+  if (r.score === null || !r.grade) return "";
+  const earned = letterGrade(r.score);
+  if (earned !== r.grade) {
+    const n = r.counts.problem;
+    return `Capped at ${r.grade}: ${n.toLocaleString("en-US")} ${n === 1 ? "check has" : "checks have"} a problem (${r.score} is in the ${earned} range).`;
+  }
+  return `Score ${r.score} is in the ${r.grade} range, ${gradeRangeText(r.grade)}.`;
 }
 
 /** Pure: the scorecard for the reports given. Reports from another connection must not be passed. */
@@ -1439,7 +1481,7 @@ export function evaluateTuning(input: TuningInput): TuningReport {
   let grade: TuningGrade | null = null;
   if (score !== null && !provisional) {
     grade = letterGrade(score);
-    if (counts.problem > 0 && (grade === "A" || grade === "B")) grade = "C";
+    if (counts.problem > 0 && gradeRank(grade) < gradeRank(PROBLEM_GRADE_CAP)) grade = PROBLEM_GRADE_CAP;
   }
   const label: TuningLabel =
     counts.problem > 0 ? "Problems found" : counts.watch > 0 ? "Needs attention" : provisional ? "Not enough data" : "Good";

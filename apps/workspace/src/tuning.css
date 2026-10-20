@@ -47,6 +47,43 @@
   line-height: var(--leading-sm);
   color: var(--ink-muted);
 }
+/* Grade C ⓘ: the legend opens from the ⓘ (keyboard and screen readers reach
+   it as a button); the reason line beside the label says why this grade. */
+.tuning-grade-line {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.tuning-grade-legend {
+  width: 100%;
+  margin: 0 0 var(--space-2);
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.tuning-grade-legend th,
+.tuning-grade-legend td {
+  padding: 2px var(--space-2);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-weight: 400;
+}
+.tuning-grade-legend thead th {
+  padding-top: 0;
+  color: var(--ink-muted);
+}
+.tuning-grade-legend tbody th {
+  width: 56px;
+  font-weight: 600;
+}
+.tuning-grade-legend tr.is-current th,
+.tuning-grade-legend tr.is-current td {
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.tuning-grade-current {
+  font-weight: 400;
+  color: var(--ink-muted);
+}
 .tuning-score-text {
   min-width: 0;
 }
@@ -60,6 +97,7 @@
   margin-right: var(--space-2);
   vertical-align: 2px;
 }
+.tuning-grade-reason,
 .tuning-score-coverage,
 .tuning-score-hint {
   margin: 2px 0 0;
@@ -67,6 +105,9 @@
   line-height: var(--leading-sm);
   color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
+}
+.tuning-grade-reason {
+  color: var(--ink);
 }
 .tuning-score-hint .text-button {
   font-size: inherit;

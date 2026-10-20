@@ -1,16 +1,20 @@
 import http.client
 import http.server
 import io
+import json
 import os
 from pathlib import Path
 import stat
+import socket
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 import urllib.response
 from email.message import Message
 from unittest.mock import patch, MagicMock
+from myflames import app_update
 from myflames.app_update import (
     parse_version_tuple,
     is_newer_version,
@@ -157,6 +161,23 @@ class TestUpdateDownloadRegression(unittest.TestCase):
         self.assertEqual(destination.read_bytes(), b'new archive')
         self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
         self.assertEqual(len(list(self.downloads.iterdir())), 3)
+
+    def test_regression_download_goes_to_the_named_downloads_folder(self):
+        """The desktop backend has an isolated HOME: MYFLAMES_DOWNLOADS_DIR
+        names the user's real Downloads folder, and a relative or missing
+        path falls back to ~/Downloads."""
+        named = Path(self.downloads.parent) / 'Real Downloads'
+        named.mkdir()
+        with patch.dict(os.environ, {'MYFLAMES_DOWNLOADS_DIR': str(named)}):
+            self.response([b'archive', b''])
+            result = download_binary_update(self.URL)
+        self.assertEqual(result['status'], 'downloaded')
+        self.assertEqual(Path(result['download_path']).parent, named)
+        for value in ('relative/Downloads', str(named / 'missing')):
+            with patch.dict(os.environ, {'MYFLAMES_DOWNLOADS_DIR': value}):
+                self.response([b'archive', b''])
+                result = download_binary_update(self.URL)
+            self.assertEqual(Path(result['download_path']).parent, self.downloads, value)
 
     def test_regression_download_failure_removes_partial_without_truncating(self):
         for exists in (False, True):
@@ -428,6 +449,124 @@ class TestUpdateDownloadRegression(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'official HTTPS'):
             download_binary_update(release_url='file:///etc/passwd')
         self.browser.assert_not_called()
+
+
+class TestUpdateCheckOutcome(unittest.TestCase):
+    """The Check for updates button: checked_at, plain failure reasons, and
+    the record kept in the workspace store (never the network on status)."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        env = patch.dict(os.environ, {'HOME': temp.name, 'USERPROFILE': temp.name,
+                                     'MYFLAMES_SECRET_BACKEND': 'vault'})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('MYFLAMES_TEST_UPDATE', None)
+        os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
+        cache = patch.dict('myflames.app_update._CACHE', clear=True)
+        cache.start()
+        self.addCleanup(cache.stop)
+        from myflames.workspace_store import WorkspaceStore
+        self.workspace = MagicMock()
+        self.workspace.store = WorkspaceStore(Path(temp.name) / 'store' / 'workspace.sqlite3')
+
+    def release(self, payload):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = payload if isinstance(payload, bytes) else json.dumps(payload).encode('utf-8')
+        return patch('myflames.app_update.urllib.request.urlopen', return_value=response)
+
+    def test_successful_check_carries_checked_at(self):
+        with self.release({'tag_name': 'v99.1.0', 'name': 'myflames 99.1.0', 'assets': []}):
+            result = check_for_updates(force=True)
+        self.assertRegex(result['checked_at'], r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+        self.assertEqual(result['latest_version'], '99.1.0')
+        self.assertTrue(result['update_available'])
+        self.assertNotIn('error', result)
+        # A cached answer keeps the time its metadata was read.
+        with patch('myflames.app_update.urllib.request.urlopen', side_effect=AssertionError('network')):
+            self.assertEqual(check_for_updates()['checked_at'], result['checked_at'])
+
+    def test_failures_have_a_plain_reason_and_are_never_cached(self):
+        def http_error(code):
+            return urllib.error.HTTPError(app_update.GITHUB_RELEASES_API, code, 'x', None, io.BytesIO())
+        cases = [
+            (urllib.error.URLError('nodename nor servname provided'), 'GitHub could not be reached'),
+            (urllib.error.URLError(socket.timeout('timed out')), 'did not answer in 5 seconds'),
+            (socket.timeout('timed out'), 'did not answer in 5 seconds'),
+            (http_error(403), 'GitHub limited requests'),
+            (http_error(500), 'status 500'),
+        ]
+        for error, reason in cases:
+            with self.subTest(error=error), \
+                    patch('myflames.app_update.urllib.request.urlopen', side_effect=error):
+                result = check_for_updates(force=True)
+            self.assertIn(reason, result['reason'])
+            self.assertTrue(result['error'].startswith('Could not check for updates: '))
+            self.assertFalse(result['update_available'])
+            self.assertIn('checked_at', result)
+            self.assertNotIn('result', app_update._CACHE)
+        for payload in (b'not json', [], {'name': 'no tag'}, {'tag_name': 'nightly'}):
+            with self.subTest(payload=payload), self.release(payload):
+                result = check_for_updates(force=True)
+            self.assertIn('unreadable', result['reason'])
+            self.assertNotIn('result', app_update._CACHE)
+
+    def test_last_check_record_keeps_only_the_outcome(self):
+        from myflames import __version__
+        when = '2026-10-20T10:42:00Z'
+        record = app_update.last_check_record({'checked_at': when, 'latest_version': '99.0.0',
+                                               'release_notes': 'long', 'asset_url': 'https://x'})
+        self.assertEqual(record, {'checked_at': when, 'outcome': 'available', 'current_version': __version__,
+                                  'latest_version': '99.0.0', 'reason': None})
+        self.assertEqual(app_update.last_check_record({'checked_at': when, 'latest_version': __version__})['outcome'],
+                         'up_to_date')
+        failed = app_update.last_check_record({'checked_at': when, 'error': 'Could not', 'reason': 'offline'})
+        self.assertEqual((failed['outcome'], failed['reason'], failed['latest_version']), ('failed', 'offline', None))
+        for bad in (None, {}, {'checked_at': 'yesterday', 'latest_version': '1.0.0'},
+                    {'checked_at': when, 'latest_version': '<b>'}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                app_update.last_check_record(bad)
+        # A record made by another myflames version (before an upgrade) is moot.
+        self.assertIsNone(app_update.stored_last_check(dict(record, current_version='0.0.1')))
+        self.assertIsNone(app_update.stored_last_check(dict(record, outcome='maybe')))
+        for when_bad in ('not a timestamp', '2026-13-45T10:00:00Z', 20261020, None):
+            with self.subTest(checked_at=when_bad):
+                self.assertIsNone(app_update.stored_last_check(dict(record, checked_at=when_bad)))
+        self.assertEqual(app_update.stored_last_check(dict(record, extra='x')), record)
+
+    def test_check_persists_and_status_reads_without_the_network(self):
+        from myflames.ui import api_response
+        with patch('myflames.app_update.urllib.request.urlopen', side_effect=AssertionError('network')) as net:
+            status = api_response('/api/app/update/status', {}, self.workspace)
+            net.assert_not_called()
+        self.assertEqual(status['schema_version'], 'app-update-status-1.0')
+        self.assertIsNone(status['last_check'])
+        self.assertFalse(self.workspace.store.path.exists(), 'status never creates the store')
+        with patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': '99.0.0'}):
+            checked = api_response('/api/app/update/check', {'force': True}, self.workspace)
+        self.assertEqual(checked['last_check']['outcome'], 'available')
+        self.assertEqual(checked['last_check']['checked_at'], checked['checked_at'])
+        # A new store object on the same file: the record survives a restart.
+        from myflames.workspace_store import WorkspaceStore
+        self.workspace.store = WorkspaceStore(self.workspace.store.path)
+        with patch('myflames.app_update.urllib.request.urlopen', side_effect=AssertionError('network')):
+            status = api_response('/api/app/update/status', {}, self.workspace)
+        self.assertEqual(status['last_check'], checked['last_check'])
+        with patch('myflames.app_update.urllib.request.urlopen', side_effect=urllib.error.URLError('offline')):
+            failed = api_response('/api/app/update/check', {'force': True}, self.workspace)
+        self.assertEqual(failed['last_check']['outcome'], 'failed')
+        # A store that cannot be written does not hide the check's answer.
+        import sqlite3
+        with patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': '99.0.0'}), \
+                patch.object(self.workspace.store, 'set_app_update_last_check',
+                             side_effect=sqlite3.OperationalError('database is locked')):
+            unsaved = api_response('/api/app/update/check', {'force': True}, self.workspace)
+        self.assertEqual((unsaved['latest_version'], unsaved['last_check']['outcome']), ('99.0.0', 'available'))
+        self.assertEqual(api_response('/api/app/update/status', {}, self.workspace)['last_check']['outcome'], 'failed')
+        self.assertIsNone(api_response('/api/app/update/status', {}, None)['last_check'])
 
 
 if __name__ == "__main__":

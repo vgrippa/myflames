@@ -53,7 +53,7 @@ assert.ok(rp.includes('copy(result.rows[menu.row][menu.col] ?? ""'), 'Copy value
 const alter = src('TableAlterDialog.tsx');
 assert.ok(/bt\(schema\)\}\.\$\{bt\(table\)/.test(alter) && !alter.includes('`${schema}`'), 'ALTER TABLE quotes identifiers');
 
-// MassKillDialog: statements are reviewed before anything is sent; cancel is recorded.
+// MassKillDialog (Kill sessions…): statements are reviewed before anything is sent; cancel is recorded.
 const mk = src('MassKillDialog.tsx');
 const handle = mk.slice(mk.indexOf('async function handleConfirm'), mk.indexOf('function declineBulk'));
 assert.ok(handle.includes('prepareBulkKill') && !handle.includes('killBulkSessions'), 'prepare does not send');
@@ -61,4 +61,4 @@ const send = mk.slice(mk.indexOf('async function sendBulk'), mk.indexOf('return 
 assert.ok(send.includes('killBulkSessions(') && send.includes('policy.check()'), 'send re-checks policy then kills');
 assert.ok(mk.includes('<ConfirmSheet') && mk.includes('pending.review.statements') && mk.includes('onCancel={declineBulk}'), 'confirmation sheet lists the statements');
 assert.ok(/recordDeclined\(/.test(mk), 'cancel is recorded as declined');
-console.log('Editor fixes: digest execution statistics and CSV guard, table copy, Copy value, ALTER quoting and Mass Kill review passed.');
+console.log('Editor fixes: digest execution statistics and CSV guard, table copy, Copy value, ALTER quoting and Kill sessions review passed.');

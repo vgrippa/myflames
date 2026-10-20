@@ -55,7 +55,7 @@ The sidebar separates where you go from what you have open:
 
 | Place | What it holds |
 | --- | --- |
-| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. The version line sits at the bottom of Home. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
+| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. The version line sits at the bottom of Home with **Check for updates**, which asks GitHub only when clicked and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
 | **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes |
 | **Query editor** | SQL tabs that run any SQL in a session of their own (Run, Run all, Stop, results per result set, Messages, export, transactions), Explain and Run analysis, the schema browser, the run history, and the connection in use |
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
@@ -124,6 +124,15 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Top statements, and Lock structs and Isolation in Locks transactions.
   Processlist rows have no buttons: each row's ⋯ menu holds **Show plan** and
   **Kill…**, which opens the same confirmation sheet as Kill in the details.
+  **Kill sessions…** in the Processlist toolbar opens the Kill sessions
+  dialog: presets (Runaway queries, Idle sleeping, Lock waiters, All clients)
+  and filters choose client sessions (system threads and your own connection
+  are never listed), and Kill N queries or Kill N connections shows the exact
+  KILL statements and the server in a confirmation sheet that starts on
+  Cancel. Nothing is sent until you confirm, the connection's type and
+  read-only setting are read again first, and Cancel is recorded as declined
+  in the Audit log. On a read-only connection the dialog says so and its Kill
+  button stays off.
   Indexes and Tables use the same ⋯ row menu (Set invisible…, Drop index…,
   Table health; Add column…, Remove column…, Optimize, Analyze and Check
   table…, View indexes), with the labels of the row's right-click menu; an
@@ -138,7 +147,7 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   in Indexes and Tables: Error log (Entries / By code, levels, Time, the text
   filter, This run only, Export) and Processlist (Active / All / Locked,
   Source, Running at least, the filter), so the view toolbar keeps one row
-  with Refresh, Auto-refresh and Mass kill.
+  with Refresh, Auto-refresh and **Kill sessions…**.
 - **Details.** The selected row's explanation, rule, numbers, statements and
   actions (Explain, Show plan, Kill, links to other views) occupy the full work
   area on both wide and narrow windows. Back or Escape returns to the same
@@ -228,7 +237,12 @@ for a problem. A check that was not measured shows **Not measured** with what
 would measure it (for example "Needs Health or Full analysis"), and it never
 counts: the summary says how many checks were measured. Until at least half
 the checks, and one in each category, are measured, the score is provisional
-and has no grade; a problem caps the grade at C. Select a check to see what was
+and has no grade. Grades are A 90 and above, B 80 to 89, C 70 to 79, D 50 to
+69 and F below 50, and a problem caps the grade at C. A line under the label
+says why the grade is what it is ("Capped at C: 1 check has a problem (89 is in
+the B range)" or "Score 84 is in the B range, 80 to 89"), and the ⓘ next to the
+grade shows the scale, the cap and when there is no grade; the Tuning ⓘ
+explains the score and the grade too. Select a check to see what was
 measured and the numbers first, then what to do, the rule and why it matters.
 Statements are for you to copy or open in the Query editor (SET PERSIST on
 MySQL; SET GLOBAL and an option-file line on MariaDB); the page never runs
@@ -461,7 +475,7 @@ Dialogs, confirmation sheets, popovers, and drawers use scoped focus trapping:
   Revert change and Set to Default use the same menu keyboard controls.
 - Activate the floating Server or Workload views button to enter its drawer.
   Arrow keys move between views; Enter opens one. Escape returns to the button.
-- Escape in a nested confirmation, including Mass Kill's review, dismisses that
+- Escape in a nested confirmation, including the Kill sessions review, dismisses that
   confirmation without closing its parent dialog.
 - Replication connector details appear on hover or focus. The pointer can move
   onto the details, and Escape dismisses them. Their accessible descriptions
@@ -864,6 +878,8 @@ token. There is no CORS access. See the [authentication and limits contract](DEV
 | `/api/render` | `plan`, `view` | `html`: standalone chart document (kept for compatibility; the workspace draws from `chart_data`) |
 | `/api/report` | `plan`, `view` | `html`: portable report |
 | `/api/compare` | `before`, `after`: raw plan text | `analysis`, `html` |
+| `/api/app/update/check` | `force`: true from the Check for updates button | `app-update-1.0` with `checked_at`, `error` and `reason` on failure, and the stored `last_check` |
+| `/api/app/update/status` | Empty object | `app-update-status-1.0`: `current_version` and the stored `last_check` (or null); never reads the network |
 
 Workspace routing in `myflames/ui.py` (`api_response`) dispatches across dedicated subsystems:
 

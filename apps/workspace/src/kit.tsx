@@ -287,10 +287,14 @@ export function Popover({
       const width = Math.min(panelWidth || (wide ? 400 : 320), window.innerWidth - 16);
       const left = Math.max(8, Math.min(b.left - 12, window.innerWidth - width - 8));
       const height = p.offsetHeight;
+      // The fixed window footer paints over the panel, so a panel opened above
+      // it ends at its top edge (720 x 520 window: the last lines were hidden).
+      const footer = document.querySelector(".window-statusbar")?.getBoundingClientRect().top;
+      const floor = footer !== undefined && footer >= b.bottom ? Math.min(footer, window.innerHeight) : window.innerHeight;
       const below = b.bottom + 6;
-      const top = below + height > window.innerHeight - 8 && b.top - height - 6 > 8 ? b.top - height - 6 : below;
-      const boundedTop = Math.max(8, Math.min(top, window.innerHeight - Math.min(height, window.innerHeight - 16) - 8));
-      setStyle({ left, top: boundedTop, width, maxHeight: window.innerHeight - boundedTop - 8 });
+      const top = below + height > floor - 8 && b.top - height - 6 > 8 ? b.top - height - 6 : below;
+      const boundedTop = Math.max(8, Math.min(top, floor - Math.min(height, floor - 16) - 8));
+      setStyle({ left, top: boundedTop, width, maxHeight: floor - boundedTop - 8 });
     };
     place();
     window.addEventListener("resize", place);

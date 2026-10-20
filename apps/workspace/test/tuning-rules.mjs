@@ -83,7 +83,8 @@ const R = (name) => clone(generated[`report:${name}`]);
 
 const T = await bundle("../src/tuningRules.ts");
 const { evaluateTuning, tuningInputs, tuningHtml, tuningMarkdown, escapeHtml, categoryScore, overallScore, letterGrade,
-  globalChange, versionTuple, formatMetric, TUNING_CATEGORIES, CATEGORY_ORDER, POINTS } = T;
+  globalChange, versionTuple, formatMetric, TUNING_CATEGORIES, CATEGORY_ORDER, POINTS,
+  GRADE_SCALE, PROBLEM_GRADE_CAP, gradeRangeText, gradeScaleText, gradeReason, GRADE_RULE, SCORE_RULE, SCORING_RULE } = T;
 const check = (report, key) => {
   const c = report.checks.find((x) => x.key === key);
   assert.ok(c, `check ${key} exists`);
@@ -143,6 +144,33 @@ test("unknown is excluded from the score; categories renormalize", () => {
   );
   assert.equal(overallScore([{ score: null, weight: 1 }]), null);
   assert.deepEqual([95, 85, 75, 55, 10].map(letterGrade), ["A", "B", "C", "D", "F"]);
+  assert.deepEqual([100, 90, 89, 80, 79, 70, 69, 50, 49, 0].map(letterGrade), ["A", "A", "B", "B", "C", "C", "D", "D", "F", "F"]);
+});
+
+test("the grade scale is exported once and every text is rendered from it", () => {
+  assert.deepEqual(GRADE_SCALE.map((g) => [g.grade, g.min]), [["A", 90], ["B", 80], ["C", 70], ["D", 50], ["F", 0]]);
+  assert.equal(PROBLEM_GRADE_CAP, "C");
+  assert.deepEqual(GRADE_SCALE.map((g) => gradeRangeText(g.grade)), ["90 and above", "80 to 89", "70 to 79", "50 to 69", "below 50"]);
+  assert.equal(gradeScaleText(), "A 90 and above, B 80 to 89, C 70 to 79, D 50 to 69, F below 50");
+  // Every range agrees with letterGrade at both ends.
+  for (const g of GRADE_SCALE) assert.equal(letterGrade(g.min), g.grade);
+  assert.match(GRADE_RULE, /A 90 and above, B 80 to 89, C 70 to 79, D 50 to 69, F below 50/);
+  assert.match(GRADE_RULE, /A problem caps the grade at C\./);
+  assert.match(GRADE_RULE, /provisional, with no grade, until at least half the checks are measured/);
+  assert.equal(SCORING_RULE, `${SCORE_RULE} ${GRADE_RULE}`);
+  assert.equal(evaluateTuning({}).scoring, SCORING_RULE, "the rule is shown and exported");
+});
+
+test("gradeReason: capped, uncapped, provisional", () => {
+  const counts = (problem) => ({ problem, watch: 0, ok: 10, unknown: 0 });
+  assert.equal(gradeReason({ score: 89, grade: "C", counts: counts(1) }), "Capped at C: 1 check has a problem (89 is in the B range).");
+  assert.equal(gradeReason({ score: 94, grade: "C", counts: counts(2) }), "Capped at C: 2 checks have a problem (94 is in the A range).");
+  assert.equal(gradeReason({ score: 89, grade: "B", counts: counts(0) }), "Score 89 is in the B range, 80 to 89.");
+  assert.equal(gradeReason({ score: 74, grade: "C", counts: counts(1) }), "Score 74 is in the C range, 70 to 79.");
+  assert.equal(gradeReason({ score: 95, grade: "A", counts: counts(0) }), "Score 95 is in the A range, 90 and above.");
+  assert.equal(gradeReason({ score: 42, grade: "F", counts: counts(3) }), "Score 42 is in the F range, below 50.");
+  assert.equal(gradeReason({ score: 61, grade: null, counts: counts(0) }), "", "provisional: no grade, no reason");
+  assert.equal(gradeReason({ score: null, grade: null, counts: counts(0) }), "");
 });
 
 test("Health only (MySQL 8.4): unknowns, a provisional score and no grade", () => {
@@ -206,6 +234,8 @@ test("problem caps the grade at C; all ok is Good", () => {
   const one = evaluateTuning({ report });
   assert.ok(one.score >= 90, `score ${one.score}`);
   assert.equal(one.grade, "C");
+  assert.equal(gradeReason(one), `Capped at C: 1 check has a problem (${one.score} is in the A range).`);
+  assert.equal(gradeReason(good), "Score 100 is in the A range, 90 and above.");
   assert.equal(one.label, "Problems found");
 });
 

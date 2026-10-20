@@ -8,6 +8,8 @@ const shots = path.resolve(process.env.PERF_SHOTS || "../../local/fixes-2026-10-
 await fs.mkdir(shots, { recursive: true });
 const h = await open("/api/unused-home-test", "home-workspace", {
   "/api/live/schemas": { status: 200, body: { schemas: [], notes: [] } },
+  // Recorded and refused: Home never asks GitHub without a click.
+  "/api/app/update/check": { status: 500, body: { error: "Not expected in this suite." } },
 });
 const { page } = h;
 async function click(text) {
@@ -28,8 +30,10 @@ async function screenshots(name) {
 }
 try {
   await page.waitForSelector(".home-version");
-  assert.match(await page.$eval(".home-version", el => el.textContent), /myflames \d+\.\d+\.\d+.*Updates not checked/);
+  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".home-version")?.textContent || ""));
+  assert.match(await page.$eval(".home-version", el => el.textContent), /myflames \d+\.\d+\.\d+.*Not checked yet.*Check for updates/);
   assert.equal(await page.$eval(".home-version a", el => el.href), "https://github.com/vgrippa/myflames/releases");
+  assert.equal(h.state.other.some(item => item.path === "/api/app/update/check"), false, "no update check without a click");
   assert.deepEqual(await page.$$eval(".nav-group-label", els => els.map(el => el.textContent)), ["SQL workspace", "Library"]);
   await screenshots("home");
   await page.click(".home-workflows button:first-child");

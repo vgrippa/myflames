@@ -6,10 +6,12 @@ update assets. Stdlib only; bounded network timeouts; safe error handling.
 import json
 import os
 import re
+import socket
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -81,7 +83,52 @@ def match_asset_for_platform(assets, platform, machine):
     return None
 
 
+def _utc_now():
+    """The current time as an ISO 8601 UTC string with a Z suffix."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _failure_reason(exc):
+    """A short, plain reason for a failed check (never a raw traceback)."""
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in (403, 429):
+            return "GitHub limited requests, try again later"
+        if exc.code == 404:
+            return "no published release was found"
+        return "GitHub answered with status %d" % exc.code
+    if isinstance(exc, socket.timeout) or isinstance(getattr(exc, "reason", None), socket.timeout):
+        return "GitHub did not answer in %d seconds" % int(REQUEST_TIMEOUT)
+    if isinstance(exc, ValueError):
+        return "the release information was unreadable"
+    return "GitHub could not be reached"
+
+
+def _failed_result(reason):
+    return {
+        "schema_version": "app-update-1.0",
+        "current_version": __version__,
+        "latest_version": __version__,
+        "update_available": False,
+        "release_title": "myflames v%s" % __version__,
+        "release_notes": "",
+        "published_at": "",
+        "html_url": GITHUB_RELEASES_URL,
+        "asset_name": None,
+        "asset_url": None,
+        "asset_size": None,
+        "checked_at": _utc_now(),
+        "reason": reason,
+        "error": "Could not check for updates: %s." % reason,
+    }
+
+
 def check_for_updates(force=False):
+    """Ask GitHub for the latest release (app-update-1.0).
+
+    Runs only when the workspace asks for it (the Check for updates button);
+    one bounded HTTPS read of the official releases API. ``checked_at`` is
+    when the release metadata was read, so a cached result keeps its time.
+    A failed check is never cached and carries ``error`` and ``reason``."""
     now = time.time()
     with _LOCK:
         if not force and "result" in _CACHE and (now - _CACHE["timestamp"]) < CACHE_TTL:
@@ -101,11 +148,12 @@ def check_for_updates(force=False):
             "asset_name": "myflames-mac-arm64.zip",
             "asset_url": "https://github.com/vgrippa/myflames/releases/download/v%s/myflames-mac-arm64.zip" % test_override,
             "asset_size": 24000000,
+            "checked_at": _utc_now(),
         }
         with _LOCK:
             _CACHE["result"] = simulated
             _CACHE["timestamp"] = now
-        return simulated
+        return dict(simulated)
 
     try:
         req = urllib.request.Request(
@@ -114,51 +162,95 @@ def check_for_updates(force=False):
         )
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
             if response.status != 200:
-                raise ValueError("GitHub API returned status %d" % response.status)
+                raise ValueError("GitHub answered with status %d" % response.status)
             body = response.read(1024 * 1024)
-            data = json.loads(body.decode("utf-8"))
+        data = json.loads(body.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("release metadata is not an object")
+        tag = data.get("tag_name")
+        if not isinstance(tag, str) or not re.match(_VERSION_REGEX, tag.strip()):
+            raise ValueError("release has no version tag")
     except Exception as exc:
-        # Gracefully handle network offline or rate limit
-        res = {
-            "schema_version": "app-update-1.0",
-            "current_version": __version__,
-            "latest_version": __version__,
-            "update_available": False,
-            "release_title": "myflames v%s" % __version__,
-            "release_notes": "",
-            "published_at": "",
-            "html_url": "https://github.com/vgrippa/myflames/releases",
-            "asset_name": None,
-            "asset_url": None,
-            "asset_size": None,
-            "error": "Could not check for updates: %s" % exc,
-        }
-        return res
+        # Offline, rate limited or unreadable: report it, never as up to date.
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()
+        return _failed_result(_failure_reason(exc))
 
-    tag_name = data.get("tag_name", "").lstrip("v")
-    is_newer = is_newer_version(tag_name, __version__) if tag_name else False
+    tag_name = tag.strip().lstrip("v")
+    is_newer = is_newer_version(tag_name, __version__)
     plat, mach = detect_system_target()
     matched = match_asset_for_platform(data.get("assets", []), plat, mach)
+
+    def text(key):
+        value = data.get(key)
+        return value if isinstance(value, str) else ""
 
     result = {
         "schema_version": "app-update-1.0",
         "current_version": __version__,
-        "latest_version": tag_name or __version__,
+        "latest_version": tag_name,
         "update_available": is_newer,
-        "release_title": data.get("name") or data.get("tag_name") or ("v" + tag_name),
-        "release_notes": data.get("body") or "",
-        "published_at": data.get("published_at") or "",
-        "html_url": data.get("html_url") or "https://github.com/vgrippa/myflames/releases",
+        "release_title": text("name") or text("tag_name") or ("v" + tag_name),
+        "release_notes": text("body"),
+        "published_at": text("published_at"),
+        "html_url": text("html_url") or GITHUB_RELEASES_URL,
         "asset_name": matched.get("name") if matched else None,
         "asset_url": matched.get("browser_download_url") if matched else None,
         "asset_size": matched.get("size") if matched else None,
+        "checked_at": _utc_now(),
     }
 
     with _LOCK:
         _CACHE["result"] = result
         _CACHE["timestamp"] = now
 
-    return result
+    return dict(result)
+
+
+def _valid_checked_at(value):
+    """An ISO 8601 UTC time as check_for_updates writes it (a real date)."""
+    if not isinstance(value, str) or not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", value):
+        return False
+    try:
+        time.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def last_check_record(result):
+    """The part of a check result kept on this computer (app-update-1.0
+    ``last_check``): when, what was found, and why it failed. Never the
+    release notes or download URLs; those come only from a fresh check."""
+    if not isinstance(result, dict):
+        raise ValueError("Expected an update check result.")
+    checked_at = result.get("checked_at")
+    if not _valid_checked_at(checked_at):
+        raise ValueError("An update check result needs checked_at.")
+    error = result.get("error")
+    if error:
+        reason = result.get("reason") if isinstance(result.get("reason"), str) else str(error)
+        return {"checked_at": checked_at, "outcome": "failed", "current_version": __version__,
+                "latest_version": None, "reason": reason[:200]}
+    latest = result.get("latest_version")
+    if not isinstance(latest, str) or not re.match(_VERSION_REGEX, latest):
+        raise ValueError("An update check result needs latest_version.")
+    newer = is_newer_version(latest, __version__)
+    return {"checked_at": checked_at, "outcome": "available" if newer else "up_to_date",
+            "current_version": __version__, "latest_version": latest, "reason": None}
+
+
+def stored_last_check(record):
+    """A stored ``last_check`` record when it is well formed and was made by
+    this version of myflames; None otherwise (an upgrade makes it moot)."""
+    if not isinstance(record, dict) or record.get("current_version") != __version__:
+        return None
+    if record.get("outcome") not in ("up_to_date", "available", "failed"):
+        return None
+    if not _valid_checked_at(record.get("checked_at")):
+        return None
+    keys = ("checked_at", "outcome", "current_version", "latest_version", "reason")
+    return {key: record.get(key) for key in keys}
 
 
 class _InvalidUpdateURL(ValueError):
@@ -252,6 +344,20 @@ def _content_length(resp):
     return int(value.strip())
 
 
+def _downloads_directory():
+    """Where a downloaded update is saved. The desktop app runs the backend
+    with an isolated HOME, so it names the user's real Downloads folder in
+    MYFLAMES_DOWNLOADS_DIR (an absolute, existing directory); otherwise
+    ~/Downloads, else the temporary directory."""
+    named = os.environ.get("MYFLAMES_DOWNLOADS_DIR", "")
+    if named and os.path.isabs(named) and os.path.isdir(named):
+        return Path(named)
+    downloads_dir = Path.home() / "Downloads"
+    if downloads_dir.is_dir():
+        return downloads_dir
+    return Path(os.environ.get("TMPDIR", "/tmp"))
+
+
 def download_binary_update(asset_url=None, release_url=None):
     """Download update asset or return release page url for user."""
     if release_url:
@@ -272,9 +378,7 @@ def download_binary_update(asset_url=None, release_url=None):
         }
 
     # Bounded download of asset into user's Downloads or temp directory
-    downloads_dir = Path.home() / "Downloads"
-    if not downloads_dir.exists():
-        downloads_dir = Path(os.environ.get("TMPDIR", "/tmp"))
+    downloads_dir = _downloads_directory()
 
     filename = urllib.parse.unquote(parsed.path).rsplit("/", 1)[-1]
     if not filename or len(filename) > 100 or any(c in filename for c in '\\/:*?"<>|'):

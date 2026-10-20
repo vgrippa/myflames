@@ -398,11 +398,11 @@ try {
   );
   assert.match(aboutText, /LicenseApache-2\.0/); // a labelled field row since the About redesign
   assert.match(aboutText, /CDDL 1\.0 \(see NOTICE\)/);
-  // Focus starts on Close and stays inside: Tab wraps to the first link,
-  // Shift+Tab wraps back.
+  // Focus starts on Close and stays inside: Tab wraps to the first control
+  // (Check for updates in the Updates row), Shift+Tab wraps back.
   assert.equal(await focused(), "Close");
   await page.keyboard.press("Tab");
-  assert.equal(await focused(), "Brendan Gregg's FlameGraph");
+  assert.equal(await focused(), "Check for updates");
   await page.keyboard.down("Shift");
   await page.keyboard.press("Tab");
   await page.keyboard.up("Shift");

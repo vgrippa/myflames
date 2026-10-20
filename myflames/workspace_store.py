@@ -689,6 +689,29 @@ class WorkspaceStore:
                     conn.execute('DELETE FROM investigation_summaries WHERE id=?', (str(key),))
         return {'deleted': True}
 
+    # -- Application update checks (app_update.py) ----------------------------
+
+    def app_update_last_check(self):
+        """The stored result of the last update check (a dict), or None.
+        Never creates the database."""
+        if not self.path.exists():
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'app_update_last_check'").fetchone()
+        value = _loads(row[0]) if row else None
+        return value if isinstance(value, dict) else None
+
+    def set_app_update_last_check(self, record):
+        """Keep *record* (app_update.last_check_record) as the last check."""
+        if not isinstance(record, dict) or not isinstance(record.get('checked_at'), str):
+            raise ValueError('Expected an update check record.')
+        text = json.dumps(record, allow_nan=False, sort_keys=True)
+        if len(text) > 4096:
+            raise ValueError('The update check record is too large.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('app_update_last_check', ?)", (text,))
+        return record
+
     # -- Audit trail of server writes (rows shaped by dbops.py) ----------------
 
     def audit_retention_days(self):

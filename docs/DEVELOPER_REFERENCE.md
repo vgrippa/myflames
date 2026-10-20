@@ -71,6 +71,30 @@ instructions. Current delivery targets macOS. The shared working UI now uses
 compact neutral navigation, open-query links, a command palette and full-width
 Server details. The original interactive preview remains synthetic design material.
 
+Update checks run only when the workspace asks: **Check for updates** in
+Home's version footer and in About myflames (`UpdateCheck.tsx`, shared state in
+`updateStatus.ts`) posts `/api/app/update/check` with `force: true`. The
+`app-update-1.0` answer carries `checked_at` (UTC, when the release metadata was
+read; a cached answer keeps its time), and a failed check carries `error` plus a
+short `reason` (GitHub could not be reached, did not answer in 5 seconds,
+limited requests, answered with a status, or unreadable release information);
+a failed check is never cached and never reported as up to date. From the
+workspace, the check also stores `last_check` (`checked_at`, `outcome`
+`up_to_date` | `available` | `failed`, `current_version`, `latest_version`,
+`reason`; never release notes or URLs) in the workspace store's `settings`
+table (`app_update_last_check`). `/api/app/update/status` returns
+`app-update-status-1.0` with that record and never reads the network; a record
+made by another myflames version is dropped. The footer shows "Checked today at
+10:42", "Checked yesterday" or "Checked Oct 18" in local time with the full
+timestamp in the tooltip ("Tried …" for a failure), "Not checked yet" before
+the first check, "Last check unknown" when the stored record could not be read
+(retried when Home or About mounts again), and a result older than 24 hours, or
+one whose time cannot be read, as "Last result: …".
+**Download…** appears for a current newer release (unavailable while a check
+runs) and opens the update dialog with the result captured at the click;
+after a reload it checks again first, because the download needs the asset the
+check found.
+
 Application updates (`myflames/app_update.py`, `/api/app/update/check` and
 `/api/app/update/download`) select an asset only when its operating system and
 architecture match; macOS also accepts universal builds. An unmatched release
@@ -94,7 +118,10 @@ temporary file is removed unpublished. Publication uses an atomic hard link
 to an unused name, adding ` (1)`, ` (2)`, etc. before the extension on collisions;
 files and symlinks already present are preserved. The temporary file is removed
 after success or failure. If the filesystem cannot publish a hard link, the
-download falls back to the browser.
+download falls back to the browser. The destination is `MYFLAMES_DOWNLOADS_DIR` when it names an
+absolute existing directory (the desktop app sets it to the user's Downloads
+folder, because its backend runs with an isolated HOME), else `~/Downloads`,
+else the temporary directory.
 
 `python3 -m myflames ui [--port PORT] [--no-browser] [--no-restore]` launches the
   myflames Performance workspace on IPv4 loopback (deprecated in favor of the standalone desktop app binary). React/TypeScript source is in
@@ -1182,11 +1209,11 @@ Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test
 - Two tabs: **Scorecard** and **Full analysis** (the report, its inspector, Run full analysis and its HTML, Markdown, JSON and Text export through `/api/report/export`). Optional prop `tabRequest {tab: "scorecard" | "analysis", n}` opens a tab; each new `n` switches again.
 - `tuningRules.evaluateTuning({report, health, config, tables})` is pure (`tuning-1.0` in memory and in the JSON export). It reads Python statuses and numbers by their keys and adds no thresholds of its own: Health metrics `bp_dirty`, `bp_wait_free`, `select_full_join`, `connections_used`, `aborted_clients` and diagnostics `buffer_pool`, `redo`, `tmp_tables`, `sorts`, `thread_cache`, `table_cache`, `table_definitions`; config-1.0 checks `redo`, `tmp_tables`, `slow_log`, `max_connections`, `table_open_cache`; the Tables report summary (or `tables.no_primary_key`, `tables.unique_stand_in`, `tables.engines` findings); `checks.no_password`, `checks.anonymous`, `checks.root_any_host` (count from the finding headline); `require_secure_transport` and `have_ssl` only from Parameters (`config.parameters.items`, every global variable). From a Full analysis it uses the report's `health_metrics` for the metrics findings leave out; without it (older reports) those checks are unknown. When a view's own report and the Full analysis both have an item, the newer `taken_at` wins.
 - 19 checks in 5 categories (weights 30/25/20/15/10): Buffer pool and redo (buffer pool, dirty pages, waits for a free page, redo log size), Queries (joins without an index, temporary tables on disk, sort merge passes, slow query log), Connections and threads (connection limit now and peak, thread cache, connections dropped), Tables and caches (table open cache, table definition cache, tables without a primary key, MyISAM tables), Security (accounts without a password, anonymous accounts, root from any host, encrypted connections).
-- States: problem, watch, ok, unknown. Python's `info` is unknown unless the check maps it (`slow_log` on with long_query_time >= 10 s and `tables.engines` without MyISAM are ok; a buffer pool with room is ok, warming is unknown). `applies: false` (thread cache under a thread pool) leaves the check out of the counts. Primary keys and MyISAM tables are unknown when no table was read in scope (the Tables summary, or the Full analysis engines finding "no tables"), never OK. Points: ok 100, watch 50, problem 0; a category is the mean of its measured checks (null when none), the overall score the weighted mean of measured categories. `provisional` when fewer than half the applicable checks or no check of some category are measured: no grade. Grades A 90, B 80, C 70, D 50, else F; any problem caps at C. Labels: Problems found, Needs attention, Not enough data, Good.
+- States: problem, watch, ok, unknown. Python's `info` is unknown unless the check maps it (`slow_log` on with long_query_time >= 10 s and `tables.engines` without MyISAM are ok; a buffer pool with room is ok, warming is unknown). `applies: false` (thread cache under a thread pool) leaves the check out of the counts. Primary keys and MyISAM tables are unknown when no table was read in scope (the Tables summary, or the Full analysis engines finding "no tables"), never OK. Points: ok 100, watch 50, problem 0; a category is the mean of its measured checks (null when none), the overall score the weighted mean of measured categories. `provisional` when fewer than half the applicable checks or no check of some category are measured: no grade. Grades come from `GRADE_SCALE` (A 90, B 80, C 70, D 50, else F; `letterGrade`, `gradeRangeText`, `gradeScaleText`); any problem caps at `PROBLEM_GRADE_CAP` (C). `gradeReason(report)` is the line beside the grade ("Capped at C: 1 check has a problem (89 is in the B range)." or "Score 84 is in the B range, 80 to 89."; empty without a grade). `GradeLegend` in `Tuning.tsx` is the ⓘ beside the grade (a `Popover` named "How the grade works") that renders the scale from `GRADE_SCALE`, marks the current grade with `aria-current`, and states the cap and the provisional rule. The view ⓘ shows `SCORE_RULE` and `GRADE_RULE`; `SCORING_RULE` joins them for `report.scoring` and the exports. Labels: Problems found, Needs attention, Not enough data, Good.
 - Remediation (`fix {text, sql?, optionFile?, caveat?}`, only on problem and watch): `globalChange` writes `SET PERSIST` on MySQL and `SET GLOBAL` plus an option-file line on MariaDB; per-session limits are `SET SESSION`. Version gates: MySQL before 8.0.30 has no innodb_redo_log_capacity (option file and restart); MariaDB before 10.9 has a read-only innodb_log_file_size; TempTable reads tmp_table_size as a per-table limit only from MySQL 8.0.28, so before it (and when only `TempTable_count_hit_max_ram` grew) the statement is `SET PERSIST temptable_max_ram`, shared by every TempTable table. The redo size is only Python's target (an hour at the measured rate, rounded up to 256 MiB) and only when it is larger than the capacity; a status raised by the checkpoint age or by waits for the log buffer (innodb_log_buffer_size) gets no size. "Clients were refused" appears only when Connection_errors_max_connections counted refusals; a problem at 90% use says so. No io_capacity advice from dirty pages, no wait_timeout or max_allowed_packet values, no OPTIMIZE from DATA_FREE (not scored), no invented buffer pool or connection targets (placeholders such as `<bytes>`). Statements are copied or opened in the Query editor; the page runs nothing.
 - Binding: `tuningInputs` keeps only reports whose `key` is `connectionKey(connection)`; with none, the newest other connection's reports are shown greyed (`ViewLayout otherConnection`). Props `health`, `config`, `tables` take the bound reports (`HealthMemory`, `Bound<ConfigReport>`, `Bound<TablesReport>`); the older unbound `healthReport`, `configReport`, `tablesReport` are used only when the bound prop is absent. The statements behind Joins without an index come from the Full analysis attribution or, on request, `StatementsBehind` (`onOpenTop`); nothing is read on open.
 - Exports: `tuningHtml` (every dynamic string through `escapeHtml`, the inspiration credit in the footer), `tuningMarkdown` (`escapeMarkdown`, statements fenced), JSON.
-- Browser test: `npm run test:tuning-browser` (`apps/workspace/test/tuning-browser.mjs`: nothing measured, Health only provisional, inspector, Full analysis and Parameters measured, the Full analysis tab, 390 px; `PERF_SHOTS` saves light and dark screenshots at 1440 and 390). Rule engine test: `npm run test:tuning-rules` (`apps/workspace/test/tuning-rules.mjs`, computes Health, config and report-1.0 inputs from the Python replays for MySQL 8.4 and 9.7 and MariaDB 11.4, with MariaDB 10.6 and 11.8 by version).
+- Browser test: `npm run test:tuning-browser` (`apps/workspace/test/tuning-browser.mjs`: nothing measured, Health only provisional, the grade legend from the keyboard and the reason line (uncapped, then capped by a problem after a second Full analysis), inspector, Full analysis and Parameters measured, the Full analysis tab, 390 px; `PERF_SHOTS` saves light and dark screenshots at 1440, 720 and 390). Rule engine test: `npm run test:tuning-rules` (`apps/workspace/test/tuning-rules.mjs`, computes Health, config and report-1.0 inputs from the Python replays for MySQL 8.4 and 9.7 and MariaDB 11.4, with MariaDB 10.6 and 11.8 by version).
 
 ### Server lifecycle: upgrade-check, dump, restore, clone
 
@@ -1553,9 +1580,9 @@ Automatic first reads use `useViewOnScreen()` and the report's connection key. A
 
 Query Digest stores its report as `Bound<DigestReport>` through `useConnectionReads`, keyed by `connectionKey` (profile, endpoint, user, TLS and write policy). Editor and Explain callbacks carry that report key to `QueryLab.openDigest`; stale actions are disabled and rechecked at dispatch. Late responses cannot replace a newer connection's report. Exports name the report's original connection and filter. Their statistics cover only the loaded digests: sums and execution-weighted means, plus the maximum of collected execution maxima. Execution minima, row/lock extrema and percentiles remain unknown; digest averages and per-digest totals are not individual execution samples.
 
-The Mass Kill **Lock waiters** preset requires a recorded wait (`lock_wait` or `lock_status: waiting`). A session that only holds locks (`is_locked` or `lock_status: holding`) is excluded. Exact bulk review, policy checks, target verification and audit remain required.
+Processlist **Kill sessions…** opens the Kill sessions dialog (`MassKillDialog.tsx`; `/api/live/kill/bulk/prepare` then `/api/live/kill/bulk`, `kill-bulk-1.0`, whose `message` reads "Kill sessions finished: N killed, …"). Its **Lock waiters** preset requires a recorded wait (`lock_wait` or `lock_status: waiting`). A session that only holds locks (`is_locked` or `lock_status: holding`) is excluded. Exact bulk review, policy checks, target verification and audit remain required.
 
-Home reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software. Stable internal place IDs remain unchanged; Query editor and Plans are grouped under SQL workspace.
+Home reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Stable internal place IDs remain unchanged; Query editor and Plans are grouped under SQL workspace.
 
 Refresh all schedules unopened sections as well as loaded ones, with three concurrent reads and a separate Full analysis phase. It preserves scope-specific large-schema consent, joins identical reads, and drops stale results. Maintenance only detects tools. Parameters and Instruments read on open (one attempt per connection; Refresh retries). Parameters inline edit controls use parameter metadata to stage local changes, and **Review and apply** reviews up to 25 changes at once while **Change…** opens the single-parameter sheet (including **This session only** handoff to the Query editor). Guidance is collapsed by default.
 
