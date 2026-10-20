@@ -20,8 +20,10 @@ import urllib.response
 from pathlib import Path
 from unittest import mock
 
-from myflames import news
+from myflames import news, tls
 from myflames.workspace_store import WorkspaceStore
+
+from _tls_servers import SilentServer, TrickleTLSServer, anonymous_contexts  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'news'
 PLANET, MARIADB = news.SOURCES
@@ -227,6 +229,56 @@ class TestFetch(FakeNetwork):
         self.assertFalse(news._failure(urllib.error.URLError(ssl.SSLError(1, 'certificate verify failed')))[1])
         self.assertFalse(news._failure(news.NewsError('The feed is not valid XML.'))[1])
         self.assertFalse(news._failure(http.client.IncompleteRead(b''))[1])
+
+
+class TestTlsDeadline(unittest.TestCase):
+    """The feed's deadline closes the TLS socket, not only the TCP socket it
+    wraps (wrapping detaches that one). Real handler, real TLS socket; nothing
+    leaves 127.0.0.1 because socket.create_connection reaches a local server."""
+
+    def fetch(self, server, context=None):
+        """fetch_feed against *server*, 0.5 s deadline, 30 s socket timeouts:
+        (exception, seconds, sockets the watchdog held)."""
+        self.addCleanup(server.close)
+        watched = []
+
+        class Recording(tls.Watchdog):
+            def watch(self, sock):
+                watched.append(sock)
+                super().watch(sock)
+        patches = [mock.patch('socket.create_connection', server.connect),
+                   mock.patch.object(news, '_Watchdog', Recording),
+                   mock.patch.object(news, 'SOCKET_TIMEOUT', 30.0)]
+        if context is not None:
+            patches.append(mock.patch.object(news, 'https_context', return_value=context))
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        started = time.monotonic()
+        with self.assertRaises(socket.timeout) as caught:
+            news.fetch_feed(PLANET_URL, deadline=time.monotonic() + 0.5)
+        return caught.exception, time.monotonic() - started, watched
+
+    def test_the_deadline_ends_a_stalled_tls_handshake(self):
+        error, elapsed, watched = self.fetch(SilentServer())
+        self.assertLess(elapsed, 3, 'the TLS handshake outlived the deadline')
+        self.assertTrue(any(isinstance(sock, ssl.SSLSocket) for sock in watched), watched)
+        self.assertEqual(news._failure(error), (news.OFFLINE_MESSAGE, True))
+
+    def test_the_deadline_closes_a_tls_read_of_headers_sent_a_byte_at_a_time(self):
+        # Every byte resets the 30 s socket timeout, and the deadline check
+        # between body reads never runs: only the watchdog can end this.
+        contexts = anonymous_contexts()
+        if contexts is None:
+            self.skipTest('this OpenSSL has no anonymous TLS cipher')
+        server_context, client_context = contexts
+        server = TrickleTLSServer(server_context, b'HTTP/1.1 200 OK\r\n' + b'X-Slow: 1\r\n' * 200)
+        _, elapsed, watched = self.fetch(server, client_context)
+        self.assertLess(elapsed, 3)
+        self.assertTrue(any(isinstance(sock, ssl.SSLSocket) for sock in watched), watched)
+        gone = server.wait(3)
+        self.assertIsNotNone(gone, 'the server could still send after the deadline')
+        self.assertLess(gone, 3)
 
 
 class TestParse(unittest.TestCase):

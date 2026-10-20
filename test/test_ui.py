@@ -459,7 +459,7 @@ class TestWorkspaceHTTP(unittest.TestCase):
             conn.close()
 
     def test_app_update_status_needs_the_session_and_reads_no_network(self):
-        with mock.patch('myflames.app_update.urllib.request.urlopen', side_effect=AssertionError('network')) as net:
+        with mock.patch('myflames.app_update.urllib.request.build_opener', side_effect=AssertionError('network')) as net:
             status, body, _ = self.request('POST', '/api/app/update/status', {},
                                            headers={'Cookie': self.server.cookie_name + '=wrong'})
             self.assertEqual(status, 403)

@@ -36,7 +36,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
 from . import __version__
-from .tls import https_context
+from .tls import Watchdog, WatchedHTTPSHandler, https_context, watched_connection_class
 
 SCHEMA_VERSION = 'news-1.0'
 CACHE_VERSION = 'news-cache-1.0'
@@ -160,66 +160,15 @@ class _Redirects(urllib.request.BaseHandler):
     http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
-class _Watchdog:
-    """Shuts a feed's sockets down at its deadline, so nothing (the TLS
-    handshake, response headers, chunk framing, a body sent a byte at a time)
-    outlives it. Only the DNS lookup is outside its reach."""
-
-    def __init__(self, deadline):
-        self._lock = threading.Lock()
-        self._sockets = []
-        self.expired = False
-        self._timer = threading.Timer(max(0.0, deadline - time.monotonic()), self._expire)
-        self._timer.daemon = True
-        self._timer.start()
-
-    def watch(self, sock):
-        with self._lock:
-            self._sockets.append(sock)
-            expired = self.expired
-        if expired:
-            self._shut(sock)
-
-    def _expire(self):
-        with self._lock:
-            self.expired = True
-            sockets = list(self._sockets)
-        for sock in sockets:
-            self._shut(sock)
-
-    @staticmethod
-    def _shut(sock):
-        try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-
-    def stop(self):
-        self._timer.cancel()
+# The watchdog and the watched HTTPS connection live in tls.py, shared with
+# the release check (app_update.py).
+_Watchdog = Watchdog
+_connection_class = watched_connection_class
 
 
-def _connection_class(watchdog):
-    """HTTPSConnection whose TCP socket the watchdog holds from the start."""
-    class Connection(http.client.HTTPSConnection):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            create = self._create_connection
-
-            def watched(*args, **kwargs):
-                sock = create(*args, **kwargs)
-                watchdog.watch(sock)
-                return sock
-            self._create_connection = watched
-    return Connection
-
-
-class _HTTPS(urllib.request.HTTPSHandler):
+class _HTTPS(WatchedHTTPSHandler):
     def __init__(self, watchdog):
-        super().__init__(context=https_context())
-        self._watchdog = watchdog
-
-    def https_open(self, req):
-        return self.do_open(_connection_class(self._watchdog), req, context=self._context)
+        super().__init__(watchdog, https_context())
 
 
 def _opener(watchdog):
@@ -609,15 +558,15 @@ def _refresh(path, sources, reader, event, clock):
             with _LOCK:
                 earlier = _WORKERS.get(source['id'])
                 if earlier is not None and earlier.is_alive():
-                    # A read still stuck past its deadline (a DNS lookup cannot
-                    # be cancelled): never start a second one for the source.
+                    # A read still stuck past its deadline (a DNS lookup or a TCP
+                    # connect is outside the watchdog): never start a second one.
                     continue
                 thread = threading.Thread(target=_read_source, args=(source, reader, results, clock()),
                                           name='myflames-news-' + source['id'], daemon=True)
                 _WORKERS[source['id']] = thread
                 thread.start()  # under the lock: no one sees it registered but not alive
             threads.append(thread)
-        # DNS lookups are outside socket timeouts: bound the wait as well.
+        # DNS lookups and TCP connects are outside the watchdog: bound the wait as well.
         stop = time.monotonic() + FEED_DEADLINE + SOCKET_TIMEOUT
         for thread in threads:
             thread.join(max(0, stop - time.monotonic()))
