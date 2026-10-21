@@ -120,8 +120,15 @@ export function MassKillDialog({
     }
   }
 
+  const queryPattern = useMemo(() => {
+    if (!matchInfo) return { regex: null, invalid: false };
+    try { return { regex: new RegExp(matchInfo, "i"), invalid: false }; }
+    catch { return { regex: null, invalid: true }; }
+  }, [matchInfo]);
+
   // Compute matched sessions based on active pt-kill filters
   const matchedSessions = useMemo(() => {
+    if (queryPattern.invalid) return [];
     return clientSessions.filter((s) => {
       // User match
       if (selectedUser !== "all" && s.user !== selectedUser) return false;
@@ -169,16 +176,7 @@ export function MassKillDialog({
       }
 
       // Query pattern match (pt-kill --match-info)
-      if (matchInfo.trim()) {
-        const queryText = (s.info || s.info_short || s.last_statement || "").toLowerCase();
-        const pattern = matchInfo.trim().toLowerCase();
-        try {
-          const rx = new RegExp(pattern, "i");
-          if (!rx.test(queryText)) return false;
-        } catch {
-          if (!queryText.includes(pattern)) return false;
-        }
-      }
+      if (queryPattern.regex && !queryPattern.regex.test(s.info || s.info_short || s.last_statement || "")) return false;
 
       return true;
     });
@@ -192,7 +190,7 @@ export function MassKillDialog({
     timeType,
     minSeconds,
     lockWaitsOnly,
-    matchInfo,
+    queryPattern,
   ]);
 
   // Auto-select all matching when filters change unless manually overridden
@@ -525,12 +523,15 @@ export function MassKillDialog({
               className="cell-sql"
               placeholder="e.g. SELECT.*FROM orders|UPDATE users"
               value={matchInfo}
+              aria-invalid={queryPattern.invalid}
+              aria-describedby={queryPattern.invalid ? "mk-query-error" : undefined}
               onChange={(e) => {
                 setActivePreset("custom");
                 setUserOverridden(false);
                 setMatchInfo(e.target.value);
               }}
             />
+            {queryPattern.invalid && <span id="mk-query-error" role="alert">Not a valid pattern</span>}
           </div>
 
           <div className="mass-kill-field">

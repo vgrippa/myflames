@@ -13,14 +13,20 @@ type PrivilegesContextValue = {
 };
 const PrivilegesContext = createContext<PrivilegesContextValue | null>(null);
 
-export function PrivilegesProvider({ connection, connected = true, connectRevision = 0, children }: PropsWithChildren<{
+export function PrivilegesProvider({ connection, connected = true, connectRevision = 0, passwordRevision = 0, children }: PropsWithChildren<{
   connection: Connection; connected?: boolean;
   /** Increment after a successful reconnect to the same identity. */
   connectRevision?: number;
+  /** Increment only when the session password is committed, never while typing. */
+  passwordRevision?: number;
 }>) {
   const key = connectionKey(connection);
-  const latest = useRef({ connection, key, connected });
-  latest.current = { connection, key, connected };
+  const committed = useRef({ key, connectRevision, passwordRevision, password: connection.password });
+  if (committed.current.key !== key || committed.current.connectRevision !== connectRevision || committed.current.passwordRevision !== passwordRevision)
+    committed.current = { key, connectRevision, passwordRevision, password: connection.password };
+  const passwordCommitted = committed.current.password === connection.password;
+  const latest = useRef({ connection, key, connected, passwordCommitted });
+  latest.current = { connection, key, connected, passwordCommitted };
   const [value, setValue] = useState<{ key: string; report: PrivilegesReport | null; at: number; error: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const pending = useRef<{ key: string; controller: AbortController; promise: Promise<void> } | null>(null);
@@ -29,7 +35,8 @@ export function PrivilegesProvider({ connection, connected = true, connectRevisi
 
   const refresh = useCallback((fresh = false): Promise<void> => {
     const c = latest.current;
-    if (!c.connected) return Promise.resolve();
+    // Focus and incidental refreshes must not authenticate with a draft either.
+    if (!c.connected || !c.passwordCommitted) return Promise.resolve();
     if (!fresh && pending.current?.key === c.key) return pending.current.promise;
     pending.current?.controller.abort();
     const controller = new AbortController();
@@ -65,9 +72,12 @@ export function PrivilegesProvider({ connection, connected = true, connectRevisi
     setValue(null); setLoading(false); at.current = 0;
     void refresh(true);
     return () => { ++generation.current; pending.current?.controller.abort(); pending.current = null; };
-  }, [key, connected, connectRevision, connection.password, refresh]);
+  }, [key, connected, connectRevision, passwordRevision, refresh]);
   useEffect(() => {
-    const focus = () => { if (Date.now() - at.current > 60_000) void refresh(); };
+    const focus = () => {
+      if (document.activeElement?.matches(".picker-password")) return;
+      if (Date.now() - at.current > 60_000) void refresh();
+    };
     window.addEventListener("focus", focus);
     return () => window.removeEventListener("focus", focus);
   }, [refresh]);

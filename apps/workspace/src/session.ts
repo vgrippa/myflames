@@ -152,6 +152,7 @@ export type ColumnLayout = { widths?: Record<string, number>; hidden?: string[] 
  * Cluster place (Nodes on Galera and PXC, Members on Group Replication,
  * Routers) and the ProxySQL place, each with its own. */
 export const TABLE_IDS = [
+  "accounts.list",
   "errorlog.entries",
   "errorlog.codes",
   "top.statements",

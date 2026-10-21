@@ -1008,6 +1008,7 @@ export function ConnectionPicker({
   safety,
   onSwitch,
   onPassword,
+  onPasswordCommit,
   onManage,
   onAccount,
   note,
@@ -1018,6 +1019,7 @@ export function ConnectionPicker({
   safety: Safety;
   onSwitch: (id: string) => void;
   onPassword: (password: string) => void;
+  onPasswordCommit?: () => void;
   onManage: () => void;
   /** Opens Account and privileges for the connection in use. */
   onAccount?: () => void;
@@ -1029,6 +1031,13 @@ export function ConnectionPicker({
   const saved = !!profile?.has_saved_password;
   const [override, setOverride] = useState(false);
   const passwordField = useRef<HTMLInputElement>(null);
+  const committedPassword = useRef(active.password);
+  useEffect(() => { committedPassword.current = active.password; }, [active.id]);
+  function commitPassword(password = active.password) {
+    if (password === committedPassword.current) return;
+    committedPassword.current = password;
+    onPasswordCommit?.();
+  }
   useEffect(() => { if (override) passwordField.current?.focus(); }, [override]);
   useEffect(() => setOverride(false), [active.id]);
   const hasConnection = !!active.fields.host;
@@ -1066,9 +1075,11 @@ export function ConnectionPicker({
           {showPassword ? <label className="field">Session password
             <input ref={passwordField} type="password" className="picker-password" aria-label={`Password for ${name}`}
               placeholder={saved ? "Saved password" : "Password"} autoComplete="current-password"
-              value={active.password} onChange={(e) => onPassword(e.target.value)} />
+              value={active.password} onChange={(e) => onPassword(e.target.value)}
+              onBlur={() => commitPassword()}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commitPassword(); } }} />
           </label> : <button className="button" onClick={() => setOverride(true)}>Use a different password</button>}
-          {saved && showPassword && <button className="button" onClick={() => { onPassword(""); setOverride(false); }}>Use saved password</button>}
+          {saved && showPassword && <button className="button" onClick={() => { onPassword(""); commitPassword(""); setOverride(false); }}>Use saved password</button>}
           </>}
           {!hasConnection && <p className="hint">Choose a connection to work with a server.</p>}
           {note && <p className="hint picker-note" role="status">{note}</p>}

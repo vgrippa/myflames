@@ -10,11 +10,7 @@
 // a switch it stays on screen, greyed, with its server actions off. It is
 // never saved; the workspace remembers only that it ran. Export turns the
 // JSON into HTML, Markdown, JSON or text on the server (never from the page).
-import { useEffect, useRef, useState } from "react";
 import {
-  api,
-  download,
-  type AnalysisExport,
   type AnalysisFinding,
   type AnalysisLink,
   type AnalysisReport,
@@ -23,34 +19,26 @@ import {
   type Connection,
   type TopStatement,
 } from "./api";
-import { connectionLabel, type Bound, type ConnectionReads } from "./binding";
-import { Icon } from "./components";
+import { connectionLabel } from "./binding";
 import { LESSONS, uptime } from "./Health";
 import { CopySql, engineLabel } from "./PerfShared";
 import { StatementRows, coverageNotes, type DigestAction, type LabSettings } from "./SlowQueries";
 import {
   Disclosure,
-  EmptyState,
   FactStrip,
   Fields,
   GroupedList,
   GroupedRow,
   InspectorSection,
-  Popover,
   PrerequisiteGate,
   StatusPill,
   SummaryLine,
-  ViewLayout,
-  ViewStatus,
   isIdentifier,
   type InspectorContent,
   type Selection,
 } from "./kit";
 import "./report.css";
 
-/** When the run on its way started, per connection (kept outside the view,
- * which may unmount meanwhile). An entry is removed when its run ends. */
-const runStarts = new Map<string, number>();
 /** The connection a report was read from, without secrets: what an export names. */
 export function analysisSource(c: Connection): AnalysisSource {
   const type = (c as Connection & { type?: string }).type;
@@ -65,12 +53,6 @@ export function analysisSource(c: Connection): AnalysisSource {
 
 /** What a run usually takes (Health, Waits and I/O sample a 10 s window). */
 export const REPORT_ESTIMATE = "about 10 to 20 s";
-const FORMATS: [string, string][] = [
-  ["html", "HTML"],
-  ["markdown", "Markdown"],
-  ["json", "JSON"],
-  ["text", "Text"],
-];
 export const STATUS_WORD: Record<AnalysisStatus, string> = {
   problem: "Problem",
   watch: "Watch",
@@ -103,213 +85,6 @@ export function attributionNotes(report: AnalysisReport): string[] {
     );
   for (const t of a.full_scans || []) if (t.capped) out.push(`For ${t.schema}.${t.table} only the heaviest digests that name it were checked.`);
   return [...out, ...(a.caveats || [])];
-}
-
-export function ReportView({
-  connection,
-  disabled,
-  onBack,
-  selection,
-  report: bound,
-  source,
-  onReport,
-  reads,
-  wasRun,
-  settings,
-  onDigest,
-  onOpenLink,
-  onOpenLesson,
-}: {
-  connection: Connection;
-  /** The Query editor is capturing: wait. */
-  disabled: boolean;
-  onBack?: () => void;
-  selection: Selection;
-  report: Bound<AnalysisReport> | null;
-  /** The connection the report was read from (non-secret fields), for exports. */
-  source: AnalysisSource | null;
-  onReport: (report: Bound<AnalysisReport>, source: AnalysisSource) => void;
-  /** The Full analysis reads, owned by the Server place so a run survives switching views. */
-  reads: ConnectionReads;
-  /** A Full analysis ran in an earlier session (its report was not saved). */
-  wasRun: boolean;
-  settings: LabSettings;
-  onDigest: (row: TopStatement, rank: number, action: DigestAction, expect: string) => void;
-  /** Open the view a finding links to (and its row); *from* is the report's connection key. */
-  onOpenLink: (link: AnalysisLink, finding: AnalysisFinding, from: string) => void;
-  onOpenLesson?: (lesson: string) => void;
-}) {
-  const loading = !!reads.loading;
-  const report = bound?.report ?? null;
-  const other = bound && bound.key !== reads.key ? bound.label : null;
-  const [now, setNow] = useState(Date.now());
-  const [exporting, setExporting] = useState("");
-  const [exported, setExported] = useState("");
-  const [exportError, setExportError] = useState("");
-
-  // While the analysis runs, count the seconds (it usually takes 10 to 20).
-  useEffect(() => {
-    if (!loading) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [loading]);
-  // A finished run leaves no start time behind for the next run or connection.
-  useEffect(() => { if (!loading && reads.key) runStarts.delete(reads.key); }, [loading, reads.key]);
-
-  // A new report starts on its Look at first pick (selected, the inspector stays as it was).
-  const selectRef = useRef(selection.select);
-  selectRef.current = selection.select;
-  const hasSelection = !!selection.key;
-  useEffect(() => {
-    if (report?.look_first && !hasSelection) selectRef.current(`first:${report.look_first}`, false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [report]);
-
-  async function run() {
-    if (disabled) return;
-    const started = Date.now();
-    if (reads.key) runStarts.set(reads.key, started);
-    setNow(started);
-    setExported("");
-    setExportError("");
-    let from: Connection | null = null;
-    await reads.run(
-      "report",
-      "Running the full analysis…",
-      (c, signal) => {
-        from = c;
-        return api<AnalysisReport>("live/report", { connection: c }, signal);
-      },
-      (b) => onReport(b, analysisSource(from || connection)),
-    );
-  }
-  async function exportAs(format: string) {
-    if (!report || exporting) return;
-    setExporting(format);
-    setExported("");
-    setExportError("");
-    try {
-      // The file names the connection it was read from (never a password).
-      const file = await api<AnalysisExport>("report/export", { report, format, ...(source ? { source } : {}) });
-      download(file.content, file.filename, file.mime);
-      setExported(file.filename);
-    } catch (e) {
-      setExportError((e as Error).message);
-    } finally {
-      setExporting("");
-    }
-  }
-
-  const actionsOff = disabled || !!other;
-  const runStarted = reads.key ? runStarts.get(reads.key) : undefined;
-  const elapsed = runStarted ? Math.max(0, Math.round((now - runStarted) / 1000)) : 0;
-
-  const inspector = report
-    ? buildReportInspector({
-        report,
-        selectionKey: selection.key,
-        onSelectKey: selection.select,
-        boundKey: bound?.key,
-        actionsOff,
-        connection,
-        settings,
-        onDigest,
-        onOpenLink,
-        onOpenLesson,
-      })
-    : null;
-
-  return (
-    <ViewLayout
-      id="report"
-      title="Full analysis"
-      className="report-panel server-aligned-values"
-      onBack={onBack}
-      info={
-        <>
-          <p>
-            Runs every Server view once on the connection in use, {REPORT_ESTIMATE}, and ranks what it finds: problems
-            first, then what to watch, with the rule each one uses.
-          </p>
-          <p>It only reads. Suggested statements and my.cnf lines are for you to copy; myflames never applies them.</p>
-        </>
-      }
-      controls={
-        report ? (
-          <Popover
-            label="Export the full analysis"
-            className="report-export"
-            buttonClassName="button"
-            buttonTitle="Export the full analysis as a file"
-            trigger={
-              <>
-                <Icon name="export" size={15} />
-                Export
-              </>
-            }
-          >
-            <h3 className="popover-title">Export as</h3>
-            <div className="report-export-formats" role="group" aria-label="Export formats">
-              {FORMATS.map(([format, label]) => (
-                <button
-                  key={format}
-                  type="button"
-                  className="button"
-                  data-format={format}
-                  disabled={!!exporting}
-                  onClick={() => void exportAs(format)}
-                >
-                  {exporting === format ? <span className="spinner" aria-hidden="true" /> : null}
-                  {label}
-                </button>
-              ))}
-            </div>
-            <p className="hint">Made from the report as read{other ? ` on ${other}` : ""}; nothing is read again.</p>
-            {exported && (
-              <p className="hint" role="status">
-                Saved {exported}
-              </p>
-            )}
-          </Popover>
-        ) : undefined
-      }
-      onRefresh={() => void run()}
-      refreshDisabled={disabled}
-      loading={loading}
-      otherConnection={other}
-      inspector={inspector}
-      inspectorEmpty={<p>Select a finding or a section to see the verdict, the numbers, the rule and what to do.</p>}
-      status={
-        <ViewStatus
-          loading={loading ? `Running every Server view once: ${elapsed} s so far, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
-          error={reads.error || exportError}
-        />
-      }
-    >
-      {!report && !loading && !reads.error && (
-        <EmptyState
-          icon="analysis"
-          title="No full analysis yet"
-          action={
-            <button type="button" className="button primary" disabled={disabled} onClick={() => void run()}>
-              Run full analysis
-            </button>
-          }
-        >
-          {wasRun
-            ? `A full analysis ran in your last session. Reports are not saved: run it again, ${REPORT_ESTIMATE}. It only reads.`
-            : `Runs every Server view once and ranks what to look at first, ${REPORT_ESTIMATE}. It only reads.`}
-        </EmptyState>
-      )}
-      {report && (
-        <ReportDiagnosticBody
-          report={report}
-          hostLabel={bound?.label}
-          selection={selection}
-        />
-      )}
-    </ViewLayout>
-  );
 }
 
 export function ReportDiagnosticBody({

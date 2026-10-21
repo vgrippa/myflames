@@ -1,3 +1,4 @@
+import { qualifiedTable, tableMaintenanceSql } from "./sqlIdent";
 // Server > Tables: tables without a primary key or a usable unique key, and
 // InnoDB free space (schema-2.0 from myflames/schema_health.py). One read per
 // click over the chosen databases (all user databases by default); myflames
@@ -104,11 +105,11 @@ function TableRowActions({
     { label: "Remove column…", icon: "minus", disabled: blocked, onSelect: onRemoveColumn },
     "divider",
     { label: "Optimize table…", icon: "optimize", disabled: blocked,
-      onSelect: () => reviewedSql?.start(`OPTIMIZE TABLE \`${schema}\`.\`${table}\``, `Optimize ${table}`) },
+      onSelect: () => reviewedSql?.start(tableMaintenanceSql("OPTIMIZE", schema, table), `Optimize ${table}`) },
     { label: "Analyze table…", icon: "statements", disabled: blocked,
-      onSelect: () => reviewedSql?.start(`ANALYZE TABLE \`${schema}\`.\`${table}\``, `Analyze ${table}`) },
+      onSelect: () => reviewedSql?.start(tableMaintenanceSql("ANALYZE", schema, table), `Analyze ${table}`) },
     { label: "Check table…", icon: "shield", disabled: blocked,
-      onSelect: () => reviewedSql?.start(`CHECK TABLE \`${schema}\`.\`${table}\``, `Check ${table}`) },
+      onSelect: () => reviewedSql?.start(tableMaintenanceSql("CHECK", schema, table), `Check ${table}`) },
     "divider",
     { label: "View indexes", icon: "index", onSelect: onIndexes },
   ];
@@ -204,7 +205,7 @@ export function TablesView({
 
   const getTableRowContextMenu = (schema: string, table: string) => {
     const runner = reviewedSqlRef.current;
-    const qTable = `\`${schema}\`.\`${table}\``;
+    const qTable = qualifiedTable(schema, table);
     return [
       ...(onOpenSql
         ? [
@@ -230,7 +231,7 @@ export function TablesView({
         icon: "optimize",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`OPTIMIZE TABLE ${qTable}`, `Optimize ${table}`);
+          runner?.start(tableMaintenanceSql("OPTIMIZE", schema, table), `Optimize ${table}`);
         },
       },
       {
@@ -238,7 +239,7 @@ export function TablesView({
         icon: "statements",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`ANALYZE TABLE ${qTable}`, `Analyze ${table}`);
+          runner?.start(tableMaintenanceSql("ANALYZE", schema, table), `Analyze ${table}`);
         },
       },
       {
@@ -246,7 +247,7 @@ export function TablesView({
         icon: "shield",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`CHECK TABLE ${qTable}`, `Check ${table}`);
+          runner?.start(tableMaintenanceSql("CHECK", schema, table), `Check ${table}`);
         },
       },
       {
@@ -254,7 +255,7 @@ export function TablesView({
         icon: "check",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`CHECKSUM TABLE ${qTable} EXTENDED`, `Checksum ${table}`);
+          runner?.start(tableMaintenanceSql("CHECKSUM", schema, table), `Checksum ${table}`);
         },
       },
       { divider: true as const },
@@ -510,17 +511,17 @@ export function TablesView({
     <div className="table-inspector-actions" style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
       <ReviewedSqlAction
         action="optimize_table"
-        sql={`OPTIMIZE TABLE \`${r.schema}\`.\`${r.table}\``}
+        sql={tableMaintenanceSql("OPTIMIZE", r.schema, r.table)}
         label={`Optimize ${r.table}`}
       />
       <ReviewedSqlAction
         action="analyze_table"
-        sql={`ANALYZE TABLE \`${r.schema}\`.\`${r.table}\``}
+        sql={tableMaintenanceSql("ANALYZE", r.schema, r.table)}
         label={`Analyze ${r.table}`}
       />
       <ReviewedSqlAction
         action="check_table"
-        sql={`CHECK TABLE \`${r.schema}\`.\`${r.table}\``}
+        sql={tableMaintenanceSql("CHECK", r.schema, r.table)}
         label={`Check ${r.table}`}
       />
       <button

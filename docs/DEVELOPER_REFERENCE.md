@@ -1851,7 +1851,7 @@ for supported table types, privilege requirements and limits.
 
 ## Workspace navigation and configuration controls
 
-Automatic first reads use `useViewOnScreen()` and the report's connection key. A retained report for another connection counts as unloaded for this purpose; it stays visible through `ViewLayout otherConnection` until the new read succeeds. Health, InnoDB, Locks, Sessions, Waits, I/O, Indexes, Tables and Replication retain their single-flight and stale-response guards. Parameters and Instruments also wait until on screen before their first attempt. Tables and Indexes pass the same visibility state to `useSchemaCatalog(connection, enabled)`, including when compact navigation hides their detail. Explicit Refresh and Refresh all remain independent of these automatic-read gates.
+Automatic first reads use `useOpenRead` and the report's connection key. Opening a view without a report for the connection in use reads once; a failed attempt waits for Refresh. Switching connections while the view stays on screen keeps its old report greyed until Refresh or a later reopening. Parameters, Instruments and Users and roles follow this rule too. Health, InnoDB, Locks, Processlist, Waits, I/O, Indexes, Tables and Replication retain their single-flight and stale-response guards. Every `useConnectionReads` request forwards its AbortSignal to `api()`. Tables and Indexes retain schema-size consent and pass visibility to `useSchemaCatalog(connection, enabled)`, including when compact navigation hides their detail. Explicit Refresh and Refresh all remain independent of these automatic-read gates.
 
 Query Digest stores its report as `Bound<DigestReport>` through `useConnectionReads`, keyed by `connectionKey` (profile, endpoint, user, TLS and write policy). Editor and Explain callbacks carry that report key to `QueryLab.openDigest`; stale actions are disabled and rechecked at dispatch. Late responses cannot replace a newer connection's report. Exports name the report's original connection and filter. Their statistics cover only the loaded digests: sums and execution-weighted means, plus the maximum of collected execution maxima. Execution minima, row/lock extrema and percentiles remain unknown; digest averages and per-digest totals are not individual execution samples.
 
@@ -1886,3 +1886,25 @@ This is not per-index fragmentation; Indexes does not invent such a metric.
 
 The Tables report is `schema-2.0`: `fragmentation[].free_pct` is a number or null. Null means the percentage cannot be established from the available values. The workspace also reads historical `schema-1.0` fixtures. `tables` is the inventory array; Indexes adds an `indexes` inventory array to its existing report. Neither inventory adds a database query.
 
+
+
+### Workspace interaction correctness
+
+`PrivilegesProvider` refreshes after the connect revision or the session-password
+commit revision changes. Typing never increments either revision. The picker
+commits on blur or Enter, once per changed value; incidental privilege reads
+ignore an uncommitted password. `refreshProfiles` adopts only the newest request
+and makes older callers await that request, preserving current write policy.
+
+`AccountsView` stores layout as `accounts.list`. Incomplete account metadata
+gets Not judged with the backend reason and a single Details column; account
+selection guards staged edits with Review changes, Discard and Cancel.
+`sqlIdent.ts` owns quoted identifiers, literals and shared index/table builders.
+`MassKillDialog` compiles the unmodified query pattern once per edit; invalid
+patterns match no rows.
+
+`ContextMenu` in `kit.tsx` serves DataTable and TableData, measures its rendered
+size, preserves keyboard focus, and suppresses empty menus. View actions precede
+standard copy actions. Resizers clear drag state and listeners on pointercancel
+and lostpointercapture. Full analysis start time belongs to its read owner in
+Server; Tuning uses it across remounts and uses ExportMenu for both exports.

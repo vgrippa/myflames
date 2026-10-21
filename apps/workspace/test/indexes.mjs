@@ -50,6 +50,11 @@ const h = await open("/api/live/indexes", "indexes", {
   "/api/live/tables": { status: 200, body: tablesReport },
   "/api/live/top": (body) => ({ status: 200, body: topFor(body) }),
   "/api/live/start": { status: 400, body: { error: "Not mocked in this suite." } },
+  "/api/editor/preview": { status: 400, body: { error: "Authority unknown in this fixture." } },
+  "/api/editor/run": body => body.decline ? { status: 200, body: { status: "declined" } } : {
+    status: 200, body: { status: "needs_confirmation", confirmation: { token: "index-review", text: "Review the statement.", tone: "primary",
+      connection: { user: "root", host: "127.0.0.1", port: 3306 }, connection_type: "development", warnings: [], statements: [body.sql], typed_target: null } } },
+  "/api/editor/close": { status: 200, body: { closed: true, session: null } },
 }, { list: "docked" });
 const { page, state, button, text } = h;
 state.fallback = { status: 200, body: mysql };
@@ -421,6 +426,58 @@ try {
   await h.view("top");
   assert.equal(await page.$eval("#top-schema", (e) => e.value), "mfshop",
     "Top statements keeps its own schema (from the earlier link), not the Indexes choice");
+
+  // Hostile catalog names reach identical quoted SQL from the row menu,
+  // inspector and context menu. A review is declined in every case.
+  await page.setViewport({ width: 1440, height: 1000 });
+  await h.server(); await h.view("indexes");
+  const odd = { schema: "s`name", table: "t`name", index: "i`'\\name" };
+  const qTable = "`s``name`.`t``name`", qIndex = "`i``'\\name`";
+  const toggle = `ALTER TABLE ${qTable} ALTER INDEX ${qIndex} INVISIBLE`;
+  const drop = `ALTER TABLE ${qTable} DROP INDEX ${qIndex}`;
+  state.queue.push({ status: 200, body: { ...mysql, indexes: undefined,
+    unused: [{ ...mysql.unused[0], ...odd, test_sql: toggle + ";", drop_sql: drop + ";" }], redundant: [], full_scans: [], no_data: [] } });
+  await h.refresh(); await h.idle(view); await list("unused");
+  const oddRow = `${view} [aria-label="Unused indexes"] tbody tr[data-row-key]`;
+  await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes("i`'"), {}, oddRow);
+  const menuItem = async (selector, label) => {
+    await page.waitForSelector(selector);
+    await page.$$eval(selector, (items, text) => {
+      const item = items.find(item => item.textContent.trim() === text);
+      if (!item) throw new Error(`Missing menu action ${text}`);
+      item.click();
+    }, label);
+  };
+  const expectReview = async expected => {
+    await page.waitForSelector("dialog.confirm-sheet[open]");
+    assert.equal(state.other.filter(call => call.path === "/api/editor/run").at(-1).body.sql, expected);
+    assert.equal(await text("dialog.confirm-sheet .sql-preview"), expected);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"));
+    assert.equal(state.other.filter(call => call.path === "/api/editor/run").at(-1).body.decline, true);
+  };
+  await page.$eval(oddRow + " .row-more", button => { button.focus(); button.click(); });
+  await menuItem(".row-action-menu [role=menuitem]", "Set invisible…");
+  await expectReview(toggle);
+  await h.select(oddRow);
+  await page.$$eval('.view-inspector [data-reviewed-sql]', buttons => buttons.find(button => button.textContent.startsWith("Drop index"))?.click());
+  await expectReview(drop);
+  const contextAction = async label => {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.click(oddRow, { button: "right" });
+    await menuItem(".context-menu [role=menuitem]", label);
+  };
+  await contextAction("Set invisible…"); await expectReview(toggle);
+  await contextAction("Update index statistics (Analyze)…"); await expectReview(`ANALYZE TABLE ${qTable}`);
+  await contextAction("Rebuild index / table (Optimize)…"); await expectReview(`OPTIMIZE TABLE ${qTable}`);
+  await page.evaluate(() => { window.__indexCopies = []; navigator.clipboard.writeText = text => { window.__indexCopies.push(text); return Promise.resolve(); }; });
+  await contextAction("Copy DROP INDEX SQL");
+  assert.deepEqual(await page.evaluate(() => window.__indexCopies), [drop + ";"]);
+  await contextAction("Show index definition (SHOW INDEX)");
+  await page.waitForSelector('[aria-label="SQL editor"]');
+  assert.equal(await page.$eval('[aria-label="SQL editor"]', editor => editor.value),
+    `SHOW INDEX FROM ${qTable} WHERE Key_name = 'i` + "`''\\\\name';");
+  assert.equal(state.other.filter(call => call.path === "/api/editor/run" && call.body.confirmed).length, 0, "menu checks never apply SQL");
 
   assert.deepEqual(h.errors, []);
   console.log("indexes view: ok");

@@ -1,9 +1,10 @@
 // Users and roles keeps all drafts, reports and secrets out of session.ts.
-// Only the selected view is eligible for restore.
+// Only the selected view and column layout are eligible for restore.
 import { useCallback, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
 import type { Connection } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
+import { useOpenRead } from "./viewOnScreen";
 import { CopySql, engineLabel } from "./PerfShared";
 import { VisiblePrivilegeGate } from "./Locks";
 import { Checkbox, ConfirmSheet, CountBadge, DataTable, Disclosure, EmptyState, Fields, InspectorSection,
@@ -87,6 +88,7 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   const [result, setResult] = useState<Bound<AccountGroupResult[]> | null>(null);
   const [editorRevision, setEditorRevision] = useState(0);
   const [pending, setPending] = useState<Pending[]>([]);
+  const [nextSelection, setNextSelection] = useState<{ key: string; open?: boolean } | null>(null);
   const [generated, setGenerated] = useState<{ key: string; password: string } | null>(null);
   const operation = useRef(false);
   const mounted = useRef(true);
@@ -116,12 +118,23 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     return () => { mounted.current = false; const r = reviewRef.current; if (r && !operation.current) void declineAccountGroups(r.via.connection, r.groups); };
   }, []);
   useEffect(() => { setForm(null); setGenerated(null); setError(""); }, [reads.key]);
-  useEffect(() => { setPending([]); }, [reads.key, selection.key]);
+  useEffect(() => { setPending([]); setNextSelection(null); }, [reads.key]);
 
   const load = useCallback(async () => {
     if (disabled || operation.current) return;
     await reads.run("accounts", "Reading users and roles…", listAccounts, onReport);
   }, [disabled, reads.run, onReport]);
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled && !review && !busy,
+    busy: !!reads.loading || reads.running(), read: () => { void load(); } });
+
+  function selectAccount(key: string, open?: boolean) {
+    if (operation.current || review) return;
+    if (key !== selection.key && pending.length) {
+      setNextSelection({ key, open });
+      return;
+    }
+    selection.select(key, open);
+  }
   useEffect(() => {
     if (!selected || other || !bound) return;
     const target = { ...selected, role: isRole(selected, bound.report) };
@@ -211,7 +224,8 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   }
 
   const columns: Column<AccountRow>[] = [
-    { key: "account", label: "Account", flex: true, primary: true, sort: accountLabel, render: a => accountLabel({ ...a, role: report ? isRole(a, report) : a.role }) },
+    // The shared table measures names, capped at its normal text-column width.
+    { key: "account", label: "Account", primary: true, sort: accountLabel, render: a => accountLabel({ ...a, role: report ? isRole(a, report) : a.role }) },
     { key: "type", label: "Type", sort: a => report && isRole(a, report) ? "Role" : "User", render: a => report && isRole(a, report) ? "Role" : "User" },
     { key: "locked", label: "Locked", sort: a => yesNo(a.locked), render: a => yesNo(a.locked) },
     { key: "expired", label: "Expired", sort: a => yesNo(a.expired), render: a => yesNo(a.expired) },
@@ -220,6 +234,11 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
       currentDetail.dangerous?.length ? <span title={currentDetail.dangerous.join(", ")}><StatusDot tone="watch" label={`${currentDetail.dangerous.length} risky`} /></span> : "None read" : "Not checked" },
     { key: "plugin", label: "Authentication plugin", sort: a => a.plugin || "", render: a => a.plugin || "Unknown" },
   ];
+  const metadataUnreadable = report?.complete === false;
+  // The unreadable-list fallback supplies only the connected name and host;
+  // it has no role/type or account attributes to judge.
+  const shownColumns: Column<AccountRow>[] = metadataUnreadable ? [columns[0],
+    { key: "details", label: "Details", render: () => "Not readable" }] : columns;
   const rows = (report?.accounts || []).filter(a => accountLabel(a).toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const roles = report ? report.accounts.filter(a => isRole(a, report)).length : 0;
   let inspector: InspectorContent | null = null;
@@ -246,12 +265,28 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     </>} inspector={inspector}
     inspectorEmpty="Select an account to view its grants, account settings and roles.">
     {createNote && <p className="account-note account-create-note" role="note">{createNote}</p>}
-    {!report ? <EmptyState icon="server" title="Users and roles" action={<button className="button primary" disabled={disabled || !!reads.loading} onClick={() => void load()}>Load users and roles</button>}>Read accounts from the connection in use.</EmptyState> : <>
-      <SummaryLine tone="info" toneLabel={report.complete ? "Accounts read" : "Partial list"} notes={report.warnings}>
-        {`${(report.accounts.length - roles).toLocaleString()} ${report.accounts.length - roles === 1 ? "user" : "users"} · ${roles.toLocaleString()} ${roles === 1 ? "role" : "roles"}`}
+    {!report ? <EmptyState icon="server" title="Users and roles" action={reads.error && <button className="button primary" disabled={disabled || !!reads.loading} onClick={() => void load()}>Retry</button>}>Read accounts from the connection in use.</EmptyState> : <>
+      <SummaryLine tone={metadataUnreadable ? "unknown" : "info"} toneLabel={metadataUnreadable ? "Not judged" : "Accounts read"} notes={report.warnings}>
+        {metadataUnreadable ? report.warnings[0] || "Account metadata could not be read." : `${(report.accounts.length - roles).toLocaleString()} ${report.accounts.length - roles === 1 ? "user" : "users"} · ${roles.toLocaleString()} ${roles === 1 ? "role" : "roles"}`}
       </SummaryLine>
-      <DataTable label="Users and roles" columns={columns} rows={rows} rowKey={accountKey} selection={selection} empty="No matching accounts." />
+      <DataTable id="accounts.list" label="Users and roles" columns={shownColumns} rows={rows} rowKey={accountKey} selection={{ key: selection.key, select: selectAccount }} empty="No matching accounts." />
     </>}
+    {nextSelection && <ConfirmSheet className="account-selection-review" title="Keep pending account changes?"
+      description={`There are pending changes for ${selected ? accountLabel(selected) : "the selected account"}. Review them before choosing another account, or discard them.`}
+      confirmLabel="Review changes" confirmTone="primary" confirmDisabled={!currentDetail || !!blocked || !!review}
+      busy={!!busy} onCancel={() => {
+        const open = nextSelection.open;
+        setNextSelection(null);
+        if (open) selection.select(selection.key, true);
+      }} onConfirm={() => {
+        const open = nextSelection.open;
+        setNextSelection(null);
+        if (open) selection.select(selection.key, true);
+        if (currentDetail) void prepare(currentDetail, compactChanges(pending.map(p => p.edit)));
+      }} secondary={{ label: "Discard", onClick: () => {
+        setPending([]); setNextSelection(null);
+        selection.select(nextSelection.key, nextSelection.open);
+      } }} />}
     {form && <AccountForm key={`${reads.key}:${form.operation}:${accountKey(form.target)}`} form={form} engine={engine}
       randomAvailable={engine === "mariadb" || engine === "mysql"} blocked={blocked} busy={!!busy} error={error}
       onCancel={() => setForm(null)} onPrepare={prepare} />}

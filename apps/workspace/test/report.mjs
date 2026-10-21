@@ -22,6 +22,164 @@ import os from "node:os";
 import path from "node:path";
 import { load, open, pause } from "./perf-harness.mjs";
 
+// Socket-free coverage of the shell-owned run lifecycle and actual Tuning
+// rendering. The browser path below continues to cover focus and downloads.
+if (process.argv.includes("--unit")) {
+  const { build, transform } = await import("esbuild");
+  const { createRequire } = await import("node:module");
+  const { fileURLToPath } = await import("node:url");
+  const React = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const source = await fs.readFile(new URL("../src/Server.tsx", import.meta.url), "utf8");
+  const helper = source.slice(source.indexOf("function refreshDiagramDatabase("), source.indexOf("/** Below this width"));
+  const helperCode = (await transform(`${helper}\nreturn refreshDiagramDatabase;`, { loader: "ts" })).code;
+  const database = new Function(helperCode)();
+  const documents = [null, { source: { kind: "import" } }, { source: { kind: "server", key: "other", database: "shop" } },
+    { source: { kind: "server", key: "current", database: "shop" } }];
+  assert.deepEqual(documents.map(doc => database(doc, " selected ", "current")), ["selected", "", "", "shop"]);
+  assert.equal(database(null, "  ", "current"), "");
+  assert.equal(database({ source: { kind: "server", key: "current" } }, "shop", "current"), "");
+  assert.equal((source.match(/refreshTasks\(\)/g) || []).length, 2, "tasks are built only on Refresh all, never to render a count");
+  const tasks = source.slice(source.indexOf("  function refreshTasks()"), source.indexOf("  /** Refresh every Server section"));
+  const viewsCode = (await transform(await fs.readFile(new URL("../src/serverViews.ts", import.meta.url), "utf8"), { loader: "ts", format: "cjs" })).code;
+  const viewModule = { exports: {} };
+  new Function("module", viewsCode)(viewModule);
+  const { ALL_SERVER_VIEWS } = viewModule.exports;
+  const taskCode = (await transform(tasks, { loader: "ts" })).code;
+  for (const diagram of documents) {
+    const scope = { latestConnection: { current: {} }, connectionKey: () => "current", lastViewRead: () => null,
+      readRunning: () => false, ALL_SERVER_VIEWS, READ_LABELS: {}, healthInterval: 5, waitsInterval: 10,
+      ioInterval: 10, schema: "", order: "total", topStatements: { table: null },
+      topRead: () => ({ params: "top", body: () => ({}) }), sessionsScope: "active", minSeconds: 0,
+      locks: null, tables: null, indexesSchemas: [], tablesSchemas: [], ERROR_LOG_READ: "error-log",
+      errorLogBody: () => ({}), diagram, diagramDatabase: "selected", refreshDiagramDatabase: database,
+      WINDOWED: ["health", "waits", "io"] };
+    const actual = new Function("scope", `with (scope) { ${taskCode}; return refreshTasks(); }`)(scope);
+    assert.equal(actual.length, ALL_SERVER_VIEWS.length + 3 + (database(diagram, "selected", "current") ? 1 : 0));
+  }
+  assert.doesNotMatch(source, /badges\.(replication|report|tuning)/);
+  assert.doesNotMatch(source, /click Load or Refresh|Top statements, Sessions|Kill in Sessions/);
+  const reportSource = await fs.readFile(new URL("../src/Report.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(reportSource, /ReportView|runStarts/);
+  const sidebar = await fs.readFile(new URL("../src/Sidebar.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(sidebar, /onNewSession|onOpenQuery|onRemoveQuery|activeQueryId|Open queries/);
+
+  const callback = source.match(/onRunReport=\{(async \(\) => \{[\s\S]*?)\}\n\s+onOpenSql=/);
+  assert.ok(callback, "shell-owned analysis callback exists");
+  const callbackCode = (await transform(`const run = ${callback[1]};`, { loader: "ts" })).code;
+  const pending = [];
+  let active = "first";
+  let started = null;
+  const scope = { disabled: false, running: false, connection: {},
+    setAnalysisStarted: value => { started = typeof value === "function" ? value(started) : value; },
+    analysisReads: { currentKey: () => active, running: () => pending.some(p => p.key === active && !p.done),
+      run: () => new Promise(resolve => pending.push({ key: active, resolve, done: false })) } };
+  const run = new Function("scope", `with (scope) { ${callbackCode}; return run; }`)(scope);
+  const now = Date.now;
+  const originalError = console.error;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const directory = await fs.mkdtemp(path.join(here, ".report-unit-"));
+  try {
+    Date.now = () => 100000;
+    const first = run();
+    assert.deepEqual(started, { key: "first", at: 100000 });
+    await run();
+    assert.equal(pending.length, 1, "duplicate starts preserve the first timestamp");
+    const output = await build({ entryPoints: [fileURLToPath(new URL("../src/Tuning.tsx", import.meta.url))],
+      bundle: true, platform: "node", format: "cjs", write: false, jsx: "automatic", loader: { ".css": "empty" }, external: ["react", "react-dom"] });
+    const filename = path.join(directory, "tuning.cjs");
+    await fs.writeFile(filename, output.outputFiles[0].text);
+    const { TuningView } = createRequire(import.meta.url)(filename);
+    console.error = (...args) => {
+      if (String(args[0]).includes("useLayoutEffect does nothing on the server")) return;
+      originalError(...args);
+    };
+    const render = extra => renderToStaticMarkup(React.createElement(TuningView, {
+      disabled: false, selection: { key: "", select() {} }, reads: { key: "first", loading: "Reading", error: "" },
+      startedAt: started?.at, ...extra,
+    }));
+    Date.now = () => 107000;
+    assert.match(render(), /7 s so far/);
+    Date.now = () => 112000;
+    assert.match(render(), /12 s so far/, "a remounted Tuning keeps the shell start time");
+    assert.match(render(), /aria-label="Export the tuning scorecard"[^>]*aria-haspopup="menu"/);
+    const analysis = await load("report-mysql-8.4.json");
+    assert.match(render({ tabRequest: { tab: "analysis", n: 1 }, report: { key: "first", label: "first", report: analysis } }),
+      /aria-label="Export the full analysis"[^>]*aria-haspopup="menu"/);
+    active = "second";
+    const second = run();
+    assert.deepEqual(started, { key: "second", at: 112000 });
+    pending[0].done = true;
+    pending[0].resolve(null);
+    await first;
+    assert.deepEqual(started, { key: "second", at: 112000 }, "old completion leaves the new connection's timer intact");
+    pending[1].done = true;
+    pending[1].resolve(null);
+    await second;
+    assert.equal(started, null);
+
+    // Refresh all owns a separate read path. Execute its actual worker with
+    // only the report task and hold the response while Tuning is first opened.
+    const refreshSource = source.slice(source.indexOf("  async function refreshAll()"), source.indexOf("  /** Stop Refresh all:"));
+    const refreshCode = (await transform(refreshSource, { loader: "ts" })).code;
+    let refresh = null;
+    let generation = 0;
+    const globalPending = [];
+    const refreshScope = {
+      refreshControl: { current: null }, disabled: false, latestConnection: { current: { key: "first" } },
+      connectionKey: c => c.key, connectionLabel: c => c.key, refreshSeq: { current: 0 },
+      refreshTasks: () => [{ view: "report", label: "Full analysis", params: "report", request() {}, accept() {} }],
+      setRefresh: value => { refresh = typeof value === "function" ? value(refresh) : value; },
+      analysisStarted: null, readRunning: () => false, nextGeneration: () => ++generation, latestGeneration: () => generation,
+      sharedRead: () => new Promise(resolve => globalPending.push(resolve)), reportOfRef: { current: () => null }, REFRESH_CONCURRENCY: 3,
+    };
+    const refreshAll = new Function("scope", `with (scope) { ${refreshCode}; return refreshAll; }`)(refreshScope);
+    Date.now = () => 200000;
+    const globalFirst = refreshAll();
+    await Promise.resolve();
+    assert.equal(refresh.views[0].state, "loading");
+    assert.equal(refresh.views[0].startedAt, 200000, "the report phase records its read start");
+    const globalProps = () => ({ reads: { key: refresh.key, loading: "", error: "" },
+      refreshRunning: refresh.state === "running" && refresh.views[0].state === "loading", startedAt: refresh.views[0].startedAt });
+    Date.now = () => 207000;
+    assert.match(render(globalProps()), /7 s so far/, "opening Tuning during Refresh all displays the running analysis");
+    Date.now = () => 212000;
+    assert.match(render(globalProps()), /12 s so far/, "remounting during Refresh all keeps its phase's start");
+    // A connection switch stops the old run and permits a new one. Its late
+    // completion cannot clear or relabel the new run's elapsed time.
+    refreshScope.refreshControl.current.controller.abort();
+    refreshScope.refreshControl.current = null;
+    refreshScope.latestConnection.current = { key: "second" };
+    const globalSecond = refreshAll();
+    await Promise.resolve();
+    globalPending[0]({});
+    await globalFirst;
+    assert.equal(refresh.key, "second");
+    assert.equal(refresh.views[0].state, "loading");
+    assert.equal(refresh.views[0].startedAt, 212000);
+    globalPending[1]({});
+    await globalSecond;
+    assert.doesNotMatch(render(globalProps()), /s so far/, "a completed report phase stops the timer");
+    // Joining a manually started read copies its original timestamp; the
+    // waiter may clear manual state before the Refresh all waiter completes.
+    refreshScope.analysisStarted = { key: "second", at: 300000 };
+    refreshScope.readRunning = () => true;
+    Date.now = () => 305000;
+    const joined = refreshAll();
+    assert.equal(refresh.views[0].startedAt, 300000);
+    refreshScope.analysisStarted = null;
+    assert.match(render(globalProps()), /5 s so far/);
+    globalPending[2]({});
+    await joined;
+  } finally {
+    Date.now = now;
+    console.error = originalError;
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+  console.log("Report unit checks passed: refresh count/scope, manual and Refresh all timing across remounts, stale completion and shared export menus.");
+  process.exit(0);
+}
+
 const smoke = await load("report-mysql-8.4.json");
 const health = await load("health-mysql-8.4.json");
 const config = await load("config-mysql-8.4.json");
@@ -193,7 +351,7 @@ try {
   assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Error log"]);
   assert.equal(await page.$("#server-nav-report"), null, "the Full analysis is no Server view");
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false, "Refresh all works before any view is loaded");
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 17 Server sections/);
+  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 17 sections/);
   await h.fullAnalysis();
   assert.match(await text(`${view} .view-empty`), /Runs every Server view once and ranks what to look at first, about 10 to 20 s\. It only reads\./);
   assert.match(await h.popover("About Tuning"), /never applies them/);
@@ -333,10 +491,10 @@ try {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.click(`${view} .detail-back`);
   await page.click(`${view} .report-export button.button`);
-  await page.waitForSelector(".popover .report-export-formats");
-  assert.deepEqual(await page.$$eval(".popover .report-export-formats button", (els) => els.map((e) => e.textContent)), ["HTML", "Markdown", "JSON", "Text"]);
-  await page.click('.popover .report-export-formats button[data-format="html"]');
-  await page.waitForFunction(() => /Saved myflames-report-20261015010720\.html/.test(document.querySelector(".popover")?.textContent || ""));
+  await page.waitForSelector(".popover .export-menu-items");
+  assert.deepEqual(await page.$$eval(".popover .export-menu-items button", (els) => els.map((e) => e.textContent)), ["HTML", "Markdown", "JSON", "Text"]);
+  await page.click('.popover .export-menu-items button[data-format="html"]');
+  await page.waitForFunction(() => /Saved myflames-report-20261015010720\.html/.test(document.querySelector(".tuning-panel")?.textContent || ""));
   assert.equal(exports.length, 1);
   assert.equal(exports[0].format, "html");
   assert.equal(exports[0].report.schema_version, "report-1.0");
@@ -346,7 +504,12 @@ try {
   assert.equal(JSON.stringify(exports[0].source).includes("password"), false);
   await until(async () => (await fs.readdir(downloads)).some((f) => f.endsWith(".html")), "the HTML file is downloaded");
   assert.equal(await fs.readFile(path.join(downloads, "myflames-report-20261015010720.html"), "utf8"), "html export");
-  for (const format of ["markdown", "json", "text"]) await page.click(`.popover .report-export-formats button[data-format="${format}"]`).then(() => pause(150));
+  for (const format of ["markdown", "json", "text"]) {
+    await page.waitForFunction(s => !document.querySelector(s)?.disabled, {}, `${view} .report-export button.button`);
+    await page.click(`${view} .report-export button.button`);
+    await page.click(`.popover .export-menu-items button[data-format="${format}"]`);
+    await until(() => exports.some(item => item.format === format), `${format} export requested`);
+  }
   assert.deepEqual(exports.map((e) => e.format), ["html", "markdown", "json", "text"]);
   await page.keyboard.press("Escape");
 
@@ -399,7 +562,7 @@ try {
   }
   const refreshed = Object.keys(replies);
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false);
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 17 Server sections for this connection \(⌥⌘R\)/);
+  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 17 sections for this connection \(⌥⌘R\)/);
   // Hold every read: three start (the sampling views first), the rest wait.
   for (const p of refreshed) hold.add(p);
   const before = state.other.length;
@@ -606,7 +769,7 @@ try {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.click(`${view} .detail-back`);
   await page.click(`${view} .report-export button.button`);
-  await page.click('.popover .report-export-formats button[data-format="markdown"]');
+  await page.click('.popover .export-menu-items button[data-format="markdown"]');
   await until(async () => (await fs.readdir(downloads)).some((f) => f.endsWith(".md")), "the Markdown file is downloaded");
   const markdown = await fs.readFile(path.join(downloads, (await fs.readdir(downloads)).find((f) => f.endsWith(".md"))), "utf8");
   assert.match(markdown, /^Connection: Local MySQL \(127\.0\.0\.1:3306\)/m);

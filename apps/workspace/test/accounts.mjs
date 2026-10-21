@@ -151,6 +151,9 @@ from myflames import accounts, privileges
 out = []
 for server in replay.SERVERS:
     conn, data = replay.reads(server)
+    catalog = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text())
+    for call in catalog['sessions']['root']['calls']:
+        conn.answers.setdefault(call['sql'], call)
     listing = accounts.list_accounts(conn)
     detail = accounts.read_account(conn, 'acct_app', '%')
     actor, _ = replay.session(server, 'acct_ops')
@@ -167,6 +170,16 @@ print(json.dumps(out))
       const markup = renderToStaticMarkup(createElement(AccountsView, { connection, report: { key: "fixture", label: "fixture", report: listing }, onReport() {}, selection: { key: "", select() {} } }));
       assert.ok(markup.includes("acct_app")); assert.ok(markup.includes("Accounts read")); assert.ok(!markup.includes("No threshold"));
     }
+    const unreadableReason = "Only the connected account is listed: listing users and roles needs SELECT on the mysql database.";
+    const unreadable = { schema_version: "accounts-1.0", engine: "mysql", version: "8.4.0", complete: false,
+      accounts: [{ name: "limited", host: "%", connected: true }], role_grants: [], default_roles: [], warnings: [unreadableReason] };
+    const unreadableMarkup = renderToStaticMarkup(createElement(AccountsView, { connection,
+      report: { key: "fixture", label: "fixture", report: unreadable }, onReport() {}, selection: { key: "", select() {} } }));
+    assert.match(unreadableMarkup, /Not judged/);
+    assert.ok(unreadableMarkup.includes(unreadableReason), "the actual unreadable-list reason is visible");
+    assert.match(unreadableMarkup, /data-col="details"/);
+    assert.match(unreadableMarkup, /Not readable/);
+    for (const key of ["type", "locked", "expired", "risk", "plugin"]) assert.ok(!unreadableMarkup.includes(`data-col="${key}"`), `unreadable metadata omits ${key}`);
     response = { ...response, plan_id: "" };
     await assert.rejects(planAccount(connection, target, [{ operation: "lock" }]), /complete reviewable/);
     await assert.rejects(planAccount(connection, target, []), /No pending/);
@@ -183,7 +196,8 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
       import {createRoot} from ${JSON.stringify(path.join(workspace, "node_modules/react-dom/client.js"))};
       import {AccountsView, compactChanges} from ${source("Accounts.tsx")};
       import {PrivilegesProvider, PrivilegeGate, usePrivileges, privilegeResult} from ${source("privileges.ts")};
-      import {InspectorContext} from ${source("kit.tsx")};
+      import {InspectorContext, ColumnStoreContext, useColumnStore} from ${source("kit.tsx")};
+      import {ViewOnScreenContext} from ${source("viewOnScreen.ts")};
       import {WritePolicyContext} from ${source("Connections.tsx")};
       import ${source("style.css")}; import ${source("kit.css")}; import ${source("server.css")};
       window.accountTest = { compactChanges, privilegeResult };
@@ -199,15 +213,23 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
         const [report,setReport] = useState(null), [selected, select] = useState("");
         const [inspector,setInspector] = useState(true), [revision,setRevision] = useState(0);
         const [width,setWidth] = useState(window.innerWidth);
+        const [onScreen,setOnScreen] = useState(false), [columns,setColumns] = useState({});
+        window.accountColumns = columns;
+        const columnStore = useColumnStore(columns, setColumns);
         React.useEffect(() => { const f = () => setWidth(window.innerWidth); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
         return <WritePolicyContext.Provider value={{blocked:"",check:async()=>connection}}>
           <PrivilegesProvider connection={connection} connectRevision={revision}>
             <div className="test-probes"><button onClick={()=>setConnection(c=>({...c,host:c.host === "127.0.0.1" ? "127.0.0.2" : "127.0.0.1"}))}>Switch connection</button>
               <button onClick={()=>setConnection(c=>({...c,read_only:!c.read_only}))}>Toggle read-only</button>
-              <button onClick={()=>setRevision(n=>n+1)}>Reconnect</button></div><Probe/>
+              <button onClick={()=>setRevision(n=>n+1)}>Reconnect</button>
+              <button onClick={()=>setOnScreen(v=>!v)}>Toggle Accounts visibility</button></div><Probe/>
             <InspectorContext.Provider value={{open:inspector,setOpen:setInspector,width:440,setWidth:()=>{},sheet:width<1040}}>
-              <AccountsView connection={connection} report={report} onReport={setReport} onBack={()=>setInspector(false)}
-                selection={{key:selected,select:(key,open)=>{select(key);if(open)setInspector(true);}}}/>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <ViewOnScreenContext.Provider value={onScreen}><div hidden={!onScreen}>
+                  <AccountsView connection={connection} report={report} onReport={setReport} onBack={()=>setInspector(false)}
+                    selection={{key:selected,select:(key,open)=>{select(key);if(open)setInspector(true);}}}/>
+                </div></ViewOnScreenContext.Provider>
+              </ColumnStoreContext.Provider>
             </InspectorContext.Provider>
           </PrivilegesProvider>
         </WritePolicyContext.Provider>;
@@ -339,7 +361,7 @@ try {
       const value=await page.$$eval(`${field("Grant scope")} option`,(options,db)=>options.find(o=>o.textContent===`${db}.*`)?.value,database);
       assert.ok(value); await page.select(field("Grant scope"),value);
     };
-    await click("Load users and roles"); await page.waitForSelector(".accounts-view tbody tr"); await inspect();
+    await click("Toggle Accounts visibility"); await page.waitForSelector(".accounts-view tbody tr"); await inspect();
     // Newly supported dynamic privilege offers its own option despite being unheld.
     await rowInput("FLUSH_TABLES"); await rowInput("FLUSH_TABLES",1);
     assert.match(await h.text(".account-pending"),/with grant option/); await click("Discard");
@@ -417,6 +439,22 @@ try {
     await h.close(); h=null; process.exit(0);
   }
 
+  // Accounts reads once when opened, never while retained off screen. An
+  // unsuccessful first read stops until the explicit Retry action.
+  assert.equal(state.seen.length, 0, "Accounts has not read off screen");
+  state.queue.push({ status: 400, body: { error: "Cannot read account metadata in this session." } });
+  await click("Toggle Accounts visibility");
+  await page.waitForSelector(".accounts-view [role=alert]");
+  assert.equal(state.seen.length, 1, "opening attempts one read");
+  await page.waitForFunction(() => !document.querySelector(".accounts-view .capture-status"));
+  assert.match(await h.text(".accounts-view [role=alert]"), /Cannot read account metadata/);
+  await click("Retry");
+  await page.waitForSelector(".accounts-view tbody tr");
+  assert.equal(state.seen.length, 2, "Retry starts a fresh read");
+  await click("Toggle Accounts visibility");
+  await click("Toggle Accounts visibility");
+  assert.equal(state.seen.length, 2, "reopening keeps the current report");
+
   // Exact global denials stay visible and focusable, unknown remains enabled.
   assert.equal(await page.$eval('[data-privilege-action="kill"]', e => e.getAttribute("aria-disabled")), "true");
   assert.match(await page.$eval('[data-privilege-action="kill"]', e => e.title), /CONNECTION_ADMIN.*SUPER/);
@@ -436,11 +474,42 @@ try {
   assert.equal(probes.read.disabledReason, ""); assert.equal(probes.missing.state, "unknown"); assert.equal(probes.compact.length, 1);
   assert.deepEqual(probes.compact[0].privileges, ["INSERT", "UPDATE"]);
 
-  await click("Load users and roles"); await page.waitForSelector(".accounts-view tbody tr"); await inspect();
+  await inspect();
   assert.equal(await h.text(".accounts-view .summary-text"), "2 users · 1 role", "counts are pluralized");
   assert.equal(await page.$("probe"), null); // User names are rendered as text.
   assert.equal(count("accounts/apply"), 0);
-  await review();
+  const selectedKey = await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey);
+  const chooseReader = async () => {
+    await backToAccounts();
+    await page.$$eval('.accounts-view tbody tr[data-row-key]', rows => rows.find(row => row.textContent.includes("reader@%"))?.click());
+    await page.waitForSelector(".account-selection-review[open]");
+  };
+  await tick("INSERT");
+  const detailReads = count("accounts/read"), plansBeforeChoice = count("accounts/plan");
+  await chooseReader();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), "Cancel");
+  assert.deepEqual(await page.$$eval(".account-selection-review .sheet-actions button", buttons => buttons.map(b => b.textContent)), ["Cancel", "Discard", "Review changes"]);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".account-selection-review"));
+  assert.equal(await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey), selectedKey);
+  assert.ok(await page.$(".account-pending"));
+  assert.equal(count("accounts/read"), detailReads, "cancel never reads the other account");
+  assert.equal(count("accounts/plan"), plansBeforeChoice, "selection alone never prepares a write");
+  await chooseReader();
+  await page.locator('.account-selection-review button ::-p-text(Cancel)').click();
+  assert.ok(await page.$(".account-pending"));
+  await chooseReader();
+  await page.locator('.account-selection-review button ::-p-text(Discard)').click();
+  await page.waitForFunction(() => document.querySelector('.account-inspector') && document.querySelector('.inspector-title')?.textContent.includes('reader'));
+  assert.equal(await page.$(".account-pending"), null);
+  await inspect();
+  await page.click(".account-inspector > .inspector-block .account-checkbox input");
+  await chooseReader();
+  await page.locator('.account-selection-review button ::-p-text(Review changes)').click();
+  await page.waitForSelector(".account-review[open]");
+  assert.equal(latestPlan.name, target.name, "review remains bound to the account with pending edits");
+  assert.equal(await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey), selectedKey);
+  assert.equal(count("accounts/apply"), 0, "Review changes only prepares statements");
   assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), "Cancel");
   assert.match(await h.text(".account-review"), /Production: confirm/);
   assert.match(await h.text('[aria-label="Before and after grants"]'), /Before.*After.*GRANT OPTION/s);
@@ -468,10 +537,12 @@ try {
   // Switching identity leaves the old list grey. A reviewed write on A
   // cannot be sent through B even when B permits account changes.
   await page.waitForSelector(".account-matrix"); await review();
+  const listsBeforeSwitch = state.seen.length;
   await page.evaluate(() => [...document.querySelectorAll(".test-probes button")].find(b => b.textContent === "Switch connection").click());
   await page.waitForFunction(() => document.querySelector(".account-review .danger-solid")?.disabled === true);
   assert.match(await h.text(".account-review"), /connection changed/); await dismiss();
   assert.equal(await page.$eval(".accounts-view", e => e.dataset.otherConnection), "true");
+  assert.equal(state.seen.length, listsBeforeSwitch, "switching connections retains the grey report until Refresh");
   assert.equal(count("accounts/apply"), 1);
   await h.refresh(); await inspect();
 
@@ -635,6 +706,28 @@ try {
   await page.click(".account-review .danger-solid"); await page.waitForSelector('[aria-label="Generated password"]');
   await page.waitForFunction(() => !document.querySelector(".account-review"));
   await click("Dismiss password");
+
+  // Account names use measured, capped widths. Layout changes persist under
+  // the stable table id even when the unreadable report swaps its columns.
+  await backToAccounts();
+  const accountWidth = await page.$eval('.accounts-view th[data-col="account"]', th => th.getBoundingClientRect().width);
+  assert.ok(accountWidth <= 360, "Account is content-sized instead of consuming spare table width");
+  await page.focus('.accounts-view [role="separator"][aria-label="Width of Account"]');
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => window.accountColumns["accounts.list"]?.widths?.account > 0);
+  const savedWidth = await page.evaluate(() => window.accountColumns["accounts.list"].widths.account);
+  const unreadableReason = "Only the connected account is listed: listing users and roles needs SELECT on the mysql database.";
+  state.queue.push({ status: 200, body: { ...list, complete: false, warnings: [unreadableReason],
+    accounts: [{ name: "limited", host: "%", connected: true }], role_grants: [], default_roles: [] } });
+  await h.refresh();
+  await page.waitForFunction(() => document.querySelector('.accounts-view .summary-line')?.textContent.includes("Not judged"));
+  assert.equal(await h.text(".accounts-view .summary-text"), unreadableReason);
+  assert.deepEqual(await page.$$eval('.accounts-view thead th[data-col]', ths => ths.map(th => th.dataset.col)), ["account", "details"]);
+  assert.equal(await h.text('.accounts-view td[data-col="details"]'), "Not readable");
+  assert.doesNotMatch(await h.text('.accounts-view tbody'), /Unknown|Not checked/);
+  await h.refresh();
+  await page.waitForSelector('.accounts-view th[data-col="plugin"]');
+  assert.equal(await page.evaluate(() => window.accountColumns["accounts.list"].widths.account), savedWidth);
 
   if (process.env.PERF_SHOTS) await fs.mkdir(process.env.PERF_SHOTS, { recursive: true });
   await page.screenshot({ path: path.join(h.shots, "accounts-desktop.png"), fullPage: true });

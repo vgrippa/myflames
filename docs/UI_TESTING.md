@@ -484,3 +484,31 @@ dark at 1440x900 and 720x520.
 ## Workspace refinement checks
 
 `test/update-check.mjs` exercises Check for updates in Home's footer and About myflames: no check without a click, progress with focus kept on the button, up to date, a newer release with Download opening the update dialog, a failure with its reason, the last check time kept across a reload, and a result older than 24 hours shown as the last result, in light and dark at 1440 and 720 pixels. `test/home-workspace.mjs` exercises Home version/release information, grouped SQL navigation and real Mermaid parsing into the canvas. `test/news.mjs` checks Home news with a mocked `/api/news`: six headlines that open outside the app, one calm line for offline, empty and failed reads, the Settings switch (off sends no request and hides the section), and that Connections and Recent work keep their place at 1440x900 and 720x520; `test/test_news.py` covers the feed allowlist, redirect refusal, the 1 MiB cap, DOCTYPE refusal, HTML stripping, RSS and Atom dates, the six-hour cache and offline fallback without network access. Before a release, look at Home with news on in light and dark at 1440 and 720 pixels, and open one headline from the desktop app to confirm it opens in the default browser. `test/table-index-pagination.mjs` exercises more than 200 rows, global sorting, last-page access, complete exports and narrow layouts. `test/report-table-export.mjs` checks CSV formula protection, HTML escaping, Unicode and report credits. PDF integration also requires a native Electron print check. Parameters draft controls must never execute on toggle or input change.
+
+
+## Workspace correctness regressions
+
+Run with a temporary HOME and USERPROFILE and `MYFLAMES_SECRET_BACKEND=vault`.
+The following checks execute without opening a listening socket:
+
+- `node test/review-read-hooks.mjs`: 24 cases executing production TypeScript hook and callback bodies, password drafts/commit deduplication, on-open reads, all four cancellation signals, regex escapes/whitespace/invalid patterns, and theme token coverage.
+- `node test/sql-ident.mjs`: 30 assertions covering backticks, backslashes, quotes, both index visibility dialects, primary keys and table maintenance, including all six Tables row-menu and inspector call sites.
+- `node test/accounts.mjs --unit`: account matrix and unreadable-metadata rendering.
+- `node test/profiles.mjs --unit`: out-of-order saved-profile successes/failures and preserving Workload state during loop callbacks.
+- `node test/report.mjs --unit`: refresh section counts, dead-code removal, elapsed time across Tuning remounts and both analysis paths, plus shared export menus.
+- `node test/editor-fixes.mjs` and `node test/kit-static.mjs`: actual context-menu placement, empty menus, copy ordering and pointer cancellation handlers.
+- `node test/session-rules.mjs`: persisted workspace settings, including recognized table IDs.
+
+After building, run `startup-reads.mjs` for password typing/Enter/blur, Parameters
+and Instruments connection switches, and aborting Waits/InnoDB/Locks/Processlist
+reads. `sessions.mjs` checks regex matching and accessible lock markers.
+`accounts.mjs` checks the on-open read, names-only fallback and Review changes /
+Discard / Cancel selection guard. `indexes.mjs` and `tables.mjs` check the SQL
+from their menus using names with backticks, quotes and backslashes.
+`kit-primitives.mjs` checks measured menu bounds, Shift+F10, the context menu key,
+Escape focus return and the empty-menu case. `report.mjs` checks shared exports.
+
+Visual release checks: inspect changed views at 1440x900 and 720x520, in light
+and dark. Use the isolated full-review screenshot runner documented above.
+A socket-restricted worker can run the unit checks and compile browser fixtures,
+but those checks do not establish browser behavior or visual correctness.

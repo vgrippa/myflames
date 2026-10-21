@@ -96,12 +96,32 @@ try {
     "Kill sessions");
   assert.equal(await page.$eval("dialog.mass-kill-dialog .segmented", (e) => e.getAttribute("aria-label")), "Kill mode");
   assert.doesNotMatch(await text("dialog.mass-kill-dialog"), /mass kill/i);
+
+  await button("All clients", "dialog.mass-kill-dialog ");
+  const eligible = active.sessions.filter(s => s.thread_kind === "client" && !s.flags.includes("own_connection") && !s.flags.includes("system_thread"));
+  for (const pattern of [String.raw`\S`, String.raw`\D`, String.raw`\W`, String.raw`\B`, " SELECT", "["]) {
+    await page.$eval("#mk-query", (input, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, pattern);
+    const expected = pattern === "[" ? [] : eligible.filter(s => new RegExp(pattern, "i").test(s.info || s.info_short || s.last_statement || "")).map(s => s.id);
+    await page.waitForFunction(n => document.querySelector(".preview-title strong")?.textContent === `Preview: ${n} matching sessions`, {}, expected.length);
+    assert.deepEqual(await page.$$eval(".mass-kill-table tbody tr td:nth-child(2) strong", es => es.map(e => Number(e.textContent))), expected, `pattern ${pattern} is preserved`);
+    assert.equal(await page.$eval("#mk-query", e => e.getAttribute("aria-invalid")), String(pattern === "["));
+    if (pattern === "[") {
+      assert.equal(await text("#mk-query-error"), "Not a valid pattern");
+      assert.equal(await page.$eval(".mass-kill-footer-actions button.danger", b => b.disabled), true, "an invalid pattern cannot select a kill target");
+    }
+  }
+
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.mass-kill-dialog"));
   assert.ok(!state.other.some((r) => r.path.startsWith("/api/live/kill")), "nothing sent");
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.session)),
     active.sessions.map((s) => String(s.id)));
   assert.equal(await page.$eval(row(93), (e) => e.dataset.status), "problem");
+  assert.ok(await page.$(`${row(94)} td[data-col=id] [role=img][aria-label="Waiting for a lock"]`));
+  assert.ok(await page.$(`${row(93)} td[data-col=id] [role=img][aria-label="Holding locks"]`));
   // The list fits beside the list of views at 1440 px: Kill and Show plan
   // live in the row menu, and Flags starts off with its words on the status.
   assert.deepEqual(await page.$$eval(`${view} thead th[data-col]`, els => els.map(e => e.dataset.col)),
@@ -148,8 +168,8 @@ try {
   assert.equal(await page.$eval('.popover input[data-col=flags]', (e) => e.checked), false);
   await page.click('.popover input[data-col=flags]');
   await page.keyboard.press("Escape");
-  assert.deepEqual(await page.$$eval(`${row(94)} .pill`, (els) => els.map((e) => e.textContent)), ["Long running", "Lock wait"]);
-  assert.deepEqual(await page.$$eval(`${row(93)} .pill`, (els) => els.map((e) => e.textContent)), ["Idle in transaction"]);
+  assert.deepEqual(await page.$$eval(`${row(94)} td[data-col=flags] .pill`, (els) => els.map((e) => e.textContent)), ["Long running", "Lock wait"]);
+  assert.deepEqual(await page.$$eval(`${row(93)} td[data-col=flags] .pill`, (els) => els.map((e) => e.textContent)), ["Idle in transaction"]);
   await page.click(`${view} .table-columns-button`);
   await page.click('.popover input[data-col=db]');
   await page.keyboard.press("Escape");
@@ -278,9 +298,9 @@ try {
   await page.waitForSelector(ctx);
   const running = await ctxItems();
   assert.deepEqual(running.map((i) => i.label).filter((l) => !/^Filter by/.test(l)),
-    ["Show plan", "Open in Query editor", "Open in Locks", "Copy query", "Copy connection ID", "Kill query…", "Kill connection…"]);
-  assert.deepEqual(running.slice(-2).map((i) => [i.off, i.hint]), [[false, ""], [false, ""]], "both kills are offered for a running statement");
-  assert.ok(await page.$eval(`${ctx} [role=menuitem]:last-child`, (e) => e.classList.contains("is-danger")), "Kill is drawn as destructive");
+    ["Show plan", "Open in Query editor", "Open in Locks", "Copy query", "Copy connection ID", "Kill query…", "Kill connection…", "Copy cell"]);
+  assert.deepEqual(running.filter((i) => /^Kill/.test(i.label)).map((i) => [i.off, i.hint]), [[false, ""], [false, ""]], "both kills are offered for a running statement");
+  assert.equal(await page.$$eval(`${ctx} [role=menuitem].is-danger`, (els) => els.length), 2, "Kill is drawn as destructive");
   await (await ctxItem("Kill query…")).asElement().click();
   await page.waitForSelector("dialog.kill-dialog[open]");
   assert.match(await text("dialog.kill-dialog"), /End connection 100\?/);
@@ -304,6 +324,8 @@ try {
   assert.equal(idleItems.find((i) => i.label === "Kill connection…").off, false);
   assert.equal(await page.$eval(`${ctx} [aria-disabled=true]`, (e) => e.disabled), false, "the reason can be reached");
   await page.keyboard.press("End");
+  await page.waitForFunction(() => document.activeElement?.textContent.trim() === "Copy cell");
+  await page.keyboard.press("ArrowUp");
   await page.waitForFunction(() => document.activeElement?.textContent.trim() === "Kill connection…");
   await page.keyboard.press("ArrowUp");
   await page.waitForFunction(() => /^Kill query…/.test(document.activeElement?.textContent.trim() || ""));

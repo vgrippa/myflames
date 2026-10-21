@@ -68,7 +68,7 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     // Popovers are positioned in a layout effect; retry once if initially hidden.
     focusFirst();
     const frame = requestAnimationFrame(() => {
-      if (focusScopes[focusScopes.length - 1] === root && !root.contains(document.activeElement)) focusFirst();
+      if (focusScopes[focusScopes.length - 1] === root && (!root.contains(document.activeElement) || document.activeElement === root)) focusFirst();
     });
     const key = (event: globalThis.KeyboardEvent) => {
       if (focusScopes[focusScopes.length - 1] !== root) return;
@@ -294,6 +294,7 @@ export function Popover({
       const below = b.bottom + 6;
       const top = below + height > floor - 8 && b.top - height - 6 > 8 ? b.top - height - 6 : below;
       const boundedTop = Math.max(8, Math.min(top, floor - Math.min(height, floor - 16) - 8));
+      p.style.visibility = "visible";
       setStyle({ left, top: boundedTop, width, maxHeight: floor - boundedTop - 8 });
     };
     place();
@@ -1201,6 +1202,73 @@ export type TableContextAction =
     }
   | { divider: true };
 
+/** Row and cell actions share measured placement, dismissal and keyboard focus. */
+export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
+  x: number;
+  y: number;
+  label: string;
+  header?: ReactNode;
+  opener: HTMLElement | null;
+  actions: TableContextAction[];
+  onClose: () => void;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [style, setStyle] = useState<CSSProperties>({ left: 8, top: 8, visibility: "hidden" });
+  // A divider is meaningful only between actions; an empty menu draws nothing.
+  const items = actions.filter((action, index) => !("divider" in action) ||
+    (index > 0 && !("divider" in actions[index - 1]) && actions.slice(index + 1).some(item => !("divider" in item))));
+  const open = items.some(action => !("divider" in action));
+  useFocusScope(panel, { open, onClose, menu: true, returnFocus: () => opener });
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      if (!panel.current?.contains(event.target as Node)) onClose();
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open, onClose]);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const element = panel.current;
+      if (!element) return;
+      const footer = document.querySelector(".window-statusbar")?.getBoundingClientRect().top;
+      const floor = footer !== undefined && footer >= y ? Math.min(footer, window.innerHeight) : window.innerHeight;
+      // Measure the natural menu within the current viewport, not a height
+      // left over from an earlier, smaller window or an estimated item count.
+      element.style.visibility = "visible";
+      element.style.maxHeight = `${Math.max(0, floor - 16)}px`;
+      const left = Math.max(8, Math.min(x, window.innerWidth - element.offsetWidth - 8));
+      const top = Math.max(8, Math.min(y, floor - element.offsetHeight - 8));
+      setStyle({ left, top, maxHeight: Math.max(0, floor - top - 8) });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, x, y, actions]);
+  if (!open) return null;
+  return <div ref={panel} className="context-menu" role="menu" aria-label={label} tabIndex={-1}
+    style={{ ...style, minWidth: "min(220px, calc(100vw - 16px))", maxWidth: "min(380px, calc(100vw - 16px))" }}>
+    {header && <div className="context-menu-header">{header}</div>}
+    {items.map((action, index) => {
+      if ("divider" in action) return <div key={`divider-${index}`} className="context-menu-divider" role="separator" />;
+      const explained = !!action.disabled && !!action.hint;
+      return <button key={`${index}-${action.label}`} type="button" role="menuitem"
+        className={[action.danger ? "is-danger" : "", action.hint ? "has-hint" : ""].filter(Boolean).join(" ")}
+        disabled={action.disabled && !explained} aria-disabled={explained ? true : undefined} title={action.hint}
+        onClick={() => { if (!action.disabled) { onClose(); action.onClick(); } }}>
+        {action.icon && <span className="context-menu-icon">{typeof action.icon === "string" && isIconName(action.icon) ? <Icon name={action.icon} /> : action.icon}</span>}
+        {action.hint ? <span className="context-menu-text"><span>{action.label}</span><small className="context-menu-hint">{action.hint}</small></span> : <span>{action.label}</span>}
+        {action.shortcut && <span className="context-menu-shortcut">{action.shortcut}</span>}
+      </button>;
+    })}
+  </div>;
+}
+
 /** Marks *marker* with data-more-left / data-more-right while *scroller* has
  * content scrolled out of view past that edge, for an edge shadow (overlay
  * scroll bars stay hidden until the pointer scrolls, so a column cut at the
@@ -1301,7 +1369,7 @@ export function DataTable<T>({
   multiSelection?: { keys: string[]; select: (keys: string[]) => void };
   /** Collections can select with one click and activate with Enter/double click. */
   onActivate?: (row: T) => void;
-  /** Custom context menu actions for a row (shown above standard Excel-style copy actions). */
+  /** Custom context menu actions for a row (shown above the standard Copy cell action). */
   rowContextMenu?: (
     row: T,
     helpers: {
@@ -1392,14 +1460,8 @@ export function DataTable<T>({
     key: string;
     col?: Column<T>;
     cellText?: string;
-    rowCells: string[];
     opener: HTMLElement | null;
   } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useFocusScope(menuRef, {
-    open: !!contextMenu, onClose: () => setContextMenu(null), menu: true,
-    returnFocus: () => contextMenu?.opener,
-  });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -1419,19 +1481,6 @@ export function DataTable<T>({
     }
   };
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handleOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target?.closest(".context-menu")) {
-        setContextMenu(null);
-      }
-    };
-    window.addEventListener("mousedown", handleOutside);
-    return () => {
-      window.removeEventListener("mousedown", handleOutside);
-    };
-  }, [contextMenu]);
   const natural = measured.sig === signature ? measured.natural : {};
   const mins = measured.sig === signature ? measured.min : {};
   const flagWidths = measured.sig === signature ? measured.flags : {};
@@ -1649,19 +1698,15 @@ export function DataTable<T>({
       const tr = e.currentTarget;
       const row = sorted[rowKeys.indexOf(key)];
       if (!row) return;
-      const rowCells = visible.map((c) => {
-        const cellTd = tr.querySelector(`td[data-col="${CSS.escape(c.key)}"]`);
-        if (cellTd) return (cellTd.textContent || "").trim();
-        return c.sort && typeof c.sort === "function" ? String(c.sort(row) ?? "") : "";
-      });
+      const col = visible[0];
+      const cell = col && tr.querySelector(`td[data-col="${CSS.escape(col.key)}"]`);
       setContextMenu({
-        x: Math.min(rect.left + 40, window.innerWidth - 260),
-        y: Math.min(rect.bottom + 4, window.innerHeight - 340),
+        x: rect.left + 40,
+        y: rect.bottom + 4,
         row,
         key,
-        col: visible[0],
-        cellText: rowCells[0],
-        rowCells,
+        col,
+        cellText: cell ? (cell.textContent || "").trim() : undefined,
         opener: tr,
       });
       return;
@@ -1844,6 +1889,10 @@ export function DataTable<T>({
                         drag.current = null;
                         setDragging(null);
                       }}
+                      onLostPointerCapture={() => {
+                        drag.current = null;
+                        setDragging(null);
+                      }}
                       onDoubleClick={() => autoWidth(c)}
                       onClick={(e) => e.stopPropagation()}
                       onKeyDown={(e) => {
@@ -1941,30 +1990,18 @@ export function DataTable<T>({
                     const cellText = td ? (td.textContent || "").trim() : undefined;
 
                     const tr = e.currentTarget;
-                    const rowCells = visible.map((c) => {
-                      const cellTd = tr.querySelector(`td[data-col="${CSS.escape(c.key)}"]`);
-                      if (cellTd) return (cellTd.textContent || "").trim();
-                      return c.sort && typeof c.sort === "function" ? String(c.sort(row) ?? "") : "";
-                    });
-
                     if (selection) {
                       selectRange(key, e.shiftKey, e.metaKey || e.ctrlKey);
                       selection.select(key, false);
                     }
 
-                    const menuW = 260;
-                    const menuH = 340;
-                    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - menuW - 16));
-                    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 16));
-
                     setContextMenu({
-                      x,
-                      y,
+                      x: e.clientX,
+                      y: e.clientY,
                       row,
                       key,
                       col,
                       cellText,
-                      rowCells,
                       opener: selection ? tr : document.activeElement as HTMLElement | null,
                     });
                   } : undefined}
@@ -1987,77 +2024,17 @@ export function DataTable<T>({
           </tbody>
         </table>
       </div>
-      {contextMenu && (
-        <div
-          ref={menuRef}
-          className="context-menu"
-          role="menu"
-          aria-label="Row actions"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          tabIndex={-1}
-        >
-          {(() => {
-            const customActions = rowContextMenu
-              ? rowContextMenu(contextMenu.row, {
-                  col: contextMenu.col,
-                  cellText: contextMenu.cellText,
-                  copy: copyWithFeedback,
-                  close: () => setContextMenu(null),
-                })
-              : [];
-
-            if (customActions.length === 0) {
-              return (
-                contextMenu.cellText ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void copyWithFeedback(contextMenu.cellText!, "Cell value copied")}
-                  >
-                    <span className="context-menu-icon"><Icon name="copy" /></span>
-                    <span>Copy "{contextMenu.cellText.length > 24 ? contextMenu.cellText.slice(0, 24) + "…" : contextMenu.cellText}"</span>
-                  </button>
-                ) : null
-              );
-            }
-
-            return (
-              <>
-                {customActions.map((action, idx) => {
-                  if ("divider" in action && action.divider) {
-                    return <div key={`div-${idx}`} className="context-menu-divider" />;
-                  }
-                  const a = action as Exclude<TableContextAction, { divider: true }>;
-                  // An item off for a reason stays focusable and says why.
-                  const explained = !!a.disabled && !!a.hint;
-                  return (
-                    <button
-                      key={a.label}
-                      type="button"
-                      role="menuitem"
-                      className={[a.danger ? "is-danger" : "", a.hint ? "has-hint" : ""].filter(Boolean).join(" ")}
-                      disabled={a.disabled && !explained}
-                      aria-disabled={explained ? true : undefined}
-                      title={a.hint}
-                      onClick={() => {
-                        if (a.disabled) return;
-                        setContextMenu(null);
-                        a.onClick();
-                      }}
-                    >
-                      {a.icon && <span className="context-menu-icon">{typeof a.icon === "string" && isIconName(a.icon) ? <Icon name={a.icon} /> : a.icon}</span>}
-                      {a.hint ? (
-                        <span className="context-menu-text"><span>{a.label}</span><small className="context-menu-hint">{a.hint}</small></span>
-                      ) : <span>{a.label}</span>}
-                      {a.shortcut && <span className="context-menu-shortcut">{a.shortcut}</span>}
-                    </button>
-                  );
-                })}
-              </>
-            );
-          })()}
-        </div>
-      )}
+      {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} label="Row actions"
+        opener={contextMenu.opener} onClose={() => setContextMenu(null)} actions={[
+          ...(rowContextMenu?.(contextMenu.row, {
+            col: contextMenu.col, cellText: contextMenu.cellText,
+            copy: copyWithFeedback, close: () => setContextMenu(null),
+          }) || []),
+          ...(contextMenu.cellText !== undefined ? [{ divider: true } as const, {
+            label: "Copy cell", icon: "copy",
+            onClick: () => void copyWithFeedback(contextMenu.cellText!, "Cell value copied"),
+          }] : []),
+        ]} />}
       {toast && <div className="table-copy-toast" role="status">{toast}</div>}
     </div>
   );
@@ -2696,6 +2673,8 @@ function Inspector({
               if (drag.current) resize(drag.current.width + drag.current.x - e.clientX);
               drag.current = null;
             }}
+            onPointerCancel={() => { drag.current = null; }}
+            onLostPointerCapture={() => { drag.current = null; }}
             onKeyDown={(e) => {
               const step = e.shiftKey ? 64 : 16;
               if (e.key === "ArrowLeft") resize(latest.current + step);

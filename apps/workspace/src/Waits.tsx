@@ -106,7 +106,7 @@ export function WaitsView({
     await reads.run(
       `waits:${interval}`,
       `Sampling wait events for ${interval} s…`,
-      (c) => api<WaitsReport>("live/waits", { connection: c, interval }),
+      (c, signal) => api<WaitsReport>("live/waits", { connection: c, interval }, signal),
       onReport,
       { onError: () => setAuto(0) },
     );

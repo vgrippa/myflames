@@ -59,13 +59,8 @@ export function Sidebar({
   onRemovePlan,
   onToggleRestore,
   onAuditLog,
-  queries = [],
-  activeQueryId,
-  onOpenQuery,
-  onRemoveQuery,
   expanded,
   onExpandedChange,
-  onNewSession,
   placeBadges,
   placeMuted,
 }: {
@@ -89,11 +84,6 @@ export function Sidebar({
   onToggleRestore: (on: boolean) => void;
   /** Open the Audit log (writes sent through myflames, kept on this computer). */
   onAuditLog: () => void;
-  queries?: { id: string; name: string }[];
-  activeQueryId?: string;
-  onOpenQuery?: (id: string) => void;
-  onRemoveQuery?: (id: string) => void;
-  onNewSession?: () => void;
   placeBadges?: Partial<Record<Place, ReactNode>>;
   /** Places that have nothing for the connection in use (Cluster on a server
    * that is not part of one), with the sentence that says so: the item looks
@@ -308,33 +298,7 @@ export function Sidebar({
             })}
           </ul>
         </section>
-        {queries.length > 0 && <section className="open-queries" aria-labelledby="open-queries-label">
-          <h2 className="section-label" id="open-queries-label">Open queries <span className="count">{queries.length}</span></h2>
-          <ul className="query-document-list">
-            {queries.map(query => {
-              const current = place === "query" && query.id === activeQueryId;
-              return (
-                <li key={query.id} className={`query-item${current ? " selected" : ""}`}>
-                  <button type="button" className="query-document" aria-current={current ? "true" : undefined}
-                    onClick={() => { setDrawerOpen(false); onOpenQuery?.(query.id); }}>
-                    <Icon name="query" /><span title={query.name}>{query.name}</span>
-                  </button>
-                  {onRemoveQuery && (
-                    <button
-                      type="button"
-                      className="icon-button remove"
-                      aria-label={`Close ${query.name}`}
-                      title={`Close ${query.name}`}
-                      onClick={() => onRemoveQuery(query.id)}
-                    >
-                      <Icon name="close" size={12} />
-                    </button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </section>}
+
       </div>
       <div className="sidebar-footer">
         <p
@@ -415,20 +379,6 @@ export function Sidebar({
             </p>
             <NewsSetting />
             <div className="settings-menu">
-              {onNewSession && (
-                <button
-                  type="button"
-                  className="settings-item"
-                  onClick={() => {
-                    setSettingsOpen(false);
-                    setDrawerOpen(false);
-                    onNewSession();
-                  }}
-                >
-                  <Icon name="refresh" size={16} />
-                  New session
-                </button>
-              )}
               <button
                 type="button"
                 className="settings-item"

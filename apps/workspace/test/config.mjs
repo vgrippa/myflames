@@ -1126,19 +1126,19 @@ try {
   await page.reload({ waitUntil: "networkidle0" }); await h.server(); await h.view("config"); await page.waitForSelector(`${view} .summary-line`); await h.idle(view);
   const initialConnection = await connectionOption(page, "Staging");
   await chooseConnection(page, initialConnection);
+  await h.refresh();
   await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection=true]`) && !document.querySelector(`${v} .spinner`), {}, view);
   await h.select(row("max_connections"));
   const readonly = await connectionOption(page, "Read only");
-  state.delay = 1200;
   await chooseConnection(page, readonly);
   await page.waitForSelector(`${view}[data-other-connection=true]`);
   assert.equal(await page.$eval(`${view} [data-action="edit-parameters"]`, e => e.disabled), true);
   assert.equal(await page.$eval('.view-inspector [data-change="max_connections"]', e => e.disabled), true);
   assert.match(await page.$eval('.view-inspector [data-change="max_connections"]', e => e.title), /refresh to load this server/);
+  await h.view("health"); await h.view("config");
   await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection=true]`) && !document.querySelector(`${v} .spinner`), {}, view);
   assert.equal(await page.$eval(`${view} [data-action="edit-parameters"]`, e => e.disabled), true);
   assert.match(await page.$eval(`${view} [data-action="edit-parameters"]`, e => e.title), /read-only/);
-  state.delay = 0;
   await h.select(row("max_connections"));
   assert.equal(await page.$eval('.view-inspector [data-change="max_connections"]', e => e.disabled), true);
   assert.match(await page.$eval('.view-inspector [data-change="max_connections"]', e => e.title), /read-only/);
@@ -1146,7 +1146,7 @@ try {
   // A connection change while a sheet is open locks the original review.
   // Dispatch the real picker action programmatically to model an external
   // switch while the modal makes the surrounding controls inert.
-  await chooseConnection(page, initialConnection); await h.idle(view);
+  await chooseConnection(page, initialConnection); await h.refresh(); await h.idle(view);
   await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection=true]`), {}, view);
   useSingleFixtures = true;
   await h.select(row("max_connections")); await openChange("max_connections");

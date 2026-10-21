@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type ConfigCheck, type ConfigReport, type ConfigParameter, type Connection } from "./api";
 import { uptime } from "./Health";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
-import { useViewOnScreen } from "./viewOnScreen";
+import { useOpenRead } from "./viewOnScreen";
 import { PrivilegeConfirmLabel, privilegeResult, targetPrivilege, usePrivilege } from "./privileges";
 import { useWritePolicy } from "./Connections";
 import { CopySql, bytes, engineLabel } from "./PerfShared";
@@ -917,7 +917,7 @@ function ParameterRecommendation({ name, flagged }: { name: string; flagged: Con
 
 export function ConfigView({ connection, disabled, onBack, selection, report: bound, onReport, onOpenSql }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
-  report: Bound<ConfigReport> | null; onReport: (report: Bound<ConfigReport>) => void; onOpenSql?: (sql: string) => void;
+  report: Bound<ConfigReport> | null; onReport: (report: Bound<ConfigReport>) => void; onOpenSql?: (sql: string, options?: { append?: boolean }) => void;
 }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -932,11 +932,9 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
   const trigger = useRef<HTMLElement | null>(null);
   const noteRef = useRef<HTMLDivElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
-  const attempted = useRef("");
   const policy = useWritePolicy();
   const sharedInspector = useInspector();
   const reads = useConnectionReads(connection);
-  const onScreen = useViewOnScreen();
   const loading = !!reads.loading;
   const report = bound?.report ?? null;
   const other = bound && bound.key !== reads.key ? bound.label : null;
@@ -951,13 +949,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     if (disabled) return;
     await reads.run("config", "Reading parameters…", (c, signal) => api<ConfigReport>("live/config", { connection: c }, signal), onReport, { force });
   }
-  useEffect(() => {
-    // One attempt on open or connection change, including a failed read. An
-    // error never causes a retry loop; Refresh remains the explicit retry.
-    if (disabled || !onScreen || bound?.key === reads.key || attempted.current === reads.key) return;
-    attempted.current = reads.key;
-    void load();
-  }, [reads.key, disabled, onScreen, bound?.key]);
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: loading || reads.running(), read: () => { void load(); } });
   useEffect(() => {
     setDrafts({}); setEditing(false); setPreview(false); setFilter("all"); setFocusName("");
     setNote(null); setBatchResults([]);
@@ -1154,7 +1146,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
           }] : []),
         ]} />
     </>}
-    {change && <VariableSheet request={change} activeKey={reads.key} onClose={closeChange} onDone={n => void changed(n)} onOpenSql={onOpenSql ? sql => { setChange(null); onOpenSql(sql); } : undefined} />}
+    {change && <VariableSheet request={change} activeKey={reads.key} onClose={closeChange} onDone={n => void changed(n)} onOpenSql={onOpenSql ? sql => { setChange(null); onOpenSql(sql, { append: true }); } : undefined} />}
     {batch && <ParameterBatchSheet request={batch} activeKey={reads.key} onClose={() => setBatch(null)} onRemove={name => { if (batch.via.key === reads.currentKey()) discard(name); }} onDone={results => void batchDone(results)} />}
   </ViewLayout>;
 }

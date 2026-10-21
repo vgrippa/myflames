@@ -442,9 +442,13 @@ export function SchemaBrowser({
           const up = () => {
             target.removeEventListener("pointermove", move);
             target.removeEventListener("pointerup", up);
+            target.removeEventListener("pointercancel", up);
+            target.removeEventListener("lostpointercapture", up);
           };
           target.addEventListener("pointermove", move);
           target.addEventListener("pointerup", up);
+          target.addEventListener("pointercancel", up);
+          target.addEventListener("lostpointercapture", up);
         }}
         onKeyDown={(e) => {
           const step = e.shiftKey ? 48 : 16;

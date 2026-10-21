@@ -99,9 +99,9 @@ export type QueryLabHandle = {
   newTab: () => void;
   /** Make an existing tab the current one (Home's Recent work); unknown ids do nothing. */
   openTab: (id: string) => void;
-  /** Add a statement at the end of the current tab, selected and not run
-   * (the SET SESSION from Parameters: it changes only this tab's session). */
-  openSql: (sql: string) => void;
+  /** Open a statement in a new tab (or append to the current tab when
+   * *options.append* is set, as for Parameters' SET SESSION), selected and not run. */
+  openSql: (sql: string, options?: { append?: boolean }) => void;
   /** Request closing a query tab, verifying uncommitted transactions first. */
   closeTab: (id: string) => void;
 };
@@ -560,7 +560,8 @@ export const QueryLab = forwardRef<
     openTab: (id: string) => {
       if (tabs.some((t) => t.id === id)) setTabId(id);
     },
-    openSql: appendStatement,
+    openSql: (sql: string, options?: { append?: boolean }) =>
+      options?.append ? appendStatement(sql) : openStatement(sql),
     closeTab: (id: string) => {
       void requestClose(id);
     },
@@ -1569,6 +1570,28 @@ export const QueryLab = forwardRef<
     }
     if (narrow) setSheet("");
   }
+  /** Open *statement* in a new tab, selected, without running it. */
+  function openStatement(statement: string) {
+    const body = statement.trim().replace(/;$/, "");
+    const sql = body ? `${body};` : "";
+    const id = crypto.randomUUID();
+    setTabs((ts) => [
+      ...ts,
+      {
+        id,
+        name: `Query ${ts.length + 1}`,
+        sql,
+        parameters: "{}",
+      },
+    ]);
+    setTabId(id);
+    window.requestAnimationFrame(() => {
+      const el = editor.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(0, body.length);
+    });
+  }
   /** Add *statement* at the end of the tab, selected, without running it. */
   function appendStatement(statement: string) {
     const sql = tab.sql;
@@ -2166,9 +2189,13 @@ export const QueryLab = forwardRef<
                 const up = () => {
                   handle.removeEventListener("pointermove", move);
                   handle.removeEventListener("pointerup", up);
+                  handle.removeEventListener("pointercancel", up);
+                  handle.removeEventListener("lostpointercapture", up);
                 };
                 handle.addEventListener("pointermove", move);
                 handle.addEventListener("pointerup", up);
+                handle.addEventListener("pointercancel", up);
+                handle.addEventListener("lostpointercapture", up);
               }}
               onKeyDown={(e) => {
                 const step = e.shiftKey ? 64 : 16;

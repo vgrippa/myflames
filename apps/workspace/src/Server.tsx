@@ -67,7 +67,6 @@ import {
   ToolbarButton,
   storeInspectorWidth,
   storedInspectorWidth,
-  worstTone,
   type ColumnPrefs,
   type InspectorShared,
   type Selection,
@@ -149,6 +148,15 @@ function focusWhenMounted(id: string) {
  * analysis lives in the Tuning place. */
 const READ_LABELS: Partial<Record<ServerKind, string>> = { report: "Full analysis", tuning: "Tuning", replication: "Replication", cluster: "Cluster", diagram: "Database diagram" };
 
+/** Refresh all adds these places to the Server and Workload views. */
+const EXTRA_REFRESH_SECTIONS = ["replication", "cluster", "report"] as const;
+
+/** Imported or other-server diagrams are never replaced by Refresh all. */
+function refreshDiagramDatabase(diagram: DiagramDocument | null, selected: string, key: string): string {
+  return diagram?.source.kind === "server" && diagram.source.key === key
+    ? diagram.source.database || "" : !diagram ? selected.trim() : "";
+}
+
 /** Below this width the sub-navigation becomes a screen of its own. */
 const COMPACT_WIDTH = 720;
 /** Below this width the inspector is a bottom sheet instead of a pane. */
@@ -166,6 +174,8 @@ type RefreshItem = {
   state: RefreshState;
   error?: string;
   at?: string;
+  /** When this section started reading, rather than when it was queued. */
+  startedAt?: number;
   /** The view's report when this read failed, stopped or was replaced: a newer
    * report (its own Refresh) means the view is no longer stale. */
   report?: unknown;
@@ -307,8 +317,8 @@ export function Server({
   onBatchChange: (running: boolean) => void;
   /** Open a Learn lesson linked from Health. */
   onOpenLesson?: (lesson: string) => void;
-  /** Put a statement (Parameters' SET SESSION) in the Query editor's current tab, without running it. */
-  onOpenSql?: (sql: string) => void;
+  /** Open a statement in the Query editor without running it (new tab, or current tab when append is set). */
+  onOpenSql?: (sql: string, options?: { append?: boolean }) => void;
   /** A link from the Query editor's schema browser: open Indexes or Tables
    * on one table (n changes per click; from is the key it was read with). */
   link?: { view: "indexes" | "tables" | "health"; schema: string; table: string; from: string; n: number } | null;
@@ -482,6 +492,7 @@ export function Server({
   const [analysisSource, setAnalysisSource] = useState<AnalysisSource | null>(null);
   // Full analysis reads live here, not in its view, so a run survives switching views.
   const analysisReads = useConnectionReads(connection);
+  const [analysisStarted, setAnalysisStarted] = useState<{ key: string; at: number } | null>(null);
   const topStatements = useTopStatements({ connection, settings, order, onAddPlan, onBatchChange });
   const [activity, setActivity] = useState<{ key: string; views: Record<string, boolean> }>({ key: activeKey, views: {} });
   const reportActivity = useCallback((view: string, loading: boolean) => {
@@ -942,8 +953,7 @@ export function Server({
     // A changed database selection requires the diagram's own replacement
     // review. Refresh only the existing document's source, or the explicit
     // picker/default database when no document has been built yet.
-    const database = diagram?.source.kind === "server" && diagram.source.key === key
-      ? diagram.source.database : !diagram ? diagramDatabase.trim() : "";
+    const database = refreshDiagramDatabase(diagram, diagramDatabase, key);
     if (database) {
       add("diagram", `diagram:${JSON.stringify(database)}`, "schema-diagram/read", c => ({ connection: c, database }), b => {
         const report = validateDiagram((b as Bound<SchemaDiagram>).report);
@@ -1007,7 +1017,12 @@ export function Server({
     const reportTask = tasks.find(task => task.view === "report");
     const worker = async (queue: RefreshTask[]) => {
       for (let task = queue.shift(); task && !controller.signal.aborted; task = queue.shift()) {
-        update(task.view, { state: "loading" });
+        // A report joined from Tuning keeps that read's original start time.
+        // Store it in this run too: either waiter can finish first, and opening
+        // Tuning midway through Refresh all must show the elapsed read time.
+        const startedAt = task.view === "report" && analysisStarted?.key === key && readRunning(key, task.params)
+          ? analysisStarted.at : Date.now();
+        update(task.view, { state: "loading", startedAt });
         // A newer read of this view (its own Refresh) wins over this one.
         const generation = nextGeneration(task.view);
         const current = task;
@@ -1179,19 +1194,6 @@ export function Server({
         ? dot("watch", `${missing} views missing instruments`)
         : dot("ok", "ready");
   }
-  // Replication: only a report of the connection in use counts; Group
-  // Replication channels stay Not judged, never a badge tone.
-  const replicationNow = current(replication);
-  if (replicationNow) {
-    if (!replicationNow.replica) badges.replication = dot("unknown", "no replica channels");
-    else if (replicationNow.summary.failed > 0)
-      badges.replication = count(replicationNow.summary.failed, "danger", `${replicationNow.summary.failed} failed`);
-    else {
-      const judged = replicationNow.channels.filter((c) => c.judged);
-      const worst = worstTone(judged.map((c) => toneOf(c.status)));
-      badges.replication = worst === "ok" ? dot("ok", "replicating") : dot(worst, TONE_TEXT[worst]);
-    }
-  }
   // Maintenance: jobs of the connection in use only, from what is already
   // loaded; nothing is polled or read for a badge.
   const maintenanceJobsNow = maintenance.jobs.filter((b) => b.key === activeKey);
@@ -1207,19 +1209,6 @@ export function Server({
     badges.maintenance = count(maintenanceFailed.length, "danger", `${maintenanceFailed.length} failed`);
   const accountsNow = current(accounts);
   if (accountsNow) badges.accounts = count(accountsNow.accounts.length, "neutral", `${accountsNow.accounts.length} accounts read${accountsNow.complete ? "" : " (partial list)"}`);
-  const analysisNow = current(analysis);
-  if (analysisNow) {
-    const tone = toneOf(analysisNow.summary.status);
-    badges.report = dot(tone, TONE_TEXT[tone]);
-    badges.tuning = analysisNow.summary.problem > 0
-      ? count(analysisNow.summary.problem, "danger", `${analysisNow.summary.problem} critical tuning issues`)
-      : analysisNow.summary.watch > 0
-      ? count(analysisNow.summary.watch, "warn", `${analysisNow.summary.watch} tuning warnings`)
-      : dot("ok", "Tuning optimal");
-  } else if (health.report && health.key === activeKey) {
-    const tone = toneOf(health.report.summary.status);
-    badges.tuning = dot(tone, TONE_TEXT[tone]);
-  }
   // Refresh all on this connection: a spinner while a view waits or reads, and
   // a mark on a view it could not refresh (its report is the previous one).
   const refreshHere = refresh && refresh.key === activeKey ? refresh : null;
@@ -1263,7 +1252,10 @@ export function Server({
       return { id: v.id, label: v.label, icon: v.icon, badge, badgeText };
     }),
   }));
-  const refreshableHere = refreshTasks();
+  // Counting does not allocate request closures or inspect in-flight reads on
+  // every render; build the actual tasks only when Refresh all starts.
+  const refreshableCount = ALL_SERVER_VIEWS.length + EXTRA_REFRESH_SECTIONS.length +
+    (refreshDiagramDatabase(diagram, diagramDatabase, activeKey) ? 1 : 0);
   const refreshDone = refreshHere ? refreshHere.views.filter((v) => outcome(v) === "ok").length : 0;
   const refreshFailed = refreshHere ? refreshHere.views.filter((v) => v.state === "failed") : [];
   const refreshText = !refreshHere
@@ -1325,7 +1317,8 @@ export function Server({
   const performanceSchema = instrumentsNow ? instrumentsNow.status.enabled : known ? known.performance_schema : null;
   // Tuning and Database diagram have no list of views to go back to.
   const onBack = compact && !singlePlace ? back : undefined;
-  const analysisPhase = running && refreshHere?.views.some(v => v.view === "report" && v.state === "loading");
+  const refreshAnalysis = refreshHere?.views.find(v => v.view === "report");
+  const analysisPhase = !!running && refreshAnalysis?.state === "loading";
   const common = { connection, disabled: disabled || !!analysisPhase, onBack };
   // A persistent status area: an active skip loop or a running maintenance
   // job stays reachable from any view, so Stop and Cancel are never lost
@@ -1396,27 +1389,37 @@ export function Server({
             runBlocked={running}
             source={analysisSource}
             reads={analysisReads}
+            refreshRunning={analysisPhase}
+            startedAt={analysisReads.loading && analysisStarted?.key === activeKey ? analysisStarted.at
+              : analysisPhase ? refreshAnalysis.startedAt : undefined}
             wasRun={reportRun}
             settings={settings}
             onDigest={onDigest}
             onOpenLink={openLink}
             onOpenLesson={onOpenLesson}
             onRunReport={async () => {
-              if (disabled || running) return;
+              if (disabled || running || analysisReads.running()) return;
+              const started = { key: analysisReads.currentKey(), at: Date.now() };
+              setAnalysisStarted(started);
               let from: Connection | null = null;
-              await analysisReads.run(
-                "report",
-                "Running the full analysis…",
-                (c, signal) => {
-                  from = c;
-                  return api<AnalysisReport>("live/report", { connection: c }, signal);
-                },
-                (b) => {
-                  setAnalysis(b);
-                  setAnalysisSource(reportSource(from || connection));
-                  setReportRun(true);
-                },
-              );
+              try {
+                await analysisReads.run(
+                  "report",
+                  "Running the full analysis…",
+                  (c, signal) => {
+                    from = c;
+                    return api<AnalysisReport>("live/report", { connection: c }, signal);
+                  },
+                  (b) => {
+                    setAnalysis(b);
+                    setAnalysisSource(reportSource(from || connection));
+                    setReportRun(true);
+                  },
+                );
+              } finally {
+                // A previous connection's completion cannot clear a newer run.
+                setAnalysisStarted(current => current === started ? null : current);
+              }
             }}
             onOpenSql={onOpenSql}
             onOpenView={openView}
@@ -1553,28 +1556,29 @@ export function Server({
                   <>
                     <p>
                       Live views of the connection in use for query workload and resource consumption:
-                      Top statements, Sessions, Waits, and I/O. Each view reads the server only when you
-                      click Load or Refresh, and its numbers stay in memory until you close the workspace.
+                      Top statements, Processlist, Waits, and I/O. Each view reads when you open it;
+                      Refresh reads again or retries a failed read. Its numbers stay in memory until you close the workspace.
                     </p>
                     <p>
-                      They only read, except Kill in Sessions (with explicit confirmation).
+                      They only read, except Kill in Processlist (with explicit confirmation).
                     </p>
                     <p>
-                      Refresh all (⌥⌘R) reads every Workload section for this connection.
+                      Refresh all (⌥⌘R) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.
                     </p>
                   </>
                 ) : (
                   <>
                     <p>
-                      Live views of the connection in use, grouped by job. Each view reads the server only when you
-                      click Load or Refresh, and its numbers stay in memory until you close the workspace.
+                      Live views of the connection in use, grouped by job. Each view reads when you open it;
+                      Refresh reads again or retries a failed read. Tables and Indexes still ask before reading a large schema.
+                      Numbers stay in memory until you close the workspace.
                     </p>
                     <p>
                       They only read. myflames changes the server only when you choose an action and confirm it: Kill in
                       Locks, Change in Parameters, a skip in Replication, or a dump, restore or clone in
                       Maintenance, or changes in Users and roles (your account needs the privilege).
                     </p>
-                    <p>Refresh all (⌥⌘R) reads every Server section, including unopened views, three at a time. Full analysis runs afterwards. Database diagram (its own place) is read too once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
+                    <p>Refresh all (⌥⌘R) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
                   </>
                 )}
               </InfoPopover>
@@ -1638,7 +1642,7 @@ export function Server({
                   className="refresh-all-button"
                   data-action="refresh-all"
                   disabled={disabled}
-                  title={`Refresh all ${refreshableHere.length} Server sections for this connection (⌥⌘R)`}
+                  title={`Refresh all ${refreshableCount} sections for this connection (⌥⌘R)`}
                   onClick={() => void refreshAll()}
                 >
                   Refresh all

@@ -196,3 +196,10 @@ Parameters uses **Review and apply** for batch edits (up to 25 changes) and **Ch
 **Shipped: Parameters documentation links and a calmer Dump form.** The Parameters inspector is one compact section with a Documentation link per variable (MySQL Reference Manual by server version, MariaDB documentation, Percona manuals for Percona-only variables), generated from saved official pages into `sysvar_docs.py`, and a single Recommendation only when a check flags it. Maintenance > Dump reads the tables of the one chosen database into a searchable list and groups the tool's options as a two-column form. MySQL 8.0 and 8.4 variables are described by the help text they are declared with in the server source (MySQL 9.0+ and MariaDB describe their own). Next: the variables declared outside the generator's source folders (the `admin_ssl_*` family), and refreshing the saved pages when a new MySQL manual ships.
 
 Home shows MySQL and MariaDB news under Recent work: up to six headlines from Planet MySQL (the MySQL team's posts) and the MariaDB Foundation, read by the backend while Home is open and cached for six hours, with a Settings switch that stops every read. More official sources can join `news.SOURCES` once their feeds answer a neutral client; the Oracle MySQL blog feed and mariadb.com's feed refused one in October 2026.
+
+
+Workspace correctness follow-up (implemented): committed-password privilege
+reads, consistent on-open reads, retained account drafts, escaped table/index
+statements, measured context menus, cancelled resize cleanup, and analysis
+progress across view remounts. Browser verification at 1440x900 and 720x520 in
+light and dark remains part of the release gate.

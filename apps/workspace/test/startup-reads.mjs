@@ -7,10 +7,11 @@
 // of the previous one. Run after `npm run build`: node test/startup-reads.mjs
 import assert from "node:assert/strict";
 import { load, open, pause } from "./perf-harness.mjs";
-import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
+import { chooseConnection, connectionOption, openConnectionPicker } from "./chrome-helpers.mjs";
 
 const healthy = await load("replication-mysql-8.4-healthy.json");
-const h = await open("/api/live/replication", "startup-reads", {}, { fallback: { status: 200, body: healthy } });
+const extra = {};
+const h = await open("/api/live/replication", "startup-reads", extra, { fallback: { status: 200, body: healthy } });
 const { page, state } = h;
 // Skip loop status lists the loops this myflames holds and reads no database.
 const viewReads = () => [...state.seen.map(() => "/api/live/replication"), ...state.other.map((o) => o.path)].filter((p) => p !== "/api/live/replication/skip-loop/status");
@@ -109,6 +110,79 @@ try {
   assert.equal(replicationReads(), beforeOpen + 1, "opening Replication reads once for Archive");
   assert.equal(state.seen.at(-1).connection.host, "db.archive");
   assert.equal(await page.$('.server-view[data-view="replication"][data-other-connection]'), null, "the report shown is Archive's");
+
+
+  // Password drafts must never authenticate. Focus refresh is suppressed too;
+  // committing with Enter and then blurring sends the full password only once.
+  await openConnectionPicker(page);
+  const password = '.window-toolbar .picker-password';
+  reset();
+  await page.type(password, "secret", { delay: 20 });
+  await page.evaluate(() => {
+    const now = Date.now;
+    Date.now = () => now() + 61_000;
+    try { window.dispatchEvent(new Event("focus")); } finally { Date.now = now; }
+  });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(state.privilegeReads.length, 0, "typing never sends a partial password");
+  await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname === "/api/live/privileges"), page.keyboard.press("Enter")]);
+  await page.keyboard.press("Tab");
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.deepEqual(state.privilegeReads.map(r => r.connection.password), ["secret"], "Enter plus blur commits once with all six characters");
+  await page.keyboard.press("Escape");
+
+  // Parameters and Instruments share the same on-open rule as other views:
+  // no automatic request on an on-screen connection switch, explicit Refresh.
+  for (const [kind, fixture] of [["config", "parameters-mysql.json"], ["instruments", "instruments-mysql-8.4.json"]]) {
+    const report = await load(fixture);
+    let reads = 0;
+    extra[`/api/live/${kind}`] = () => { reads++; return { status: 200, body: report }; };
+    await h.view(kind);
+    const selector = `.server-view[data-view=${kind}]`;
+    await page.waitForFunction(s => !!document.querySelector(`${s} .summary-line`), {}, selector);
+    await h.idle(selector);
+    assert.equal(reads, 1, `${kind} reads on open`);
+    const next = kind === "config" ? "Staging" : "Archive";
+    await chooseConnection(page, await connectionOption(page, next));
+    await page.waitForSelector(`${selector}[data-other-connection=true]`);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(reads, 1, `${kind} keeps the old report until Refresh`);
+    await page.click(`${selector} [data-action=refresh]`);
+    await page.waitForFunction(s => !document.querySelector(`${s}[data-other-connection]`), {}, selector);
+    assert.equal(reads, 2, `${kind} Refresh reads the chosen connection`);
+  }
+
+  // Hold fetch before it reaches the network. A connection switch must abort
+  // each view's actual API signal, not only ignore an eventual stale response.
+  for (const [kind, fixture] of [["waits", "waits-mysql-8.4.json"], ["innodb", "innodb-mysql-8.4.json"],
+    ["locks", "locks-mysql-8.4.json"], ["sessions", "sessions-mysql-8.4-active.json"]]) {
+    extra[`/api/live/${kind}`] = { status: 200, body: await load(fixture) };
+    await h.view(kind);
+    const selector = `.server-view[data-view=${kind}]`;
+    await page.waitForFunction(s => !!document.querySelector(`${s} .summary-line`), {}, selector);
+    await h.idle(selector);
+    await page.evaluate(route => {
+      const original = window.fetch;
+      window.__readAbort = { started: false, aborted: false };
+      window.__restoreReadFetch = () => { window.fetch = original; };
+      window.fetch = (url, options) => {
+        if (new URL(String(url), location.href).pathname !== route) return original(url, options);
+        window.__readAbort.started = true;
+        return new Promise((resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            window.__readAbort.aborted = true;
+            reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        });
+      };
+    }, `/api/live/${kind}`);
+    await page.click(`${selector} [data-action=refresh]`);
+    await page.waitForFunction(() => window.__readAbort.started);
+    const next = ["waits", "locks"].includes(kind) ? "Staging" : "Archive";
+    await chooseConnection(page, await connectionOption(page, next));
+    await page.waitForFunction(() => window.__readAbort.aborted);
+    await page.evaluate(() => { window.__restoreReadFetch(); delete window.__restoreReadFetch; delete window.__readAbort; });
+  }
 
   assert.deepEqual(h.errors, []);
   console.log("startup-reads: ok");

@@ -2,7 +2,7 @@
 // Consumers and Actors and objects. Individual rows support bounded selection;
 // exact runtime SQL uses the shared review/confirmation runner. Startup option
 // lines stay copy-only. Linked rows and selected-row details use the inspector.
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import {
   api,
   type Connection,
@@ -20,7 +20,7 @@ import { CopySql, bytes, count, engineLabel } from "./PerfShared";
 import { uptime } from "./Health";
 import type { ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
-import { useViewOnScreen } from "./viewOnScreen";
+import { useOpenRead } from "./viewOnScreen";
 import {
   copyToClipboard,
   DataTable,
@@ -98,8 +98,8 @@ function featureStatus(feature: Feature): [Tone, string] {
 /** Views a feature can open in the Server place. */
 const VIEWS: Record<string, [ServerKind, string]> = {
   top: ["top", "Top statements"],
-  sessions: ["sessions", "Sessions"],
-  running: ["sessions", "Sessions"],
+  sessions: ["sessions", "Processlist"],
+  running: ["sessions", "Processlist"],
   locks: ["locks", "Locks"],
   waits: ["waits", "Waits"],
   indexes: ["indexes", "Indexes"],
@@ -334,7 +334,6 @@ export function InstrumentsView({
   onOpenSql?: (sql: string) => void;
 }) {
   const reads = useConnectionReads(connection);
-  const onScreen = useViewOnScreen();
   const loading = !!reads.loading;
   const error = reads.error;
   const report = bound?.report ?? null;
@@ -345,7 +344,6 @@ export function InstrumentsView({
   const [state, setState] = useState("all");
   const [instrumentNames, setInstrumentNames] = useState<string[]>([]);
   const [consumerNames, setConsumerNames] = useState<string[]>([]);
-  const attempted = useRef<string | null>(null);
   const applied = report?.presets.find((p) => p.applied === true)?.key || "";
   const [preset, setPreset] = useState("");
 
@@ -358,13 +356,7 @@ export function InstrumentsView({
     );
   }
 
-  // One attempt per connection visit, including failures. Refresh remains explicit.
-  useEffect(() => {
-    if (disabled || !onScreen || attempted.current === reads.key) return;
-    attempted.current = reads.key;
-    if (bound?.key !== reads.key) void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reads.key, disabled, onScreen, bound?.key]);
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: loading || reads.running(), read: () => { void load(); } });
   useEffect(() => {
     setInstrumentNames([]);
     setConsumerNames([]);
@@ -678,7 +670,7 @@ export function InstrumentsView({
             Which Performance Schema instruments and consumers are on, what each gives myflames and you, what it
             costs, and the statements that turn it on or off, with ready-made presets.
           </p>
-          <p>Refresh reads the setup tables. Apply actions show the exact SQL and require confirmation.</p>
+          <p>This view reads the setup tables when opened. Refresh retries or reads them again. Apply actions show the exact SQL and require confirmation.</p>
         </>
       }
       controls={report && shownPreset ? (

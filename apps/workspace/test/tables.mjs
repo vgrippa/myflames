@@ -421,6 +421,74 @@ try {
   await h.view("indexes");
   assert.equal(await text(".server-view .perf-picker-summary"), "mftab");
 
+  // Every generated menu/inspector snippet quotes catalog identifiers,
+  // including maintenance reviews and snippets copied or opened in the editor.
+  await page.setViewport({ width: 1440, height: 1000 });
+  await h.view("tables");
+  const odd = { schema: "s`name", table: "t`'\\name" };
+  const qTable = "`s``name`.`t``'\\name`";
+  state.queue.push({ status: 200, body: { ...fresh, tables: undefined,
+    missing_primary_keys: [{ ...fresh.missing_primary_keys[0], ...odd }], fragmentation: [], generated_primary_keys: [] } });
+  await h.refresh(); await h.idle(view);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.click(`${view} .segmented button[data-value=missing]`);
+  const oddRow = `${view} [aria-label="${missingLabel}"] tbody tr[data-row-key]`;
+  await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes("t`'"), {}, oddRow);
+  const contextAction = async label => {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.click(oddRow, { button: "right" });
+    await page.waitForSelector(".context-menu [role=menuitem]");
+    await page.$$eval(".context-menu [role=menuitem]", (items, label) => {
+      const item = items.find(item => item.textContent.trim() === label);
+      if (!item) throw new Error(`Missing menu action ${label}`);
+      item.click();
+    }, label);
+  };
+  await page.evaluate(() => { window.__tableCopies = []; navigator.clipboard.writeText = text => { window.__tableCopies.push(text); return Promise.resolve(); }; });
+  for (const label of [`Copy table name (${qTable})`, "Copy SELECT query", "Copy SELECT COUNT(*)"]) await contextAction(label);
+  assert.deepEqual(await page.evaluate(() => window.__tableCopies), [qTable, `SELECT * FROM ${qTable} LIMIT 100;`, `SELECT COUNT(*) AS total_rows FROM ${qTable};`]);
+  const confirmedBefore = state.other.filter(call => call.path === "/api/editor/run" && call.body.confirmed).length;
+  const expectReview = async expected => {
+    await page.waitForSelector("dialog.confirm-sheet[open]");
+    assert.equal(state.other.filter(call => call.path === "/api/editor/run").at(-1).body.sql, expected);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"));
+    assert.equal(state.other.filter(call => call.path === "/api/editor/run").at(-1).body.decline, true);
+  };
+  for (const [label, expected] of [
+    ["Optimize table…", `OPTIMIZE TABLE ${qTable}`], ["Analyze table…", `ANALYZE TABLE ${qTable}`],
+    ["Check table…", `CHECK TABLE ${qTable}`], ["Checksum table…", `CHECKSUM TABLE ${qTable} EXTENDED`],
+    ["Truncate table…", `SET SESSION lock_wait_timeout = 5;\nTRUNCATE TABLE ${qTable}`],
+    ["Drop table…", `SET SESSION lock_wait_timeout = 5;\nDROP TABLE ${qTable}`],
+  ]) {
+    await contextAction(label);
+    await expectReview(expected);
+  }
+  for (const [label, verb] of [["Optimize", "OPTIMIZE"], ["Analyze", "ANALYZE"], ["Check", "CHECK"]]) {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.$eval(oddRow + " .row-more", button => { button.focus(); button.click(); });
+    await page.waitForSelector(".row-action-menu [role=menuitem]");
+    await page.$$eval(".row-action-menu [role=menuitem]", (items, label) => {
+      const item = items.find(item => item.textContent.trim() === `${label} table…`);
+      if (!item) throw new Error(`Missing row action ${label}`);
+      item.click();
+    }, label);
+    await expectReview(`${verb} TABLE ${qTable}`);
+  }
+  await h.select(oddRow);
+  for (const [label, verb] of [["Optimize", "OPTIMIZE"], ["Analyze", "ANALYZE"], ["Check", "CHECK"]]) {
+    await page.$$eval('.view-inspector [data-reviewed-sql]', (buttons, label) => {
+      const button = buttons.find(button => button.dataset.reviewedSql === label);
+      if (!button) throw new Error(`Missing inspector action ${label}`);
+      button.click();
+    }, `${label} ${odd.table}`);
+    await expectReview(`${verb} TABLE ${qTable}`);
+  }
+  assert.equal(state.other.filter(call => call.path === "/api/editor/run" && call.body.confirmed).length, confirmedBefore);
+  await contextAction("Show CREATE TABLE (DDL)");
+  await page.waitForSelector('[aria-label="SQL editor"]');
+  assert.equal(await page.$eval('[aria-label="SQL editor"]', editor => editor.value), `SHOW CREATE TABLE ${qTable};`);
+
   assert.deepEqual(h.errors, []);
   console.log("tables view: ok");
 } finally {

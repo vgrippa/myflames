@@ -74,7 +74,9 @@
     "test:kit-primitives": "npm run build && node test/kit-primitives.mjs",
     "test:kit-static": "node test/kit-static.mjs",
     "test:mermaid-export": "npm run build && node test/mermaid-export.mjs",
-    "test:table-index-pagination": "npm run build && node test/table-index-pagination.mjs"
+    "test:table-index-pagination": "npm run build && node test/table-index-pagination.mjs",
+    "test:review-read-hooks": "node test/review-read-hooks.mjs",
+    "test:sql-ident": "node test/sql-ident.mjs"
   },
   "dependencies": {
     "mermaid": "11.17.2",

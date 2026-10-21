@@ -231,12 +231,13 @@ try {
   await page.keyboard.press("End");
   await page.waitForFunction(() => document.activeElement?.id === "server-nav-accounts");
   assert.equal(await current(), "accounts");
+  await page.waitForSelector("#server-nav-accounts .count-badge");
   await page.keyboard.press("ArrowUp");
   assert.equal(await current(), "maintenance");
   await page.keyboard.press("Home");
   assert.equal(await current(), "health");
-  // A view reads when it is opened on screen (Parameters and Instruments
-  // read their catalogs once); views never opened read nothing, and nothing
+  // A view reads when it is opened on screen (Parameters, Instruments and
+  // Users and roles read their catalogs once); views never opened read nothing, and nothing
   // was read before Server was opened (Server and Replication mount on their
   // first visit). No badge appears without data.
   const onOpen = ["/api/live/config", "/api/live/instruments", "/api/live/error-log"];
@@ -245,8 +246,9 @@ try {
   assert.deepEqual(live().filter((c) => c.path !== "/api/live/schemas" && c.path !== "/api/live/privileges" && !opened.includes(c.path)), [],
     "only views opened on screen read (never Top statements, Processlist, Waits, I/O, Replication or the Full analysis)");
   for (const path of onOpen) assert.equal(live().filter((c) => c.path === path).length, 1, `${path} is read once on open`);
-  // Only the views that read on open can show a badge: here Parameters (Instruments is not mocked).
-  assert.deepEqual(await page.$$eval(".source-list .count-badge, .source-list .status-dot", (els) => els.map((e) => e.closest("[id^=server-nav-]")?.id)), ["server-nav-config"]);
+  assert.equal(state.other.filter((c) => c.path === "/api/accounts/list").length, 1, "/api/accounts/list is read once on open");
+  // Only the views that read on open can show a badge: here Parameters and Users and roles (Instruments is not mocked).
+  assert.deepEqual(await page.$$eval(".source-list .count-badge, .source-list .status-dot", (els) => els.map((e) => e.closest("[id^=server-nav-]")?.id)), ["server-nav-config", "server-nav-accounts"]);
 
   // The shared database chooser participates in the kit's one-popover and
   // focus-return contract. Dismissing it does not navigate or load a report.
@@ -390,19 +392,18 @@ try {
     await page.waitForSelector(".server-view[data-view=health]");
   }
 
-  // The packaged view restores its id only. Its badge counts an explicit
-  // list read, and a reload does not restore the list or issue an account read.
+  // The packaged view restores its id only (never the list), and reads once
+  // when opened on screen to show its count badge.
   await h.view("accounts");
-  assert.equal(await page.$("#server-nav-accounts .count-badge"), null);
-  await h.button("Load users and roles"); await page.waitForSelector("#server-nav-accounts .count-badge");
+  await page.waitForSelector("#server-nav-accounts .count-badge");
   assert.match(await text("#server-nav-accounts"), /1/);
   const savedAccounts = await h.savedSlow(s => s.kind === "accounts");
   assert.ok(!JSON.stringify(savedAccounts.state).includes("nav-account"));
   const readsBeforeReload = state.other.filter(r => r.path === "/api/accounts/list").length;
   await page.reload({ waitUntil: "networkidle0" }); await h.server();
   await page.waitForSelector("#server-nav-accounts[aria-current=page]");
-  assert.equal(await page.$("#server-nav-accounts .count-badge"), null);
-  assert.equal(state.other.filter(r => r.path === "/api/accounts/list").length, readsBeforeReload);
+  await page.waitForSelector("#server-nav-accounts .count-badge");
+  assert.equal(state.other.filter(r => r.path === "/api/accounts/list").length, readsBeforeReload + 1);
 
   // Refresh all repeats the explicitly approved table scope, including
   // Fresh numbers before the :all suffix. It never grants a new scope consent.

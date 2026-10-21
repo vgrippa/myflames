@@ -796,7 +796,7 @@ export function LocksView({
     const fresh = await reads.run(
       `locks:${waitsOnly}`,
       "Reading locks…",
-      (c) => api<LocksReport>("live/locks", { connection: c, limit: 500, waits_only: waitsOnly }),
+      (c, signal) => api<LocksReport>("live/locks", { connection: c, limit: 500, waits_only: waitsOnly }, signal),
       onReport,
       { force, onError: () => setAuto(0) },
     );

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { type Connection } from './api';
 import { connectionKey } from './binding';
-import { ConfirmSheet, copyToClipboard, useFocusScope } from './kit';
-import { Icon } from './components';
+import { ConfirmSheet, ContextMenu, copyToClipboard, type TableContextAction } from './kit';
 import { csvCell } from './reportTableExport';
 import { tsv } from './ResultsPane';
 import { tableData, type Cell, type Change, type TablePage, type TableReview, type TableOutcome } from './tableDataApi';
@@ -30,11 +29,6 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     inserted: boolean;
     opener: HTMLElement;
   } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useFocusScope(menuRef, {
-    open: !!contextMenu, onClose: () => setContextMenu(null), menu: true,
-    returnFocus: () => contextMenu?.opener,
-  });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -50,19 +44,6 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     showToast(ok ? (msg || "Copied to clipboard") : "Could not copy to clipboard");
   };
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handleOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target?.closest(".context-menu")) {
-        setContextMenu(null);
-      }
-    };
-    window.addEventListener("pointerdown", handleOutside);
-    return () => {
-      window.removeEventListener("pointerdown", handleOutside);
-    };
-  }, [contextMenu]);
   const heading = useRef<HTMLHeadingElement>(null);
   const alive = useRef(true);
   const pending = useRef(false);
@@ -154,13 +135,9 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
   }
   function resetDrafts() { setDrafts({}); setInserts([]); setReview(null); }
   const openCellMenu = (opener: HTMLElement, rowId: string, colIndex: number, inserted: boolean, clientX: number, clientY: number) => {
-    const menuW = 240;
-    const menuH = 340;
-    const x = Math.max(8, Math.min(clientX, window.innerWidth - menuW - 16));
-    const y = Math.max(8, Math.min(clientY, window.innerHeight - menuH - 16));
     setContextMenu({
-      x,
-      y,
+      x: clientX,
+      y: clientY,
       rowId,
       colIndex,
       inserted,
@@ -283,6 +260,40 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
       ])
     : "";
 
+  const cellActions: TableContextAction[] = [];
+  if (contextMenu && activeCol && editable) {
+    if (activeCol.nullable && !activeDeleted) cellActions.push({ label: "Set to NULL", icon: "∅", disabled: activeVal?.kind === 'null',
+      onClick: () => applyCellUpdate(contextMenu.rowId, activeCol.name, { kind: 'null', value: null }, contextMenu.inserted) });
+    if (!activeDeleted && (contextMenu.inserted || drafts[contextMenu.rowId]?.values?.[activeCol.name])) cellActions.push({
+      label: contextMenu.inserted ? "Set to Default" : "Revert change", icon: contextMenu.inserted ? "refresh" : "undo",
+      onClick: () => applyCellUpdate(contextMenu.rowId, activeCol.name, undefined, contextMenu.inserted),
+    });
+    cellActions.push(contextMenu.inserted ? { label: "Remove row", icon: "trash", danger: true,
+      onClick: () => setInserts(rows => rows.filter(r => r.id !== contextMenu.rowId)),
+    } : { label: activeDeleted ? "Undo delete" : "Delete row", icon: activeDeleted ? "undo" : "trash", danger: !activeDeleted,
+      onClick: () => {
+        if (activeDeleted) setDrafts(current => { const next = { ...current }; delete next[contextMenu.rowId]; return next; });
+        else setDrafts(current => ({ ...current, [contextMenu.rowId]: { kind: 'delete', row_id: contextMenu.rowId } }));
+      },
+    });
+  }
+
+  if (contextMenu && activeCol) {
+    if (cellActions.length) cellActions.push({ divider: true });
+    cellActions.push(
+      { label: "Copy cell value", icon: "copy", onClick: () => void copyWithFeedback(activeCellText, "Cell value copied") },
+      { label: "Copy row (Excel TSV)", icon: "copy", onClick: () => void copyWithFeedback(tsv([activeRowVals]), "Row copied (Excel TSV)") },
+      { label: "Copy row as CSV", icon: "statements", onClick: () => void copyWithFeedback(activeRowVals.map(v => csvCell(v)).join(","), "Row copied as CSV") },
+      { label: "Copy row as JSON", icon: "query", onClick: () => {
+        const obj: Record<string, string | null> = {};
+        page?.columns.forEach((c, i) => { obj[c.name] = activeRowVals[i] ?? null; });
+        void copyWithFeedback(JSON.stringify(obj, null, 2), "Row copied as JSON");
+      } },
+      { label: `Copy column (${activeCol.name})`, icon: "copy", onClick: () => void copyWithFeedback(tsv(activeColVals.map(v => [v])), `Column ${activeCol.name} copied`) },
+      { label: "Copy table with headers", icon: "copy", onClick: () => void copyWithFeedback(tableTsv, "Table copied (Excel TSV)") },
+    );
+  }
+
   return <section className="table-data-panel" role="region" aria-labelledby="table-data-title">
     <header><div><h2 id="table-data-title" tabIndex={-1} ref={heading}>{schema}.{table}</h2><p>Table data · UTC · {page?.rows.length ?? 0} loaded rows</p></div>
       <button className="button" onClick={close}>Close table</button></header>
@@ -324,136 +335,8 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     </ConfirmSheet>}
     {discard && <ConfirmSheet title={unknown ? "Close with an unknown outcome?" : "Discard staged changes?"} description={unknown ? "Changes may have committed. Closing discards only the local draft. Open the table afresh and inspect its rows before making new changes. Do not resend this batch." : "These changes have not been applied."} confirmLabel={unknown ? "Close and inspect separately" : "Discard and close"} onConfirm={() => { resetDrafts(); onClose(); }} onCancel={() => setDiscard(false)} />}
     {toast && <div className="table-copy-toast" role="status">{toast}</div>}
-    {contextMenu && activeCol && (
-      <div
-        ref={menuRef}
-        className="context-menu"
-        role="menu"
-        aria-label="Cell actions"
-        tabIndex={-1}
-        style={{ left: contextMenu.x, top: contextMenu.y }}
-      >
-        <div className="context-menu-header">{activeCol.name}</div>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => void copyWithFeedback(activeCellText, "Cell value copied")}
-        >
-          <span className="context-menu-icon"><Icon name="copy" /></span>
-          <span>Copy cell value</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => void copyWithFeedback(tsv([activeRowVals]), "Row copied (Excel TSV)")}
-        >
-          <span className="context-menu-icon"><Icon name="copy" /></span>
-          <span>Copy row (Excel TSV)</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            const csv = activeRowVals.map(v => csvCell(v)).join(",");
-            void copyWithFeedback(csv, "Row copied as CSV");
-          }}
-        >
-          <span className="context-menu-icon"><Icon name="statements" /></span>
-          <span>Copy row as CSV</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            const obj: Record<string, string | null> = {};
-            page?.columns.forEach((c, i) => { obj[c.name] = activeRowVals[i] ?? null; });
-            void copyWithFeedback(JSON.stringify(obj, null, 2), "Row copied as JSON");
-          }}
-        >
-          <span className="context-menu-icon"><Icon name="query" /></span>
-          <span>Copy row as JSON</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => void copyWithFeedback(tsv(activeColVals.map(v => [v])), `Column ${activeCol.name} copied`)}
-        >
-          <span className="context-menu-icon"><Icon name="copy" /></span>
-          <span>Copy column ({activeCol.name})</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => void copyWithFeedback(tableTsv, "Table copied (Excel TSV)")}
-        >
-          <span className="context-menu-icon"><Icon name="copy" /></span>
-          <span>Copy table with headers</span>
-        </button>
+    {contextMenu && activeCol && <ContextMenu x={contextMenu.x} y={contextMenu.y} label="Cell actions"
+      header={activeCol.name} opener={contextMenu.opener} actions={cellActions} onClose={() => setContextMenu(null)} />}
 
-        {editable && (
-          <>
-            <div className="context-menu-divider" />
-            {activeCol.nullable && !activeDeleted && (
-              <button
-                type="button"
-                role="menuitem"
-                disabled={activeVal?.kind === 'null'}
-                onClick={() => {
-                  applyCellUpdate(contextMenu.rowId, activeCol.name, { kind: 'null', value: null }, contextMenu.inserted);
-                  setContextMenu(null);
-                }}
-              >
-                <span className="context-menu-icon">∅</span>
-                <span>Set to NULL</span>
-              </button>
-            )}
-            {!activeDeleted && (contextMenu.inserted || drafts[contextMenu.rowId]?.values?.[activeCol.name]) && (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  applyCellUpdate(contextMenu.rowId, activeCol.name, undefined, contextMenu.inserted);
-                  setContextMenu(null);
-                }}
-              >
-                <span className="context-menu-icon"><Icon name={contextMenu.inserted ? "refresh" : "undo"} /></span>
-                <span>{contextMenu.inserted ? "Set to Default" : "Revert change"}</span>
-              </button>
-            )}
-            {contextMenu.inserted ? (
-              <button
-                type="button"
-                role="menuitem"
-                className="is-danger"
-                onClick={() => {
-                  setInserts(rows => rows.filter(r => r.id !== contextMenu.rowId));
-                  setContextMenu(null);
-                }}
-              >
-                <span className="context-menu-icon"><Icon name="trash" /></span>
-                <span>Remove row</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                role="menuitem"
-                className={activeDeleted ? undefined : "is-danger"}
-                onClick={() => {
-                  if (activeDeleted) {
-                    setDrafts(c => { const n = { ...c }; delete n[contextMenu.rowId]; return n; });
-                  } else {
-                    setDrafts(c => ({ ...c, [contextMenu.rowId]: { kind: 'delete', row_id: contextMenu.rowId } }));
-                  }
-                  setContextMenu(null);
-                }}
-              >
-                <span className="context-menu-icon"><Icon name={activeDeleted ? "undo" : "trash"} /></span>
-                <span>{activeDeleted ? "Undo delete" : "Delete row"}</span>
-              </button>
-            )}
-          </>
-        )}
-      </div>
-    )}
   </section>;
 }

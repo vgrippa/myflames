@@ -328,3 +328,9 @@ Parameters (under Server > Setup) lists every global server parameter in one fil
 Instruments lets you filter and select individual instruments or consumers and apply batched `UPDATE` statements through the reviewed SQL runner, with copy-only option file lines for restart persistence. Learn matches the workspace light and dark appearance, with a lesson toolbar, grouped family rows, and a compact embedded lesson bar.
 
 Tables and Indexes include complete scoped inventories with pagination. Indexes checks partitioning only for candidate tables: partitioned or unresolved candidates appear under No data, with DROP and visibility SQL withheld. Export the filtered results as CSV, HTML or PDF through the system print dialog. Tables can filter measured reusable-space percentage; this is not an index fragmentation estimate.
+
+Workspace views read when opened; Refresh retries. Changing the connection keeps
+the previous report greyed until Refresh or reopening the view. Users and roles
+asks before discarding staged grants. The session password is committed on blur
+or Enter, so typing sends no privilege checks. See [workspace interactions](docs/LOCAL_UI.md#connection-and-table-interactions)
+for row menus, reviewed statements and analysis progress.

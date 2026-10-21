@@ -385,6 +385,7 @@ function App() {
   const [activePassword, setActivePassword] = useState("");
   const [connectionNote, setConnectionNote] = useState("");
   const [connectRevision, setConnectRevision] = useState(0);
+  const [passwordRevision, setPasswordRevision] = useState(0);
   const [labBusy, setLabBusy] = useState(false);
   const [batchRunning, setBatchRunning] = useState(false);
   const labRef = useRef<QueryLabHandle | null>(null);
@@ -401,21 +402,30 @@ function App() {
   }, []);
   const labStateRef = useRef(labState);
   labStateRef.current = labState;
-  const refreshProfiles = useCallback(async () => {
-    try {
-      const r = await api<{ items: Profile[]; secret_store?: SecretStore }>(
-        "profiles/list",
-        {},
-      );
-      setProfiles(r.items);
-      setProfilesLoaded(true);
-      setProfilesFailed("");
-      if (r.secret_store) setSecretStore(r.secret_store);
-      return r.items;
-    } catch (e) {
-      setProfilesFailed(message(e));
-      throw e;
-    }
+  const profilesReadSequence = useRef(0);
+  const latestProfilesRead = useRef<Promise<Profile[]> | null>(null);
+  const refreshProfiles = useCallback(() => {
+    const sequence = ++profilesReadSequence.current;
+    const pending: Promise<Profile[]> = (async () => {
+      try {
+        const r = await api<{ items: Profile[]; secret_store?: SecretStore }>("profiles/list", {});
+        // An older success or failure must not replace the latest policy.
+        // Its callers also await the latest read, so a write-policy check or
+        // restored-profile check cannot act on stale connection settings.
+        if (sequence !== profilesReadSequence.current) return latestProfilesRead.current!;
+        setProfiles(r.items);
+        setProfilesLoaded(true);
+        setProfilesFailed("");
+        if (r.secret_store) setSecretStore(r.secret_store);
+        return r.items;
+      } catch (e) {
+        if (sequence !== profilesReadSequence.current) return latestProfilesRead.current!;
+        setProfilesFailed(message(e));
+        throw e;
+      }
+    })();
+    latestProfilesRead.current = pending;
+    return pending;
   }, []);
   // A connection's type or read-only setting can change in another tab or
   // through the CLI: read them again whenever this window comes back.
@@ -1521,6 +1531,7 @@ function App() {
       safety={safety}
       onSwitch={switchConnection}
       onPassword={setActivePassword}
+      onPasswordCommit={() => setPasswordRevision(value => value + 1)}
       onManage={manageConnections}
       onAccount={() => setAccountOpen(true)}
       note={connectionNote}
@@ -1601,7 +1612,7 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const workspaceCommands = useMemo<WorkspaceCommand[]>(() => [
+  const workspaceCommands: WorkspaceCommand[] = [
     // Places in the sidebar's order, then what belongs to one of them.
     { id: "place-home", label: "Home", group: "Places", icon: "home", run: () => go("home") },
     { id: "place-server", label: "Server", group: "Places", icon: "server", keywords: "database status", run: () => go("server") },
@@ -1639,10 +1650,10 @@ function App() {
     { id: "action-import", label: "Import plan", group: "Actions", icon: "import", keywords: "open json explain analyze", run: openImport },
     { id: "action-audit", label: "Audit log", group: "Actions", icon: "audit", keywords: "writes changes kill declined refused log", run: openAuditLog },
     { id: "action-account", label: "Account and privileges", group: "Actions", icon: "key", keywords: "privileges grants roles user account connected as permissions show grants", run: () => setAccountOpen(true) },
-  ], [go]);
+  ];
 
   return (
-    <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} connected={ready && safety.known && !!request.host}>
+    <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={ready && safety.known && !!request.host}>
     <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <a href="#main" className="skip">
         Skip to content
@@ -2013,10 +2024,9 @@ function App() {
                   go("learn");
                   setLesson(key);
                 }}
-                onOpenSql={(sql) => {
+                onOpenSql={(sql, options) => {
+                  withLab((lab) => lab.openSql(sql, options));
                   go("query");
-                  // After the editor is on screen, so it can take focus and the selection.
-                  window.setTimeout(() => withLab((lab) => lab.openSql(sql)));
                 }}
               />
               </ViewOnScreenContext.Provider>
@@ -2039,11 +2049,12 @@ function App() {
                   report={replicationReport}
                   onReport={shareReplication}
                   onLoopActivity={(active) => {
-                    patchLab({
-                      slow: {
-                        ...(labState.slow || { kind: "health" }),
-                        replication_loop_active: active,
-                      },
+                    setLabState(current => {
+                      const next = normalizeLab({
+                        ...current,
+                        slow: { ...(current.slow || { kind: "health" }), replication_loop_active: active },
+                      });
+                      return sameLab(current, next) ? current : next;
                     });
                   }}
                 />

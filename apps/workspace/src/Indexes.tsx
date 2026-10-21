@@ -1,3 +1,4 @@
+import { bt, dropIndexSql, indexVisibilitySql, showIndexSql, tableMaintenanceSql } from "./sqlIdent";
 // Server > Indexes: unused and redundant indexes and tables read mostly by
 // full scans (indexes-1.0 from myflames/indexes.py). One read per click: the
 // Performance Schema tables behind it cost time on servers with many tables,
@@ -117,16 +118,12 @@ function IndexRowActions({
   }
 
   const isCurrentlyVisible = visible !== false;
-  const toggleVisibilitySql = isMaria
-    ? `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "IGNORED" : "NOT IGNORED"}`
-    : `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "INVISIBLE" : "VISIBLE"}`;
+  const toggleVisibilitySql = indexVisibilitySql(schema, table, index, engine, isCurrentlyVisible);
   const toggleVisibilityLabel = isMaria
     ? (isCurrentlyVisible ? "Set ignored" : "Set not ignored")
     : (isCurrentlyVisible ? "Set invisible" : "Set visible");
 
-  const dropSql = isPrimary
-    ? `ALTER TABLE \`${schema}\`.\`${table}\` DROP PRIMARY KEY`
-    : `ALTER TABLE \`${schema}\`.\`${table}\` DROP INDEX \`${index}\``;
+  const dropSql = dropIndexSql(schema, table, index);
 
   const items: RowMenuItem[] = [
     ...(!isPrimary && canInvisible ? [{
@@ -176,16 +173,12 @@ function IndexInspectorActions({
   }
 
   const isCurrentlyVisible = visible !== false;
-  const toggleVisibilitySql = isMaria
-    ? `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "IGNORED" : "NOT IGNORED"}`
-    : `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "INVISIBLE" : "VISIBLE"}`;
+  const toggleVisibilitySql = indexVisibilitySql(schema, table, index, engine, isCurrentlyVisible);
   const toggleVisibilityLabel = isMaria
     ? (isCurrentlyVisible ? "Set ignored" : "Set not ignored")
     : (isCurrentlyVisible ? "Set invisible" : "Set visible");
 
-  const dropSql = isPrimary
-    ? `ALTER TABLE \`${schema}\`.\`${table}\` DROP PRIMARY KEY`
-    : `ALTER TABLE \`${schema}\`.\`${table}\` DROP INDEX \`${index}\``;
+  const dropSql = dropIndexSql(schema, table, index);
 
   return (
     <div className="index-inspector-actions" style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
@@ -296,16 +289,12 @@ export function IndexesView({
     const isPrimary = index.toUpperCase() === "PRIMARY";
 
     const isCurrentlyVisible = visible !== false;
-    const toggleVisibilitySql = isMaria
-      ? `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "IGNORED" : "NOT IGNORED"}`
-      : `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "INVISIBLE" : "VISIBLE"}`;
+    const toggleVisibilitySql = indexVisibilitySql(schema, table, index, report?.engine || "", isCurrentlyVisible);
     const toggleVisibilityLabel = isMaria
       ? (isCurrentlyVisible ? "Set ignored" : "Set not ignored")
       : (isCurrentlyVisible ? "Set invisible" : "Set visible");
 
-    const dropSql = isPrimary
-      ? `ALTER TABLE \`${schema}\`.\`${table}\` DROP PRIMARY KEY`
-      : `ALTER TABLE \`${schema}\`.\`${table}\` DROP INDEX \`${index}\``;
+    const dropSql = dropIndexSql(schema, table, index);
 
     return [
       ...(!actionBlockedReason && !isPrimary && canInvisible
@@ -331,7 +320,7 @@ export function IndexesView({
         icon: "statements",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`ANALYZE TABLE \`${schema}\`.\`${table}\``, `Analyze statistics for ${table}`);
+          runner?.start(tableMaintenanceSql("ANALYZE", schema, table), `Analyze statistics for ${table}`);
         },
       },
       {
@@ -339,7 +328,7 @@ export function IndexesView({
         icon: "optimize",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`OPTIMIZE TABLE \`${schema}\`.\`${table}\``, `Optimize ${table} (rebuild index)`);
+          runner?.start(tableMaintenanceSql("OPTIMIZE", schema, table), `Optimize ${table} (rebuild index)`);
         },
       },
       { divider: true as const },
@@ -364,7 +353,7 @@ export function IndexesView({
               label: "Show index definition (SHOW INDEX)",
               icon: "index",
               onClick: () => {
-                onOpenSql(`SHOW INDEX FROM \`${schema}\`.\`${table}\` WHERE Key_name = '${index.replace(/'/g, "''")}';`);
+                onOpenSql(showIndexSql(schema, table, index));
               },
             },
           ]
@@ -372,7 +361,7 @@ export function IndexesView({
       {
         label: `Copy index name (\`${index}\`)`,
         icon: "copy",
-        onClick: () => void copyToClipboard(`\`${index}\``),
+        onClick: () => void copyToClipboard(bt(index)),
       },
       ...(!actionBlockedReason ? [{
         label: isPrimary ? "Copy DROP PRIMARY KEY SQL" : "Copy DROP INDEX SQL",

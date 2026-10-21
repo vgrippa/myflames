@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Server actions that open a statement in the Query editor (Show index, Show create table, Processlist's Open in Query editor) open it in a new tab, as Top statements already did; Parameters' Session change still goes to the current tab, because it changes that tab's session.
+- Redesign the optional 3D B+tree lesson with fitted camera travel, cursor zoom and view presets, bounded labels, page inspection and record trays, read-path lighting, light/dark themes and a stage that fits the window. Add an editable lookup id, rendering quality tiers, frame-sweep tests and the `teach-3d` project skill.
 - The Full analysis's version support check no longer applies MySQL's lifecycle dates to Percona Server: it is unknown there, with MySQL's date shown for reference. Its text names the product ("MySQL 8.0.46", not "mysql 8.0.46").
 
 - Server > Parameters' inspector is one compact section: a one-sentence description (on MySQL 8.0 and 8.4, which report none, the help text the variable is declared with in the MySQL source, as MySQL 9.0+ reports it; generated into `myflames/mysql_sysvar_help.py` by `scripts/gen_mysql_sysvars.py`), the Documentation link, and Current value (Value, Default, Source, Changes in words instead of Apply type and Scope, Allowed values, Persisted, and the checks that cover it); a Recommendation follows only when a check flags the parameter, with the most severe check's reason, the suggested statement and option file line, and its caveat in one line. The per-check "Explanation and recommendations" blocks, which repeated the description, are gone, and the actions moved to the bar under the parameter's name.
@@ -70,6 +72,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Set explain_json_format_version only on MySQL 8.3 or later and give MCP callers the actionable MySQL 8.4 requirement for JSON EXPLAIN ANALYZE.
 - Bound update downloads by an overall deadline and open the validated release page after a direct-download failure.
 - Refuse and audit Kill requests for Group Replication data-stream connections and expose the reason in session reports, including the truncated `Group Replicatio` command returned by MySQL process-list tables.
+- Commit the session password on blur or Enter before refreshing privileges; password keystrokes send no login attempts.
+- Preserve Kill sessions regex escapes and whitespace; invalid patterns match nothing and show their reason.
+- Read Users and roles on open and save its table column choices.
+- Show Not judged with the reason when account metadata is unreadable, with one Details column and compact account names.
+- Ask Review changes, Discard or Cancel before selecting another account with staged grant edits.
+- Share escaped identifier and literal builders across Indexes and Tables reviewed statements.
+- Count Refresh all sections without constructing requests on every render, and remove unused badges and ineffective command memoization.
+- Remove the unused ReportView and unreachable Sidebar query/session branches.
+- Measure row context menus after rendering, preserve copy actions and keyboard focus, and share the menu with TableData.
+- Correct Server and Workload read-on-open guidance, Refresh all scope, and Processlist links.
+- Keep Parameters and Instruments reports greyed after an on-screen connection switch until Refresh.
+- Forward cancellation to Waits, InnoDB, Locks and Processlist API requests.
+- Apply only the newest saved-connection response to the picker and safety footer.
+- Stop inspector, table-column, schema-browser and editor resizing on pointer cancellation or lost capture.
+- Use theme tokens for session, table and editor colors and label lock rows with accessible icons.
+- Preserve the latest Workload settings when replication loop activity changes.
+- Keep Full analysis elapsed time across Tuning remounts and use the shared Export menu for both exports.
 
 - Keep popovers above the window footer: an ⓘ panel opened near the bottom of a 720x520 window ended under the footer, which hid its last lines; it now stops at the footer's top edge and scrolls.
 - Replication Topology: the connector's details popover is no longer cut off below the map.

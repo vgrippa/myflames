@@ -167,7 +167,7 @@ export function InnodbView({
     await reads.run(
       `innodb:${raw}`,
       raw ? "Reading the raw InnoDB status…" : "Reading SHOW ENGINE INNODB STATUS…",
-      (c) => api<InnodbReport>("live/innodb", { connection: c, raw }),
+      (c, signal) => api<InnodbReport>("live/innodb", { connection: c, raw }, signal),
       onReport,
     );
   }

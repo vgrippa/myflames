@@ -67,6 +67,17 @@ function flagText(flags: SessionFlag[]) {
   return flags.map((f) => (FLAGS[f] || [f.replace(/_/g, " ")])[0]).join(", ");
 }
 
+function lockStatus(s: Session): "waiting" | "holding" | null {
+  if (s.lock_status === "waiting" || s.lock_status === "holding" || s.lock_status === null) return s.lock_status;
+  if (s.lock_wait) return "waiting";
+  if ((s.trx?.rows_locked ?? 0) > 0 || (s.trx?.tables_locked ?? 0) > 0) return "holding";
+  return null;
+}
+
+function isLocked(s: Session): boolean {
+  return s.is_locked ?? (lockStatus(s) !== null || s.trx?.state === "LOCK WAIT");
+}
+
 function Breakdown({ title, rows }: { title: string; rows: SessionBreakdown }) {
   const max = Math.max(1, ...rows.map((r) => r.count));
   return (
@@ -177,14 +188,14 @@ export function SessionsView({
     return reads.run(
       `sessions:${activeOnly}:${minSeconds}:${source}:${lockedOnly}`,
       "Reading the sessions…",
-      (c) =>
+      (c, signal) =>
         api<SessionsReport>("live/sessions", {
           connection: c,
           active_only: activeOnly,
           min_seconds: minSeconds,
           source_mode: source,
           locked_only: lockedOnly,
-        }),
+        }, signal),
       onReport,
       { force, onError: () => setAuto(0) },
     );
@@ -363,7 +374,32 @@ export function SessionsView({
         ) : null,
       className: "cell-dot",
     },
-    { key: "id", label: "ID", title: "Connection ID (the processlist ID that KILL takes)", num: true, width: 96, sort: (x) => x.id, render: (x) => x.id },
+    {
+      key: "id",
+      label: "ID",
+      title: "Connection ID (the processlist ID that KILL takes)",
+      num: true,
+      width: 96,
+      sort: (x) => x.id,
+      render: (x) => {
+        const ls = lockStatus(x);
+        return (
+          <>
+            {x.id}
+            {(ls === "waiting" || ls === "holding") && (
+              <span
+                className="session-lock-marker"
+                role="img"
+                aria-label={ls === "waiting" ? "Waiting for a lock" : "Holding locks"}
+                title={ls === "waiting" ? "Waiting for a lock" : "Holding locks"}
+              >
+                <Icon name={ls === "waiting" ? "lock" : "key"} size={12} />
+              </span>
+            )}
+          </>
+        );
+      },
+    },
     {
       key: "user",
       label: "User@host",
@@ -385,6 +421,7 @@ export function SessionsView({
       key: "statement",
       label: "Statement",
       flex: true,
+      minWidth: 220,
       sort: (x) => x.info_short || x.last_statement || "",
       render: (x) =>
         x.info_short ? (
@@ -405,16 +442,20 @@ export function SessionsView({
       key: "lock",
       label: "Lock / Trx",
       width: 140,
-      sort: (x) => (x.lock_status === "waiting" ? 0 : x.lock_status === "holding" ? 1 : 2),
+      sort: (x) => {
+        const ls = lockStatus(x);
+        return ls === "waiting" ? 0 : ls === "holding" ? 1 : 2;
+      },
       render: (x) => {
-        if (x.lock_status === "waiting") {
+        const ls = lockStatus(x);
+        if (ls === "waiting") {
           return (
             <span className="pill is-danger" title={x.lock_detail || "Waiting on lock"}>
               <Icon name="lock" size={12} /> Wait {x.lock_wait?.wait_s != null ? `(${x.lock_wait.wait_s}s)` : ""}
             </span>
           );
         }
-        if (x.lock_status === "holding") {
+        if (ls === "holding") {
           return (
             <span className="pill is-warn" title={x.lock_detail || "Holding locks"}>
               <Icon name="key" size={12} /> Locks ({x.trx?.rows_locked ?? 0} rows)
@@ -756,11 +797,14 @@ export function SessionsView({
                 rowAttrs={(v) => ({
                   "data-session": String(v.id),
                   "data-status": v.status,
-                  "data-locked": v.is_locked ? "true" : "false",
-                  "data-lock-wait": v.lock_status === "waiting" ? "true" : "false",
+                  "data-locked": isLocked(v) ? "true" : "false",
+                  "data-lock-wait": lockStatus(v) === "waiting" ? "true" : "false",
                 })}
                 // A class from rowAttrs would replace the selection class; rowClass joins it.
-                rowClass={(v) => (v.lock_status === "waiting" ? "row-lock-wait" : v.lock_status === "holding" ? "row-lock-holding" : "")}
+                rowClass={(v) => {
+                  const ls = lockStatus(v);
+                  return ls === "waiting" ? "row-lock-wait" : ls === "holding" ? "row-lock-holding" : "";
+                }}
                 rowContextMenu={(v, { copy, close }) => {
                   // Right click, Shift+F10 or the context menu key on a row:
                   // the same actions as the inspector and the ⋯ menu, with
@@ -796,7 +840,7 @@ export function SessionsView({
                     ...(statement && onOpenSql
                       ? [{ label: "Open in Query editor", icon: "query", onClick: () => { close(); onOpenSql(statement); } }]
                       : []),
-                    ...(v.is_locked || v.lock_status === "waiting" || v.lock_status === "holding" || v.trx
+                    ...(isLocked(v) || v.trx
                       ? [{ label: "Open in Locks", icon: "lock", onClick: () => { close(); onOpenView("locks"); } }]
                       : []),
                     ...(v.user ? [{ label: `Filter by user ${v.user}`, icon: "users", onClick: () => { close(); setSearch(v.user || ""); } }] : []),

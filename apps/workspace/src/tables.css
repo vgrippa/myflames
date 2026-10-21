@@ -98,7 +98,7 @@
   margin-top: var(--space-2);
 }
 .col-info-row.warn-key {
-  color: var(--color-warn-ink, #b45309);
+  color: var(--warn);
   font-size: var(--text-xs);
   margin-top: 4px;
 }

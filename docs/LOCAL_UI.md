@@ -143,7 +143,8 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Processlist rows have no buttons: each row's ⋯ menu holds **Show plan** and
   **Kill…**, which opens the same confirmation sheet as Kill in the details.
   Right click on a row (or Shift+F10, or the context menu key) opens its
-  menu: Show plan, Open in Query editor, Open in Locks, filters, **Copy
+  menu: Show plan, Open in Query editor (a new tab, like Show index and Show
+  create table elsewhere), Open in Locks, filters, **Copy
   query**, **Copy connection ID**, then **Kill query…** and **Kill
   connection…** for that row. Each opens the same sheet with that KILL
   chosen. An item that cannot run stays in the menu with its reason under it
@@ -199,8 +200,10 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   actions. Connection write policies remain authoritative: read-only connections
   refuse writes, and Production connections ask for explicit confirmation.
 
-**Refresh all** (top bar, after the connection picker; ⌥⌘R or Alt+Ctrl+R) reads every Server section,
-including sections not yet opened, using each view's window, databases and scope.
+**Refresh all** (top bar, after the connection picker; ⌥⌘R or Alt+Ctrl+R) reads Server
+and Workload sections, Replication and Cluster, including sections not yet opened,
+using each view's window, databases and scope. Database diagram is included once
+a database is chosen; imported diagrams stay unchanged.
 At most three section reads run at once, with Health, Waits and I/O first.
 Full analysis runs in a separate phase because it manages its own bounded reads.
 Maintenance detects tools; it never starts upgrade checks or jobs. Existing
@@ -1313,15 +1316,18 @@ The sidebar, Home, and browser tab share a simplified stacked-flame
 
 ### Users and roles
 
-Open **Server → Security → Users and roles**. Load reads accounts and roles
-without displaying password hashes; selecting a row reads its effective grants
+Open **Server → Security → Users and roles**. Opening the view reads accounts and roles
+once per connection; Refresh retries a failed read. The list never displays password hashes; selecting a row reads its effective grants
 and account attributes. The navigation badge counts only the loaded list.
 Without access to the account tables, the list shows the connected account and
-the backend's coverage warning. Create user and Create role are in the toolbar;
+the backend's coverage warning. When details cannot be read, the summary says **Not judged**
+with the reason and the list shows **Details: Not readable**, instead of repeated
+Unknown values. Column choices are saved. Create user and Create role are in the toolbar;
 Lock, Unlock, Expire password, Set password, Rename and Drop live in the
 inspector action area.
 
-Edits stay under Pending changes. Review changes shows the before/requested-after
+Edits stay under Pending changes. Choosing another account asks for **Review changes**,
+**Discard**, or **Cancel**. Review keeps the current account selected. Review changes shows the before/requested-after
 direct-grant comparison, exact statements, warnings and any required typed name.
 Compatible edits share a statement group. Every group appears in one review,
 including mixed grant/revoke operations and scopes. Planning errors appear beside
@@ -1372,3 +1378,26 @@ Reusable space in Tables is an InnoDB tablespace metric. Its minimum-percent
 filter applies only where file-per-table ownership and all denominator values
 are known. Shared or unknown tablespaces and missing sizes have no percentage.
 This is not per-index fragmentation; Indexes does not invent such a metric.
+
+
+### Connection and table interactions
+
+Typing the session password sends no privilege read. Leaving the password field
+or pressing Enter commits the password and reads privileges once; a successful
+connect also refreshes them. An unfinished password never reaches a focus refresh.
+
+Parameters, Instruments and Users and roles read when opened. Changing the
+connection while a report stays on screen keeps that report greyed until Refresh.
+Opening the view again reads the chosen connection. Saved connection settings
+always use the newest list response, including the write-safety footer.
+
+Row menus keep a view's actions followed by Copy cell, and fit their actual height
+inside the window. Shift+F10 or the context menu key opens the menu; Escape returns
+focus to the row. Cancelling a resize ends the drag. Processlist lock rows carry
+a lock or key icon with an accessible explanation as well as their theme colors.
+
+Kill sessions preserves the query pattern exactly as typed and matches without
+case sensitivity. An invalid expression says **Not a valid pattern** and selects
+no sessions. Reviewed Indexes and Tables statements quote names containing
+backticks correctly. Tuning and Full analysis share the Export menu, and an
+analysis's elapsed time continues when Tuning is reopened during its run.

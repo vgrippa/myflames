@@ -30,6 +30,7 @@ import type { ServerKind } from "./session";
 import { StatementRows, StatementsBehind, type DigestAction, type LabSettings, type OpenTop } from "./SlowQueries";
 import {
   EmptyState,
+  ExportMenu,
   Fields,
   GroupedList,
   GroupedRow,
@@ -103,6 +104,10 @@ interface TuningViewProps {
   sessionsReport?: SessionsReport | null;
   source?: AnalysisSource | null;
   reads?: ConnectionReads;
+  /** Refresh all can own the analysis read while this view is not mounted. */
+  refreshRunning?: boolean;
+  /** Start of the in-flight read, owned by Server so remounting does not reset it. */
+  startedAt?: number;
   wasRun?: boolean;
   settings?: LabSettings;
   onDigest?: (row: TopStatement, rank: number, action: DigestAction, expect: string) => void;
@@ -135,6 +140,8 @@ export function TuningView({
   tablesReport,
   source,
   reads,
+  refreshRunning,
+  startedAt,
   wasRun,
   settings,
   onDigest,
@@ -154,7 +161,6 @@ export function TuningView({
   const [exported, setExported] = useState("");
   const [exportError, setExportError] = useState("");
   const [now, setNow] = useState(Date.now());
-  const started = useRef(0);
 
   useEffect(() => {
     if (tabRequest) setTab(tabRequest.tab);
@@ -177,17 +183,16 @@ export function TuningView({
   const analysis = boundReport?.report ?? null;
   const analysisOther = boundReport && boundReport.key !== activeKey ? boundReport.label : null;
   const loading = reads?.loading || "";
-  const running = !!loading;
+  const running = !!loading || !!refreshRunning;
 
   // While the analysis runs, count the seconds (it usually takes 10 to 20).
   useEffect(() => {
     if (!running) return;
-    started.current = Date.now();
-    setNow(started.current);
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [running]);
-  const elapsed = running ? Math.max(0, Math.round((now - started.current) / 1000)) : 0;
+  }, [running, startedAt]);
+  const elapsed = running && startedAt !== undefined ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0;
 
   // A new Full analysis starts on its Look at first pick, on that tab only.
   const selectRef = useRef(selection.select);
@@ -292,71 +297,28 @@ export function TuningView({
 
   const exportMenu =
     tab === "scorecard" ? (
-      <Popover
+      <ExportMenu
         label="Export the tuning scorecard"
         className="report-export"
-        buttonClassName="button"
-        // The scorecard on screen belongs to another server until this one is read.
         disabled={!!other}
-        buttonTitle={other ? `The scorecard is from ${other}: run the full analysis to load this server` : "Export the tuning scorecard as a file"}
-        trigger={
-          <>
-            <Icon name="export" size={15} />
-            Export
-          </>
-        }
-      >
-        <h3 className="popover-title">Export as</h3>
-        <div className="report-export-formats" role="group" aria-label="Export formats">
-          {(["html", "markdown", "json"] as const).map((f) => (
-            <button key={f} type="button" className="button" data-format={f} onClick={() => exportScorecard(f)}>
-              {f === "html" ? "HTML" : f === "markdown" ? "Markdown" : "JSON"}
-            </button>
-          ))}
-        </div>
-        <p className="hint">The scorecard as shown: {coverageText(tuning)}; nothing is read again.</p>
-        {exported && (
-          <p className="hint" role="status">
-            Saved {exported}
-          </p>
-        )}
-      </Popover>
+        title={other ? `The scorecard is from ${other}: run the full analysis to load this server`
+          : `The scorecard as shown: ${coverageText(tuning)}; nothing is read again.`}
+        formats={(["html", "markdown", "json"] as const).map(format => ({
+          key: format,
+          label: format === "html" ? "HTML" : format === "markdown" ? "Markdown" : "JSON",
+          onSelect: () => exportScorecard(format),
+        }))}
+      />
     ) : analysis ? (
-      <Popover
+      <ExportMenu
         label="Export the full analysis"
         className="report-export"
-        buttonClassName="button"
-        buttonTitle="Export the full analysis as a file"
-        trigger={
-          <>
-            <Icon name="export" size={15} />
-            Export
-          </>
-        }
-      >
-        <h3 className="popover-title">Export as</h3>
-        <div className="report-export-formats" role="group" aria-label="Export formats">
-          {ANALYSIS_FORMATS.map(([format, label]) => (
-            <button
-              key={format}
-              type="button"
-              className="button"
-              data-format={format}
-              disabled={!!exporting}
-              onClick={() => void exportAnalysis(format)}
-            >
-              {exporting === format ? <span className="spinner" aria-hidden="true" /> : null}
-              {label}
-            </button>
-          ))}
-        </div>
-        <p className="hint">Made from the report as read{analysisOther ? ` on ${analysisOther}` : ""}; nothing is read again.</p>
-        {exported && (
-          <p className="hint" role="status">
-            Saved {exported}
-          </p>
-        )}
-      </Popover>
+        disabled={!!exporting}
+        title={`Made from the report as read${analysisOther ? ` on ${analysisOther}` : ""}; nothing is read again.`}
+        formats={ANALYSIS_FORMATS.map(([format, label]) => ({
+          key: format, label, onSelect: () => void exportAnalysis(format),
+        }))}
+      />
     ) : null;
 
   // Scorecard | Full analysis: the shared segmented control in the header row,
@@ -436,10 +398,13 @@ export function TuningView({
         </p>
       }
       status={
-        <ViewStatus
-          loading={running ? `Running every Server view once: ${elapsed} s so far, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
-          error={reads?.error || exportError}
-        />
+        <>
+          <ViewStatus
+            loading={running ? `Running every Server view once: ${elapsed} s so far, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
+            error={reads?.error || exportError}
+          />
+          {exported && <p className="hint" role="status">Saved {exported}</p>}
+        </>
       }
     >
       {tab === "scorecard" ? (

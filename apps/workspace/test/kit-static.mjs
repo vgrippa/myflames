@@ -60,6 +60,18 @@ try {
   assert.equal((multi.match(/tabindex="0"/g) || []).length >= 1, true);
   assert.doesNotMatch(multi, /aria-current="true"/, 'collection selection is not navigation state');
   assert.match(render('Popover', { label: 'Actions for connection', menu: true, trigger: 'More', children: 'Use' }), /aria-haspopup="menu"/);
+  const menuProps = { x: 800, y: 600, label: 'Row actions', opener: null, onClose() {} };
+  assert.equal(render('ContextMenu', { ...menuProps, actions: [] }), '', 'no empty menu surface');
+  assert.equal(render('ContextMenu', { ...menuProps, actions: [{ divider: true }] }), '', 'dividers alone are not a menu');
+  const rowMenu = render('ContextMenu', { ...menuProps, actions: [
+    { divider: true }, { label: 'Kill query…', disabled: true, hint: 'This connection is read-only', onClick() {} },
+    { divider: true }, { divider: true }, { label: 'Copy cell', icon: 'copy', onClick() {} }, { divider: true },
+  ] });
+  assert.equal((rowMenu.match(/role="menuitem"/g) || []).length, 2);
+  assert.equal((rowMenu.match(/role="separator"/g) || []).length, 1, 'no leading, trailing or repeated separators');
+  assert.match(rowMenu, /aria-disabled="true" title="This connection is read-only"/);
+  assert.ok(rowMenu.indexOf('Kill query…') < rowMenu.indexOf('Copy cell'), 'copy follows the custom action');
+  assert.doesNotMatch(rowMenu, / disabled=""/, 'explained disabled actions remain keyboard focusable');
   const appBundle = await build({ stdin: { contents: 'export * from "./Connections"; export * from "./Home"; export { normalizeLab } from "./session";',
       resolveDir: path.join(here, '../src'), loader: 'tsx' }, bundle: true, platform: 'node', format: 'cjs', write: false,
     loader: { '.css': 'empty' }, external: ['react', 'react-dom'], jsx: 'automatic' });

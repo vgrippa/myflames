@@ -198,3 +198,15 @@ Home shows the installed version and links to releases. Update status stays unve
 Tables/Indexes workspace reports include complete scoped inventories with a 100,000-row category ceiling and existing schema-size consent. Paginate after sorting; exports include all filtered rows. CSV protects formula-like values, HTML escapes names and values, and PDF uses the system print dialog. DATA_FREE never represents per-index fragmentation; reusable-space percentages require known sizes and file-per-table ownership. Preserve unknowns. CLI row limits remain unchanged.
 
 Parameters uses **Review and apply** for batch edits and **Change…** in the inspector for single-parameter modes. Permission details appear inside the review dialog; the buttons do not show an Unverified badge. Existing confirmation and privilege checks still apply.
+
+
+Workspace interaction guards: privilege reads use the successful-connect or
+committed-password revision, never password keystrokes; blur and Enter commit
+once per changed value. Saved-connection reads adopt the newest response.
+Parameters, Instruments and Users and roles use `useOpenRead`, keeping an old
+report greyed on an on-screen connection switch until Refresh. Account selection
+asks Review changes, Discard or Cancel when grants are staged. Shared SQL builders
+in `sqlIdent.ts` escape identifiers and literals. Row menus use the measured
+`ContextMenu`, with view actions before copy actions; resize cancellation always
+clears the drag. Full analysis elapsed time belongs to the read owner, outside
+Tuning's mount.
