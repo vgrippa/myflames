@@ -1056,6 +1056,7 @@ export type WaitsReport = PerfBase & {
 };
 /** indexes-1.0: unused and redundant indexes, full scans. */
 export type UnusedIndex = {
+  action_blocked_reason?: string;
   schema: string;
   table: string;
   index: string;
@@ -1073,6 +1074,7 @@ export type UnusedIndex = {
   caveat?: string;
 };
 export type RedundantIndex = {
+  action_blocked_reason?: string;
   schema: string;
   table: string;
   index: string;
@@ -1100,7 +1102,7 @@ export type FullScanTable = {
   mostly: boolean;
   why: string;
 };
-export type IndexInventoryRow = { schema: string; table: string; index: string; columns: string; unique: boolean; type: string; visible: boolean };
+export type IndexInventoryRow = { action_blocked_reason?: string; schema: string; table: string; index: string; columns: string; unique: boolean; type: string; visible: boolean };
 export type IndexesReport = PerfBase & {
   indexes?: IndexInventoryRow[];
   schema_version: "indexes-1.0";
@@ -1112,7 +1114,7 @@ export type IndexesReport = PerfBase & {
   unused: UnusedIndex[];
   redundant: RedundantIndex[];
   full_scans: FullScanTable[];
-  no_data: { schema: string; table: string; indexes: number; reason: string }[];
+  no_data: { schema: string; table: string; indexes: number; reason: string; reason_text?: string }[];
   foreign_keys: number;
   summary: {
     tables: number;

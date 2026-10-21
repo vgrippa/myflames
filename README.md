@@ -260,7 +260,7 @@ Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
 | `innodb` | `[--raw] [--fail-on {problem,watch}]` | Parse and summarize SHOW ENGINE INNODB STATUS output. |
 | `error-log` | `[--level LEVEL[,LEVEL...]] [--limit N] [--fail-on {problem,watch}]` | Read the server error log: `performance_schema.error_log` on MySQL; on MariaDB the log file, only when the server runs on this computer. |
 | `waits` | `[--interval N] [--limit N]` | Rank wait events over a sampling window and since server boot. |
-| `indexes` | `[--schema NAME] [--all-schemas] [--limit N]` | Find unused, redundant, or missing indexes. |
+| `indexes` | `[--schema NAME] [--all-schemas] [--limit N]` | Find unused, redundant, or missing indexes; partitioned or unknown candidates stay under No data. |
 | `tables` | `[--schema NAME] [--all-schemas] [--fresh]` | Inspect table fragmentation, missing primary keys, and engine distributions. |
 | `io` | `[--interval N] [--schema NAME] [--all-instances]` | Analyze file and table I/O throughput. |
 | `config` | `[--fail-on LEVEL]`; `set NAME VAL [--persist]`; `reset-persist NAME` | Review server settings or execute planned variable modifications. |
@@ -327,4 +327,4 @@ Parameters (under Server > Setup) lists every global server parameter in one fil
 
 Instruments lets you filter and select individual instruments or consumers and apply batched `UPDATE` statements through the reviewed SQL runner, with copy-only option file lines for restart persistence. Learn matches the workspace light and dark appearance, with a lesson toolbar, grouped family rows, and a compact embedded lesson bar.
 
-Tables and Indexes include complete scoped inventories with pagination. Export the filtered results as CSV, HTML or PDF through the system print dialog. Tables can filter measured reusable-space percentage; this is not an index fragmentation estimate.
+Tables and Indexes include complete scoped inventories with pagination. Indexes checks partitioning only for candidate tables: partitioned or unresolved candidates appear under No data, with DROP and visibility SQL withheld. Export the filtered results as CSV, HTML or PDF through the system print dialog. Tables can filter measured reusable-space percentage; this is not an index fragmentation estimate.

@@ -132,9 +132,9 @@ try {
   await page.click(`${iv} .segmented button[data-value=nodata]`);
   const noDataRow = `${iv} [aria-label="Tables with no data"] tr[data-table="parted_pk"]`;
   await page.waitForSelector(noDataRow);
-  assert.match(await text(noDataRow), /partitioned, which Percona Server's user statistics do not count/);
+  assert.match(await text(noDataRow), /partitioned, and Performance Schema does not count every read through a partitioned table's indexes/);
   await h.select(noDataRow);
-  assert.match(await h.inspector(), /4 indexes, partitioned, which Percona Server's user statistics do not count\. Never listed as unused/);
+  assert.match(await h.inspector(), /4 indexes, partitioned, and Performance Schema does not count every read through a partitioned table's indexes\. Never listed as unused/);
   await shoot("indexes-partitioned");
   await page.click(".detail-back").catch(() => {});
 

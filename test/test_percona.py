@@ -17,9 +17,10 @@ import os
 import re
 import unittest
 
-from _perf_replay import ReplayConn, assert_read_only, fixture
+from _perf_replay import ReplayConn, assert_read_only, fixture, replay as recorded_replay
 from myflames import config_review, health, indexes, perf_common, schema_health, server_info
 from myflames.perf_common import Server
+from myflames.connector import ConnectorError
 
 PERCONA_80 = "Percona Server (GPL), Release 37, Revision 39e2b60e"
 PERCONA_84 = "Percona Server (GPL), Release 11, Revision 57878ff8"
@@ -28,8 +29,7 @@ HEALTH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "h
 
 
 def replay(view, server, edit=None):
-    data = fixture(view, server)
-    return ReplayConn(data["calls"], edit=edit), data
+    return recorded_replay(view, server, edit=edit)
 
 
 class TestIdentity(unittest.TestCase):
@@ -169,29 +169,53 @@ class TestIndexes(unittest.TestCase):
         stats[0][3] = "0"
         raw = {"statistics": stats, "foreign_keys": [], "usage": None, "instrument": None, "consumers": None,
                "actors": None, "objects": None, "index_stats": [["shop", "t", "k_a", "10"]],
-               "table_stats": [["shop", "t", "30"]], "partitioned": []}
+               "table_stats": [["shop", "t", "30"]], "partitioned": [["shop", "t", ""]]}
         report = indexes.compute_indexes(server, raw, ["shop"])
         self.assertEqual(report["source"], "userstat")
         self.assertEqual(report["userstat"]["role"], "source")
         self.assertEqual([u["index"] for u in report["unused"]], ["k_b"])
         self.assertTrue(any("Percona Server user statistics" in n for n in report["notes"]))
 
+    def test_userstat_scan_subtraction_requires_confirmed_plain_table(self):
+        """Percona partitioned table/index reads do not describe the same complete workload."""
+        server = Server({'version': '8.4.11-11', 'version_comment': PERCONA_84,
+                         'performance_schema': 'OFF', 'userstat': 'ON'}, {'Uptime': '90000'})
+        definition = ['shop', 't', 'k', '1', '1', 'a', None, 'A', 'BTREE', 'YES', None]
+        for metadata in (None, [], [['shop', 't', 'partitioned']], [['shop', 't', '']]):
+            with self.subTest(metadata=metadata):
+                raw = {'statistics': [definition], 'foreign_keys': [], 'usage': None,
+                       'index_stats': [['shop', 't', 'k', '20']], 'table_stats': [['shop', 't', '100']],
+                       'partitioned': metadata}
+                report = indexes.compute_indexes(server, raw, ['shop'])
+                self.assertEqual(report['unused'], [], 'the only index was read; no zero-use candidate exists')
+                if metadata == [['shop', 't', '']]:
+                    self.assertEqual([r['rows_without_index'] for r in report['full_scans']], [80])
+                    self.assertEqual([r['share_rows'] for r in report['full_scans']], [0.8])
+                else:
+                    self.assertEqual(report['full_scans'], [])
+                    if metadata == [['shop', 't', 'partitioned']]:
+                        self.assertEqual([n['reason'] for n in report['no_data']], ['partitioned'])
+                    else:
+                        self.assertTrue(any('partition' in n.lower() for n in report['notes']))
+
     def test_partitioned_tables_are_no_data_when_userstat_is_the_source(self):
         conn, data = replay("indexes", "percona-8.4-psoff")
         report = indexes.index_report(conn, **data["args"])
         assert_read_only(self, conn, indexes.INDEXES_TAG)
         self.assertEqual(report["source"], "userstat")
-        self.assertTrue(any("CREATE_OPTIONS LIKE '%partitioned%'" in sql for sql, _ in conn.calls))
+        self.assertTrue(any("SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_OPTIONS" in sql for sql, _ in conn.calls))
+        self.assertFalse(any("CREATE_OPTIONS LIKE" in sql for sql, _ in conn.calls))
         no_data = {n["table"]: n["reason"] for n in report["no_data"]}
-        self.assertEqual((no_data["parted_pk"], no_data["parted_nopk"]), ("partitioned", "partitioned"))
+        self.assertEqual(no_data, {"parted_pk": "partitioned"})
+        # parted_nopk has no unused-index candidate, so its metadata is not read.
         # Live: a range read through parted_pk.kw is missing from INDEX_STATISTICS; it is never called unused.
         self.assertFalse([u for u in report["unused"] if u["table"].startswith("parted")])
         self.assertEqual([(u["table"], u["index"]) for u in report["unused"]], [("plain_pk", "kz")])
-        self.assertTrue(any("indexes of the 2 partitioned tables in scope are under No data" in n
+        self.assertTrue(any("Partitioned tables with unused-index candidates are under No data" in n
                             for n in report["notes"]))
         text = indexes.format_text(report)
         self.assertIn("usage from Percona Server user statistics (userstat)", text)
-        self.assertIn("  partitioned, which Percona Server's user statistics do not count: review.parted_nopk, "
+        self.assertIn("  partitioned, and Performance Schema does not count every read through a partitioned table's indexes: "
                       "review.parted_pk\n", text)
         self.assertNotIn("MariaDB", text)
 
@@ -204,31 +228,33 @@ class TestIndexes(unittest.TestCase):
         conn, data = replay("indexes", "percona-8.4-partitioned", edit=edit)
         report = indexes.index_report(conn, **data["args"])
         unused = {(u["table"], u["index"]): u for u in report["unused"]}
-        # Absent from INDEX_STATISTICS on a partitioned table: unknown, not zero.
-        self.assertIsNone(unused[("parted_pk", "kz")]["userstat_rows_read"])
-        self.assertIsNone(unused[("parted_pk", "kw")]["userstat_rows_read"])
-        # A count above zero is still a read (live: 3 through parted_pk.kv).
-        self.assertEqual((unused[("parted_pk", "kv")]["verdict"], unused[("parted_pk", "kv")]["userstat_rows_read"]),
-                         ("keep", 3))
+        # Even a positive supplemental userstat read cannot make the table's zero counters complete.
+        self.assertFalse([key for key in unused if key[0] == 'parted_pk'])
+        no_data = {n['table']: n['reason'] for n in report['no_data']}
+        self.assertEqual(no_data['parted_pk'], 'partitioned')
         self.assertEqual(unused[("plain_pk", "kz")]["userstat_rows_read"], 0)
-        self.assertTrue(any("for the 2 partitioned tables in scope they can show that an index was read, never that "
-                            "it was not" in n for n in report["notes"]))
+        self.assertTrue(any("Partitioned tables with unused-index candidates are under No data" in n
+                            for n in report["notes"]))
 
     def test_partitioned_tables_unlisted_leave_userstat_unused_unknown(self):
-        data = fixture("indexes", "percona-8.4-psoff")
-        calls = [[c[0], None, "ERROR 1356 (HY000): refused"] if "CREATE_OPTIONS" in c[0] else c
-                 for c in data["calls"]]
-        report = indexes.index_report(ReplayConn(calls), **data["args"])
+        def edit(sql, text, n):
+            if 'CREATE_OPTIONS' in sql:
+                raise ConnectorError('ERROR 1356 (HY000): refused')
+            return text
+        conn, data = replay("indexes", "percona-8.4-psoff", edit=edit)
+        report = indexes.index_report(conn, **data["args"])
         self.assertEqual(report["unused"], [])
-        self.assertTrue(report["no_data"])
-        self.assertEqual({n["reason"] for n in report["no_data"]} - {"not_read"}, {"userstat_unknown"})
-        self.assertTrue(any("could not list them" in n for n in report["notes"]))
+        self.assertEqual({n['table']: n['reason'] for n in report['no_data']},
+                         {'parted_pk': 'partitioning_unknown', 'plain_pk': 'partitioning_unknown'})
+        self.assertTrue(any("Could not read information_schema.TABLES partitioning" in n for n in report["notes"]))
 
-    def test_mariadb_userstat_reads_no_partition_list(self):
+    def test_mariadb_userstat_reads_bounded_partition_metadata(self):
         import test_indexes
         conn, data = test_indexes.replay("indexes", "mariadb-11.4-userstat")
-        indexes.index_report(conn, **data["args"])
-        self.assertFalse(any("CREATE_OPTIONS" in sql for sql, _ in conn.calls))
+        report = indexes.index_report(conn, **data["args"])
+        self.assertEqual(report['source'], 'userstat')
+        self.assertEqual(sum('CREATE_OPTIONS' in sql for sql, _ in conn.calls), 1)
+        self.assertFalse(any('CREATE_OPTIONS LIKE' in sql for sql, _ in conn.calls))
 
     def test_mysql_without_userstat_reads_no_userstat_table(self):
         import test_indexes

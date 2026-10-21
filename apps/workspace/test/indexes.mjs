@@ -272,6 +272,75 @@ try {
   await page.waitForFunction(() => /ALTER INDEX `k_status` IGNORED;/.test(document.querySelector(".view-inspector")?.textContent || ""));
   await list("scans");
   assert.match(await text(`${view} tr[data-table="orders"]`), /of rows/);
+  // Partitioned and unresolved tables have no DROP/visibility path, including
+  // the inventory, redundant list, inspector, row menu and right-click menu.
+  // Keep a plain candidate alongside them as the positive action control.
+  for (const engine of ["mysql", "mariadb"]) {
+    for (const reason of ["partitioned", "partitioning_unknown"]) {
+      const reasonText = reason === "partitioned"
+        ? "partitioned, and Performance Schema does not count every read through a partitioned table's indexes"
+        : "partitioning could not be read, so index use cannot be judged";
+      const plain = { ...mysql.unused[0] };
+      const blocked = { schema: "mfshop", table: "parted", index: "kw", columns: "w", unique: false,
+        type: "BTREE", visible: true, action_blocked_reason: reasonText };
+      const guarded = { ...mysql, engine, server_version: engine === "mysql" ? "8.4.11" : "11.4.13-MariaDB",
+        indexes: [blocked, { ...plain, unique: false, type: "BTREE" }],
+        unused: [plain],
+        redundant: [{ ...mysql.redundant[0], ...blocked, dominant: "kw_more", dominant_columns: "w, id",
+          test_sql: "", drop_sql: "", caveat: "" }],
+        full_scans: [], no_data: [{ schema: "mfshop", table: "parted", indexes: 2, reason, reason_text: reasonText }],
+        summary: { ...mysql.summary, tables: 2, indexes: 3, unused: 1, unused_candidates: 1,
+          keep_foreign_key: 0, keep_userstat: 0, redundant: 1, full_scans: 0, mostly_full_scans: 0, no_data: 1 },
+        more: { indexes: 0, unused: 0, redundant: 0, full_scans: 0, no_data: 0 } };
+      if (await page.$(".detail-back")) await page.click(".detail-back");
+      state.queue.push({ status: 200, body: guarded });
+      const loaded = page.waitForResponse(response => response.url().endsWith("/api/live/indexes"));
+      await h.refresh();
+      await loaded;
+      await h.idle(view);
+      await list("nodata");
+      const noDataRow = `${view} tr[data-table="parted"]`;
+      await page.waitForSelector(noDataRow);
+      assert.ok((await text(noDataRow)).includes(reasonText));
+      await h.select(noDataRow);
+      assert.ok((await h.inspector()).includes(reasonText));
+      assert.doesNotMatch(await h.inspector(), /DROP INDEX|ALTER INDEX/);
+      assert.equal(await page.$(".view-inspector .perf-sql"), null);
+      assert.ok(!(await page.$$eval(".view-inspector button", els => els.map(e => e.textContent.trim())))
+        .some(label => /Drop|Set invisible|Set visible|Set ignored|Set not ignored/.test(label)));
+      await list("unused");
+      assert.deepEqual(await ids("Unused indexes"), [`${plain.table}.${plain.index}`]);
+      await page.click(`${view} tbody tr:first-child .row-more`);
+      await page.waitForSelector(".row-action-menu [role=menuitem]", { visible: true });
+      assert.match(await text(".row-action-menu"), /Drop index/);
+      await page.keyboard.press("Escape");
+      await page.waitForSelector(".row-action-menu", { hidden: true });
+      for (const group of ["all", "redundant"]) {
+        await list(group);
+        const row = `${view} tr[data-index="parted.kw"]`;
+        await page.waitForSelector(row);
+        await page.click(`${row} .row-more`);
+        await page.waitForSelector(".row-action-menu [role=menuitem]", { visible: true });
+        assert.deepEqual(await page.$$eval(".row-action-menu [role=menuitem]", els => els.map(e => e.textContent.trim())),
+          ["Table health"]);
+        await page.keyboard.press("Escape");
+        await page.waitForSelector(".row-action-menu", { hidden: true });
+        await page.click(row, { button: "right" });
+        await page.waitForSelector(".context-menu[role=menu]", { visible: true });
+        assert.doesNotMatch(await text(".context-menu"), /DROP|Drop|invisible|visible|ignored/);
+        await page.keyboard.press("Escape");
+        await page.waitForSelector(".context-menu", { hidden: true });
+        await h.select(row);
+        assert.ok((await h.inspector()).includes(reasonText));
+        assert.doesNotMatch(await h.inspector(), /DROP INDEX|ALTER INDEX/);
+        assert.equal(await page.$(".view-inspector .perf-sql"), null);
+        const actions = await page.$$eval(".view-inspector button", els => els.map(e => e.textContent.trim()));
+        assert.ok(!actions.some(label => /Drop|Set invisible|Set visible|Set ignored|Set not ignored/.test(label)));
+      }
+    }
+  }
+  // Restore the list the following limit assertions exercise.
+  await list("scans");
   // Every list cut at the server's limit says how many rows it leaves out.
   state.queue.push({ status: 200, body: { ...mysql, more: { unused: 1, redundant: 4, full_scans: 2, no_data: 3 } } });
   await h.refresh();

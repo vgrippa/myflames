@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep partitioned-table indexes out of Unused on MySQL, MariaDB and Percona Server. Check partitioning only for candidate tables in bounded batches; put partitioned or unresolved candidates under No data with a reason, and suppress DROP and visibility SQL across index lists and inspectors.
+
 - ProxySQL digest routing shows Not judged and names an unread runtime variable when the rule walk depends on it, instead of reporting a false match or mismatch.
 - Completed Cluster and ProxySQL actions close their sheet after a connection switch and offer no follow-up change on the replacement connection; the Audit log keeps the attempt.
 - ProxySQL digests with separators in schema, user or client names keep separate row selections and rule links.

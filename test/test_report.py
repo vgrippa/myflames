@@ -24,8 +24,8 @@ import time
 import unittest
 from unittest import mock
 
-from _perf_replay import (PASSWORD, FakeFactory, FakeTime, ReplayConn, _Refused, batch, replay as raw_replay, run_cli,
-                          run_main)
+from _perf_replay import (PASSWORD, FakeFactory, FakeTime, ReplayConn, _Refused, batch, index_partition_keys,
+                          replay as raw_replay, run_cli, run_main, simulated_index_partitioning)
 from myflames import cluster, discover, report, server_checks, ui
 from myflames.connector import ConnectorError, MySQLConnection
 from myflames.perf_common import Server, _table_count_sql, scope_sql
@@ -310,6 +310,12 @@ class TestLiveRecordings(ReportShape):
                                  data['summary']['views'])
                 self.assertEqual([sql for sql in conn.answers if sql not in conn.seen], [])
                 self.assertEqual(result['header']['failures'], [])
+                # The three instrumented root recordings have unused indexes
+                # only on customers; unavailable usage needs no metadata read.
+                metadata = [index_partition_keys(sql) for sql, _ in conn.calls if index_partition_keys(sql) is not None]
+                expected = [[('mfshop', 'customers')]] if name in (
+                    'mysql-8.4-replica', 'mysql-8.0', 'mariadb-11.4') else []
+                self.assertEqual(metadata, expected)
                 for fmt in ('text', 'digest', 'markdown', 'html', 'json'):
                     self.assertTrue(report.export(result, fmt))
 
@@ -363,6 +369,29 @@ class TestLiveRecordings(ReportShape):
                     for unexpected in (sql, bounded + ' LIMIT 2001', sql + ' LIMIT 2000'):
                         with self.assertRaisesRegex(AssertionError, 'unexpected SQL:'):
                             conn.run(unexpected)
+
+    def test_index_metadata_supplement_preserves_captured_create_options(self):
+        for name in ('mysql-8.4-replica', 'mariadb-11.4'):
+            with self.subTest(server=name):
+                conn, data = raw_replay('report', name)
+                original = json.dumps(data, sort_keys=True)
+                metadata = simulated_index_partitioning(data)
+                self.assertEqual(metadata[('mfshop', 'customers')], '')
+                self.assertEqual(json.dumps(data, sort_keys=True), original)
+                # An explicitly simulated alternate table definition overrides
+                # the plain-table fallback from STATISTICS, including NULL.
+                for option in ('partitioned', 'NULL'):
+                    alternate = json.loads(original)
+                    for call in alternate['calls']:
+                        if call[0].startswith('/*myflames:tables*/ SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE,'):
+                            rows = [line.split('\t') for line in call[1].split('\n') if line]
+                            for row in rows:
+                                if row[:2] == ['mfshop', 'customers']:
+                                    row[7] = option
+                            call[1] = ''.join('\t'.join(row) + '\n' for row in rows)
+                    self.assertEqual(simulated_index_partitioning(alternate)[('mfshop', 'customers')],
+                                     None if option == 'NULL' else option)
+                self.assertEqual(json.dumps(data, sort_keys=True), original)
 
     def test_limited_io_count_reuses_the_recorded_denial(self):
         original, _ = raw_replay('report', 'mysql-8.0-limited')
@@ -793,8 +822,14 @@ class TestConcurrency(unittest.TestCase):
             with self.subTest(engine=engine), tempfile.TemporaryDirectory() as directory, \
                     mock.patch.object(tempfile, 'tempdir', directory):
                 source, _ = replay('report', engine)
+                expected, recorded, _ = run_report(engine)
                 answers = {sql: ({'error': str(values[0])} if isinstance(values[0], _Refused)
                                  else {'stdout': values[0]}) for sql, values in source.answers.items()}
+                # The subprocess has a finite answer map, so materialize the
+                # explicit metadata supplement for each expected bounded read.
+                for sql, _ in recorded.calls:
+                    if index_partition_keys(sql) is not None:
+                        answers[sql] = {'stdout': source.run(sql)}
                 clock = FakeTime()
                 with option_file_client(directory, answers) as binary, \
                         MySQLConnection('h', password=PASSWORD, binary=binary) as conn:
@@ -802,6 +837,8 @@ class TestConcurrency(unittest.TestCase):
                                                     sleep=clock.sleep, clock=clock.monotonic)
                 self.assertEqual(result['header']['failures'], [])
                 self.assertEqual(len(result['header']['views']), 10)
+                self.assertEqual({f['id']: f['status'] for f in result['findings'] if f['id'].startswith('indexes.')},
+                                 {f['id']: f['status'] for f in expected['findings'] if f['id'].startswith('indexes.')})
                 paths = []
                 for name in os.listdir(directory):
                     if name.startswith('record-'):

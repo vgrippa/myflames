@@ -1350,6 +1350,8 @@ Accounts controls use its canonical action answers; other screens use the [privi
 
 ### Tables and indexes: browse and export
 
+Indexes puts partitioned tables with unused-index candidates under **No data**, with the reason “partitioned, and Performance Schema does not count every read through a partitioned table's indexes”. DROP and visibility SQL are unavailable for those tables in All indexes, Redundant, row menus and inspectors. If partitioning cannot be read or a candidate table is missing from the metadata, its indexes also stay under No data with the reason and a note. The check reads only candidate tables, in batches of at most 100 within one database.
+
 Tables includes an All tables inventory, and Indexes includes All indexes,
 including used and primary indexes. Both paginate in groups of 25, 50, 100 or
 200 rows. Sorting applies to the entire result before pagination. Search and
