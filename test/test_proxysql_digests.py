@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from myflames import proxysql, proxysql_digests as pd, reviewed_writes, ui
-from test_proxysql import DIGESTS, Factory, FakeAdmin, Home, NotProxy
+from test_proxysql import DIGESTS, Factory, Home, NotProxy
 
 ROOT = Path(__file__).resolve().parent.parent
 DIGEST_SCHEMA = json.loads((ROOT / 'docs' / 'schemas' / 'proxysql-digests-1.0.json').read_text(encoding='utf-8'))
@@ -303,7 +303,7 @@ class TestRouting(unittest.TestCase):
 class TestReport(Home):
     def test_the_lab_cross_check(self):
         from test_chart_data import validate
-        report = proxysql.read_status(FakeAdmin())
+        report = proxysql.read_status(self.admin())
         validate(report, PROXY_SCHEMA)
         by = dict(((d['hostgroup'], d['digest']), d['routing']) for d in report['query_digests'])
         self.assertEqual(by[(32, '0xA8027DF9CE26E2FF')]['verdict'], 'match')
@@ -322,7 +322,7 @@ class TestReport(Home):
 
 class TestDigests(Home):
     def test_unread_runtime_variables_survive_the_admin_read(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("DELETE FROM runtime_mysql_query_rules")
         conn.db.executemany("INSERT INTO runtime_mysql_query_rules "
                             "(rule_id, active, flagIN, flagOUT, destination_hostgroup, apply) VALUES (?,?,?,?,?,?)",
@@ -333,7 +333,7 @@ class TestDigests(Home):
         for d in out['digests']:
             self.assertEqual(d['routing']['verdict'], 'unknown')
             self.assertIn('mysql-query_processor_iterations', ' '.join(d['routing']['why']))
-        unread = pd.read_digests(FakeAdmin(missing=('runtime_global_variables',)))
+        unread = pd.read_digests(self.admin(missing=('runtime_global_variables',)))
         selected = next(d for d in unread['digests'] if d['digest_text'] == 'SELECT @@hostname')
         self.assertEqual(selected['routing']['verdict'], 'unknown')
         self.assertIn('mysql-query_processor_regex', ' '.join(selected['routing']['why']))
@@ -349,15 +349,15 @@ class TestDigests(Home):
                              ('hostgroup', 'schemaname', 'username', 'client_address', 'digest')])
 
     def test_digest_hash_filter_normalizes_lowercase_and_mixed_case(self):
-        expected = pd.read_digests(FakeAdmin(), digest='0xA8027DF9CE26E2FF')['digests']
+        expected = pd.read_digests(self.admin(), digest='0xA8027DF9CE26E2FF')['digests']
         self.assertEqual(len(expected), 2)
         for value in ('0xa8027df9ce26e2ff', '0xa8027Df9cE26e2Ff'):
-            out = pd.read_digests(FakeAdmin(), digest=value)
+            out = pd.read_digests(self.admin(), digest=value)
             self.assertEqual(out['digests'], expected)
             self.assertEqual(out['filters']['digest'], '0xA8027DF9CE26E2FF')
 
     def read(self, conn=None, **filters):
-        conn = conn or FakeAdmin()
+        conn = conn or self.admin()
         return pd.read_digests(conn, **filters), conn
 
     def test_every_order_is_bounded_in_admin_and_validates(self):
@@ -383,35 +383,35 @@ class TestDigests(Home):
         self.assertEqual([f['value'] for f in out['facets']['hostgroups']], [32, 30, 10])
 
     def test_nothing_typed_reaches_the_statement_and_reset_is_never_named(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         typed = "stats_mysql_query_digest_reset' OR '1'='1"
         out = pd.read_digests(conn, text=typed, schema=typed, user=typed)
         self.assertEqual(out['digests'], [])
         for sql in conn.calls:
             self.assertNotIn('_reset', sql)
             self.assertNotIn("'1'='1", sql)
-        out = pd.read_digests(FakeAdmin(), text='ORDERS')
+        out = pd.read_digests(self.admin(), text='ORDERS')
         self.assertEqual(sorted(d['digest'] for d in out['digests']),
                          ['0x4A8BCC5DA1E63EFB', '0x7499BD50A3EBE746', '0x9C012E222EE5AA4E'], 'ASCII case folded')
-        self.assertEqual(len(pd.read_digests(FakeAdmin(), hostgroup=10)['digests']), 2)
-        self.assertEqual(len(pd.read_digests(FakeAdmin(), user='mf_admin', schema='information_schema')['digests']), 10)
-        self.assertEqual([d['hostgroup'] for d in pd.read_digests(FakeAdmin(), digest='0xA8027DF9CE26E2FF')['digests']],
+        self.assertEqual(len(pd.read_digests(self.admin(), hostgroup=10)['digests']), 2)
+        self.assertEqual(len(pd.read_digests(self.admin(), user='mf_admin', schema='information_schema')['digests']), 10)
+        self.assertEqual([d['hostgroup'] for d in pd.read_digests(self.admin(), digest='0xA8027DF9CE26E2FF')['digests']],
                          [32, 10])
 
     def test_an_empty_schema_is_a_filter_of_its_own(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("INSERT INTO stats.stats_mysql_query_digest VALUES (30, '', 'mf_admin', '', '0xE1', "
                         "'SELECT ?', 2, 1, 2, 10, 5, 5, 0, 2)")
         out = pd.read_digests(conn, schema='')
         self.assertEqual([d['digest'] for d in out['digests']], ['0xE1'])
-        self.assertEqual(len(pd.read_digests(FakeAdmin(), schema=None)['digests']), 10)
+        self.assertEqual(len(pd.read_digests(self.admin(), schema=None)['digests']), 10)
         self.assertEqual(pd.check_filters(schema='')['schema'], '')
         self.assertIsNone(pd.check_filters(text='')['text'])
 
     def test_more_and_limits(self):
         out, _ = self.read(limit=10)
         self.assertFalse(out['more'])
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.executemany('INSERT INTO stats.stats_mysql_query_digest VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                             [(30, 's', 'u', '', '0xF%d' % i, 'SELECT %d' % i, 1, 1, 1, 1, 1, 1, 0, 1) for i in range(5)])
         out, _ = self.read(conn, limit=10)
@@ -425,10 +425,10 @@ class TestDigests(Home):
         self.assertEqual(out['scanned'], 10)
         self.assertTrue([c for c in conn.calls if c.endswith('LIMIT %d' % pd.RULE_SCAN)])
         with self.assertRaises(ValueError):
-            pd.read_digests(FakeAdmin(), rule_id=99)
+            pd.read_digests(self.admin(), rule_id=99)
 
     def test_rows_sent_needs_the_column(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute('DROP TABLE stats.stats_mysql_query_digest')
         conn.db.execute('CREATE TABLE stats.stats_mysql_query_digest (hostgroup INT, schemaname VARCHAR, '
                         'username VARCHAR, client_address VARCHAR, digest VARCHAR, digest_text VARCHAR, '
@@ -458,7 +458,7 @@ class Endpoints(Home):
         super().setUp()
         from myflames.workspace_store import WorkspaceStore
         self.workspace = type('Workspace', (), {'store': WorkspaceStore(os.path.join(self.tmp.name, 'ws.sqlite3'))})()
-        self.conn = FakeAdmin()
+        self.conn = self.admin()
         self.connection = {'host': '127.0.0.1', 'port': 6032, 'user': 'radmin', 'password': 'pw-secret'}
 
     def api(self, path, body, conn=None):
@@ -497,7 +497,7 @@ class Endpoints(Home):
 
     def test_progress_follows_the_send_and_done_waits_for_the_answer(self):
         seen = []
-        conn = FakeAdmin()
+        conn = self.admin()
         plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
         self.assertEqual(plan['timeout_s'], proxysql.ACTION_TIMEOUT)
         self.assertTrue(plan['checks'] and 'Refresh this place' in plan['checks'][0])
@@ -526,14 +526,14 @@ class Endpoints(Home):
 
     def test_failed_partial_unknown_and_refused_states(self):
         target = {'config': [30, 'mf-ic-2', 3306]}
-        partial = FakeAdmin(fail_line=2)
+        partial = self.admin(fail_line=2)
         result = self.send(self.plan('server_weight', target, 50), 'q' * 20, conn=partial)
         self.assertEqual((result['status'], result['states']), ('partial', ['done', 'failed']))
         self.assertEqual(self.progress('q' * 20)['states'], ['done', 'failed'])
-        failed = FakeAdmin(fail_line=1)
+        failed = self.admin(fail_line=1)
         result = self.send(self.plan('server_weight', target, 50), conn=failed)
         self.assertEqual((result['status'], result['states']), ('failed', ['failed', 'not_run']))
-        lost = FakeAdmin(timeout_line=1)
+        lost = self.admin(timeout_line=1)
         result = self.send(self.plan('server_weight', target, 50), 'r' * 20, conn=lost)
         self.assertEqual((result['status'], result['states'], result['effect']), ('unknown', ['unknown', 'unknown'], None))
         self.assertEqual(self.progress('r' * 20)['status'], 'unknown')

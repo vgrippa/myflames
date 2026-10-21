@@ -278,6 +278,8 @@ class FakeAdmin(object):
         return self.db.execute(sql).fetchall()
 
     def close(self):
+        # API calls reuse this simulated server through successive client sessions.
+        # Home.admin owns its SQLite lifetime and closes it at test cleanup.
         pass
 
     def __enter__(self):
@@ -331,11 +333,34 @@ class Home(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
 
+    def admin(self, *args, **kwargs):
+        """Keep the simulated server alive across clients, but only for this test."""
+        conn = FakeAdmin(*args, **kwargs)
+        self.addCleanup(conn.db.close)
+        return conn
+
+
+class TestFixtureCleanup(unittest.TestCase):
+    def test_admin_databases_close_at_test_cleanup(self):
+        owner = Home('runTest')
+        self.addCleanup(owner.doCleanups)
+        connections = [owner.admin(), owner.admin(missing=('runtime_mysql_servers',))]
+        for conn in connections:
+            # Closing a simulated client must not destroy the server state.
+            with conn:
+                self.assertEqual(conn.rows('SELECT 1'), [(1,)])
+            conn.close()
+            self.assertEqual(conn.rows('SELECT 1'), [(1,)])
+        self.assertTrue(owner.doCleanups())
+        for conn in connections:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                conn.rows('SELECT 1')
+
 
 class TestRead(Home):
     def test_reads_the_lab_shape_and_validates(self):
         from test_chart_data import validate
-        conn = FakeAdmin()
+        conn = self.admin()
         report = proxysql.read_status(conn)
         validate(report, SCHEMA)
         self.assertEqual((report['is_proxysql'], report['version'], report['uptime_s']), (True, VERSION, 187200))
@@ -365,7 +390,7 @@ class TestRead(Home):
 
     def test_missing_tables_and_columns_are_unknown_not_a_crash(self):
         # 2.x without mysql_servers_ssl_params, a stats-only account, an older pool.
-        conn = FakeAdmin(missing=('stats_mysql_query_digest', 'stats_mysql_query_rules', 'mysql_servers_ssl_params'),
+        conn = self.admin(missing=('stats_mysql_query_digest', 'stats_mysql_query_rules', 'mysql_servers_ssl_params'),
                          pool_columns=('hostgroup', 'srv_host', 'srv_port', 'status', 'ConnUsed', 'ConnFree',
                                        'ConnOK', 'ConnERR', 'Queries'))
         report = proxysql.read_status(conn)
@@ -376,7 +401,7 @@ class TestRead(Home):
         self.assertNotIn('bytes_sent', pool)
         self.assertTrue(any('stats_mysql_query_digest' in n for n in report['notes']))
         self.assertEqual(report['pending']['servers']['runtime'], [], 'a secondary table missing on both sides is skipped')
-        stats_only = FakeAdmin(missing=('main.mysql_servers', 'main.mysql_query_rules'))
+        stats_only = self.admin(missing=('main.mysql_servers', 'main.mysql_query_rules'))
         report = proxysql.read_status(stats_only)
         self.assertFalse(report['config_readable'])
         self.assertEqual(report['actions'], [])
@@ -385,7 +410,7 @@ class TestRead(Home):
 
     def test_missing_status_or_weight_columns_offer_nothing_that_needs_them(self):
         # Codex review: an absent status column crashed the comparison; an absent weight offered Change weight.
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute('CREATE TABLE main.nostatus AS SELECT hostgroup_id, hostname, port, gtid_port, weight, '
                         'compression, max_connections, max_replication_lag, use_ssl, max_latency_ms, comment '
                         'FROM main.runtime_mysql_servers')
@@ -407,7 +432,7 @@ class TestRead(Home):
             self.assertEqual(report['actions'], [])
 
     def test_identity_needs_the_echoed_version(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.version = 'other'
         self.assertEqual(proxysql.identify(conn)[0], False)
 
@@ -419,7 +444,7 @@ class TestRead(Home):
             proxysql.read_status(Down())
 
     def test_pending_changes_follow_the_monitors(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("UPDATE main.mysql_servers SET weight = 7 WHERE hostname = 'mf-ic-2'")
         conn.db.execute("UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30")
         report = proxysql.read_status(conn)
@@ -427,14 +452,14 @@ class TestRead(Home):
         self.assertEqual(report['pending']['servers']['disk'], ['hostgroup 30, mf-ic-2:3306: weight 100 → 7'])
         self.assertEqual(report['pending']['query_rules']['runtime'], ['rule 30: active 1 → 0'])
         # OFFLINE_SOFT under Galera is put back in traffic by the monitor: not pending forever.
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("UPDATE main.mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostname = 'mf-galera-3'")
         conn.load('servers')
         self.assertEqual(proxysql.read_status(conn)['pending']['servers']['runtime'], [])
 
     def test_a_runtime_row_the_monitor_keeps_is_pending(self):
         # Live on 3.0.11: a row moved from 30 to 50 stayed ONLINE in reader hostgroup 32 too.
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("UPDATE main.mysql_servers SET hostgroup_id = 50 WHERE hostname = 'mf-ic-3'")
         conn.db.execute("INSERT INTO main.runtime_mysql_servers VALUES (50, 'mf-ic-3', 3306, 0, 'ONLINE', 100, 0, 1000, "
                         "0, 1, 0, 'ic-3')")
@@ -443,7 +468,7 @@ class TestRead(Home):
             "hostgroup 32, mf-ic-3:3306: in runtime (the Group Replication monitor's hostgroups), not in memory"])
 
     def test_offline_hard_configuration_is_shown_without_runtime(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("UPDATE main.mysql_servers SET status = 'OFFLINE_HARD' WHERE hostname = 'mf-ic-3'")
         conn.load('servers')
         report = proxysql.read_status(conn)
@@ -452,7 +477,7 @@ class TestRead(Home):
         self.assertEqual(report['pending']['servers']['runtime'], [])
 
     def test_hostgroup_without_online_server_and_rule_to_nowhere_are_problems(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("UPDATE main.mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostname IN ('mf-ic-2', 'mf-ic-3')")
         conn.db.execute("INSERT INTO main.mysql_query_rules (%s) VALUES (40," % RULE_NAMES + " 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
         conn.load('servers')
@@ -465,7 +490,7 @@ class TestRead(Home):
 
     def test_routing_is_judged_by_the_rules_proxysql_runs(self):
         # Codex review: rule 40 routes to an empty hostgroup in runtime while memory already has it inactive.
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("INSERT INTO main.mysql_query_rules (%s) VALUES (40," % RULE_NAMES + " 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
         conn.load('query_rules')
         conn.db.execute("UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 40")
@@ -477,32 +502,32 @@ class TestRead(Home):
         conn.db.execute("DELETE FROM main.mysql_query_rules WHERE rule_id = 40")
         self.assertEqual(proxysql.read_status(conn)['status'], 'problem')
         # Active in memory but not loaded yet: it routes nothing, the pending change says so.
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("INSERT INTO main.mysql_query_rules (%s) VALUES (40," % RULE_NAMES + " 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
         report = proxysql.read_status(conn)
         self.assertEqual(report['status'], 'ok')
         self.assertEqual(len(report['pending']['query_rules']['runtime']), 1)
 
     def test_unread_runtime_routing_is_unknown(self):
-        conn = FakeAdmin(missing=('runtime_mysql_query_rules',))
+        conn = self.admin(missing=('runtime_mysql_query_rules',))
         report = proxysql.read_status(conn)
         self.assertEqual(report['status'], 'unknown')
         self.assertTrue(any('could not be read (runtime_mysql_query_rules)' in w for w in report['status_why']),
                         report['status_why'])
         # A problem still shows over unknown.
-        conn = FakeAdmin(missing=('runtime_mysql_query_rules',))
+        conn = self.admin(missing=('runtime_mysql_query_rules',))
         conn.db.execute("UPDATE main.mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostname IN ('mf-ic-2', 'mf-ic-3')")
         conn.load('servers')
         self.assertEqual(proxysql.read_status(conn)['status'], 'problem')
         # Neither runtime_mysql_servers nor the pool: no hostgroup is known to have a server.
-        conn = FakeAdmin(missing=('runtime_mysql_servers', 'stats_mysql_connection_pool'))
+        conn = self.admin(missing=('runtime_mysql_servers', 'stats_mysql_connection_pool'))
         report = proxysql.read_status(conn)
         self.assertEqual(report['status'], 'unknown')
         self.assertFalse(any(w.startswith('Active rule') for w in report['status_why']), report['status_why'])
 
     def test_sql_null_and_the_text_null_are_different_values(self):
         # Codex review: batch output prints both as NULL; the client's XML output does not.
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("UPDATE main.mysql_query_rules SET username = 'NULL', comment = '' WHERE rule_id = 20")
         report = proxysql.read_status(conn)
         rules = dict((r['rule_id'], r) for r in report['query_rules'])
@@ -515,7 +540,7 @@ class TestRead(Home):
         self.assertTrue(all(sql.startswith('SELECT') for sql in conn.calls))
 
     def test_a_value_the_client_cannot_write_as_xml_is_unread_never_misread(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("UPDATE main.mysql_query_rules SET comment = 'a' || char(1) || 'b' WHERE rule_id = 30")
         report = proxysql.read_status(conn)
         self.assertFalse(report['config_readable'])
@@ -525,7 +550,7 @@ class TestRead(Home):
 
     def test_a_table_is_absent_only_when_every_copy_says_no_such_table(self):
         # Codex review: memory and runtime unread, disk readable, was taken for a table this version lacks.
-        conn = FakeAdmin(missing=('main.mysql_query_rules_fast_routing', 'runtime_mysql_query_rules_fast_routing'))
+        conn = self.admin(missing=('main.mysql_query_rules_fast_routing', 'runtime_mysql_query_rules_fast_routing'))
         conn.db.execute("INSERT INTO main.mysql_query_rules_fast_routing VALUES ('app', 'db', 0, 99, '')")
         report = proxysql.read_status(conn)
         self.assertIsNone(report['pending']['query_rules']['runtime'])
@@ -535,7 +560,7 @@ class TestRead(Home):
             with self.assertRaises(ValueError, msg=action):
                 proxysql.plan_action(report, action, target)
         # Every copy unreadable for another reason (not "no such table"): unknown too.
-        conn = FakeAdmin(missing=('mysql_servers_ssl_params',), missing_text='ProxySQL Admin Error: database is locked')
+        conn = self.admin(missing=('mysql_servers_ssl_params',), missing_text='ProxySQL Admin Error: database is locked')
         report = proxysql.read_status(conn)
         self.assertIsNone(report['pending']['servers']['runtime'])
         self.assertIsNone(report['pending']['servers']['disk'])
@@ -544,7 +569,7 @@ class TestRead(Home):
         self.assertTrue(all(s['actions'] == [] for s in report['servers']))
         self.assertEqual([a['id'] for a in report['actions']], ['query_rules_load', 'query_rules_save'])
         # Every copy "no such table" (a version without it): passed over.
-        conn = FakeAdmin(missing=('mysql_servers_ssl_params',))
+        conn = self.admin(missing=('mysql_servers_ssl_params',))
         report = proxysql.read_status(conn)
         self.assertEqual(report['pending']['servers'], {'runtime': [], 'disk': []})
         proxysql.plan_action(report, 'server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
@@ -553,7 +578,7 @@ class TestRead(Home):
 class TestActionsOffered(Home):
     def setUp(self):
         super().setUp()
-        self.report = proxysql.read_status(FakeAdmin())
+        self.report = proxysql.read_status(self.admin())
 
     def offered(self, key):
         return [a['id'] for a in next(s for s in self.report['servers'] if s['key'] == key)['actions']]
@@ -573,7 +598,7 @@ class TestActionsOffered(Home):
                          ['servers_load', 'servers_save', 'query_rules_load', 'query_rules_save'])
 
     def test_unsafe_host_names_offer_nothing(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         conn.db.execute("INSERT INTO main.mysql_servers VALUES (50, 'db''1', 3306, 0, 'ONLINE', 1, 0, 10, 0, 0, 0, '')")
         conn.db.execute("INSERT INTO main.mysql_servers VALUES (50, 'db\\1', 3306, 0, 'ONLINE', 1, 0, 10, 0, 0, 0, '')")
         conn.load('servers')
@@ -592,7 +617,7 @@ class TestActionsOffered(Home):
 class TestPlans(Home):
     def setUp(self):
         super().setUp()
-        self.conn = FakeAdmin()
+        self.conn = self.admin()
         self.report = proxysql.read_status(self.conn)
 
     def plan(self, action, target=None, value=None):
@@ -711,7 +736,7 @@ class Endpoints(Home):
         super().setUp()
         from myflames.workspace_store import WorkspaceStore
         self.workspace = type('Workspace', (), {'store': WorkspaceStore(os.path.join(self.tmp.name, 'ws.sqlite3'))})()
-        self.conn = FakeAdmin()
+        self.conn = self.admin()
         self.connection = {'host': '127.0.0.1', 'port': 6032, 'user': 'radmin', 'password': 'pw-secret'}
 
     def api(self, path, body, conn=None):
@@ -843,7 +868,7 @@ class Endpoints(Home):
         self.assertEqual(self.send(plan, typed='mf-ic-2:3306')['status'], 'done')
 
     def test_a_timeout_is_unknown_and_never_retried(self):
-        conn = FakeAdmin(timeout_line=2)
+        conn = self.admin(timeout_line=2)
         plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
         result = self.send(plan, conn=conn)
         self.assertEqual(result['status'], 'unknown')
@@ -853,7 +878,7 @@ class Endpoints(Home):
         self.assertEqual((record['status'], record['outcome']), ('unknown', 'timeout'))
 
     def test_load_failing_after_the_update_is_partial(self):
-        conn = FakeAdmin(fail_line=2, fail_text='ProxySQL Admin Error: lock held')
+        conn = self.admin(fail_line=2, fail_text='ProxySQL Admin Error: lock held')
         plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
         result = self.send(plan, conn=conn)
         self.assertEqual(result['status'], 'partial')
@@ -861,13 +886,13 @@ class Endpoints(Home):
         self.assertIn('ProxySQL still runs the previous configuration', result['message'])
         (record,) = self.audit()
         self.assertEqual((record['status'], record['outcome']), ('error', 'partial'))
-        first = FakeAdmin(fail_line=1, fail_text='ProxySQL Admin Error: constraint failed')
+        first = self.admin(fail_line=1, fail_text='ProxySQL Admin Error: constraint failed')
         plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
         result = self.send(plan, conn=first)
         self.assertEqual((result['status'], result['sent']), ('failed', []))
 
     def test_a_comment_before_load_is_what_admin_refuses(self):
-        conn = FakeAdmin()
+        conn = self.admin()
         with self.assertRaises(ConnectorError):
             conn.run_write(proxysql.ACTION_TAG + proxysql.LOAD['servers'])
         for plan in (proxysql.plan_action(proxysql.read_status(conn), 'servers_load'),
@@ -917,7 +942,7 @@ class Endpoints(Home):
 
     def test_a_copy_that_cannot_be_read_offers_no_load_or_row_change(self):
         # Codex review: runtime_mysql_query_rules_fast_routing unreadable while memory has a change there.
-        conn = FakeAdmin(missing=('runtime_mysql_query_rules_fast_routing',))
+        conn = self.admin(missing=('runtime_mysql_query_rules_fast_routing',))
         conn.db.execute("INSERT INTO main.mysql_query_rules_fast_routing VALUES ('app', 'db', 0, 99, '')")
         report = proxysql.read_status(conn)
         self.assertIsNone(report['pending']['query_rules']['runtime'])
