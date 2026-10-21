@@ -142,7 +142,7 @@ myflames compare before.json after.json --json
 
 ### 2. Server diagnostics and contention analysis
 
-Connect to a live server to identify system-wide bottlenecks:
+Host-and-port connections use TCP, including `localhost`; Unix sockets require an explicit socket setting. Connect to a live server to identify system-wide bottlenecks:
 
 - **Full Analysis Report**: Run health checks across storage engines, buffer pool efficiency, indexing, and configuration settings:
   ```bash
@@ -159,6 +159,8 @@ Connect to a live server to identify system-wide bottlenecks:
 - **Database Diagrams**: Visualize schemas and foreign-key relationships from live metadata or imported SQL, Mermaid, or JSON files without executing queries.
 
 Top statements opens selected SQL and its evidence across the available width. Supported UPDATE, DELETE and INSERT/REPLACE SELECT statements can be converted to a SELECT for review before analysis. This measures row selection or the SELECT source only; it does not reproduce write cost, assignment expressions, triggers or locking. Unsupported forms remain blocked.
+
+Slow queries are filtered and ranked by duration before the result limit. Read errors and disabled instrumentation are reported in notes, and unavailable slow-log counters remain unknown. Session statement text is capped with a truncation indicator; MySQL versions before 8.0.22 receive Error log file-viewing guidance.
 
 ### 3. Query editor and persistent SQL sessions
 
@@ -199,6 +201,8 @@ myflames audit export --csv -o audit.csv
 
 Optional Optimize table and Apply instrumentation actions show their exact SQL and require confirmation, including on Development connections. Reusable InnoDB free space stays informational; it does not imply that maintenance is needed.
 
+HANDLER OPEN requires confirmation because it holds a metadata lock until CLOSE or session end. Kill protects Group Replication data-stream connections, including the truncated `Group Replicatio` command returned by MySQL process-list tables, and points to Cluster instead. Bulk Kill audits each target, including policy refusals and pre-send failures, and preserves per-target identity checks.
+
 All mutations are logged to a local SQLite database (`~/.myflames/workspace.sqlite3`) with passwords and sensitive credentials automatically redacted.
 
 ### 5. Replication, lifecycle, and administration
@@ -234,6 +238,8 @@ Integrate myflames into automation pipelines and AI tooling. CLI tool discovery 
 
 ---
 
+The MCP `explain_query` tool reports the MySQL 8.4 requirement for JSON EXPLAIN ANALYZE on older servers without first sending an unsupported format-variable setting.
+
 ## CLI reference
 
 Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
@@ -247,9 +253,9 @@ Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
 | `compare` | `before.json after.json [--digest \| --json] [-o PATH]` | Compare two execution plans and report operator differences. |
 | `diff` | `before.json after.json [--digest \| --json] [-o PATH]` | Deprecated alias of `compare`. |
 | `top` | `[--order {total,time,avg,examined,rows,count,exec_count,full_join,scan,scans,no_index,tmp_tables,locks}] [--table SCHEMA.TABLE] [--schema NAME] [--limit N] [--json] [-o PATH] [-q]` | Rank expensive statements from Performance Schema digests. |
-| `sessions` | `[--min-seconds N] [--kill ID [--yes]] [--explain ID]` | Inspect running queries, idle transactions, and thread states. |
+| `sessions` | `[--min-seconds N] [--kill ID [--yes]] [--explain ID]` | Inspect running queries, idle transactions, and thread states; Kill protects Group Replication streams even when their command name is truncated. |
 | `running` | `[--min-seconds N] [--explain ID] [--json] [-o PATH]` | Deprecated alias of `sessions`, retaining the `running-1.0` contract. |
-| `locks` | `[--waits-only \| --deadlock \| --kill ID [--yes]]` | Trace lock waits, metadata blockers, and deadlocks. |
+| `locks` | `[--waits-only \| --deadlock \| --kill ID [--yes]]` | Trace lock waits, metadata blockers, and deadlocks; Kill shares the Group Replication stream guard with Sessions. |
 | `health` | `[--interval N] [--fail-on {problem,watch}]` | Sample server status counters over time to detect health anomalies. |
 | `innodb` | `[--raw] [--fail-on {problem,watch}]` | Parse and summarize SHOW ENGINE INNODB STATUS output. |
 | `error-log` | `[--level LEVEL[,LEVEL...]] [--limit N] [--fail-on {problem,watch}]` | Read the server error log: `performance_schema.error_log` on MySQL; on MariaDB the log file, only when the server runs on this computer. |

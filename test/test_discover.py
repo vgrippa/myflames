@@ -1046,16 +1046,160 @@ class TestWorkloadAttribution(unittest.TestCase):
         self.assertEqual(result['order'], 'full_join')
 
     def test_top_order_aliases_and_filters(self):
-        conn = mysql_top('8.4.3', [attribution_row('SELECT * FROM orders', no_index=1, sample='x')])
-        for order in ('time', 'scans', 'full_join', 'tmp_tables', 'locks', 'rows', 'exec_count'):
-            res = discover.top_report(conn, order=order)
-            self.assertEqual(res['order'], order)
+        for order, column in (('time', 'SUM_TIMER_WAIT'), ('scans', 'SUM_SELECT_SCAN'),
+                              ('full_join', 'SUM_SELECT_FULL_JOIN'),
+                              ('tmp_tables', 'SUM_CREATED_TMP_DISK_TABLES'),
+                              ('locks', 'SUM_LOCK_TIME'), ('rows', 'SUM_ROWS_EXAMINED'),
+                              ('exec_count', 'COUNT_STAR')):
+            with self.subTest(order=order):
+                conn = mysql_top('8.4.3', [attribution_row('SELECT * FROM orders', no_index=1, sample='x')])
+                res = discover.top_report(conn, order=order)
+                self.assertEqual(res['order'], order)
+                sql = conn.sql('events_statements_summary_by_digest')[0]
+                self.assertIn('ORDER BY %s DESC' % column, sql)
+                self.assertIn('LIMIT 20', sql)
+                condition = discover.ORDER_FILTERS.get(order)
+                if condition:
+                    self.assertIn(condition, sql)
 
-    def test_slow_queries_report(self):
-        conn = mysql_top('8.4.3', [attribution_row('SELECT * FROM slow_t', sample='SELECT * FROM slow_t')])
-        report = discover.slow_queries_report(conn, min_seconds=1.0)
-        self.assertEqual(report['schema_version'], 'slow-queries-1.0')
-        self.assertTrue(len(report['statements']) >= 0)
+
+class TestSlowQueries(unittest.TestCase):
+    def slow_log(self, version='8.4.3', response=None):
+        if response is None:
+            response = batch([['2026-10-21 12:00:00', 'app[app] @ localhost',
+                               '00:00:05.125000', '00:00:00.025000', 1, 10000,
+                               'shop', 'SELECT * FROM orders WHERE id > 0']])
+        return FakeConn(version, [server(version), ('FROM mysql.slow_log', response)])
+
+    def test_slow_log_filters_and_orders_by_duration_before_limit_on_both_engines(self):
+        for version in ('8.4.3', '11.4.3-MariaDB'):
+            with self.subTest(version=version):
+                conn = self.slow_log(version)
+                report = discover.slow_queries_report(conn, min_seconds=1.25, limit=7, source='slow_log')
+                sql = conn.sql('FROM mysql.slow_log')[0]
+                self.assertIn('WHERE query_time >= SEC_TO_TIME(1.25) ORDER BY query_time DESC LIMIT 7', sql)
+                self.assertNotIn('ORDER BY start_time', sql)
+                self.assertEqual(report['schema_version'], 'slow-queries-1.0')
+                self.assertEqual(report['source'], 'mysql.slow_log')
+                self.assertEqual(len(report['statements']), 1)
+                item = report['statements'][0]
+                self.assertEqual((item['total_ms'], item['avg_ms'], item['max_ms'], item['lock_time_ms']),
+                                 (5125.0, 5125.0, 5125.0, 25.0))
+                self.assertEqual((item['rows_examined'], item['rows_sent'], item['examined_per_sent']),
+                                 (10000, 1, 10000.0))
+                self.assertEqual(item['sample_text'], 'SELECT * FROM orders WHERE id > 0')
+                self.assertEqual(item['schema'], 'shop')
+                for counter in ('no_index_used', 'no_good_index_used', 'tmp_disk_tables', 'tmp_tables',
+                                'sort_merge_passes', 'select_full_join', 'select_range_check', 'select_scan'):
+                    self.assertIsNone(item[counter], counter)
+                self.assertEqual(item['flags'], ['slow_query'])
+                self.assertIsNone(item['capture_problem'])
+                self.assertIn('notes', json.loads(json.dumps(report, allow_nan=False)))
+
+    def test_slow_log_keeps_sql_matches_at_fractional_second_boundary(self):
+        for version in ('8.4.3', '11.4.3-MariaDB'):
+            with self.subTest(version=version):
+                response = batch([['2026-10-21 12:00:00', 'app[app] @ localhost',
+                                   '00:00:01.000002', '00:00:00', 1, 1, 'shop', 'SELECT 1']])
+                conn = self.slow_log(version, response=response)
+                report = discover.slow_queries_report(conn, min_seconds=1.000002, source='slow_log')
+                self.assertIn('WHERE query_time >= SEC_TO_TIME(1.000002)', conn.sql('FROM mysql.slow_log')[0])
+                # The server matched the exact TIME value. Display rounding and
+                # binary floating-point arithmetic must not discard that row.
+                self.assertEqual(len(report['statements']), 1)
+                self.assertEqual(report['statements'][0]['total_ms'], 1000.002)
+
+    def test_bad_arguments_are_refused_before_connecting(self):
+        conn = FakeConn('8.4.3')
+        for key, values in (
+                ('min_seconds', (-1, 31536001, float('nan'), float('inf'), True, '1', None)),
+                ('limit', (0, 201, True, '5', 1.5, None)),
+                ('source', ('unknown', None))):
+            for value in values:
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ValueError):
+                        discover.slow_queries_report(conn, **{key: value})
+        self.assertEqual(conn.calls, [])
+
+    def test_zero_threshold_and_maximum_limit_are_supported(self):
+        conn = self.slow_log(response='')
+        report = discover.slow_queries_report(conn, min_seconds=0, limit=200, source='slow_log')
+        self.assertEqual(report['statements'], [])
+        self.assertIn('WHERE query_time >= SEC_TO_TIME(0.0) ORDER BY query_time DESC LIMIT 200',
+                      conn.sql('FROM mysql.slow_log')[0])
+        self.assertEqual(report['notes'], [])
+
+    def test_pfs_duration_and_report_keep_measured_counters(self):
+        for version in ('8.4.3', '11.4.3-MariaDB'):
+            with self.subTest(version=version):
+                has_sample = 'MariaDB' not in version
+                row = digest_row('SELECT * FROM `orders`', sample='SELECT * FROM orders',
+                                 no_index=2, max_ps=5000000000000, with_sample=has_sample) + [3, 4, 5]
+                conn = mysql_top(version, [row])
+                report = discover.slow_queries_report(conn, min_seconds=1.25, limit=7, source='pfs')
+                sql = conn.sql('events_statements_summary_by_digest')[0]
+                self.assertIn('MAX_TIMER_WAIT >= 1250000000000', sql)
+                self.assertIn('ORDER BY MAX_TIMER_WAIT DESC LIMIT 7', sql)
+                self.assertEqual(report['source'], 'performance_schema')
+                self.assertEqual(len(report['statements']), 1)
+                item = report['statements'][0]
+                self.assertEqual((item['no_index_used'], item['select_scan']), (2, 5))
+                self.assertTrue(any('accumulate' in n for n in report['notes']))
+                if not has_sample:
+                    self.assertTrue(any('no sample statement text' in n for n in report['notes']))
+                self.assertEqual(conn.sql('FROM mysql.slow_log'), [])
+
+    def test_slow_log_errors_are_reported_and_auto_falls_back(self):
+        denied = ConnectorError('ERROR 1142 (42000): SELECT command denied for mysql.slow_log')
+        for source in ('slow_log', 'auto'):
+            with self.subTest(source=source):
+                conn = mysql_top('8.4.3', [digest_row('SELECT * FROM orders', sample='SELECT * FROM orders')],
+                                 extra=[('FROM mysql.slow_log', denied)])
+                report = discover.slow_queries_report(conn, source=source)
+                notes = '\n'.join(report['notes'])
+                self.assertIn('ERROR 1142', notes)
+                self.assertIn('GRANT SELECT ON mysql.slow_log', notes)
+                self.assertEqual(len(report['statements']), 1 if source == 'auto' else 0)
+                self.assertEqual(report['source'], 'performance_schema' if source == 'auto' else 'mysql.slow_log')
+
+    def test_auto_preserves_both_source_errors(self):
+        conn = mysql_top('8.4.3', [], extra=[
+            ('FROM mysql.slow_log', ConnectorError('ERROR 1146: mysql.slow_log is absent')),
+            ('events_statements_summary_by_digest', ConnectorError('ERROR 2013: Lost connection to server'))])
+        report = discover.slow_queries_report(conn)
+        self.assertEqual(report['statements'], [])
+        notes = '\n'.join(report['notes'])
+        self.assertIn('ERROR 1146', notes)
+        self.assertIn('ERROR 2013', notes)
+
+    def test_pfs_off_disabled_consumer_and_missing_grant_have_actionable_notes(self):
+        cases = [
+            (FakeConn('8.4.3', [server('8.4.3', ps_on=False)]), 'performance_schema=OFF'),
+            (FakeConn('11.4.3-MariaDB', [server('11.4.3-MariaDB', ps_on=False)]),
+             'MariaDB disables it by default'),
+            (mysql_top('8.4.3', [], extra=[('setup_consumers', batch([['statements_digest', 'NO']]))]),
+             "SET ENABLED='YES'"),
+            (mysql_top('8.4.3', [], extra=[('events_statements_summary_by_digest',
+                                          ConnectorError('ERROR 1142: SELECT command denied'))]),
+             'GRANT SELECT ON performance_schema.*'),
+        ]
+        for conn, expected in cases:
+            with self.subTest(expected=expected):
+                report = discover.slow_queries_report(conn, source='performance_schema')
+                self.assertEqual(report['statements'], [])
+                self.assertIn(expected, '\n'.join(report['notes']))
+
+    def test_value_errors_become_notes_but_programming_errors_propagate(self):
+        conn = self.slow_log(response=ValueError('invalid slow-log response'))
+        report = discover.slow_queries_report(conn, source='slow_log')
+        self.assertIn('invalid slow-log response', '\n'.join(report['notes']))
+        for source in ('slow_log', 'pfs'):
+            conn = self.slow_log(response=AssertionError('unexpected slow-log SQL')) if source == 'slow_log' else \
+                mysql_top('8.4.3', [], extra=[('events_statements_summary_by_digest',
+                                             AssertionError('unexpected digest SQL'))])
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(AssertionError, 'unexpected'):
+                    discover.slow_queries_report(conn, source=source)
 
 
 if __name__ == '__main__':

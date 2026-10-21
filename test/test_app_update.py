@@ -196,6 +196,143 @@ class TestUpdateDownloadRegression(unittest.TestCase):
                 if exists:
                     self.assertEqual(destination.read_bytes(), b'original')
 
+    def test_failed_download_opens_and_returns_release_page_never_asset(self):
+        for release in (None, '', app_update.GITHUB_RELEASES_URL + '/tag/v3.1.0'):
+            with self.subTest(release=release):
+                self.browser.reset_mock()
+                self.response([b'partial', OSError('connection lost')])
+                result = download_binary_update(self.URL, release_url=release)
+                expected = release or app_update.GITHUB_RELEASES_URL + '/latest'
+                self.assertEqual(result['status'], 'fallback_browser')
+                self.assertEqual(result['html_url'], expected)
+                self.browser.assert_called_once_with(expected)
+                self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_download_cut_at_eof_is_not_published(self):
+        response = self.response([])
+        with patch.object(app_update, 'Watchdog') as watchdog:
+            guard = watchdog.return_value
+            guard.expired = False
+            chunks = iter([b'partial', b''])
+
+            def read(size):
+                chunk = next(chunks)
+                if not chunk:
+                    guard.expired = True
+                return chunk
+
+            response.read.side_effect = read
+            result = download_binary_update(self.URL)
+            self.assertEqual(result['status'], 'fallback_browser')
+            self.assertIn('took too long', result['message'])
+            guard.stop.assert_called()
+        self.assertEqual(list(self.downloads.iterdir()), [])
+
+    @staticmethod
+    def socket_pair():
+        class Client(socket.socket):
+            def setsockopt(self, level, name, *args):
+                # HTTPConnection enables this TCP optimization; an AF_UNIX
+                # socketpair carries the same TLS bytes but has no TCP layer.
+                if level == socket.IPPROTO_TCP and name == socket.TCP_NODELAY:
+                    return
+                return super().setsockopt(level, name, *args)
+
+        client, peer = socket.socketpair()
+        return Client(fileno=client.detach()), peer
+
+    def test_download_deadline_interrupts_stalled_tls_handshake(self):
+        client, peer = self.socket_pair()
+        self.addCleanup(client.close)
+        self.addCleanup(peer.close)
+
+        def connect(*args, **kwargs):
+            client.settimeout(3)  # also bounds this regression on the old code
+            return client
+
+        with patch('socket.create_connection', connect), \
+                patch.object(app_update, 'DOWNLOAD_DEADLINE', 0.5, create=True):
+            started = time.monotonic()
+            result = download_binary_update(self.URL)
+            elapsed = time.monotonic() - started
+        self.assertEqual(result['status'], 'fallback_browser')
+        self.assertIn('took too long', result['message'])
+        self.assertLess(elapsed, 2, 'the handshake outlived the total download deadline')
+        self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def trickle_peer(self, context, head, answer):
+        """Real TLS over a socketpair, so this test needs no listening port.
+
+        Bytes arrive faster than the per-read timeout, but a whole header
+        or 64 KiB body read cannot complete before the overall deadline.
+        """
+        client, peer = self.socket_pair()
+        client.settimeout(3)
+        peer.settimeout(3)
+        stop = threading.Event()
+        sent, disconnected = [], threading.Event()
+
+        def serve():
+            wrapped = None
+            try:
+                wrapped = context.wrap_socket(peer, server_side=True)
+                request = b''
+                while b'\r\n\r\n' not in request:
+                    chunk = wrapped.recv(4096)
+                    if not chunk:
+                        return
+                    request += chunk
+                if head:
+                    wrapped.sendall(head)
+                # The finite peer also bounds this test on the unfixed code.
+                for i in range(80):
+                    wrapped.sendall(answer[i % len(answer):i % len(answer) + 1])
+                    sent.append(i)
+                    if stop.wait(0.05):
+                        return
+            except OSError:
+                disconnected.set()
+            finally:
+                (wrapped or peer).close()
+
+        worker = threading.Thread(target=serve, daemon=True)
+        worker.start()
+
+        def cleanup():
+            stop.set()
+            client.close()
+            peer.close()
+            worker.join(5)
+            self.assertFalse(worker.is_alive(), 'the test TLS peer did not stop')
+
+        self.addCleanup(cleanup)
+        return client, worker, sent, disconnected
+
+    def test_download_deadline_interrupts_trickled_headers_and_body(self):
+        contexts = anonymous_contexts()
+        if contexts is None:
+            self.skipTest('this OpenSSL has no anonymous TLS cipher')
+        server_context, client_context = contexts
+        for part, head, answer in (
+                ('headers', b'', b'HTTP/1.1 200 OK\r\n' + b'X-Slow: 1\r\n' * 200),
+                ('body', b'HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n', b'x')):
+            with self.subTest(part=part):
+                client, worker, sent, disconnected = self.trickle_peer(server_context, head, answer)
+                with patch('socket.create_connection', return_value=client), \
+                        patch.object(app_update, 'https_context', return_value=client_context), \
+                        patch.object(app_update, 'DOWNLOAD_DEADLINE', 0.5, create=True):
+                    started = time.monotonic()
+                    result = download_binary_update(self.URL)
+                    elapsed = time.monotonic() - started
+                self.assertEqual(result['status'], 'fallback_browser')
+                self.assertIn('took too long', result['message'])
+                self.assertLess(elapsed, 2, 'a trickled response outlived the total deadline')
+                worker.join(2)
+                self.assertFalse(worker.is_alive(), 'the server could still send after the deadline')
+                self.assertTrue(disconnected.is_set())
+                self.assertGreaterEqual(len(sent), 3)
+                self.assertEqual(list(self.downloads.iterdir()), [])
+
     def test_regression_download_size_limit_cleans_partial_file(self):
         import itertools
         self.response(itertools.repeat(b'x' * (64 * 1024), 2401))

@@ -326,6 +326,8 @@ def _bulk_kill_review_details(payload):
     prepared = []
     statements = []
     for item in targets:
+        if not isinstance(item, dict):
+            raise ValueError("Each session target must be an object.")
         cid = item.get("connection_id")
         exp = item.get("expect")
         _check_kill_args(cid, mode, exp)
@@ -348,49 +350,87 @@ def _bulk_kill_response(payload, workspace):
     from . import dbops
     from .live import connection_options
     from .connector import MySQLConnection
-    from .locks import KILL_TAG, _check_kill_args, kill_session, refused_result
-    targets = payload.get("targets")
-    if not isinstance(targets, list) or not (1 <= len(targets) <= 200):
-        raise ValueError("Choose between 1 and 200 sessions to kill.")
-    mode = payload.get("mode", "connection")
-    if mode not in ("connection", "query"):
-        raise ValueError("mode must be 'connection' or 'query'.")
+    from .locks import (KILL_TAG, kill_session, _confirmed, _kill_context,
+                        _kill_batch_after, _after_view, _kill_message)
+    details = _bulk_kill_review_details(payload)
+    targets, mode = details["targets"], details["mode"]
     connection = payload.get("connection")
     safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
     plain = connection if isinstance(connection, dict) else {}
-    sample_stmt = ("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % targets[0].get("connection_id", 1)
-    decision = dbops.decide(dbops.classify(sample_stmt), safety["type"], safety["read_only"], safety["profile_name"])
+    decision = dbops.decide(dbops.classify(details["statements"][0]), safety["type"],
+                           safety["read_only"], safety["profile_name"])
+    password = plain.get("password") if isinstance(plain.get("password"), str) else None
+    audits = [dbops.AuditTrail(workspace.store, "kill_query" if mode == "query" else "kill", "ui",
+                              connection={k: plain.get(k) for k in ("host", "port", "user")}, safety=safety,
+                              password=password, policy=dbops.policy_summary(decision)) for _ in targets]
     blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
     if blocked:
-        return {
-            "schema_version": "kill-bulk-1.0",
-            "total": len(targets),
-            "killed": 0, "gone": 0, "refused": len(targets), "denied": 0, "errors": 0,
-            "message": blocked[1],
-            "results": [{"connection_id": t.get("connection_id"), "status": blocked[0], "message": blocked[1]} for t in targets]
-        }
-    details = _bulk_kill_review_details(payload)
-    consume = _review_tokens(workspace).consumer(payload.get("review_token"), "bulk_kill",
-                dbops.connection_identity(plain, safety), details)
-    consume()
-    payload = _with_saved_password(payload, workspace)
-    options = connection_options(payload.get("connection"))
-    password = options.get("password")
-    results = []
-    with MySQLConnection(**options) as conn:
-        for t in targets:
-            cid = t.get("connection_id")
-            exp = t.get("expect")
-            stmt = ("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % cid
-            audit = dbops.AuditTrail(workspace.store, "kill_query" if mode == "query" else "kill", "ui",
-                                     connection={k: options.get(k) for k in ("host", "port", "user")}, safety=safety,
-                                     password=password, policy=dbops.policy_summary(decision))
+        refused = []
+        for target, statement, audit in zip(targets, details["statements"], audits):
+            cid = target["connection_id"]
+            audit_id = audit.outcome([KILL_TAG + statement], "refused",
+                                    outcome="read_only" if blocked[0] == "refused" else blocked[0],
+                                    message=blocked[1], target=_confirmed(target["expect"], cid, mode))
+            refused.append({"connection_id": cid, "status": blocked[0], "message": blocked[1],
+                            "audit_id": audit_id, "after": None})
+        return {"schema_version": "kill-bulk-1.0", "total": len(targets), "killed": 0, "gone": 0,
+                "refused": len(targets), "denied": 0, "errors": 0,
+                "message": blocked[1], "results": refused}
+    results, accepted = [], []
+
+    def current_policy():
+        # A batch may outlive a profile edit. This is a local store read, so
+        # retaining the send-boundary policy gate costs no client invocation.
+        current = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+        if dbops.connection_identity(plain, current) != dbops.connection_identity(plain, safety):
+            return "The connection or its write policy changed after confirmation; nothing was sent."
+        return None
+
+    try:
+        consume = _review_tokens(workspace).consumer(payload.get("review_token"), "bulk_kill",
+                    dbops.connection_identity(plain, safety), details)
+        consume()
+        payload = _with_saved_password(payload, workspace)
+        options = connection_options(payload.get("connection"))
+        password = options.get("password")
+        for audit in audits:
+            audit.password = password
+            audit.connection = {k: options.get(k) for k in ("host", "port", "user")}
+        with MySQLConnection(**options) as conn:
+            context = _kill_context(conn)
             try:
-                res = kill_session(conn, cid, mode, exp, audit=audit, decision=decision,
-                                   confirmed=True, connection=plain)
-                results.append({"connection_id": cid, "status": res.get("status"), "message": res.get("message")})
-            except Exception as exc:
-                results.append({"connection_id": cid, "status": "error", "message": str(exc)})
+                for target, statement, audit in zip(targets, details["statements"], audits):
+                    cid, expect = target["connection_id"], target["expect"]
+                    try:
+                        res = kill_session(conn, cid, mode, expect, audit=audit, decision=decision,
+                                           confirmed=True, connection=plain, settle_s=0,
+                                           _batch_context=context, _defer_after=True, before_send=current_policy)
+                        row = {"connection_id": cid, "status": res.get("status"), "message": res.get("message"),
+                               "audit_id": res.get("audit_id"), "after": res.get("after")}
+                        results.append(row)
+                        if res.get("status") == "killed":
+                            accepted.append((row, res, audit))
+                    except (ValueError, ConnectorError) as exc:
+                        audit.fail(exc, [KILL_TAG + statement])
+                        results.append({"connection_id": cid, "status": "error",
+                                        "message": dbops.redact(str(exc), password),
+                                        "audit_id": audit.id, "after": None})
+                if accepted:
+                    snapshot = _kill_batch_after(conn, context, [row["connection_id"] for row, _, _ in accepted])
+                    for row, res, audit in accepted:
+                        row["after"] = _after_view(snapshot.get(row["connection_id"])) if snapshot is not None else None
+                        row["message"] = _kill_message(mode, row["connection_id"], res.get("target"),
+                                                       row["after"] or {"present": True})
+            finally:
+                # An interrupted after-read cannot turn an accepted KILL into a failed send.
+                for row, _res, audit in accepted:
+                    audit.complete("ok", outcome="killed", message=row["message"], after=row["after"])
+    except (KeyboardInterrupt, ValueError, ConnectorError) as exc:
+        for audit, statement in zip(audits, details["statements"]):
+            audit.fail(exc, [KILL_TAG + statement])
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        _reraise_redacted(exc, password)
     killed_cnt = sum(1 for r in results if r["status"] == "killed")
     gone_cnt = sum(1 for r in results if r["status"] == "gone")
     refused_cnt = sum(1 for r in results if r["status"] == "refused")

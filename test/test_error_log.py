@@ -156,6 +156,34 @@ class LogCase(unittest.TestCase):
 
 
 class TestMySQL(LogCase):
+    def test_old_mysql_returns_unsupported_before_error_log_reads(self):
+        """MariaDB uses its separate file reader, not this MySQL-only table."""
+        for version, omit in [('8.0.21', []), ('8.0.1', []),
+                              ('5.7.44', ['log_error_services', 'log_error_verbosity'])]:
+            with self.subTest(version=version):
+                conn = SparseConn(omit)
+                conn.version = version
+                report = self.report(conn)
+                self.assertFalse(report['available'])
+                self.assertEqual(report['reason'], 'unsupported_version')
+                self.assertEqual(report['reason_text'],
+                                 'performance_schema.error_log needs MySQL 8.0.22 or later.')
+                self.assertTrue(report['how_to_view'])
+                self.assertEqual(report['summary']['status'], 'unknown')
+                self.assertIsNone(report['buffer'])
+                self.assertEqual(report['entries'], [])
+                self.assertEqual(len(conn.calls), 2, 'only preflight may read an older server')
+                self.assertTrue(all('performance_schema.error_log' not in sql and 'Error_log_' not in sql
+                                    for sql, _ in conn.calls))
+
+    def test_mysql_8022_reads_the_error_log(self):
+        conn = LogConn()
+        conn.version = '8.0.22'
+        report = self.report(conn)
+        self.assertTrue(report['available'])
+        self.assertEqual(report['source'], 'performance_schema.error_log')
+        self.assertEqual(len(conn.calls), 6)
+
     def test_complete_envelope_and_four_report_reads(self):
         conn = LogConn()
         report = self.report(conn)

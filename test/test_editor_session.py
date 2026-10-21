@@ -976,6 +976,21 @@ class ProcessTests(unittest.TestCase):
         self.assertIsNone(session._conn._defaults_file_path)      # removed once the client connected
         self.assertNotIn("--skip-commands", argv)
 
+    def test_mariadb_version_comment_selects_transaction_helpers_for_masked_version(self):
+        script = Path(os.environ['PATH'].split(os.pathsep)[0]) / 'mysql'
+        client = script.read_text(encoding='utf-8')
+        client = client.replace('ENGINE = os.environ.get("FAKE_ENGINE", "mysql")', 'ENGINE = "mariadb"')
+        client = client.replace('"11.4.13-MariaDB-fake" if ENGINE == "mariadb" else "8.4.11-fake"',
+                                '"11.4.13", "version_comment": "MariaDB Server"')
+        script.write_text(client, encoding='utf-8')
+        result = self.run_sql('SELECT 1')
+        self.assertEqual(result['status'], 'complete')
+        self.assertEqual(result['session']['engine'], 'mariadb')
+        log = '\n'.join(self.session_log())
+        self.assertIn('@@version_comment AS version_comment', log)
+        self.assertIn('@@in_transaction AS in_transaction', log)
+        self.assertNotIn('PS_CURRENT_THREAD_ID()', log)
+
     def test_skip_commands_when_the_client_has_it(self):
         os.environ["FAKE_COMMANDS"] = "1"
         try:

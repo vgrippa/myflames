@@ -783,7 +783,17 @@ def _classify_code(upper, idents, key_columns):
         if verb in ("INSERT", "REPLACE"):
             return _verdict("write", "dml", "%s adds rows." % verb)
         return _select_checks(upper, idents)
-    if word in ("SHOW", "HELP", "USE", "CHECKSUM", "SIGNAL", "RESIGNAL", "GET", "HANDLER", "DEALLOCATE"):
+    if word == "HANDLER":
+        # Both engines retain OPEN's MDL ticket with MDL_EXPLICIT duration
+        # (sql/sql_handler.cc). Match the operation after the table name,
+        # not OPEN inside a quoted name, READ predicate or alias.
+        # Quoted names need no following space; bare names must stay whole.
+        name = r"(?:`\d+`|''|%s+(?!%s))" % (_IDENT_CHAR, _IDENT_CHAR)
+        if re.match(r"\s*%s(?:\s*\.\s*%s)?\s*OPEN\b" % (name, name), after):
+            return _verdict("risky", "lock", "HANDLER OPEN holds a metadata lock on the table until "
+                                            "HANDLER CLOSE or the session ends")
+        return _verdict("read", "read")
+    if word in ("SHOW", "HELP", "USE", "CHECKSUM", "SIGNAL", "RESIGNAL", "GET", "DEALLOCATE"):
         return _verdict("read", "session" if word in ("USE", "DEALLOCATE") else "read")
     if word == "PREPARE":
         return _verdict("read", "session", "PREPARE only prepares a statement; EXECUTE runs it.")

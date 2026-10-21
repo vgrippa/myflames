@@ -111,7 +111,7 @@ import uuid
 import weakref
 
 from .connector import ConnectorError, MySQLConnection
-from .server_info import identity_from_version
+from .server_info import identity_from_version, product_identity
 
 SCHEMA_VERSION = "editor-session-1.0"
 RUN_SCHEMA_VERSION = "editor-run-1.0"
@@ -614,7 +614,8 @@ class EditorSession(object):
                 self._readers.append(thread)
             self._write("DELIMITER %s\n" % self.delimiter)
             hello = self._helper(TAG + "SELECT '%s' AS myflames_editor, CONNECTION_ID() AS connection_id, "
-                                       "VERSION() AS version, @@hostname AS hostname, @@port AS port, "
+                                       "VERSION() AS version, @@version_comment AS version_comment, "
+                                       "@@hostname AS hostname, @@port AS port, "
                                        "@@server_id AS server_id, @@autocommit AS autocommit, @@sql_mode AS sql_mode, "
                                        "@@sql_safe_updates AS sql_safe_updates" % secrets.token_hex(6),
                                  timeout=float(options.get("connect_timeout") or 10) + HELPER_TIMEOUT)
@@ -623,9 +624,13 @@ class EditorSession(object):
                 raise ConnectorError(self._helper_problem(hello) or "The MySQL client did not start a session.")
             self.connection_id = _int(row.get("connection_id"))
             self.server_version = row.get("version") or ""
-            self.engine = "mariadb" if "mariadb" in self.server_version.lower() else "mysql"
-            # The label only (Percona's release suffix names it; the hello reads VERSION()).
-            self.server_product = identity_from_version(self.server_version)["product"]
+            # @@version_comment decides, as everywhere else: a MariaDB server whose
+            # @@version was changed at startup still names itself there.
+            comment = row.get("version_comment")
+            identity = (product_identity(self.server_version, comment) if comment
+                        else identity_from_version(self.server_version))
+            self.engine = identity["engine"]
+            self.server_product = identity["product"]
             self.server_identity = self._identity_row(row)
             if self.server_identity is None:
                 raise ConnectorError("The server identity could not be read; no editor statements were sent.")

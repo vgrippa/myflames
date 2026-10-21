@@ -55,6 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Completed Cluster and ProxySQL actions close their sheet after a connection switch and offer no follow-up change on the replacement connection; the Audit log keeps the attempt.
 - ProxySQL digests with separators in schema, user or client names keep separate row selections and rule links.
 - ProxySQL digest hash filters accept lowercase and mixed-case hexadecimal hashes with the same results as uppercase hashes.
+- Use TCP for host-and-port connections, including localhost, across reads, writes, editor sessions and lifecycle tools; keep Unix sockets explicit.
+- Audit bulk Kill policy refusals, expired reviews, credential lookup failures and connection errors after validating every target.
+- Filter slow-log executions by duration before applying the limit, preserve source failures in notes, and report unmeasured counters as null.
+- Cap SHOW FULL PROCESSLIST statement text at 16,384 Unicode characters while preserving truncation indicators and the 10,000-session report cap.
+- Share server identity and final process-list reads across bulk Kill requests, remove per-target settle delays, and retain every target identity and transaction check.
+- Return an unavailable Error log report with file-viewing guidance on MySQL versions before 8.0.22.
+- Require write confirmation for HANDLER OPEN because it holds a metadata lock until HANDLER CLOSE or the session ends; READ and CLOSE remain reads.
+- Replace vacuous discovery tests with assertions for slow-log results, duration filters, source errors and the SQL ordering of top statements.
+- Bound lifecycle control-query output to 64 MiB on stdout and 1 MiB on stderr, with client cleanup on overflow.
+- Detect the editor session engine from both version and version_comment so a customized MariaDB version string retains MariaDB behavior.
+- Set explain_json_format_version only on MySQL 8.3 or later and give MCP callers the actionable MySQL 8.4 requirement for JSON EXPLAIN ANALYZE.
+- Bound update downloads by an overall deadline and open the validated release page after a direct-download failure.
+- Refuse and audit Kill requests for Group Replication data-stream connections and expose the reason in session reports, including the truncated `Group Replicatio` command returned by MySQL process-list tables.
+
 - Keep popovers above the window footer: an ⓘ panel opened near the bottom of a 720x520 window ended under the footer, which hid its last lines; it now stops at the footer's top edge and scrolls.
 - Replication Topology: the connector's details popover is no longer cut off below the map.
 - HTTPS reads (Check for updates, the update download, tool update checks and Home news) verify certificates in the packaged macOS app on a Mac without Homebrew's OpenSSL: its bundled OpenSSL only looked for certificate authorities at the build machine's paths, so every read failed verification there. When OpenSSL finds none, myflames now also trusts the roots macOS trusts: certificates from the system root and System keychains that the system, admin or user trust settings list as an unrestricted trusted root and no domain denies, read with `/usr/bin/security`; intermediates and identities in those keychains are left out. Nothing is added when any trust domain cannot be read, so a Never Trust choice is never dropped, and a failed read is tried again after a minute instead of turning the fallback off until the app restarts. When `SSL_CERT_FILE` or `SSL_CERT_DIR` is set, myflames uses only what they name and adds no macOS roots (`myflames/tls.py`).

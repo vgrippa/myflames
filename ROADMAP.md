@@ -43,6 +43,8 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
 
 ## Shipped
 
+- Backend review fixes: explicit TCP targeting, audited and faster bulk Kill with Group Replication protection (including truncated process-list command names), accurate slow-query notes and unknown counters, bounded session and lifecycle reads, version-aware error logs and analysis, editor flavor detection, and bounded update downloads with release-page fallback.
+
 - **3.1.0 (first 3.x release; 3.0.0 was never published)**: the macOS desktop
   app as the only way to run the workspace (browser launch deprecated); the
   **Tuning** place, a 0 to 100 scorecard of 19 checks in five weighted

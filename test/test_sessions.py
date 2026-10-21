@@ -72,6 +72,44 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(conn.calls, [])
 
 
+class TestShowProcesslistBounds(unittest.TestCase):
+    def test_full_statement_is_capped_in_python_without_splitting_unicode(self):
+        for version in ('8.4.11', '11.4.13-MariaDB'):
+            with self.subTest(version=version):
+                # SHOW FULL has no LEFT(INFO, ...) projection: cap its text
+                # before building a session, but retain the original byte count.
+                info = 'SELECT ' + '界' * (200000 - len('SELECT '))
+                row = [420, 'app', 'localhost', 'shop', 'Query', 12, 'executing', info]
+                conn = synthetic([], version=version, pl_rows=[row])
+                with mock.patch.object(sessions, '_session', wraps=sessions._session) as build:
+                    report = sessions_report(conn, source_mode='show_processlist', active_only=False)
+                kept_row = build.call_args[0][0]
+                self.assertEqual(kept_row[8], len(info.encode('utf-8')))
+                item = report['sessions'][0]
+                self.assertEqual(item['info'], info[:sessions.INFO_CAP])
+                self.assertEqual(item['info'].encode('utf-8').decode('utf-8'), item['info'])
+                self.assertTrue(item['info_truncated'])
+                self.assertTrue(any('16,384 characters' in n for n in report['notes']))
+                self.assertNotIn(info, json.dumps(report, ensure_ascii=False))
+
+    def test_show_keeps_only_read_cap_longest_sessions_and_reports_partial_summary(self):
+        for version in ('8.4.11', '11.4.13-MariaDB'):
+            with self.subTest(version=version):
+                rows = [[i, 'app', 'localhost', 'shop', 'Query', seconds, 'executing', 'SELECT 1']
+                        for i, seconds in ((1, 2), (2, 5), (3, 4), (4, 1), (5, 3))]
+                rows.append([6, 'app', 'localhost', 'shop', 'Query', 10, 'executing',
+                             sessions.SESSIONS_TAG + 'SHOW FULL PROCESSLIST'])
+                with mock.patch.object(sessions, 'READ_CAP', 3), \
+                        mock.patch.object(sessions, '_session', wraps=sessions._session) as build:
+                    report = sessions_report(synthetic([], version=version, pl_rows=rows),
+                                             source_mode='show_processlist', active_only=False)
+                self.assertEqual([s['id'] for s in report['sessions']], [2, 3, 5])
+                self.assertEqual(build.call_count, 3)
+                self.assertEqual(report['summary']['total'], 3)
+                self.assertTrue(any('More than 3 sessions' in n and 'summary is partial' in n
+                                    for n in report['notes']))
+
+
 class TestLiveReplay(unittest.TestCase):
     def test_show_processlist_accepts_mariadb_progress_column(self):
         # MariaDB adds Progress; MySQL's SHOW has only the first eight columns.

@@ -989,12 +989,15 @@ class TestLiveBulkKillAndTableColumns(unittest.TestCase):
 
     def test_bulk_kill_unconfirmed_gate(self):
         conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}
-        targets = [{'connection_id': 42, 'expect': {'connection_id': 42, 'command': 'Sleep', 'user': 'test'}}]
+        targets = [{'connection_id': 42, 'expect': {'connection_id': 42, 'command': 'Sleep', 'user': 'test', 'host': 'localhost'}}]
         res = api_response('/api/live/kill/bulk', {'connection': conn, 'targets': targets, 'confirmed': False}, self.workspace)
         self.assertEqual(res['schema_version'], 'kill-bulk-1.0')
         self.assertEqual(res['total'], 1)
         self.assertEqual(res['killed'], 0)
         self.assertEqual(res['refused'], 1)
+        records = self.store.audit_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'needs_confirmation'))
 
     def test_bulk_kill_prepare_and_execute(self):
         from myflames.review_tokens import ReviewTokens
@@ -1015,6 +1018,8 @@ class TestLiveBulkKillAndTableColumns(unittest.TestCase):
         fake_conn.__exit__.return_value = False
 
         with mock.patch('myflames.connector.MySQLConnection', return_value=fake_conn), \
+             mock.patch('myflames.locks._kill_context', return_value=(('mysql', '8.4.6', (8, 4, 6), True), {})), \
+             mock.patch('myflames.locks._kill_batch_after', return_value={}), \
              mock.patch('myflames.locks.kill_session') as mock_kill:
             mock_kill.side_effect = [
                 {'status': 'killed', 'message': 'Killed connection 10.'},

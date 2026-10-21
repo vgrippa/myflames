@@ -236,6 +236,14 @@ class TestDefaultsFile(unittest.TestCase):
         self.assertIn('host="h"', content)
         self.assertIn('user="u"', content)
 
+    def test_tcp_transport_is_explicit_for_localhost_and_remote_hosts(self):
+        for host in ('localhost', '127.0.0.1', 'db.example', '::1'):
+            with self.subTest(host=host), MySQLConnection(host=host, port=3317) as conn:
+                content = conn._build_defaults_file_content()
+                self.assertIn('protocol=TCP\n', content)
+                self.assertIn('port=3317\n', content)
+                self.assertNotIn('socket=', content)
+
     def test_password_is_quoted(self):
         """Passwords with # / ; / = must be quoted so the INI parser in
         the CLI does not interpret them as comment delimiters."""
@@ -541,6 +549,33 @@ class TestRunAndQueries(unittest.TestCase):
         last_sql = calls[-1][-1]
         self.assertIn("ANALYZE FORMAT=JSON", last_sql)
         self.assertNotIn("EXPLAIN ANALYZE FORMAT=JSON", last_sql)
+
+    def test_explain_analyze_gates_json_format_variable_by_server_version(self):
+        for version, maria, has_setting in (
+                ('5.7.44', False, False), ('8.0.46', False, False),
+                ('8.2.0', False, False), ('8.3.0', False, True),
+                ('8.4.11', False, True), ('9.7.2', False, True),
+                ('26.7.0', False, True), ('11.4.13-MariaDB', True, False)):
+            with self.subTest(version=version), \
+                    mock.patch.object(self.conn, 'server_version', return_value=version), \
+                    mock.patch.object(self.conn, 'is_mariadb', return_value=maria), \
+                    mock.patch.object(self.conn, 'run', return_value='{}') as run:
+                self.assertEqual(self.conn.explain_analyze('SELECT 1 -- trailing'), '{}')
+                sql = run.call_args[0][0]
+                self.assertEqual('explain_json_format_version=2' in sql, has_setting)
+                self.assertIn('SET SESSION TRANSACTION READ ONLY; START TRANSACTION READ ONLY;', sql)
+                self.assertIn('SELECT 1 -- trailing\n;\nROLLBACK', sql)
+                self.assertNotIn('--force', run.call_args[1]['extra_flags'])
+
+    def test_explain_analyze_uses_capture_error_mapping_for_old_mysql(self):
+        raw = "ERROR 1235 (42000) at line 3: This version does not yet support EXPLAIN ANALYZE with JSON format"
+        with mock.patch.object(self.conn, 'server_version', return_value='8.0.46'), \
+                mock.patch.object(self.conn, 'is_mariadb', return_value=False), \
+                mock.patch.object(self.conn, 'run', side_effect=ConnectorError(raw)):
+            with self.assertRaisesRegex(ConnectorError, 'needs MySQL 8.4 or later') as caught:
+                self.conn.explain_analyze('SELECT 1')
+        self.assertIn('this server is 8.0.46', str(caught.exception))
+        self.assertNotIn('at line 3', str(caught.exception))
 
 
 class TestTerminalText(unittest.TestCase):

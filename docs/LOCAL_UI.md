@@ -160,7 +160,9 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Cancel. Nothing is sent until you confirm, the connection's type and
   read-only setting are read again first, and Cancel is recorded as declined
   in the Audit log. On a read-only connection the dialog says so and its Kill
-  button stays off.
+  button stays off. Group Replication data-stream connections are marked as
+  replication system threads and protected from Kill, including when MySQL
+  reports their command as `Group Replicatio`; the reason points to Cluster.
   Indexes and Tables use the same ⋯ row menu (Set invisible…, Drop index…,
   Table health; Add column…, Remove column…, Optimize, Analyze and Check
   table…, View indexes), with the labels of the row's right-click menu; an

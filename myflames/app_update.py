@@ -7,7 +7,8 @@ and every redirect checked against the official GitHub addresses before it is
 followed, its body closed unread. The check reads at most 1 MiB and answers
 within CHECK_DEADLINE seconds: it runs in a worker thread the caller waits for
 at most that long, and tls.Watchdog shuts the worker's sockets at the same
-deadline. The download reads at most 150 MiB with a per-read timeout.
+deadline. The download reads at most 150 MiB with a per-read timeout and a
+DOWNLOAD_DEADLINE watchdog covering its TLS handshake, headers and body.
 """
 import json
 import os
@@ -31,6 +32,7 @@ GITHUB_RELEASES_URL = "https://github.com/vgrippa/myflames/releases"
 ASSET_HOSTS = ("objects.githubusercontent.com", "release-assets.githubusercontent.com")
 REQUEST_TIMEOUT = 5.0   # connect, and each read of the socket
 CHECK_DEADLINE = 10.0   # the caller's wait for the whole check; its sockets are shut then
+DOWNLOAD_DEADLINE = 300.0  # total network-read budget, including redirects
 MAX_RELEASE_BYTES = 1024 * 1024
 CACHE_TTL = 300.0  # 5 minutes in-memory cache
 
@@ -502,7 +504,7 @@ def download_binary_update(asset_url=None, release_url=None):
         _validate_update_url(release_url, asset=False)
     parsed = _validate_update_url(asset_url, initial=True) if asset_url else None
     expected_size = _checked_asset(asset_url) if asset_url else None
-    target_url = asset_url or release_url or GITHUB_RELEASES_URL + "/latest"
+    target_url = release_url or GITHUB_RELEASES_URL + "/latest"
     if not asset_url:
         import webbrowser
         try:
@@ -523,15 +525,19 @@ def download_binary_update(asset_url=None, release_url=None):
         filename = "myflames-update.zip"
 
     temporary = None
+    deadline = time.monotonic() + DOWNLOAD_DEADLINE
+    watchdog = Watchdog(deadline)
     try:
         req = urllib.request.Request(asset_url, headers={"User-Agent": "myflames/%s" % __version__})
         max_bytes = 150 * 1024 * 1024  # 150 MiB limit
         downloaded = 0
-        with _opener(_validate_update_url).open(req, timeout=15.0) as resp:
+        with _opener(_validate_update_url, watchdog).open(req, timeout=15.0) as resp:
             _validate_update_url(resp.geturl())
             fd, temporary = tempfile.mkstemp(prefix=".myflames-update-", suffix=".part", dir=str(downloads_dir))
             with os.fdopen(fd, "wb") as out:
                 while True:
+                    if watchdog.expired or time.monotonic() >= deadline:
+                        raise socket.timeout("The update download took too long.")
                     chunk = resp.read(64 * 1024)
                     if not chunk:
                         break
@@ -539,6 +545,10 @@ def download_binary_update(asset_url=None, release_url=None):
                     if downloaded > max_bytes:
                         raise ValueError("Update binary exceeded 150 MiB limit.")
                     out.write(chunk)
+            # A watchdog shutdown may look like a clean EOF without a
+            # Content-Length. Never publish a response cut at the deadline.
+            if watchdog.expired or time.monotonic() >= deadline:
+                raise socket.timeout("The update download took too long.")
             # http.client returns b"" at an early EOF even when Content-Length
             # promised more (and TLS ragged EOFs are suppressed), so an empty
             # read alone does not mean the file is complete.
@@ -551,6 +561,9 @@ def download_binary_update(asset_url=None, release_url=None):
             if any(size is not None and downloaded != size for size in (declared, expected_size)):
                 raise ValueError("The download size does not match the release asset.")
         stem, extension = os.path.splitext(filename)
+        watchdog.stop()
+        if watchdog.expired or time.monotonic() >= deadline:
+            raise socket.timeout("The update download took too long.")
         if filename.endswith(".tar.gz"):
             stem, extension = filename[:-7], ".tar.gz"
         dest_file = downloads_dir / filename
@@ -568,11 +581,16 @@ def download_binary_update(asset_url=None, release_url=None):
             "status": "downloaded",
             "download_path": str(dest_file),
             "message": "Update downloaded to %s" % dest_file,
-            "html_url": release_url or target_url,
+            "html_url": target_url,
         }
     except _InvalidUpdateURL:
         raise
     except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()
+        if watchdog.expired:
+            exc = socket.timeout("The update download took too long.")
+        watchdog.stop()
         import webbrowser
         try:
             webbrowser.open(target_url)
@@ -584,5 +602,6 @@ def download_binary_update(asset_url=None, release_url=None):
             "html_url": target_url,
         }
     finally:
+        watchdog.stop()
         if temporary is not None:
             os.unlink(temporary)

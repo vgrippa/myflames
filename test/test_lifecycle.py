@@ -20,7 +20,7 @@ import types
 import unittest
 from unittest import mock
 
-from myflames import dbops, lifecycle as lc, privileges
+from myflames import connector, dbops, lifecycle as lc, privileges
 from myflames.connector import ConnectorError
 from myflames.workspace_store import WorkspaceStore
 
@@ -254,6 +254,93 @@ else:
     (root/'restored').touch()
     print('100% restored',file=sys.stderr,flush=True)
 '''
+
+
+class ControlTransportTests(unittest.TestCase):
+    """Real local children exercise control-query caps and option-file lifetime."""
+
+    def child(self, script):
+        real_popen = lc.subprocess.Popen
+        self.children = []
+        self.defaults = []
+
+        def launch(argv, **kwargs):
+            self.defaults.append(argv[1].split('=', 1)[1])
+            child = real_popen([sys.executable, '-c', script] + argv[1:], **kwargs)
+            self.children.append(child)
+            return child
+        return mock.patch.object(lc.subprocess, 'Popen', side_effect=launch)
+
+    def test_control_queries_bound_each_pipe_and_reap_real_clients(self):
+        self.assertEqual(connector.MAX_STDOUT_BYTES, 64 * 1024 * 1024)
+        self.assertEqual(connector.MAX_STDERR_BYTES, 1024 * 1024)
+        for stream, limit in (('stdout', connector.MAX_STDOUT_BYTES),
+                              ('stderr', connector.MAX_STDERR_BYTES)):
+            script = ('import sys\n'
+                      'sys.stdin.buffer.read()\n'
+                      'for i in range(%d):\n'
+                      ' sys.%s.buffer.write(b"x" * 65536)\n'
+                      'sys.%s.buffer.write(b"x")\n' % (limit // 65536, stream, stream))
+            with self.subTest(stream=stream), self.child(script), \
+                    lc.LifecycleConnection(host='localhost', binary='mysql') as conn:
+                with self.assertRaisesRegex(ConnectorError, stream + ' response exceeds'):
+                    conn.run('SELECT 1', timeout=10)
+                self.assertIsNotNone(self.children[0].poll())
+                self.assertFalse(os.path.exists(self.defaults[0]))
+
+    def test_control_errors_keep_redaction_error_code_and_socket_flags(self):
+        script = ('import sys\n'
+                  'assert "--protocol=SOCKET" in sys.argv\n'
+                  'assert "--socket=/private/mysql.sock" in sys.argv\n'
+                  'assert "-e" not in sys.argv\n'
+                  'assert sys.stdin.buffer.read() == b"SELECT 1"\n'
+                  'sys.stderr.write("ERROR 1045 (28000): connection-secret IDENTIFIED BY \'sql-secret\'")\n'
+                  'sys.exit(1)\n')
+        with self.child(script), lc.LifecycleConnection(
+                host='localhost', socket='/private/mysql.sock', password='connection-secret', binary='mysql') as conn:
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run('SELECT 1')
+            self.assertEqual(caught.exception.server_error_code, 1045)
+            self.assertNotIn('connection-secret', str(caught.exception))
+            self.assertNotIn('sql-secret', str(caught.exception))
+            self.assertFalse(os.path.exists(self.defaults[0]))
+
+    def test_control_timeout_reaps_client_and_removes_credentials(self):
+        with self.child('import os\nr,w=os.pipe()\nos.read(r,1)'), \
+                lc.LifecycleConnection(host='localhost', binary='mysql') as conn:
+            with self.assertRaisesRegex(ConnectorError, 'timed out'):
+                conn.run('SELECT 1', timeout=0.2)
+        self.assertIsNotNone(self.children[0].poll())
+        self.assertFalse(os.path.exists(self.defaults[0]))
+
+    def test_lifecycle_option_files_pin_tcp_and_preserve_explicit_sockets(self):
+        for name, engine in (('mysql', 'mysql'), ('mysqldump', 'mysql'),
+                             ('mariadb', 'mariadb'), ('mariadb-dump', 'mariadb'),
+                             ('mysqlsh', 'mysql')):
+            tool = {'path': name, 'name': name, 'engine': engine}
+            for socket_path in (None, '/private/mysql.sock'):
+                connection = dict(CONNECTION, host='localhost', port=3317)
+                if socket_path:
+                    connection['socket'] = socket_path
+                with self.subTest(tool=name, socket=socket_path), \
+                        lc._credentials(connection, tool) as (argv, env):
+                    content = Path(argv[1].split('=', 1)[1]).read_text()
+                    self.assertIn('host="localhost"\n', content)
+                    if name == 'mysqlsh':
+                        self.assertNotIn('protocol=', content)  # Shell has no such option.
+                        if socket_path:
+                            self.assertNotIn('port=', content)  # Shell's last transport option wins.
+                        else:
+                            self.assertIn('port="3317"\n', content)
+                    else:
+                        self.assertIn('protocol=%s\n' % ('SOCKET' if socket_path else 'TCP'), content)
+                    if socket_path:
+                        self.assertIn('socket="/private/mysql.sock"\n', content)
+        with lc.LifecycleConnection(host='localhost', socket='/private/mysql.sock') as conn:
+            content = conn._build_defaults_file_content()
+            self.assertIn('protocol=SOCKET\n', content)
+            self.assertIn('socket="/private/mysql.sock"\n', content)
+            self.assertNotIn('protocol=TCP', content)
 
 
 class LifecycleTests(unittest.TestCase):

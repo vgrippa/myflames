@@ -34,7 +34,7 @@ import tempfile
 import threading
 import time
 
-from .server_info import detect_flavor
+from .server_info import detect_flavor, server_version_tuple
 
 # Bound both pipes independently: stderr can be large even for a tiny result.
 MAX_STDOUT_BYTES = 64 * 1024 * 1024
@@ -281,9 +281,17 @@ class MySQLConnection:
         ``mariadb`` read it. Values with a ``#`` or ``=`` inside are rare
         but we quote defensively to avoid the CLI parser tripping.
         """
-        lines = ["[client]"]
-        if self.host:
-            lines.append("host=" + _option_value(self.host))
+        # A port in an option file does not prevent localhost from selecting
+        # the client's default Unix socket. Pin the reviewed transport instead.
+        # LifecycleConnection also accepts an explicit socket; keep it usable
+        # by inherited write methods as well as its control-query path.
+        socket = getattr(self, "socket", None)
+        lines = ["[client]", "protocol=" + ("SOCKET" if socket else "TCP")]
+        host = "localhost" if socket else self.host
+        if host:
+            lines.append("host=" + _option_value(host))
+        if socket:
+            lines.append("socket=" + _option_value(socket))
         if self.port:
             lines.append("port=" + str(self.port))
         if self.user:
@@ -597,8 +605,9 @@ class MySQLConnection:
         raw JSON text (already stripped of MySQL CLI decorations because we
         use --batch --raw --skip-column-names).
 
-        - MySQL: prefixes ``SET explain_json_format_version=2`` and runs
-          ``EXPLAIN ANALYZE FORMAT=JSON``.
+        - MySQL: prefixes ``SET explain_json_format_version=2`` on 8.3+
+          (where the variable was introduced), then runs ``EXPLAIN ANALYZE
+          FORMAT=JSON``.
         - MariaDB: runs ``ANALYZE FORMAT=JSON``.
 
         EXPLAIN ANALYZE runs the statement, so it runs inside the same
@@ -612,15 +621,28 @@ class MySQLConnection:
         backslash commands or DELIMITER lines, every comment closed); it is
         sent with ``-e`` and without ``--binary-mode``.
         """
-        if self.is_mariadb():
+        maria = self.is_mariadb()
+        version = self.server_version()
+        if maria:
             stmt = "ANALYZE FORMAT=JSON " + sql
             prefix = ""
         else:
             stmt = "EXPLAIN ANALYZE FORMAT=JSON " + sql
-            prefix = "SET explain_json_format_version=2; "
+            prefix = ("SET explain_json_format_version=2; "
+                      if server_version_tuple(version) >= (8, 3, 0) else "")
         script = (prefix + "SET SESSION TRANSACTION READ ONLY; START TRANSACTION READ ONLY; "
                   + stmt + "\n;\nROLLBACK")
-        return self.run(script, extra_flags=["--raw"])
+        try:
+            return self.run(script, extra_flags=["--raw"])
+        except ConnectorError as exc:
+            from .live import client_error_text
+            message = client_error_text(str(exc), mode="analyze", version=version, maria=maria)
+            if message == str(exc):
+                raise
+            error = ConnectorError(message)
+            if hasattr(exc, "server_error_code"):
+                error.server_error_code = exc.server_error_code
+            raise error from None
 
 
 #: Module-level name for the batch-mode unescape, so modules that import it

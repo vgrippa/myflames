@@ -339,12 +339,21 @@ def _credentials(connection, tool):
     options = _options(connection)
     if options.get('socket'):
         options['host'] = 'localhost'
+        # mysqlsh selects transport from the last socket/port option. Do not
+        # let the default port override an explicitly reviewed socket.
+        options.pop('port', None)
+    shell = tool.get('name') == 'mysqlsh'
     with tempfile.TemporaryDirectory(prefix='myflames-lifecycle-') as home:
         path = os.path.join(home, 'connection.cnf')
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as handle:
                 handle.write('[client]\n')
+                # Shell has no --protocol option: its explicit port selects
+                # TCP, including localhost. Classic clients need this option
+                # because a port read from my.cnf does not force TCP.
+                if not shell:
+                    handle.write('protocol=%s\n' % ('SOCKET' if options.get('socket') else 'TCP'))
                 for key, value in options.items():
                     if key == 'database':
                         continue  # database is a client argument, not a shared tool option
@@ -385,9 +394,9 @@ class LifecycleConnection(MySQLConnection):
             argv += ['--protocol=SOCKET', '--socket=' + self.socket]
         with tempfile.TemporaryDirectory(prefix='myflames-control-') as home:
             try:
-                proc = subprocess.run(argv, input=sql.encode('utf-8'), stdout=subprocess.PIPE,
-                                      stderr=subprocess.PIPE, timeout=timeout or self.query_timeout,
-                                      env=_clean_env(home))
+                from .connector import _run_bounded
+                proc = _run_bounded(argv, input=sql.encode('utf-8'),
+                                    timeout=timeout or self.query_timeout, env=_clean_env(home))
             except subprocess.TimeoutExpired:
                 raise ConnectorError('Lifecycle control query timed out.')
         if proc.returncode:

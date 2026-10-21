@@ -296,6 +296,14 @@ def _int(value):
 
 
 def _mysql_report(reader, server, report):
+    # WL#13681 added the table and its status counters in MySQL 8.0.22.
+    # Gate before settings too: 5.7 has no log_error_services variable.
+    if server.version_tuple < (8, 0, 22):
+        path = server.var('log_error')
+        hint = (_how_to_view(path, server.var('datadir')) if path and path != 'stderr' else
+                "Read the error log file on the server host, or the service manager's log (for example journalctl).")
+        return _unavailable(report, 'unsupported_version',
+                            'performance_schema.error_log needs MySQL 8.0.22 or later.', hint)
     path, services = server.var('log_error'), server.var('log_error_services')
     verbosity = _int(server.var('log_error_verbosity'))
     if services is None or verbosity is None:
