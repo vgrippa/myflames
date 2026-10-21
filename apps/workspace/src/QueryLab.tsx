@@ -61,7 +61,6 @@ import "./editor.css";
 // Opened on request (Table data, the Query Digest mode): their chunks load
 // the first time they open (lazy.tsx).
 const TableData = lazyComponent(() => import("./TableData").then((m) => m.TableData));
-const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => m.QueryDigestView));
 
 const MAC =
   typeof navigator !== "undefined" &&
@@ -96,8 +95,6 @@ export type QueryLabHandle = {
    * connectionKey), nothing opens or runs unless that is still the
    * connection in use. */
   openDigest: (row: TopStatement, rank: number, action: DigestAction, expect?: string) => void;
-  /** Switch to the Query digest mode (in the style of pt-query-digest) */
-  openDigestView?: () => void;
   /** Add an empty query tab and put the cursor in it (Home's New query tab). */
   newTab: () => void;
   /** Make an existing tab the current one (Home's Recent work); unknown ids do nothing. */
@@ -468,7 +465,6 @@ export const QueryLab = forwardRef<
   const [status, setStatus] = useState("");
   const [analysisWarning, setAnalysisWarning] = useState<{ tab: string; text: string } | null>(null);
   const [error, setError] = useState("");
-  const [workspaceMode, setWorkspaceMode] = useState<"editor" | "digest">("editor");
   // A staged table draft remains bound to the connection it was opened from.
   const [tableData, setTableData] = useState<{ connection: Connection; schema: string; table: string } | null>(null);
   const [job, setJob] = useState<Job | null>(null);
@@ -560,7 +556,6 @@ export const QueryLab = forwardRef<
 
   useImperativeHandle(ref, () => ({
     openDigest,
-    openDigestView: () => setWorkspaceMode("digest"),
     newTab: () => addTab(true),
     openTab: (id: string) => {
       if (tabs.some((t) => t.id === id)) setTabId(id);
@@ -1661,21 +1656,15 @@ export const QueryLab = forwardRef<
   const statusKey = connectionKey(connection);
   const statusSession = rt.sessionKey === statusKey ? session : null;
   const statusRun = rt.runKey === statusKey ? runLabel : null;
-  const transaction = statusSession && !statusSession.ended
-    ? tx[1] === "Auto-commit" && statusSession.autocommit === null ? "Autocommit unknown" : tx[1]
-    : undefined;
   useWindowStatus(`query:${statusKey}:${tab.id}`, {
     connectionState: connectionLabel(connection),
-    engineVersion: statusSession?.server_version ? `${statusSession.engine === "mariadb" ? "MariaDB" : statusSession.engine === "mysql" ? "MySQL" : "Server"} ${statusSession.server_version}` : undefined,
+    engineVersion: statusSession?.server_version ? `${statusSession.server_product || (statusSession.engine === "mariadb" ? "MariaDB" : statusSession.engine === "mysql" ? "MySQL" : "Server")} ${statusSession.server_version}` : undefined,
     sessionState: statusSession
       ? statusSession.ended ? "Session ended"
         : `${running ? "Running" : statusSession.state === "starting" ? "Session starting" : "Session open"}${statusSession.connection_id !== null ? ` · connection ${statusSession.connection_id}` : ""}${statusSession.read_only_transactions ? " · read-only" : ""}`
       : rt.probed && !session ? "No session" : undefined,
     // The transaction state is in the editor toolbar, and the rows and time
-    // of the run in its result tabs: the footer does not repeat them. The
-    // Query digest mode hides the toolbar, so there the footer keeps the
-    // transaction state (an open transaction may hold locks).
-    transaction: workspaceMode === "digest" ? transaction : undefined,
+    // of the run in its result tabs: the footer does not repeat them.
     lastRunAt: statusRun?.finished_at ? Date.parse(statusRun.finished_at) : undefined,
   });
   const planPane =
@@ -1730,31 +1719,6 @@ export const QueryLab = forwardRef<
         </div>
         <div className="editor-panel card">
           <div className="query-tabs">
-            <div className="query-mode-switch segmented-control" role="tablist" aria-label="Query workspace view">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={workspaceMode === "editor"}
-                className={`mode-tab ${workspaceMode === "editor" ? "is-active" : ""}`}
-                onClick={() => setWorkspaceMode("editor")}
-              >
-                <Icon name="query" size={13} />
-                <span>Editor</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={workspaceMode === "digest"}
-                className={`mode-tab ${workspaceMode === "digest" ? "is-active" : ""}`}
-                onClick={() => setWorkspaceMode("digest")}
-                title="Workload profile of statement digests, in the style of pt-query-digest"
-              >
-                <Icon name="statements" size={13} />
-                <span>Query digest</span>
-              </button>
-            </div>
-            {workspaceMode === "editor" && (
-              <>
                 <div
                   className="query-tablist"
                   role="tablist"
@@ -1841,31 +1805,13 @@ export const QueryLab = forwardRef<
                 >
                   +
                 </button>
-              </>
-            )}
-            <div className="editor-connection" style={workspaceMode === "digest" ? { marginLeft: "auto" } : undefined}>{picker}</div>
+            <div className="editor-connection">{picker}</div>
           </div>
-          {workspaceMode === "digest" && (
-            <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
-              <QueryDigestView
-                connection={connection}
-                onOpenInEditor={(row, rank, from) => {
-                  openDigest(row, rank, "open", from);
-                  setWorkspaceMode("editor");
-                }}
-                onExplain={(row, rank, from) => {
-                  openDigest(row, rank, "explain", from);
-                  setWorkspaceMode("editor");
-                }}
-              />
-            </div>
-          )}
           <div
             ref={tabPanel}
             role="tabpanel" tabIndex={0}
             id="query-tab-panel"
             className="query-tab-panel"
-            hidden={workspaceMode !== "editor"}
             aria-labelledby={`query-tab-${Math.max(0, tabs.indexOf(tab))}`}
             onKeyDown={(e) => {
               // Escape that ends an input method's composition is not Stop.

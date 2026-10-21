@@ -4,12 +4,13 @@
 // Sections: Topology, Channels (Connections on MariaDB), Lag, GTID and
 // Recovery, under the shared summary line and metric tiles. Every change goes
 // through a write-policy confirmation sheet.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import type { Connection } from "./api";
-import { connectionKey, type Bound } from "./binding";
+import type { Bound } from "./binding";
 import { ReplicationView, type ReplicationSubTab } from "./Replication";
 import type { ReplicationReport, SkipLoop } from "./opsApi";
-import { NavMarker, InspectorContext, type InspectorShared, type Selection, worstTone, TONE_TEXT } from "./kit";
+import type { ClusterKind } from "./clusterApi";
+import { InspectorContext, type InspectorShared, type Selection } from "./kit";
 import { InstrumentsLinkContext } from "./Instruments";
 import "./replication.css";
 
@@ -17,7 +18,8 @@ export function ReplicationPlace({
   connection,
   disabled = false,
   onBack,
-  onBadgeChange,
+  clusterKind = null,
+  onOpenCluster,
   onOpenInstruments,
   loops: propLoops,
   onLoops,
@@ -29,7 +31,11 @@ export function ReplicationPlace({
   connection: Connection;
   disabled?: boolean;
   onBack?: () => void;
-  onBadgeChange?: (badge: ReactNode) => void;
+  /** The cluster the connection in use belongs to, once the Cluster place or
+   * Refresh all read it (a node that is not a replica points there). The
+   * sidebar's marker is drawn by the shell from the shared report. */
+  clusterKind?: ClusterKind | null;
+  onOpenCluster?: () => void;
   onOpenInstruments?: (row: string) => void;
   loops?: Bound<SkipLoop[]> | null;
   onLoops?: (loops: Bound<SkipLoop[]>) => void;
@@ -58,29 +64,6 @@ export function ReplicationPlace({
   const [inspectorWidth, setInspectorWidth] = useState(360);
   const [activeTab, setActiveTab] = useState<ReplicationSubTab>("topology");
   const [, setLoopActiveNow] = useState(false);
-
-  useEffect(() => {
-    const currentKey = connectionKey(connection);
-    if (!report || report.key !== currentKey) {
-      onBadgeChange?.(null);
-      return;
-    }
-    const rep = report.report;
-    if (!rep) {
-      onBadgeChange?.(null);
-      return;
-    }
-    if (!rep.replica) {
-      onBadgeChange?.(<NavMarker tone="unknown" text="no replica channels" />);
-    } else if (rep.summary.failed > 0) {
-      const n = rep.summary.failed;
-      onBadgeChange?.(<NavMarker compact tone="problem" count={n} countTone="danger" text={`Problem, ${n} failed`} />);
-    } else {
-      const judged = rep.channels.filter((c) => c.judged);
-      const worst = judged.length ? worstTone(judged.map((c) => c.status)) : "unknown";
-      onBadgeChange?.(<NavMarker tone={worst} text={worst === "ok" ? "replicating" : TONE_TEXT[worst] || worst} />);
-    }
-  }, [report, connection, onBadgeChange]);
 
   const selection: Selection = {
     key: selectedKey,
@@ -121,6 +104,8 @@ export function ReplicationPlace({
             }}
             activeTab={activeTab}
             onTabChange={setActiveTab}
+            clusterKind={clusterKind}
+            onOpenCluster={onOpenCluster}
           />
         </div>
       </InstrumentsLinkContext.Provider>

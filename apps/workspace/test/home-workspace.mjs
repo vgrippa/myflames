@@ -43,7 +43,9 @@ try {
   await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Server");
   await click("Home");
   await page.click(".home-workflows button:nth-child(3)");
-  await page.waitForSelector('.server-view[data-view="diagram"]');
+  // Home's Database diagram opens its place (SQL workspace), not a Server view.
+  await page.waitForSelector('.server-place.is-diagram-place .server-view[data-view="diagram"]', { visible: true });
+  await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Database diagram");
   await click("View Mermaid");
   assert.equal(await page.$eval('[aria-label="Import format"]', el => el.value), "mermaid");
   await page.type(".diagram-paste textarea", "erDiagram\n  customers ||--o{ orders : places\n  customers {\n    int id PK\n    string name\n  }\n  orders {\n    int id PK\n    int customer_id FK\n  }\n");

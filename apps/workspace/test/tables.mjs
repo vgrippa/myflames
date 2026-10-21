@@ -60,8 +60,8 @@ const assertRefreshBlocked = async () => {
 };
 try {
   await h.server();
-  // Tables follows Indexes in the Schema group.
-  assert.deepEqual(await texts(".source-list .source-group:nth-child(3) .source-label"), ["Indexes", "Tables", "Database diagram"]);
+  // Tables follows Indexes in the Schema group (Database diagram is a place of its own).
+  assert.deepEqual(await texts(".source-list .source-group:nth-child(3) .source-label"), ["Indexes", "Tables"]);
   await h.view("tables");
   // A small server reads on open, because the view is on screen.
   await page.waitForSelector(`${view} .fact-strip`);

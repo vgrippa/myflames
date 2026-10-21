@@ -11,6 +11,13 @@ import { Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popov
 import { actionLabel, privilegeResult, usePrivileges } from "./privileges";
 import { defaultConnection, relativeTime, SSL_MODES, type SessionConnection } from "./session";
 
+/** connection/test: the version, and the product the server names in @@version_comment. */
+type ConnectionTestResult = { version: string; engine?: string; flavor?: string; product?: string };
+/** "8.4.11", "11.8.9-MariaDB-log" (they name themselves), "Percona Server 8.4.11-11". */
+function testedServer(r: ConnectionTestResult) {
+  return r.flavor === "percona" && r.product ? `${r.product} ${r.version}` : r.version;
+}
+
 /** The connection the Query editor and Server send requests to. The password
  * is typed for this page only and is never part of the saved session. */
 export type ActiveConnection = {
@@ -447,14 +454,14 @@ export function Connections({
     setTesting(true);
     setError("");
     try {
-      const r = await api<{ version: string; schemas: string[] }>(
+      const r = await api<ConnectionTestResult & { schemas: string[] }>(
         "connection/test",
         { connection: formConnection },
       );
       if (draftGen.current !== gen || testSeq.current !== seq) return;
       setSchemas(r.schemas);
       statusFromTest.current = true;
-      setStatus(`Connected · ${r.version}`);
+      setStatus(`Connected · ${testedServer(r)}`);
       if (tested.editing && !savedPassword && tested.password && canRemember)
         setOfferSave(true);
     } catch (e) {
@@ -536,8 +543,8 @@ export function Connections({
     const put = (next: RowTest) => setRowTests((t) => (t[key]?.seq === seq ? { ...t, [key]: next } : t));
     setRowTests((t) => ({ ...t, [key]: { state: "testing", identity, seq } }));
     try {
-      const r = await api<{ version: string }>("connection/test", { connection });
-      put({ state: "ok", text: `Connected · ${r.version}`, identity, seq });
+      const r = await api<ConnectionTestResult>("connection/test", { connection });
+      put({ state: "ok", text: `Connected · ${testedServer(r)}`, identity, seq });
     } catch (e) {
       put({ state: "failed", text: (e as Error).message, identity, seq });
     }

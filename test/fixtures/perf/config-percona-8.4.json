@@ -1,0 +1,632 @@
+{
+ "server": "percona-8.4",
+ "source": "live",
+ "args": {
+  "parameters": true
+ },
+ "calls": [
+  [
+   "/*myflames:config*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('innodb_buffer_pool_size', 'innodb_buffer_pool_size_max', 'innodb_data_file_buffering', 'innodb_dedicated_server', 'innodb_flush_log_at_trx_commit', 'innodb_flush_method', 'innodb_io_capacity', 'innodb_io_capacity_max', 'innodb_log_file_buffering', 'innodb_log_file_size', 'innodb_log_files_in_group', 'innodb_redo_log_capacity', 'internal_tmp_mem_storage_engine', 'join_buffer_size', 'log_bin', 'log_output', 'log_slow_query', 'log_slow_query_time', 'long_query_time', 'max_connections', 'max_heap_table_size', 'open_files_limit', 'performance_schema', 'slow_query_log', 'sort_buffer_size', 'sync_binlog', 'table_open_cache', 'temptable_max_mmap', 'temptable_max_ram', 'temptable_use_mmap', 'thread_handling', 'thread_pool_size', 'tmp_disk_table_size', 'tmp_memory_table_size', 'tmp_table_size', 'userstat', 'version', 'version_comment')",
+   "innodb_buffer_pool_size\t134217728\ninnodb_dedicated_server\tOFF\ninnodb_flush_log_at_trx_commit\t1\ninnodb_flush_method\tO_DIRECT\ninnodb_io_capacity\t10000\ninnodb_io_capacity_max\t20000\ninnodb_log_file_size\t50331648\ninnodb_log_files_in_group\t2\ninnodb_redo_log_capacity\t104857600\ninternal_tmp_mem_storage_engine\tTempTable\njoin_buffer_size\t262144\nlog_bin\tON\nlog_output\tFILE\nlong_query_time\t0.200000\nmax_connections\t151\nmax_heap_table_size\t16777216\nopen_files_limit\t1048576\nperformance_schema\tON\nslow_query_log\tOFF\nsort_buffer_size\t262144\nsync_binlog\t1\ntable_open_cache\t4000\ntemptable_max_mmap\t0\ntemptable_max_ram\t1073741824\ntemptable_use_mmap\tOFF\nthread_handling\tone-thread-per-connection\nthread_pool_size\t16\ntmp_table_size\t16777216\nuserstat\tON\nversion\t8.4.11-11\nversion_comment\tPercona Server (GPL), Release 11, Revision 57878ff8\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t1336\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('log_queries_not_using_indexes', 'log_query_errors', 'log_slow_rate_limit', 'log_slow_rate_type', 'slow_query_log_always_write_time')",
+   "log_queries_not_using_indexes\tOFF\nlog_query_errors\t\nlog_slow_rate_limit\t1\nlog_slow_rate_type\tsession\nslow_query_log_always_write_time\t10.000000\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Max_used_connections', 'Connection_errors_max_connections', 'Opened_tables', 'Open_tables', 'Created_tmp_tables', 'Created_tmp_disk_tables', 'Innodb_os_log_written', 'Innodb_redo_log_capacity_resized', 'Innodb_redo_log_current_lsn', 'Innodb_redo_log_checkpoint_lsn', 'Innodb_checkpoint_age')",
+   "Connection_errors_max_connections\t0\nCreated_tmp_disk_tables\t0\nCreated_tmp_tables\t262\nInnodb_checkpoint_age\t0\nInnodb_os_log_written\t23907840\nInnodb_redo_log_capacity_resized\t104857600\nInnodb_redo_log_checkpoint_lsn\t53130067\nInnodb_redo_log_current_lsn\t53130067\nMax_used_connections\t4\nOpen_tables\t574\nOpened_tables\t672\nUptime\t1336\n"
+  ],
+  [
+   "/*myflames:config*/ SELECT VARIABLE_NAME, VARIABLE_SOURCE, NULL FROM performance_schema.variables_info WHERE VARIABLE_NAME IN ('innodb_buffer_pool_size', 'innodb_buffer_pool_size_max', 'innodb_data_file_buffering', 'innodb_dedicated_server', 'innodb_flush_log_at_trx_commit', 'innodb_flush_method', 'innodb_io_capacity', 'innodb_io_capacity_max', 'innodb_log_file_buffering', 'innodb_log_file_size', 'innodb_log_files_in_group', 'innodb_redo_log_capacity', 'internal_tmp_mem_storage_engine', 'join_buffer_size', 'log_bin', 'log_output', 'log_slow_query', 'log_slow_query_time', 'long_query_time', 'max_connections', 'max_heap_table_size', 'open_files_limit', 'performance_schema', 'slow_query_log', 'sort_buffer_size', 'sync_binlog', 'table_open_cache', 'temptable_max_mmap', 'temptable_max_ram', 'temptable_use_mmap', 'thread_handling', 'thread_pool_size', 'tmp_disk_table_size', 'tmp_memory_table_size', 'tmp_table_size')",
+   "innodb_buffer_pool_size\tCOMMAND_LINE\tNULL\ninnodb_dedicated_server\tCOMPILED\tNULL\ninnodb_flush_log_at_trx_commit\tCOMPILED\tNULL\ninnodb_flush_method\tCOMPILED\tNULL\ninnodb_io_capacity\tCOMPILED\tNULL\ninnodb_io_capacity_max\tCOMPILED\tNULL\ninnodb_log_file_size\tCOMPILED\tNULL\ninnodb_log_files_in_group\tCOMPILED\tNULL\ninnodb_redo_log_capacity\tCOMPILED\tNULL\ninternal_tmp_mem_storage_engine\tCOMPILED\tNULL\njoin_buffer_size\tCOMPILED\tNULL\nlog_bin\tCOMPILED\tNULL\nlog_output\tCOMPILED\tNULL\nlong_query_time\tCOMMAND_LINE\tNULL\nmax_connections\tCOMPILED\tNULL\nmax_heap_table_size\tCOMPILED\tNULL\nopen_files_limit\tCOMPILED\tNULL\nperformance_schema\tCOMMAND_LINE\tNULL\nslow_query_log\tCOMMAND_LINE\tNULL\nsort_buffer_size\tCOMPILED\tNULL\nsync_binlog\tCOMPILED\tNULL\ntable_open_cache\tCOMPILED\tNULL\ntemptable_max_mmap\tCOMPILED\tNULL\ntemptable_max_ram\tCOMPILED\tNULL\ntemptable_use_mmap\tCOMPILED\tNULL\nthread_handling\tCOMPILED\tNULL\nthread_pool_size\tCOMPILED\tNULL\ntmp_table_size\tCOMPILED\tNULL\n"
+  ],
+  [
+   "/*myflames:config*/ SELECT COALESCE(SUM(ALLOCATED_SIZE), 0), COUNT(*) FROM information_schema.INNODB_TABLESPACES WHERE SPACE_TYPE IN ('Single', 'General')",
+   "85446656\t16\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL VARIABLES",
+   "activate_all_roles_on_login\tOFF\nadmin_address\t\nadmin_port\t33062\nadmin_ssl_ca\t\nadmin_ssl_capath\t\nadmin_ssl_cert\t\nadmin_ssl_cipher\t\nadmin_ssl_crl\t\nadmin_ssl_crlpath\t\nadmin_ssl_key\t\nadmin_tls_ciphersuites\t\nadmin_tls_version\tTLSv1.2,TLSv1.3\nauthentication_policy\t*,,\nauto_generate_certs\tON\nauto_increment_increment\t1\nauto_increment_offset\t1\nautocommit\tON\nautomatic_sp_privileges\tON\nback_log\t151\nbasedir\t/usr/\nbig_tables\tOFF\nbind_address\t*\nbinlog_cache_size\t32768\nbinlog_checksum\tCRC32\nbinlog_ddl_skip_rewrite\tOFF\nbinlog_direct_non_transactional_updates\tOFF\nbinlog_encryption\tOFF\nbinlog_error_action\tABORT_SERVER\nbinlog_expire_logs_auto_purge\tON\nbinlog_expire_logs_seconds\t2592000\nbinlog_format\tROW\nbinlog_group_commit_sync_delay\t0\nbinlog_group_commit_sync_no_delay_count\t0\nbinlog_gtid_simple_recovery\tON\nbinlog_max_flush_queue_time\t0\nbinlog_order_commits\tON\nbinlog_rotate_encryption_master_key_at_startup\tOFF\nbinlog_row_event_max_size\t8192\nbinlog_row_image\tFULL\nbinlog_row_metadata\tMINIMAL\nbinlog_row_value_options\t\nbinlog_rows_query_log_events\tOFF\nbinlog_skip_flush_commands\tOFF\nbinlog_space_limit\t0\nbinlog_stmt_cache_size\t32768\nbinlog_transaction_compression\tOFF\nbinlog_transaction_compression_level_zstd\t3\nbinlog_transaction_dependency_history_size\t25000\nblock_encryption_mode\taes-128-ecb\nbuffered_error_log_filename\t\nbuffered_error_log_size\t0\nbuild_id\t98d0dcfa2c76b321e4de45abafb3e08e18a2280b\nbulk_insert_buffer_size\t8388608\ncaching_sha2_password_auto_generate_rsa_keys\tON\ncaching_sha2_password_digest_rounds\t5000\ncaching_sha2_password_private_key_path\tprivate_key.pem\ncaching_sha2_password_public_key_path\tpublic_key.pem\ncharacter_set_client\tutf8mb4\ncharacter_set_connection\tutf8mb4\ncharacter_set_database\tutf8mb4\ncharacter_set_filesystem\tbinary\ncharacter_set_results\tutf8mb4\ncharacter_set_server\tutf8mb4\ncharacter_set_system\tutf8mb3\ncharacter_sets_dir\t/usr/share/percona-server/charsets/\ncheck_proxy_users\tOFF\ncollation_connection\tutf8mb4_0900_ai_ci\ncollation_database\tutf8mb4_0900_ai_ci\ncollation_server\tutf8mb4_0900_ai_ci\ncompletion_type\tNO_CHAIN\nconcurrent_insert\tAUTO\nconnect_timeout\t10\nconnection_memory_chunk_size\t8192\nconnection_memory_limit\t18446744073709551615\ncore_file\tOFF\ncreate_admin_listener_thread\tOFF\ncte_max_recursion_depth\t1000\ndatadir\t/var/lib/mysql/\ndefault_collation_for_utf8mb4\tutf8mb4_0900_ai_ci\ndefault_password_lifetime\t0\ndefault_storage_engine\tInnoDB\ndefault_table_encryption\tOFF\ndefault_tmp_storage_engine\tInnoDB\ndefault_week_format\t0\ndelay_key_write\tON\ndelayed_insert_limit\t100\ndelayed_insert_timeout\t300\ndelayed_queue_size\t1000\ndisabled_storage_engines\t\ndisconnect_on_expired_password\tON\ndiv_precision_increment\t4\nencrypt_tmp_files\tOFF\nend_markers_in_json\tOFF\nenforce_gtid_consistency\tON\nenforce_storage_engine\t\neq_range_index_dive_limit\t200\nevent_scheduler\tON\nexpand_fast_index_creation\tOFF\nexplain_format\tTRADITIONAL\nexplain_json_format_version\t1\nexplicit_defaults_for_timestamp\tON\nflush\tOFF\nflush_time\t0\nforeign_key_checks\tON\nft_boolean_syntax\t+ -><()~*:\"\"&|\nft_max_word_len\t84\nft_min_word_len\t4\nft_query_expansion_limit\t20\nft_query_extra_word_chars\tOFF\nft_stopword_file\t(built-in)\ngeneral_log\tOFF\ngeneral_log_file\t/var/lib/mysql/8fdd27b05acf.log\ngenerated_random_password_length\t20\nglobal_connection_memory_limit\t18446744073709551615\nglobal_connection_memory_tracking\tOFF\ngroup_concat_max_len\t1024\ngroup_replication_consistency\tBEFORE_ON_PRIMARY_FAILOVER\ngtid_executed\t88303115-cd79-11f1-9f1a-d68c201aa1d9:1-47\ngtid_executed_compression_period\t0\ngtid_mode\tON\ngtid_owned\t\ngtid_purged\t\nhave_backup_locks\tYES\nhave_backup_safe_binlog_info\tYES\nhave_compress\tYES\nhave_dynamic_loading\tYES\nhave_geometry\tYES\nhave_profiling\tYES\nhave_query_cache\tNO\nhave_rtree_keys\tYES\nhave_snapshot_cloning\tYES\nhave_statement_timeout\tYES\nhave_symlink\tDISABLED\nhistogram_generation_max_mem_size\t20000000\nhost_cache_size\t0\nhostname\t8fdd27b05acf\ninformation_schema_stats_expiry\t86400\ninit_connect\t\ninit_file\t\ninit_replica\t\ninit_slave\t\ninnodb_adaptive_flushing\tON\ninnodb_adaptive_flushing_lwm\t10\ninnodb_adaptive_hash_index\tOFF\ninnodb_adaptive_hash_index_parts\t8\ninnodb_adaptive_max_sleep_delay\t150000\ninnodb_api_bk_commit_interval\t5\ninnodb_api_disable_rowlock\tOFF\ninnodb_api_enable_binlog\tOFF\ninnodb_api_enable_mdl\tOFF\ninnodb_api_trx_level\t0\ninnodb_autoextend_increment\t64\ninnodb_autoinc_lock_mode\t2\ninnodb_buffer_pool_chunk_size\t134217728\ninnodb_buffer_pool_dump_at_shutdown\tON\ninnodb_buffer_pool_dump_now\tOFF\ninnodb_buffer_pool_dump_pct\t25\ninnodb_buffer_pool_filename\tib_buffer_pool\ninnodb_buffer_pool_in_core_file\tOFF\ninnodb_buffer_pool_instances\t1\ninnodb_buffer_pool_lazy_latch_init\tOFF\ninnodb_buffer_pool_load_abort\tOFF\ninnodb_buffer_pool_load_at_startup\tON\ninnodb_buffer_pool_load_now\tOFF\ninnodb_buffer_pool_populate\tON\ninnodb_buffer_pool_size\t134217728\ninnodb_change_buffer_max_size\t25\ninnodb_change_buffering\tnone\ninnodb_checksum_algorithm\tcrc32\ninnodb_cleaner_lsn_age_factor\thigh_checkpoint\ninnodb_cmp_per_index_enabled\tOFF\ninnodb_commit_concurrency\t0\ninnodb_compressed_columns_threshold\t96\ninnodb_compressed_columns_zip_level\t6\ninnodb_compression_failure_threshold_pct\t5\ninnodb_compression_level\t6\ninnodb_compression_pad_pct_max\t50\ninnodb_concurrency_tickets\t5000\ninnodb_corrupt_table_action\tassert\ninnodb_data_file_path\tibdata1:12M:autoextend\ninnodb_data_home_dir\t\ninnodb_ddl_buffer_size\t1048576\ninnodb_ddl_threads\t4\ninnodb_deadlock_detect\tON\ninnodb_dedicated_server\tOFF\ninnodb_default_row_format\tdynamic\ninnodb_directories\t\ninnodb_disable_sort_file_cache\tOFF\ninnodb_doublewrite\tON\ninnodb_doublewrite_batch_size\t0\ninnodb_doublewrite_dir\t\ninnodb_doublewrite_files\t2\ninnodb_doublewrite_pages\t128\ninnodb_empty_free_list_algorithm\tlegacy\ninnodb_encrypt_online_alter_logs\tOFF\ninnodb_extend_and_initialize\tON\ninnodb_fast_shutdown\t1\ninnodb_file_per_table\tON\ninnodb_fill_factor\t100\ninnodb_flush_log_at_timeout\t1\ninnodb_flush_log_at_trx_commit\t1\ninnodb_flush_method\tO_DIRECT\ninnodb_flush_neighbors\t0\ninnodb_flush_sync\tON\ninnodb_flushing_avg_loops\t30\ninnodb_force_index_records_in_range\t0\ninnodb_force_load_corrupted\tOFF\ninnodb_force_recovery\t0\ninnodb_fsync_threshold\t0\ninnodb_ft_aux_table\t\ninnodb_ft_cache_size\t8000000\ninnodb_ft_enable_diag_print\tOFF\ninnodb_ft_enable_stopword\tON\ninnodb_ft_ignore_stopwords\tOFF\ninnodb_ft_max_token_size\t84\ninnodb_ft_min_token_size\t3\ninnodb_ft_num_word_optimize\t2000\ninnodb_ft_result_cache_limit\t2000000000\ninnodb_ft_server_stopword_table\t\ninnodb_ft_sort_pll_degree\t2\ninnodb_ft_total_cache_size\t640000000\ninnodb_ft_user_stopword_table\t\ninnodb_idle_flush_pct\t100\ninnodb_io_capacity\t10000\ninnodb_io_capacity_max\t20000\ninnodb_lock_wait_timeout\t50\ninnodb_log_buffer_size\t67108864\ninnodb_log_checksums\tON\ninnodb_log_compressed_pages\tON\ninnodb_log_file_size\t50331648\ninnodb_log_files_in_group\t2\ninnodb_log_group_home_dir\t./\ninnodb_log_spin_cpu_abs_lwm\t80\ninnodb_log_spin_cpu_pct_hwm\t50\ninnodb_log_wait_for_flush_spin_hwm\t400\ninnodb_log_write_ahead_size\t8192\ninnodb_log_writer_threads\tON\ninnodb_lru_scan_depth\t1024\ninnodb_lru_threads\tOFF\ninnodb_max_dirty_pages_pct\t90.000000\ninnodb_max_dirty_pages_pct_lwm\t10.000000\ninnodb_max_purge_lag\t0\ninnodb_max_purge_lag_delay\t0\ninnodb_max_undo_log_size\t1073741824\ninnodb_monitor_disable\t\ninnodb_monitor_enable\t\ninnodb_monitor_reset\t\ninnodb_monitor_reset_all\t\ninnodb_numa_interleave\tON\ninnodb_old_blocks_pct\t37\ninnodb_old_blocks_time\t1000\ninnodb_online_alter_log_max_size\t134217728\ninnodb_open_files\t4000\ninnodb_optimize_fulltext_only\tOFF\ninnodb_page_cleaners\t1\ninnodb_page_size\t16384\ninnodb_parallel_read_threads\t4\ninnodb_print_all_deadlocks\tOFF\ninnodb_print_ddl_logs\tOFF\ninnodb_print_lock_wait_timeout_info\tOFF\ninnodb_purge_batch_size\t300\ninnodb_purge_rseg_truncate_frequency\t128\ninnodb_purge_threads\t1\ninnodb_random_read_ahead\tOFF\ninnodb_read_ahead_threshold\t56\ninnodb_read_io_threads\t8\ninnodb_read_only\tOFF\ninnodb_records_in_range\t0\ninnodb_redo_log_archive_dirs\t\ninnodb_redo_log_capacity\t104857600\ninnodb_redo_log_encrypt\tOFF\ninnodb_replication_delay\t0\ninnodb_rollback_on_timeout\tOFF\ninnodb_rollback_segments\t128\ninnodb_segment_reserve_factor\t12.500000\ninnodb_show_locks_held\t10\ninnodb_sort_buffer_size\t1048576\ninnodb_spin_wait_delay\t6\ninnodb_spin_wait_pause_multiplier\t50\ninnodb_stats_auto_recalc\tON\ninnodb_stats_include_delete_marked\tOFF\ninnodb_stats_method\tnulls_equal\ninnodb_stats_on_metadata\tOFF\ninnodb_stats_persistent\tON\ninnodb_stats_persistent_sample_pages\t20\ninnodb_stats_transient_sample_pages\t8\ninnodb_status_output\tOFF\ninnodb_status_output_locks\tOFF\ninnodb_strict_mode\tON\ninnodb_sync_array_size\t1\ninnodb_sync_spin_loops\t30\ninnodb_sys_tablespace_encrypt\tOFF\ninnodb_table_locks\tON\ninnodb_temp_data_file_path\tibtmp1:12M:autoextend\ninnodb_temp_tablespace_encrypt\tOFF\ninnodb_temp_tablespaces_dir\t./#innodb_temp/\ninnodb_thread_concurrency\t0\ninnodb_thread_sleep_delay\t10000\ninnodb_tmpdir\t\ninnodb_undo_directory\t./\ninnodb_undo_log_encrypt\tOFF\ninnodb_undo_log_truncate\tON\ninnodb_undo_tablespaces\t2\ninnodb_use_fdatasync\tON\ninnodb_use_native_aio\tON\ninnodb_validate_tablespace_paths\tON\ninnodb_version\t8.4.11-11\ninnodb_write_io_threads\t4\ninteractive_timeout\t28800\ninternal_tmp_mem_storage_engine\tTempTable\njemalloc_detected\tOFF\njemalloc_profiling\tOFF\njoin_buffer_size\t262144\nkeep_files_on_create\tOFF\nkey_buffer_size\t8388608\nkey_cache_age_threshold\t300\nkey_cache_block_size\t1024\nkey_cache_division_limit\t100\nkeyring_operations\tON\nkill_idle_transaction\t0\nlarge_files_support\tON\nlarge_page_size\t0\nlarge_pages\tOFF\nlc_messages\ten_US\nlc_messages_dir\t/usr/share/percona-server/\nlc_time_names\ten_US\nlicense\tGPL\nlocal_infile\tOFF\nlock_wait_timeout\t31536000\nlocked_in_memory\tOFF\nlog_bin\tON\nlog_bin_basename\t/var/lib/mysql/mysql-bin\nlog_bin_index\t/var/lib/mysql/mysql-bin.index\nlog_bin_trust_function_creators\tOFF\nlog_error\tstderr\nlog_error_services\tlog_filter_internal; log_sink_internal\nlog_error_suppression_list\t\nlog_error_verbosity\t2\nlog_output\tFILE\nlog_queries_not_using_indexes\tOFF\nlog_query_errors\t\nlog_raw\tOFF\nlog_replica_updates\tON\nlog_slave_updates\tON\nlog_slow_admin_statements\tOFF\nlog_slow_extra\tOFF\nlog_slow_filter\t\nlog_slow_rate_limit\t1\nlog_slow_rate_type\tsession\nlog_slow_replica_statements\tOFF\nlog_slow_slave_statements\tOFF\nlog_slow_sp_statements\tON\nlog_slow_verbosity\t\nlog_statements_unsafe_for_binlog\tON\nlog_throttle_queries_not_using_indexes\t0\nlog_timestamps\tUTC\nlong_query_time\t0.200000\nlow_priority_updates\tOFF\nlower_case_file_system\tOFF\nlower_case_table_names\t0\nmandatory_roles\t\nmaster_verify_checksum\tOFF\nmax_allowed_packet\t67108864\nmax_binlog_cache_size\t18446744073709547520\nmax_binlog_size\t1073741824\nmax_binlog_stmt_cache_size\t18446744073709547520\nmax_connect_errors\t100\nmax_connections\t151\nmax_delayed_threads\t20\nmax_digest_length\t1024\nmax_error_count\t1024\nmax_execution_time\t0\nmax_heap_table_size\t16777216\nmax_insert_delayed_threads\t20\nmax_join_size\t18446744073709551615\nmax_length_for_sort_data\t4096\nmax_points_in_geometry\t65536\nmax_prepared_stmt_count\t16382\nmax_relay_log_size\t0\nmax_seeks_for_key\t18446744073709551615\nmax_slowlog_files\t0\nmax_slowlog_size\t0\nmax_sort_length\t1024\nmax_sp_recursion_depth\t0\nmax_user_connections\t0\nmax_write_lock_count\t18446744073709551615\nmin_examined_row_limit\t0\nmyisam_data_pointer_size\t6\nmyisam_max_sort_file_size\t9223372036853727232\nmyisam_mmap_size\t18446744073709551615\nmyisam_recover_options\tOFF\nmyisam_sort_buffer_size\t8388608\nmyisam_stats_method\tnulls_unequal\nmyisam_use_mmap\tOFF\nmysql_native_password_proxy_users\tOFF\nmysqlx_bind_address\t*\nmysqlx_compression_algorithms\tDEFLATE_STREAM,LZ4_MESSAGE,ZSTD_STREAM\nmysqlx_connect_timeout\t30\nmysqlx_deflate_default_compression_level\t3\nmysqlx_deflate_max_client_compression_level\t5\nmysqlx_document_id_unique_prefix\t0\nmysqlx_enable_hello_notice\tON\nmysqlx_idle_worker_thread_timeout\t60\nmysqlx_interactive_timeout\t28800\nmysqlx_lz4_default_compression_level\t2\nmysqlx_lz4_max_client_compression_level\t8\nmysqlx_max_allowed_packet\t67108864\nmysqlx_max_connections\t100\nmysqlx_min_worker_threads\t2\nmysqlx_port\t33060\nmysqlx_port_open_timeout\t0\nmysqlx_read_timeout\t30\nmysqlx_socket\t/var/lib/mysql/mysqlx.sock\nmysqlx_ssl_ca\t\nmysqlx_ssl_capath\t\nmysqlx_ssl_cert\t\nmysqlx_ssl_cipher\t\nmysqlx_ssl_crl\t\nmysqlx_ssl_crlpath\t\nmysqlx_ssl_key\t\nmysqlx_wait_timeout\t28800\nmysqlx_write_timeout\t60\nmysqlx_zstd_default_compression_level\t3\nmysqlx_zstd_max_client_compression_level\t11\nnet_buffer_length\t16384\nnet_buffer_shrink_interval\t0\nnet_read_timeout\t30\nnet_retry_count\t10\nnet_write_timeout\t60\nngram_token_size\t2\noffline_mode\tOFF\nold_alter_table\tOFF\nopen_files_limit\t1048576\noptimizer_max_subgraph_pairs\t100000\noptimizer_prune_level\t1\noptimizer_search_depth\t62\noptimizer_switch\tindex_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on,favor_range_scan=off\noptimizer_trace\tenabled=off,one_line=off\noptimizer_trace_features\tgreedy_search=on,range_optimizer=on,dynamic_range=on,repeated_subselect=on\noptimizer_trace_limit\t1\noptimizer_trace_max_mem_size\t1048576\noptimizer_trace_offset\t-1\nparser_max_mem_size\t18446744073709551615\npartial_revokes\tOFF\npassword_history\t0\npassword_require_current\tOFF\npassword_reuse_interval\t0\npercona_telemetry_disable\tON\nperformance_schema\tON\nperformance_schema_accounts_size\t-1\nperformance_schema_digests_size\t10000\nperformance_schema_error_size\t5799\nperformance_schema_events_stages_history_long_size\t10000\nperformance_schema_events_stages_history_size\t10\nperformance_schema_events_statements_history_long_size\t10000\nperformance_schema_events_statements_history_size\t10\nperformance_schema_events_transactions_history_long_size\t10000\nperformance_schema_events_transactions_history_size\t10\nperformance_schema_events_waits_history_long_size\t10000\nperformance_schema_events_waits_history_size\t10\nperformance_schema_hosts_size\t-1\nperformance_schema_max_cond_classes\t150\nperformance_schema_max_cond_instances\t-1\nperformance_schema_max_digest_length\t1024\nperformance_schema_max_digest_sample_age\t60\nperformance_schema_max_file_classes\t80\nperformance_schema_max_file_handles\t32768\nperformance_schema_max_file_instances\t-1\nperformance_schema_max_index_stat\t-1\nperformance_schema_max_logger_classes\t80\nperformance_schema_max_memory_classes\t530\nperformance_schema_max_metadata_locks\t-1\nperformance_schema_max_meter_classes\t30\nperformance_schema_max_metric_classes\t600\nperformance_schema_max_mutex_classes\t350\nperformance_schema_max_mutex_instances\t-1\nperformance_schema_max_prepared_statements_instances\t-1\nperformance_schema_max_program_instances\t-1\nperformance_schema_max_rwlock_classes\t100\nperformance_schema_max_rwlock_instances\t-1\nperformance_schema_max_socket_classes\t10\nperformance_schema_max_socket_instances\t-1\nperformance_schema_max_sql_text_length\t1024\nperformance_schema_max_stage_classes\t175\nperformance_schema_max_statement_classes\t228\nperformance_schema_max_statement_stack\t10\nperformance_schema_max_table_handles\t-1\nperformance_schema_max_table_instances\t-1\nperformance_schema_max_table_lock_stat\t-1\nperformance_schema_max_thread_classes\t100\nperformance_schema_max_thread_instances\t-1\nperformance_schema_session_connect_attrs_size\t512\nperformance_schema_setup_actors_size\t-1\nperformance_schema_setup_objects_size\t-1\nperformance_schema_show_processlist\tOFF\nperformance_schema_users_size\t-1\npersist_only_admin_x509_subject\t\npersist_sensitive_variables_in_plaintext\tON\npersisted_globals_load\tON\npid_file\t/var/run/mysqld/mysqld.pid\nplugin_dir\t/usr/lib64/mysql/plugin/\nport\t3306\npreload_buffer_size\t32768\nprint_identified_with_as_hex\tOFF\nprofiling\tOFF\nprofiling_history_size\t15\nprotocol_compression_algorithms\tzlib,zstd,uncompressed\nprotocol_version\t10\nproxy_protocol_networks\t\nquery_alloc_block_size\t8192\nquery_prealloc_size\t8192\nrange_alloc_block_size\t4096\nrange_optimizer_max_mem_size\t8388608\nrbr_exec_mode\tSTRICT\nread_buffer_size\t131072\nread_only\tOFF\nread_rnd_buffer_size\t262144\nregexp_stack_limit\t8000000\nregexp_time_limit\t32\nrelay_log\t8fdd27b05acf-relay-bin\nrelay_log_basename\t/var/lib/mysql/8fdd27b05acf-relay-bin\nrelay_log_index\t/var/lib/mysql/8fdd27b05acf-relay-bin.index\nrelay_log_purge\tON\nrelay_log_recovery\tOFF\nrelay_log_space_limit\t0\nreplica_allow_batching\tON\nreplica_checkpoint_group\t512\nreplica_checkpoint_period\t300\nreplica_compressed_protocol\tOFF\nreplica_enable_event\t\nreplica_exec_mode\tSTRICT\nreplica_load_tmpdir\t/tmp\nreplica_max_allowed_packet\t1073741824\nreplica_net_timeout\t60\nreplica_parallel_type\tLOGICAL_CLOCK\nreplica_parallel_workers\t4\nreplica_pending_jobs_size_max\t134217728\nreplica_preserve_commit_order\tON\nreplica_skip_errors\tOFF\nreplica_sql_verify_checksum\tON\nreplica_transaction_retries\t10\nreplica_translate_deprecated_priv\tOFF\nreplica_type_conversions\t\nreplication_optimize_for_static_plugin_config\tOFF\nreplication_sender_observe_commit_only\tOFF\nreport_host\t\nreport_password\t\nreport_port\t3306\nreport_user\t\nrequire_secure_transport\tOFF\nrestrict_fk_on_non_standard_key\tON\nrpl_read_size\t8192\nrpl_stop_replica_timeout\t31536000\nrpl_stop_slave_timeout\t31536000\nschema_definition_cache\t256\nsecondary_engine_cost_threshold\t100000.000000\nsecure_file_priv\t/var/lib/mysql-files/\nsecure_log_path\t\nselect_into_buffer_size\t131072\nselect_into_disk_sync\tOFF\nselect_into_disk_sync_delay\t0\nserver_id\t114\nserver_id_bits\t32\nserver_uuid\t88303115-cd79-11f1-9f1a-d68c201aa1d9\nsession_track_gtids\tOFF\nsession_track_schema\tON\nsession_track_state_change\tOFF\nsession_track_system_variables\ttime_zone,autocommit,character_set_client,character_set_results,character_set_connection\nsession_track_transaction_info\tOFF\nset_operations_buffer_size\t262144\nsha256_password_auto_generate_rsa_keys\tON\nsha256_password_private_key_path\tprivate_key.pem\nsha256_password_proxy_users\tOFF\nsha256_password_public_key_path\tpublic_key.pem\nshow_create_table_verbosity\tOFF\nshow_gipk_in_create_table_and_information_schema\tON\nskip_external_locking\tON\nskip_name_resolve\tON\nskip_networking\tOFF\nskip_replica_start\tOFF\nskip_show_database\tOFF\nskip_slave_start\tOFF\nslave_allow_batching\tON\nslave_checkpoint_group\t512\nslave_checkpoint_period\t300\nslave_compressed_protocol\tOFF\nslave_exec_mode\tSTRICT\nslave_load_tmpdir\t/tmp\nslave_max_allowed_packet\t1073741824\nslave_net_timeout\t60\nslave_parallel_type\tLOGICAL_CLOCK\nslave_parallel_workers\t4\nslave_pending_jobs_size_max\t134217728\nslave_preserve_commit_order\tON\nslave_skip_errors\tOFF\nslave_sql_verify_checksum\tON\nslave_transaction_retries\t10\nslave_type_conversions\t\nslow_launch_time\t2\nslow_query_log\tOFF\nslow_query_log_always_write_time\t10.000000\nslow_query_log_file\t/var/lib/mysql/slow.log\nslow_query_log_use_global_control\t\nsocket\t/var/lib/mysql/mysql.sock\nsort_buffer_size\t262144\nsource_verify_checksum\tOFF\nsql_auto_is_null\tOFF\nsql_big_selects\tON\nsql_buffer_result\tOFF\nsql_generate_invisible_primary_key\tOFF\nsql_log_off\tOFF\nsql_mode\tONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION\nsql_notes\tON\nsql_quote_show_create\tON\nsql_replica_skip_counter\t0\nsql_require_primary_key\tOFF\nsql_safe_updates\tOFF\nsql_select_limit\t18446744073709551615\nsql_slave_skip_counter\t0\nsql_warnings\tOFF\nssl_ca\tca.pem\nssl_capath\t\nssl_cert\tserver-cert.pem\nssl_cipher\t\nssl_crl\t\nssl_crlpath\t\nssl_fips_mode\tOFF\nssl_key\tserver-key.pem\nssl_session_cache_mode\tON\nssl_session_cache_timeout\t300\nstored_program_cache\t256\nstored_program_definition_cache\t256\nsuper_read_only\tOFF\nsync_binlog\t1\nsync_master_info\t10000\nsync_relay_log\t10000\nsync_relay_log_info\t10000\nsync_source_info\t10000\nsystem_time_zone\tUTC\ntable_definition_cache\t2000\ntable_encryption_privilege_check\tOFF\ntable_open_cache\t4000\ntable_open_cache_instances\t16\ntable_open_cache_triggers\t524288\ntablespace_definition_cache\t256\ntemptable_max_mmap\t0\ntemptable_max_ram\t1073741824\ntemptable_use_mmap\tOFF\nterminology_use_previous\tNONE\ntf_sequence_table_max_upper_bound\t1048576\nthread_cache_size\t9\nthread_handling\tone-thread-per-connection\nthread_pool_high_prio_mode\ttransactions\nthread_pool_high_prio_tickets\t4294967295\nthread_pool_idle_timeout\t60\nthread_pool_max_threads\t100000\nthread_pool_oversubscribe\t3\nthread_pool_size\t16\nthread_pool_stall_limit\t500\nthread_stack\t1048576\nthread_statistics\tOFF\ntime_zone\tSYSTEM\ntls_certificates_enforced_validation\tOFF\ntls_ciphersuites\t\ntls_version\tTLSv1.2,TLSv1.3\ntmp_table_size\t16777216\ntmpdir\t/tmp\ntransaction_alloc_block_size\t8192\ntransaction_isolation\tREPEATABLE-READ\ntransaction_prealloc_size\t4096\ntransaction_read_only\tOFF\nunique_checks\tON\nupdatable_views_with_limit\tYES\nuserstat\tON\nversion\t8.4.11-11\nversion_comment\tPercona Server (GPL), Release 11, Revision 57878ff8\nversion_compile_machine\taarch64\nversion_compile_os\tLinux\nversion_compile_zlib\t1.3.2\nversion_suffix\t\nwait_timeout\t28800\nwindowing_use_high_precision\tON\nxa_detach_on_prepare\tON\n"
+  ],
+  [
+   "/*myflames:config*/ SELECT VARIABLE_NAME, VARIABLE_SOURCE, VARIABLE_PATH, MIN_VALUE, MAX_VALUE, SET_TIME, SET_USER, SET_HOST FROM performance_schema.variables_info",
+   "activate_all_roles_on_login\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_address\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_port\tCOMPILED\t\t0\t65535\tNULL\tNULL\tNULL\nadmin_ssl_ca\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_ssl_capath\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_ssl_cert\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_ssl_cipher\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_ssl_crl\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_ssl_crlpath\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_ssl_key\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_tls_ciphersuites\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nadmin_tls_version\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nauthentication_policy\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nauto_generate_certs\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nauto_increment_increment\tCOMPILED\t\t1\t65535\tNULL\tNULL\tNULL\nauto_increment_offset\tCOMPILED\t\t1\t65535\tNULL\tNULL\tNULL\nautocommit\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nautomatic_sp_privileges\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nback_log\tCOMPILED\t\t0\t65535\tNULL\tNULL\tNULL\nbasedir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbig_tables\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbind_address\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_cache_size\tCOMPILED\t\t4096\t18446744073709547520\tNULL\tNULL\tNULL\nbinlog_checksum\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_ddl_skip_rewrite\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_direct_non_transactional_updates\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_encryption\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_error_action\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_expire_logs_auto_purge\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_expire_logs_seconds\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nbinlog_format\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_group_commit_sync_delay\tCOMPILED\t\t0\t1000000\tNULL\tNULL\tNULL\nbinlog_group_commit_sync_no_delay_count\tCOMPILED\t\t0\t100000\tNULL\tNULL\tNULL\nbinlog_gtid_simple_recovery\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_max_flush_queue_time\tCOMPILED\t\t0\t100000\tNULL\tNULL\tNULL\nbinlog_order_commits\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_rotate_encryption_master_key_at_startup\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_row_event_max_size\tCOMPILED\t\t256\t18446744073709551360\tNULL\tNULL\tNULL\nbinlog_row_image\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_row_metadata\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_row_value_options\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_rows_query_log_events\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_skip_flush_commands\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_space_limit\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nbinlog_stmt_cache_size\tCOMPILED\t\t4096\t18446744073709547520\tNULL\tNULL\tNULL\nbinlog_transaction_compression\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbinlog_transaction_compression_level_zstd\tCOMPILED\t\t1\t22\tNULL\tNULL\tNULL\nbinlog_transaction_dependency_history_size\tCOMPILED\t\t1\t1000000\tNULL\tNULL\tNULL\nblock_encryption_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbuffered_error_log_filename\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbuffered_error_log_size\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nbuild_id\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nbulk_insert_buffer_size\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\ncaching_sha2_password_auto_generate_rsa_keys\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncaching_sha2_password_digest_rounds\tCOMPILED\t\t5000\t4095000\tNULL\tNULL\tNULL\ncaching_sha2_password_private_key_path\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncaching_sha2_password_public_key_path\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncharacter_set_client\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncharacter_set_connection\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncharacter_set_database\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncharacter_set_filesystem\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncharacter_set_results\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncharacter_set_server\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncharacter_set_system\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncharacter_sets_dir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncheck_proxy_users\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncollation_connection\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncollation_database\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncollation_server\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncompletion_type\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nconcurrent_insert\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nconnect_timeout\tCOMPILED\t\t2\t31536000\tNULL\tNULL\tNULL\nconnection_memory_chunk_size\tCOMPILED\t\t1\t536870912\tNULL\tNULL\tNULL\nconnection_memory_limit\tCOMPILED\t\t2097152\t18446744073709551615\tNULL\tNULL\tNULL\ncore_file\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncreate_admin_listener_thread\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ncte_max_recursion_depth\tDYNAMIC\t\t0\t4294967295\t2026-10-21 18:02:15.962440\troot\tlocalhost\ndatadir\tGLOBAL\t/etc/my.cnf\t0\t0\tNULL\tNULL\tNULL\ndefault_collation_for_utf8mb4\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ndefault_password_lifetime\tCOMPILED\t\t0\t65535\tNULL\tNULL\tNULL\ndefault_storage_engine\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ndefault_table_encryption\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ndefault_tmp_storage_engine\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ndefault_week_format\tCOMPILED\t\t0\t7\tNULL\tNULL\tNULL\ndelay_key_write\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ndelayed_insert_limit\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\ndelayed_insert_timeout\tCOMPILED\t\t1\t31536000\tNULL\tNULL\tNULL\ndelayed_queue_size\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\ndisabled_storage_engines\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ndisconnect_on_expired_password\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ndiv_precision_increment\tCOMPILED\t\t0\t30\tNULL\tNULL\tNULL\nencrypt_tmp_files\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nend_markers_in_json\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nenforce_gtid_consistency\tCOMMAND_LINE\t\t0\t0\tNULL\tNULL\tNULL\nenforce_storage_engine\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\neq_range_index_dive_limit\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nerror_count\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nevent_scheduler\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nexpand_fast_index_creation\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nexplain_format\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nexplain_json_format_version\tCOMPILED\t\t1\t2\tNULL\tNULL\tNULL\nexplicit_defaults_for_timestamp\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nexternal_user\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nflush\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nflush_time\tCOMPILED\t\t0\t31536000\tNULL\tNULL\tNULL\nforeign_key_checks\tDYNAMIC\t\t0\t0\t2026-10-21 18:02:14.923162\tNULL\tNULL\nft_boolean_syntax\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nft_max_word_len\tCOMPILED\t\t10\t84\tNULL\tNULL\tNULL\nft_min_word_len\tCOMPILED\t\t1\t84\tNULL\tNULL\tNULL\nft_query_expansion_limit\tCOMPILED\t\t0\t1000\tNULL\tNULL\tNULL\nft_query_extra_word_chars\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nft_stopword_file\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ngeneral_log\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ngeneral_log_file\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ngenerated_random_password_length\tCOMPILED\t\t5\t255\tNULL\tNULL\tNULL\nglobal_connection_memory_limit\tCOMPILED\t\t16777216\t18446744073709551615\tNULL\tNULL\tNULL\nglobal_connection_memory_tracking\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ngroup_concat_max_len\tCOMPILED\t\t4\t18446744073709551615\tNULL\tNULL\tNULL\ngroup_replication_consistency\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ngtid_executed\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ngtid_executed_compression_period\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\ngtid_mode\tCOMMAND_LINE\t\t0\t0\tNULL\tNULL\tNULL\ngtid_next\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ngtid_owned\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ngtid_purged\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_backup_locks\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_backup_safe_binlog_info\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_compress\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_dynamic_loading\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_geometry\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_profiling\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_query_cache\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_rtree_keys\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_snapshot_cloning\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_statement_timeout\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhave_symlink\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nhistogram_generation_max_mem_size\tCOMPILED\t\t1000000\t18446744073709551615\tNULL\tNULL\tNULL\nhost_cache_size\tGLOBAL\t/etc/my.cnf.d/docker.cnf\t0\t65536\tNULL\tNULL\tNULL\nhostname\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nidentity\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nimmediate_server_version\tCOMPILED\t\t0\t999999\tNULL\tNULL\tNULL\ninformation_schema_stats_expiry\tCOMPILED\t\t0\t31536000\tNULL\tNULL\tNULL\ninit_connect\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninit_file\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninit_replica\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninit_slave\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_adaptive_flushing\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_adaptive_flushing_lwm\tCOMPILED\t\t0\t70\tNULL\tNULL\tNULL\ninnodb_adaptive_hash_index\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_adaptive_hash_index_parts\tCOMPILED\t\t1\t512\tNULL\tNULL\tNULL\ninnodb_adaptive_max_sleep_delay\tCOMPILED\t\t0\t1000000\tNULL\tNULL\tNULL\ninnodb_api_bk_commit_interval\tCOMPILED\t\t1\t1073741824\tNULL\tNULL\tNULL\ninnodb_api_disable_rowlock\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_api_enable_binlog\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_api_enable_mdl\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_api_trx_level\tCOMPILED\t\t0\t3\tNULL\tNULL\tNULL\ninnodb_autoextend_increment\tCOMPILED\t\t1\t1000\tNULL\tNULL\tNULL\ninnodb_autoinc_lock_mode\tCOMPILED\t\t0\t2\tNULL\tNULL\tNULL\ninnodb_buffer_pool_chunk_size\tCOMPILED\t\t1048576\t144115188075855871\tNULL\tNULL\tNULL\ninnodb_buffer_pool_dump_at_shutdown\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_dump_now\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_dump_pct\tCOMPILED\t\t1\t100\tNULL\tNULL\tNULL\ninnodb_buffer_pool_filename\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_in_core_file\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_instances\tCOMPILED\t\t0\t64\tNULL\tNULL\tNULL\ninnodb_buffer_pool_lazy_latch_init\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_load_abort\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_load_at_startup\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_load_now\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_populate\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_buffer_pool_size\tCOMMAND_LINE\t\t5242880\t9223372036854775807\tNULL\tNULL\tNULL\ninnodb_change_buffer_max_size\tCOMPILED\t\t0\t50\tNULL\tNULL\tNULL\ninnodb_change_buffering\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_checksum_algorithm\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_cleaner_lsn_age_factor\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_cmp_per_index_enabled\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_commit_concurrency\tCOMPILED\t\t0\t1000\tNULL\tNULL\tNULL\ninnodb_compressed_columns_threshold\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\ninnodb_compressed_columns_zip_level\tCOMPILED\t\t0\t9\tNULL\tNULL\tNULL\ninnodb_compression_failure_threshold_pct\tCOMPILED\t\t0\t100\tNULL\tNULL\tNULL\ninnodb_compression_level\tCOMPILED\t\t0\t9\tNULL\tNULL\tNULL\ninnodb_compression_pad_pct_max\tCOMPILED\t\t0\t75\tNULL\tNULL\tNULL\ninnodb_concurrency_tickets\tCOMPILED\t\t1\t4294967295\tNULL\tNULL\tNULL\ninnodb_corrupt_table_action\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_data_file_path\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_data_home_dir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_ddl_buffer_size\tCOMPILED\t\t65536\t4294967295\tNULL\tNULL\tNULL\ninnodb_ddl_threads\tCOMPILED\t\t1\t64\tNULL\tNULL\tNULL\ninnodb_deadlock_detect\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_dedicated_server\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_default_row_format\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_directories\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_disable_sort_file_cache\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_doublewrite\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_doublewrite_batch_size\tCOMPILED\t\t0\t256\tNULL\tNULL\tNULL\ninnodb_doublewrite_dir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_doublewrite_files\tCOMPILED\t\t1\t256\tNULL\tNULL\tNULL\ninnodb_doublewrite_pages\tCOMPILED\t\t1\t512\tNULL\tNULL\tNULL\ninnodb_empty_free_list_algorithm\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_encrypt_online_alter_logs\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_extend_and_initialize\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_fast_shutdown\tCOMPILED\t\t0\t2\tNULL\tNULL\tNULL\ninnodb_file_per_table\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_fill_factor\tCOMPILED\t\t10\t100\tNULL\tNULL\tNULL\ninnodb_flush_log_at_timeout\tCOMPILED\t\t0\t2700\tNULL\tNULL\tNULL\ninnodb_flush_log_at_trx_commit\tCOMPILED\t\t0\t2\tNULL\tNULL\tNULL\ninnodb_flush_method\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_flush_neighbors\tCOMPILED\t\t0\t2\tNULL\tNULL\tNULL\ninnodb_flush_sync\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_flushing_avg_loops\tCOMPILED\t\t1\t1000\tNULL\tNULL\tNULL\ninnodb_force_index_records_in_range\tCOMPILED\t\t0\t2147483647\tNULL\tNULL\tNULL\ninnodb_force_load_corrupted\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_force_recovery\tCOMPILED\t\t0\t6\tNULL\tNULL\tNULL\ninnodb_fsync_threshold\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\ninnodb_ft_aux_table\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_ft_cache_size\tCOMPILED\t\t1600000\t80000000\tNULL\tNULL\tNULL\ninnodb_ft_enable_diag_print\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_ft_enable_stopword\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_ft_ignore_stopwords\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_ft_max_token_size\tCOMPILED\t\t10\t84\tNULL\tNULL\tNULL\ninnodb_ft_min_token_size\tCOMPILED\t\t0\t16\tNULL\tNULL\tNULL\ninnodb_ft_num_word_optimize\tCOMPILED\t\t1000\t10000\tNULL\tNULL\tNULL\ninnodb_ft_result_cache_limit\tCOMPILED\t\t1000000\t4294967295\tNULL\tNULL\tNULL\ninnodb_ft_server_stopword_table\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_ft_sort_pll_degree\tCOMPILED\t\t1\t16\tNULL\tNULL\tNULL\ninnodb_ft_total_cache_size\tCOMPILED\t\t32000000\t1600000000\tNULL\tNULL\tNULL\ninnodb_ft_user_stopword_table\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_idle_flush_pct\tCOMPILED\t\t0\t100\tNULL\tNULL\tNULL\ninnodb_io_capacity\tCOMPILED\t\t100\t4294967295\tNULL\tNULL\tNULL\ninnodb_io_capacity_max\tCOMPILED\t\t100\t4294967295\tNULL\tNULL\tNULL\ninnodb_lock_wait_timeout\tDYNAMIC\t\t1\t1073741824\t2026-10-21 18:02:21.718176\troot\tlocalhost\ninnodb_log_buffer_size\tCOMPILED\t\t262144\t4294967295\tNULL\tNULL\tNULL\ninnodb_log_checksums\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_log_compressed_pages\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_log_file_size\tCOMPILED\t\t4194304\t18446744073709551615\tNULL\tNULL\tNULL\ninnodb_log_files_in_group\tCOMPILED\t\t2\t100\tNULL\tNULL\tNULL\ninnodb_log_group_home_dir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_log_spin_cpu_abs_lwm\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\ninnodb_log_spin_cpu_pct_hwm\tCOMPILED\t\t0\t100\tNULL\tNULL\tNULL\ninnodb_log_wait_for_flush_spin_hwm\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\ninnodb_log_write_ahead_size\tCOMPILED\t\t512\t16384\tNULL\tNULL\tNULL\ninnodb_log_writer_threads\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_lru_scan_depth\tCOMPILED\t\t100\t4294967295\tNULL\tNULL\tNULL\ninnodb_lru_threads\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_max_dirty_pages_pct\tCOMPILED\t\t0\t99\tNULL\tNULL\tNULL\ninnodb_max_dirty_pages_pct_lwm\tCOMPILED\t\t0\t99\tNULL\tNULL\tNULL\ninnodb_max_purge_lag\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\ninnodb_max_purge_lag_delay\tCOMPILED\t\t0\t10000000\tNULL\tNULL\tNULL\ninnodb_max_undo_log_size\tCOMPILED\t\t10485760\t18446744073709551615\tNULL\tNULL\tNULL\ninnodb_monitor_disable\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_monitor_enable\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_monitor_reset\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_monitor_reset_all\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_numa_interleave\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_old_blocks_pct\tCOMPILED\t\t5\t95\tNULL\tNULL\tNULL\ninnodb_old_blocks_time\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\ninnodb_online_alter_log_max_size\tCOMPILED\t\t65536\t18446744073709551615\tNULL\tNULL\tNULL\ninnodb_open_files\tCOMPILED\t\t0\t2147483647\tNULL\tNULL\tNULL\ninnodb_optimize_fulltext_only\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_page_cleaners\tCOMPILED\t\t1\t64\tNULL\tNULL\tNULL\ninnodb_page_size\tCOMPILED\t\t4096\t65536\tNULL\tNULL\tNULL\ninnodb_parallel_read_threads\tCOMPILED\t\t1\t256\tNULL\tNULL\tNULL\ninnodb_print_all_deadlocks\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_print_ddl_logs\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_print_lock_wait_timeout_info\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_purge_batch_size\tCOMPILED\t\t1\t5000\tNULL\tNULL\tNULL\ninnodb_purge_rseg_truncate_frequency\tCOMPILED\t\t1\t128\tNULL\tNULL\tNULL\ninnodb_purge_threads\tCOMPILED\t\t1\t32\tNULL\tNULL\tNULL\ninnodb_random_read_ahead\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_read_ahead_threshold\tCOMPILED\t\t0\t64\tNULL\tNULL\tNULL\ninnodb_read_io_threads\tCOMPILED\t\t1\t64\tNULL\tNULL\tNULL\ninnodb_read_only\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_records_in_range\tCOMPILED\t\t0\t2147483647\tNULL\tNULL\tNULL\ninnodb_redo_log_archive_dirs\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_redo_log_capacity\tCOMPILED\t\t8388608\t549755813888\tNULL\tNULL\tNULL\ninnodb_redo_log_encrypt\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_replication_delay\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\ninnodb_rollback_on_timeout\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_rollback_segments\tCOMPILED\t\t1\t128\tNULL\tNULL\tNULL\ninnodb_segment_reserve_factor\tCOMPILED\t\t0\t40\tNULL\tNULL\tNULL\ninnodb_show_locks_held\tCOMPILED\t\t0\t1000\tNULL\tNULL\tNULL\ninnodb_sort_buffer_size\tCOMPILED\t\t65536\t67108864\tNULL\tNULL\tNULL\ninnodb_spin_wait_delay\tCOMPILED\t\t0\t1000\tNULL\tNULL\tNULL\ninnodb_spin_wait_pause_multiplier\tCOMPILED\t\t0\t100\tNULL\tNULL\tNULL\ninnodb_stats_auto_recalc\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_stats_include_delete_marked\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_stats_method\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_stats_on_metadata\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_stats_persistent\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_stats_persistent_sample_pages\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\ninnodb_stats_transient_sample_pages\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\ninnodb_status_output\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_status_output_locks\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_strict_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_sync_array_size\tCOMPILED\t\t1\t1024\tNULL\tNULL\tNULL\ninnodb_sync_spin_loops\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\ninnodb_sys_tablespace_encrypt\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_table_locks\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_temp_data_file_path\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_temp_tablespace_encrypt\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_temp_tablespaces_dir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_thread_concurrency\tCOMPILED\t\t0\t1000\tNULL\tNULL\tNULL\ninnodb_thread_sleep_delay\tCOMPILED\t\t0\t1000000\tNULL\tNULL\tNULL\ninnodb_tmpdir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_undo_directory\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_undo_log_encrypt\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_undo_log_truncate\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_undo_tablespaces\tCOMPILED\t\t2\t127\tNULL\tNULL\tNULL\ninnodb_use_fdatasync\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_use_native_aio\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_validate_tablespace_paths\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_version\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ninnodb_write_io_threads\tCOMPILED\t\t1\t64\tNULL\tNULL\tNULL\ninsert_id\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\ninteractive_timeout\tCOMPILED\t\t1\t31536000\tNULL\tNULL\tNULL\ninternal_tmp_mem_storage_engine\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\njemalloc_detected\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\njemalloc_profiling\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\njoin_buffer_size\tCOMPILED\t\t128\t18446744073709551488\tNULL\tNULL\tNULL\nkeep_files_on_create\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nkey_buffer_size\tCOMPILED\t\t0\t18446744073709547520\tNULL\tNULL\tNULL\nkey_cache_age_threshold\tCOMPILED\t\t100\t18446744073709551600\tNULL\tNULL\tNULL\nkey_cache_block_size\tCOMPILED\t\t512\t16384\tNULL\tNULL\tNULL\nkey_cache_division_limit\tCOMPILED\t\t1\t100\tNULL\tNULL\tNULL\nkeyring_operations\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nkill_idle_transaction\tCOMPILED\t\t0\t31536000\tNULL\tNULL\tNULL\nlarge_files_support\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlarge_page_size\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nlarge_pages\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlast_insert_id\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nlc_messages\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlc_messages_dir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlc_time_names\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlicense\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlocal_infile\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlock_wait_timeout\tCOMPILED\t\t1\t31536000\tNULL\tNULL\tNULL\nlocked_in_memory\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_bin\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_bin_basename\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_bin_index\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_bin_trust_function_creators\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_error\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_error_services\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_error_suppression_list\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_error_verbosity\tCOMPILED\t\t1\t3\tNULL\tNULL\tNULL\nlog_output\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_queries_not_using_indexes\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_query_errors\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_raw\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_replica_updates\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slave_updates\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slow_admin_statements\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slow_extra\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slow_filter\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slow_rate_limit\tCOMPILED\t\t1\t1000\tNULL\tNULL\tNULL\nlog_slow_rate_type\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slow_replica_statements\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slow_slave_statements\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slow_sp_statements\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_slow_verbosity\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_statements_unsafe_for_binlog\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlog_throttle_queries_not_using_indexes\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nlog_timestamps\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlong_query_time\tCOMMAND_LINE\t\t0\t4719230590769954816\tNULL\tNULL\tNULL\nlow_priority_updates\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlower_case_file_system\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nlower_case_table_names\tCOMPILED\t\t0\t2\tNULL\tNULL\tNULL\nmandatory_roles\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmaster_verify_checksum\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmax_allowed_packet\tCOMPILED\t\t1024\t1073741824\tNULL\tNULL\tNULL\nmax_binlog_cache_size\tCOMPILED\t\t4096\t18446744073709547520\tNULL\tNULL\tNULL\nmax_binlog_size\tCOMPILED\t\t4096\t1073741824\tNULL\tNULL\tNULL\nmax_binlog_stmt_cache_size\tCOMPILED\t\t4096\t18446744073709547520\tNULL\tNULL\tNULL\nmax_connect_errors\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\nmax_connections\tCOMPILED\t\t1\t100000\tNULL\tNULL\tNULL\nmax_delayed_threads\tCOMPILED\t\t0\t16384\tNULL\tNULL\tNULL\nmax_digest_length\tCOMPILED\t\t0\t1048576\tNULL\tNULL\tNULL\nmax_error_count\tCOMPILED\t\t0\t65535\tNULL\tNULL\tNULL\nmax_execution_time\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nmax_heap_table_size\tCOMPILED\t\t16384\t18446744073709550592\tNULL\tNULL\tNULL\nmax_insert_delayed_threads\tCOMPILED\t\t0\t16384\tNULL\tNULL\tNULL\nmax_join_size\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\nmax_length_for_sort_data\tCOMPILED\t\t4\t8388608\tNULL\tNULL\tNULL\nmax_points_in_geometry\tCOMPILED\t\t3\t1048576\tNULL\tNULL\tNULL\nmax_prepared_stmt_count\tCOMPILED\t\t0\t4194304\tNULL\tNULL\tNULL\nmax_relay_log_size\tCOMPILED\t\t0\t1073741824\tNULL\tNULL\tNULL\nmax_seeks_for_key\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\nmax_slowlog_files\tCOMPILED\t\t0\t102400\tNULL\tNULL\tNULL\nmax_slowlog_size\tCOMPILED\t\t0\t1073741824\tNULL\tNULL\tNULL\nmax_sort_length\tCOMPILED\t\t4\t8388608\tNULL\tNULL\tNULL\nmax_sp_recursion_depth\tCOMPILED\t\t0\t255\tNULL\tNULL\tNULL\nmax_user_connections\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nmax_write_lock_count\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\nmin_examined_row_limit\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nmyisam_data_pointer_size\tCOMPILED\t\t2\t7\tNULL\tNULL\tNULL\nmyisam_max_sort_file_size\tCOMPILED\t\t0\t9223372036854775807\tNULL\tNULL\tNULL\nmyisam_mmap_size\tCOMPILED\t\t7\t18446744073709551615\tNULL\tNULL\tNULL\nmyisam_recover_options\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmyisam_sort_buffer_size\tCOMPILED\t\t4096\t18446744073709551615\tNULL\tNULL\tNULL\nmyisam_stats_method\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmyisam_use_mmap\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysql_native_password_proxy_users\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_bind_address\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_compression_algorithms\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_connect_timeout\tCOMPILED\t\t1\t1000000000\tNULL\tNULL\tNULL\nmysqlx_deflate_default_compression_level\tCOMPILED\t\t1\t9\tNULL\tNULL\tNULL\nmysqlx_deflate_max_client_compression_level\tCOMPILED\t\t1\t9\tNULL\tNULL\tNULL\nmysqlx_document_id_unique_prefix\tCOMPILED\t\t0\t65535\tNULL\tNULL\tNULL\nmysqlx_enable_hello_notice\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_idle_worker_thread_timeout\tCOMPILED\t\t0\t3600\tNULL\tNULL\tNULL\nmysqlx_interactive_timeout\tCOMPILED\t\t1\t2147483\tNULL\tNULL\tNULL\nmysqlx_lz4_default_compression_level\tCOMPILED\t\t0\t16\tNULL\tNULL\tNULL\nmysqlx_lz4_max_client_compression_level\tCOMPILED\t\t0\t16\tNULL\tNULL\tNULL\nmysqlx_max_allowed_packet\tCOMPILED\t\t512\t1073741824\tNULL\tNULL\tNULL\nmysqlx_max_connections\tCOMPILED\t\t1\t65535\tNULL\tNULL\tNULL\nmysqlx_min_worker_threads\tCOMPILED\t\t1\t100\tNULL\tNULL\tNULL\nmysqlx_port\tCOMPILED\t\t1\t65535\tNULL\tNULL\tNULL\nmysqlx_port_open_timeout\tCOMPILED\t\t0\t120\tNULL\tNULL\tNULL\nmysqlx_read_timeout\tCOMPILED\t\t1\t2147483\tNULL\tNULL\tNULL\nmysqlx_socket\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_ssl_ca\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_ssl_capath\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_ssl_cert\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_ssl_cipher\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_ssl_crl\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_ssl_crlpath\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_ssl_key\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nmysqlx_wait_timeout\tCOMPILED\t\t1\t2147483\tNULL\tNULL\tNULL\nmysqlx_write_timeout\tCOMPILED\t\t1\t2147483\tNULL\tNULL\tNULL\nmysqlx_zstd_default_compression_level\tCOMPILED\t\t4294836224\t22\tNULL\tNULL\tNULL\nmysqlx_zstd_max_client_compression_level\tCOMPILED\t\t4294836224\t22\tNULL\tNULL\tNULL\nnet_buffer_length\tCOMPILED\t\t1024\t1048576\tNULL\tNULL\tNULL\nnet_buffer_shrink_interval\tCOMPILED\t\t0\t31536000\tNULL\tNULL\tNULL\nnet_read_timeout\tCOMPILED\t\t1\t31536000\tNULL\tNULL\tNULL\nnet_retry_count\tCOMPILED\t\t1\t18446744073709551615\tNULL\tNULL\tNULL\nnet_write_timeout\tCOMPILED\t\t1\t31536000\tNULL\tNULL\tNULL\nngram_token_size\tCOMPILED\t\t1\t10\tNULL\tNULL\tNULL\noffline_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nold_alter_table\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nopen_files_limit\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\noptimizer_max_subgraph_pairs\tCOMPILED\t\t1\t2147483647\tNULL\tNULL\tNULL\noptimizer_prune_level\tCOMPILED\t\t0\t1\tNULL\tNULL\tNULL\noptimizer_search_depth\tCOMPILED\t\t0\t62\tNULL\tNULL\tNULL\noptimizer_switch\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\noptimizer_trace\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\noptimizer_trace_features\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\noptimizer_trace_limit\tCOMPILED\t\t0\t9223372036854775807\tNULL\tNULL\tNULL\noptimizer_trace_max_mem_size\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\noptimizer_trace_offset\tCOMPILED\t\t-9223372036854775808\t9223372036854775807\tNULL\tNULL\tNULL\noriginal_commit_timestamp\tCOMPILED\t\t0\t36028797018963968\tNULL\tNULL\tNULL\noriginal_server_version\tCOMPILED\t\t0\t999999\tNULL\tNULL\tNULL\nparser_max_mem_size\tCOMPILED\t\t10000000\t18446744073709551615\tNULL\tNULL\tNULL\npartial_revokes\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\npassword_history\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\npassword_require_current\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\npassword_reuse_interval\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\npercona_telemetry_disable\tCOMMAND_LINE\t\t0\t0\tNULL\tNULL\tNULL\nperformance_schema\tCOMMAND_LINE\t\t0\t0\tNULL\tNULL\tNULL\nperformance_schema_accounts_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_digests_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_error_size\tCOMPILED\t\t0\t1048576\tNULL\tNULL\tNULL\nperformance_schema_events_stages_history_long_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_events_stages_history_size\tCOMPILED\t\t-1\t1024\tNULL\tNULL\tNULL\nperformance_schema_events_statements_history_long_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_events_statements_history_size\tCOMPILED\t\t-1\t1024\tNULL\tNULL\tNULL\nperformance_schema_events_transactions_history_long_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_events_transactions_history_size\tCOMPILED\t\t-1\t1024\tNULL\tNULL\tNULL\nperformance_schema_events_waits_history_long_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_events_waits_history_size\tCOMPILED\t\t-1\t1024\tNULL\tNULL\tNULL\nperformance_schema_hosts_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_cond_classes\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nperformance_schema_max_cond_instances\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_digest_length\tCOMPILED\t\t0\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_digest_sample_age\tCOMPILED\t\t0\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_file_classes\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nperformance_schema_max_file_handles\tCOMPILED\t\t0\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_file_instances\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_index_stat\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_logger_classes\tCOMPILED\t\t0\t200\tNULL\tNULL\tNULL\nperformance_schema_max_memory_classes\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nperformance_schema_max_metadata_locks\tCOMPILED\t\t-1\t104857600\tNULL\tNULL\tNULL\nperformance_schema_max_meter_classes\tCOMPILED\t\t0\t64\tNULL\tNULL\tNULL\nperformance_schema_max_metric_classes\tCOMPILED\t\t0\t11000\tNULL\tNULL\tNULL\nperformance_schema_max_mutex_classes\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nperformance_schema_max_mutex_instances\tCOMPILED\t\t-1\t104857600\tNULL\tNULL\tNULL\nperformance_schema_max_prepared_statements_instances\tCOMPILED\t\t-1\t4194304\tNULL\tNULL\tNULL\nperformance_schema_max_program_instances\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_rwlock_classes\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nperformance_schema_max_rwlock_instances\tCOMPILED\t\t-1\t104857600\tNULL\tNULL\tNULL\nperformance_schema_max_socket_classes\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nperformance_schema_max_socket_instances\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_sql_text_length\tCOMPILED\t\t0\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_stage_classes\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nperformance_schema_max_statement_classes\tCOMPILED\t\t0\t256\tNULL\tNULL\tNULL\nperformance_schema_max_statement_stack\tCOMPILED\t\t1\t256\tNULL\tNULL\tNULL\nperformance_schema_max_table_handles\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_table_instances\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_table_lock_stat\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_max_thread_classes\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nperformance_schema_max_thread_instances\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_session_connect_attrs_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_setup_actors_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_setup_objects_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\nperformance_schema_show_processlist\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nperformance_schema_users_size\tCOMPILED\t\t-1\t1048576\tNULL\tNULL\tNULL\npersist_only_admin_x509_subject\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\npersist_sensitive_variables_in_plaintext\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\npersisted_globals_load\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\npid_file\tGLOBAL\t/etc/my.cnf\t0\t0\tNULL\tNULL\tNULL\nplugin_dir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nport\tCOMPILED\t\t0\t65535\tNULL\tNULL\tNULL\npreload_buffer_size\tCOMPILED\t\t1024\t1073741824\tNULL\tNULL\tNULL\nprint_identified_with_as_hex\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nprofiling\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nprofiling_history_size\tCOMPILED\t\t0\t100\tNULL\tNULL\tNULL\nprotocol_compression_algorithms\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nprotocol_version\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nproxy_protocol_networks\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nproxy_user\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\npseudo_replica_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\npseudo_slave_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\npseudo_thread_id\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nquery_alloc_block_size\tCOMPILED\t\t1024\t4294966272\tNULL\tNULL\tNULL\nquery_prealloc_size\tCOMPILED\t\t8192\t18446744073709550592\tNULL\tNULL\tNULL\nrand_seed1\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nrand_seed2\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nrange_alloc_block_size\tCOMPILED\t\t4096\t4294966272\tNULL\tNULL\tNULL\nrange_optimizer_max_mem_size\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nrbr_exec_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nread_buffer_size\tCOMPILED\t\t8192\t2147479552\tNULL\tNULL\tNULL\nread_only\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nread_rnd_buffer_size\tCOMPILED\t\t1\t2147483647\tNULL\tNULL\tNULL\nregexp_stack_limit\tCOMPILED\t\t0\t2147483647\tNULL\tNULL\tNULL\nregexp_time_limit\tCOMPILED\t\t0\t2147483647\tNULL\tNULL\tNULL\nrelay_log\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrelay_log_basename\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrelay_log_index\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrelay_log_purge\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrelay_log_recovery\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrelay_log_space_limit\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nreplica_allow_batching\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_checkpoint_group\tCOMPILED\t\t32\t524280\tNULL\tNULL\tNULL\nreplica_checkpoint_period\tCOMPILED\t\t1\t4294967295\tNULL\tNULL\tNULL\nreplica_compressed_protocol\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_enable_event\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_exec_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_load_tmpdir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_max_allowed_packet\tCOMPILED\t\t1024\t1073741824\tNULL\tNULL\tNULL\nreplica_net_timeout\tCOMPILED\t\t1\t31536000\tNULL\tNULL\tNULL\nreplica_parallel_type\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_parallel_workers\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nreplica_pending_jobs_size_max\tCOMPILED\t\t1024\t18446744073709550592\tNULL\tNULL\tNULL\nreplica_preserve_commit_order\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_skip_errors\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_sql_verify_checksum\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_transaction_retries\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nreplica_translate_deprecated_priv\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplica_type_conversions\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplication_optimize_for_static_plugin_config\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreplication_sender_observe_commit_only\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreport_host\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreport_password\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nreport_port\tCOMPILED\t\t0\t65535\tNULL\tNULL\tNULL\nreport_user\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrequire_row_format\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrequire_secure_transport\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrestrict_fk_on_non_standard_key\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nresultset_metadata\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nrpl_read_size\tCOMPILED\t\t8192\t18446744073709547520\tNULL\tNULL\tNULL\nrpl_stop_replica_timeout\tCOMPILED\t\t2\t31536000\tNULL\tNULL\tNULL\nrpl_stop_slave_timeout\tCOMPILED\t\t2\t31536000\tNULL\tNULL\tNULL\nschema_definition_cache\tCOMPILED\t\t256\t524288\tNULL\tNULL\tNULL\nsecondary_engine_cost_threshold\tCOMPILED\t\t0\t9218868437227405311\tNULL\tNULL\tNULL\nsecure_file_priv\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsecure_log_path\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nselect_into_buffer_size\tCOMPILED\t\t8192\t2147479552\tNULL\tNULL\tNULL\nselect_into_disk_sync\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nselect_into_disk_sync_delay\tCOMPILED\t\t0\t31536000\tNULL\tNULL\tNULL\nserver_id\tCOMMAND_LINE\t\t0\t4294967295\tNULL\tNULL\tNULL\nserver_id_bits\tCOMPILED\t\t0\t32\tNULL\tNULL\tNULL\nserver_uuid\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsession_track_gtids\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsession_track_schema\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsession_track_state_change\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsession_track_system_variables\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsession_track_transaction_info\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nset_operations_buffer_size\tCOMPILED\t\t16384\t18446744073709551488\tNULL\tNULL\tNULL\nsha256_password_auto_generate_rsa_keys\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsha256_password_private_key_path\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsha256_password_proxy_users\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsha256_password_public_key_path\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nshow_create_table_skip_secondary_engine\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nshow_create_table_verbosity\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nshow_gipk_in_create_table_and_information_schema\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nskip_external_locking\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nskip_name_resolve\tGLOBAL\t/etc/my.cnf.d/docker.cnf\t0\t0\tNULL\tNULL\tNULL\nskip_networking\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nskip_replica_start\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nskip_show_database\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nskip_slave_start\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_allow_batching\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_checkpoint_group\tCOMPILED\t\t32\t524280\tNULL\tNULL\tNULL\nslave_checkpoint_period\tCOMPILED\t\t1\t4294967295\tNULL\tNULL\tNULL\nslave_compressed_protocol\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_exec_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_load_tmpdir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_max_allowed_packet\tCOMPILED\t\t1024\t1073741824\tNULL\tNULL\tNULL\nslave_net_timeout\tCOMPILED\t\t1\t31536000\tNULL\tNULL\tNULL\nslave_parallel_type\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_parallel_workers\tCOMPILED\t\t0\t1024\tNULL\tNULL\tNULL\nslave_pending_jobs_size_max\tCOMPILED\t\t1024\t18446744073709550592\tNULL\tNULL\tNULL\nslave_preserve_commit_order\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_skip_errors\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_sql_verify_checksum\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslave_transaction_retries\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nslave_type_conversions\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nslow_launch_time\tCOMPILED\t\t0\t31536000\tNULL\tNULL\tNULL\nslow_query_log\tCOMMAND_LINE\t\t0\t0\tNULL\tNULL\tNULL\nslow_query_log_always_write_time\tCOMPILED\t\t0\t4719230590769954816\tNULL\tNULL\tNULL\nslow_query_log_file\tCOMMAND_LINE\t\t0\t0\tNULL\tNULL\tNULL\nslow_query_log_use_global_control\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsocket\tGLOBAL\t/etc/my.cnf\t0\t0\tNULL\tNULL\tNULL\nsort_buffer_size\tCOMPILED\t\t32768\t18446744073709551615\tNULL\tNULL\tNULL\nsource_verify_checksum\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_auto_is_null\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_big_selects\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_buffer_result\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_generate_invisible_primary_key\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_log_bin\tDYNAMIC\t\t0\t0\t2026-10-21 18:02:15.236498\troot\tlocalhost\nsql_log_off\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_notes\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_quote_show_create\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_replica_skip_counter\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nsql_require_primary_key\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_safe_updates\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsql_select_limit\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nsql_slave_skip_counter\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nsql_warnings\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_ca\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_capath\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_cert\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_cipher\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_crl\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_crlpath\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_fips_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_key\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_session_cache_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nssl_session_cache_timeout\tCOMPILED\t\t0\t84600\tNULL\tNULL\tNULL\nstatement_id\tCOMPILED\t\t0\t9223372036854775807\tNULL\tNULL\tNULL\nstored_program_cache\tCOMPILED\t\t16\t524288\tNULL\tNULL\tNULL\nstored_program_definition_cache\tCOMPILED\t\t256\t524288\tNULL\tNULL\tNULL\nsuper_read_only\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nsync_binlog\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nsync_master_info\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nsync_relay_log\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nsync_relay_log_info\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nsync_source_info\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nsystem_time_zone\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntable_definition_cache\tCOMPILED\t\t400\t524288\tNULL\tNULL\tNULL\ntable_encryption_privilege_check\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntable_open_cache\tCOMPILED\t\t1\t524288\tNULL\tNULL\tNULL\ntable_open_cache_instances\tCOMPILED\t\t1\t64\tNULL\tNULL\tNULL\ntable_open_cache_triggers\tCOMPILED\t\t1\t524288\tNULL\tNULL\tNULL\ntablespace_definition_cache\tCOMPILED\t\t256\t524288\tNULL\tNULL\tNULL\ntemptable_max_mmap\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\ntemptable_max_ram\tCOMPILED\t\t2097152\t18446744073709551615\tNULL\tNULL\tNULL\ntemptable_use_mmap\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nterminology_use_previous\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntf_sequence_table_max_upper_bound\tCOMPILED\t\t1024\t18446744073709551615\tNULL\tNULL\tNULL\nthread_cache_size\tCOMPILED\t\t0\t16384\tNULL\tNULL\tNULL\nthread_handling\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nthread_pool_high_prio_mode\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nthread_pool_high_prio_tickets\tCOMPILED\t\t0\t4294967295\tNULL\tNULL\tNULL\nthread_pool_idle_timeout\tCOMPILED\t\t1\t4294967295\tNULL\tNULL\tNULL\nthread_pool_max_threads\tCOMPILED\t\t1\t100000\tNULL\tNULL\tNULL\nthread_pool_oversubscribe\tCOMPILED\t\t1\t1000\tNULL\tNULL\tNULL\nthread_pool_size\tCOMPILED\t\t1\t1024\tNULL\tNULL\tNULL\nthread_pool_stall_limit\tCOMPILED\t\t10\t4294967295\tNULL\tNULL\tNULL\nthread_stack\tCOMPILED\t\t131072\t18446744073709550592\tNULL\tNULL\tNULL\nthread_statistics\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntime_zone\tDYNAMIC\t\t0\t0\t2026-10-21 18:04:24.037236\tmf_admin\tNULL\ntimestamp\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntls_certificates_enforced_validation\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntls_ciphersuites\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntls_version\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntmp_table_size\tCOMPILED\t\t1024\t18446744073709551615\tNULL\tNULL\tNULL\ntmpdir\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntransaction_alloc_block_size\tCOMPILED\t\t1024\t131072\tNULL\tNULL\tNULL\ntransaction_allow_batching\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntransaction_isolation\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\ntransaction_prealloc_size\tCOMPILED\t\t1024\t131072\tNULL\tNULL\tNULL\ntransaction_read_only\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nunique_checks\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nupdatable_views_with_limit\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nuse_secondary_engine\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nuserstat\tCOMMAND_LINE\t\t0\t0\tNULL\tNULL\tNULL\nversion\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nversion_comment\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nversion_compile_machine\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nversion_compile_os\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nversion_compile_zlib\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nversion_suffix\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nwait_timeout\tCOMPILED\t\t1\t31536000\tNULL\tNULL\tNULL\nwarning_count\tCOMPILED\t\t0\t18446744073709551615\tNULL\tNULL\tNULL\nwindowing_use_high_precision\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\nxa_detach_on_prepare\tCOMPILED\t\t0\t0\tNULL\tNULL\tNULL\n"
+  ],
+  [
+   "/*myflames:config*/ SELECT VARIABLE_NAME FROM performance_schema.persisted_variables",
+   ""
+  ]
+ ],
+ "report": {
+  "schema_version": "config-1.0",
+  "engine": "mysql",
+  "flavor": "percona",
+  "server_product": "Percona Server",
+  "server_version": "8.4.11-11",
+  "taken_at": "2026-10-21T18:24:30.414819+00:00",
+  "uptime_s": 1336,
+  "performance_schema": true,
+  "summary": {
+   "status": "watch",
+   "problem": 0,
+   "watch": 1,
+   "ok": 9,
+   "info": 5,
+   "unknown": 0
+  },
+  "groups": [
+   {
+    "key": "memory",
+    "label": "Memory"
+   },
+   {
+    "key": "durability",
+    "label": "Durability"
+   },
+   {
+    "key": "redo",
+    "label": "Redo log"
+   },
+   {
+    "key": "connections",
+    "label": "Connections and caches"
+   },
+   {
+    "key": "observability",
+    "label": "Observability"
+   },
+   {
+    "key": "server",
+    "label": "Server facts"
+   }
+  ],
+  "checks": [
+   {
+    "key": "buffer_pool",
+    "group": "memory",
+    "label": "Buffer pool size",
+    "explain": "The memory InnoDB uses to cache data and index pages. Pages not in it are read from disk. Compared here with the size of the InnoDB tablespace files on disk (free space inside them included), because a pool much smaller than the data cannot hold much of it.",
+    "value": "128.0 MiB",
+    "status": "ok",
+    "why": "128.0 MiB for 81.5 MiB of InnoDB tablespace files. Rule of thumb: watch when the buffer pool is less than half the InnoDB tablespace files; a pool smaller than the data is normal when the hot data fits, so check the hit ratio in Health.",
+    "rule": "watch when the buffer pool is less than half the InnoDB tablespace files; a pool smaller than the data is normal when the hot data fits, so check the hit ratio in Health",
+    "caveat": "The data on disk includes cold rows and free space; what matters is the hot set. Leave room for connections, the OS and other processes: a pool that makes the server swap is far worse than disk reads.",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_buffer_pool_size",
+      "value": "134217728",
+      "display": "128.0 MiB",
+      "default": "128.0 MiB",
+      "set_by": "command line",
+      "dynamic": true
+     },
+     {
+      "name": "innodb_dedicated_server",
+      "value": "OFF",
+      "display": "OFF",
+      "default": "OFF",
+      "set_by": "default",
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "innodb_buffer_pool_size",
+     "information_schema.INNODB_TABLESPACES"
+    ]
+   },
+   {
+    "key": "sort_buffer_size",
+    "group": "memory",
+    "label": "Sort buffer",
+    "explain": "Memory each session can allocate for each sort. It is a per-session limit, so a large global value is multiplied by the number of sessions doing that at once.",
+    "value": "256.0 KiB",
+    "status": "ok",
+    "why": "256.0 KiB (engine default 256.0 KiB). Rule of thumb: watch when the global value is 16.0 MiB or more.",
+    "rule": "watch when the global value is 16.0 MiB or more",
+    "caveat": "A global change applies to new sessions only. Check first which queries sort or join large sets (Health shows sort merge passes).",
+    "action": null,
+    "settings": [
+     {
+      "name": "sort_buffer_size",
+      "value": "262144",
+      "display": "256.0 KiB",
+      "default": "256.0 KiB",
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "sort_buffer_size"
+    ]
+   },
+   {
+    "key": "join_buffer_size",
+    "group": "memory",
+    "label": "Join buffer",
+    "explain": "Memory each session can allocate for each join that cannot use an index. It is a per-session limit, so a large global value is multiplied by the number of sessions doing that at once.",
+    "value": "256.0 KiB",
+    "status": "ok",
+    "why": "256.0 KiB (engine default 256.0 KiB). Rule of thumb: watch when the global value is 16.0 MiB or more.",
+    "rule": "watch when the global value is 16.0 MiB or more",
+    "caveat": "A global change applies to new sessions only. Check first which queries sort or join large sets (Health shows sort merge passes).",
+    "action": null,
+    "settings": [
+     {
+      "name": "join_buffer_size",
+      "value": "262144",
+      "display": "256.0 KiB",
+      "default": "256.0 KiB",
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "join_buffer_size"
+    ]
+   },
+   {
+    "key": "tmp_tables",
+    "group": "memory",
+    "label": "Temporary tables",
+    "explain": "Internal temporary tables (GROUP BY, DISTINCT, UNION, derived tables) start in memory and move to disk when they outgrow the limit. TempTable keeps each internal temporary table in memory up to tmp_table_size (16.0 MiB), and all of them up to temptable_max_ram (1.0 GiB) together.",
+    "value": "0.0% on disk",
+    "status": "ok",
+    "why": "0 of 262 internal temporary tables since startup went to disk (0.0%). Rule of thumb: watch when 25% or more of internal temporary tables since startup went to disk, with at least 100 of them.",
+    "rule": "watch when 25% or more of internal temporary tables since startup went to disk, with at least 100 of them",
+    "caveat": "Each concurrent temporary table can use up to the limit, so a large global value risks memory pressure. Tables too big for any sensible limit go to disk regardless.",
+    "action": null,
+    "settings": [
+     {
+      "name": "internal_tmp_mem_storage_engine",
+      "value": "TempTable",
+      "display": "TempTable",
+      "default": "TempTable",
+      "set_by": "default",
+      "dynamic": true
+     },
+     {
+      "name": "tmp_table_size",
+      "value": "16777216",
+      "display": "16.0 MiB",
+      "default": "16.0 MiB",
+      "set_by": "default",
+      "dynamic": true
+     },
+     {
+      "name": "temptable_max_ram",
+      "value": "1073741824",
+      "display": "1.0 GiB",
+      "default": null,
+      "set_by": "default",
+      "dynamic": true
+     },
+     {
+      "name": "temptable_max_mmap",
+      "value": "0",
+      "display": "0 B",
+      "default": null,
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "internal_tmp_mem_storage_engine",
+     "tmp_table_size",
+     "temptable_max_ram",
+     "temptable_max_mmap",
+     "Created_tmp_tables",
+     "Created_tmp_disk_tables"
+    ]
+   },
+   {
+    "key": "flush_log",
+    "group": "durability",
+    "label": "Redo flush at commit",
+    "explain": "When InnoDB writes and syncs the redo log for a commit. 1 writes and syncs at every commit, so a committed transaction survives a crash or power loss.",
+    "value": "1",
+    "status": "ok",
+    "why": "innodb_flush_log_at_trx_commit=1. Rule of thumb: ok at 1 (and MariaDB's 3), which make each commit durable; watch at 0 or 2.",
+    "rule": "ok at 1 (and MariaDB's 3), which make each commit durable; watch at 0 or 2",
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_flush_log_at_trx_commit",
+      "value": "1",
+      "display": "1",
+      "default": "1",
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "innodb_flush_log_at_trx_commit"
+    ]
+   },
+   {
+    "key": "sync_binlog",
+    "group": "durability",
+    "label": "Binary log sync",
+    "explain": "How often the binary log is synced to disk. At 1 it is synced at each commit (group), so after an OS crash or power loss the binary log has every committed transaction and replicas stay consistent. MySQL's default is 1.",
+    "value": "1",
+    "status": "ok",
+    "why": "sync_binlog=1. Rule of thumb: ok at 1 with the binary log on; watch at 0 or above 1.",
+    "rule": "ok at 1 with the binary log on; watch at 0 or above 1",
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "sync_binlog",
+      "value": "1",
+      "display": "1",
+      "default": "1",
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "sync_binlog",
+     "log_bin"
+    ]
+   },
+   {
+    "key": "flush_method",
+    "group": "durability",
+    "label": "File flush method",
+    "explain": "How InnoDB opens and syncs its data files. O_DIRECT bypasses the OS file cache, so data is not cached twice. MySQL uses O_DIRECT by default when the file system supports it.",
+    "value": "O_DIRECT",
+    "status": "info",
+    "why": "innodb_flush_method=O_DIRECT. No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_flush_method",
+      "value": "O_DIRECT",
+      "display": "O_DIRECT",
+      "default": "O_DIRECT when supported, else fsync",
+      "set_by": "default",
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "innodb_flush_method"
+    ]
+   },
+   {
+    "key": "redo",
+    "group": "redo",
+    "label": "Redo log size",
+    "explain": "The redo log holds changes not yet written to the data files. When it fills, InnoDB must flush dirty pages before more writes can proceed, so a small redo log for the write rate causes flushing bursts. A larger one means a longer crash recovery.",
+    "value": "100.0 MiB",
+    "status": "info",
+    "why": "Redo capacity 100.0 MiB; the checkpoint age is 0 B now (0% of capacity; MySQL starts forced flushing near 79% and makes writes wait near 84%); too little uptime to judge the write rate. No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_redo_log_capacity",
+      "value": "104857600",
+      "display": "100.0 MiB",
+      "default": "100.0 MiB",
+      "set_by": "default",
+      "dynamic": true
+     },
+     {
+      "name": "innodb_log_file_size",
+      "value": "50331648",
+      "display": "48.0 MiB",
+      "default": "48.0 MiB",
+      "set_by": "default",
+      "dynamic": false
+     },
+     {
+      "name": "innodb_log_files_in_group",
+      "value": "2",
+      "display": "2",
+      "default": null,
+      "set_by": "default",
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "innodb_redo_log_capacity",
+     "innodb_log_file_size",
+     "innodb_log_files_in_group",
+     "Innodb_redo_log_capacity_resized",
+     "Innodb_os_log_written"
+    ]
+   },
+   {
+    "key": "max_connections",
+    "group": "connections",
+    "label": "Connection limit",
+    "explain": "The most client connections the server accepts (one more is kept for an administrator). Compared with the peak since startup or the last status reset.",
+    "value": "151",
+    "status": "ok",
+    "why": "Peak 4 of max_connections 151 (3%). Rule of thumb: watch when the peak since startup reached 80% of max_connections; problem when clients were refused (Connection_errors_max_connections above zero).",
+    "rule": "watch when the peak since startup reached 80% of max_connections; problem when clients were refused (Connection_errors_max_connections above zero)",
+    "caveat": "Every connection can allocate its own sort, join and temporary-table memory, so a higher limit raises the worst-case memory. MySQL may lower max_connections at startup to fit open_files_limit.",
+    "action": null,
+    "settings": [
+     {
+      "name": "max_connections",
+      "value": "151",
+      "display": "151",
+      "default": "151",
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "max_connections",
+     "Max_used_connections",
+     "Connection_errors_max_connections"
+    ]
+   },
+   {
+    "key": "table_open_cache",
+    "group": "connections",
+    "label": "Table cache",
+    "explain": "How many open table instances the server keeps for reuse. When it is full, a table not in it must be opened again (Opened_tables).",
+    "value": "4,000",
+    "status": "ok",
+    "why": "574 of 4,000 in use; 0.50 tables opened per second on average since startup. Rule of thumb: watch when the cache is at least 95% full and tables were opened at 1 per second or more on average since startup.",
+    "rule": "watch when the cache is at least 95% full and tables were opened at 1 per second or more on average since startup",
+    "caveat": "Each open table uses a file descriptor and memory; the server needs open_files_limit to cover it. MySQL may lower table_open_cache at startup to fit open_files_limit.",
+    "action": null,
+    "settings": [
+     {
+      "name": "table_open_cache",
+      "value": "4000",
+      "display": "4000",
+      "default": "4000",
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "table_open_cache",
+     "Open_tables",
+     "Opened_tables"
+    ]
+   },
+   {
+    "key": "performance_schema",
+    "group": "observability",
+    "label": "Performance Schema",
+    "explain": "Performance Schema records statement digests, waits, and table and file I/O. myflames' Top statements, Waits, I/O and unused-index views need it. It is read-only at runtime.",
+    "value": "ON",
+    "status": "ok",
+    "why": "ON. Rule of thumb: watch when off: Top statements, Waits, I/O and unused indexes need it.",
+    "rule": "watch when off: Top statements, Waits, I/O and unused indexes need it",
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "performance_schema",
+      "value": "ON",
+      "display": "ON",
+      "default": "ON",
+      "set_by": "command line",
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "performance_schema"
+    ]
+   },
+   {
+    "key": "slow_log",
+    "group": "observability",
+    "label": "Slow query log",
+    "explain": "The slow query log records statements that ran longer than long_query_time.",
+    "value": "OFF",
+    "status": "watch",
+    "why": "slow_query_log=OFF: slow statements are not logged. Rule of thumb: watch when off; info when on with long_query_time at 10 s or more.",
+    "rule": "watch when off; info when on with long_query_time at 10 s or more",
+    "caveat": "A low threshold on a busy server writes a lot of log; log_output=TABLE costs more than FILE. A new long_query_time applies to new connections only.",
+    "action": {
+     "sql": "SET GLOBAL slow_query_log = ON; SET GLOBAL long_query_time = 1;",
+     "config": "slow_query_log = ON\nlong_query_time = 1  # under [mysqld]"
+    },
+    "settings": [
+     {
+      "name": "slow_query_log",
+      "value": "OFF",
+      "display": "OFF",
+      "default": "OFF",
+      "set_by": "command line",
+      "dynamic": true
+     },
+     {
+      "name": "long_query_time",
+      "value": "0.200000",
+      "display": "0.2 s",
+      "default": "10 s",
+      "set_by": "command line",
+      "dynamic": true
+     },
+     {
+      "name": "log_output",
+      "value": "FILE",
+      "display": "FILE",
+      "default": null,
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "slow_query_log",
+     "long_query_time",
+     "log_output"
+    ]
+   },
+   {
+    "key": "io_capacity",
+    "group": "server",
+    "label": "InnoDB I/O capacity",
+    "explain": "The background I/O rate InnoDB aims for when flushing pages. The engines' defaults differ a lot: MySQL 8.4 uses 10000, MariaDB 200.",
+    "value": "10000",
+    "status": "info",
+    "why": "innodb_io_capacity=10000. No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_io_capacity",
+      "value": "10000",
+      "display": "10000",
+      "default": "10000",
+      "set_by": "default",
+      "dynamic": true
+     },
+     {
+      "name": "innodb_io_capacity_max",
+      "value": "20000",
+      "display": "20000",
+      "default": null,
+      "set_by": "default",
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "innodb_io_capacity",
+     "innodb_io_capacity_max"
+    ]
+   },
+   {
+    "key": "dedicated_server",
+    "group": "server",
+    "label": "Dedicated server mode",
+    "explain": "With innodb_dedicated_server=ON, MySQL sizes the buffer pool from the machine's memory and, when innodb_redo_log_capacity is not set, the redo log from its CPU count.",
+    "value": "OFF",
+    "status": "info",
+    "why": "innodb_dedicated_server=OFF. No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_dedicated_server",
+      "value": "OFF",
+      "display": "OFF",
+      "default": "OFF",
+      "set_by": "default",
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "innodb_dedicated_server"
+    ]
+   },
+   {
+    "key": "thread_handling",
+    "group": "server",
+    "label": "Thread handling",
+    "explain": "How the server runs connections: a thread per connection, or a thread pool.",
+    "value": "one-thread-per-connection",
+    "status": "info",
+    "why": "thread_handling=one-thread-per-connection. No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "thread_handling",
+      "value": "one-thread-per-connection",
+      "display": "one-thread-per-connection",
+      "default": "one-thread-per-connection",
+      "set_by": "default",
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "thread_handling"
+    ]
+   }
+  ],
+  "notes": [
+   "The server started 22 min 16 s ago, so the counters since startup are still small.",
+   "Counters run from server start. The connection peak (Max_used_connections) also restarts with FLUSH STATUS on MySQL and MariaDB 11.4 or older, and with FLUSH GLOBAL STATUS on MariaDB 11.5 and later, which also resets the temporary-table and tables-opened counts.",
+   "Statuses are rules of thumb, not verdicts; each check says which rule it uses. The review never changes a setting: read a suggestion's caveat first, then change it yourself or with Change (myflames config set), which shows the exact statement and asks before sending it."
+  ],
+  "parameters": {
+   "schema_version": "parameters-1.0",
+   "complete": true,
+   "notes": [],
+   "flavor": "percona",
+   "items_recorded": 683,
+   "vendor_items": [
+    "binlog_ddl_skip_rewrite",
+    "binlog_skip_flush_commands",
+    "binlog_space_limit",
+    "buffered_error_log_filename",
+    "buffered_error_log_size",
+    "encrypt_tmp_files",
+    "enforce_storage_engine",
+    "expand_fast_index_creation",
+    "ft_query_extra_word_chars",
+    "have_backup_locks",
+    "have_backup_safe_binlog_info",
+    "have_snapshot_cloning",
+    "innodb_buffer_pool_lazy_latch_init",
+    "innodb_buffer_pool_populate",
+    "innodb_cleaner_lsn_age_factor",
+    "innodb_compressed_columns_threshold",
+    "innodb_compressed_columns_zip_level",
+    "innodb_corrupt_table_action",
+    "innodb_empty_free_list_algorithm",
+    "innodb_encrypt_online_alter_logs",
+    "innodb_force_index_records_in_range",
+    "innodb_ft_ignore_stopwords",
+    "innodb_lru_threads",
+    "innodb_print_lock_wait_timeout_info",
+    "innodb_records_in_range",
+    "innodb_show_locks_held",
+    "innodb_sys_tablespace_encrypt",
+    "innodb_temp_tablespace_encrypt",
+    "jemalloc_detected",
+    "jemalloc_profiling",
+    "kill_idle_transaction",
+    "log_query_errors",
+    "log_slow_filter",
+    "log_slow_rate_limit",
+    "log_slow_rate_type",
+    "log_slow_sp_statements",
+    "log_slow_verbosity",
+    "max_slowlog_files",
+    "max_slowlog_size",
+    "net_buffer_shrink_interval",
+    "percona_telemetry_disable",
+    "proxy_protocol_networks",
+    "replica_enable_event",
+    "replica_translate_deprecated_priv",
+    "secure_log_path",
+    "slow_query_log_always_write_time",
+    "slow_query_log_use_global_control",
+    "table_open_cache_triggers",
+    "tf_sequence_table_max_upper_bound",
+    "thread_pool_high_prio_mode",
+    "thread_pool_high_prio_tickets",
+    "thread_pool_idle_timeout",
+    "thread_pool_max_threads",
+    "thread_pool_oversubscribe",
+    "thread_pool_size",
+    "thread_pool_stall_limit",
+    "thread_statistics",
+    "userstat",
+    "version_suffix"
+   ]
+  }
+ }
+}

@@ -49,13 +49,21 @@ import { ReviewedSqlAction, ReviewedSqlBridger, ReviewedSqlProvider, ReviewedSql
 
 const SOURCES: Record<string, string> = {
   performance_schema: "Performance Schema",
-  userstat: "MariaDB user statistics (userstat)",
+  userstat: "User statistics (userstat)",
 };
+/** "Keep: backs a foreign key", "Keep: read per user statistics", "Candidate". */
+function verdictLabel(u: UnusedIndex, short = false) {
+  if (u.verdict !== "keep") return "Candidate";
+  if (short) return "Keep";
+  return u.keep_reason === "userstat" ? "Keep: read per user statistics" : "Keep: backs a foreign key";
+}
 const NO_DATA: Record<string, string> = {
   not_opened: "not opened since the counts started",
   no_activity: "no rows read or written",
   not_instrumented: "not instrumented (setup_objects)",
   not_read: "no reads since userstat started",
+  partitioned: "partitioned, which Percona Server's user statistics do not count",
+  userstat_unknown: "partitioned tables could not be listed, and Percona Server's user statistics do not count them",
 };
 type List = "all" | "unused" | "redundant" | "scans" | "nodata";
 type NoData = IndexesReport["no_data"][number];
@@ -463,7 +471,7 @@ export function IndexesView({
       sort: (u) => (u.verdict === "keep" ? 1 : 0),
       render: (u) => (
         <span className={`perf-verdict is-${u.verdict}`}>
-          <StatusPill tone={u.verdict === "keep" ? "ok" : "watch"} label={u.verdict === "keep" ? "Keep: backs a foreign key" : "Candidate"} />
+          <StatusPill tone={u.verdict === "keep" ? "ok" : "watch"} label={verdictLabel(u)} />
         </span>
       ),
     },
@@ -583,7 +591,7 @@ export function IndexesView({
         title: u.index,
         meta: (
           <>
-            <StatusPill tone={u.verdict === "keep" ? "ok" : "watch"} label={u.verdict === "keep" ? "Keep" : "Candidate"} />
+            <StatusPill tone={u.verdict === "keep" ? "ok" : "watch"} label={verdictLabel(u, true)} />
             <code>
               {u.schema}.{u.table}
             </code>
@@ -612,6 +620,7 @@ export function IndexesView({
                   ["Columns", u.columns],
                   ["Visible", u.visible ? "Yes" : report.engine === "mariadb" ? "No (ignored)" : "No (invisible)"],
                   u.foreign_keys.length > 0 && ["Foreign keys", u.foreign_keys.join(", ")],
+                  u.userstat_rows_read != null && ["Rows read (user statistics)", count(u.userstat_rows_read)],
                 ]}
               />
             </InspectorSection>
@@ -835,7 +844,9 @@ export function IndexesView({
               ["Server", engineLabel(report)],
               ["Uptime", uptime(report.uptime_s)],
               ["Databases", scope],
-              ["Usage from", report.source ? SOURCES[report.source] : "not available"],
+              ["Usage from", report.source
+                ? `${SOURCES[report.source]}${report.userstat?.role === "evidence" ? " and user statistics" : ""}`
+                : "not available"],
               ["Tables", count(s.tables)],
               ["Indexes", count(s.indexes)],
             ]}

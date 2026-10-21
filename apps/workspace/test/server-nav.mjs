@@ -95,7 +95,9 @@ try {
   assert.equal((await switcher("health")).expanded, "true");
   assert.equal(await page.$eval("#health-switcher", (e) => e.getAttribute("aria-controls")), await page.$eval(".view-switcher-popover", (e) => e.id));
   assert.deepEqual(await texts(".view-switcher-popover .source-group h3"), ["Overview", "Contention", "Schema", "Setup", "Security"]);
-  assert.equal(await page.$$eval(".view-switcher-popover .source-item", (els) => els.length), 11);
+  // Ten views: Database diagram is a place of its own (SQL workspace group).
+  assert.equal(await page.$$eval(".view-switcher-popover .source-item", (els) => els.length), 10);
+  assert.equal(await page.$("#server-nav-diagram"), null, "no Database diagram in the Server list");
   assert.ok(await page.$('.view-switcher-popover .server-floating-header button[aria-label="Dock the list of views"]'), "the dock control in its header");
   // Anchored under the title, aligned to its left edge, never over it, within the window.
   const anchor = await page.evaluate(() => {
@@ -164,7 +166,7 @@ try {
   await page.focus("#health-switcher");
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(() => document.activeElement?.id === "server-nav-health");
-  for (const id of ["innodb", "errorlog", "locks", "indexes", "tables", "diagram", "config"]) {
+  for (const id of ["innodb", "errorlog", "locks", "indexes", "tables", "config"]) {
     await page.keyboard.press("ArrowDown");
     await page.waitForFunction((target) => document.activeElement?.id === `server-nav-${target}`, {}, id);
   }
@@ -212,7 +214,7 @@ try {
   assert.deepEqual(await texts(".source-list .source-group h3"), ["Overview", "Contention", "Schema", "Setup", "Security"]);
   const items = await page.$$eval(".source-list .source-item", (els) => els.map((e) => [e.dataset.view, e.querySelector("svg path, svg rect, svg circle")?.outerHTML]));
   assert.deepEqual(items.map((i) => i[0]),
-    ["health", "innodb", "errorlog", "locks", "indexes", "tables", "diagram", "config", "instruments", "maintenance", "accounts"]);
+    ["health", "innodb", "errorlog", "locks", "indexes", "tables", "config", "instruments", "maintenance", "accounts"]);
   assert.equal(new Set(items.map((i) => i[1])).size, items.length, "one glyph per view");
   assert.equal((await page.$$(".source-list [aria-current=page]")).length, 1);
   assert.equal(await current(), "health");
@@ -237,8 +239,8 @@ try {
   // read their catalogs once); views never opened read nothing, and nothing
   // was read before Server was opened (Server and Replication mount on their
   // first visit). No badge appears without data.
-  const onOpen = ["/api/live/config", "/api/live/instruments"];
-  for (const view of ["innodb", "errorlog", "locks", "indexes", "tables", "diagram", "config", "instruments", "maintenance", "accounts"]) await h.view(view);
+  const onOpen = ["/api/live/config", "/api/live/instruments", "/api/live/error-log"];
+  for (const view of ["innodb", "errorlog", "locks", "indexes", "tables", "config", "instruments", "maintenance", "accounts"]) await h.view(view);
   const opened = ["/api/live/health", "/api/live/innodb", "/api/live/error-log", "/api/live/locks", "/api/live/indexes", "/api/live/tables", ...onOpen];
   assert.deepEqual(live().filter((c) => c.path !== "/api/live/schemas" && c.path !== "/api/live/privileges" && !opened.includes(c.path)), [],
     "only views opened on screen read (never Top statements, Processlist, Waits, I/O, Replication or the Full analysis)");
@@ -358,6 +360,21 @@ try {
   const migrated = await h.savedSlow((s) => s.kind === "io");
   assert.equal(migrated.state.query_lab.slow.inspector, false);
   assert.equal(migrated.state.query_lab.slow.sessions_scope, "active");
+  // A workspace saved on the old Server > Database diagram view opens the
+  // Database diagram place (an old route opens the place); Server then opens Health.
+  await page.evaluate(async (t) => {
+    const call = (route, body) => fetch(route, { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": t }, body: JSON.stringify(body) }).then((r) => r.json());
+    const stored = await call("/api/session/load", {});
+    const state = stored.state;
+    state.mode = "server";
+    state.query_lab.slow.kind = "diagram";
+    await call("/api/session/save", { revision: stored.revision, client_id: "an-earlier-version-diagram", seq: 1, state });
+  }, token);
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector('.server-place.is-diagram-place .server-view[data-view="diagram"]', { visible: true });
+  assert.equal(await page.$eval(".main-nav button[aria-current=page]", (e) => e.dataset.place), "diagram");
+  await h.server();
+  await page.waitForSelector("#server-nav-health[aria-current=page]");
   // A stored view id that names an Object property ("constructor", "__proto__") is no view: Health opens.
   for (const kind of ["constructor", "__proto__", "toString"]) {
     await page.evaluate(async (t, k) => {
@@ -436,8 +453,8 @@ try {
   await phone.keyboard.press("ArrowDown");
   await phone.waitForFunction(() => document.activeElement?.id === "server-nav-indexes");
   assert.ok(await phone.$(".server-layout.show-list"), "arrows only move focus in the pushed list");
-  // Locks to Parameters: Indexes, Tables, Database diagram, Parameters.
-  for (const id of ["tables", "diagram", "config"]) {
+  // Locks to Parameters: Indexes, Tables, Parameters.
+  for (const id of ["tables", "config"]) {
     await phone.keyboard.press("ArrowDown");
     await phone.waitForFunction((target) => document.activeElement?.id === `server-nav-${target}`, {}, id);
   }

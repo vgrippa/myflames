@@ -263,7 +263,7 @@ import time
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
 # Compatibility exports for one release.
 from .perf_common import _bytes_text, _count_text, _duration_text, _number, _round, _version_tuple
-from .server_info import detect_flavor
+from .server_info import product_identity, product_name
 
 SCHEMA_VERSION = "health-1.0"
 #: Health statements carry the myflames prefix so ``top`` excludes them.
@@ -356,6 +356,9 @@ VARIABLES = ("version", "version_comment", "max_connections", "table_open_cache"
              "binlog_cache_size", "binlog_stmt_cache_size", "open_files_limit", "sort_buffer_size",
              "tmp_table_size", "max_heap_table_size", "temptable_max_ram", "tmp_memory_table_size",
              "tmp_disk_table_size")
+#: Read in a second statement only under thread_handling=pool-of-threads
+#: (Percona Server and MariaDB's thread pool; see _thread_pool).
+POOL_VARIABLES = ("thread_pool_size", "thread_pool_max_threads")
 
 # ---- diagnostics: rules of thumb -------------------------------------------------
 #: Free-list target per buffer pool instance when innodb_lru_scan_depth is not
@@ -451,7 +454,11 @@ def _now():
 def read_variables(conn):
     """The few ``SHOW GLOBAL VARIABLES`` the report needs, as strings."""
     sql = "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)" % ", ".join("'%s'" % v for v in VARIABLES)
-    return _pairs(_rows(conn, sql))
+    variables = _pairs(_rows(conn, sql))
+    if (variables.get("thread_handling") or "").lower() == "pool-of-threads":
+        variables.update(_pairs(_rows(conn, "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)"
+                                      % ", ".join("'%s'" % v for v in POOL_VARIABLES))))
+    return variables
 
 
 def take_sample(conn, clock=None):
@@ -529,7 +536,9 @@ class _Window(object):
         elapsed = (second.get("t") or 0) - (first.get("t") or 0)
         self.elapsed = elapsed if elapsed > 0 else None
         self.version = self.vars.get("version") or ""
-        self.engine = detect_flavor(self.version, self.vars.get("version_comment"))
+        identity = product_identity(self.version, self.vars.get("version_comment"))
+        self.engine = identity["engine"]
+        self.flavor, self.product = identity["flavor"], identity["product"]
         up_a, up_b = _number(self.a.get("Uptime")), _number(self.b.get("Uptime"))
         self.uptime = up_b
         self.restarted = up_a is not None and up_b is not None and up_b < up_a
@@ -1649,6 +1658,8 @@ def _diag_thread_cache(w):
            "new connections; Threads_created counts the threads it had to create instead. Connections is the "
            "next thread id: every connection that got past the max_connections check (failed logins included), "
            "plus a few internal threads. Each window includes this tool's own connection.")
+    if handling == "pool-of-threads" and w.gauge("Threadpool_threads") is not None:
+        return _thread_pool(w, key, title, why, settings, sources)
     if handling and handling != "one-thread-per-connection":
         return _diagnostic(key, title, "info", "Not used: thread_handling=%s" % handling,
                            ("thread_handling is %s, so a thread pool manages the threads and Threads_created counts "
@@ -1696,6 +1707,48 @@ def _diag_thread_cache(w):
     return _diagnostic(key, title, status, headline, verdict, why, DIAGNOSTIC_RULES["thread_cache"], value=hit,
                        unit="%", numbers=numbers, settings=settings, recommendation=recommendation,
                        sources=sources)
+
+
+def _thread_pool(w, key, title, why, settings, sources):
+    """The thread cache does not apply under a thread pool; show the pool's own
+    numbers instead, read from the server, without a threshold.
+
+    Threadpool_threads and Threadpool_idle_threads exist on MariaDB
+    (Ma/sql/mysqld.cc:8056-8057) and Percona Server (read live on 8.0.46-37
+    and 8.4.11-11); Percona 8.4 adds Threadpool_requests_waiting_in_queue and
+    Threadpool_requests_starved_in_queue (read live on 8.4.11-11).
+    """
+    threads, idle = w.gauge("Threadpool_threads"), w.gauge("Threadpool_idle_threads")
+    waiting = w.gauge("Threadpool_requests_waiting_in_queue")
+    starved = w.gauge("Threadpool_requests_starved_in_queue")
+    size, ceiling = w.var("thread_pool_size"), w.var("thread_pool_max_threads")
+    owner = "MariaDB's" if w.engine == "mariadb" else "%s's" % (w.product if w.flavor == "percona" else "The server")
+    headline = "%s threads, %s idle" % (_count_text(threads), _count_text(idle))
+    # thread_pool_size: "Number of thread groups in the pool ... roughly equivalent to
+    # maximum number of concurrently executing threads" (Ma/sql/sys_vars.cc:4549-4552).
+    verdict = ("thread_handling is pool-of-threads, so %s thread pool runs statements on worker threads in "
+               "thread_pool_size %s thread groups (about that many statements execute at once) instead of one "
+               "thread per connection, and the thread cache does not apply. It has %s worker threads now, %s of "
+               "them idle%s."
+               % (owner, _count_text(size), _count_text(threads), _count_text(idle),
+                  ", at most %s" % _count_text(ceiling) if ceiling is not None else ""))
+    if waiting is not None:
+        verdict += " %s requests wait in its queues now%s." % (
+            _count_text(waiting), " (%s starved)" % _count_text(starved) if starved else "")
+    numbers = [
+        _number_item("pool_threads", "Thread pool worker threads now", threads, ""),
+        _number_item("pool_idle", "Idle worker threads now", idle, "") if idle is not None else None,
+        _number_item("pool_waiting", "Requests waiting in the queues now", waiting, "") if waiting is not None
+        else None,
+        _number_item("pool_starved", "Requests starved in the queues now", starved, "") if starved is not None
+        else None,
+    ]
+    pool_settings = list(settings) + [_setting(w, "thread_pool_size"), _setting(w, "thread_pool_max_threads")]
+    pool_sources = tuple(sources) + ("Threadpool_threads", "Threadpool_idle_threads", "thread_pool_size") + (
+        ("Threadpool_requests_waiting_in_queue",) if waiting is not None else ())
+    # The same key (Tuning reads it as not applicable); the title says what is shown.
+    return _diagnostic(key, "Thread pool", "info", headline, verdict, why, None, numbers=numbers,
+                       settings=pool_settings, sources=pool_sources, state="not_applicable")
 
 
 def _diag_binlog_cache(w):
@@ -2028,6 +2081,8 @@ def compute_health(first, second, variables, interval=DEFAULT_INTERVAL):
     return {
         "schema_version": SCHEMA_VERSION,
         "engine": w.engine,
+        "flavor": w.flavor,
+        "server_product": w.product,
         "server_version": w.version or None,
         "interval": interval,
         "elapsed_s": _round(w.elapsed, 3),
@@ -2082,7 +2137,7 @@ def format_value(metric):
 
 def format_text(report):
     """Compact grouped table with status markers."""
-    head = "%s %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL", report["server_version"] or "?")
+    head = "%s %s" % (product_name(report), report["server_version"] or "?")
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     head += ", sampled over %s s" % (_count_text(report["elapsed_s"]) if report["elapsed_s"] else "?")

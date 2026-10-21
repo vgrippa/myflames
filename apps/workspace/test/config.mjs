@@ -20,13 +20,13 @@ if (process.argv.includes("--unit")) {
     plugins: [{ name: "config-unit", enforce: "pre", transform(code, id) {
       if (id.endsWith("/src/Config.tsx")) return code + "\nexport { parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch };";
     }, resolveId(id) { if (id === entry) return entry; }, load(id) {
-      if (id === entry) return `export { openSessionSql, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch } from ${JSON.stringify(path.join(workspace, "src/Config.tsx"))}; export { connectionKey } from ${JSON.stringify(path.join(workspace, "src/binding.ts"))};`;
+      if (id === entry) return `export { openSessionSql, documentationLink, oneLine, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch } from ${JSON.stringify(path.join(workspace, "src/Config.tsx"))}; export { connectionKey } from ${JSON.stringify(path.join(workspace, "src/binding.ts"))};`;
     } }], build: { ssr: true, write: false, rollupOptions: { input: entry, output: { inlineDynamicImports: true } } } });
   const temporary = await fs.mkdtemp(path.join(workspace, ".config-unit-"));
   try {
     const module = path.join(temporary, "unit.mjs");
     await fs.writeFile(module, compiled.output.find(f => f.type === "chunk").code);
-    const { openSessionSql, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch, connectionKey } = await import(pathToFileURL(module));
+    const { openSessionSql, documentationLink, oneLine, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch, connectionKey } = await import(pathToFileURL(module));
     globalThis.fetch = () => { throw new Error("A handoff must never call an API"); };
     const opened = [], callback = sql => opened.push(sql);
     for (const statement of ["SET SESSION character_set_results = NULL", "SET SESSION character_set_results = 'NULL'", "SET SESSION sql_mode = 'STRICT_TRANS_TABLES';"]) {
@@ -65,9 +65,31 @@ if (process.argv.includes("--unit")) {
     assert.match(unmodifiable(find("truncated_parameter"), "mysql"), /truncated/);
     assert.equal(applyType(find("unknown_parameter")), "Unknown");
     assert.equal(sourceDetails(find("modified_parameter")), "/etc/my.cnf · admin@localhost at 2026-10-18T12:00:00Z");
+    // Documentation links: only HTTPS pages of the official manuals the desktop app opens.
+    for (const url of ["https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_buffer_pool_size",
+      "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_buffer_pool_size",
+      "https://docs.percona.com/percona-server/8.4/innodb-corrupt-table-action.html#innodb_corrupt_table_action"])
+      assert.deepEqual(documentationLink({ url, source: "Manual" }), { url, source: "Manual" });
+    for (const url of ["http://dev.mysql.com/doc/", "https://dev.mysql.com.evil.test/", "https://user@dev.mysql.com/", "https://dev.mysql.com:8443/",
+      "javascript:alert(1)", "https://example.com/", "not a url"])
+      assert.equal(documentationLink({ url, source: "Manual" }), null, url);
+    assert.equal(documentationLink(null), null); assert.equal(documentationLink(undefined), null);
+    assert.ok(mysql.parameters.items.filter(p => p.documentation).every(p => documentationLink(p.documentation)), "every fixture link is accepted");
+    // One sentence: the server's description, else the opening sentence of a check about this parameter first.
+    const checksOf = p => p.checks.map(k => mysql.checks.find(c => c.key === k)).filter(Boolean);
+    assert.equal(oneLine(find("slow_query_log"), checksOf(find("slow_query_log"))), "The slow query log records statements that ran longer than long_query_time.");
+    assert.equal(oneLine({ ...find("innodb_buffer_pool_size"), description: null }, checksOf(find("innodb_buffer_pool_size"))),
+      "The memory InnoDB uses to cache data and index pages.");
+    assert.equal(oneLine({ ...find("long_query_time"), description: null }, checksOf(find("long_query_time"))), "", "a check about another parameter first is not this parameter's description");
+    assert.equal(oneLine({ ...find("max_connections"), description: "Uses 2.5 MiB per thread. Second sentence." }, []), "Uses 2.5 MiB per thread.");
+    assert.ok(oneLine({ ...find("max_connections"), description: "x".repeat(600) }, []).length <= 240);
     const fallback = parametersOf(old), unique = new Set(old.checks.flatMap(c => c.settings.map(s => s.name)));
     assert.equal(fallback.length, unique.size);
     const pool = fallback.find(p => p.name === "innodb_buffer_pool_size");
+    // A check describes its first setting only: innodb_dedicated_server takes the Dedicated server check's text.
+    assert.equal(pool.description, old.checks.find(c => c.key === "buffer_pool").explain);
+    assert.equal(fallback.find(p => p.name === "innodb_dedicated_server").description, old.checks.find(c => c.key === "dedicated_server").explain);
+    assert.equal(fallback.find(p => p.name === "temptable_max_ram").description, null);
     assert.equal(pool.modified, false, "legacy defaults compare the formatted display with the formatted default");
     assert.equal(pool.type, null, "fallback does not invent catalog metadata");
     const duplicate = structuredClone(old);
@@ -380,11 +402,45 @@ try {
     assert.equal(await page.$$eval(`${view} table[aria-label="Parameters"] tbody tr[data-row-key]`, es => es.length), wanted.length);
   }
   await search("");
-  // Recommendations retain the original explanation, caveat and CopySql.
+  // One compact section per parameter: a sentence, the documentation link and
+  // the facts; a flagged parameter adds one recommendation with its reason,
+  // the suggested change and the caveat. Nothing is repeated.
   await h.select(row("slow_query_log"));
-  await page.click(".view-inspector .config-explanation summary");
-  assert.match(await h.inspector(), /Explanation and recommendations.*What it is.*Why it is flagged.*What to do.*Caveat:/s);
-  assert.ok(await page.$(".view-inspector .perf-sql pre"));
+  const slow = mysql.checks.find(c => c.key === "slow_log");
+  const inspected = await h.inspector();
+  assert.deepEqual(await texts(".view-inspector .inspector-block h4"), ["Current value", "Recommendation"]);
+  assert.equal((inspected.match(/The slow query log records statements/g) || []).length, 1, "the description appears once");
+  assert.ok(inspected.includes(slow.why) && inspected.includes(slow.caveat), "the reason and the caveat are shown");
+  assert.doesNotMatch(inspected, /Explanation and recommendations|What it is|Why it is flagged|Apply type|Scope/);
+  assert.equal(await page.$$eval(".view-inspector .parameter-finding", es => es.length), 1);
+  assert.ok(await page.$(".view-inspector .parameter-finding .perf-sql pre"), "the suggested change is copyable");
+  const docLink = await page.$eval('.view-inspector a[data-doc-link="slow_query_log"]', a => ({ href: a.href, target: a.target, rel: a.rel, text: a.textContent }));
+  assert.equal(docLink.href, mysql.parameters.items.find(p => p.name === "slow_query_log").documentation.url);
+  assert.equal(docLink.target, "_blank"); assert.match(docLink.rel, /noreferrer/);
+  assert.match(docLink.text, /^Documentation for slow_query_log, opens in your browser$/);
+  assert.match(inspected, /MySQL 8\.4 Reference Manual/);
+  assert.match(inspected, /Changes\s*Now/);
+  // Current value and Recommendation sit side by side only when both have room:
+  // in the 720 px window the recommendation follows the facts, full width.
+  const blocks = () => page.$$eval(".view-inspector .inspector-block", es => es.map(e => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, width: r.width }; }));
+  let [facts, advice] = await blocks();
+  assert.ok(Math.abs(facts.top - advice.top) < 2 && advice.left > facts.left + facts.width - 1, JSON.stringify([facts, advice]));
+  await page.setViewport({ width: 720, height: 520 });
+  await page.waitForFunction(() => { const [a, b] = document.querySelectorAll(".view-inspector .inspector-block"); return b && b.getBoundingClientRect().top >= a.getBoundingClientRect().bottom; });
+  [facts, advice] = await blocks();
+  assert.ok(advice.top >= facts.bottom && Math.abs(advice.left - facts.left) < 2 && advice.width >= facts.width - 1, JSON.stringify([facts, advice]));
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, "no horizontal overflow at 720 px");
+  await page.setViewport({ width: 1440, height: 1000 });
+  await back();
+  // Two checks that do not flag it: one Checked row, no recommendation.
+  await h.select(row("innodb_dedicated_server"));
+  assert.deepEqual(await texts(".view-inspector .inspector-block h4"), ["Current value"]);
+  assert.match(await h.inspector(), /Checked.*Buffer pool size.*Dedicated server/s);
+  assert.match(await h.inspector(), /Changes\s*After a restart/);
+  await back();
+  // A parameter without a link or a description says so in one line.
+  await h.select(row("unknown_parameter"));
+  assert.equal(await page.$(".view-inspector a[data-doc-link]"), null);
   await back();
 
   // Snapshot the catalog in both appearances and at phone width. Overflow

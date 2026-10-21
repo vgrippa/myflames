@@ -129,6 +129,8 @@ class TestLiveReplay(IoCase):
         self.assertIsNone(result['window']['tables'][0]['read_ms'])
         self.assertEqual(result['window']['files'], [])
         self.assertIn('MariaDB user statistics', result['notes'][0])
+        # Live: a range read through a partitioned table's index is missing from user statistics.
+        self.assertIn('They do not count partitioned tables reliably', result['notes'][0])
         self.assertFalse(any('performance_schema.' in sql for sql, _ in conn.calls))
         off, conn = self.report('mariadb-13.0-default')
         self.assertEqual(off['source'], 'status')

@@ -23,6 +23,7 @@ import {
   ToolbarSelect,
   type Column,
   InspectorSection,
+  Pill,
   SearchField,
   Select,
   StatusPill,
@@ -640,7 +641,11 @@ function parametersOf(report: ConfigReport): ConfigParameter[] {
   const rows = new Map<string, ConfigParameter>();
   for (const check of report.checks) for (const setting of check.settings) {
     const previous = rows.get(setting.name);
-    if (previous) { if (!previous.checks.includes(check.key)) previous.checks.push(check.key); continue; }
+    if (previous) {
+      if (!previous.checks.includes(check.key)) previous.checks.push(check.key);
+      if (!previous.description && check.settings[0]?.name === setting.name) previous.description = check.explain;
+      continue;
+    }
     const dynamic = setting.dynamic;
     rows.set(setting.name, {
       name: setting.name, value: setting.value, truncated: false, scope: null,
@@ -652,7 +657,8 @@ function parametersOf(report: ConfigReport): ConfigParameter[] {
       source_path: null, set_time: null, set_user: null, set_host: null,
       persisted: report.engine === "mysql" && setting.set_by === "SET PERSIST" ? true : null,
       modified: setting.default !== null && setting.display !== null ? setting.default !== setting.display : null,
-      description: check.explain, checks: [check.key],
+      // The check describes its first setting; oneLine falls back the same way.
+      description: check.settings[0]?.name === setting.name ? check.explain : null, checks: [check.key],
     });
   }
   return [...rows.values()];
@@ -857,22 +863,56 @@ function ParameterBatchSheet({ request, activeKey, onClose, onRemove, onDone }: 
   </ConfirmSheet>;
 }
 
-function CheckExplanation({ check }: { check: ConfigCheck }) {
-  const flagged = check.status === "watch" || check.status === "problem";
-  return <section className="parameter-check">
-    <div className="parameter-check-heading"><StatusPill tone={check.status} /><strong>{check.label}</strong></div>
-    <Disclosure title="Explanation and recommendations" className="config-explanation">
-      <InspectorSection title="What it is"><p>{check.explain}</p></InspectorSection>
-      <InspectorSection title={flagged ? "Why it is flagged" : "Why this status"}><p className="config-why">{check.why}</p></InspectorSection>
-      {check.action && <InspectorSection title="What to do">
-        {check.action.text && <p>{check.action.text}</p>}
-        {check.action.sql && <CopySql sql={check.action.sql} label={`Suggested statement for ${check.label}`} />}
-        {check.action.config && <CopySql sql={check.action.config} label={`my.cnf line for ${check.label}`} />}
-      </InspectorSection>}
-      {check.caveat && <p className="hint perf-caveat">Caveat: {check.caveat}</p>}
-      <p className="hint config-sources">From {check.sources.join(", ")}</p>
-    </Disclosure>
-  </section>;
+const SEVERITY: Record<string, number> = { problem: 0, watch: 1 };
+/** The most severe finding first: problem, then watch. */
+function findings(checks: ConfigCheck[]) {
+  return checks.filter(c => c.status in SEVERITY).sort((a, b) => SEVERITY[a.status] - SEVERITY[b.status]);
+}
+/** Only the official manuals the desktop app opens (apps/desktop/backend.cjs). */
+const DOC_HOSTS = new Set(["dev.mysql.com", "mariadb.com", "docs.percona.com"]);
+export function documentationLink(doc: ConfigParameter["documentation"]): { url: string; source: string } | null {
+  if (!doc || typeof doc.url !== "string") return null;
+  try {
+    const u = new URL(doc.url);
+    return u.protocol === "https:" && !u.username && !u.password && !u.port && DOC_HOSTS.has(u.hostname)
+      ? { url: u.href, source: doc.source || "Documentation" } : null;
+  } catch { return null; }
+}
+/** One plain sentence: the server's own description, else the opening
+ * sentence of a check that is about this parameter first. */
+export function oneLine(p: ConfigParameter, checks: ConfigCheck[]) {
+  const text = p.description || checks.find(c => c.settings[0]?.name === p.name)?.explain || "";
+  const first = text.trim().match(/^.*?[.!?](?=\s+[A-Z(]|$)/s)?.[0] || text.trim();
+  return first.length > 240 ? `${first.slice(0, 239).trimEnd()}…` : first;
+}
+/** When a change takes effect, in words (replaces Apply type and Scope). */
+function changeTiming(p: ConfigParameter, engine: string | null) {
+  if (p.modifiable === "none") return "Set by the server";
+  if (p.apply_type === "dynamic") return p.scope === "both" ? "Now, for new sessions" : "Now";
+  if (p.modifiable === "restart") return "After a restart";
+  if (p.modifiable === "option_file" || (engine === "mariadb" && p.apply_type === "static")) return "Option file, then a restart";
+  return p.apply_type === "static" ? "After a restart" : "Unknown";
+}
+function sourceText(p: ConfigParameter) {
+  const details = sourceDetails(p);
+  return [p.source_label || p.source || "Unknown", details].filter(Boolean).join(" · ");
+}
+
+/** The single recommendation for a parameter: the most severe finding, its
+ * reason, the suggested change and one caveat line. */
+function ParameterRecommendation({ name, flagged }: { name: string; flagged: ConfigCheck[] }) {
+  const [check, ...others] = flagged;
+  return <InspectorSection title="Recommendation">
+    <div className="parameter-finding" data-check={check.key}>
+      <p className="parameter-finding-head"><StatusPill tone={check.status} /><strong>{check.label}</strong></p>
+      <p>{check.why}</p>
+      {check.action?.text && <p>{check.action.text}</p>}
+      {check.action?.sql && <CopySql sql={check.action.sql} label={`Suggested statement for ${name}`} />}
+      {check.action?.config && <CopySql sql={check.action.config} label={`Option file line for ${name}`} />}
+      {check.caveat && <p className="hint">{check.caveat}</p>}
+      {others.length > 0 && <p className="hint">Also flagged: {others.map(c => c.label).join(", ")}.</p>}
+    </div>
+  </InspectorSection>;
 }
 
 export function ConfigView({ connection, disabled, onBack, selection, report: bound, onReport, onOpenSql }: {
@@ -978,7 +1018,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     await load(true);
   }
   const columns: Column<ConfigParameter>[] = [
-    { key: "name", label: "Name", primary: true, width: 260, sort: p => p.name, render: p => <span className="parameter-name">{recommendation(p) && <StatusDot tone={recommendation(p)!.status} />}<code>{p.name}</code></span> },
+    { key: "name", label: "Name", primary: true, width: 260, sort: p => p.name, render: p => <span className="parameter-name">{recommendation(p) && <StatusDot tone={recommendation(p)!.status} />}<code>{p.name}</code>{p.vendor === "percona" && <Pill title="A variable Percona Server adds to MySQL">Percona</Pill>}</span> },
     { key: "value", label: "Value", width: editing ? 320 : 180, minWidth: editing ? 300 : undefined, sort: p => p.value, render: p => {
       const staged = Object.prototype.hasOwnProperty.call(drafts, p.name);
       const reason = unmodifiable(p, report?.engine || null);
@@ -1002,33 +1042,43 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     const p = selected;
     const reason = unmodifiable(p, report.engine);
     const resettable = report.engine === "mysql" && p.apply_type === "dynamic" && ["bytes", "integer", "double", "boolean"].includes(p.type || "");
-    inspector = { key: p.name, title: p.name, meta: <span>{valueText(p.type, p.value)}</span>, body: <>
-      <Fields rows={[
-        ["Value", valueText(p.type, p.value)], ["Default", p.default === null ? "Unknown" : valueText(p.type, p.default)],
-        ["Source", p.source_label || p.source || "Unknown"], sourceDetails(p) ? ["Set by", sourceDetails(p)] : null,
-        report.engine === "mysql" ? ["Persisted", p.persisted === null ? "Unknown" : p.persisted ? "Yes" : "No"] : null,
-        ["Allowed values", allowedValues(p) || "Unknown"], ["Scope", p.scope === "both" ? "Global and Session" : p.scope === "global" ? "Global" : "Unknown"],
-        ["Apply type", applyType(p)],
-      ]} />
-      <p className="hint">{p.modifiable === "none" ? "The server sets this value; no option or statement changes it."
-        : p.apply_type === "dynamic" ? (p.scope === "both" ? "A dynamic parameter can change while the server runs. Sessions already connected keep their own value." : "A dynamic parameter can change while the server runs.")
-        : p.apply_type === "static" ? "A static parameter takes effect after the server restarts." : "myflames cannot tell when this parameter can change."}</p>
-      {p.description && <InspectorSection title="Description"><p>{p.description}</p></InspectorSection>}
-      <div className="config-actions">
+    const checks = p.checks.map(k => checkMap.get(k)).filter((c): c is ConfigCheck => !!c);
+    const flagged = findings(checks);
+    const doc = documentationLink(p.documentation);
+    const line = oneLine(p, checks);
+    inspector = { key: p.name, title: p.name,
+      meta: <><span>{valueText(p.type, p.value)}</span>{flagged[0] && <StatusPill tone={flagged[0].status} />}</>,
+      actions: <div className="config-actions">
         <button type="button" className="button primary" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => editParameter(p)}>Edit value</button>
         {resettable && <button type="button" className="button" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => { setEditing(true); stage(p, "DEFAULT"); sharedInspector?.setOpen(false); setPreview(true); }}>Reset to default</button>}
         <button type="button" className="button" data-change={p.name} disabled={actionsOff || !!offTitle || p.modifiable === "none"}
           title={offTitle || (p.modifiable === "none" ? reason : undefined) || undefined} onClick={e => openChange(p.name, null, e.currentTarget)}>Change…</button>
         {p.persisted === true && <button type="button" className="button" data-reset={p.name} disabled={actionsOff || !!offTitle} title={offTitle || undefined} onClick={e => openChange(p.name, "reset_persist", e.currentTarget)}>Reset persisted value…</button>}
-      </div>
-      {p.checks.map(k => checkMap.get(k)).filter((c): c is ConfigCheck => !!c).map(check => <CheckExplanation key={check.key} check={check} />)}
-    </> };
+      </div>,
+      body: <>
+        <div className="parameter-about">
+          {line ? <p className="parameter-summary">{line}</p> : !doc && <p className="hint">The server gives no description for this parameter.</p>}
+          {doc && <p className="parameter-docs"><a href={doc.url} target="_blank" rel="noreferrer" data-doc-link={p.name}>Documentation<span className="visually-hidden"> for {p.name}, opens in your browser</span></a><span className="hint">{doc.source}</span></p>}
+        </div>
+        <InspectorSection title="Current value">
+          <Fields label={`${p.name} facts`} rows={[
+            ["Value", valueText(p.type, p.value)],
+            ["Default", p.default === null ? "Unknown" : valueText(p.type, p.default)],
+            ["Source", sourceText(p)],
+            ["Changes", changeTiming(p, report.engine)],
+            ["Allowed", allowedValues(p) || "Unknown"],
+            report.engine === "mysql" ? ["Persisted", p.persisted === null ? "Unknown" : p.persisted ? "Yes" : "No"] : null,
+            checks.length > 0 && !flagged.length ? ["Checked", <span className="parameter-checked">{checks.map(c => <span key={c.key}><StatusPill tone={c.status} /> {c.label}</span>)}</span>] : null,
+          ]} />
+        </InspectorSection>
+        {flagged.length > 0 && <ParameterRecommendation name={p.name} flagged={flagged} />}
+      </> };
   }
   const s = report?.summary;
   const notes = [...(report?.notes || []), ...(report?.parameters?.notes || [])];
   if (report?.parameters && !report.parameters.complete) notes.push("The parameter catalog is incomplete. Some parameters or metadata could not be read.");
   return <ViewLayout id="config" title="Parameters" className="config-panel" onBack={onBack}
-    info={<><p>Every server parameter, with its allowed values, source and when it applies.</p><p>Edit stages local drafts. Preview changes, then review every exact statement before applying. Recommendations are rules of thumb; select a parameter for the explanation and caveats.</p></>}
+    info={<><p>Every server parameter, with its allowed values, source and when it applies.</p><p>Edit stages local drafts. Preview changes, then review every exact statement before applying. Recommendations are rules of thumb; select a parameter for its recommendation and a link to the official documentation.</p></>}
     controls={report && <>
       <SearchField label="Filter parameters" value={search} onChange={setSearch} placeholder="Filter parameters" />
       <ToolbarSelect label="Show" value={filter} options={[["all", "All"], ["modified", "Modified"], ["dynamic", "Dynamic"], ["static", "Static"], ["recommendations", "Recommendations"], ...(editing ? [["pending", "Pending"] as [string, string]] : [])]} onChange={setFilter} />
@@ -1077,10 +1127,15 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
             onClick: () => openChange(p.name, p.modifiable === "now" ? "global" : p.modifiable === "restart" ? "persist_only" : null, document.body),
           }] : []),
           {
-            label: "Inspect parameter & docs",
+            label: "Inspect parameter",
             icon: "info",
             onClick: () => selection.select(p.name, true),
           },
+          ...(documentationLink(p.documentation) ? [{
+            label: "Open documentation",
+            icon: "browser" as const,
+            onClick: () => { window.open(documentationLink(p.documentation)!.url, "_blank", "noopener,noreferrer"); },
+          }] : []),
           { divider: true as const },
           {
             label: `Copy variable name (${p.name})`,

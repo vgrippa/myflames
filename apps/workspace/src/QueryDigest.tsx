@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   number,
@@ -10,6 +10,7 @@ import {
   type TopStatement,
 } from "./api";
 import { useConnectionReads, type Bound } from "./binding";
+import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { Icon } from "./components";
 import { EmptyState } from "./kit";
 import { csvCell } from "./reportTableExport";
@@ -109,9 +110,16 @@ export function QueryDigestView({
     );
   };
 
+  // Query digest is a place of its own: it reads when it opens on screen
+  // (once per connection; Refresh reads again), and a new filter, limit or
+  // default database reads again while it is on screen.
+  const onScreen = useViewOnScreen();
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: true, busy: loading || reads.running(), read: () => { void loadData(); } });
+  const choices = useRef(true);
   useEffect(() => {
-    void loadData();
-  }, [filter, limit, reads.key, connection.database]);
+    if (choices.current) { choices.current = false; return; }
+    if (onScreen) void loadData();
+  }, [filter, limit, connection.database]);
 
   function openRow(row: TopStatement, rank: number, callback: QueryDigestProps["onExplain"]) {
     // Recheck at dispatch as well as disabling the visible action. The editor

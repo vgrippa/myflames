@@ -200,6 +200,7 @@ import re
 
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, _number, denied, now, preflight, reason
+from .server_info import product_name
 
 SCHEMA_VERSION = "cluster-1.0"
 CLUSTER_TAG = "/*myflames:cluster*/ "
@@ -581,6 +582,8 @@ def _base(server):
     return {
         "schema_version": SCHEMA_VERSION,
         "engine": server.engine,
+        "flavor": server.flavor,
+        "server_product": server.product,
         "server_version": server.version or None,
         "version_comment": _text(variables.get("version_comment")),
         "captured_at": now(),
@@ -1627,7 +1630,7 @@ def _size_fact(report):
 def format_text(report):
     """Human text for a cluster-1.0 report (also the MCP digest)."""
     out = []
-    engine = "MariaDB" if report.get("engine") == "mariadb" else "MySQL"
+    engine = product_name(report)
     if not report.get("available"):
         return terminal_text(report.get("message") or "Cluster status is not available.") + "\n"
     if report.get("kind") == "none":
@@ -1949,8 +1952,7 @@ def plan_action(report, action, member_key=None, checks=None):
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "member_key": member_key, "typed_guard": None,
             "warnings": [], "next": None, "verified": ["server identity", "member state and role"],
             "facts": [["Runs on", _connected_text(report, local)],
-                      ["Server", "%s %s" % ("MariaDB" if report.get("engine") == "mariadb" else "MySQL",
-                                            report.get("server_version") or "")],
+                      ["Server", "%s %s" % (product_name(report), report.get("server_version") or "")],
                       ["Cluster", "%s%s" % (kind_label(report), " %s" % cluster["name"] if cluster.get("name") else "")]]}
     kind = report.get("kind")
     if kind in ("innodb_cluster", "group_replication"):

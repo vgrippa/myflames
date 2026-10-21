@@ -1,8 +1,11 @@
-// Server > Overview > Error log. Reads only on Load or Refresh all; filters by level, run,
-// search, and date/time range. Exports to CSV, .log, and JSON.
+// Server > Overview > Error log. Reads when it opens on screen (once per
+// connection; Refresh reads again, and so does Refresh all); a server whose
+// error log myflames cannot read says why. Filters by level, run, search, and
+// date/time range. Exports to CSV, .log, and JSON.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, download, type Connection, type ErrorLogCode, type ErrorLogEntry, type ErrorLogReport } from "./api";
 import { useConnectionReads, type Bound } from "./binding";
+import { useOpenRead } from "./viewOnScreen";
 import { Icon } from "./components";
 import { bytes, CompactNumber, count, engineLabel } from "./PerfShared";
 import {
@@ -161,6 +164,11 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
     await reads.run(ERROR_LOG_READ, "Reading the error log…",
       (c, signal) => api<ErrorLogReport>("live/error-log", errorLogBody(c), signal), onReport);
   }
+
+  // Opening the view reads it: MySQL's performance_schema.error_log, or on
+  // MariaDB the log file when the server is on this computer and its identity
+  // is verified; otherwise the report says why it is not available.
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!reads.loading || reads.running(), read: () => { void load(); } });
 
   const occurrences = new Map<string, number>();
   const entries: EntryRow[] = (report?.entries || []).map(entry => {
@@ -364,9 +372,8 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
     onRefresh={() => void load()} refreshDisabled={disabled} loading={!!reads.loading} otherConnection={other}
     inspector={inspector} inspectorEmpty={<p>Select an entry or code to see the full message and details.</p>}
     status={<ViewStatus loading={reads.loading} error={reads.error} />}>
-    {!report && !reads.loading && !reads.error && <EmptyState icon="warning" title="No error log loaded"
-      action={<button type="button" className="button primary" disabled={disabled} onClick={() => void load()}>Load error log</button>}>
-      MySQL: performance_schema.error_log. MariaDB: the error log file, only when the server runs on this computer.
+    {!report && !reads.loading && !reads.error && <EmptyState icon="errorlog" title="Error log">
+      {disabled ? "Read when the Query editor finishes its capture." : "MySQL: performance_schema.error_log. MariaDB: the error log file, only when the server runs on this computer."}
     </EmptyState>}
     {report && <>
       <SummaryLine tone={report.summary.status} notes={report.notes}>{report.summary.text}</SummaryLine>

@@ -1194,6 +1194,9 @@ export type TableContextAction =
       shortcut?: string;
       danger?: boolean;
       disabled?: boolean;
+      /** Why the item is off (with *disabled*), a second line under its label:
+       * the item stays focusable (aria-disabled) so the reason can be read. */
+      hint?: string;
       onClick: () => void;
     }
   | { divider: true };
@@ -2024,28 +2027,28 @@ export function DataTable<T>({
                   if ("divider" in action && action.divider) {
                     return <div key={`div-${idx}`} className="context-menu-divider" />;
                   }
-                  const a = action as {
-                    label: string;
-                    icon?: ReactNode;
-                    shortcut?: string;
-                    danger?: boolean;
-                    disabled?: boolean;
-                    onClick: () => void;
-                  };
+                  const a = action as Exclude<TableContextAction, { divider: true }>;
+                  // An item off for a reason stays focusable and says why.
+                  const explained = !!a.disabled && !!a.hint;
                   return (
                     <button
                       key={a.label}
                       type="button"
                       role="menuitem"
-                      className={a.danger ? "is-danger" : ""}
-                      disabled={a.disabled}
+                      className={[a.danger ? "is-danger" : "", a.hint ? "has-hint" : ""].filter(Boolean).join(" ")}
+                      disabled={a.disabled && !explained}
+                      aria-disabled={explained ? true : undefined}
+                      title={a.hint}
                       onClick={() => {
+                        if (a.disabled) return;
                         setContextMenu(null);
                         a.onClick();
                       }}
                     >
                       {a.icon && <span className="context-menu-icon">{typeof a.icon === "string" && isIconName(a.icon) ? <Icon name={a.icon} /> : a.icon}</span>}
-                      <span>{a.label}</span>
+                      {a.hint ? (
+                        <span className="context-menu-text"><span>{a.label}</span><small className="context-menu-hint">{a.hint}</small></span>
+                      ) : <span>{a.label}</span>}
                       {a.shortcut && <span className="context-menu-shortcut">{a.shortcut}</span>}
                     </button>
                   );

@@ -93,8 +93,10 @@ export function percent(share: number | null | undefined) {
   return `${Math.round(share * 100)}%`;
 }
 
-export function engineLabel(report: { engine: string; server_version: string | null }) {
-  return `${report.engine === "mariadb" ? "MariaDB" : "MySQL"} ${report.server_version || "?"}`;
+/** "MySQL 8.4.11", "MariaDB 11.8.9-MariaDB-log", "Percona Server 8.4.11-11": the
+ * report's server_product when it names one (Percona keeps engine "mysql"). */
+export function engineLabel(report: { engine: string | null; server_version: string | null; server_product?: string | null }) {
+  return `${report.server_product || (report.engine === "mariadb" ? "MariaDB" : "MySQL")} ${report.server_version || "?"}`;
 }
 
 /** SQL the user may run themselves, with a Copy button. myflames never runs it. */

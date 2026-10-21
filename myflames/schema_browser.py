@@ -42,11 +42,19 @@ def _flag(value):
     return (value or "").upper() in ("YES", "1")
 
 
-def tables_of(reader, schema, prefix=None, after=None):
+def _count(value):
+    return int(value) if isinstance(value, str) and value.isdigit() else None
+
+
+def tables_of(reader, schema, prefix=None, after=None, stats=False):
     """One name-ordered page and whether more exist; prefix is literal text.
 
     Binary keyset ordering keeps case-distinct names reachable on servers
-    whose catalog collation otherwise compares them equal.
+    whose catalog collation otherwise compares them equal. With *stats* each
+    table also carries ``engine``, ``rows`` (TABLE_ROWS: an estimate for
+    InnoDB, cached per information_schema_stats_expiry on MySQL) and
+    ``bytes`` (DATA_LENGTH + INDEX_LENGTH), None when the server has none
+    (views). MariaDB opens each table of the schema to answer them.
     """
     where = "TABLE_SCHEMA = " + literal(schema)
     if prefix:
@@ -54,18 +62,24 @@ def tables_of(reader, schema, prefix=None, after=None):
         where += " AND LEFT(TABLE_NAME, %d) = %s" % (len(prefix), literal(prefix))
     if after:
         where += " AND BINARY TABLE_NAME > BINARY " + literal(after)
+    columns = "TABLE_NAME, TABLE_TYPE" + (", ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH" if stats else "")
     rows = reader.named(
-        "SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE %s "
-        "ORDER BY BINARY TABLE_NAME LIMIT %d" % (where, MAX_TABLES + 1))
+        "SELECT %s FROM information_schema.TABLES WHERE %s "
+        "ORDER BY BINARY TABLE_NAME LIMIT %d" % (columns, where, MAX_TABLES + 1))
     tables = []
     for row in rows[:MAX_TABLES]:
         name = row.get("TABLE_NAME")
         if name is None:
             continue
         kind = (row.get("TABLE_TYPE") or "").upper()
-        tables.append({"name": name, "type": "view" if kind == "VIEW" else
-                       "system view" if kind == "SYSTEM VIEW" else
-                       "sequence" if kind == "SEQUENCE" else "table"})
+        table = {"name": name, "type": "view" if kind == "VIEW" else
+                 "system view" if kind == "SYSTEM VIEW" else
+                 "sequence" if kind == "SEQUENCE" else "table"}
+        if stats:
+            data, index = _count(row.get("DATA_LENGTH")), _count(row.get("INDEX_LENGTH"))
+            table.update(engine=row.get("ENGINE") or None, rows=_count(row.get("TABLE_ROWS")),
+                         bytes=None if data is None and index is None else (data or 0) + (index or 0))
+        tables.append(table)
     return tables, len(rows) > MAX_TABLES
 
 
@@ -106,8 +120,9 @@ def indexes_of(reader, schema, table):
     return [indexes[name] for name in order]
 
 
-def catalog_report(conn, schema, table=None, prefix=None, after=None):
-    """``catalog-1.0``: the tables of *schema*, or with *table* its columns and indexes."""
+def catalog_report(conn, schema, table=None, prefix=None, after=None, stats=False):
+    """``catalog-1.0``: the tables of *schema* (with *stats*, also their
+    engine, estimated rows and size), or with *table* its columns and indexes."""
     schema = check_schema(schema)
     table = check_table(table)
     prefix, after = check_table(prefix), check_table(after)
@@ -116,10 +131,10 @@ def catalog_report(conn, schema, table=None, prefix=None, after=None):
     reader = Reader(conn, TAG)
     try:
         if table is None:
-            tables, truncated = tables_of(reader, schema, prefix, after)
+            tables, truncated = tables_of(reader, schema, prefix, after, stats=stats is True)
             return {"schema_version": CATALOG_VERSION, "level": "tables", "schema": schema, "tables": tables,
                     "truncated": truncated, "limit": MAX_TABLES, "prefix": prefix, "after": after,
-                    "next_after": tables[-1]["name"] if truncated and tables else None}
+                    "next_after": tables[-1]["name"] if truncated and tables else None, "stats": stats is True}
         columns = columns_of(reader, schema, table)
         if not columns:
             raise ValueError("No table %s.%s, or no privilege to see its columns." % (schema, table))

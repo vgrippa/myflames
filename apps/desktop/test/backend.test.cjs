@@ -29,6 +29,17 @@ test('navigation compares exact origins; external links require permitted HTTPS 
   assert.equal(externalLink('https://dev.mysql.com/downloads/shell/'), 'https://dev.mysql.com/downloads/shell/');
   for (const value of ['https://dev.mysql.com.evil.test/', 'https://user@dev.mysql.com/', 'https://dev.mysql.com:123/', 'http://dev.mysql.com/', 'file:///etc/passwd', 'ms-settings:privacy', 'javascript:alert(1)']) assert.equal(externalLink(value), null);
 });
+test('Parameters documentation links open only the official manuals', () => {
+  // myflames/sysvar_docs.py: the MySQL Reference Manual, MariaDB's documentation, Percona's manuals.
+  for (const value of ['https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_buffer_pool_size',
+    'https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_buffer_pool_size',
+    'https://docs.percona.com/percona-server/8.4/innodb-corrupt-table-action.html#innodb_corrupt_table_action',
+    'https://docs.percona.com/percona-xtradb-cluster/8.4/wsrep-system-index.html#pxc_strict_mode'])
+    assert.equal(externalLink(value), value);
+  for (const value of ['http://docs.percona.com/percona-server/8.4/x.html', 'https://docs.percona.com.evil.test/x',
+    'https://user@docs.percona.com/x', 'https://docs.percona.com:8443/x', 'https://percona.com/x', 'https://forums.percona.com/x'])
+    assert.equal(externalLink(value), null);
+});
 test('Home news links open in the default browser, never in the app window', () => {
   // Headline links from myflames/news.py: the MySQL team's posts and mariadb.org.
   for (const value of ['https://blogs.oracle.com/mysql/troubleshooting-mysql-with-opentelemetry-metrics', 'https://mariadb.org/amazic-joins-mariadb-foundation-as-a-silver-sponsor/'])

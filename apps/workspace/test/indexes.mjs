@@ -265,7 +265,7 @@ try {
   // MariaDB user statistics: no read times, IGNORED instead of INVISIBLE.
   state.queue.push({ status: 200, body: userstat });
   await h.refresh();
-  await page.waitForFunction(() => /user statistics/.test(document.querySelector(".server-view .fact-strip")?.textContent || ""));
+  await page.waitForFunction(() => /Usage fromUser statistics \(userstat\)/.test(document.querySelector(".server-view .fact-strip")?.textContent || ""));
   await h.idle(view);
   await list("unused");
   await h.select(`${view} [aria-label="Unused indexes"] tr[data-index="orders.k_status"]`);

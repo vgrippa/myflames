@@ -87,6 +87,7 @@ long_query_time                 10 s                        10 s, alias of
   SET GLOBAL reaches new connections only. long_query_time is per session on
   both engines.
 """
+from .server_info import product_name
 from .advisor import buffer_pool_coverage, flush_log_durability
 from .connector import ConnectorError
 from .health import SEVERITY
@@ -116,6 +117,10 @@ VARIABLES = (
     "slow_query_log", "log_slow_query", "long_query_time", "log_slow_query_time", "log_output",
     "thread_handling", "thread_pool_size",
 )
+#: Percona Server's slow log sampling, read in a second statement on Percona
+#: Server only (see _slow_sample).
+PERCONA_SLOW_VARIABLES = ("log_slow_rate_limit", "log_slow_rate_type", "slow_query_log_always_write_time",
+                          "log_queries_not_using_indexes", "log_query_errors")
 STATUS = ("Uptime", "Max_used_connections", "Connection_errors_max_connections", "Opened_tables", "Open_tables",
           "Created_tmp_tables", "Created_tmp_disk_tables", "Innodb_os_log_written", "Innodb_redo_log_capacity_resized",
           "Innodb_redo_log_current_lsn", "Innodb_redo_log_checkpoint_lsn", "Innodb_checkpoint_age")
@@ -179,6 +184,8 @@ def config_report(conn, parameters=False):
     raw = {"sources": None, "tablespaces": None}
     try:
         server = preflight(reader, VARIABLES)
+        if server.flavor == "percona":
+            server.variables.update(show_variables(reader, PERCONA_SLOW_VARIABLES))
         status = reader.pairs("SHOW GLOBAL STATUS WHERE Variable_name IN (%s)" % ", ".join("'%s'" % n for n in STATUS))
         names = sorted(set(VARIABLES + ("performance_schema",)))
         if server.engine == "mysql":
@@ -232,6 +239,7 @@ class _Config(object):
     def __init__(self, server, status, raw):
         self.server = server
         self.engine = server.engine
+        self.flavor = getattr(server, "flavor", self.engine)
         self.v = server.variables
         self.s = status or {}
         self.raw = raw or {}
@@ -704,13 +712,79 @@ def _slow_log(c):
                       action={"sql": "SET GLOBAL %s = ON; SET GLOBAL %s = 1;" % (name, time_name),
                               "config": "%s = ON\n%s = 1  # under [mysqld]" % (name, time_name)},
                       settings=settings, sources=sources, value="OFF")
-    if seconds is not None and seconds >= 10:
-        return _check("slow_log", "observability", "Slow query log", explain, "info",
-                      "On, but only statements over %s are logged" % _display(time_name, c.v.get(time_name)),
+    high = seconds is not None and seconds >= 10
+    threshold = _display(time_name, c.v.get(time_name)) or "?"
+    text = ("On, but only statements over %s are logged" if high else "On, logging statements over %s") % threshold
+    sample = _slow_sample(c, seconds)
+    if sample:
+        settings += sample["settings"]
+        text += (", and %s" if high else ", but %s") % sample["text"]
+        return _check("slow_log", "observability", "Slow query log", explain, "info", text,
+                      caveat=sample["caveat"], settings=settings, sources=sources + sample["sources"], value="ON")
+    if high:
+        return _check("slow_log", "observability", "Slow query log", explain, "info", text,
                       settings=settings, sources=sources, value="ON")
-    return _check("slow_log", "observability", "Slow query log", explain, "ok",
-                  "On, logging statements over %s" % (_display(time_name, c.v.get(time_name)) or "?"), "slow_log",
+    return _check("slow_log", "observability", "Slow query log", explain, "ok", text, "slow_log",
                   settings=settings, sources=sources, value="ON")
+
+
+def _slow_sample(c, seconds):
+    """log_slow_rate_limit above 1 logs a sample (read on Percona Server only).
+
+    The variable comes from Percona's slow log patch, also in MariaDB: "Write
+    to slow log every #th slow query" (Ma/sql/sys_vars.cc:7047-7052). Percona
+    Server adds log_slow_rate_type (session or query, read live as session on
+    8.0.46-37 and 8.4.11-11) and slow_query_log_always_write_time (read live
+    as 10 s). Percona Server 8.4.11-11 sql/log.cc log_slow_applicable admits
+    a statement that ran longer than long_query_time, or one that
+    log_queries_not_using_indexes or log_query_errors adds, then skips it for
+    the sample (query: a random 1 in N is kept; session: only connections
+    whose ID is a multiple of N) only when it ran less than
+    slow_query_log_always_write_time and, with long_query_time under 1 s,
+    less than 1 s. So with slow_query_log_always_write_time 0 nothing is
+    sampled; at or below long_query_time every statement over long_query_time
+    is logged and only the statements the other two variables add are
+    sampled (checked live on a throwaway 8.4.11-11: with long_query_time 10,
+    slow_query_log_always_write_time 10 and log_slow_rate_limit 1000, none of
+    6 statements log_queries_not_using_indexes added was logged, and all 3
+    with 1). 31536000 s, its maximum (LONG_TIMEOUT, M/sql/sql_const.h:160), is
+    not worth saying. *seconds* is long_query_time. The clause for the
+    observation, or None when nothing is sampled."""
+    limit = _number(c.v.get("log_slow_rate_limit"))
+    if limit is None or limit <= 1:
+        return None
+    always = _number(c.v.get("slow_query_log_always_write_time"))
+    if always is not None and always == 0:
+        return None
+    slow_sampled = not (always is not None and seconds is not None and always <= seconds)
+    others = [n for n in ("log_queries_not_using_indexes", "log_query_errors")
+              if (c.on(n) if n == "log_queries_not_using_indexes" else (c.v.get(n) or "").strip())]
+    if not slow_sampled and not others:
+        return None
+    rate_type = (c.v.get("log_slow_rate_type") or "").lower()
+    n = _count_text(limit)
+    share = {"session": "the sessions whose connection ID is a multiple of %s" % n,
+             "query": "1 in %s queries" % n}.get(rate_type, "a sample (1 in %s)" % n)
+    if slow_sampled:
+        text = "log_slow_rate_limit=%s logs only %s" % (n, share)
+    else:
+        text = "log_slow_rate_limit=%s samples the statements %s adds: only %s" % (n, " and ".join(others), share)
+    if rate_type == "session":
+        caveat = ("A sampled slow log is incomplete: only sessions whose connection ID is a multiple of %s are "
+                  "written, and sessions run different numbers of statements, so a tool that sums it misses an "
+                  "unknown share." % n)
+    else:
+        caveat = ("A sampled slow log is incomplete: about 1 in %s of the sampled statements is written, so a tool "
+                  "that sums it undercounts." % n)
+    if always is not None and always < 31536000:
+        caveat += (" Statements that run %s s or longer (slow_query_log_always_write_time) are always written."
+                   % _count_text(always))
+    if seconds is not None and seconds < 1 and (always is None or always > 1):
+        caveat += " With long_query_time under 1 s, statements that run 1 s or longer are always written too."
+    names = ["log_slow_rate_limit"] + [x for x in ("log_slow_rate_type", "slow_query_log_always_write_time")
+                                       if x in c.v] + others
+    return {"text": text, "caveat": caveat, "sources": names,
+            "settings": [x for x in (c.setting(name) for name in names) if x]}
 
 
 def _facts(c):
@@ -786,7 +860,7 @@ _MARK = {"ok": "ok", "watch": "WATCH", "problem": "PROBLEM", "info": "-", "unkno
 
 
 def format_text(report):
-    head = "%s %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL", report["server_version"] or "?")
+    head = "%s %s" % (product_name(report), report["server_version"] or "?")
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     s = report["summary"]

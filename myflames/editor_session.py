@@ -111,6 +111,7 @@ import uuid
 import weakref
 
 from .connector import ConnectorError, MySQLConnection
+from .server_info import identity_from_version
 
 SCHEMA_VERSION = "editor-session-1.0"
 RUN_SCHEMA_VERSION = "editor-run-1.0"
@@ -548,6 +549,7 @@ class EditorSession(object):
         self.end_message = None
         self.engine = None
         self.server_version = None
+        self.server_product = None
         self.connection_id = None
         self.server_identity = None
         self.autocommit = None
@@ -622,6 +624,8 @@ class EditorSession(object):
             self.connection_id = _int(row.get("connection_id"))
             self.server_version = row.get("version") or ""
             self.engine = "mariadb" if "mariadb" in self.server_version.lower() else "mysql"
+            # The label only (Percona's release suffix names it; the hello reads VERSION()).
+            self.server_product = identity_from_version(self.server_version)["product"]
             self.server_identity = self._identity_row(row)
             if self.server_identity is None:
                 raise ConnectorError("The server identity could not be read; no editor statements were sent.")
@@ -1308,6 +1312,7 @@ class EditorSession(object):
                                "port": self.port, "user": self.user, "type": self.connection_type,
                                "read_only": self.read_only},
                 "engine": self.engine, "server_version": self.server_version,
+                "server_product": self.server_product,
                 "connection_id": self.connection_id, "autocommit": self.autocommit,
                 "in_transaction": self.in_transaction, "transaction_source": self.transaction_source,
                 "transaction_note": self.transaction_note, "sql_mode": self.sql_mode,

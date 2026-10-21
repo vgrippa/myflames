@@ -355,6 +355,7 @@ export function KillDialog({
   target,
   blocking,
   busy,
+  initialMode,
   onCancel,
   onConfirm,
 }: {
@@ -362,10 +363,14 @@ export function KillDialog({
   /** What the session blocks (Locks), or nothing when unknown. */
   blocking?: ReactNode;
   busy: boolean;
+  /** The KILL chosen before the sheet opened (a row menu's Kill query… or
+   * Kill connection…); KILL QUERY only while the session runs a statement. */
+  initialMode?: "connection" | "query";
   onCancel: () => void;
   onConfirm: (mode: "connection" | "query", reviewToken: string) => void;
 }) {
-  const [mode, setMode] = useState<"connection" | "query">(target.running ? "query" : "connection");
+  const [mode, setMode] = useState<"connection" | "query">(
+    initialMode === "connection" || !target.running ? "connection" : "query");
   const [review, setReview] = useState<KillReview | null>(null);
   const [reviewError, setReviewError] = useState("");
   useEffect(() => {
@@ -558,23 +563,44 @@ export async function sendKill(active: Connection, target: KillTarget, mode: "co
   }
 }
 
-export type KillNote = { status: string; message: string; outcome: Outcome[]; refresh?: boolean };
+export type KillNote = {
+  status: string; message: string; outcome: Outcome[]; refresh?: boolean;
+  /** Which KILL was sent (one session). */
+  mode?: "connection" | "query";
+  /** The list is being read again after the KILL (the view's loading line
+   * says so; the note marks it with data-refreshing). */
+  refreshing?: boolean;
+};
+/** The first words of a Kill's answer: what happened, never more than is known. */
+export function killHeadline(note: Pick<KillNote, "status" | "message" | "mode">): string {
+  switch (note.status) {
+    // The server accepted the KILL; the message says what it changed.
+    case "killed":
+    case "ok":
+      return "Done.";
+    case "warn":
+      return "Nothing was ended.";
+    case "gone":
+      return "Already ended.";
+    case "denied":
+      return "The server refused.";
+    case "error":
+      // A KILL whose request got no reply may have run: never "not sent".
+      return /outcome is unknown|may have reached the server/i.test(note.message) ? "Outcome unknown." : "Could not end it.";
+    default:
+      return "Nothing was sent.";
+  }
+}
 /** The answer to a Kill, announced and focused. */
 export function KillResultNote({ note, onDismiss, noteRef, onRefresh }: { note: KillNote; onDismiss: () => void; noteRef: React.RefObject<HTMLDivElement>; onRefresh?: () => void }) {
+  const done = note.status === "killed" || note.status === "ok";
   return (
-    <div ref={noteRef} tabIndex={-1} className={`kill-result ${note.status}`} role={note.status === "killed" ? "status" : "alert"}>
+    <div ref={noteRef} tabIndex={-1} className={`kill-result ${note.status}`} role={done ? "status" : "alert"} data-status={note.status} data-refreshing={note.refreshing ? "true" : undefined}>
       <p>
-        <strong>
-          {note.status === "killed"
-            ? "Ended."
-            : note.status === "denied"
-              ? "The server refused."
-              : note.status === "error"
-                ? "Could not end it."
-                : "Nothing was sent."}
-        </strong>{" "}
+        <strong>{killHeadline(note)}</strong>{" "}
         {note.message}
       </p>
+
       {note.outcome.length > 0 && (
         <ul>
           {note.outcome.map((o) => (
@@ -816,17 +842,21 @@ export function LocksView({
     const kinds = new Map((report.ddl_waits || []).map((d) => [d.connection_id, d.kind] as const));
     setKilling(true);
     const sent = await sendKill(connection, target, mode, policy, reviewToken);
-    const note: KillNote = { ...sent, outcome: [] };
+    const note: KillNote = { ...sent, mode, outcome: [] };
     setKillTarget(null);
     setKilling(false);
     // Re-read and infer the outcome only while the connection in use is still
     // the one the Kill was confirmed for (checked now, after the await); a
-    // report of another server says nothing about this Kill.
+    // report of another server says nothing about this Kill. The answer is
+    // shown at once, and says the list is read again meanwhile.
     const changed = !target.via || reads.currentKey() !== target.via.key;
-    const fresh = changed || note.refresh ? null : await load(true);
-    if (note.status === "killed" && fresh && ids.length) note.outcome = outcomeOf(fresh, ids, kinds);
-    setKillNote(note);
+    const reread = !changed && !note.refresh;
+    setKillNote({ ...note, refreshing: reread });
     window.setTimeout(() => killNoteRef.current?.focus(), 0);
+    if (!reread) return;
+    const fresh = await load(true);
+    if (note.status === "killed" && fresh && ids.length) note.outcome = outcomeOf(fresh, ids, kinds);
+    setKillNote((shown) => (shown && shown.message === note.message && shown.status === note.status ? { ...note, refreshing: false } : shown));
   }
   async function showPlan(id: number) {
     if (!bound || other) return;
@@ -858,7 +888,7 @@ export function LocksView({
   const rowLocks = (report?.row_locks || []).filter((l) => !rowTable || objectName(l.schema, l.table) === rowTable);
   const transactions = report?.transactions || [];
   const deadlock = report?.deadlock || null;
-  const engineName = report ? `${report.engine === "mariadb" ? "MariaDB" : "MySQL"} ${report.server_version}` : "";
+  const engineName = report ? `${report.server_product || (report.engine === "mariadb" ? "MariaDB" : "MySQL")} ${report.server_version}` : "";
   const idleRoot = report?.blocking_tree.find((n) => n.root && n.idle_in_transaction);
 
   // ---- The inspector for the selected row ----

@@ -118,7 +118,7 @@ try {
   await page.goto(url, { waitUntil: "networkidle0" });
   const button = (text, scope = "") => page.locator(`${scope}button ::-p-text(${text})`).click();
   const text = (selector) => page.$eval(selector, (e) => e.textContent);
-  const last = (pathname) => seen[pathname].at(-1);
+  const last = (pathname) => (seen[pathname] || []).at(-1);
   const password = ".connection-panel input[type=password]";
   const notice = (needle) =>
     page.waitForFunction(
@@ -207,7 +207,8 @@ try {
   // Server reads with the connection in use, by id, without a password.
   await place("Workload");
   await chooseView(page, "top");
-  await button("Load top statements");
+  // Top statements reads when it opens on screen (no Load button).
+  for (let i = 0; i < 100 && last("/api/live/top")?.connection.profile_id !== "p1"; i++) await new Promise((r) => setTimeout(r, 50));
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   assert.equal(last("/api/live/top").connection.profile_id, "p1");
   assert.equal(last("/api/live/top").connection.password, "");
@@ -495,7 +496,7 @@ try {
   await page.click(kill);
   await page.waitForSelector("dialog.kill-dialog[open]");
   await page.click(".sheet-actions .danger-solid");
-  await page.waitForSelector(".server-view[data-view=sessions] .kill-result.killed");
+  await page.waitForSelector(".server-view[data-view=sessions] .kill-result.killed:not([data-refreshing])");
   assert.equal(seen["/api/live/kill"].length, 1);
   assert.equal(seen["/api/live/kill"][0].connection.type, "development");
   await place("Home");

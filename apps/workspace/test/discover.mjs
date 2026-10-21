@@ -182,11 +182,11 @@ try {
     WORKLOAD_VIEW_LABELS,
   );
   assert.equal(await page.$eval("#server-nav-top", (e) => e.getAttribute("aria-current")), "page");
-  assert.match(await text(`${view} .view-empty`), /used the most server time/);
 
-  // Top statements: one row per statement, flag pills with plain-English titles, notes behind a button.
-  await button("Load top statements", view + " ");
+  // Top statements reads when it opens on screen, once (no Load button): one
+  // row per statement, flag pills with plain-English titles, notes behind a button.
   await page.waitForSelector(`${view} tbody tr`);
+  assert.equal(seen.filter((s) => s.path === "/api/live/top").length, 1, "opening Top statements reads once");
   assert.equal((await page.$$(`${view} tbody tr`)).length, 2);
   assert.equal(seen.at(-1).order, "total");
   assert.equal(seen.at(-1).connection.host, "127.0.0.1");

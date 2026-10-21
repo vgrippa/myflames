@@ -6,7 +6,8 @@ not appear. Scope, type, bounds and mutability share the single-variable
 reader's rules. A label describes application timing, not permission or a
 promise that an arbitrary value will pass the separate change review.
 """
-from . import variables
+from . import mysql_sysvar_help, sysvar_docs, variables
+from .server_info import percona_variable
 
 
 SCHEMA_VERSION = "parameters-1.0"
@@ -26,6 +27,79 @@ _CATALOG_KEYS = ("name", "global_value", "origin", "default", "scope", "type", "
                  "values", "read_only", "path", "comment", "command_line_argument")
 
 
+def _location(entry, versions, wanted):
+    """(manual version, page index, anchor or None) from a sysvar_docs entry.
+
+    An entry is a location (a page index, or (page index, anchor)) valid in
+    every manual, or one location per manual with None where that manual
+    does not document the name. The manual for a server is the first at or
+    after its major.minor (8.1 to 8.3 are in 8.4's, 9.0 to 9.6 in 9.7's), else
+    the newest. A name that manual leaves out comes from the nearest newer
+    manual, then the nearest older one.
+    """
+    if entry is None:
+        return None
+    keys = [tuple(int(p) for p in v.split(".")) for v in versions]
+    start = next((i for i, key in enumerate(keys) if key >= tuple(wanted[:2])), len(keys) - 1)
+    single = isinstance(entry, int) or (isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[1], str))
+    order = [start] + list(range(start + 1, len(keys))) + list(range(start - 1, -1, -1))
+    for i in order:
+        loc = entry if single else entry[i]
+        if loc is not None:
+            page, anchor = (loc, None) if isinstance(loc, int) else loc
+            return versions[i], page, anchor
+    return None
+
+
+def source_help(version_tuple, name):
+    """The help text a MySQL server before 9.0 declares *name* with, from the
+    tagged source (mysql_sysvar_help), or None. MySQL 9.0+ reports its own in
+    performance_schema.variables_metadata, so this is never used there."""
+    if tuple(version_tuple or (0,))[:1] >= (9,):
+        return None
+    if tuple(version_tuple or (0, 0))[:2] < (8, 1) and name in mysql_sysvar_help.HELP_80:
+        return mysql_sysvar_help.HELP_80[name]
+    return mysql_sysvar_help.HELP.get(name)
+
+
+def documentation(engine, version_tuple, name, flavor=None):
+    """``{"url", "source"}``: the official manual page for system variable
+    *name* on this server, or None. Nothing is fetched; sysvar_docs is
+    generated from saved reference pages. MySQL and Percona servers use the
+    MySQL Reference Manual; a name it does not document links to Percona's
+    manuals only on a Percona server (flavor "percona"). MariaDB uses its own
+    documentation."""
+    name = (name or "").lower()
+    if not variables._NAME.match(name):
+        return None
+    if engine == "mariadb":
+        found = _location(sysvar_docs.MARIADB.get(name), ("0.0",), (0, 0))
+        if not found:
+            return None
+        _, page, anchor = found
+        return {"url": sysvar_docs.MARIADB_URL % (sysvar_docs.MARIADB_PAGES[page], anchor or name),
+                "source": "MariaDB documentation"}
+    wanted = tuple(version_tuple or (0, 0))[:2]
+    found = _location(sysvar_docs.MYSQL.get(name), sysvar_docs.MYSQL_VERSIONS, wanted)
+    if found:
+        version, page, anchor = found
+        return {"url": sysvar_docs.MYSQL_URL % (version, sysvar_docs.MYSQL_PAGES[page], anchor or "sysvar_" + name),
+                "source": "MySQL %s Reference Manual" % version}
+    if flavor != "percona":
+        return None
+    for table, versions, pages, url, product in (
+            (sysvar_docs.PERCONA, sysvar_docs.PERCONA_VERSIONS, sysvar_docs.PERCONA_PAGES, sysvar_docs.PERCONA_URL,
+             "Percona Server"),
+            (sysvar_docs.PXC, sysvar_docs.PXC_VERSIONS, sysvar_docs.PXC_PAGES, sysvar_docs.PXC_URL,
+             "Percona XtraDB Cluster")):
+        found = _location(table.get(name), versions, wanted)
+        if found:
+            version, page, anchor = found
+            return {"url": url % (version, pages[page], anchor or name),
+                    "source": "%s %s documentation" % (product, version)}
+    return None
+
+
 def _index(rows, keys):
     return {row[0].lower(): dict(zip(keys, row)) for row in rows or [] if row and row[0]}
 
@@ -40,8 +114,19 @@ def _check_names(checks):
     return out
 
 
+def _flavor(engine, flavor, globals_):
+    """mysql, percona or mariadb: the server's own flavor when the caller
+    knows it, else Percona's @@version_comment ("Percona Server (GPL), ...",
+    "Percona XtraDB Cluster (GPL), ...")."""
+    if engine == "mariadb":
+        return "mariadb"
+    if flavor in ("mysql", "percona"):
+        return flavor
+    return "percona" if "percona" in str(globals_.get("version_comment") or "").lower() else "mysql"
+
+
 def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persisted_rows=None,
-                       metadata_rows=None, catalog_rows=None, checks=None, notes=None):
+                       metadata_rows=None, catalog_rows=None, checks=None, notes=None, flavor=None):
     """Build ``parameters-1.0`` from decoded positional rows, without I/O.
 
     Row order follows the SELECT constants above; ``rows`` is SHOW GLOBAL
@@ -49,6 +134,9 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
     with no rows. Only MySQL 9.0+ requires metadata_rows. MariaDB uses only
     catalog_rows. Values are already unescaped by perf_common.Reader.
     modifiable="none" means the server sets the value; no option or SET changes it.
+    *flavor* (``percona`` on Percona Server) marks the variables Percona adds
+    with ``vendor: "percona"`` (server_info.PERCONA_VARIABLES); every other
+    item has ``vendor: None``.
     """
     mysql = engine == "mysql"
     required = [rows, info_rows, persisted_rows] if mysql else [catalog_rows]
@@ -61,6 +149,7 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
     globals_ = ({row[0].lower(): row[1] for row in rows or [] if len(row) >= 2 and row[0]} if mysql else
                 {name: row.get("global_value") for name, row in catalog.items()})
     associations = _check_names(checks)
+    flavor = _flavor(engine, flavor, globals_)
     items = []
     for name, value in sorted(globals_.items()):
         info = {"name": name, "engine": engine, "version_tuple": version_tuple,
@@ -85,7 +174,7 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
                 modifiable = "none"
             else:
                 modifiable = "option_file" if not mysql or "np" in flags else "restart"
-        description = cat.get("comment") if not mysql else meta.get("documentation")
+        description = cat.get("comment") if not mysql else meta.get("documentation") or source_help(version_tuple, name)
         items.append({
             "name": name, "value": value[:variables.MAX_VALUE_LENGTH] if value is not None else None,
             "truncated": value is not None and len(value) > variables.MAX_VALUE_LENGTH,
@@ -97,10 +186,13 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
             "persisted": name in persisted if persisted is not None else None,
             "modified": source.upper() not in (("COMPILED",) if mysql else ("COMPILE-TIME", "AUTO")) if source else None,
             "description": description[:600] if description else None,
+            "documentation": documentation(engine, version_tuple, name, flavor),
             "checks": sorted(associations.get(name, ())),
+            "vendor": "percona" if percona_variable(name, flavor, version_tuple) else None,
         })
     return {"schema_version": SCHEMA_VERSION, "complete": all(rowset is not None for rowset in required),
-            "notes": list(notes or []), "items": items}
+            "notes": list(notes or []), "flavor": flavor or ("mariadb" if engine == "mariadb" else "mysql"),
+            "items": items}
 
 
 def read_parameters(reader, server, notes, checks):
@@ -124,7 +216,8 @@ def read_parameters(reader, server, notes, checks):
     value_rows = data.get("rows") if server.engine == "mysql" else data.get("catalog_rows")
     resolved = _resolve_nulls(reader, server.engine, value_rows, local_notes)
     notes.extend(local_notes)
-    report = compute_parameters(server.engine, server.version_tuple, checks=checks, notes=local_notes, **data)
+    report = compute_parameters(server.engine, server.version_tuple, checks=checks, notes=local_notes,
+                                flavor=getattr(server, "flavor", None), **data)
     if not resolved:
         # SQL NULL and the text NULL are still indistinguishable for some values.
         report["complete"] = False

@@ -34,7 +34,7 @@ import re
 import time
 
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
-from .server_info import detect_flavor, server_version_tuple as _version_tuple
+from .server_info import detect_flavor, product_identity, server_version_tuple as _version_tuple
 
 #: Schemas never reported as user data.
 SYSTEM_SCHEMAS = ("mysql", "performance_schema", "information_schema", "sys")
@@ -269,7 +269,12 @@ class Server(object):
         self.status = status or {}
         self.version = self.variables.get("version") or ""
         comment = self.variables.get("version_comment") or ""
-        self.engine = detect_flavor(self.version, comment)
+        identity = product_identity(self.version, comment)
+        self.engine = identity["engine"]
+        #: mysql, percona or mariadb; Percona Server keeps engine "mysql".
+        self.flavor = identity["flavor"]
+        #: The name to show: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB.
+        self.product = identity["product"]
         self.version_tuple = _version_tuple(self.version)
         self.ps_on = (self.variables.get("performance_schema") or "").upper() in ("ON", "1")
         self.uptime = _number(self.status.get("Uptime"))
@@ -277,7 +282,7 @@ class Server(object):
 
     @property
     def label(self):
-        return "MariaDB" if self.engine == "mariadb" else "MySQL"
+        return self.product
 
     def var(self, name):
         return self.variables.get(name)
@@ -289,7 +294,8 @@ class Server(object):
                       and (_number(value) or 0) > 0)
 
     def describe(self):
-        return {"engine": self.engine, "version": self.version or None, "uptime_s": self.uptime,
+        return {"engine": self.engine, "flavor": self.flavor, "product": self.product,
+                "version": self.version or None, "uptime_s": self.uptime,
                 "performance_schema": self.ps_on}
 
 
@@ -377,10 +383,38 @@ def restarted(first, second):
     return a is not None and b is not None and b < a
 
 
+def identity_fields(engine, version, version_comment=None):
+    """``flavor`` and ``server_product`` for a report built from engine and
+    version alone; the comment decides Percona (see server_info)."""
+    identity = product_identity(version, version_comment or "")
+    if engine == "mariadb" and identity["engine"] != "mariadb":
+        identity = {"flavor": "mariadb", "product": "MariaDB"}
+    return {"flavor": identity["flavor"], "server_product": identity["product"]}
+
+
+def conn_identity(conn, engine, version):
+    """identity_fields from a connection's cached ``@@version_comment``.
+
+    The connector caches the comment once read (``_server`` reads it), so
+    this normally sends nothing; connection doubles without the reader are
+    MySQL or MariaDB by engine."""
+    comment = None
+    if engine != "mariadb":
+        reader = getattr(conn, "server_version_comment", None)
+        if callable(reader):
+            try:
+                comment = reader()
+            except ConnectorError:
+                comment = None
+    return identity_fields(engine, version, comment)
+
+
 def base_report(schema_version, server, taken_at=None):
     return {
         "schema_version": schema_version,
         "engine": server.engine,
+        "flavor": getattr(server, "flavor", "mariadb" if server.engine == "mariadb" else "mysql"),
+        "server_product": getattr(server, "product", "MariaDB" if server.engine == "mariadb" else "MySQL"),
         "server_version": server.version or None,
         "taken_at": taken_at or now(),
         "uptime_s": server.uptime,

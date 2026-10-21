@@ -812,12 +812,22 @@ def _version_support(server, as_of=None):
         return _check("version_support", "observability", "Version support", "unknown",
                       "No reviewed lifecycle entry for %s %s" % (server.engine, server.version or "unknown"),
                       "version_support", caveat=caveat, numbers=numbers, value="unknown")
+    if getattr(server, "flavor", None) == "percona":
+        # Percona publishes its own lifecycle; a fork never inherits MySQL's dates.
+        upstream = "MySQL %d.%d maintenance ends %s" % (server.version_tuple[0], server.version_tuple[1], row[1]) \
+            if row[1] else "MySQL %d.%d has no proved maintenance end date" % server.version_tuple[:2]
+        return _check("version_support", "observability", "Version support", "unknown",
+                      "%s %s: Percona publishes its own lifecycle, which myflames has not reviewed (for reference, %s)"
+                      % (server.product, server.version, upstream), "version_support", caveat=caveat,
+                      numbers=numbers, value="unknown", sources=["version", "version_comment"],
+                      action={"text": "Check Percona's lifecycle for this series."})
     track, end_text = row
     if end_text is None:
         note = VERSION_SUPPORT_NOTES.get(server.engine, {}).get(server.version_tuple[:2],
                                                                   "No proved maintenance end date.")
         return _check("version_support", "observability", "Version support", "unknown",
-                      "%s %s: support unknown (%s). %s" % (server.engine, server.version, track, note),
+                      "%s %s: support unknown (%s). %s" % (getattr(server, "product", server.engine), server.version,
+                                                           track, note),
                       "version_support", caveat=caveat, numbers=numbers, value="unknown",
                       sources=["version", "version_comment"],
                       action={"text": "Verify the release maturity and maintenance period with the vendor."})
@@ -830,7 +840,8 @@ def _version_support(server, as_of=None):
                 _evidence("Days until maintenance ends", remaining)]
     return _check("version_support", "observability", "Version support", status,
                   "%s %s: %s (%s), maintenance ends %s" %
-                  (server.engine, server.version, classification, track, end_text), "version_support",
+                  (getattr(server, "product", server.engine), server.version, classification, track, end_text),
+                  "version_support",
                   caveat=caveat, numbers=numbers, value=classification,
                   action={"text": "Check the vendor lifecycle and test an upgrade to a maintained series."}
                   if status in ("watch", "problem") else None, sources=["version", "version_comment"])

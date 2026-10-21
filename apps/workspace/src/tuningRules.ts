@@ -180,7 +180,8 @@ export interface TuningReport {
   checks: TuningCheck[];
   /** Problem and watch checks, problems first, then by category weight. */
   recommendations: TuningCheck[];
-  server: { engine: "mysql" | "mariadb"; version: string | null };
+  /** product: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB (Percona keeps engine "mysql"). */
+  server: { engine: "mysql" | "mariadb"; version: string | null; product?: string | null };
   /** The rule behind the score, in words (shown and exported). */
   scoring: string;
   generatedAt: string;
@@ -405,6 +406,8 @@ function findingItem(f: AnalysisFinding, source: TuningSource): Item {
 class Ctx {
   readonly engine: "mysql" | "mariadb";
   readonly version: string | null;
+  /** The product the reports name (Percona Server keeps engine "mysql": MySQL rules apply). */
+  readonly product: string | null;
   readonly tuple: number[] | null;
   readonly report: AnalysisReportInput | null;
   readonly health: HealthReport | null;
@@ -424,6 +427,9 @@ class Ctx {
     this.version =
       this.report?.header?.server?.version || this.report?.server_version || this.health?.server?.version ||
       this.health?.server_version || this.config?.server_version || this.tables?.server_version || null;
+    this.product =
+      this.report?.header?.server?.product || this.report?.server_product || this.health?.server_product ||
+      this.config?.server_product || this.tables?.server_product || null;
     this.tuple = versionTuple(this.version);
     for (const f of this.report?.findings || []) this.findings.set(f.id, f);
   }
@@ -1504,7 +1510,7 @@ export function evaluateTuning(input: TuningInput): TuningReport {
     categories,
     checks,
     recommendations,
-    server: { engine: ctx.engine, version: ctx.version },
+    server: { engine: ctx.engine, version: ctx.version, product: ctx.product },
     scoring: SCORING_RULE,
     generatedAt: input.now || new Date().toISOString(),
   };
@@ -1616,7 +1622,7 @@ function fence(text: string, lang = "sql"): string[] {
 const CREDIT = "Made with myflames. Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs.";
 
 function serverText(r: TuningReport): string {
-  return `${r.server.engine === "mariadb" ? "MariaDB" : "MySQL"} ${r.server.version || ""}`.trim();
+  return `${r.server.product || (r.server.engine === "mariadb" ? "MariaDB" : "MySQL")} ${r.server.version || ""}`.trim();
 }
 function scoreText(r: TuningReport): string {
   if (r.score === null) return "No score: no check was measured.";

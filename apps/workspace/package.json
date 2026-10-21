@@ -24,6 +24,7 @@
     "test:waits": "npm run build && node test/waits.mjs",
     "test:indexes": "npm run build && node test/indexes.mjs",
     "test:tables": "npm run build && node test/tables.mjs",
+    "test:percona": "npm run build && node test/percona.mjs",
     "test:io": "npm run build && node test/io.mjs",
     "test:config": "npm run build && node test/config.mjs",
     "test:instruments": "npm run build && node test/instruments.mjs",

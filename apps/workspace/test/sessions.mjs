@@ -223,7 +223,7 @@ try {
   await page.click('.view-inspector [aria-label="Kill: connection 93"]');
   await page.waitForSelector("dialog.kill-dialog[open]");
   await page.click(".sheet-actions .danger-solid");
-  await page.waitForSelector(`${view} .kill-result.killed`);
+  await page.waitForSelector(`${view} .kill-result.killed:not([data-refreshing])`);
   const sent = state.other.find((o) => o.path === "/api/live/kill").body;
   assert.equal(sent.confirmed, true, "confirmation is the literal boolean true");
   assert.deepEqual({ id: sent.connection_id, mode: sent.mode, expect: sent.expect },
@@ -231,7 +231,7 @@ try {
       connection_identity: reportConnectionKey(sent.connection), server_identity: all.server_identity } });
   assert.equal(state.seen.length, reads + 1, "the list refreshes after the kill");
   assert.equal(declined().length, 2, "a confirmed Kill is not recorded as declined");
-  assert.match(await text(`${view} .kill-result`), /Ended\. Ended connection 93/);
+  assert.match(await text(`${view} .kill-result`), /^Done\. Ended connection 93/);
   await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
 
   // The row menu (⋯): Show plan when the statement can be explained, and
@@ -264,6 +264,74 @@ try {
   assert.equal(declined()[2].target.connection_id, 93);
   assert.equal(state.other.filter((o) => o.path === "/api/live/kill").length, 1, "the row menu sends nothing until the confirm button");
 
+  // The row's context menu (right click, Shift+F10 or the context menu key):
+  // Copy query, and Kill query… and Kill connection… for that row, each
+  // opening the same single Kill sheet with that KILL chosen. An item that
+  // cannot run stays in the menu, focusable, with its reason under it.
+  const ctx = ".context-menu[role=menu]";
+  const ctxItems = () => page.$$eval(`${ctx} [role=menuitem]`, (els) => els.map((e) => ({
+    label: e.querySelector(".context-menu-text > span, :scope > span:not(.context-menu-icon):not(.context-menu-text)")?.textContent.trim(),
+    off: e.getAttribute("aria-disabled") === "true" || e.disabled, hint: e.querySelector(".context-menu-hint")?.textContent || "" })));
+  const ctxItem = (label) => page.evaluateHandle((m, l) => [...document.querySelectorAll(`${m} [role=menuitem]`)]
+    .find((e) => (e.querySelector(".context-menu-text > span, :scope > span:not(.context-menu-icon):not(.context-menu-text)")?.textContent || "").trim() === l), ctx, label);
+  await page.click(`${row(100)} td[data-col=statement]`, { button: "right" });
+  await page.waitForSelector(ctx);
+  const running = await ctxItems();
+  assert.deepEqual(running.map((i) => i.label).filter((l) => !/^Filter by/.test(l)),
+    ["Show plan", "Open in Query editor", "Open in Locks", "Copy query", "Copy connection ID", "Kill query…", "Kill connection…"]);
+  assert.deepEqual(running.slice(-2).map((i) => [i.off, i.hint]), [[false, ""], [false, ""]], "both kills are offered for a running statement");
+  assert.ok(await page.$eval(`${ctx} [role=menuitem]:last-child`, (e) => e.classList.contains("is-danger")), "Kill is drawn as destructive");
+  await (await ctxItem("Kill query…")).asElement().click();
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  assert.match(await text("dialog.kill-dialog"), /End connection 100\?/);
+  assert.equal(await page.$eval('dialog.kill-dialog input[value="query"]', (e) => e.checked), true, "Kill query… opens the sheet on KILL QUERY");
+  await page.waitForFunction(() => /Kill query on connection 100/.test(document.querySelector("dialog.kill-dialog .danger-solid")?.textContent || ""));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog"));
+  // Focus returns to the row the menu was opened on.
+  await page.waitForFunction((s) => document.activeElement?.matches(s), {}, row(100));
+  while (declined().length < 4) await pause(25);
+  assert.deepEqual([declined()[3].target.connection_id, declined()[3].target.mode], [100, "query"]);
+  // From the keyboard on an idle session: Shift+F10 opens the menu; Kill
+  // query… is off with its reason and stays focusable; Kill connection… runs.
+  await page.focus(row(93));
+  await page.keyboard.down("Shift"); await page.keyboard.press("F10"); await page.keyboard.up("Shift");
+  await page.waitForSelector(ctx);
+  const idleItems = await ctxItems();
+  assert.deepEqual(idleItems.find((i) => i.label === "Kill query…"),
+    { label: "Kill query…", off: true, hint: "Connection 93 runs no statement now; Kill connection… ends it." });
+  assert.equal(idleItems.some((i) => i.label === "Show plan"), false, "an idle session has no plan");
+  assert.equal(idleItems.find((i) => i.label === "Kill connection…").off, false);
+  assert.equal(await page.$eval(`${ctx} [aria-disabled=true]`, (e) => e.disabled), false, "the reason can be reached");
+  await page.keyboard.press("End");
+  await page.waitForFunction(() => document.activeElement?.textContent.trim() === "Kill connection…");
+  await page.keyboard.press("ArrowUp");
+  await page.waitForFunction(() => /^Kill query…/.test(document.activeElement?.textContent.trim() || ""));
+  await page.keyboard.press("Enter");
+  await pause(200);
+  assert.ok(await page.$(ctx), "a Kill that is off does nothing when chosen");
+  assert.equal(await page.$("dialog.kill-dialog"), null);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  assert.equal(await page.$eval('dialog.kill-dialog input[value="connection"]', (e) => e.checked), true);
+  const killsBefore = state.other.filter((o) => o.path === "/api/live/kill").length;
+  const readsBefore = state.seen.length;
+  // Progress, then the answer at once, then the list read again.
+  state.delay = 400;
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog .danger-solid")?.disabled);
+  await page.click("dialog.kill-dialog .danger-solid");
+  await page.waitForSelector(`${view} .kill-result[data-refreshing=true]`);
+  assert.match(await text(`${view} .kill-result`), /^Done\. Ended connection 93/);
+  assert.match(await text(`${view} .view-status`), /Reading the sessions…/, "the view's loading line says the list is read again");
+  await page.waitForSelector(`${view} .kill-result.killed:not([data-refreshing])`);
+  state.delay = 0;
+  assert.equal(state.seen.length, readsBefore + 1, "the list is read again after the kill");
+  const sentKill = state.other.filter((o) => o.path === "/api/live/kill");
+  assert.equal(sentKill.length, killsBefore + 1);
+  assert.deepEqual([sentKill.at(-1).body.connection_id, sentKill.at(-1).body.mode, sentKill.at(-1).body.confirmed], [93, "connection", true]);
+  await page.locator(`${view} .kill-result ::-p-text(Dismiss)`).click();
+
   // Show plan for a running statement opens it in Plans.
   await h.select(row(100));
   await page.click('.view-inspector [aria-label="Show plan for connection 100"]');
@@ -292,6 +360,11 @@ try {
   assert.deepEqual(await page.$eval('.popover[role=menu] .is-danger', (e) => [e.disabled, e.title]),
     [true, "A server thread, not a client session: myflames does not end it."], "the row menu never kills a server thread");
   await page.keyboard.press("Escape");
+  await page.click(`${row(5)} td[data-col=id]`, { button: "right" });
+  await page.waitForSelector(ctx);
+  assert.equal((await ctxItems()).some((i) => /^Kill/.test(i.label)), false, "the context menu never offers to kill a server thread");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((m) => !document.querySelector(m), {}, ctx);
   await h.select(row(5));
   await inspectorHas(/Connection 5/);
   assert.equal(await page.$eval('.view-inspector [aria-label="Kill: connection 5"]', (e) => e.disabled), true);

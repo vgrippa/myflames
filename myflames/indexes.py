@@ -9,10 +9,13 @@ cost time proportional to the number of tables and open table handles.
 Sources, all raw tables (never the sys views, whose MariaDB versions differ):
 
 * Index usage: ``performance_schema.table_io_waits_summary_by_index_usage``
-  (COUNT_STAR = 0 means unused). On MariaDB with Performance Schema off and
-  ``userstat=ON``, ``information_schema.INDEX_STATISTICS`` and
-  ``TABLE_STATISTICS`` instead (an index absent from INDEX_STATISTICS on a
-  table that has a TABLE_STATISTICS row was not read).
+  (COUNT_STAR = 0 means unused). On MariaDB or Percona Server with
+  Performance Schema off and ``userstat=ON``,
+  ``information_schema.INDEX_STATISTICS`` and ``TABLE_STATISTICS`` instead
+  (an index absent from INDEX_STATISTICS on a table that has a
+  TABLE_STATISTICS row was not read). With Performance Schema on and
+  ``userstat=ON``, INDEX_STATISTICS is read as well: an index it shows read
+  is kept even when its Performance Schema count is zero.
 * Index definitions: ``information_schema.STATISTICS``. The redundancy rules
   are advisor.find_redundant_indexes, the same ones the per-plan advice uses.
 * Foreign keys: ``information_schema.KEY_COLUMN_USAGE``.
@@ -47,7 +50,23 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
   TABLE_STATISTICS.ROWS_READ counts every row read, INDEX_STATISTICS only
   those read through each index (Ma/sql/handler.h:4439-4449,
   Ma/sql/handler.cc:4059-4173, 6437-6566), so the difference is the rows read
-  without an index. It has no start time and counts reads only.
+  without an index. It has no start time and counts reads only. Percona
+  Server has the same variable and tables with the same columns (read live on
+  8.0.46-37 and 8.4.11-11: INDEX_STATISTICS TABLE_SCHEMA, TABLE_NAME,
+  INDEX_NAME, ROWS_READ; TABLE_STATISTICS adds ROWS_CHANGED and
+  ROWS_CHANGED_X_INDEXES; MariaDB's columns are in
+  Ma/plugin/userstat/index_stats.cc:5-9 and table_stats.cc:5-9). It counts
+  every session, so it also sees reads by sessions setup_actors leaves out,
+  and FLUSH INDEX_STATISTICS restarts it, not a table rebuild. Percona
+  Server's user statistics do not support partitioned tables
+  (https://docs.percona.com/percona-server/8.4/user-stats.html; read live on
+  8.0.46-37 and 8.4.11-11: rows read through a partitioned table's secondary
+  index were missing from INDEX_STATISTICS and from its TABLE_STATISTICS
+  ROWS_READ), so on Percona the partitioned tables are listed from
+  information_schema.TABLES CREATE_OPTIONS ("partitioned",
+  M/sql/dd/impl/system_views/tables.cc:55-59): their indexes are never
+  unused by user statistics and an absent count is unknown, not zero. A
+  count above zero is still a read.
 * MariaDB's information_schema.STATISTICS opens every table fully for the
   COLLATION and INDEX_TYPE columns (Ma/sql/sql_show.cc:10322, 10327,
   5072-5100), and that registers never-opened tables in Performance Schema
@@ -62,6 +81,7 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
   key's columns in order with no prefix length, never FULLTEXT or SPATIAL
   (M/storage/innobase/dict/dict0dict.cc:3371-3372, 4777-4806).
 """
+from .server_info import product_name
 from .advisor import _index_text, find_redundant_indexes
 from .connector import ConnectorError
 from .perf_common import (Reader, _count_text, _duration_text, _number, _round, base_report, check_limit,
@@ -134,7 +154,7 @@ def index_report(conn, schema=None, limit=DEFAULT_LIMIT, schemas=None, require_c
     reader = Reader(conn, INDEXES_TAG)
     notes = []
     raw = {"statistics": [], "foreign_keys": [], "usage": None, "instrument": None, "consumers": None,
-           "actors": None, "objects": None, "index_stats": None, "table_stats": None}
+           "actors": None, "objects": None, "index_stats": None, "table_stats": None, "partitioned": None}
     try:
         server = preflight(reader)
         require_choice(reader, server, schema, require_choice_above, "Index health")
@@ -153,7 +173,8 @@ def index_report(conn, schema=None, limit=DEFAULT_LIMIT, schemas=None, require_c
                 "WHERE OBJECT_TYPE = 'TABLE'", "performance_schema.setup_objects", notes)
             raw["usage"] = reader.optional(_usage_sql(schema),
                                            "performance_schema.table_io_waits_summary_by_index_usage", notes)
-        elif server.engine == "mariadb" and server.userstat:
+        if server.userstat:
+            # The only source with Performance Schema off; evidence beside it when on.
             where = _scope_sql("TABLE_SCHEMA", schema)
             raw["index_stats"] = reader.optional(
                 "SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, ROWS_READ FROM information_schema.INDEX_STATISTICS "
@@ -161,6 +182,11 @@ def index_report(conn, schema=None, limit=DEFAULT_LIMIT, schemas=None, require_c
             raw["table_stats"] = reader.optional(
                 "SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ FROM information_schema.TABLE_STATISTICS WHERE " + where,
                 "information_schema.TABLE_STATISTICS", notes)
+            if server.flavor == "percona":
+                # Percona's user statistics do not support partitioned tables (module docstring).
+                raw["partitioned"] = reader.optional(
+                    "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES WHERE TABLE_TYPE = 'BASE TABLE' "
+                    "AND CREATE_OPTIONS LIKE '%partitioned%' AND " + where, "information_schema.TABLES", notes)
         raw["statistics"] = reader.rows(_statistics_sql(server, schema))
         raw["foreign_keys"] = reader.optional(_fk_sql(schema), "information_schema.KEY_COLUMN_USAGE", notes) or []
     except ConnectorError as exc:
@@ -353,6 +379,12 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
         "scope": {"schema": schema[0] if schema and len(schema) == 1 else None,
                   "schemas": list(schema) if schema else None, "server_wide": schema is None},
         "source": source, "available": source is not None and not instrument_off,
+        # userstat=ON (MariaDB, Percona Server): the source with Performance
+        # Schema off, evidence for unused indexes with it on.
+        "userstat": {"enabled": bool(server.userstat),
+                     "read": raw.get("index_stats") is not None and raw.get("table_stats") is not None,
+                     "role": "source" if source == "userstat" else "evidence"
+                     if source == "performance_schema" and raw.get("index_stats") is not None else None},
         "unused": [], "redundant": [], "full_scans": [], "no_data": [],
         "foreign_keys": len(fks), "notes": notes,
     })
@@ -378,7 +410,8 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
     report["summary"] = {
         "tables": len(tables), "indexes": sum(len(v) for v in tables.values()),
         "unused": len(unused), "unused_candidates": sum(1 for u in unused if u["verdict"] == "candidate"),
-        "keep_foreign_key": sum(1 for u in unused if u["verdict"] == "keep"),
+        "keep_foreign_key": sum(1 for u in unused if u.get("keep_reason") == "foreign_key"),
+        "keep_userstat": sum(1 for u in unused if u.get("keep_reason") == "userstat"),
         "redundant": len(redundant), "full_scans": len(full_scans),
         "mostly_full_scans": sum(1 for f in full_scans if f["mostly"]), "no_data": len(no_data),
     }
@@ -403,10 +436,31 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
     return report
 
 
+def _userstat_reads(raw):
+    """{(schema, table, index): rows read} from INDEX_STATISTICS, or None when not read."""
+    if raw.get("index_stats") is None:
+        return None
+    return {(r[0], r[1], r[2]): _number(r[3]) or 0 for r in raw["index_stats"] if len(r) >= 4 and r[0] and r[1]}
+
+
+def _userstat_blind(server, raw):
+    """Tables whose user statistics are not counted: Percona Server's
+    partitioned tables (module docstring). An empty set elsewhere, None on
+    Percona when they could not be listed (every table is then in doubt)."""
+    if getattr(server, "flavor", None) != "percona" or raw.get("index_stats") is None:
+        return set()
+    if raw.get("partitioned") is None:
+        return None
+    return {(r[0], r[1]) for r in raw["partitioned"] if len(r) >= 2 and r[0] and r[1]}
+
+
 def _usage(server, raw, tables, backing, source, available):
     unused, full_scans, no_data = [], [], []
     if not available:
         return unused, full_scans, no_data
+    # With Performance Schema as the source, user statistics are evidence beside it.
+    userstat = _userstat_reads(raw) if source == "performance_schema" else None
+    blind = _userstat_blind(server, raw)
     objects = None
     if source == "performance_schema":
         if raw.get("objects") is not None:
@@ -438,6 +492,10 @@ def _usage(server, raw, tables, backing, source, available):
         if source == "performance_schema" and not _object_enabled(objects, s, t):
             no_data.append({"schema": s, "table": t, "indexes": count, "reason": "not_instrumented"})
             continue
+        if source == "userstat" and (blind is None or (s, t) in blind):
+            no_data.append({"schema": s, "table": t, "indexes": count,
+                            "reason": "partitioned" if blind else "userstat_unknown"})
+            continue
         if not rows:
             no_data.append({"schema": s, "table": t, "indexes": count,
                             "reason": "not_opened" if source == "performance_schema" else "not_read"})
@@ -457,12 +515,29 @@ def _usage(server, raw, tables, backing, source, available):
                 continue
             fk = backing.get((s, t, index["name"]), [])
             test, drop = _sql(server, s, t, index["name"])
+            # Absent from INDEX_STATISTICS: no row read through it in its window,
+            # unknown for a table user statistics do not count.
+            read = None
+            if userstat is not None:
+                read = userstat.get((s, t, index["name"]))
+                if read is None and blind is not None and (s, t) not in blind:
+                    read = 0
+            seen = bool(read)
             entry = {"schema": s, "table": t, "index": index["name"], "columns": _columns_text(index),
                      "visible": index["visible"], "foreign_keys": fk,
-                     "verdict": "keep" if fk else "candidate"}
+                     "verdict": "keep" if fk or seen else "candidate",
+                     "keep_reason": "foreign_key" if fk else "userstat" if seen else None,
+                     "userstat_rows_read": read}
             if fk:
                 entry["why"] = ("Shows no use since %s, but it backs a foreign key (%s). InnoDB checks foreign "
                                 "keys without going through the counters, so keep it." % (since, "; ".join(fk)))
+            elif seen:
+                entry["why"] = ("Performance Schema shows no use since %s, but user statistics "
+                                "(information_schema.INDEX_STATISTICS) count %s rows read through it since userstat "
+                                "was turned on or the last FLUSH INDEX_STATISTICS, so it is in use. User statistics "
+                                "count every session, including sessions setup_actors does not instrument, and keep "
+                                "their counts when the table is rebuilt; keep it."
+                                % (since, _count_text(read)))
             else:
                 entry["why"] = "No use since %s (%s)." % (since, evidence)
                 if not index["visible"]:
@@ -520,7 +595,7 @@ def _full_scan_why(f):
 def _notes(server, raw, report, schema, source, instrument_off, notes):
     uptime = server.uptime
     if source is None:
-        if server.engine == "mariadb" and not server.ps_on:
+        if (server.engine == "mariadb" or server.flavor == "percona") and not server.ps_on:
             notes.insert(0, ps_off_text(server, "index usage") + (
                 " Alternatively, turn on user statistics at runtime with SET GLOBAL userstat = ON; it "
                 "counts reads through each index from that moment (a small overhead on every "
@@ -556,10 +631,27 @@ def _notes(server, raw, report, schema, source, instrument_off, notes):
         if any(n["reason"] == "not_instrumented" for n in report["no_data"]):
             notes.append("performance_schema.setup_objects turns table instrumentation off for some tables in "
                          "scope; their indexes are listed under No data.")
+        if raw.get("index_stats") is not None:
+            notes.append("User statistics are on (userstat=ON), so an index that Performance Schema shows unused "
+                         "but information_schema.INDEX_STATISTICS shows read is marked keep. They count from when "
+                         "userstat was turned on or the last FLUSH INDEX_STATISTICS.")
     elif source == "userstat":
-        notes.append("Using MariaDB user statistics (userstat=ON) because Performance Schema is off. They count "
+        notes.append("Using %s user statistics (userstat=ON) because Performance Schema is off. They count "
                      "reads only, from when userstat was turned on or the last FLUSH INDEX_STATISTICS; there is "
-                     "no start time to show. Tables with no reads or changes since then are under No data.")
+                     "no start time to show. Tables with no reads or changes since then are under No data."
+                     % server.product)
+    blind = _userstat_blind(server, raw)
+    if blind is None:
+        notes.append("Percona Server's user statistics do not support partitioned tables, and myflames could not "
+                     "list them (information_schema.TABLES), so user statistics %s."
+                     % ("are not used to call any index unused" if source == "userstat"
+                        else "show reads but never an absence of reads"))
+    elif blind and source in ("performance_schema", "userstat"):
+        which = ("the partitioned table in scope" if len(blind) == 1
+                 else "the %s partitioned tables in scope" % _count_text(len(blind)))
+        notes.append("Percona Server's user statistics do not support partitioned tables, so %s."
+                     % ("the indexes of %s are under No data" % which if source == "userstat"
+                        else "for %s they can show that an index was read, never that it was not" % which))
     if uptime is not None and uptime < SHORT_UPTIME_S and source == "performance_schema":
         notes.append("The server has been up only %s, so infrequent jobs may not have run yet."
                      % _duration_text(uptime))
@@ -578,8 +670,19 @@ def _notes(server, raw, report, schema, source, instrument_off, notes):
 # ---- text output for the CLI -------------------------------------------------------
 
 
+# Why a table is under No data, for the text output (Indexes.tsx NO_DATA).
+NO_DATA_TEXT = {
+    "not_opened": "not opened since the counts started",
+    "no_activity": "no rows read or written",
+    "not_instrumented": "not instrumented (setup_objects)",
+    "not_read": "no reads since userstat started",
+    "partitioned": "partitioned, which Percona Server's user statistics do not count",
+    "userstat_unknown": "partitioned tables could not be listed, and Percona Server's user statistics do not count them",
+}
+
+
 def format_text(report):
-    head = "%s %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL", report["server_version"] or "?")
+    head = "%s %s" % (product_name(report), report["server_version"] or "?")
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     scope = report["scope"]
@@ -587,7 +690,8 @@ def format_text(report):
     head += ", %s" % (scope_text(chosen) if chosen else "every schema")
     s = report["summary"]
     lines = [head, "%d tables, %d indexes; usage from %s" % (
-        s["tables"], s["indexes"], {"performance_schema": "Performance Schema", "userstat": "MariaDB userstat"}.get(
+        s["tables"], s["indexes"], {"performance_schema": "Performance Schema",
+                                    "userstat": "%s user statistics (userstat)" % product_name(report)}.get(
             report["source"], "nothing (see notes)")), ""]
     lines.append("UNUSED INDEXES")
     if not report["available"]:
@@ -596,7 +700,8 @@ def format_text(report):
         lines.append("  None.")
     else:
         rows = [["%s.%s" % (u["schema"], u["table"]), u["index"], u["columns"],
-                 "keep: backs a foreign key" if u["verdict"] == "keep" else "candidate"] for u in report["unused"]]
+                 "candidate" if u["verdict"] != "keep" else "keep: read per user statistics"
+                 if u.get("keep_reason") == "userstat" else "keep: backs a foreign key"] for u in report["unused"]]
         lines.extend("  " + l for l in table_text(["TABLE", "INDEX", "COLUMNS", "VERDICT"], rows).split("\n"))
     lines.append("")
     lines.append("REDUNDANT INDEXES")
@@ -624,6 +729,10 @@ def format_text(report):
                      quote("%s.%s" % (first["schema"], first["table"])))
     if report["no_data"]:
         lines.append("")
-        lines.append("NO DATA (no reads or writes recorded since the counts started)")
-        lines.append("  " + ", ".join("%s.%s" % (n["schema"], n["table"]) for n in report["no_data"]))
+        lines.append("NO DATA (never listed as unused: there is nothing to judge)")
+        groups = {}
+        for n in report["no_data"]:
+            groups.setdefault(n["reason"], []).append("%s.%s" % (n["schema"], n["table"]))
+        for why, names in groups.items():
+            lines.append("  %s: %s" % (NO_DATA_TEXT.get(why, why), ", ".join(names)))
     return "\n".join(lines) + "\n"

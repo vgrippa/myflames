@@ -58,9 +58,11 @@ The sidebar separates where you go from what you have open:
 | **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. **News**, under Recent work (below it on a narrow window), lists up to six MySQL and MariaDB headlines with their source and age; each opens in your browser, **Refresh news** reads again, and one line says when news is loading, unavailable offline (with when it was last updated) or empty. The version line sits at the bottom of Home with **Check for updates**, which asks GitHub only when clicked and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
 | **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes |
 | **Query editor** | SQL tabs that run any SQL in a session of their own (Run, Run all, Stop, results per result set, Messages, export, transactions), Explain and Run analysis, the schema browser, the run history, and the connection in use |
-| **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
+| **Query digest** | Right below the Query editor: the statement digests of the connection in use profiled in the style of pt-query-digest (ranked by total time, full scans, joins without an index, temporary tables on disk, lock time, or slow queries), with Export. A row's **Open in editor** and **Explain** open the Query editor, which runs them. See [Query digest](#query-digest) |
+| **Database diagram** | After Query digest: the tables, columns and relationships of a database, read from the connection in use or imported without executing SQL, with a Diagram \| Mermaid view. See [Database diagram](#database-diagram) |
+| **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
 | **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O) |
-| **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation |
+| **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation. A server with no asynchronous channel reads **Not a replica** (never Unknown), and the item is greyed in the sidebar once a read says so |
 | **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers, with a member's changes (Make primary, Stop or Start Group Replication, Desync, Resync, Bootstrap a Primary component) in its inspector, each after its own confirmation. Greyed in the sidebar once the connection is known not to be part of a cluster |
 | **ProxySQL** | The ProxySQL Admin interface the connection in use reaches: backends as ProxySQL runs them with their connection pool, hostgroups, query rules and query digests, with a server's or rule's changes in its inspector and Load and Save to disk on the Configuration line, each after its own confirmation. Greyed in the sidebar once the connection is known not to be a ProxySQL Admin interface |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
@@ -84,10 +86,10 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   for a problem, amber to watch, a gray ring when unknown or off, nothing when
   OK) and a neutral count beside it, so color always means state.
   Nothing is read just for a badge. A view reads when it is opened on screen,
-  once per connection (Refresh retries); Tables and Indexes keep their
-  schema-size consent, Error log waits for **Load**, and nothing reads off
-  screen (Server, Replication and Cluster mount on their first visit, and a hidden view
-  never reads on its own). The arrow keys move between items.
+  once per connection (Refresh retries), Top statements and Error log
+  included; Tables and Indexes keep their schema-size consent, and nothing
+  reads off screen (Server, Replication, Cluster, ProxySQL and Query digest
+  mount on their first visit, and a hidden view never reads on its own). The arrow keys move between items.
 - **The list of views floats** by default in a wide window, so the view gets
   the full width: the view's title is a pop-up button ("Health ▾") that opens
   the list under it, with the same groups, icons and markers. Enter, Space or
@@ -140,6 +142,16 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Top statements, and Lock structs and Isolation in Locks transactions.
   Processlist rows have no buttons: each row's ⋯ menu holds **Show plan** and
   **Kill…**, which opens the same confirmation sheet as Kill in the details.
+  Right click on a row (or Shift+F10, or the context menu key) opens its
+  menu: Show plan, Open in Query editor, Open in Locks, filters, **Copy
+  query**, **Copy connection ID**, then **Kill query…** and **Kill
+  connection…** for that row. Each opens the same sheet with that KILL
+  chosen. An item that cannot run stays in the menu with its reason under it
+  (a read-only connection, settings still loading, a missing privilege, a
+  server thread, a session with no statement to stop). While the KILL is sent
+  the sheet's button says so; the answer then shows above the list at once
+  (Done, Already ended, The server refused, Outcome unknown, or Nothing was
+  sent) while the list is read again.
   **Kill sessions…** in the Processlist toolbar opens the Kill sessions
   dialog: presets (Runaway queries, Idle sleeping, Lock waiters, All clients)
   and filters choose client sessions (system threads and your own connection
@@ -207,8 +219,8 @@ its late answers; it also drops any view's read still on its way, so switching
 back never shows an answer read before the switch. It can start before any
 section has been loaded.
 
-**Error log** (Overview, after InnoDB) reads nothing until **Load error log**
-or Refresh all. On MySQL it reads `performance_schema.error_log`: the newest
+**Error log** (Overview, after InnoDB) reads when it is opened on screen, once
+per connection (Refresh and Refresh all read again). On MySQL it reads `performance_schema.error_log`: the newest
 entries with their level (System, Error, Warning, Note), code and subsystem,
 the most frequent codes under **By code**, and entries the server reloaded from
 its previous run (hide them with **This run only**). **Time** limits the list
@@ -300,9 +312,27 @@ row. A change whose reply does not arrive shows **Outcome unknown**: it may have
 run, so check the value before trying again. Cancel or Escape sends nothing and
 records a declined attempt for every planned row in the [Audit log](#audit-log).
 
-The inspector shows value, default, source with path and who set it when,
-persisted (MySQL), allowed values, scope, apply type and description, plus
-every covering check (status, explanation, what to do). Its actions are **Edit
+The inspector has one compact section per parameter: a one-sentence
+description (the server's own text on MySQL 9.0 and later and on MariaDB; on
+MySQL 8.0 and 8.4 the same help text, taken from the MySQL source because
+those servers do not report it; otherwise the opening sentence of a check
+about that parameter), a
+**Documentation** link to its entry in the official manual, and **Current
+value** (Value, Default, Source with its path and who set it when, Changes:
+Now, Now for new sessions, After a restart, Option file then a restart, or Set
+by the server; Allowed values; Persisted on MySQL; and Checked, the checks that
+cover it when none flags it). Only when a check flags the parameter (Watch or
+Problem) does a **Recommendation** follow: the most severe check, its reason,
+the suggested statement and option file line to copy, and its caveat in one
+line; any other check that flags it is named once. The link opens in your
+browser: the MySQL Reference Manual for the server's version (8.1 to 8.3 use
+the 8.4 manual, 9.0 to 9.6 the 9.7 manual; a variable that manual leaves out
+links to the nearest one that has it, which the link's label names), MariaDB's
+documentation, and Percona's manuals (Percona Server and Percona XtraDB
+Cluster) for the variables a Percona server adds. The locations come from the
+generated `myflames/sysvar_docs.py`; nothing is fetched to build them. A row's
+context menu also has **Open documentation**. Its actions, in the bar under the
+name, are **Edit
 value**, **Reset to default** (stages `DEFAULT` for MySQL numeric and boolean
 dynamic parameters), **Change…** (the single-parameter sheet with every mode,
 including **This session only**, which opens the planned `SET SESSION`
@@ -331,7 +361,13 @@ on screen, once per connection (when it is opened after another connection was
 chosen elsewhere it reads once for that one); **Refresh** reads again, and the Server
 place's **Refresh all** feeds this place too, so opening Replication afterwards shows
 that answer without another read. Choosing another connection while Replication stays
-on screen greys the old report until **Refresh**. The header switches between
+on screen greys the old report until **Refresh**. A server with no
+asynchronous replication channel reads **Not a replica**, a calm state with
+the reason, never Unknown: a Group Replication member (whose
+group_replication_applier and group_replication_recovery channels belong to
+the group) and a Galera node get **Open Cluster**, and the sidebar item is
+greyed with "This connection is not a replica" while staying focusable.
+Unknown means only that the status could not be read or was not allowed. The header switches between
 **Topology**, **Channels** (**Connections** on MariaDB), **Lag**, **GTID** and
 **Recovery**. Under the summary line four tiles show the replica state, the
 channel count, the maximum applier lag (**Unknown** whenever any judged
@@ -371,8 +407,9 @@ table, failing GTID, the server's text), the lag signals with their caveats
 (Seconds_Behind_Source alone never says a replica is caught up), the
 positions and GTID state in one list (GTID mode and Enforce GTID consistency
 named in full), what recovery needs, and the raw channel status behind a
-disclosure. Group Replication channels
-are listed as Not judged and cannot be skipped here. A healthy channel shows no
+disclosure. Group Replication's own channels
+are not listed (a note names them when the server also has an asynchronous
+channel) and cannot be skipped here. A healthy channel shows no
 recovery actions. When the applier stopped
 on an error, the inspector offers two changes, each with its own confirmation
 sheet that reads the failure again before it opens and shows the exact
@@ -595,9 +632,27 @@ the dump manifest. Jobs belong to the myflames process and to the connection
 they ran on: after a switch they stay greyed until you switch back, a reloaded
 page finds them again, and a Start whose reply was lost is found in the job
 list instead of being sent twice. A running job is also named above any other
-Server view with **Open Maintenance**. A dump uses MySQL Shell when it is
-offered, or the engine's SQL dump tool when you choose it; a table dump needs
-exactly one database. Options follow the selected tool: MySQL Shell offers file compression, chunking and rate limits; SQL dump tools offer hexadecimal binary output, DROP TABLE statements and connection compression. Triggers, routines and events can be selected where the scope supports them. Compression levels require Shell 8.4 or newer. Connection compression and TLS do not encrypt local backup files; use an encrypted destination or encrypt the completed backup separately. The exact options appear in the preflight and manifest. The donor password for a clone stays in the page and is
+Server view with **Open Maintenance**. The Dump form puts each label left of
+its control (rows stack below 650 px): **Scope** (Whole instance or Databases),
+**Databases**, and once exactly one database is chosen, **Tables**: its tables
+are read then (name, engine, the server's estimated rows and size; 200 at a
+time with **Load more tables**) into a searchable list whose default is **All
+tables**. Ticked tables make a table dump of exactly those names; a table that
+a **Reload list** no longer shows blocks the preflight until you choose again,
+and the preflight itself fails for a name the database does not have. A dump
+uses MySQL Shell when it is offered, or the engine's SQL dump tool when you
+choose it (the Tool list names it). **Options for** the tool are one form in
+sections, with a line under the heading summarizing what differs from the
+tool's defaults: **Performance** (MySQL Shell: Threads, Chunking, Chunk size,
+Rate limit per thread), **Contents** (Include Triggers, Stored routines and
+Events; a MySQL Shell table dump has no routines or events), **SQL output** (SQL
+dump tools: binary values as hexadecimal, DROP TABLE before each CREATE TABLE)
+and **Compression** (MySQL Shell: Method and Level, the level needing Shell 8.4
+or newer; SQL dump tools: compress the traffic from the server, which leaves
+the backup file uncompressed). One line says backup files are not encrypted,
+with **Why**: connection compression and TLS do not encrypt local backup files;
+use an encrypted destination or encrypt the completed backup separately. The
+exact options appear in the preflight and manifest. The donor password for a clone stays in the page and is
 never saved, and a clone always requires TLS to the donor (the donor address
 can differ when the recipient reaches it by another name). Clone is MySQL
 only; MariaDB is pointed to mariadb-backup on the server host.
@@ -640,8 +695,8 @@ and news feeds when shown and turned on), and the credits (Brendan Gregg's
 FlameGraph and Tanel Poder's SQL Plan FlameGraphs). Close is its default button, and in a
 short window its text scrolls while Close stays in view. The
 top bar names the place once (Server and Workload name the view in the view
-header, Plans names the plan in the plan header, and Replication, Cluster and
-Tuning, one view each, name the place in their view header only) and has one sidebar
+header, Plans names the plan in the plan header, and Replication, Cluster,
+Tuning, Query digest and Database diagram, one view each, name the place in their view header only) and has one sidebar
 toggle. With plans open it also shows **Save investigation** with **Unsaved
 changes** or **Investigation saved**. The top bar holds no status badge and no
 privileges button: on the places that send to a connection it shows the sidebar
@@ -852,14 +907,29 @@ one of them in the form and it warns that the connection is Production there,
 shows Production, and saves as Production unless you choose Development again.
 **Use** with such edits, before saving, is Production too.
 
-The window footer of the Query editor, Server, Workload, Replication, Cluster
-and Tuning starts with the write safety of the connection in use: a purple dot and
+Every view names the server by its product: MySQL, MariaDB, Percona Server
+("Percona Server 8.4.11-11", the release number kept) or Percona XtraDB
+Cluster, in its summary line, the window footer, the connection test, Tuning,
+the Full analysis, Replication's source version and Cluster. Percona Server
+follows MySQL's rules; what it adds is shown only when the server reports it:
+with `userstat=ON`, Indexes keeps an index Performance Schema shows unused when
+user statistics saw it read ("Keep: read per user statistics", with the rows
+read in its details) and Tables adds a Rows changed column (inserts, updates
+and deletes together; a dash for a partitioned table, which user statistics do
+not count reliably); Health shows a
+Thread pool row (threads and idle threads) in place of the Thread cache under
+`thread_handling=pool-of-threads`;
+Parameters tags the variables Percona adds with **Percona**.
+
+The window footer of the Query editor, Query digest, Database diagram, Server,
+Workload, Replication, Cluster, ProxySQL and Tuning starts with the write safety
+of the connection in use: a purple dot and
 "Production · changes ask first" (the full sentence, "Production: every change
 on NAME asks first", is its tooltip and accessible name), an outlined dot and
 "Read-only · changes refused", or a teal dot and "Development · risky changes
 ask first". Nothing is drawn under the top bar, so the top bar and view
-headers stay clear. The picker has a dot of the same color (red Production,
-green Development, an outline when read-only) and the PRODUCTION tag. The
+headers stay clear. The picker has a dot of the same color (purple Production,
+teal Development, an outline when read-only) and the PRODUCTION tag. The
 server enforces the type on every write; the footer and the dot only show it. Saved connections are read
 again whenever the window comes back and right before a Kill is sent, so a
 type or read-only change made in another tab or with `myflames profiles set`
@@ -1072,9 +1142,27 @@ Top statements opens a selected statement in a detail view using the available w
 
 Tables shows reusable InnoDB free space as information. **Optimize table** is an optional action with exact SQL and rebuild caveats to review. Instruments reads on open (one attempt per connection) and organizes its view into **Features**, **Instruments**, **Consumers**, and **Actors and objects** tabs: filter and select up to 2,000 instruments (with **Enable**, **Enable without timing**, **Disable**, and **Clear selection**) or consumers (enabling required parent consumers automatically), and run batched `UPDATE` statements (up to 500 names per statement) through the reviewed SQL runner, with copy-only option file lines under **Keep after restart**. Both require confirmation on Development and Production connections, refuse Read-only connections and remain disabled for stale data from another connection. Copying statements still works independently.
 
+## Query digest
+
+**Query digest**, right below the Query editor in the sidebar's SQL workspace
+group (and in the command palette), profiles the statement digests of the
+connection in use in the style of pt-query-digest. It reads when it is opened
+on screen, once per connection; **Refresh** reads again, and choosing another
+filter or row count reads that list. The filters rank by total time, full
+scans, joins without an index, temporary tables on disk or lock time, or list
+slow queries (over 1 s). **Export** saves a pt-query-digest style text report
+or CSV. A row's **Open in editor** and **Explain** open it in a new Query
+editor tab, which runs it (the editor's own checks and confirmations apply).
+It is not a tab of the Query editor. It fills the window between the top bar
+and the footer, so the list of statements and the inspector scroll on their
+own however many rows are read. Start fresh, or another window's newer
+workspace, starts it over: its search and selection are cleared and it reads
+again.
+
 ## Database diagram
 
-Open **Server > Schema > Database diagram** to inspect a database's tables,
+Open **Database diagram** in the sidebar's SQL workspace group (after Query
+digest; Home's Database diagram card and the command palette open it too) to inspect a database's tables,
 columns, keys, and foreign-key relationships. Choose a database from the connected server and select **Rebuild from database** to read fresh metadata. Rebuilding retains positions for tables that remain and incorporates added or removed tables and relationships. Replacing an imported diagram asks for confirmation first; cancel leaves it intact. You can also import SQL (`.sql`), Mermaid (`.mmd` or `.mermaid`), or editable JSON
 without a database connection. Imports are parsed as data and never executed.
 Files and models are limited to 2 MiB; a model holds at most 200 tables,
@@ -1106,9 +1194,10 @@ key. Mermaid cardinalities are retained as modeling information.
 Export SQL or Mermaid after reviewing any loss warnings, editable JSON to keep
 the model and table positions, or standalone SVG to share the drawing. Export
 does not apply schema changes. The diagram and layout stay in memory and are
-not part of session restore; save JSON to continue later. Refresh all reloads
-live diagrams and can build the selected database before the first diagram
-load. Imported diagrams remain unchanged.
+not part of session restore; save JSON to continue later. The place has no
+Refresh all of its own: Server's Refresh all reloads live diagrams and can
+build the selected database before the first diagram load, and opening the
+place while it reads keeps that answer. Imported diagrams remain unchanged.
 
 
 ## API

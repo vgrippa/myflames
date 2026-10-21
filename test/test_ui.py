@@ -36,9 +36,14 @@ class TestBackendReadLimits(unittest.TestCase):
         args, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'prefix': 'a%_', 'after': 'a%_Z'},
                                  'myflames.schema_browser.catalog_report')
         self.assertEqual(args[1:], ('shop', None))
-        self.assertEqual(kwargs, {'prefix': 'a%_', 'after': 'a%_Z'})
+        self.assertEqual(kwargs, {'prefix': 'a%_', 'after': 'a%_Z', 'stats': False})
         _, kwargs = self.call('/api/live/catalog', {'schema': 'shop'}, 'myflames.schema_browser.catalog_report')
-        self.assertEqual(kwargs, {'prefix': None, 'after': None})
+        self.assertEqual(kwargs, {'prefix': None, 'after': None, 'stats': False})
+        # Maintenance > Dump asks for engine, rows and size; only a literal true does.
+        for value, expected in ((True, True), ('true', False), (1, False), (None, False)):
+            _, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'stats': value},
+                                  'myflames.schema_browser.catalog_report')
+            self.assertIs(kwargs['stats'], expected, value)
 
     def test_catalog_rejects_invalid_paging_before_opening_a_connection(self):
         for key in ('prefix', 'after'):
@@ -54,7 +59,7 @@ class TestBackendReadLimits(unittest.TestCase):
             with self.subTest(value=value):
                 _, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'prefix': value, 'after': value},
                                       'myflames.schema_browser.catalog_report')
-                self.assertEqual(kwargs, {'prefix': expected, 'after': expected})
+                self.assertEqual(kwargs, {'prefix': expected, 'after': expected, 'stats': False})
 
     def test_selected_and_global_schema_limits_require_a_boolean_override(self):
         for route, target in (('tables', 'myflames.schema_health.table_report'),
@@ -663,9 +668,10 @@ class TestWorkspaceTeach(unittest.TestCase):
 class _FakeDB(object):
     """Stands in for MySQLConnection in connection/test; records the options."""
 
-    def __init__(self, error=None):
+    def __init__(self, error=None, version='8.4.3', comment='MySQL Community Server - GPL'):
         self.error = error
         self.options = None
+        self.version, self.comment = version, comment
 
     def __call__(self, **options):
         self.options = options
@@ -680,7 +686,13 @@ class _FakeDB(object):
         return False
 
     def server_version(self):
-        return '8.4.3'
+        return self.version
+
+    def server_version_comment(self):
+        return self.comment
+
+    def is_mariadb(self):
+        return 'mariadb' in (self.version + self.comment).lower()
 
     def query_rows(self, sql):
         return [['shop']]
@@ -830,6 +842,7 @@ class TestProfilePasswordAPI(unittest.TestCase):
         with mock.patch('myflames.connector.MySQLConnection', fake):
             result = self.call('/api/connection/test', {'connection': self.connect(profile_id)})
         self.assertEqual(result['version'], '8.4.3')
+        self.assertEqual((result['engine'], result['flavor'], result['product']), ('mysql', 'mysql', 'MySQL'))
         self.assertEqual(fake.options['password'], self.PASSWORD)
         self.call('/api/live/start', {'connection': self.connect(profile_id), 'query': 'SELECT 1'})
         self.assertEqual(self.workspace.jobs.payloads[-1]['connection']['password'], self.PASSWORD)
@@ -849,6 +862,16 @@ class TestProfilePasswordAPI(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'own host, port, user, and TLS settings'):
             self.call('/api/connection/test', {'connection': self.connect(profile_id, host='evil.example')})
 
+
+    def test_connection_test_names_percona_server(self):
+        """Percona names itself only in @@version_comment (read live on 8.4.11-11)."""
+        from unittest import mock
+        profile_id = self.save()['id']
+        fake = _FakeDB(version='8.4.11-11', comment='Percona Server (GPL), Release 11, Revision 57878ff8')
+        with mock.patch('myflames.connector.MySQLConnection', fake):
+            result = self.call('/api/connection/test', {'connection': self.connect(profile_id)})
+        self.assertEqual((result['version'], result['engine'], result['flavor'], result['product']),
+                         ('8.4.11-11', 'mysql', 'percona', 'Percona Server'))
     def test_saved_password_binds_to_the_exact_tls_mode(self):
         # A profile saved without ssl_mode means "the client's own default",
         # which is not PREFERRED for every client (MariaDB 11.4+ verifies by

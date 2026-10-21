@@ -435,6 +435,8 @@ export function TablesView({
     { key: "rows", label: "Rows (est.)", num: true, sort: r => r.rows, render: r => <CompactNumber value={r.rows} /> },
     { key: "data", label: "Data", num: true, sort: r => r.data_bytes, render: r => bytes(r.data_bytes) },
     { key: "indexes", label: "Indexes", num: true, sort: r => r.index_bytes, render: r => bytes(r.index_bytes) },
+    ...(report?.userstat?.read ? [{ key: "changed", label: "Rows changed", num: true, sort: (r: TableInventoryRow) => r.rows_changed ?? null,
+      render: (r: TableInventoryRow) => <CompactNumber value={r.rows_changed ?? null} /> }] : []),
   ];
   const missingColumns: Column<MissingPrimaryKey>[] = [
     {
@@ -457,6 +459,9 @@ export function TablesView({
     },
     { key: "rows", label: "Rows (est.)", num: true, width: 112, sort: (m) => m.rows, render: (m) => <CompactNumber value={m.rows} /> },
     { key: "size", label: "Size", num: true, width: 112, sort: (m) => m.size_bytes, render: (m) => bytes(m.size_bytes) },
+    // userstat=ON: rows inserted, updated or deleted (unknown for partitioned tables).
+    ...(report?.userstat?.read ? [{ key: "changed", label: "Rows changed", num: true, width: 120,
+      sort: (m: MissingPrimaryKey) => m.rows_changed ?? null, render: (m: MissingPrimaryKey) => <CompactNumber value={m.rows_changed ?? null} /> }] : []),
     {
       key: "clustered",
       label: "Clustered on",

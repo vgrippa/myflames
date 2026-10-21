@@ -1163,7 +1163,7 @@ def _catalog_response(payload):
     try:
         with MySQLConnection(**options) as conn:
             return catalog_report(conn, payload.get("schema"), payload.get("table"),
-                                  prefix=prefix, after=after)
+                                  prefix=prefix, after=after, stats=payload.get("stats") is True)
     except (ValueError, ConnectorError) as exc:
         _reraise_redacted(exc, options.get("password"))
 
@@ -1541,7 +1541,13 @@ def api_response(path, payload, workspace=None):
             options = connection_options(payload.get("connection"))
             try:
                 with MySQLConnection(**options) as conn:
-                    return {"version": conn.server_version(), "schemas": [row[0] for row in conn.query_rows("SHOW DATABASES") if row]}
+                    from .server_info import product_identity
+                    version = conn.server_version()
+                    comment = "" if conn.is_mariadb() else conn.server_version_comment()
+                    identity = product_identity(version, comment)
+                    return {"version": version, "engine": identity["engine"], "flavor": identity["flavor"],
+                            "product": identity["product"],
+                            "schemas": [row[0] for row in conn.query_rows("SHOW DATABASES") if row]}
             except (ValueError, ConnectorError) as exc:
                 _reraise_redacted(exc, options.get("password"))
         if path == "/api/live/kill/prepare":

@@ -68,6 +68,7 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
 """
 import re
 
+from .server_info import product_name
 from .connector import ConnectorError
 from .discover import _processlist_source
 from .health import CONNECTIONS_USED_PCT, _grade
@@ -727,7 +728,7 @@ def _secs(value):
 def format_text(report):
     from .perf_common import table_text
     s = report["summary"]
-    head = "%s %s, %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL",
+    head = "%s %s, %s" % (product_name(report),
                           report["server_version"] or "?", report["source"])
     lines = [head, "Status: %s. %s" % (s["status"].upper() if s["status"] != "ok" else "ok", s["text"]), ""]
     c = s["connections"]

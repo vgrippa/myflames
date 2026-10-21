@@ -90,7 +90,7 @@ import re
 from .connector import ConnectorError, MySQLConnection
 from .live import capture_problem
 # Compatibility exports for one release; these primitives no longer belong to discovery.
-from .perf_common import SERVER_STATE_SQL, _denied, _reason, _server, _version_tuple, text_rows
+from .perf_common import SERVER_STATE_SQL, _denied, _reason, _server, _version_tuple, conn_identity, text_rows
 
 ORDERS = {
     "total": "SUM_TIMER_WAIT",
@@ -428,6 +428,7 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
             "(needs a restart) or truncate the table to see them; Performance_schema_digest_lost "
             "counts them too." % ("{:,}".format(count), _ms_text(total_ms)))
     report = {"schema_version": "top-1.0", "engine": engine, "server_version": version,
+              **conn_identity(conn, engine, version),
               "order": order, "limit": limit, "schema": schema, "notes": notes,
               "statements": items,
               "table": {"schema": table[0], "table": table[1]} if table else None,
@@ -914,6 +915,7 @@ def running_report(conn, min_seconds=0):
     if source == "performance_schema.processlist" or engine == "mariadb":
         notes.append("Without the PROCESS privilege only your own user's sessions are listed.")
     return {"schema_version": "running-1.0", "engine": engine, "server_version": version,
+            **conn_identity(conn, engine, version),
             "source": source, "min_seconds": min_seconds, "notes": notes,
             "statements": statements}
 

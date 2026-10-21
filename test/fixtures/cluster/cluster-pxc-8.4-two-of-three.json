@@ -27,6 +27,8 @@
  "report": {
   "schema_version": "cluster-1.0",
   "engine": "mysql",
+  "flavor": "percona",
+  "server_product": "Percona XtraDB Cluster",
   "server_version": "8.4.11-11.1",
   "version_comment": "Percona XtraDB Cluster (GPL), Release rel11, Revision 33f7510, WSREP version 26.1.4.3",
   "captured_at": "2026-10-20T14:49:06.644413+00:00",

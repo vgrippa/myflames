@@ -129,11 +129,20 @@ try {
   await downloads.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: directory });
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  await page.setRequestInterception(true);
-  page.on("request", async (request) => {
+  // Every page of the suite (a second tab included) answers from these handlers.
+  const route = async (request) => {
     const pathname = new URL(request.url()).pathname;
     const handler = handlers[pathname];
-    if (!handler) return request.continue();
+    if (!handler) {
+      // A real session save can be paused while another tab saves a newer
+      // snapshot, so the conflict arrives with the original place on screen.
+      const gate = gates[pathname];
+      if (gate && gate.when(JSON.parse(request.postData() || "{}"), request)) {
+        gate.started = true;
+        await gate.promise;
+      }
+      return request.continue();
+    }
     const body = JSON.parse(request.postData() || "{}");
     (seen[pathname] = seen[pathname] || []).push(body);
     const reply = JSON.stringify(handler(body));
@@ -141,7 +150,9 @@ try {
     if (gate && gate.when(body)) await gate.promise;
     try { await request.respond({ status: 200, contentType: "application/json", body: reply }); }
     catch { /* the page aborted the request while it was held */ }
-  });
+  };
+  await page.setRequestInterception(true);
+  page.on("request", route);
   await page.setViewport({ width: 1440, height: 1000 });
   await page.goto(url, { waitUntil: "networkidle0" });
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
@@ -155,16 +166,23 @@ try {
     page.$$eval(".main-nav [aria-current=page]", (els) => els.map((e) => e.textContent));
   const visible = (selector) =>
     page.$eval(selector, (e) => !!(e.offsetWidth || e.offsetHeight)).catch(() => false);
-  const last = (pathname) => seen[pathname].at(-1);
+  const last = (pathname) => (seen[pathname] || []).at(-1);
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
-  // 1. Places: eleven, in order (Cluster right after Replication, then
-  // ProxySQL), each with its own icon.
-  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning", "Query editor", "Plans", "Investigations", "Learn"];
+  // 1. Places: thirteen, in order (Cluster right after Replication, then
+  // ProxySQL; Query digest and Database diagram right below the Query editor
+  // in the SQL workspace group), each with its own icon.
+  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning", "Query editor", "Query digest", "Database diagram", "Plans", "Investigations", "Learn"];
   assert.deepEqual(await texts(".main-nav button"), places);
   const icons = await page.$$eval(".main-nav button svg", (els) => els.map((e) => e.innerHTML));
-  assert.equal(icons.length, 11);
-  assert.equal(new Set(icons).size, 11, "every place has a distinct icon");
+  assert.equal(icons.length, 13);
+  assert.equal(new Set(icons).size, 13, "every place has a distinct icon");
+  // The SQL workspace group: Query editor, Query digest, Database diagram, Plans.
+  assert.deepEqual(await page.$$eval(".main-nav > *", (els) => {
+    const start = els.findIndex((e) => e.textContent === "SQL workspace");
+    const end = els.findIndex((e) => e.textContent === "Library");
+    return els.slice(start + 1, end).map((e) => e.textContent);
+  }), ["Query editor", "Query digest", "Database diagram", "Plans"]);
   assert.equal(await page.$eval(".brand", (e) => e.getAttribute("aria-label")), "myflames Home");
   assert.equal(await page.title(), "myflames · Performance workspace");
 
@@ -190,6 +208,8 @@ try {
   const screens = {
     Plans: ".plans-empty",
     "Query editor": ".query-lab",
+    "Query digest": ".digest-place .query-digest-container",
+    "Database diagram": ".server-place.is-diagram-place .server-view[data-view=diagram]",
     Server: ".server-place",
     Workload: ".server-place",
     Replication: ".replication-place",
@@ -254,6 +274,18 @@ try {
       if (geometry.own) assert.ok(geometry.all.right <= geometry.own.left || geometry.all.left >= geometry.own.right, `${label}: Refresh all is not stacked over Refresh ${JSON.stringify(geometry)}`);
       assert.ok(geometry.toolbarBottom <= geometry.barBottom - 1, `${label}: the top bar keeps its hairline ${JSON.stringify(geometry)}`);
     }
+    // Database diagram is a place of its own too: one view, full width.
+    if (label === "Database diagram") {
+      assert.equal(await page.$eval(".server-place.is-diagram-place", (e) => !!e.querySelector(".source-list, .place-toolbar, .view-switcher")), false,
+        "Database diagram shows no Server navigation");
+      assert.equal(await page.$eval(".server-place.is-diagram-place .server-content", (e) => Math.round(e.getBoundingClientRect().left)),
+        await page.$eval("main", (e) => Math.round(e.getBoundingClientRect().left)), "the diagram starts at the content's edge");
+    }
+    // The Query editor has no Query digest tab: Query digest is its own place.
+    if (label === "Query editor") {
+      assert.equal(await page.$(".query-mode-switch"), null, "no Editor | Query digest switch");
+      assert.equal(await page.$$eval(".query-lab [role=tab]", (els) => els.some((e) => /Query digest/.test(e.textContent))), false);
+    }
     // Tuning is a place of its own: no Server list of views, no Server toolbar.
     if (label === "Tuning") {
       assert.equal(await page.$eval(".server-place.is-tuning-place", (e) => !!e.querySelector(".source-list, .place-toolbar")), false,
@@ -269,6 +301,8 @@ try {
   const commands = await page.$$eval(".command-option", (els) => els.map((e) => [e.querySelector("span")?.textContent, e.querySelector("small")?.textContent]));
   assert.deepEqual(commands.filter(([, g]) => g === "Places").map(([l]) => l), places, "palette places follow the sidebar");
   assert.deepEqual(commands.find(([l]) => l === "Compare"), ["Compare", "Plans"]);
+  assert.deepEqual(commands.filter(([l]) => l === "Database diagram" || l === "Query digest"),
+    [["Query digest", "Places"], ["Database diagram", "Places"]], "one palette entry each, as places");
   assert.equal(commands.some(([l]) => l === "Compare plans"), false);
   // Account and privileges is a palette action as well as a picker item.
   await page.type('input[aria-label="Search commands"]', "privileges");
@@ -312,6 +346,7 @@ try {
   assert.equal(await page.$(".server-place:not(.is-tuning-place) .server-view[data-view=tuning]"), null, "Server does not embed Tuning");
   await openViewList(page);
   assert.equal(await page.$$eval(".source-list .source-item", (els) => els.some((e) => e.dataset.view === "tuning")), false, "Tuning is not a Server view");
+  assert.equal(await page.$$eval(".source-list .source-item", (els) => els.some((e) => e.dataset.view === "diagram")), false, "Database diagram is not a Server view");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".view-switcher-popover"));
   await go("Home");
@@ -477,7 +512,7 @@ try {
   assert.equal(await page.$('[data-status="safety"]'), null, "no safety state on Home");
   assert.equal(await page.$(".safety-strip"), null, "no strip under the top bar");
   const safety = '.window-statusbar[aria-label="Workspace status"] > [data-status="safety"]:first-child';
-  for (const label of ["Query editor", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning"]) {
+  for (const label of ["Query editor", "Query digest", "Database diagram", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning"]) {
     await go(label);
     await page.waitForSelector(`${safety}.is-production`);
     assert.equal(await text(`${safety} strong`), "Production");
@@ -491,13 +526,19 @@ try {
     const box = await page.$eval(".window-statusbar", (e) => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; });
     const topbar = await page.$eval(".window-toolbar", (e) => e.getBoundingClientRect().bottom);
     assert.ok(box.top > topbar && Math.round(box.bottom) <= 1000, `${label}: the footer is at the bottom (${JSON.stringify(box)})`);
-    // Real values only: the connection in use; nothing read yet, so no
-    // server version and no refresh time. Unknown fields are hidden.
+    // Real values only: the connection in use, and on the places Server
+    // draws (Server, Workload, Tuning, Database diagram) the version and time
+    // of its last read (Top statements read the mocked 8.4.3 when Workload
+    // opened). Unknown fields are hidden.
     await page.waitForFunction(() => document.querySelector('.window-statusbar [data-status="connection"]')?.textContent === "Local MySQL (127.0.0.1:3306)");
     if (label === "Query editor")
       await page.waitForFunction(() => document.querySelector('.window-statusbar [data-status="session"]')?.textContent === "No session");
+    // A read still on its way (Health against this suite's unmocked server) shows "refreshing" until it ends.
+    await page.waitForFunction(() => !document.querySelector('.window-statusbar [data-status="refreshing"]'), { timeout: 20000 });
     const fields = await page.$$eval(".window-statusbar [data-status]", (els) => els.map((e) => e.dataset.status));
-    assert.deepEqual(fields, label === "Query editor" ? ["safety", "connection", "session"] : ["safety", "connection"], `${label} status fields`);
+    const serverDrawn = ["Server", "Workload", "Tuning", "Database diagram"].includes(label);
+    assert.deepEqual(fields, label === "Query editor" ? ["safety", "connection", "session"]
+      : serverDrawn ? ["safety", "engine", "connection", "refreshed"] : ["safety", "connection"], `${label} status fields`);
     assert.doesNotMatch(await text(".window-statusbar"), /unknown|not checked|not refreshed/i, "unknown fields are hidden");
     assert.equal(await page.$eval(".connection-picker .type-dot", (e) => e.getAttribute("aria-label")), "Production");
   }
@@ -880,7 +921,8 @@ try {
   assert.equal(await page.$eval(serverPicker + " select", (e) => e.value), "p2");
   assert.equal(await page.$eval(serverPicker + " .picker-password", (e) => e.value), "typed-secret");
   await chooseView(page, "top");
-  await button("Load top statements");
+  // Top statements reads when it opens on screen (no Load button).
+  for (let i = 0; i < 100 && last("/api/live/top")?.connection.profile_id !== "p2"; i++) await new Promise((r) => setTimeout(r, 50));
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   assert.equal(last("/api/live/top").connection.profile_id, "p2");
   assert.equal(last("/api/live/top").connection.password, "typed-secret");
@@ -1024,6 +1066,132 @@ try {
     }
     await page.screenshot({ path: path.join(directory, `${label.replace(/ /g, "-").toLowerCase()}-mobile.png`) });
   }
+
+  // 10. Query digest, a place of its own, keeps its table and inspector in
+  // their own scroll areas: the page is the window minus the top bar and the
+  // footer at every size, however many rows are read.
+  const digestRow = (i) => ({ digest: i.toString(16).padStart(64, "0"), digest_text: `SELECT * FROM t${i} WHERE id = ?`, schema: "shop",
+    count: 120, total_ms: 9000 - i * 10, avg_ms: 45, max_ms: 90, rows_examined: 360000, rows_sent: 1200, examined_per_sent: 300,
+    no_index_used: 120, no_good_index_used: 0, tmp_disk_tables: 0, sort_merge_passes: 0, sample_text: null, sample_truncated: false,
+    first_seen: "2026-10-12 10:00:00", last_seen: "2026-10-12 11:00:00", flags: ["no_index_used"], capture_problem: null });
+  handlers["/api/live/top"] = (body) => ({ schema_version: "top-1.0", engine: "mysql", server_version: "8.4.3", order: body.order, notes: [],
+    statements: Array.from({ length: body.limit }, (_, i) => digestRow(i)) });
+  const digestRows = (p) => p.$$eval(".digest-place .query-digest-table tbody tr", (els) => els.length);
+  await page.setViewport({ width: 1440, height: 900 });
+  await go("Query digest");
+  await page.select('.digest-place [aria-label="Row limit"]', "100");
+  await page.waitForFunction(() => document.querySelectorAll(".digest-place .query-digest-table tbody tr").length === 100);
+  for (const [width, height] of [[1440, 900], [720, 520]]) {
+    await page.setViewport({ width, height });
+    await new Promise((r) => setTimeout(r, 300));
+    const box = await page.evaluate(() => {
+      const el = (s) => document.querySelector(s);
+      const scrolls = (s) => { const e = el(s); return !!e && e.scrollHeight > e.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(e).overflowY); };
+      return { page: document.scrollingElement.scrollHeight - innerHeight, wide: document.documentElement.scrollWidth - innerWidth,
+        table: scrolls(".query-digest-table-wrapper"), split: scrolls(".query-digest-main-split"),
+        bottom: el(".query-digest-container").getBoundingClientRect().bottom, footer: el(".window-statusbar").getBoundingClientRect().top };
+    });
+    assert.ok(box.page <= 1, `${width}: Query digest does not grow the page with its rows ${JSON.stringify(box)}`);
+    assert.ok(box.wide <= 0, `${width}: no sideways scroll ${JSON.stringify(box)}`);
+    assert.ok(width > 1000 ? box.table : box.table || box.split,
+      `${width}: the rows scroll in their own area ${JSON.stringify(box)}`);
+    assert.ok(box.bottom <= box.footer + 1, `${width}: Query digest ends at the footer ${JSON.stringify(box)}`);
+    if (width > 1000) {
+      const scrolled = await page.$eval(".query-digest-table-wrapper", (e) => {
+        e.scrollTop = 100;
+        return e.scrollTop;
+      });
+      assert.ok(scrolled > 0, "the desktop table really scrolls, rather than clipping its rows");
+      assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0);
+      await page.$eval(".query-digest-table-wrapper", (e) => { e.scrollTop = 0; });
+    }
+  }
+  await page.setViewport({ width: 1440, height: 1000 });
+
+  // 11. Reopening a workspace snapshot that is also on Query digest (another
+  // tab's newer version) starts Query digest over: its search, selection and
+  // report, filter and row limit are dropped, and it reads again. Hold an
+  // old read too: it must not keep the new opening busy or replace its report.
+  const storedSession = (p) => p.evaluate(async () => {
+    const headers = { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" };
+    const token = (await (await fetch("/api/auth/session", { method: "POST", headers, body: "{}" })).json()).token;
+    const r = await fetch("/api/session/load", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": token }, body: "{}" });
+    const j = await r.json();
+    return { mode: j.state?.mode, revision: j.revision };
+  });
+  const storedUntil = async (p, predicate, what) => {
+    const deadline = Date.now() + 15000;
+    let last;
+    while (Date.now() < deadline) {
+      last = await storedSession(p);
+      if (predicate(last)) return last;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`${what}: ${JSON.stringify(last)}`);
+  };
+  const search = '.digest-place input[placeholder^="Filter queries"]';
+  await page.type(search, "t7");
+  await page.click(".digest-place .query-digest-table tbody tr:last-child");
+  assert.match(await text(".digest-place tr.is-selected .query-digest-sql-text"), /FROM t79 /);
+  const oldDigest = await page.$(".digest-place .query-digest-container");
+  const releaseOldRead = hold("/api/live/top", (body) => body.extra_metrics && body.order === "scans");
+  await page.locator('.digest-place [role="tab"] ::-p-text(Full scans)').click();
+  await page.waitForFunction(() => document.querySelector(".digest-place .query-digest-actions button")?.disabled);
+  for (let i = 0; i < 200 && last("/api/live/top")?.order !== "scans"; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(last("/api/live/top").order, "scans");
+  const connectionBefore = last("/api/live/top").connection;
+  const first = await storedUntil(page, (s) => s.mode === "digest", "Query digest was not saved");
+  const other = await browser.newPage();
+  other.on("pageerror", (e) => errors.push(String(e)));
+  await other.setRequestInterception(true);
+  other.on("request", route);
+  await other.setViewport({ width: 1440, height: 1000 });
+  await other.goto(url, { waitUntil: "networkidle0" });
+  await other.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
+  await other.waitForFunction(() => document.querySelectorAll(".digest-place .query-digest-table tbody tr").length === 50);
+  // Pause a real save from the first tab, then return to Query digest before
+  // the second tab advances the revision. No connection fields change.
+  await page.bringToFront();
+  const releaseSave = hold("/api/session/save", (body, request) => request.frame()?.page() === page && body.state?.mode === "query");
+  await go("Query editor");
+  for (let i = 0; i < 200 && !gates["/api/session/save"].started; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(gates["/api/session/save"].started, "the conflicting save is waiting");
+  await go("Query digest");
+  // The second tab leaves Query digest and comes back, saving each step, so
+  // the newest version is on Query digest too.
+  await other.locator(".main-nav button ::-p-text(Query editor)").click();
+  const away = await storedUntil(other, (s) => s.mode === "query" && s.revision > first.revision, "the second tab did not save");
+  await other.locator(".main-nav button ::-p-text(Query digest)").click();
+  await storedUntil(other, (s) => s.mode === "digest" && s.revision > away.revision, "the second tab did not save its return");
+  await page.bringToFront();
+  const readsBefore = seen["/api/live/top"].length;
+  assert.equal(await page.$eval(search, (e) => e.value), "t7");
+  assert.equal(await text('.digest-place [role="tab"][aria-selected="true"]'), "Full scans");
+  assert.deepEqual(await active(), ["Query digest"]);
+  releaseSave();
+  await page.waitForFunction(() => document.querySelector(".session-notice")?.textContent.includes("changed in another browser tab"));
+  await page.waitForFunction(() => document.querySelector(".main-nav [aria-current=page]")?.textContent === "Query digest");
+  await page.waitForFunction((s) => document.querySelector(s)?.value === "", {}, search);
+  assert.equal(await page.$eval(search, (e) => e.value), "", "the reopened Query digest starts with no search");
+  assert.equal(await oldDigest.evaluate((e) => e.isConnected), false, "the old digest was unmounted");
+  await oldDigest.dispose();
+  assert.equal(await text('.digest-place [role="tab"][aria-selected="true"]'), "By total time");
+  assert.equal(await page.$eval('.digest-place [aria-label="Row limit"]', (e) => e.value), "50");
+  await page.waitForFunction(() => document.querySelectorAll(".digest-place .query-digest-table tbody tr").length === 50);
+  assert.ok(seen["/api/live/top"].length > readsBefore, "the reopened Query digest reads again");
+  const reopened = last("/api/live/top");
+  assert.equal(reopened.order, "time");
+  assert.equal(reopened.limit, 50);
+  for (const field of ["profile_id", "host", "port", "user", "database", "ssl_mode", "ssl_ca", "type", "read_only"])
+    assert.equal(reopened.connection[field], connectionBefore[field], `reset kept connection ${field}`);
+  assert.match(await text(".digest-place tr.is-selected .query-digest-sql-text"), /FROM t0 /);
+  releaseOldRead();
+  // Flush the old interception before checking that it cannot replace the
+  // freshly opened report or restore the old selection.
+  await page.waitForNetworkIdle();
+  assert.equal(await digestRows(page), 50);
+  assert.match(await text(".digest-place tr.is-selected .query-digest-sql-text"), /FROM t0 /);
+  await other.close();
 
   assert.deepEqual(errors, []);
   console.log("Navigation checks passed. " + directory);

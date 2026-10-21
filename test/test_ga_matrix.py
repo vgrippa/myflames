@@ -162,5 +162,47 @@ class TestClusterMatrixHomeGuard(TestMyflamesHomeGuard):
         self.assertIn("unknown argument --hom", result.stderr.decode())
 
 
+
+@unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "needs bash")
+class TestGaMatrixServers(unittest.TestCase):
+    """The Percona Server entries: pinned official images, MySQL rules, a GTID replica."""
+
+    def setUp(self):
+        self.text = (SCRIPTS / "ga-matrix.sh").read_text()
+
+    def spec(self, name):
+        import re
+        match = re.search(r"^\s+%s\)\s+echo \"([^\"]+)\"" % re.escape(name), self.text, re.M)
+        self.assertIsNotNone(match, name)
+        return match.group(1).split()
+
+    def test_percona_servers_use_pinned_official_images(self):
+        import re
+        for name, port in (("percona-8.0", "33180"), ("percona-8.4", "33184"), ("percona-8.4-replica", "33185")):
+            with self.subTest(name=name):
+                image, engine, got_port, role = self.spec(name)[:4]
+                self.assertRegex(image, r"^percona/percona-server:\d+\.\d+\.\d+-\d+\.\d+$", "an exact tag, never latest")
+                self.assertEqual(engine, "mysql", "Percona Server is a MySQL flavor: the mysql client and MySQL rules")
+                self.assertEqual(got_port, port)
+                self.assertEqual(role, "replica" if name.endswith("replica") else "primary")
+        self.assertEqual(self.spec("percona-8.4-replica")[6], "percona-8.4")
+        all_line = re.search(r'^ALL="([^"]+)"', self.text, re.M).group(1).split()
+        for name in ("percona-8.0", "percona-8.4", "percona-8.4-replica"):
+            self.assertIn(name, all_line)
+        # The replica pair replicates with GTIDs; telemetry is off.
+        self.assertIn("percona-8.4|percona-8.4-replica) args+=(--gtid-mode=ON", self.text.replace(
+            "mysql-9.7|mysql-9.7-replica|", ""))
+        self.assertIn("PERCONA_TELEMETRY_DISABLE=1", self.text)
+
+    def test_help_lists_percona(self):
+        result = subprocess.run(["bash", str(SCRIPTS / "ga-matrix.sh")], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout.decode()
+        self.assertIn("percona-8.0 percona-8.4", out)
+        self.assertIn("percona-8.4-replica", out)
+        self.assertIn("CREDS_FILE", out)  # the whole header, through Settings
+
+
 if __name__ == "__main__":
     unittest.main()

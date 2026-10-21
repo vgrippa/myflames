@@ -243,11 +243,13 @@
   margin: var(--space-1) 0 2px;
   padding-left: var(--space-4);
 }
-.kill-result.killed {
+.kill-result.killed,
+.kill-result.ok {
   border-left-color: var(--ok);
   background: var(--ok-soft);
 }
 .kill-result.refused,
+.kill-result.warn,
 .kill-result.gone {
   border-left-color: var(--warn);
   background: var(--warn-soft);

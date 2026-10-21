@@ -109,6 +109,10 @@ class ReplayConnection(object):
             if self.restored_marker and os.path.exists(self.restored_marker):
                 return _tsv(CATALOG)
             return _tsv(self.catalog)
+        if body == 'SELECT @@lower_case_table_names':
+            if 'lower_case_table_names' not in self.variables:
+                raise ConnectorError('ERROR 1193 (HY000): Unknown system variable')
+            return str(self.variables['lower_case_table_names']) + '\n'
         if body.startswith('SELECT COUNT(*) FROM '):
             return str(self.row_count) + '\n'
         if body.startswith('SELECT ID,USER,HOST,TIME,STATE FROM information_schema.PROCESSLIST'):
@@ -585,6 +589,36 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('--single-transaction', args)
         self.assertNotIn('--source-data', args)
         self.assertFalse(any('gtid-purged' in arg for arg in args))
+
+    def test_named_tables_must_exist_in_the_schema(self):
+        tools = self.native_tools()
+        plan = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], tables=['t', 'v'], tools=tools)
+        check = [c for c in plan['checks'] if c['check'] == 'tables'][0]
+        self.assertEqual(check['status'], 'passed')
+        self.assertTrue(plan['ready'])
+        self.assertTrue(plan['commands'][0].endswith('app t v > ' + os.path.join(self.output, 'dump.sql')))
+        tables_check = lambda plan: [c for c in plan['checks'] if c['check'] == 'tables'][0]
+        # Names compare without case only when the server does (lower_case_table_names 1 or 2).
+        self.assertEqual(tables_check(lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['APP'],
+                                                      tables=['T'], tools=tools))['status'], 'failed')
+        for setting, expected in (('1', 'passed'), ('2', 'passed'), ('0', 'failed')):
+            conn = ReplayConnection(dict(server_variables(), lower_case_table_names=setting))
+            self.assertEqual(tables_check(lc.prepare_dump(conn, CONNECTION, self.output, schemas=['APP'], tables=['T'],
+                                                          tools=tools))['status'], expected, setting)
+        # On a case-sensitive server a missing `orders` is not the existing `Orders`.
+        upper = ReplayConnection(dict(server_variables(), lower_case_table_names='0'),
+                                 catalog=[['app', 'Orders', 'BASE TABLE', 'InnoDB', '100', '20']])
+        check = tables_check(lc.prepare_dump(upper, CONNECTION, self.output, schemas=['app'], tables=['Orders', 'orders'],
+                                             tools=tools))
+        self.assertEqual((check['status'], check['missing']), ('failed', ['orders']))
+        gone = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], tables=['t', 'gone'], tools=tools)
+        check = [c for c in gone['checks'] if c['check'] == 'tables'][0]
+        self.assertEqual((check['status'], check['missing']), ('failed', ['gone']))
+        self.assertIn('Not found in app: gone', check['reason'])
+        self.assertFalse(gone['ready'])
+        # Schema and instance dumps do not add the check.
+        self.assertNotIn('tables', [c['check'] for c in lc.prepare_dump(
+            self.conn, CONNECTION, self.output, schemas=['app'], tools=tools)['checks']])
 
     def test_shell_dump_dry_run_and_dump_scope_methods(self):
         plan, result = self.make_dump(shell=True)

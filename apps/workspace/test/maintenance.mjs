@@ -138,7 +138,7 @@ const connect = async (name) => {
   await page.waitForFunction((n) => document.querySelector('.window-toolbar .connection-pill-name')?.textContent === n, {}, name);
 };
 async function field(label, value) {
-  const handle = await page.waitForSelector(`${view} .ops-field label ::-p-text(${label}), ${view} label.ops-field ::-p-text(${label})`);
+  const handle = await page.waitForSelector(`${view} .ops-field label ::-p-text(${label}), ${view} label.ops-field ::-p-text(${label}), ${view} .form-row > label ::-p-text(${label})`);
   const input = await handle.evaluateHandle((span) => span.closest("label").control || span.closest("label").querySelector("input"));
   await input.click({ clickCount: 3 });
   await page.keyboard.press("Backspace");

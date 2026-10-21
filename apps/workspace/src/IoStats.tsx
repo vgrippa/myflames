@@ -33,7 +33,7 @@ import {
 
 const SOURCES: Record<string, string> = {
   performance_schema: "Performance Schema",
-  userstat: "MariaDB user statistics",
+  userstat: "User statistics (userstat)",
   status: "server-wide counters only",
 };
 

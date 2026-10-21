@@ -1,4 +1,6 @@
 // The lists of views of the Server and Workload places, apart from Server.tsx
+// (Database diagram, once a Schema view, is a place of its own in the SQL
+// workspace group; Server renders it with place="diagram")
 // so the shell (sidebar, command palette) can name them without loading the
 // Server chunk (lazy.tsx).
 import type { IconName } from "./components";
@@ -11,7 +13,6 @@ export const SERVER_VIEWS: { id: ServerKind; label: string; icon: IconName; grou
   { id: "locks", label: "Locks", icon: "lock", group: "Contention" },
   { id: "indexes", label: "Indexes", icon: "index", group: "Schema" },
   { id: "tables", label: "Tables", icon: "table", group: "Schema" },
-  { id: "diagram", label: "Database diagram", icon: "diagram", group: "Schema" },
   { id: "config", label: "Parameters", icon: "configuration", group: "Setup" },
   { id: "instruments", label: "Instruments", icon: "instruments", group: "Setup" },
   { id: "maintenance", label: "Maintenance", icon: "maintenance", group: "Setup" },

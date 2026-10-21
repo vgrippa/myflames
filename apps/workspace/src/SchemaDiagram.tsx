@@ -338,9 +338,15 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
     observer.observe(el); return ()=>observer.disconnect();
   }, [!!d, view]);
   useEffect(() => { if(d)fit(d.tables,diagramPositions(d)); }, [d?.tables]);
+  // A new connection or default database drops the reads on their way,
+  // Refresh all's too. Opening the place (this view mounting) does not:
+  // Refresh all started on Server and still reading the diagram keeps its answer.
+  const identitySeen = useRef(false);
   useEffect(() => {
     request.current?.abort(); revision.current++; setBusy(""); setError("");
-    nextGeneration("diagram"); reads.clearError();
+    if (identitySeen.current) nextGeneration("diagram");
+    identitySeen.current = true;
+    reads.clearError();
     const target = selectedDatabase ?? connection.database ?? "";
     setDatabase(target); setReplacement(null);
     onDatabaseChange?.(key, target);

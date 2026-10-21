@@ -42,6 +42,7 @@ import {
   type Selection,
 } from "./kit";
 import { digestName, digestQuery } from "./placeholders";
+import { useOpenRead } from "./viewOnScreen";
 import { isPrivilegeDenial, privilegeButtonProps, usePrivilege, usePrivileges } from "./privileges";
 import "./digest.css";
 
@@ -459,6 +460,8 @@ export function useTopStatements({
     clearTable,
     accept,
     loading: reads.loading,
+    /** A read is on its way (this view's, or Refresh all's through accept). */
+    running: reads.running,
     error: reads.error || actionError,
     load,
     batch,
@@ -852,6 +855,11 @@ export function TopStatementsView({
   const counter = ORDER_COUNTERS[shownOrder as TopOrder];
   // A Performance Schema prerequisite is a gate with one action, not an error.
   const gate = digestGate(error);
+  // Opening the view on screen reads it, once per connection (Refresh reads
+  // again), like every other view; a link (Health, Indexes, the Full
+  // analysis) has already started its own read with its order and table.
+  useOpenRead({ key: activeKey, reportKey: state.top?.key, ready: !disabled && !batchRunning, busy: !!loading || state.running(),
+    read: () => { void state.load(schema); } });
 
   const columns: Column<Row>[] = [
     { key: "rank", label: "#", num: true, sort: (r) => r.rank, render: (r) => r.rank },

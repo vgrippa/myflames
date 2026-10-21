@@ -111,7 +111,7 @@ import sys
 import time
 
 from .connector import ConnectorError, MySQLConnection, terminal_text, unescape_mysql
-from .perf_common import _denied, _reason, _server
+from .perf_common import _denied, _reason, _server, conn_identity
 
 SCHEMA_VERSION = "locks-1.1"
 KILL_SCHEMA_VERSION = "kill-1.0"
@@ -434,6 +434,7 @@ def lock_report(conn, limit=500, waits_only=False, deadlock_only=False, identity
     scope = "deadlock" if deadlock_only else "waits" if waits_only else "all"
     engine, version, ver, ps_on = _server(conn)
     r = _Report(engine, version, ver, ps_on, limit, scope)
+    r.identity = conn_identity(conn, engine, version)
     # Bind a later Kill confirmation to the server that supplied this report.
     # Only the workspace asks (identity=True); the CLI Kill path re-reads it.
     keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
@@ -2077,8 +2078,10 @@ def _assemble(r, deadlock, waits_only):
         "ddl_waits": len(ddl_waits),
     }
     return {
-        "schema_version": SCHEMA_VERSION, "engine": r.engine, "server_version": r.version,
-        "server_identity": r.server_identity,
+        "schema_version": SCHEMA_VERSION, "engine": r.engine,
+        "flavor": getattr(r, "identity", {}).get("flavor"),
+        "server_product": getattr(r, "identity", {}).get("server_product"),
+        "server_version": r.version, "server_identity": r.server_identity,
         "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "scope": r.scope, "limit": r.limit, "capabilities": r.caps, "notes": notes,
         "summary": summary, "ddl_waits": ddl_waits, "kill_privilege": r.kill_privilege,

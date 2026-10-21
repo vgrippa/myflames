@@ -272,7 +272,7 @@ try {
   await page.keyboard.press("Escape");
   await nav("Workload");
   await chooseView(page, "top");
-  await page.locator("button ::-p-text(Load top statements)").click();
+  // Top statements reads when it opens on screen (no Load button).
   await page.waitForSelector(".server-view tbody tr");
   assert.equal((await page.$$(".server-view tbody tr")).length, 6);
 

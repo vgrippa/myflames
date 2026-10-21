@@ -481,7 +481,9 @@ class LiveJob:
                 version = conn.server_version()
                 maria = conn.is_mariadb()
                 runs, warnings, raw, trace_data = [], [], '', None
-                note = unsupported_version_note(version, 'mariadb' if maria else '')
+                # is_mariadb() cached the comment, which names Percona Server.
+                note = unsupported_version_note(
+                    version, 'mariadb' if maria else (getattr(conn, '_version_comment_cache', None) or ''))
                 if note: warnings.append(note)
                 for index in range(self.repeat):
                     if self.cancelled.is_set(): raise ConnectorError('Capture cancelled.')

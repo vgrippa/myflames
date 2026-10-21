@@ -74,7 +74,7 @@ export function Home({
       <nav className="home-workflows" aria-label="Start working">
         <button onClick={onQuery}><Icon name="query" /><span><strong>Write SQL</strong><small>Queries, completion, and table data</small></span><Icon name="disclosure" size={14} /></button>
         <button onClick={onServer}><Icon name="server" /><span><strong>Inspect server</strong><small>Activity, performance, and configuration</small></span><Icon name="disclosure" size={14} /></button>
-        <button onClick={onDiagram}><Icon name="plan" /><span><strong>Database diagram</strong><small>Live schemas and Mermaid diagrams</small></span><Icon name="disclosure" size={14} /></button>
+        <button onClick={onDiagram}><Icon name="diagram" /><span><strong>Database diagram</strong><small>Live schemas and Mermaid diagrams</small></span><Icon name="disclosure" size={14} /></button>
       </nav>
       <div className="home-launcher">
         {connections}

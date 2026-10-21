@@ -416,7 +416,7 @@ try {
   assert.equal(held[0].body.interval, 5, "Health keeps its window");
   assert.equal(held[2].body.interval, 10, "unopened I/O uses its configured window");
   assert.match(await statusText(), /^Refreshing 1 of 17…$/);
-  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 10); // the Server list: 11 views, the diagram waits for a database, the Full analysis is in Tuning
+  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 10); // the Server list: 10 views (Database diagram and the Full analysis are places of their own)
   await h.workload();
   assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 4);
   await h.server();
@@ -689,24 +689,30 @@ try {
   await h.view("diagram");
   await page.waitForFunction(() => document.querySelector('.diagram-source input[aria-label="Database"]')?.value === "shop");
   const diagramReads = calls("/api/schema-diagram/read").length;
+  // Database diagram is a place of its own with no Refresh all: Server's
+  // Refresh all reads it too, and the place shows that answer.
+  assert.equal(await page.$('.server-place.is-diagram-place [data-action=refresh-all]'), null, "no Refresh all in the diagram place");
+  await h.server();
   await clickRefreshAll();
   await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
   assert.equal(calls("/api/schema-diagram/read").length, diagramReads + 1);
   assert.equal(calls("/api/schema-diagram/read").at(-1).body.database, "shop");
+  await h.view("diagram");
   await page.waitForSelector('.diagram-table[aria-label="Table shop.orders"]');
 
   // Move the arrangement while global metadata refresh is still reading.
   // Its response must retain that new position and place new tables below it.
   holdDiagram = true;
+  await h.server();
   await clickRefreshAll();
   await until(() => !!pendingDiagram, "global diagram read is held");
+  await h.view("diagram");
   await page.focus('[data-table-id="shop.orders"]');
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowDown");
   const moved = await page.$eval('.diagram-table[aria-label="Table shop.orders"]', e => ({x: e.style.left, y: e.style.top}));
   const pending = pendingDiagram; pendingDiagram = null; holdDiagram = false;
   await pending.request.respond({status: 200, contentType: "application/json", body: JSON.stringify(diagramReply(pending.body, true))});
-  await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
   await page.waitForSelector('.diagram-table[aria-label="Table shop.shipments"]');
   assert.deepEqual(await page.$eval('.diagram-table[aria-label="Table shop.orders"]', e => ({x: e.style.left, y: e.style.top})), moved);
   assert.equal(await page.evaluate(() => {
@@ -714,6 +720,8 @@ try {
     const added = document.querySelector('.diagram-table[aria-label="Table shop.shipments"]');
     return parseFloat(added.style.top) >= parseFloat(existing.style.top) + parseFloat(existing.style.height);
   }), true, "global refresh places new tables below the latest arrangement");
+  await h.server();
+  await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
 
   assert.deepEqual(h.errors, []);
   console.log("full analysis and refresh all: ok");

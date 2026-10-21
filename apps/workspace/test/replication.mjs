@@ -220,11 +220,42 @@ try {
   assert.match(await text(`${view} .gate`), /REPLICATION CLIENT or SUPER/);
   assert.match(await text(`${view} .summary-line`), /Replication status not available/);
   assert.match(await h.popover("About Replication"), /Audit log/);
+  // Not readable: the one Unknown state, in the sidebar too, with the reason.
+  assert.match(await text('.main-nav button[data-place="replication"]'), /Unknown, replication status not readable/);
   state.queue.push({ status: 200, body: source });
   await h.refresh();
-  await page.waitForFunction((v) => /not a replica/.test(document.querySelector(`${v} .gate`)?.textContent || ""), {}, view);
-  assert.match(await text(`${view} .summary-line`), /Not a replica/);
+  // Not a replica is a calm state of its own, never Unknown: no gate, no
+  // status pill, no sub-tabs, and the sidebar item looks disabled (still
+  // focusable) with its tooltip.
+  await page.waitForFunction((v) => /Not a replica/.test(document.querySelector(`${v} .view-empty`)?.textContent || ""), {}, view);
+  assert.match(await text(`${view} .view-empty`), /SHOW REPLICA STATUS returned no channel/);
+  assert.equal(await page.$(`${view} .gate`), null, "not a replica is not a prerequisite gate");
+  // The summary names the server; the empty state below says what this means.
+  assert.match(await text(`${view} .summary-line`), /^Not a replica · MySQL 8\.4\.\d+/);
+  assert.equal(await page.$(`${view} .summary-line .status-indicator`), null, "no status pill for not a replica");
+  assert.equal(await page.$('[aria-label="Replication sub-tabs"]'), null, "no sub-tabs without a channel");
+  assert.equal(await page.$(`${view} .view-empty button`), null, "a server outside a cluster is offered nothing");
+  const replicationItem = '.main-nav button[data-place="replication"]';
+  await page.waitForSelector(`${replicationItem}.is-muted`);
+  assert.equal(await page.$eval(replicationItem, (e) => e.title), "This connection is not a replica");
+  assert.equal(await page.$(`${replicationItem} .status-dot, ${replicationItem} .count-badge`), null, "no Unknown marker");
+  assert.equal(await page.$eval(replicationItem, (e) => e.disabled || e.tabIndex < 0), false, "still focusable");
   assert.equal(calls(STATUS).length, 0);
+  // A Group Replication member: its group's channels are not asynchronous
+  // replication (the backend names them apart), so it is not a replica
+  // either, and the place points to Cluster.
+  state.queue.push({ status: 200, body: { ...source, group_replication_channels: ["group_replication_applier"], cluster_hint: "group_replication",
+    message: "This server is not a replica: SHOW REPLICA STATUS returned no asynchronous channel. Its group_replication_applier channel belongs to Group Replication: Cluster (myflames cluster) shows the group." } });
+  await h.refresh();
+  await page.waitForFunction((v) => /group_replication_applier/.test(document.querySelector(`${v} .view-empty`)?.textContent || ""), {}, view);
+  assert.match(await text(`${view} .view-empty`), /^Not a replica.*no asynchronous channel/s);
+  assert.equal(await text(`${view} .view-empty button`), "Open Cluster");
+  assert.ok(await page.$(`${replicationItem}.is-muted`), "a group member is not a replica in the sidebar");
+  // Open Cluster goes to the Cluster place (its read is refused by this suite's mock).
+  await page.click(`${view} .view-empty button`);
+  await page.waitForSelector('.main-nav button[data-place="cluster"][aria-current=page]');
+  await h.view("replication");
+  await page.waitForSelector(`${view} .view-empty`, { visible: true });
 
   // The recorded duplicate key failure on the default channel.
   state.fallback = { status: 200, body: error };

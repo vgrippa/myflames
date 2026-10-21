@@ -110,14 +110,14 @@
   color: var(--ink);
 }
 
-/* The Tuning place: its one view, full width, without the list of views
-   (Tuning is a place of its own, never a Server view). */
-.server-place.is-tuning-place .server-layout,
-.server-place.is-tuning-place .server-layout.is-compact {
+/* Tuning and Database diagram: their one view, full width, without the list
+   of views (each is a place of its own, never a Server view). */
+.server-place.is-single-place .server-layout,
+.server-place.is-single-place .server-layout.is-compact {
   grid-template-columns: minmax(0, 1fr);
   background: var(--surface);
 }
-.server-place.is-tuning-place .server-content {
+.server-place.is-single-place .server-content {
   border-left: 0;
 }
 

@@ -23,6 +23,8 @@
  "report": {
   "schema_version": "cluster-1.0",
   "engine": "mariadb",
+  "flavor": "mariadb",
+  "server_product": "MariaDB",
   "server_version": "11.8.9-MariaDB-ubu2404-log",
   "version_comment": "mariadb.org binary distribution",
   "captured_at": "2026-10-20T14:40:00.367615+00:00",

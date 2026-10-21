@@ -521,7 +521,7 @@ try {
   await page.locator(killButton).click();
   await page.waitForSelector("dialog.kill-dialog[open]");
   await page.locator(".sheet-actions .danger-solid").click();
-  await page.waitForSelector(".kill-result.killed");
+  await page.waitForSelector(".kill-result.killed:not([data-refreshing])");
   const call = killCalls().at(-1);
   assert.equal(call.confirmed, true, "confirmation is the literal boolean true");
   assert.deepEqual({ id: call.connection_id, mode: call.mode, expect: call.expect, host: call.connection.host },
@@ -532,7 +532,7 @@ try {
   assert.equal(declined().length, 2, "a confirmed Kill is not recorded as declined");
   assert.equal(lockCalls().length, before + 1, "the report refreshes after the kill");
   const result = await text(".kill-result");
-  assert.match(result, /Ended\. Ended connection 53\. Its open transaction was rolled back/);
+  assert.match(result, /^Done\. Ended connection 53\. Its open transaction was rolled back/);
   assert.match(result, /The ALTER TABLE on connection 54 no longer waits; it is running or done\./);
   assert.match(result, /Connection 55 no longer waits\./);
   assert.equal(await page.$eval(".kill-result", (e) => e.getAttribute("role")), "status");
@@ -552,7 +552,7 @@ try {
   await openBlocker();
   await page.locator(killButton).click();
   await page.locator(".sheet-actions .danger-solid").click();
-  await page.waitForSelector(".kill-result.killed");
+  await page.waitForSelector(".kill-result.killed:not([data-refreshing])");
   assert.match(await text(".kill-result"), /The ALTER TABLE on connection 54 still waits, now for connection 14\./);
 
   // A running blocker that changed many rows: the rollback warning and both choices.

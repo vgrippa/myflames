@@ -310,7 +310,7 @@ try {
   await page.waitForSelector("dialog.kill-dialog[open]");
   assert.match(await text("dialog.kill-dialog"), /Server\s*Staging \(dev@db\.staging:3307\)/);
   await page.click(".sheet-actions .danger-solid");
-  await page.waitForSelector(`${view("sessions")} .kill-result.killed`);
+  await page.waitForSelector(`${view("sessions")} .kill-result.killed:not([data-refreshing])`);
   const kill = calls("/api/live/kill").at(-1).body;
   const target = mariadb.sessions.find((s) => s.id === 79);
   assert.deepEqual(

@@ -11,7 +11,7 @@ import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "
 import { TYPE_LABEL, useWritePolicy } from "./Connections";
 import { SchemaPicker, useSchemaCatalog } from "./PerfShared";
 import {
-  Checkbox, ConfirmSheet, DataTable, EmptyState, Fields, InspectorSection,
+  Checkbox, ConfirmSheet, DataTable, EmptyState, Fields, FormGrid, FormRow, InspectorSection,
   NumberField, PrerequisiteGate, Segmented, Select, StatusPill, SummaryLine,
   ToolbarButton, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection, type Tone,
@@ -27,9 +27,11 @@ import {
 import { isPrivilegeDenial } from "./privileges";
 import { VisiblePrivilegeGate, VisiblePrivilegeConfirmLabel } from "./Locks";
 import "./ops.css";
-import { DumpOptions } from "./DumpOptions";
+import { DumpOptions, optionShown, optionsSummary } from "./DumpOptions";
+import { TablePicker, useSchemaTables } from "./DumpTables";
 import type { DumpOptions as DumpOptionValues } from "./opsApi";
 import { FolderField } from "./FolderField";
+import { useViewOnScreen } from "./viewOnScreen";
 import { toolDownloadUrl } from "./opsApi";
 
 export type MaintenanceSection = "tools" | "upgrade" | "dump" | "restore" | "clone";
@@ -48,7 +50,6 @@ const KEEP_FINISHED = 20;
 const checkTone = (check: Verification): Tone => check.status === "passed" ? "ok" : check.status === "failed" ? "problem" : "unknown";
 const checkWord = (check: Verification) => check.status === "passed" ? "Passed" : check.status === "failed" ? "Failed" : "Not checked";
 const validInteger = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max;
-const namedTables = (value: string) => value.split(",").map((name) => name.trim()).filter(Boolean);
 const VERSION = /^\d+\.\d+\.\d+$/;
 
 /** One upgrade finding's result: what the check found, or that it passed,
@@ -161,9 +162,11 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const [target, setTarget] = useState("");
   const [customTarget, setCustomTarget] = useState("");
   const [preferShell, setPreferShell] = useState(true);
-  const [scope, setScope] = useState<"instance" | "schemas" | "tables">("instance");
+  // What to dump: the instance, or databases; with one database, its
+  // chosen tables (none chosen: all of them).
+  const [scope, setScope] = useState<"instance" | "schemas">("instance");
   const [schemas, setSchemas] = useState<string[]>([]);
-  const [tables, setTables] = useState("");
+  const [tables, setTables] = useState<string[]>([]);
   const [directory, setDirectory] = useState("");
   const [restoreDirectory, setRestoreDirectory] = useState("");
   const [restoreSchema, setRestoreSchema] = useState("");
@@ -203,15 +206,25 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   memoryRef.current = memory;
   const currentKey = useRef(key);
   currentKey.current = key;
-  const catalog = useSchemaCatalog(connection, section === "dump" && scope !== "instance");
+  // Nothing reads while the view is off screen (viewOnScreen.ts).
+  const onScreen = useViewOnScreen();
+  const catalog = useSchemaCatalog(connection, onScreen && section === "dump" && scope !== "instance");
+  // The one chosen database's tables, read when it is chosen and Dump is on
+  // screen. The chosen tables last while that database stays the only one.
+  const oneSchema = scope === "schemas" && schemas.length === 1 ? schemas[0] : "";
+  const schemaTables = useSchemaTables(connection, oneSchema, onScreen && section === "dump" && !!oneSchema);
+  useEffect(() => { setTables([]); }, [key, oneSchema]);
+  const loadedTables = new Set(schemaTables.tables.map((t) => t.name));
+  const unknownTables = tables.filter((name) => !loadedTables.has(name));
+  const tableScope = !!oneSchema && tables.length > 0;
   const tools = memory.tools?.key === key ? memory.tools.report : null;
   const dumpToolName = tools?.offered.dump.find(name => !sqlDump || name !== "mysqlsh");
   const dumpTool = dumpToolName ? tools?.tools[dumpToolName] : undefined;
-  const dumpCapabilities = scope === "tables" ? dumpTool?.dump_table_capabilities : dumpTool?.dump_capabilities;
-  const activeDumpOptions = Object.fromEntries(Object.entries(dumpOptions).filter(([name]) =>
-    dumpCapabilities?.options.some(option => option.key === name) &&
-    (name !== "compression_level" || ["gzip", "zstd"].includes(String(dumpOptions.compression))) &&
-    (name !== "bytes_per_chunk" || dumpOptions.chunking !== false)));
+  const dumpCapabilities = tableScope ? dumpTool?.dump_table_capabilities : dumpTool?.dump_capabilities;
+  const activeDumpOptions = Object.fromEntries(Object.entries(dumpOptions).filter(([name]) => {
+    const option = dumpCapabilities?.options.find(o => o.key === name);
+    return !!option && optionShown(option, dumpOptions) && (name !== "compression_level" || ["gzip", "zstd"].includes(String(dumpOptions.compression)));
+  }));
   useEffect(() => { setDumpOptions({}); }, [key, dumpToolName]);
   const plan = prepared?.report;
   const upgrade = memory.upgrade?.report || null;
@@ -329,7 +342,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     await reads.run(`maintenance-upgrade:${JSON.stringify([version, preferShell])}`, "Checking the upgrade…", (c, signal) => checkUpgrade(c, version, preferShell, signal), (bound) => onMemory((m) => ({ ...m, upgrade: bound })));
   }
   function request(): PrepareRequest | null {
-    if (section === "dump") return { operation: "dump", directory: directory.trim(), schemas: scope === "instance" ? [] : schemas, tables: scope === "tables" ? namedTables(tables) : [], threads, prefer_shell: !sqlDump, options: activeDumpOptions };
+    if (section === "dump") return { operation: "dump", directory: directory.trim(), schemas: scope === "instance" ? [] : schemas, tables: tableScope ? tables : [], threads, prefer_shell: !sqlDump, options: activeDumpOptions };
     if (section === "restore") return { operation: "restore", directory: restoreDirectory.trim(), schema: restoreSchema.trim(), existing, allow_source: allowSource, resume, threads };
     if (section === "clone") return { operation: "clone", donor: { ...donor }, donor_address: donorAddress.trim(), data_directory: cloneMode === "directory" ? dataDirectory.trim() : "", require_ssl: true };
     return null;
@@ -478,7 +491,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const shellVersion = tools?.tools.mysqlsh?.available ? tools.tools.mysqlsh.version_tuple?.join(".") || "" : "";
   const versions = [...new Set([...targetVersions, shellVersion].filter((v) => VERSION.test(v)))];
   const version = target === "custom" ? customTarget.trim() : target;
-  const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && (scope !== "tables" || (schemas.length === 1 && namedTables(tables).length > 0));
+  // Chosen tables come from the loaded list: one a reload no longer lists blocks the preflight.
+  const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && !unknownTables.length;
   const restoreValid = !!restoreDirectory.trim() && validInteger(threads, 1, 64);
   const cloneValid = !!donor.host.trim() && !!donor.user.trim() && validInteger(donor.port, 1, 65535) && (cloneMode === "in_place" || dataDirectory.startsWith("/"));
   const canPrepare = operation === "dump" ? dumpValid && !!tools?.offered.dump.some((name) => !sqlDump || name !== "mysqlsh") : operation === "restore" ? restoreValid && !!tools : operation === "clone" ? cloneValid && !!tools?.offered.clone : false;
@@ -495,12 +509,12 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const kindOfCheck = upgrade ? (upgrade.method === "mariadb_upgrade_guidance" ? "mariadb-upgrade steps" : upgrade.partial ? "Partial check (native subset)" : "MySQL Shell") : "";
   const summary = section === "upgrade" && upgrade
     ? [
-        `${engineName(upgrade.server.engine, upgrade.server.version)} to ${upgrade.target_version}`,
+        `${engineName(upgrade.server.engine, upgrade.server.version, upgrade.server.product)} to ${upgrade.target_version}`,
         kindOfCheck,
         upgrade.method === "mariadb_upgrade_guidance" ? "" : [plural(counts?.error || 0, "error"), plural(counts?.warning || 0, "warning"), plural(counts?.notice || 0, "notice")].join(", "),
       ].filter(Boolean).join(" · ")
     : tools
-      ? `${engineName(tools.server.engine, tools.server.version)} · ${SECTION_LABEL[section]}`
+      ? `${engineName(tools.server.engine, tools.server.version, tools.server.product)} · ${SECTION_LABEL[section]}`
       : "";
   const upgradeNotes = section === "upgrade" && upgrade ? upgrade.limitations : undefined;
   return <>
@@ -532,17 +546,42 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           {upgrade.manual_checks.length > 0 && <details className="ops-details"><summary>Manual checks ({upgrade.manual_checks.length.toLocaleString()})</summary><pre className="ops-pre">{JSON.stringify(upgrade.manual_checks, null, 2)}</pre></details>}
         </>}
       </>}
-      {section === "dump" && tools && form(<>
-        <label className="ops-field"><span>Scope</span><Select label="Scope" value={scope} options={[["instance", "Whole instance"], ["schemas", "Databases"], ["tables", "Tables of one database"]]} onChange={(v) => { if (v === "instance" || v === "schemas" || v === "tables") setScope(v); }} /></label>
-        {scope !== "instance" && <div className="ops-field"><SchemaPicker id="ops-dump-schemas" value={schemas} onChange={setSchemas} catalog={catalog.catalog} error={catalog.error} loading={catalog.loading} onReload={catalog.reload} disabled={formDisabled} />{!schemas.length && <span className="hint">Choose {scope === "tables" ? "one database" : "at least one database"}.</span>}</div>}
-        {scope === "tables" && <FormField label="Tables" value={tables} onChange={setTables} hint="Names separated by commas." />}
-        <label className="ops-field"><span>Tool</span><Select label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", "Automatic (MySQL Shell first)"], ["sql", "SQL dump (mysqldump or mariadb-dump)"]]} onChange={(v) => setSqlDump(v === "sql")} /></label>
-        <FolderField key={`dump:${key}`} label="Output folder" value={directory} onChange={setDirectory} disabled={formDisabled} hint="On this computer. Choose an empty folder, or enter a new folder path." />
-        <details className="ops-dump-options"><summary>Options{dumpToolName ? ` for ${dumpToolName}` : ""}</summary>
-          {dumpToolName === "mysqlsh" && <label className="ops-field"><span>Threads</span><NumberField min={1} max={64} value={threads} onChange={(v) => setThreads(+v)} /></label>}
-          {dumpCapabilities && <DumpOptions catalog={dumpCapabilities} value={dumpOptions} onChange={setDumpOptions} />}
+      {section === "dump" && tools && <div className="ops-form ops-dump"><fieldset disabled={formDisabled}>
+        <FormGrid>
+          <FormRow label="Scope" htmlFor="ops-dump-scope">
+            <Select id="ops-dump-scope" label="Scope" value={scope} options={[["instance", "Whole instance"], ["schemas", "Databases"]]} onChange={(v) => { if (v === "instance" || v === "schemas") setScope(v); }} />
+          </FormRow>
+          {scope !== "instance" && <div className="form-row">
+            <span className="form-row-label">Databases</span>
+            <div className="form-row-control">
+              <SchemaPicker id="ops-dump-schemas" value={schemas} onChange={setSchemas} catalog={catalog.catalog} error={catalog.error} loading={catalog.loading} onReload={catalog.reload} disabled={formDisabled} />
+              <p className="hint">{!schemas.length ? "Choose at least one database." : schemas.length > 1 ? "Choose one database to pick its tables." : ""}</p>
+            </div>
+          </div>}
+          {oneSchema && <div className="form-row" data-dump-tables={oneSchema}>
+            <span className="form-row-label">Tables</span>
+            <div className="form-row-control">
+              <TablePicker id="ops-dump-tables" schema={oneSchema} value={tables} onChange={setTables} tables={schemaTables} disabled={formDisabled} />
+              <p className={unknownTables.length || schemaTables.error ? "form-error" : "hint"} role={unknownTables.length || schemaTables.error ? "alert" : undefined}>
+                {unknownTables.length && schemaTables.truncated ? `Not in the tables loaded so far: ${unknownTables.join(", ")}. Load more tables to confirm them.`
+                  : unknownTables.length ? `No longer in ${oneSchema}: ${unknownTables.join(", ")}. Choose tables from the list again.`
+                  : schemaTables.error ? `Could not read the tables of ${oneSchema}: ${schemaTables.error}`
+                    : schemaTables.loading && !schemaTables.tables.length ? `Reading the tables of ${oneSchema}…`
+                      : tables.length ? `${tables.length.toLocaleString()} of ${schemaTables.truncated ? `${schemaTables.tables.length.toLocaleString()}+` : schemaTables.tables.length.toLocaleString()} tables.`
+                        : `Every table of ${oneSchema}; choose tables to dump only those.`}
+              </p>
+            </div>
+          </div>}
+          <FormRow label="Tool" htmlFor="ops-dump-tool">
+            <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", "Automatic (MySQL Shell first)"], ["sql", `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]]} onChange={(v) => setSqlDump(v === "sql")} />
+          </FormRow>
+          <FolderField key={`dump:${key}`} row label="Output folder" value={directory} onChange={setDirectory} disabled={formDisabled} hint="On this computer. Choose an empty folder, or enter a new folder path." />
+        </FormGrid>
+        <details className="ops-dump-options"><summary>Options{dumpToolName ? ` for ${dumpToolName}` : ""}{dumpCapabilities && <span className="hint">{optionsSummary(dumpCapabilities, dumpOptions, dumpToolName === "mysqlsh" ? threads : undefined) || "Tool defaults"}</span>}</summary>
+          {dumpCapabilities && <DumpOptions catalog={dumpCapabilities} value={dumpOptions} onChange={setDumpOptions} disabled={formDisabled}
+            threads={dumpToolName === "mysqlsh" ? threads : undefined} onThreads={dumpToolName === "mysqlsh" ? setThreads : undefined} />}
         </details>
-      </>)}
+      </fieldset></div>}
       {section === "restore" && tools && form(<>
         <div className="ops-target"><span>Restores into</span><strong>{connectionLabel(connection)}</strong></div>
         <FolderField key={`restore:${key}`} label="Dump folder" value={restoreDirectory} onChange={setRestoreDirectory} disabled={formDisabled} hint="A completed myflames dump with its checksummed manifest." />
@@ -587,7 +626,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           ["Recipient type", `${TYPE_LABEL[sheet.report.expect.recipient.type]}${sheet.report.expect.recipient.read_only ? ", read-only" : ""}`],
           ["Donor address used by recipient", sheet.report.expect.donor_address],
         ] as [string, string][] : []),
-        ["Server", engineName(sheet.report.server.engine, sheet.report.server.version)],
+        ["Server", engineName(sheet.report.server.engine, sheet.report.server.version, sheet.report.server.product)],
         !!sheet.report.server.identity?.hostname && ["Host name", String(sheet.report.server.identity.hostname)],
         ["Tool", toolName(sheet.report.tool)],
         ["Preflight", `${plural(sheet.report.checks.filter((c) => c.status === "passed").length, "check")} passed${sheet.report.checks.some((c) => c.status === "not_checked") ? `, ${sheet.report.checks.filter((c) => c.status === "not_checked").length.toLocaleString()} not checked` : ""}`],

@@ -56,8 +56,9 @@ without becoming a requirement for finding features.
 
 The preview demonstrates navigation, document tabs, full-width statement
 details, filtering, sample query results, a schema view, appearance switching
-and a keyboard command palette. Database diagram remains under Server > Schema
-in the working product; its preview shortcut represents an open document.
+and a keyboard command palette. Database diagram is a place of its own in the
+SQL workspace group of the working product (after Query digest); its preview
+shortcut represents an open document.
 
 ## Current implementation and next features
 

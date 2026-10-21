@@ -22,7 +22,7 @@ export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 export const SERVER_GROUPS = {
   Overview: ["Health", "InnoDB", "Error log"],
   Contention: ["Locks"],
-  Schema: ["Indexes", "Tables", "Database diagram"],
+  Schema: ["Indexes", "Tables"],
   Setup: ["Parameters", "Instruments", "Maintenance"],
   Security: ["Users and roles"],
 };
@@ -216,6 +216,12 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
       if (kind === "replication") {
         await helpers.button("Replication", ".main-nav ");
         await page.waitForSelector('.server-view[data-view="replication"]');
+        return;
+      }
+      // Database diagram is a place of its own (SQL workspace group).
+      if (kind === "diagram") {
+        await page.click('.main-nav button[data-place="diagram"]');
+        await page.waitForSelector('.server-place.is-diagram-place .server-view[data-view="diagram"]', { visible: true });
         return;
       }
       const isWorkload = ["top", "sessions", "waits", "io"].includes(kind);

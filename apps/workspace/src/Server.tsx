@@ -147,7 +147,7 @@ function focusWhenMounted(id: string) {
 
 /** Names of what Refresh all reads that is not a view in a list: the Full
  * analysis lives in the Tuning place. */
-const READ_LABELS: Partial<Record<ServerKind, string>> = { report: "Full analysis", tuning: "Tuning", replication: "Replication", cluster: "Cluster" };
+const READ_LABELS: Partial<Record<ServerKind, string>> = { report: "Full analysis", tuning: "Tuning", replication: "Replication", cluster: "Cluster", diagram: "Database diagram" };
 
 /** Below this width the sub-navigation becomes a screen of its own. */
 const COMPACT_WIDTH = 720;
@@ -278,12 +278,13 @@ export function Server({
   onColumns: propOnColumns,
 }: {
   /** The place on screen (or shown last, while another place is): Server and
-   * Workload list their views; Tuning shows its one view, full width. */
-  place?: "server" | "workload" | "tuning";
+   * Workload list their views; Tuning and Database diagram show their one
+   * view, full width. */
+  place?: "server" | "workload" | "tuning" | "diagram";
   /** The place is on screen (not hidden behind another place). Views read on
    * open only while it is (viewOnScreen.ts). */
   onScreen?: boolean;
-  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "replication" | "cluster", view: ServerKind) => void;
+  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "diagram" | "replication" | "cluster", view: ServerKind) => void;
   /** Command palette navigation: changes the visible view without reading it. */
   navigation?: { view: ServerKind; n: number };
   /** The list of views floats (opened from the view's title) instead of
@@ -337,18 +338,22 @@ export function Server({
   // chosen inside Server: an earlier session that saved either as the Server
   // view opens Health there.
   const [serverSelectedKind, setServerSelectedKind] = useState<ServerKind>(() => {
-    return initial?.kind && !WORKLOAD_KINDS.includes(initial.kind) && !["tuning", "report", "replication", "cluster"].includes(initial.kind) ? initial.kind : "health";
+    return initial?.kind && !WORKLOAD_KINDS.includes(initial.kind) && !["tuning", "report", "replication", "cluster", "diagram"].includes(initial.kind) ? initial.kind : "health";
   });
   const [workloadSelectedKind, setWorkloadSelectedKind] = useState<ServerKind>(() => {
     return initial?.kind && WORKLOAD_KINDS.includes(initial.kind) ? initial.kind : "top";
   });
   useEffect(() => preloadWhenIdle(LAZY_VIEWS), []);
   const tuningPlace = place === "tuning";
-  const kind: ServerKind = place === "workload" ? workloadSelectedKind : tuningPlace ? "tuning" : serverSelectedKind;
+  const diagramPlace = place === "diagram";
+  // Tuning and Database diagram are places of one view each: no list of
+  // views, no Refresh all toolbar, full width.
+  const singlePlace = tuningPlace || diagramPlace;
+  const kind: ServerKind = place === "workload" ? workloadSelectedKind : tuningPlace ? "tuning" : diagramPlace ? "diagram" : serverSelectedKind;
   const kindRef = useRef(kind);
   kindRef.current = kind;
-  // The Tuning place saves the Server view under it, so Server opens where it was.
-  const savedKind = tuningPlace ? serverSelectedKind : kind;
+  // A place of one view saves the Server view under it, so Server opens where it was.
+  const savedKind = singlePlace ? serverSelectedKind : kind;
   const [order, setOrder] = useState(initial?.order || "total");
   const [minSeconds, setMinSeconds] = useState(initial?.min_seconds || 0);
   const [healthInterval, setHealthInterval] = useState(initial?.health_interval || 5);
@@ -508,7 +513,9 @@ export function Server({
       const report = bound.report;
       if ('server_version' in report && report.server_version && seen >= versionAt) {
         const engine = 'engine' in report ? report.engine : null;
-        engineVersion = `${engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : "Server"} ${report.server_version}`;
+        // Percona Server keeps engine "mysql"; its reports name the product.
+        const product = 'server_product' in report && typeof report.server_product === "string" ? report.server_product : null;
+        engineVersion = `${product || (engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : "Server")} ${report.server_version}`;
         versionAt = seen;
       }
     }
@@ -578,7 +585,7 @@ export function Server({
   const compact = width > 0 && width < COMPACT_WIDTH;
   // The list floats in a wide window only; the narrow layout keeps its own
   // pushed list (Back), and Tuning has no list of views.
-  const floating = !tuningPlace && navCollapsed && !compact;
+  const floating = !singlePlace && navCollapsed && !compact;
   const floatingNavOpen = floating && onScreen && floatingMenuFor === kind;
   useEffect(() => {
     if (!floating || !onScreen || floatingMenuFor !== kind) setFloatingMenuFor(null);
@@ -635,6 +642,11 @@ export function Server({
   function choose(view: ServerKind) {
     if (view === "replication" || view === "cluster") {
       onNavigatePlace?.(view, view);
+      return;
+    }
+    // Database diagram is a place of its own (it was a Schema view).
+    if (view === "diagram") {
+      if (!diagramPlace) onNavigatePlace?.("diagram", "diagram");
       return;
     }
     if (view === "tuning" || view === "report") {
@@ -1049,9 +1061,10 @@ export function Server({
   }
   const refreshRef = useRef({ refreshAll, stopRefresh });
   refreshRef.current = { refreshAll, stopRefresh };
-  // Refresh all belongs to the Server and Workload toolbars; Tuning has none.
-  const tuningRef = useRef(tuningPlace);
-  tuningRef.current = tuningPlace;
+  // Refresh all belongs to the Server and Workload toolbars; Tuning and
+  // Database diagram have none.
+  const tuningRef = useRef(singlePlace);
+  tuningRef.current = singlePlace;
   // Switching the connection, or leaving the workspace, stops it.
   useEffect(() => {
     if (refreshControl.current && refresh && refresh.key !== activeKey) stopRefresh("The connection in use changed.");
@@ -1310,8 +1323,8 @@ export function Server({
     (r): r is NonNullable<typeof r> => !!r && typeof r.performance_schema === "boolean",
   );
   const performanceSchema = instrumentsNow ? instrumentsNow.status.enabled : known ? known.performance_schema : null;
-  // The Tuning place has no list of views to go back to.
-  const onBack = compact && !tuningPlace ? back : undefined;
+  // Tuning and Database diagram have no list of views to go back to.
+  const onBack = compact && !singlePlace ? back : undefined;
   const analysisPhase = running && refreshHere?.views.some(v => v.view === "report" && v.state === "loading");
   const common = { connection, disabled: disabled || !!analysisPhase, onBack };
   // A persistent status area: an active skip loop or a running maintenance
@@ -1523,14 +1536,14 @@ export function Server({
         <ViewActivityContext.Provider value={reportActivity}>
         <ViewBackLabelContext.Provider value={place === "workload" ? "Workload" : "Server"}>
         <section
-          className={`server-place${tuningPlace ? " is-tuning-place" : navCollapsed && !compact ? " is-nav-collapsed" : ""}`}
-          aria-labelledby={tuningPlace ? "tuning-place-title" : "server-title"}
-          data-place-view={tuningPlace ? "tuning" : undefined}
+          className={`server-place${tuningPlace ? " is-tuning-place is-single-place" : diagramPlace ? " is-diagram-place is-single-place" : navCollapsed && !compact ? " is-nav-collapsed" : ""}`}
+          aria-labelledby={tuningPlace ? "tuning-place-title" : diagramPlace ? "diagram-place-title" : "server-title"}
+          data-place-view={tuningPlace ? "tuning" : diagramPlace ? "diagram" : undefined}
           ref={placeRef}
         >
-          {tuningPlace ? (
+          {singlePlace ? (
             // The top bar names the place; its view toolbar is the header.
-            <h1 id="tuning-place-title" className="visually-hidden">Tuning</h1>
+            <h1 id={tuningPlace ? "tuning-place-title" : "diagram-place-title"} className="visually-hidden">{tuningPlace ? "Tuning" : "Database diagram"}</h1>
           ) : (
           <div className={`place-toolbar has-refresh-all${compact ? " is-compact" : ""}`}>
             <div className="place-title">
@@ -1561,7 +1574,7 @@ export function Server({
                       Locks, Change in Parameters, a skip in Replication, or a dump, restore or clone in
                       Maintenance, or changes in Users and roles (your account needs the privilege).
                     </p>
-                    <p>Refresh all (⌥⌘R) reads every Server section, including unopened views, three at a time. Full analysis runs afterwards. Database diagram needs a chosen database; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
+                    <p>Refresh all (⌥⌘R) reads every Server section, including unopened views, three at a time. Full analysis runs afterwards. Database diagram (its own place) is read too once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
                   </>
                 )}
               </InfoPopover>
@@ -1674,8 +1687,8 @@ export function Server({
             </div>
           </div>
           )}
-          <div className={`server-layout${compact ? " is-compact" : ""}${showList && !tuningPlace ? " show-list" : ""}${navCollapsed && !compact && !tuningPlace ? " is-nav-collapsed" : ""}`}>
-            {!tuningPlace && !floating && (
+          <div className={`server-layout${compact ? " is-compact" : ""}${showList && !singlePlace ? " show-list" : ""}${navCollapsed && !compact && !singlePlace ? " is-nav-collapsed" : ""}`}>
+            {!singlePlace && !floating && (
               <div className="server-source-wrap">
                 <SourceList
                   label={listLabel}
@@ -1712,7 +1725,7 @@ export function Server({
                 </div>
               )}
               <ViewSwitcherContext.Provider value={switcherFor(kind)}>
-                <ViewOnScreenContext.Provider value={onScreen && !(compact && showList && !tuningPlace)}>{view}</ViewOnScreenContext.Provider>
+                <ViewOnScreenContext.Provider value={onScreen && !(compact && showList && !singlePlace)}>{view}</ViewOnScreenContext.Provider>
               </ViewSwitcherContext.Provider>
               {keptViews.includes("tables") && (
                 <div className="server-keep" hidden={kind !== "tables"}>

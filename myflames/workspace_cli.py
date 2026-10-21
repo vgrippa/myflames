@@ -359,7 +359,8 @@ def _version_note(conn, quiet, report=None):
         # Most readers use SHOW GLOBAL VARIABLES rather than the connection's
         # cached @@version. Privileges calls this field version.
         version = report.get('server_version') or report.get('version')
-        comment = report.get('engine') or ''
+        # The product names Percona ("Percona Server" is what its comment says).
+        comment = report.get('server_product') or report.get('engine') or ''
     if version:
         note = unsupported_version_note(version, comment)
         if note:

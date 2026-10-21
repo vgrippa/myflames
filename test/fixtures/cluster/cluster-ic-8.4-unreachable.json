@@ -43,6 +43,8 @@
  "report": {
   "schema_version": "cluster-1.0",
   "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
   "server_version": "8.4.11",
   "version_comment": "MySQL Community Server - GPL",
   "captured_at": "2026-10-20T14:49:30.370533+00:00",

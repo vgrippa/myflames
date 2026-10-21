@@ -3679,6 +3679,15 @@ button, .plan-item, .main-nav button {
 .workspace[data-place="query"] .query-lab {
   height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }
+/* Query digest, a place of its own, is the same height as the Query editor
+   it came from, so its table and inspector scroll on their own and the page
+   never grows with the rows. */
+.digest-place {
+  display: flex;
+  height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
+  min-width: 0;
+  overflow: hidden;
+}
 .workspace:is([data-place="server"], [data-place="workload"], [data-place="tuning"]) .server-view {
   min-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }

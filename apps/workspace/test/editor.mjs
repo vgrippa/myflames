@@ -624,13 +624,11 @@ try {
   await chord("Enter");
   await ran(12);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction unknown");
-  // The footer leaves the transaction to the toolbar, except in Query digest,
-  // which hides the toolbar: an open or unknown transaction stays visible.
+  // The footer leaves the transaction to the toolbar, which is always shown:
+  // Query digest is a place of its own, not a mode of the editor.
   assert.equal(await page.$('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]'), null);
-  await page.click('.query-mode-switch [role=tab]:nth-child(2)');
-  await page.waitForFunction(() => document.querySelector('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]')?.textContent === "Transaction unknown");
-  await page.click('.query-mode-switch [role=tab]:nth-child(1)');
-  await page.waitForFunction(() => !document.querySelector('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]') && !!document.querySelector(".tx-state"));
+  assert.equal(await page.$(".query-mode-switch"), null, "no Editor | Query digest switch");
+  assert.ok(await page.$(".tx-state"));
   mock.close.push({ closed: false, reason: "transaction_unknown", message: "A transaction may be open.", session: session({ in_transaction: null }) });
   mock.close.push({ closed: true, session: session({ ended: true, ended_reason: "closed", state: "ended" }) });
   await page.click(".query-tab:has([aria-selected=true]) .query-tab-close");

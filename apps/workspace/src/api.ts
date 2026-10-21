@@ -672,6 +672,10 @@ export type LocksReport = {
   server_identity?: KillServerIdentity;
   schema_version: "locks-1.0" | "locks-1.1";
   engine: string;
+  /** mysql, percona or mariadb: Percona Server keeps engine "mysql". */
+  flavor?: string | null;
+  /** MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
+  server_product?: string | null;
   server_version: string;
   captured_at: string;
   scope: "all" | "waits" | "deadlock";
@@ -909,6 +913,10 @@ export type HealthMetric = {
 export type HealthReport = {
   schema_version: "health-1.0";
   engine: string;
+  /** mysql, percona or mariadb: Percona Server keeps engine "mysql" (MySQL rules apply). */
+  flavor?: "mysql" | "percona" | "mariadb";
+  /** The name to show: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
+  server_product?: string;
   server_version: string | null;
   interval: number;
   elapsed_s: number | null;
@@ -977,6 +985,10 @@ export type HealthDiagnostic = {
 /** Shared by the Performance workspace's live views (waits, indexes, io, config). */
 type PerfBase = {
   engine: string;
+  /** mysql, percona or mariadb: Percona Server keeps engine "mysql" (MySQL rules apply). */
+  flavor?: "mysql" | "percona" | "mariadb";
+  /** The name to show: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
+  server_product?: string;
   server_version: string | null;
   taken_at: string;
   uptime_s: number | null;
@@ -1051,6 +1063,10 @@ export type UnusedIndex = {
   visible: boolean;
   foreign_keys: string[];
   verdict: "candidate" | "keep";
+  /** Why it is kept: it backs a foreign key, or user statistics saw it read. */
+  keep_reason?: "foreign_key" | "userstat" | null;
+  /** Rows INDEX_STATISTICS counts through it (userstat=ON beside Performance Schema), else null. */
+  userstat_rows_read?: number | null;
   why: string;
   test_sql?: string;
   drop_sql?: string;
@@ -1091,6 +1107,8 @@ export type IndexesReport = PerfBase & {
   scope: { schema: string | null; schemas?: string[] | null; server_wide: boolean };
   source: "performance_schema" | "userstat" | null;
   available: boolean;
+  /** userstat=ON (MariaDB, Percona Server): the source with Performance Schema off, evidence beside it. */
+  userstat?: { enabled: boolean; read: boolean; role: "source" | "evidence" | null };
   unused: UnusedIndex[];
   redundant: RedundantIndex[];
   full_scans: FullScanTable[];
@@ -1102,6 +1120,7 @@ export type IndexesReport = PerfBase & {
     unused: number;
     unused_candidates: number;
     keep_foreign_key: number;
+    keep_userstat?: number;
     redundant: number;
     full_scans: number;
     mostly_full_scans: number;
@@ -1234,11 +1253,17 @@ export type ConfigParameter = {
   persisted: boolean | null;
   modified: boolean | null;
   description: string | null;
+  /** The official manual page (parameters.documentation); absent in older reports. */
+  documentation?: { url: string; source: string } | null;
   checks: string[];
+  /** "percona": a variable Percona Server adds (on Percona Server only); null otherwise. */
+  vendor?: "percona" | null;
 };
 export type ConfigParameters = {
   schema_version: "parameters-1.0";
   complete: boolean;
+  /** mysql, percona or mariadb (which product's documentation describes the items); absent in older reports. */
+  flavor?: "mysql" | "percona" | "mariadb";
   notes: string[];
   items: ConfigParameter[];
 };
@@ -1386,6 +1411,9 @@ export type MissingPrimaryKey = {
   checks: TableStatement[];
   fixes: TableStatement[];
   caveat: string;
+  /** userstat=ON: rows read and changed since it started (TABLE_STATISTICS); null when unknown (a partitioned table). */
+  rows_read?: number | null;
+  rows_changed?: number | null;
 };
 export type FreeSpaceRow = {
   schema: string;
@@ -1407,6 +1435,8 @@ export type FreeSpaceRow = {
 export type TableInventoryRow = {
   schema: string; table: string; engine: string | null; rows: number | null;
   data_bytes: number | null; index_bytes: number | null; size_bytes: number | null; partitioned: boolean;
+  /** userstat=ON (MariaDB, Percona Server): rows read and changed since it started; null when unknown (a partitioned table). */
+  rows_read?: number | null; rows_changed?: number | null;
 };
 export type TablesReport = PerfBase & {
   /** Complete scoped inventory on current servers; absent in older saved reports. */
@@ -1415,6 +1445,8 @@ export type TablesReport = PerfBase & {
   scope: { schemas: string[] | null; all_user_schemas: boolean; excluded: string[] };
   statistics: { fresh_requested: boolean; fresh: boolean; cache_expiry_s: number | null; cached: boolean };
   tablespaces_known: boolean;
+  /** userstat=ON (MariaDB, Percona Server): TABLE_STATISTICS read for activity. */
+  userstat?: { enabled: boolean; read: boolean };
   tablespace_collection?: { show_create_limit: number; deadline_s: number; unresolved: number };
   summary: {
     status: "ok" | "watch" | "problem";
@@ -1718,12 +1750,16 @@ export type AnalysisReport = {
   schema_version: "report-1.0";
   myflames_version: string;
   engine: string;
+  /** mysql, percona or mariadb: Percona Server keeps engine "mysql" (MySQL rules apply). */
+  flavor?: "mysql" | "percona" | "mariadb";
+  /** The name to show: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
+  server_product?: string;
   server_version: string | null;
   taken_at: string;
   uptime_s: number | null;
   performance_schema: boolean;
   header: {
-    server: { engine: string; version: string | null; version_comment: string | null; uptime_s: number | null; performance_schema: boolean };
+    server: { engine: string; flavor?: string; product?: string; version: string | null; version_comment: string | null; uptime_s: number | null; performance_schema: boolean };
     started_at: string | null;
     elapsed_s: number | null;
     interval: number;
@@ -1762,6 +1798,8 @@ export type EditorSession = {
   };
   engine: "mysql" | "mariadb" | null;
   server_version: string | null;
+  /** From the version alone: Percona's release suffix names Percona Server. */
+  server_product?: string | null;
   connection_id: number | null;
   autocommit: boolean | null;
   /** True or false, or null when this server cannot tell. */

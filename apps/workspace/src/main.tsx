@@ -29,7 +29,7 @@ import { Home } from "./Home";
 import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
-import type { ReplicationReport, SkipLoop } from "./opsApi";
+import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
 import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
@@ -84,6 +84,9 @@ const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
 const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
+// Query digest (in the style of pt-query-digest) is a place of its own in the
+// SQL workspace group, after the Query editor; its row actions open the editor.
+const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => m.QueryDigestView));
 const Library = lazyComponent(() => import("./Library").then((m) => m.Library));
 const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
 const PlanChart = lazyComponent(() => import("./PlanChart").then((m) => m.PlanChart));
@@ -106,8 +109,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "workload", "replication", "cluster", "proxysql", "tuning", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "server", "workload", "replication", "cluster", "proxysql", "tuning", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -126,6 +129,8 @@ function placeOf(mode: Mode): Place | null {
 const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   home: "home",
   query: "query",
+  digest: "digest",
+  diagram: "diagram",
   server: "server",
   workload: "workload",
   replication: "replication",
@@ -203,7 +208,6 @@ function App() {
   }, []);
   const chrome = useRef<HTMLDivElement>(null);
   const [placeActionsWidth, setPlaceActionsWidth] = useState(0);
-  const [replicationBadge, setReplicationBadge] = useState<ReactNode>(null);
   const [replicationLoops, setReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
   const [plans, setPlans] = useState<(Plan & { origin?: "sample" })[]>([]);
   const [activeId, setActiveId] = useState("");
@@ -985,6 +989,9 @@ function App() {
     // Plans with nothing open was the welcome screen, which is now Home.
     if ((nextMode === "inspect" || nextMode === "compare") && !restoredPlans.length)
       nextMode = "home";
+    // Database diagram was a Server view: a session saved on it opens its place.
+    if (nextMode === "server" && isRecord(state.query_lab) && isRecord(state.query_lab.slow) && state.query_lab.slow.kind === "diagram")
+      nextMode = "diagram";
     const nextView = views.some(([id]) => id === state.view)
       ? (state.view as View)
       : "workbench";
@@ -1365,14 +1372,24 @@ function App() {
       ? <NavMarker tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
       // Not judged (an account that cannot read): no marker word of its own; the place says why.
       : <NavMarker tone={clusterState.status === "unknown" ? undefined : clusterState.status} text={clusterState.text} />;
+  // Replication names the state of the connection in use the same way, from
+  // the one report the place and Refresh all share: muted when it is not a
+  // replica (a neutral state; Group Replication's own channels do not count),
+  // Unknown only when the status could not be read.
+  const replicationState = replicationNav(replicationReport, connectionKey(request));
+  const replicationMuted = replicationState.state === "none";
+  const replicationBadge = replicationState.state !== "replica" ? null
+    : replicationState.failed > 0
+      ? <NavMarker compact tone="problem" count={replicationState.failed} countTone="danger" text={replicationState.text} />
+      : <NavMarker tone={replicationState.tone} text={replicationState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
-  const connectionPlace = mode === "query" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
-  // Server renders Server, Workload and Tuning. While another place is on
-  // screen it keeps the one shown last, so leaving it never swaps (and
-  // mounts) a different view in the hidden place.
-  const serverPlaceRef = useRef<"server" | "workload" | "tuning">(mode === "workload" || mode === "tuning" ? mode : "server");
-  if (mode === "server" || mode === "workload" || mode === "tuning") serverPlaceRef.current = mode;
+  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
+  // Server renders Server, Workload, Tuning and Database diagram. While
+  // another place is on screen it keeps the one shown last, so leaving it
+  // never swaps (and mounts) a different view in the hidden place.
+  const serverPlaceRef = useRef<"server" | "workload" | "tuning" | "diagram">(mode === "workload" || mode === "tuning" || mode === "diagram" ? mode : "server");
+  if (mode === "server" || mode === "workload" || mode === "tuning" || mode === "diagram") serverPlaceRef.current = mode;
   const serverPlace = serverPlaceRef.current;
   const serverOnScreen = ready && mode === serverPlace;
   // Server and Replication mount on their first visit and stay mounted,
@@ -1380,12 +1397,14 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
   if (ready && mode === "cluster") visited.current.cluster = true;
   if (ready && mode === "proxysql") visited.current.proxysql = true;
+  if (ready && mode === "digest") visited.current.digest = true;
+  const mountDigest = visited.current.digest;
   const mountCluster = visited.current.cluster;
   const mountProxySql = visited.current.proxysql;
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
@@ -1395,7 +1414,7 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, PlanChart, ContextPanel]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, QueryDigestView, PlanChart, ContextPanel]);
   }, [ready]);
   // Replication's "How to turn it on" opens Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -1521,7 +1540,7 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "digest" || mode === "diagram" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -1546,6 +1565,11 @@ function App() {
     });
   }, []);
   function chooseServerView(viewId: ServerKind) {
+    // Database diagram is a place of its own now: an old route to it opens it.
+    if (viewId === "diagram") {
+      go("diagram");
+      return;
+    }
     if (WORKLOAD_KINDS.includes(viewId)) {
       if (mode !== "workload") go("workload");
     } else {
@@ -1576,6 +1600,8 @@ function App() {
     { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },
     { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
     { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
+    { id: "place-digest", label: "Query digest", group: "Places", icon: "analysis", keywords: "pt-query-digest digest profile statements workload slow queries", run: () => go("digest") },
+    { id: "place-diagram", label: "Database diagram", group: "Places", icon: "diagram", keywords: "schema diagram er erd mermaid tables relationships foreign keys", run: () => go("diagram") },
     { id: "place-plans", label: "Plans", group: "Places", icon: "plan", keywords: "explain analyze flame graph visual explain", run: () => go("plans") },
     { id: "place-investigations", label: "Investigations", group: "Places", icon: "investigation", keywords: "saved library notes", run: () => go("investigations") },
     { id: "place-learn", label: "Learn", group: "Places", icon: "learn", keywords: "lessons teach algorithms", run: () => go("learn") },
@@ -1628,7 +1654,8 @@ function App() {
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
         placeBadges={{ replication: replicationBadge, cluster: clusterBadge }}
-        placeMuted={clusterMuted || proxyMuted ? {
+        placeMuted={clusterMuted || proxyMuted || replicationMuted ? {
+          ...(replicationMuted ? { replication: NOT_A_REPLICA } : {}),
           ...(clusterMuted ? { cluster: NOT_A_CLUSTER } : {}),
           ...(proxyMuted ? { proxysql: NOT_A_PROXYSQL } : {}),
         } : undefined}
@@ -1644,7 +1671,7 @@ function App() {
                 document in the plan header. Replication and Tuning are one
                 view whose header already says the place name, so it stays
                 here for assistive technology only. */}
-            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" || mode === "digest" || mode === "diagram" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
           {ready && (mode === "inspect" || mode === "compare") && (
             <div className={`plans-bar${mode === "inspect" && active ? " has-active-plan" : ""}`}>
@@ -1726,6 +1753,8 @@ function App() {
             mode === "proxysql" ||
             mode === "tuning" ||
             mode === "query" ||
+            mode === "digest" ||
+            mode === "diagram" ||
             mode === "audit" ||
             mode === "home" ||
             mode === "teach"
@@ -1879,7 +1908,7 @@ function App() {
               onInvestigations={() => go("investigations")}
               onQuery={() => go("query")}
               onServer={() => go("server")}
-              onDiagram={() => chooseServerView("diagram")}
+              onDiagram={() => go("diagram")}
               queryTabs={labState.tabs}
               onOpenQuery={(id) => {
                 withLab((lab) => lab.openTab(id));
@@ -1909,6 +1938,24 @@ function App() {
               </WritePolicyContext.Provider>
             </div>
           )}
+          {ready && mountDigest && (
+            // Mounted on its first visit and kept, hidden, after it: it reads
+            // only while on screen (viewOnScreen.ts), and its rows open the
+            // Query editor, which runs them.
+            <div className="digest-place" hidden={mode !== "digest"}>
+              <ViewOnScreenContext.Provider value={mode === "digest"}>
+                {/* Keyed like Server: Start fresh or another tab's newer
+                    workspace starts it over even when that workspace is on
+                    Query digest too (the wrapper is a sibling of Teach). */}
+                <QueryDigestView
+                  key={resetKey}
+                  connection={request}
+                  onOpenInEditor={(row, rank, from) => openDigest(row, rank, "open", from)}
+                  onExplain={(row, rank, from) => openDigest(row, rank, "explain", from)}
+                />
+              </ViewOnScreenContext.Provider>
+            </div>
+          )}
           {ready && mountServer && (
             <div hidden={!serverOnScreen}>
               <WritePolicyContext.Provider value={writePolicy}>
@@ -1919,8 +1966,8 @@ function App() {
                 onScreen={serverOnScreen}
                 onNavigatePlace={(targetPlace, targetView) => {
                   go(targetPlace);
-                  // Tuning, Replication and Cluster show their one view; Server and Workload choose theirs.
-                  if (targetPlace !== "tuning" && targetPlace !== "replication" && targetPlace !== "cluster") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
+                  // Tuning, Database diagram, Replication and Cluster show their one view; Server and Workload choose theirs.
+                  if (targetPlace !== "tuning" && targetPlace !== "diagram" && targetPlace !== "replication" && targetPlace !== "cluster") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
                 }}
                 navCollapsed={serverNavCollapsed}
                 onToggleNavCollapsed={toggleServerNavCollapsed}
@@ -1973,7 +2020,8 @@ function App() {
                   connection={request}
                   restoredLoop={restoredLoop}
                   disabled={labBusy}
-                  onBadgeChange={setReplicationBadge}
+                  clusterKind={clusterReport?.key === connectionKey(request) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
+                  onOpenCluster={() => go("cluster")}
                   onOpenInstruments={openInstrumentsRow}
                   loops={replicationLoops}
                   onLoops={setReplicationLoops}

@@ -59,7 +59,8 @@ try {
   assert.equal(ERROR_LOG_READ, "errorlog:200");
   assert.deepEqual(errorLogBody(connection), { connection, limit: 200 });
   const empty = render();
-  assert.match(empty, /Load error log/);
+  // The view reads when it opens on screen: no Load button.
+  assert.doesNotMatch(empty, /Load error log/);
   assert.match(empty, /performance_schema.error_log.*MariaDB.*only when the server runs on this computer/s);
   assert.doesNotMatch(empty, /<table/);
   const mysql = reports["mysql-8.4"];

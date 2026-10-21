@@ -11,7 +11,7 @@ import { Checkbox, useFocusScope } from "./kit";
 import { NewsSetting } from "./HomeNews";
 import type { SaveStatus } from "./session";
 
-export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "query" | "plans" | "investigations" | "learn";
+export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "query" | "digest" | "diagram" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "server", label: "Server", icon: "server" },
@@ -21,6 +21,8 @@ export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "proxysql", label: "ProxySQL", icon: "proxy" },
   { key: "tuning", label: "Tuning", icon: "tuning" },
   { key: "query", label: "Query editor", icon: "query" },
+  { key: "digest", label: "Query digest", icon: "analysis" },
+  { key: "diagram", label: "Database diagram", icon: "diagram" },
   { key: "plans", label: "Plans", icon: "plan" },
   { key: "investigations", label: "Investigations", icon: "investigation" },
   { key: "learn", label: "Learn", icon: "learn" },

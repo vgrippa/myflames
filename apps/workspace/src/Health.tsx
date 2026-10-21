@@ -282,7 +282,7 @@ export function HealthView({
   const history = memory.key === key ? memory.history : [];
   const s = report?.summary;
   const d = s?.diagnostics;
-  const engine = report ? (report.engine === "mariadb" ? "MariaDB" : "MySQL") : "";
+  const engine = report ? report.server_product || (report.engine === "mariadb" ? "MariaDB" : "MySQL") : "";
   // Problems first, then watch, then the rest (stable within a status).
   const diagnostics = [...(report?.diagnostics ?? [])].sort((a, b) => toneRank(a.status) - toneRank(b.status));
   const byGroup = report

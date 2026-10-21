@@ -60,10 +60,23 @@ remaining limitations.
 
 ## GA version matrix (live servers)
 
-`scripts/ga-matrix.sh` starts every GA MySQL (8.0, 8.4, 9.7, 26.7) and MariaDB
-(10.6, 10.11, 11.4, 11.8, 12.3, 13.0) image in Docker on 127.0.0.1 (ports 33080
-to 33130), plus a GTID replica for MySQL 9.7 and MariaDB 11.8 (the latter left
-with a duplicate-key SQL thread error). Each primary gets the `testdb` seed from
+`scripts/record-perf-fixtures.py --port PORT --server NAME --view
+indexes|tables|config|io|waits|health [--schema S ...] [--parameters]` records
+one live view read from a matrix server as a replay fixture
+(`test/fixtures/perf/<view>-<server>.json`, or `test/fixtures/health/<server>.json`),
+with the password read from the matrix's credentials file and never printed;
+run it with an isolated `HOME`. The Percona fixtures that `test/test_percona.py`
+replays were recorded this way from `percona-8.0` and `percona-8.4`.
+
+`scripts/ga-matrix.sh` starts every GA MySQL (8.0, 8.4, 9.7, 26.7), Percona
+Server for MySQL (8.0, 8.4; official `percona/percona-server` images pinned to
+8.0.46-37.1 and 8.4.11-11.1, arm64 and amd64) and MariaDB (10.6, 10.11, 11.4,
+11.8, 12.3, 13.0) image in Docker on 127.0.0.1 (ports 33080 to 33185), plus a
+GTID replica for MySQL 9.7, Percona Server 8.4 and MariaDB 11.8 (the last left
+with a duplicate-key SQL thread error). Percona Server 8.0 (port 33180) runs the
+thread pool and the slow log with `log_slow_verbosity=full`; Percona Server 8.4
+(33184, replica on 33185) runs with `userstat=ON`; saved connections
+`ga-percona-8.0`, `ga-percona-8.4` and `ga-percona-8.4-replica`. Each primary gets the `testdb` seed from
 `generate-fixtures.sh`, a `review` schema (no primary key, redundant index,
 foreign key, reusable free space, view, procedure), a warm-up workload and one
 deadlock. Accounts: `root`, `mf_admin` (ALL), `mf_read` (read only); passwords

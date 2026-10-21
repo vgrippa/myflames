@@ -87,6 +87,26 @@ class TestCatalogReport(unittest.TestCase):
         self.assertNotIn("DROP", sql)
         self.assertEqual(conn.flags[0], ["--comments", "--xml"])
 
+    def test_stats_add_engine_estimated_rows_and_size_only_when_asked(self):
+        rows = [{"TABLE_NAME": "orders", "TABLE_TYPE": "BASE TABLE", "ENGINE": "InnoDB", "TABLE_ROWS": "1200",
+                 "DATA_LENGTH": "16384", "INDEX_LENGTH": "4096"},
+                {"TABLE_NAME": "recent", "TABLE_TYPE": "VIEW", "ENGINE": None, "TABLE_ROWS": None,
+                 "DATA_LENGTH": None, "INDEX_LENGTH": None}]
+        conn = FakeConn({"TABLES": rows})
+        report = schema_browser.catalog_report(conn, "shop", stats=True)
+        self.assertTrue(report["stats"])
+        self.assertEqual(report["tables"], [
+            {"name": "orders", "type": "table", "engine": "InnoDB", "rows": 1200, "bytes": 20480},
+            {"name": "recent", "type": "view", "engine": None, "rows": None, "bytes": None}])
+        self.assertIn("ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH FROM information_schema.TABLES", conn.sql[0])
+        self.assertIn("LIMIT %d" % (schema_browser.MAX_TABLES + 1), conn.sql[0])
+        plain = FakeConn({"TABLES": TABLES})
+        self.assertFalse(schema_browser.catalog_report(plain, "shop")["stats"])
+        self.assertNotIn("TABLE_ROWS", plain.sql[0])
+        self.assertNotIn("engine", schema_browser.catalog_report(FakeConn({"TABLES": TABLES}), "shop")["tables"][0])
+        # Only a literal true asks for them.
+        self.assertFalse(schema_browser.catalog_report(FakeConn({"TABLES": TABLES}), "shop", stats="yes")["stats"])
+
     def test_more_tables_than_the_limit_are_cut_and_flagged(self):
         rows = [{"TABLE_NAME": "t%05d" % i, "TABLE_TYPE": "BASE TABLE"} for i in range(6)]
         with mock.patch.object(schema_browser, "MAX_TABLES", 5):

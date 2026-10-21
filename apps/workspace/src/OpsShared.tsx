@@ -76,10 +76,13 @@ export function channelPhrase(engine: string | null | undefined, name: string) {
   const word = engine === "mariadb" ? "connection" : "channel";
   return name ? `${word} '${name}'` : `the default ${word}`;
 }
-/** "MySQL 8.4.11", "MariaDB 11.4.13" (the build suffix of "11.4.13-MariaDB-log" left out). */
-export function engineName(engine: string | null | undefined, version?: string | null) {
-  const name = engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : engine || "Server";
-  const short = version ? version.match(/^\d+(?:\.\d+)*/)?.[0] || version : "";
+/** "MySQL 8.4.11", "MariaDB 11.4.13" (the build suffix of "11.4.13-MariaDB-log" left out),
+ * "Percona Server 8.4.11-11" when the server names its product (Percona's release
+ * number is part of its version, so it stays). */
+export function engineName(engine: string | null | undefined, version?: string | null, product?: string | null) {
+  const name = product || (engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : engine || "Server");
+  const pattern = name.startsWith("Percona") ? /^\d+(?:\.\d+)*(?:-\d+(?:\.\d+)?)?/ : /^\d+(?:\.\d+)*/;
+  const short = version ? version.match(pattern)?.[0] || version : "";
   return short ? `${name} ${short}` : name;
 }
 /** "1 channel", "2 channels". */

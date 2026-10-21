@@ -531,7 +531,11 @@
         "checks": [
           "buffer_pool"
         ],
-        "name": "innodb_buffer_pool_size"
+        "name": "innodb_buffer_pool_size",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_buffer_pool_size",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "8796093022208",
@@ -557,7 +561,11 @@
         "checks": [
           "buffer_pool"
         ],
-        "name": "innodb_buffer_pool_size_max"
+        "name": "innodb_buffer_pool_size_max",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_buffer_pool_size_max",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "2097152",
@@ -583,7 +591,11 @@
         "checks": [
           "sort_buffer_size"
         ],
-        "name": "sort_buffer_size"
+        "name": "sort_buffer_size",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#sort_buffer_size",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "262144",
@@ -609,7 +621,11 @@
         "checks": [
           "join_buffer_size"
         ],
-        "name": "join_buffer_size"
+        "name": "join_buffer_size",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#join_buffer_size",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "16777216",
@@ -635,7 +651,11 @@
         "checks": [
           "tmp_tables"
         ],
-        "name": "tmp_memory_table_size"
+        "name": "tmp_memory_table_size",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#tmp_memory_table_size",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "16777216",
@@ -661,7 +681,11 @@
         "checks": [
           "tmp_tables"
         ],
-        "name": "max_heap_table_size"
+        "name": "max_heap_table_size",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#max_heap_table_size",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "18446744073709551615",
@@ -687,7 +711,11 @@
         "checks": [
           "tmp_tables"
         ],
-        "name": "tmp_disk_table_size"
+        "name": "tmp_disk_table_size",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#tmp_disk_table_size",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "1",
@@ -713,7 +741,11 @@
         "checks": [
           "flush_log"
         ],
-        "name": "innodb_flush_log_at_trx_commit"
+        "name": "innodb_flush_log_at_trx_commit",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_flush_log_at_trx_commit",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "0",
@@ -739,7 +771,11 @@
         "checks": [
           "sync_binlog"
         ],
-        "name": "sync_binlog"
+        "name": "sync_binlog",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/ha-and-performance/standard-replication/replication-and-binary-log-system-variables#sync_binlog",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "OFF",
@@ -765,7 +801,11 @@
         "checks": [
           "sync_binlog"
         ],
-        "name": "log_bin"
+        "name": "log_bin",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/ha-and-performance/standard-replication/replication-and-binary-log-system-variables#log_bin",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "O_DIRECT",
@@ -791,7 +831,11 @@
         "checks": [
           "flush_method"
         ],
-        "name": "innodb_flush_method"
+        "name": "innodb_flush_method",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_flush_method",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "OFF",
@@ -817,7 +861,11 @@
         "checks": [
           "flush_method"
         ],
-        "name": "innodb_data_file_buffering"
+        "name": "innodb_data_file_buffering",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_data_file_buffering",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "OFF",
@@ -843,7 +891,11 @@
         "checks": [
           "flush_method"
         ],
-        "name": "innodb_log_file_buffering"
+        "name": "innodb_log_file_buffering",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_log_file_buffering",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "50331648",
@@ -869,7 +921,11 @@
         "checks": [
           "redo"
         ],
-        "name": "innodb_log_file_size"
+        "name": "innodb_log_file_size",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_log_file_size",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "151",
@@ -895,7 +951,11 @@
         "checks": [
           "max_connections"
         ],
-        "name": "max_connections"
+        "name": "max_connections",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#max_connections",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "2000",
@@ -921,7 +981,11 @@
         "checks": [
           "table_open_cache"
         ],
-        "name": "table_open_cache"
+        "name": "table_open_cache",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#table_open_cache",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "OFF",
@@ -947,7 +1011,11 @@
         "checks": [
           "performance_schema"
         ],
-        "name": "performance_schema"
+        "name": "performance_schema",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/reference/system-tables/performance-schema/performance-schema-system-variables#performance_schema",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "OFF",
@@ -973,7 +1041,11 @@
         "checks": [
           "slow_log"
         ],
-        "name": "log_slow_query"
+        "name": "log_slow_query",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#log_slow_query",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "10.000000",
@@ -999,7 +1071,11 @@
         "checks": [
           "slow_log"
         ],
-        "name": "log_slow_query_time"
+        "name": "log_slow_query_time",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#log_slow_query_time",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "FILE",
@@ -1029,7 +1105,11 @@
         "checks": [
           "slow_log"
         ],
-        "name": "log_output"
+        "name": "log_output",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#log_output",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "200",
@@ -1055,7 +1135,11 @@
         "checks": [
           "io_capacity"
         ],
-        "name": "innodb_io_capacity"
+        "name": "innodb_io_capacity",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_io_capacity",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "2000",
@@ -1081,7 +1165,11 @@
         "checks": [
           "io_capacity"
         ],
-        "name": "innodb_io_capacity_max"
+        "name": "innodb_io_capacity_max",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_io_capacity_max",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "one-thread-per-connection",
@@ -1107,7 +1195,11 @@
         "checks": [
           "thread_handling"
         ],
-        "name": "thread_handling"
+        "name": "thread_handling",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/ha-and-performance/optimization-and-tuning/buffers-caches-and-threads/thread-pool/thread-pool-system-status-variables#thread_handling",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "16",
@@ -1133,7 +1225,11 @@
         "checks": [
           "thread_handling"
         ],
-        "name": "thread_pool_size"
+        "name": "thread_pool_size",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/ha-and-performance/optimization-and-tuning/buffers-caches-and-threads/thread-pool/thread-pool-system-status-variables#thread_pool_size",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "OFF",
@@ -1157,7 +1253,11 @@
         "modified": false,
         "description": "Synthetic parameter metadata for browser coverage.",
         "checks": [],
-        "name": "slow_query_log"
+        "name": "slow_query_log",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#slow_query_log",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": "10",
@@ -1181,7 +1281,11 @@
         "modified": false,
         "description": "Synthetic parameter metadata for browser coverage.",
         "checks": [],
-        "name": "long_query_time"
+        "name": "long_query_time",
+        "documentation": {
+          "url": "https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#long_query_time",
+          "source": "MariaDB documentation"
+        }
       },
       {
         "value": null,
@@ -1205,7 +1309,8 @@
         "modified": null,
         "description": null,
         "checks": [],
-        "name": "unknown_parameter"
+        "name": "unknown_parameter",
+        "documentation": null
       },
       {
         "value": "/data/server",
@@ -1229,7 +1334,8 @@
         "modified": false,
         "description": "Synthetic parameter metadata for browser coverage.",
         "checks": [],
-        "name": "option_file_parameter"
+        "name": "option_file_parameter",
+        "documentation": null
       },
       {
         "value": "partial",
@@ -1253,7 +1359,8 @@
         "modified": false,
         "description": "Synthetic parameter metadata for browser coverage.",
         "checks": [],
-        "name": "truncated_parameter"
+        "name": "truncated_parameter",
+        "documentation": null
       },
       {
         "value": "2048",
@@ -1277,7 +1384,8 @@
         "modified": true,
         "description": "Synthetic parameter metadata for browser coverage.",
         "checks": [],
-        "name": "modified_parameter"
+        "name": "modified_parameter",
+        "documentation": null
       },
       {
         "value": "0",
@@ -1301,7 +1409,8 @@
         "modified": false,
         "description": "Synthetic catalog item 0 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_00"
+        "name": "catalog_parameter_00",
+        "documentation": null
       },
       {
         "value": "1",
@@ -1325,7 +1434,8 @@
         "modified": false,
         "description": "Synthetic catalog item 1 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_01"
+        "name": "catalog_parameter_01",
+        "documentation": null
       },
       {
         "value": "2",
@@ -1349,7 +1459,8 @@
         "modified": false,
         "description": "Synthetic catalog item 2 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_02"
+        "name": "catalog_parameter_02",
+        "documentation": null
       },
       {
         "value": "3",
@@ -1373,7 +1484,8 @@
         "modified": false,
         "description": "Synthetic catalog item 3 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_03"
+        "name": "catalog_parameter_03",
+        "documentation": null
       },
       {
         "value": "4",
@@ -1397,7 +1509,8 @@
         "modified": false,
         "description": "Synthetic catalog item 4 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_04"
+        "name": "catalog_parameter_04",
+        "documentation": null
       },
       {
         "value": "5",
@@ -1421,7 +1534,8 @@
         "modified": false,
         "description": "Synthetic catalog item 5 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_05"
+        "name": "catalog_parameter_05",
+        "documentation": null
       },
       {
         "value": "6",
@@ -1445,7 +1559,8 @@
         "modified": false,
         "description": "Synthetic catalog item 6 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_06"
+        "name": "catalog_parameter_06",
+        "documentation": null
       },
       {
         "value": "7",
@@ -1469,7 +1584,8 @@
         "modified": false,
         "description": "Synthetic catalog item 7 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_07"
+        "name": "catalog_parameter_07",
+        "documentation": null
       },
       {
         "value": "8",
@@ -1493,7 +1609,8 @@
         "modified": false,
         "description": "Synthetic catalog item 8 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_08"
+        "name": "catalog_parameter_08",
+        "documentation": null
       },
       {
         "value": "9",
@@ -1517,7 +1634,8 @@
         "modified": false,
         "description": "Synthetic catalog item 9 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_09"
+        "name": "catalog_parameter_09",
+        "documentation": null
       },
       {
         "value": "10",
@@ -1541,7 +1659,8 @@
         "modified": false,
         "description": "Synthetic catalog item 10 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_10"
+        "name": "catalog_parameter_10",
+        "documentation": null
       },
       {
         "value": "11",
@@ -1565,7 +1684,8 @@
         "modified": false,
         "description": "Synthetic catalog item 11 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_11"
+        "name": "catalog_parameter_11",
+        "documentation": null
       },
       {
         "value": "12",
@@ -1589,7 +1709,8 @@
         "modified": false,
         "description": "Synthetic catalog item 12 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_12"
+        "name": "catalog_parameter_12",
+        "documentation": null
       },
       {
         "value": "13",
@@ -1613,7 +1734,8 @@
         "modified": false,
         "description": "Synthetic catalog item 13 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_13"
+        "name": "catalog_parameter_13",
+        "documentation": null
       },
       {
         "value": "14",
@@ -1637,7 +1759,8 @@
         "modified": false,
         "description": "Synthetic catalog item 14 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_14"
+        "name": "catalog_parameter_14",
+        "documentation": null
       },
       {
         "value": "15",
@@ -1661,7 +1784,8 @@
         "modified": false,
         "description": "Synthetic catalog item 15 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_15"
+        "name": "catalog_parameter_15",
+        "documentation": null
       },
       {
         "value": "16",
@@ -1685,7 +1809,8 @@
         "modified": false,
         "description": "Synthetic catalog item 16 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_16"
+        "name": "catalog_parameter_16",
+        "documentation": null
       },
       {
         "value": "17",
@@ -1709,7 +1834,8 @@
         "modified": false,
         "description": "Synthetic catalog item 17 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_17"
+        "name": "catalog_parameter_17",
+        "documentation": null
       },
       {
         "value": "18",
@@ -1733,7 +1859,8 @@
         "modified": false,
         "description": "Synthetic catalog item 18 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_18"
+        "name": "catalog_parameter_18",
+        "documentation": null
       },
       {
         "value": "19",
@@ -1757,7 +1884,8 @@
         "modified": false,
         "description": "Synthetic catalog item 19 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_19"
+        "name": "catalog_parameter_19",
+        "documentation": null
       },
       {
         "value": "20",
@@ -1781,7 +1909,8 @@
         "modified": false,
         "description": "Synthetic catalog item 20 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_20"
+        "name": "catalog_parameter_20",
+        "documentation": null
       },
       {
         "value": "21",
@@ -1805,7 +1934,8 @@
         "modified": false,
         "description": "Synthetic catalog item 21 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_21"
+        "name": "catalog_parameter_21",
+        "documentation": null
       },
       {
         "value": "22",
@@ -1829,7 +1959,8 @@
         "modified": false,
         "description": "Synthetic catalog item 22 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_22"
+        "name": "catalog_parameter_22",
+        "documentation": null
       },
       {
         "value": "23",
@@ -1853,7 +1984,8 @@
         "modified": false,
         "description": "Synthetic catalog item 23 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_23"
+        "name": "catalog_parameter_23",
+        "documentation": null
       },
       {
         "value": "24",
@@ -1877,7 +2009,8 @@
         "modified": false,
         "description": "Synthetic catalog item 24 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_24"
+        "name": "catalog_parameter_24",
+        "documentation": null
       },
       {
         "value": "25",
@@ -1901,7 +2034,8 @@
         "modified": false,
         "description": "Synthetic catalog item 25 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_25"
+        "name": "catalog_parameter_25",
+        "documentation": null
       },
       {
         "value": "26",
@@ -1925,7 +2059,8 @@
         "modified": false,
         "description": "Synthetic catalog item 26 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_26"
+        "name": "catalog_parameter_26",
+        "documentation": null
       },
       {
         "value": "27",
@@ -1949,7 +2084,8 @@
         "modified": false,
         "description": "Synthetic catalog item 27 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_27"
+        "name": "catalog_parameter_27",
+        "documentation": null
       },
       {
         "value": "28",
@@ -1973,7 +2109,8 @@
         "modified": false,
         "description": "Synthetic catalog item 28 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_28"
+        "name": "catalog_parameter_28",
+        "documentation": null
       },
       {
         "value": "29",
@@ -1997,7 +2134,8 @@
         "modified": false,
         "description": "Synthetic catalog item 29 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_29"
+        "name": "catalog_parameter_29",
+        "documentation": null
       },
       {
         "value": "30",
@@ -2021,7 +2159,8 @@
         "modified": false,
         "description": "Synthetic catalog item 30 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_30"
+        "name": "catalog_parameter_30",
+        "documentation": null
       },
       {
         "value": "31",
@@ -2045,7 +2184,8 @@
         "modified": false,
         "description": "Synthetic catalog item 31 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_31"
+        "name": "catalog_parameter_31",
+        "documentation": null
       },
       {
         "value": "32",
@@ -2069,7 +2209,8 @@
         "modified": false,
         "description": "Synthetic catalog item 32 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_32"
+        "name": "catalog_parameter_32",
+        "documentation": null
       },
       {
         "value": "33",
@@ -2093,7 +2234,8 @@
         "modified": false,
         "description": "Synthetic catalog item 33 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_33"
+        "name": "catalog_parameter_33",
+        "documentation": null
       },
       {
         "value": "34",
@@ -2117,7 +2259,8 @@
         "modified": false,
         "description": "Synthetic catalog item 34 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_34"
+        "name": "catalog_parameter_34",
+        "documentation": null
       },
       {
         "value": "35",
@@ -2141,7 +2284,8 @@
         "modified": false,
         "description": "Synthetic catalog item 35 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_35"
+        "name": "catalog_parameter_35",
+        "documentation": null
       },
       {
         "value": "36",
@@ -2165,7 +2309,8 @@
         "modified": false,
         "description": "Synthetic catalog item 36 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_36"
+        "name": "catalog_parameter_36",
+        "documentation": null
       },
       {
         "value": "37",
@@ -2189,7 +2334,8 @@
         "modified": false,
         "description": "Synthetic catalog item 37 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_37"
+        "name": "catalog_parameter_37",
+        "documentation": null
       },
       {
         "value": "38",
@@ -2213,7 +2359,8 @@
         "modified": false,
         "description": "Synthetic catalog item 38 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_38"
+        "name": "catalog_parameter_38",
+        "documentation": null
       },
       {
         "value": "39",
@@ -2237,8 +2384,10 @@
         "modified": false,
         "description": "Synthetic catalog item 39 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_39"
+        "name": "catalog_parameter_39",
+        "documentation": null
       }
-    ]
+    ],
+    "flavor": "mariadb"
   }
 }

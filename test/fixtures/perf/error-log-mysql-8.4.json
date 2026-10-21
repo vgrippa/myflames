@@ -666,6 +666,7 @@
   ],
   "entries_total": 48,
   "file": null,
+  "flavor": "mysql",
   "how_to_view": null,
   "levels": [
    "System",
@@ -682,6 +683,7 @@
   "reason": null,
   "reason_text": null,
   "schema_version": "error-log-1.0",
+  "server_product": "MySQL",
   "server_started": "2026-10-19 20:29:23",
   "server_version": "8.4.11",
   "settings": {

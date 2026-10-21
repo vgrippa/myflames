@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # scripts/ga-matrix.sh
 #
-# Bring up every GA MySQL and MariaDB version in Docker with realistic data,
-# plus one replica pair, and create saved myflames connections to them in an
-# ISOLATED home (never the real ~/.myflames). For review and compatibility
-# testing only: the servers are throwaway and mf_admin has ALL PRIVILEGES.
+# Bring up every GA MySQL, Percona Server and MariaDB version in Docker with
+# realistic data, plus one replica pair per engine family, and create saved
+# myflames connections to them in an ISOLATED home (never the real
+# ~/.myflames). For review and compatibility testing only: the servers are
+# throwaway and mf_admin has ALL PRIVILEGES.
 #
 # Usage:
 #   scripts/ga-matrix.sh up [NAME...]        pull, start, configure, seed, workload (idempotent)
@@ -18,9 +19,16 @@
 #   scripts/ga-matrix.sh profiles            create the saved connections in $MYFLAMES_HOME
 #   scripts/ga-matrix.sh env                 print the matrix as JSON
 #
-# Names: mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 mariadb-10.6 mariadb-10.11
-#        mariadb-11.4 mariadb-11.8 mariadb-12.3 mariadb-13.0
-#        mysql-9.7-replica mariadb-11.8-replica
+# Names: mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4
+#        mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3
+#        mariadb-13.0 mysql-9.7-replica percona-8.4-replica mariadb-11.8-replica
+#
+# Percona Server for MySQL is a MySQL flavor: it uses the mysql client and
+# MySQL rules, from the official percona/percona-server images (arm64 and
+# amd64). percona-8.0 runs the thread pool (thread_handling=pool-of-threads)
+# and the slow log with log_slow_verbosity=full; percona-8.4 runs with
+# userstat=ON (INFORMATION_SCHEMA.INDEX_STATISTICS, TABLE_STATISTICS) and
+# GTIDs, replicated to percona-8.4-replica.
 #
 # Settings (environment):
 #   MYFLAMES_HOME   isolated HOME for myflames profiles (default local/ga-matrix/home)
@@ -37,7 +45,7 @@ MYFLAMES_HOME="${MYFLAMES_HOME:-$LAB/home}"
 STATE="$LAB/state"
 LOGS="$LAB/logs"
 NET="myflames-ga-net"
-ALL="mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3 mariadb-13.0 mysql-9.7-replica mariadb-11.8-replica"
+ALL="mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4 mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3 mariadb-13.0 mysql-9.7-replica percona-8.4-replica mariadb-11.8-replica"
 
 log() { echo "[ga-matrix] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -49,6 +57,8 @@ spec() {
     mysql-8.4)          echo "mysql:8.4.11 mysql 33084 primary 102 off -" ;;
     mysql-9.7)          echo "mysql:9.7.2 mysql 33097 primary 103 on -" ;;
     mysql-26.7)         echo "mysql:26.7.0 mysql 33267 primary 104 off -" ;;
+    percona-8.0)        echo "percona/percona-server:8.0.46-37.1 mysql 33180 primary 113 on -" ;;
+    percona-8.4)        echo "percona/percona-server:8.4.11-11.1 mysql 33184 primary 114 off -" ;;
     mariadb-10.6)       echo "mariadb:10.6.28 mariadb 33106 primary 105 on -" ;;
     mariadb-10.11)      echo "mariadb:10.11.19 mariadb 33111 primary 106 off -" ;;
     mariadb-11.4)       echo "mariadb:11.4.13 mariadb 33114 primary 107 on -" ;;
@@ -57,6 +67,7 @@ spec() {
     mariadb-13.0)       echo "mariadb:13.0.2 mariadb 33130 primary 110 off -" ;;
     mysql-9.7-replica)  echo "mysql:9.7.2 mysql 33098 replica 111 off mysql-9.7" ;;
     mariadb-11.8-replica) echo "mariadb:11.8.9 mariadb 33119 replica 112 off mariadb-11.8" ;;
+    percona-8.4-replica) echo "percona/percona-server:8.4.11-11.1 mysql 33185 replica 115 off percona-8.4" ;;
     *) return 1 ;;
   esac
 }
@@ -64,6 +75,8 @@ valid() { spec "$1" > /dev/null 2>&1 || die "unknown server '$1' (known: $ALL)";
 cname() { echo "myflames-ga-${1//./-}"; }
 # f NAME index (1=image 2=engine 3=port 4=role 5=server-id 6=slow-log 7=source)
 f() { local n="$1" i="$2" s; s="$(spec "$n")"; set -- $s; eval "echo \${$i}"; }
+# The product family for reports: percona (a MySQL flavor), mysql or mariadb.
+flavor() { case "$(f "$1" 1)" in percona/*) echo percona ;; *) f "$1" 2 ;; esac; }
 client() { [ "$(f "$1" 2)" = mariadb ] && echo mariadb || echo mysql; }
 is_up() { docker ps --format '{{.Names}}' | grep -Fxq "$(cname "$1")"; }
 
@@ -112,10 +125,18 @@ start_container() {
   local sl=0; [ "$slow" = on ] && sl=1
   local args=()
   local envname=MYSQL_ROOT_PASSWORD
+  local extra_env=()
+  # Percona images send telemetry unless told not to.
+  [ "$(flavor "$n")" = percona ] && extra_env=(-e PERCONA_TELEMETRY_DISABLE=1)
   if [ "$engine" = mysql ]; then
     args=(--performance-schema=ON --innodb-buffer-pool-size=128M --log-bin=mysql-bin --server-id="$sid"
           --slow-query-log="$sl" --long-query-time=0.2 --slow-query-log-file=/var/lib/mysql/slow.log)
-    case "$n" in mysql-9.7|mysql-9.7-replica) args+=(--gtid-mode=ON --enforce-gtid-consistency=ON) ;; esac
+    case "$n" in mysql-9.7|mysql-9.7-replica|percona-8.4|percona-8.4-replica) args+=(--gtid-mode=ON --enforce-gtid-consistency=ON) ;; esac
+    # Percona Server features the views read when the server reports them.
+    case "$n" in
+      percona-8.0) args+=(--thread-handling=pool-of-threads --log-slow-verbosity=full) ;;
+      percona-8.4) args+=(--userstat=ON) ;;
+    esac
   else
     envname=MARIADB_ROOT_PASSWORD
     args=(--performance-schema=ON --innodb-buffer-pool-size=128M --log-bin=mysql-bin --server-id="$sid"
@@ -131,7 +152,7 @@ start_container() {
   # -e NAME without a value copies it from this process: no password in ps.
   ( export "$envname=$ROOT_PASSWORD"
     docker run -d --name "$cn" --network "$NET" -p "127.0.0.1:$port:3306" -e "$envname" \
-      --label myflames-ga=1 "$image" "${args[@]}" > /dev/null )
+      ${extra_env[@]+"${extra_env[@]}"} --label myflames-ga=1 "$image" "${args[@]}" > /dev/null )
 }
 
 configure_perf() {
@@ -560,7 +581,7 @@ cmd_env() {
     v=""; is_up "$n" && v="$(rq "$n" "SELECT VERSION()" || true)"
     local profs; profs="$(profile_names "$n" | awk '{print $1}' | paste -sd, -)"
     local ierr=""; [ -f "$STATE/$n.induced" ] && ierr="$(cat "$STATE/$n.induced")"
-    rows="$rows$n	$(cname "$n")	$image	$engine	$v	$port	$role	$slow	$source	$profs	$ierr
+    rows="$rows$n	$(cname "$n")	$image	$engine	$v	$port	$role	$slow	$source	$profs	$ierr	$(flavor "$n")
 "
   done
   ROWS="$rows" HOMEDIR="$MYFLAMES_HOME" CREDS="$CREDS_FILE" STATEDIR="$STATE" python3 - <<'PY'
@@ -568,7 +589,7 @@ import json, os
 out = {"env": {"HOME": os.environ["HOMEDIR"], "MYFLAMES_SECRET_BACKEND": "vault"},
        "credentials_env": os.environ["CREDS"], "servers": []}
 for line in os.environ["ROWS"].splitlines():
-    n, c, image, engine, v, port, role, slow, source, profs, ierr = (line.split("\t") + [""] * 11)[:11]
+    n, c, image, engine, v, port, role, slow, source, profs, ierr, flavor = (line.split("\t") + [""] * 12)[:12]
     smoke = {}
     for p in profs.split(","):
         r = os.path.join(os.environ["STATEDIR"], "smoke", p + ".result")
@@ -579,7 +600,7 @@ for line in os.environ["ROWS"].splitlines():
         except Exception:
             pass
         smoke[p] = res
-    s = {"name": n, "container": c, "image": image, "engine": engine, "version": v or None,
+    s = {"name": n, "container": c, "image": image, "engine": engine, "flavor": flavor or engine, "version": v or None,
          "host": "127.0.0.1", "port": int(port), "role": role, "slow_log": slow,
          "profiles": profs.split(","), "smoke": smoke, "up": bool(v)}
     if source != "-":
@@ -604,7 +625,7 @@ main() {
     mdl) [ "$#" -eq 2 ] || die "usage: mdl NAME SECONDS"; cmd_mdl "$@" ;;
     profiles) cmd_profiles ;;
     env) cmd_env ;;
-    *) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
+    *) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
   esac
 }
 main "$@"

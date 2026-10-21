@@ -40,11 +40,16 @@ try {
   await h.server();
   await h.view("errorlog");
   assert.equal(await page.$eval('#server-nav-errorlog', e => e.closest("li")?.previousElementSibling?.querySelector("button")?.dataset.view), "innodb");
-  await pause(300);
-  assert.equal(state.seen.length, 0, "opening Error log reads nothing until Load");
-  await page.click(`${view} button.primary`);
+  // Opening the view on screen reads it at once (once per connection), like
+  // every other view: no Load button.
   await page.waitForSelector(rows); await h.idle(view);
-  assert.equal(state.seen.length, 1, "Load error log reads once");
+  assert.equal(state.seen.length, 1, "opening Error log reads once");
+  assert.equal(await page.$(`${view} .view-empty button`), null, "no Load button");
+  // Once per connection: another view and back reads nothing more.
+  await h.view("innodb");
+  await h.view("errorlog");
+  await pause(300);
+  assert.equal(state.seen.length, 1, "coming back reads nothing again");
   assert.deepEqual(Object.keys(state.seen[0]).sort(), ["connection", "limit"]);
   assert.equal(state.seen[0].connection.host, "127.0.0.1");
   assert.equal(state.seen[0].limit, 200);

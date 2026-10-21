@@ -24,6 +24,7 @@ import {
   type ReplicationReport, type SkipLoop, type SkipPlan, type SkipResult,
 } from "./opsApi";
 import { VisiblePrivilegeGate, VisiblePrivilegeConfirmLabel } from "./Locks";
+import type { ClusterKind } from "./clusterApi";
 import { ReplicationTopology, sourceVersionNote, sourceVersionText } from "./ReplicationTopology";
 import "./ops.css";
 import "./replication.css";
@@ -113,7 +114,7 @@ type Confirmation = {
 
 export type ReplicationSubTab = "topology" | "channels" | "lag" | "gtid" | "recovery";
 
-export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange }: {
+export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   report: Bound<ReplicationReport> | null; onReport: (report: Bound<ReplicationReport>) => void;
   /** Memory only, owned by Server. Keep this view mounted while hidden. */
@@ -123,6 +124,10 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   missingPrivileges?: MissingPrivileges;
   activeTab?: ReplicationSubTab;
   onTabChange?: (tab: ReplicationSubTab) => void;
+  /** The cluster the connection in use belongs to, when known: a node that
+   * is not a replica says where its own replication is shown. */
+  clusterKind?: ClusterKind | null;
+  onOpenCluster?: () => void;
 }) {
   const reads = useConnectionReads(connection);
   const captureScope = useOpsScope(connection);
@@ -499,9 +504,9 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     ? !report.available
       ? "Replication status not available"
       : !report.replica
-        ? "Not a replica"
+        ? `Not a replica · ${engineName(report.engine, report.server_version)}`
         : [
-            engineName(report.engine, report.server_version),
+            engineName(report.engine, report.server_version, report.server_product),
             plural(report.summary.channels, word),
             report.summary.failed ? `${report.summary.failed.toLocaleString()} failed` : "",
             lagUnknown ? "lag unknown" : `max lag ${(report.summary.lag_max_s as number).toLocaleString()} s`,
@@ -521,7 +526,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   return <>
     <ViewLayout id="replication" title="Replication" className="ops-view" onRefresh={() => { void load(); }} refreshDisabled={disabled || busy} loading={!!reads.loading} otherConnection={other} inspector={inspector}
       inspectorEmpty={<p>Select a {word} to see its threads, last error, lag signals and recovery.</p>}
-      controls={onTabChange ? (
+      controls={onTabChange && (!report || !report.available || report.replica) ? (
         <Segmented<ReplicationSubTab>
           label="Replication sub-tabs"
           value={activeTab}
@@ -546,7 +551,8 @@ export function ReplicationView({ connection, disabled, selection, report: bound
 
       {restartNote && <p className="ops-note" role="status">Stopped when myflames restarted. Skip loops never resume from a restored workspace.</p>}
       {report ? <>
-        <SummaryLine tone={!report.available || !report.replica ? "unknown" : judged.length ? worstTone(judged.map((r) => r.status)) : "unknown"} toneLabel={judged.length || !report.replica ? undefined : "Not judged"} notes={report.notes.length ? report.notes : undefined}>
+        {/* Not a replica is a state of its own, not an unknown one: no status pill. */}
+        <SummaryLine tone={!report.available ? "unknown" : !report.replica ? undefined : judged.length ? worstTone(judged.map((r) => r.status)) : "unknown"} toneLabel={judged.length || !report.replica ? undefined : "Not judged"} notes={report.notes.length ? report.notes : undefined}>
           {summary}
         </SummaryLine>
         {report.available && report.replica && (
@@ -577,8 +583,10 @@ export function ReplicationView({ connection, disabled, selection, report: bound
           // GTID mode is the tile above; the strip carries the rest of the server's GTID state.
           <FactStrip label="Server GTID state" facts={factRows(Object.fromEntries(Object.entries(report.gtid).filter(([k]) => k !== "mode" && k !== "gtid_mode")), GTID_LABELS)} />
         )}
-        {!report.available || !report.replica ? (
+        {!report.available ? (
           <PrerequisiteGate>{report.message || "Replication status is not available for this connection."}</PrerequisiteGate>
+        ) : !report.replica ? (
+          <NotAReplica report={report} clusterKind={other ? null : clusterKind} onOpenCluster={other ? undefined : onOpenCluster} />
         ) : activeTab === "topology" ? (
           <ReplicationTopology
             report={topologyReport!}
@@ -626,4 +634,21 @@ export function ReplicationView({ connection, disabled, selection, report: bound
       <details><summary>After skipping</summary><ul>{c.plan.after.map((s, i) => <li key={i}>{s}</li>)}</ul></details>
     </ConfirmSheet>}
   </>;
+}
+
+/** The calm state of a server with no asynchronous replication channel: why
+ * (the backend's sentence without its lead, which names Cluster for a Group
+ * Replication member or a Galera node), and Open Cluster for those. */
+function NotAReplica({ report, clusterKind, onOpenCluster }: { report: ReplicationReport; clusterKind: ClusterKind | null; onOpenCluster?: () => void }) {
+  const text = (report.message || "").replace(/^This server is not a replica:\s*/, "");
+  const reason = text ? text.charAt(0).toUpperCase() + text.slice(1) : "It has no replication channel.";
+  // The backend's hint (a Galera provider, Group Replication configured or
+  // its channels), or the Cluster place's own report for this connection.
+  const member = !!report.cluster_hint || (report.group_replication_channels || []).length > 0 || !!clusterKind;
+  return (
+    <EmptyState icon="replication" title="Not a replica"
+      action={member && onOpenCluster ? <ToolbarButton onClick={onOpenCluster}>Open Cluster</ToolbarButton> : undefined}>
+      {reason}
+    </EmptyState>
+  );
 }

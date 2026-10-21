@@ -5,7 +5,10 @@ writes that recover one failed transaction at a time.
 replication channel (MySQL) or connection (MariaDB) with thread states, the
 last IO and SQL errors, positions or GTID sets, lag with its caveats, and a
 status (``ok`` / ``watch`` / ``problem`` / ``unknown``) with the reasons.
-Group Replication channels are listed but not judged. A channel whose
+Group Replication's own channels (group_replication_applier and
+group_replication_recovery) are not asynchronous replication: they are named
+in ``group_replication_channels`` and left out of ``channels``, so a group
+member with no other channel is not a replica. A channel whose
 applier stopped on an error carries ``skip_plan``: the exact statements that
 would skip that one transaction.
 
@@ -138,7 +141,7 @@ import uuid
 from . import dbops, privileges
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, _duration_text, _version_tuple, denied, now, preflight, reason
-from .server_info import detect_flavor
+from .server_info import identity_from_version, product_identity, product_name
 
 SCHEMA_VERSION = "replication-1.0"
 SKIP_SCHEMA_VERSION = "replication-skip-1.0"
@@ -156,6 +159,14 @@ LAG_WATCH_S = 60
 
 GROUP_REPLICATION_CHANNELS = ("group_replication_applier", "group_replication_recovery")
 GR_NOTE = "Group Replication member, not judged here."
+#: Why a Group Replication member with no other channel is not a replica.
+GR_NOT_REPLICA = "Its %s %s to Group Replication: Cluster (myflames cluster) shows the group."
+#: Why a Galera node, or a configured Group Replication member, is not a replica.
+GALERA_NOT_REPLICA = "It is a Galera node: Cluster (myflames cluster) shows replication between the nodes."
+GR_CONFIGURED_NOT_REPLICA = "Group Replication is configured on it: Cluster (myflames cluster) shows the group."
+#: The note on a report that set Group Replication channels apart.
+GR_CHANNELS_NOTE = ("Group Replication's own channels (%s) are not asynchronous replication and are not "
+                    "listed here: Cluster (myflames cluster) shows the group.")
 
 #: Error codes the skip loop offers, with their meaning. None is preselected.
 COMMON_ERRORS = {1062: "duplicate key", 1032: "row not found", 1452: "foreign key: no parent row"}
@@ -432,8 +443,9 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
 
     Without the privilege (REPLICATION CLIENT or SUPER on MySQL; SLAVE
     MONITOR on MariaDB) the report has ``available: false`` and a one
-    sentence ``message``. A server with no replication configured says so
-    (``replica: false``). Connection failures raise ConnectorError; other
+    sentence ``message``. A server with no asynchronous replication channel
+    says so (``replica: false``); Group Replication's own channels are named in
+    ``group_replication_channels`` and never listed in ``channels``. Connection failures raise ConnectorError; other
     unreadable answers raise ValueError.
 
     With *source_versions* every replication channel gets ``source_version``
@@ -452,6 +464,8 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
     report = {
         "schema_version": SCHEMA_VERSION,
         "engine": server.engine,
+        "flavor": server.flavor,
+        "server_product": server.product,
         "server_version": server.version or None,
         "captured_at": now(),
         "uptime_s": server.uptime,
@@ -463,6 +477,8 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
         "settings": _settings(server),
         "global_skip_counter": _int(server.variables.get("sql_replica_skip_counter", server.variables.get("sql_slave_skip_counter"))),
         "channels": [],
+        "group_replication_channels": [],
+        "cluster_hint": None,
         "capabilities": {"status": False, "performance_schema": server.ps_on, "worker_timestamps": False,
                          "agat": False, "source_version": False},
         "notes": [],
@@ -478,10 +494,35 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
             report["message"] = _privilege_message(server, exc)
             return report
         raise ValueError("Could not read replication status: " + reason(exc))
+    # Group Replication's own channels (group_replication_applier and
+    # group_replication_recovery, reserved names in M/sql/rpl_msr.cc:38-39)
+    # are the group's, not asynchronous replication. SHOW REPLICA STATUS walks
+    # only the asynchronous channel map (M/sql/rpl_replica.cc:3866 with the
+    # default SLAVE_REPLICATION_CHANNEL of M/sql/rpl_msr.h:568; the group's
+    # channels are kept apart, M/sql/rpl_msr.cc:54-56), so a member normally
+    # reports none; a row with one of those names is still set apart and
+    # never makes the server a replica.
+    group, others = [], []
+    for row in rows:
+        named = _text(row.get("Channel_Name")) or ""
+        (group if server.engine != "mariadb" and named in GROUP_REPLICATION_CHANNELS else others).append(row)
+    rows = others
+    names = [_text(row.get("Channel_Name")) for row in group]
+    report["group_replication_channels"] = names
     if not rows:
-        report["message"] = ("This server is not a replica: %s returned no %s." % (
-            show_sql, "connection" if server.engine == "mariadb" else "channel"))
+        report["message"] = ("This server is not a replica: %s returned no %s%s." % (
+            show_sql, "asynchronous " if group else "", "connection" if server.engine == "mariadb" else "channel"))
+        if group:
+            report["message"] += " " + GR_NOT_REPLICA % (" and ".join(names), "channel belongs" if len(names) == 1
+                                                          else "channels belong")
+        report["cluster_hint"] = "group_replication" if group else _cluster_hint(reader)
+        if report["cluster_hint"] == "galera":
+            report["message"] += " " + GALERA_NOT_REPLICA
+        elif report["cluster_hint"] == "group_replication" and not group:
+            report["message"] += " " + GR_CONFIGURED_NOT_REPLICA
         return report
+    if group:
+        report["notes"].append(GR_CHANNELS_NOTE % " and ".join(names))
     report["replica"] = True
     report["capabilities"]["status"] = True
     if server.engine == "mariadb":
@@ -528,6 +569,33 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
         attach_source_versions(reader, report, profiles, open_profile,
                                replica_host if replica_host is not None else getattr(conn, "host", None))
     return report
+
+
+#: Read only for a server that is not a replica, to say where its own
+#: replication is shown (a pointer to the Cluster place, never a verdict):
+#: ``group_replication_group_name`` exists while the Group Replication plugin
+#: is loaded (M/plugin/group_replication/src/plugin.cc:4414) and is set once it
+#: is configured; ``wsrep_provider`` names a Galera provider library, ``none``
+#: without one (Ma/sql/sys_vars.cc:6378-6380; also how Percona XtraDB Cluster
+#: 8.4 is told apart, see cluster.wsrep_enabled).
+CLUSTER_HINT_SQL = ("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('group_replication_group_name', "
+                    "'wsrep_provider')")
+
+
+def _cluster_hint(reader):
+    """``galera``, ``group_replication`` or None for a server that is not a replica."""
+    try:
+        values = reader.pairs(CLUSTER_HINT_SQL)
+    except ConnectorError as exc:
+        if _fatal(exc):
+            raise
+        return None
+    provider = (values.get("wsrep_provider") or "").strip()
+    if provider and provider.lower() != "none":
+        return "galera"
+    if (values.get("group_replication_group_name") or "").strip():
+        return "group_replication"
+    return None
 
 
 def _engine_gtid(server):
@@ -1050,16 +1118,19 @@ def match_source_profiles(source, profiles, replica_host=None):
 
 
 def _unknown_version(reason_text, hint=None, attempts=()):
-    return {"version": None, "version_comment": None, "engine": None, "provenance": None, "label": "Version unknown",
+    return {"version": None, "version_comment": None, "engine": None, "flavor": None, "product": None,
+            "provenance": None, "label": "Version unknown",
             "profile_id": None, "profile_name": None, "relay_log_file": None, "verified": False, "caveat": None,
             "reason": reason_text, "hint": hint, "attempts": list(attempts)}
 
 
 def _known_version(version, comment, provenance, label, **extra):
     out = _unknown_version(None)
+    # The comment names Percona; a relay log records only the version.
+    identity = product_identity(version, comment) if comment else identity_from_version(version)
     out.update({"version": version, "version_comment": comment or None,
-                "engine": detect_flavor(version, comment or ""), "provenance": provenance, "label": label,
-                "reason": None})
+                "engine": identity["engine"], "flavor": identity["flavor"], "product": identity["product"],
+                "provenance": provenance, "label": label, "reason": None})
     out.update(extra)
     return out
 
@@ -2990,7 +3061,8 @@ def format_text(report):
         out.append("MariaDB %s  gtid_slave_pos %s" % (report.get("server_version") or "?",
                                                       gtid.get("slave_pos") or "(empty)"))
     else:
-        out.append("MySQL %s  gtid_mode %s" % (report.get("server_version") or "?", gtid.get("mode") or "?"))
+        out.append("%s %s  gtid_mode %s" % (product_name(report), report.get("server_version") or "?",
+                                            gtid.get("mode") or "?"))
     for channel in report["channels"]:
         label = "channel %r" % channel["name"] if report.get("engine") == "mysql" else \
             "connection %r" % channel["name"]
@@ -3023,14 +3095,17 @@ def format_text(report):
 
 
 def source_version_text(value):
-    """One line: ``Source version: 9.7.2 (relay log)``, or unknown with why."""
+    """One line: ``Source version: 9.7.2 (relay log)`` (``Percona Server 8.4.11-11``
+    for a Percona source), or unknown with why."""
     if value.get("version"):
         how = "relay log"
         if value.get("provenance") == "saved_connection":
             how = "saved connection %s" % value.get("profile_name")
             if not value.get("verified"):
                 how += "; " + SERVER_ID_ONLY
-        return "Source version: %s (%s)" % (value["version"], how)
+        # MySQL and MariaDB versions name themselves; Percona's needs the product.
+        product = value.get("product") if value.get("flavor") == "percona" else None
+        return "Source version: %s%s (%s)" % (product + " " if product else "", value["version"], how)
     return " ".join(part for part in ("Source version: unknown.", value.get("reason"), value.get("hint")) if part)
 
 

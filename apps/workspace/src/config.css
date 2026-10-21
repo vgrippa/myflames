@@ -1,15 +1,11 @@
 /* Parameters catalog, local drafts and the exact-statement review sheets. */
 
-/* Change… and Reset persisted value… under a setting's value in the inspector. */
+/* Edit value, Reset to default, Change… and Reset persisted value… in the
+   inspector's action bar under the parameter's name. */
 .config-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1) var(--space-3);
-  margin-top: 2px;
-}
-.config-actions .text-button {
-  padding: 0;
-  font-size: var(--text-sm);
+  gap: var(--space-2);
 }
 
 /* The sheet: facts, when it applies, the value, then the checked statement. */
@@ -201,13 +197,40 @@ ul.variable-problems {
   }
 }
 
-/* Parameter facts and recommendations occupy the inspector's full width. */
-.config-panel .config-explanation,
-.config-panel .parameter-check,
-.config-panel .config-actions {
-  grid-column: 1 / -1;
+/* The inspector: one sentence, the documentation link and the facts, then
+   the single recommendation when a check flags the parameter. */
+.parameter-about { margin-bottom: var(--space-4); }
+.is-detail .parameter-about { margin-bottom: 0; }
+.inspector-scroll .parameter-summary { margin: 0 0 var(--space-1); }
+.inspector-scroll .parameter-docs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
 }
-.config-explanation p { max-width: 70ch; }
+.parameter-docs a {
+  color: var(--accent-text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.parameter-docs a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-sm); }
+.parameter-docs .hint { color: var(--ink-muted); }
+.parameter-checked { display: flex; flex-direction: column; gap: 2px; }
+.parameter-checked > span { display: inline-flex; align-items: center; gap: var(--space-1); }
+.parameter-finding { display: grid; gap: var(--space-2); min-width: 0; }
+.inspector-scroll .parameter-finding p { margin: 0; }
+.parameter-finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.parameter-finding .hint { font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--ink-muted); }
+.parameter-finding .perf-sql { max-width: 100%; }
+/* Current value and Recommendation side by side only when both columns have
+   room (the 720 px window leaves about 500 px: one column, the facts first). */
+@container view (max-width: 700px) {
+  .config-panel .is-detail .inspector-scroll { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+}
 .config-switch {
   display: inline-flex;
   width: max-content;
@@ -229,7 +252,7 @@ ul.variable-problems {
 
 .parameter-name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .parameter-name code { overflow: hidden; text-overflow: ellipsis; }
-.parameter-name .status-dot { flex: 0 0 auto; }
+.parameter-name .status-dot, .parameter-name .pill { flex: 0 0 auto; }
 .parameter-cell-editor { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .parameter-cell-editor .variable-input,
 .parameter-cell-editor .select { width: 100%; min-width: 0; }
@@ -243,11 +266,7 @@ ul.variable-problems {
 .parameter-preview { margin-bottom: var(--space-4); min-width: 0; }
 .parameter-preview h3 { margin: 0 0 var(--space-2); font-size: var(--text-md); }
 .parameter-preview .data-table-wrap { max-height: 35dvh; }
-.parameter-check { border-top: 1px solid var(--line); padding-top: var(--space-3); margin-top: var(--space-3); }
-.parameter-check-heading,
 .parameter-review-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.parameter-check-heading { justify-content: flex-start; }
-.parameter-check .config-explanation { margin-top: var(--space-2); }
 .parameter-batch-sheet { width: min(760px, calc(100vw - var(--space-6))); }
 .parameter-persist { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); font-size: var(--text-md); }
 .parameter-review-row { padding: var(--space-3) 0; border-top: 1px solid var(--line); min-width: 0; }

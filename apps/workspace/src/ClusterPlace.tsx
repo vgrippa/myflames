@@ -83,8 +83,8 @@ function localPhrase(report: ClusterReport, me: ClusterMember, stale: boolean) {
 
 /** One line (at most 120 characters) naming the cluster and its state. */
 export function summaryText(report: ClusterReport, stale = false): string {
-  if (!report.available) return engineName(report.engine, report.server_version);
-  if (report.kind === "none") return engineName(report.engine, report.server_version);
+  if (!report.available) return engineName(report.engine, report.server_version, report.server_product);
+  if (report.kind === "none") return engineName(report.engine, report.server_version, report.server_product);
   const c = report.cluster;
   const parts = [`${kindLabel(report)}${c.name ? ` ${c.name}` : ""}`];
   const me = report.members.find((m) => m.local);

@@ -283,9 +283,9 @@ try {
     assert.equal(await page.$(`${view} table`), null);
   }
   // Links still open the named inspector and focus Back, including repeats.
-  for (const [section, loadLabel, linkRow] of [["top", "Load top statements", "consumer:statements_digest"], ["waits", null, "ps"]]) {
-    // Top statements waits for Load; Waits reads once when it opens on screen.
-    await h.view(section); if (loadLabel) await button(loadLabel, `.server-view[data-view=${section}] `);
+  for (const [section, linkRow] of [["top", "consumer:statements_digest"], ["waits", "ps"]]) {
+    // Top statements and Waits read once when they open on screen.
+    await h.view(section);
     await page.waitForSelector(`.server-view[data-view=${section}] .instr-link`);
     await page.click(`.server-view[data-view=${section}] .instr-link`);
     await page.waitForSelector("#server-nav-instruments[aria-current=page]");
