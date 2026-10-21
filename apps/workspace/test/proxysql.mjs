@@ -228,9 +228,9 @@ try {
   await page.click(`${sheet} .sheet-actions button:last-child`);
   await page.waitForFunction((s) => /Reading the target again/.test(document.querySelector(`${s} .action-phase`)?.textContent || ""), {}, sheet);
   const checking = await page.$eval(sheet, (d) => ({
-    confirm: d.querySelector(".sheet-actions button:last-child").textContent, disabled: d.querySelector(".sheet-actions button:last-child").disabled,
+    confirm: d.querySelector(".sheet-actions button:last-child").textContent, ariaDisabled: d.querySelector(".sheet-actions button:last-child").getAttribute("aria-disabled"),
     cancel: d.querySelector(".sheet-actions button:first-child").disabled, steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state) }));
-  assert.deepEqual(checking, { confirm: "Applying…", disabled: true, cancel: true, steps: ["waiting", "waiting"] });
+  assert.deepEqual(checking, { confirm: "Applying…", ariaDisabled: "true", cancel: true, steps: ["waiting", "waiting"] });
   progressAnswer = () => ({ status: 200, body: R["progress-sending"] });
   await page.waitForFunction((s) => /Sent\. Waiting for the server's answer/.test(document.querySelector(`${s} .action-phase`)?.textContent || ""), {}, sheet);
   const sending = await page.$eval(sheet, (d) => ({ steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state),

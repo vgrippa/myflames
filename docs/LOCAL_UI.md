@@ -152,7 +152,8 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   server thread, a session with no statement to stop). While the KILL is sent
   the sheet's button says so; the answer then shows above the list at once
   (Done, Already ended, The server refused, Outcome unknown, or Nothing was
-  sent) while the list is read again.
+  sent) while the list is read again. A successful result begins with **Done.**
+  followed by the server's explanation; Kill sessions uses the same headline.
   **Kill sessions…** in the Processlist toolbar opens the Kill sessions
   dialog: presets (Runaway queries, Idle sleeping, Lock waiters, All clients)
   and filters choose client sessions (system threads and your own connection

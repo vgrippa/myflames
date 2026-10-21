@@ -127,6 +127,9 @@ if (process.argv.includes("--unit")) {
     const globalPending = [];
     const refreshScope = {
       refreshControl: { current: null }, disabled: false, latestConnection: { current: { key: "first" } },
+      // Stop arming is exercised by the browser path; this worker test owns
+      // no UI timer, but provides the merged action-feedback dependencies.
+      stopArmedAt: { current: 0 }, setStopArmed() {}, STOP_ARM_MS: 600, window: { setTimeout() {} },
       connectionKey: c => c.key, connectionLabel: c => c.key, refreshSeq: { current: 0 },
       refreshTasks: () => [{ view: "report", label: "Full analysis", params: "report", request() {}, accept() {} }],
       setRefresh: value => { refresh = typeof value === "function" ? value(refresh) : value; },
@@ -358,12 +361,20 @@ try {
   assert.equal(state.seen.length, 0, "nothing runs until asked");
   assert.equal(await page.$(`${view} .report-export`), null, "no export before a report");
 
-  // Run: the progress line counts the seconds; then the report.
+  // Run: the progress line says what runs (announced once) and counts the
+  // seconds beside it (drawn, not announced); then the report.
   state.delay = 1300;
   await page.locator(`${view} .view-empty button ::-p-text(Run full analysis)`).click();
   await page.waitForSelector(`${view} .capture-status`);
-  assert.match(await text(`${view} .capture-status`), /Running every Server view once: \d+ s so far, about 10 to 20 s in all\. It only reads\./);
-  await page.waitForFunction((v) => /[1-9] s so far/.test(document.querySelector(`${v} .capture-status`)?.textContent || ""), {}, view);
+  assert.match(await text(`${view} .capture-status`), /Running every Server view once, about 10 to 20 s in all\. It only reads\./);
+  await page.waitForFunction((v) => document.querySelector(`${v} .view-status > [role=status]`)?.textContent ===
+    "Running every Server view once, about 10 to 20 s in all. It only reads.", { timeout: 3000 }, view);
+  // While the seconds count, the live region still holds the same words.
+  const announcedWhileCounting = await page.waitForFunction((v) =>
+    /[1-9] s so far/.test(document.querySelector(`${v} .capture-status`)?.textContent || "") &&
+      document.querySelector(`${v} .view-status > [role=status]`)?.textContent, {}, view).then((h) => h.jsonValue());
+  assert.equal(announcedWhileCounting, "Running every Server view once, about 10 to 20 s in all. It only reads.",
+    "the seconds are never announced");
   await page.waitForSelector(`${view} .summary-line`);
   await h.idle(view);
   state.delay = 0;
@@ -578,7 +589,8 @@ try {
   assert.deepEqual(held.map((e) => e.path), ["/api/live/health", "/api/live/waits", "/api/live/io"]);
   assert.equal(held[0].body.interval, 5, "Health keeps its window");
   assert.equal(held[2].body.interval, 10, "unopened I/O uses its configured window");
-  assert.match(await statusText(), /^Refreshing 1 of 17…$/);
+  // It names the views it reads now, so a slow one is never hidden behind a count.
+  assert.match(await statusText(), /^Refreshing 1 of 17 · Health, Waits, I\/O…$/);
   assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 10); // the Server list: 10 views (Database diagram and the Full analysis are places of their own)
   await h.workload();
   assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 4);
@@ -826,6 +838,9 @@ try {
   // Staging -> Archive -> Staging while a run is on its way: its answer, read
   // before the switch, is never shown (and the run can start again).
   const archive = await connectionOption(page, "Archive");
+  // connectionOption leaves the picker open; close it before clicking Refresh under it.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".window-toolbar .picker-panel"));
   const lateReport = structuredClone(rich);
   lateReport.summary = { ...lateReport.summary, text: "Late answer from before the switch" };
   state.queue.push({ status: 200, body: lateReport });

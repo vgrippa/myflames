@@ -282,7 +282,7 @@ export function InnodbView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a row to see its section's numbers, rules and related views.</p>}
-      status={<ViewStatus loading={loading} error={error} />}
+      status={<ViewStatus loading={loading} error={error} onStop={reads.stop} onRetry={error ? () => void load() : undefined} doneAt={reads.doneAt} />}
     >
       {!report && !loading && !error && (
         <EmptyState

@@ -705,7 +705,7 @@ export function InstrumentsView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a preset, a view or an instrument to see its statements, gain and cost.</p>}
-      status={<><ViewStatus loading={reads.loading} error={error} /><ReviewedSqlStatus /></>}
+      status={<><ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} /><ReviewedSqlStatus /></>}
     >
       {!report && !loading && !error && (
         <EmptyState

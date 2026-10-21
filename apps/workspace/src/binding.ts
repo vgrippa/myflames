@@ -184,6 +184,8 @@ export function useConnectionReads(connection: Connection) {
   const seq = useRef(0);
   const [pending, setPending] = useState<Ticket | null>(null);
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
+  // When the last read for a connection was shown (ViewStatus announces it).
+  const [done, setDone] = useState<{ key: string; at: number } | null>(null);
 
   /** Stop waiting for *t*: its answer is dropped, and the request is aborted
    * when no one else (Refresh all, the same view) waits for it. */
@@ -262,6 +264,7 @@ export function useConnectionReads(connection: Connection) {
         if (!live(t)) return null;
         const b: Bound<R> = { key: t.key, label: t.label, report: result };
         accept(b);
+        setDone({ key: t.key, at: Date.now() });
         return b;
       } catch (e) {
         if (live(t)) {
@@ -289,6 +292,12 @@ export function useConnectionReads(connection: Connection) {
     loading: pending && pending.key === key ? pending.message : "",
     /** The last error of a read for the connection in use. */
     error: failure && failure.key === key ? failure.message : "",
+    /** When the last read for the connection in use was shown (Date.now()), or 0. */
+    doneAt: done && done.key === key ? done.at : 0,
+    /** Stop waiting for the read running now: nothing is shown from it, the
+     * view keeps its report, and the request is aborted unless Refresh all
+     * waits for the same read. */
+    stop: useCallback(() => drop(current.current), [drop]),
     clearError: useCallback(() => setFailure(null), []),
     /** connectionKey() of the connection in use now (after an await, not the render's). */
     currentKey: useCallback(() => latest.current.key, []),

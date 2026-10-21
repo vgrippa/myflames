@@ -29,6 +29,7 @@ import { buildReportInspector, REPORT_ESTIMATE, ReportDiagnosticBody } from "./R
 import type { ServerKind } from "./session";
 import { StatementRows, StatementsBehind, type DigestAction, type LabSettings, type OpenTop } from "./SlowQueries";
 import {
+  ActionButton,
   EmptyState,
   ExportMenu,
   Fields,
@@ -73,6 +74,8 @@ import "./tuning.css";
 export type TuningTab = "scorecard" | "analysis";
 type ListFilter = "attention" | "unknown" | "all";
 
+/** The Full analysis usually ends within this many seconds; past it, its line says so and offers Stop. */
+const REPORT_USUAL_MAX_S = 20;
 const ANALYSIS_FORMATS: [string, string][] = [
   ["html", "HTML"],
   ["markdown", "Markdown"],
@@ -160,7 +163,6 @@ export function TuningView({
   const [exporting, setExporting] = useState("");
   const [exported, setExported] = useState("");
   const [exportError, setExportError] = useState("");
-  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     if (tabRequest) setTab(tabRequest.tab);
@@ -184,15 +186,6 @@ export function TuningView({
   const analysisOther = boundReport && boundReport.key !== activeKey ? boundReport.label : null;
   const loading = reads?.loading || "";
   const running = !!loading || !!refreshRunning;
-
-  // While the analysis runs, count the seconds (it usually takes 10 to 20).
-  useEffect(() => {
-    if (!running) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [running, startedAt]);
-  const elapsed = running && startedAt !== undefined ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0;
 
   // A new Full analysis starts on its Look at first pick, on that tab only.
   const selectRef = useRef(selection.select);
@@ -369,17 +362,19 @@ export function TuningView({
           {tabs}
           {exportMenu}
           {tab === "scorecard" && onRunReport && (
-            <button
-              type="button"
-              className="button"
+            // While it runs: a spinner and "Running…", aria-busy, clicks
+            // ignored, and focus stays on it (aria-disabled, not disabled).
+            <ActionButton
               data-action="run-analysis"
-              disabled={disabled || !!runBlocked || running}
+              icon="analysis"
+              busy={running}
+              busyLabel="Running…"
+              disabled={!running && (disabled || !!runBlocked)}
               title={`Runs every Server view once, ${REPORT_ESTIMATE}. It only reads.`}
               onClick={run}
             >
-              {running ? <span className="spinner" aria-hidden="true" /> : <Icon name="analysis" size={15} />}
               Run full analysis
-            </button>
+            </ActionButton>
           )}
         </>
       }
@@ -399,8 +394,16 @@ export function TuningView({
       }
       status={
         <>
+          {/* Announce the run once; draw seconds from the shell-owned start
+              so opening or remounting this view preserves its progress. */}
           <ViewStatus
-            loading={running ? `Running every Server view once: ${elapsed} s so far, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
+            loading={running ? `Running every Server view once, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
+            startedAt={startedAt}
+            slowAfter={REPORT_USUAL_MAX_S * 1000}
+            slowText={`Longer than the usual ${REPORT_ESTIMATE.replace(/^about /, "")}.`}
+            onStop={reads?.stop}
+            onRetry={reads?.error ? run : undefined}
+            doneAt={reads?.doneAt}
             error={reads?.error || exportError}
           />
           {exported && <p className="hint" role="status">Saved {exported}</p>}

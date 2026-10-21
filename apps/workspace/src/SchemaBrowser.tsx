@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { api, type CatalogTable, type CatalogTables, type Connection } from "./api";
 import { connectionKey, connectionLabel } from "./binding";
 import { Icon, type IconName } from "./components";
-import { IconButton, SearchField, useFocusScope } from "./kit";
+import { ActionStatus, IconButton, SearchField, useFocusScope, useSince } from "./kit";
 import { useSchemaCatalog } from "./PerfShared";
 import { quoteName } from "./sqlHighlight";
 
@@ -68,6 +68,7 @@ export function SchemaBrowser({
   const [focus, setFocus] = useState("");
   const [menu, setMenu] = useState<Menu>(null);
   const tree = useRef<HTMLDivElement>(null);
+  const browser = useRef<HTMLElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
@@ -344,17 +345,31 @@ export function SchemaBrowser({
   }
   const menuNode = menu?.node;
   const qualified = menuNode?.schema && menuNode.table ? `${quoteName(menuNode.schema)}.${quoteName(menuNode.table)}` : "";
+  const reading = enabled && catalog.loading;
+  const readingSince = useSince(reading);
   return (
-    <aside className="schema-browser" aria-label="Schema browser" style={width ? { width } : undefined}>
+    <aside className="schema-browser" aria-label="Schema browser" style={width ? { width } : undefined} ref={browser}>
       <div className="browser-head">
         <h2>Schemas</h2>
-        <IconButton icon="refresh" label="Reload schemas" disabled={!enabled} onClick={refresh} />
+        <IconButton icon="refresh" label={reading ? "Reading schemas…" : "Reload schemas"} disabled={!enabled}
+          className={reading ? "is-busy" : undefined} aria-busy={reading || undefined} aria-disabled={reading || undefined}
+          onClick={() => { if (!reading) refresh(); }} />
         <IconButton icon="close" label="Hide the schema browser" onClick={onClose} />
       </div>
+      {/* Always mounted (above the gate and the tree), so reading and its
+          failure are announced; the seconds show after 1 s. */}
+      <ActionStatus className="browser-status" state={{
+        phase: reading ? "pending" : enabled && catalog.error ? "failed" : "idle",
+        message: reading ? `Reading the schemas of ${label}…` : catalog.error || "", startedAt: readingSince,
+      }} onRetry={enabled && catalog.error ? refresh : undefined} />
       {!enabled ? (
         <div className="browser-gate">
           <p>Read the schemas of {label}.</p>
-          <button type="button" className="button small" onClick={() => setAsked(new Set(asked).add(key))}>
+          <button type="button" className="button small" onClick={() => {
+            setAsked(new Set(asked).add(key));
+            // The gate goes away: focus moves to the filter, not to the page.
+            window.setTimeout(() => browser.current?.querySelector<HTMLInputElement>(".browser-filter input")?.focus());
+          }}>
             Load schemas
           </button>
         </div>
@@ -363,16 +378,6 @@ export function SchemaBrowser({
           <div className="browser-filter">
             <SearchField label="Table name prefix" value={filter} onChange={setFilter} placeholder="Table name starts with" />
           </div>
-          {catalog.loading && !catalog.catalog && (
-            <p className="browser-status" role="status">
-              <span className="spinner" /> Reading schemas…
-            </p>
-          )}
-          {catalog.error && (
-            <p className="browser-status is-error" role="alert">
-              {catalog.error}
-            </p>
-          )}
           <div className="browser-tree" role="tree" aria-label={`Schemas on ${label}`} ref={tree}>
             {nodes.map((n, i) => (
               <div

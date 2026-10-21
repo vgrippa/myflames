@@ -3,7 +3,7 @@
 // Inspired by Percona Toolkit pt-kill (busy-time, idle-time, match-user,
 // ignore-user, match-host, match-db, match-command, match-info, lock-wait).
 // Excludes server/system threads and current connection for safety.
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   prepareBulkKill,
   killBulkSessions,
@@ -14,12 +14,45 @@ import {
   type KillServerIdentity,
   type Session,
 } from "./api";
-import { killVia, Sql, type KillNote } from "./Locks";
+import { killStatusWord, killVia, Sql, type KillNote } from "./Locks";
 import { connectionKey } from "./binding";
 import { useWritePolicy } from "./Connections";
 import { Icon } from "./components";
 import { CompactNumber } from "./PerfShared";
-import { ConfirmSheet, NumberField, Segmented, useFocusScope } from "./kit";
+import { ActionButton, ActionStatus, ConfirmSheet, NumberField, Segmented, errorText, useFocusScope, writeFailure } from "./kit";
+
+/** The Kill sessions send that is still waiting for its reply, across dialogs:
+ * a sheet closed before the reply leaves it running, and a dialog opened
+ * meanwhile sends nothing until it ends (one bulk KILL at a time). */
+let bulkInFlight: { label: string; count: number } | null = null;
+const bulkListeners = new Set<() => void>();
+function setBulkInFlight(value: typeof bulkInFlight) {
+  bulkInFlight = value;
+  bulkListeners.forEach((listener) => listener());
+}
+function useBulkInFlight() {
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    const listener = () => rerender((n) => n + 1);
+    bulkListeners.add(listener);
+    return () => { bulkListeners.delete(listener); };
+  }, []);
+  return bulkInFlight;
+}
+/** The open Kill sessions dialogs, newest last. The late outcome of a send
+ * whose sheet was closed goes to the newest one, which shows it and passes it
+ * on to Processlist when it closes: a late reply never closes a dialog opened
+ * since (the owner closes the dialog when it gets an outcome). */
+const openDialogs: ((note: KillNote) => void)[] = [];
+
+/** Processlist's note while a send whose dialog was closed waits for its reply. */
+function waitingNote(count: number, label: string): KillNote {
+  return {
+    status: "pending",
+    message: `Waiting for the reply to ${count} KILL ${count === 1 ? "statement" : "statements"} on ${label}. The outcome shows here when it arrives.`,
+    outcome: [],
+  };
+}
 
 export function MassKillDialog({
   sessions,
@@ -51,15 +84,78 @@ export function MassKillDialog({
   const [lockWaitsOnly, setLockWaitsOnly] = useState<boolean>(false);
   const [activePreset, setActivePreset] = useState<"runaway" | "sleep" | "locks" | "custom">("runaway");
 
-  const [busy, setBusy] = useState<boolean>(false);
+  // Preparing the review (nothing is sent) or sending the reviewed KILLs.
+  const [phase, setPhase] = useState<"idle" | "preparing" | "sending">("idle");
+  const [phaseSince, setPhaseSince] = useState<number | null>(null);
+  const busy = phase !== "idle";
   const [error, setError] = useState<string>("");
+  // A send from a dialog closed before its reply: this one waits for it.
+  const earlier = useBulkInFlight();
+  const waitingForEarlier = !!earlier && phase !== "sending";
+  const prepareRead = useRef<AbortController | null>(null);
+  // The sheet was closed while the KILLs had no reply: the outcome goes to the
+  // Processlist note, and this dialog is not closed again by the late reply.
+  const left = useRef(false);
+  useEffect(() => () => prepareRead.current?.abort(), []);
+  // The outcome of an earlier send that arrived while this dialog is open:
+  // shown here, and passed on to Processlist when this dialog closes.
+  const [earlierNote, setEarlierNote] = useState<KillNote | null>(null);
+  const earlierOutcome = useRef<KillNote | null>(null);
+  const receive = useRef((note: KillNote) => {
+    earlierOutcome.current = note;
+    setEarlierNote(note);
+  });
+  const onSuccessRef = useRef(onSuccess);
+  onSuccessRef.current = onSuccess;
+  function takeEarlier() {
+    const note = earlierOutcome.current;
+    earlierOutcome.current = null;
+    return note;
+  }
+  // The send waiting for its reply, if any: a dialog closed by its owner
+  // meanwhile (the connection in use changed) is left like Close on its sheet.
+  const sending = useRef<{ count: number; label: string } | null>(null);
+  useEffect(() => {
+    const own = receive.current;
+    openDialogs.push(own);
+    return () => {
+      const index = openDialogs.indexOf(own);
+      if (index >= 0) openDialogs.splice(index, 1);
+      const note = earlierOutcome.current;
+      earlierOutcome.current = null;
+      if (sending.current && !left.current) {
+        // Its outcome goes where a late one goes (a dialog opened since, or
+        // Processlist), and Processlist says it is waiting for it.
+        left.current = true;
+        onSuccessRef.current(waitingNote(sending.current.count, sending.current.label));
+      } else if (note) {
+        // Closed some other way: the earlier outcome still reaches Processlist.
+        onSuccessRef.current(note);
+      }
+    };
+  }, []);
+  /** Close by the user (Close, Cancel, Escape, outside): an earlier outcome
+   * shown here goes to Processlist. */
+  function close() {
+    const note = takeEarlier();
+    if (note) onSuccess(note);
+    onClose();
+  }
+  function begin(next: "preparing" | "sending") {
+    setPhase(next);
+    setPhaseSince(Date.now());
+  }
+  function end() {
+    setPhase("idle");
+    setPhaseSince(null);
+  }
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
   const [userOverridden, setUserOverridden] = useState<boolean>(false);
   // The reviewed KILL statements, shown in a confirmation sheet before anything is sent.
-  const [pending, setPending] = useState<{ review: BulkKillReview; targets: BulkKillTarget[]; label: string } | null>(null);
+  const [pending, setPending] = useState<{ review: BulkKillReview; targets: BulkKillTarget[]; label: string; key: string } | null>(null);
 
   useFocusScope(dialog, {
-    open: true, onClose: () => { if (!busy && !pending) onClose(); },
+    open: true, onClose: () => { if (!busy && !pending) close(); },
     initialFocus: () => closeButton.current,
   });
 
@@ -234,8 +330,10 @@ export function MassKillDialog({
       return;
     }
 
-    setBusy(true);
+    begin("preparing");
     setError("");
+    const controller = new AbortController();
+    prepareRead.current = controller;
 
     try {
       const via = killVia(connection);
@@ -252,13 +350,24 @@ export function MassKillDialog({
         },
       }));
 
-      const review = await prepareBulkKill(connection, targets);
-      setPending({ review, targets, label: via.label });
+      const review = await prepareBulkKill(connection, targets, controller.signal);
+      if (controller.signal.aborted) return;
+      setPending({ review, targets, label: via.label, key: via.key });
     } catch (e) {
-      setError((e as Error).message || "Kill sessions failed.");
+      if (!controller.signal.aborted) setError(`Could not prepare the review: ${errorText(e)} Nothing was sent.`);
     } finally {
-      setBusy(false);
+      if (prepareRead.current === controller) {
+        prepareRead.current = null;
+        end();
+      }
     }
+  }
+  /** Stop waiting for the review: nothing was sent, and its answer is dropped. */
+  function stopPreparing() {
+    prepareRead.current?.abort();
+    prepareRead.current = null;
+    end();
+    setError("Stopped waiting for the review. Nothing was sent.");
   }
 
   function declineBulk() {
@@ -276,8 +385,28 @@ export function MassKillDialog({
   async function sendBulk() {
     const p = pending;
     if (!p || busy) return;
-    setBusy(true);
+    if (bulkInFlight) return;
+    begin("sending");
     setError("");
+    left.current = false;
+    const on = { key: p.key, label: p.label };
+    sending.current = { count: p.review.statements.length, label: p.label };
+    /** The outcome: to Processlist, closing this dialog; after its sheet was
+     * closed, to the newest dialog opened since, else to Processlist. */
+    const deliver = (note: KillNote) => {
+      if (!left.current) {
+        // This dialog's own outcome replaces an earlier one it was showing.
+        takeEarlier();
+        onSuccess(note);
+        onClose();
+        return;
+      }
+      const late = { ...note, late: true };
+      const newest = openDialogs.filter((d) => d !== receive.current).pop();
+      if (newest) newest(late);
+      else onSuccess(late);
+    };
+    setBulkInFlight({ label: p.label, count: p.review.statements.length });
     try {
       // Re-read the type and read-only flag: they may have changed since the review.
       const active = policy ? await policy.check() : connection;
@@ -288,14 +417,33 @@ export function MassKillDialog({
       }
       const res = await killBulkSessions(connection, p.targets, p.review.review_token);
       setPending(null);
-      onSuccess({ status: res.killed > 0 ? "ok" : "warn", message: res.message, outcome: [] });
-      onClose();
+      // Ended at least one: "Done."; none, with an error: "Could not end it.";
+      // none, refused or gone before sending: "Nothing was sent."
+      const status = res.killed > 0 ? "killed" : res.errors > 0 ? "error" : res.denied > 0 ? "denied" : "refused";
+      deliver({ status, message: res.message, outcome: [], on });
     } catch (e) {
       setPending(null);
-      setError((e as Error).message || "Kill sessions failed.");
+      // The server answered with an error (the dialog stays, with it), or no
+      // reply arrived: the KILLs may have run, and they are never sent again.
+      const failure = writeFailure(e, { audited: true });
+      if (failure.phase === "unknown" || left.current)
+        deliver({ status: failure.phase === "unknown" ? "unknown" : "error", message: failure.message, outcome: [], refresh: true, on });
+      else setError(`Could not send the KILL statements: ${failure.message}`);
     } finally {
-      setBusy(false);
+      sending.current = null;
+      setBulkInFlight(null);
+      end();
     }
+  }
+  /** Close the dialog while the KILLs have no reply yet (offered when slow). */
+  function leave() {
+    const p = pending;
+    if (!p) return;
+    left.current = true;
+    // An earlier outcome shown here was seen; this send's note replaces it.
+    takeEarlier();
+    onSuccess(waitingNote(p.review.statements.length, p.label));
+    onClose();
   }
 
   return (
@@ -306,10 +454,10 @@ export function MassKillDialog({
       aria-labelledby="mass-kill-title"
       onCancel={(e) => {
         e.preventDefault();
-        if (!busy && !pending) onClose();
+        if (!busy && !pending) close();
       }}
       onClick={(e) => {
-        if (e.target === dialog.current && !busy && !pending) onClose();
+        if (e.target === dialog.current && !busy && !pending) close();
       }}
     >
       <div className="mass-kill-header">
@@ -337,7 +485,7 @@ export function MassKillDialog({
             className="icon-button"
             aria-label="Close dialog"
             disabled={busy || !!pending}
-            onClick={onClose}
+            onClick={close}
           >
             <Icon name="close" size={14} />
           </button>
@@ -380,7 +528,20 @@ export function MassKillDialog({
         </button>
       </div>
 
-      {error && <div className="note danger mass-kill-error" style={{ margin: "var(--space-2) var(--space-5)" }}>{error}</div>}
+      {error && <div className="note danger mass-kill-error" role="alert" style={{ margin: "var(--space-2) var(--space-5)" }}>{error}</div>}
+      {waitingForEarlier && (
+        <div className="note mass-kill-earlier" role="status" style={{ margin: "var(--space-2) var(--space-5)" }}>
+          The earlier Kill sessions request ({earlier.count} KILL {earlier.count === 1 ? "statement" : "statements"} on {earlier.label}) has
+          not answered yet. New KILLs wait for it; its outcome shows here when it arrives.
+        </div>
+      )}
+      {!earlier && earlierNote && phase !== "sending" && (
+        <div className={`note mass-kill-earlier is-answered${earlierNote.status === "killed" ? "" : " danger"}`} role="status"
+          style={{ margin: "var(--space-2) var(--space-5)" }}>
+          The earlier Kill sessions request{earlierNote.on ? ` on ${earlierNote.on.label}` : ""} answered:{" "}
+          <strong>{killStatusWord(earlierNote.status)}</strong> {earlierNote.message}
+        </div>
+      )}
       {isReadOnly && (
         <div className="note danger mass-kill-blocked" style={{ margin: "var(--space-2) var(--space-5)" }}>
           {connection.read_only ? "This connection is read-only, so no session can be killed from here." : policy?.blocked}
@@ -661,8 +822,14 @@ export function MassKillDialog({
           eyebrow="KILL"
           title={`${pending.review.mode === "query" ? "End the running query of" : "End"} ${pending.targets.length} ${pending.targets.length === 1 ? "connection" : "connections"}?`}
           description="Check these statements and the server. Before sending anything, myflames reads each session again and stops for any that changed or ended. Cancel sends nothing."
-          busy={busy}
-          confirmLabel={busy ? "Terminating sessions…" : `Send ${pending.review.statements.length} ${pending.review.statements.length === 1 ? "statement" : "statements"}`}
+          busy={phase === "sending"}
+          busyLabel={pending.review.mode === "query"
+            ? `Stopping ${pending.targets.length} ${pending.targets.length === 1 ? "query" : "queries"}…`
+            : `Ending ${pending.targets.length} ${pending.targets.length === 1 ? "connection" : "connections"}…`}
+          progress="Waiting for the KILL replies"
+          onLeave={leave}
+          leaveText="The KILLs may still be running. Close does not stop them; the outcome shows in Processlist."
+          confirmLabel={`Send ${pending.review.statements.length} ${pending.review.statements.length === 1 ? "statement" : "statements"}`}
           onCancel={declineBulk}
           onConfirm={() => void sendBulk()}
         >
@@ -680,22 +847,30 @@ export function MassKillDialog({
         </ConfirmSheet>
       )}
       <div className="mass-kill-footer">
-        <span className="mass-kill-footer-safety">
-          System threads, replication, and your active connection are excluded.
-        </span>
+        {/* Always mounted (its live region announces the start); idle, it takes no room.
+            Preparing sends nothing: it reads each session and builds the statements to review. */}
+        <ActionStatus
+          state={{ phase: phase === "preparing" ? "pending" : "idle", message: "Preparing the statements for review. Nothing is sent yet.", startedAt: phaseSince }}
+          onStop={stopPreparing}
+          stopLabel="Stop waiting"
+        />
+        {phase !== "preparing" && (
+          <span className="mass-kill-footer-safety">
+            System threads, replication, and your active connection are excluded.
+          </span>
+        )}
         <div className="mass-kill-footer-actions">
-          <button type="button" className="button" onClick={onClose} disabled={busy}>
+          <button type="button" className="button" onClick={close} disabled={busy}>
             Cancel
           </button>
-          <button
-            type="button"
-            className="button danger"
+          <ActionButton
+            danger
             onClick={handleConfirm}
-            disabled={busy || selectedCount === 0 || !!isReadOnly}
+            busy={phase === "preparing"}
+            busyLabel="Preparing review…"
+            disabled={phase !== "preparing" && (busy || selectedCount === 0 || !!isReadOnly || waitingForEarlier)}
           >
-            {busy
-              ? "Terminating sessions…"
-              : `Kill ${selectedCount} ${
+            {`Kill ${selectedCount} ${
                   mode === "query"
                     ? selectedCount === 1
                       ? "query"
@@ -704,7 +879,7 @@ export function MassKillDialog({
                     ? "connection"
                     : "connections"
                 }`}
-          </button>
+          </ActionButton>
         </div>
       </div>
     </dialog>

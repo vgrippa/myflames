@@ -48,6 +48,9 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [MariaDB Fixtures](#mariadb-fixtures)
 - [Visual Explain (merged Diagram / Workbench)](#visual-explain-merged-diagram--workbench)
 - [Investigation engine](#investigation-engine)
+- [Workspace navigation and configuration controls](#workspace-navigation-and-configuration-controls)
+  - [Action feedback](#action-feedback)
+  - [Tables and indexes: browse and export](#tables-and-indexes-browse-and-export)
 
 ## Commands Reference
 
@@ -1955,6 +1958,76 @@ Processlist **Kill sessions…** opens the Kill sessions dialog (`MassKillDialog
 Home reads the installed version from the server-injected version meta tag. Its release link does not perform an update check or install software; only **Check for updates** asks GitHub (see Application updates above). Its News section is described under [Local UI](#local-ui) (Home news). Stable internal place IDs remain unchanged; Query editor and Plans are grouped under SQL workspace.
 
 Refresh all schedules unopened sections as well as loaded ones, with three concurrent reads and a separate Full analysis phase. It preserves scope-specific large-schema consent, joins identical reads, and drops stale results. Maintenance only detects tools. Parameters and Instruments read on open (one attempt per connection; Refresh retries). Parameters inline edit controls use parameter metadata to stage local changes, and **Review and apply** reviews up to 25 changes at once while **Change…** opens the single-parameter sheet (including **This session only** handoff to the Query editor). Guidance is collapsed by default.
+
+### Action feedback
+
+Every action reacts in the frame of the click and says what is happening and
+what happened. The parts live in `apps/workspace/src/kit.tsx` and `kit.css`
+(outside `DataTable`); `test/action-feedback-unit.mjs` and
+`test/action-feedback.mjs` check them.
+
+| Part | Contract |
+| --- | --- |
+| `useAction(scope?)` | One action's lifecycle: `idle`, `pending`, `done`, `failed`, `unknown`. `run(work, text)` sends nothing while the same action runs (single flight), shows `text.pending` at once, then `text.done` (a string, or a function of the reply; empty leaves no line), the error in plain words, or, for `write: true`, `writeFailure`'s answer. `cancel()`, a new `scope` (the connection or form it belongs to) or unmounting ends it quietly: its reply is never applied. Writes pass no scope; their outcome is always shown. A `done` or `failed` function that throws is logged and replaced by "Done." or the error's own words, so an action always ends. |
+| `ActionButton` | The control that runs it. While `busy`: a spinner and `busyLabel` in the present tense ("Testing…", "Applying…"), `aria-busy`, clicks ignored, and focus kept (`aria-disabled`, never `disabled`). The other label is reserved, invisible, in the same grid cell, so the width never changes; beside an icon the label starts at the icon. |
+| `ActionStatus` | The line beside or under the action: a polite live region that is always mounted (a region inserted with its text is often not read), with the seconds after 1 s (drawn, `aria-hidden`, never announced), "Still waiting for the server." after `ACTION_SLOW_AFTER_MS` (10 s) with `onStop` ("Stop" or "Stop waiting"), and `onRetry` ("Try again") after a failure. Idle it takes no room; `keepLine` keeps its empty line, for a status under a centered control. |
+| `ConfirmSheet` | `busyLabel` on the confirm button (it keeps focus), and the busy label read aloud at once; after 1 s a one-line `progress` ("Waiting for the server" by default) with the seconds at the start of the action row, which never wraps the buttons. With `onLeave`, after 10 s without a reply the line reads "No reply yet", `leaveText` (what Close does) appears at the end of the body, and Cancel becomes Close: the sheet closes, the request goes on, and its owner shows the outcome in the view. Cancel and Escape never decline a write that was sent. Its buttons share one box (`.sheet-buttons`, `display: contents`), so the first is Cancel and the last confirms. |
+| `ViewLayout` and `ViewStatus` | Refresh is an `ActionButton` ("Refreshing…"). The loading line counts seconds after 1 s; after `slowAfter` (20 s; sampling views add their window, Indexes and Tables 45 s) it says so (`slowText`, "Still waiting for the server." by default) and offers Stop (`reads.stop`: the view keeps its report and the request is aborted unless Refresh all waits for the same read); a read error offers Try again (`onRetry`) beside the alert, never inside it; `doneAt` (`reads.doneAt`) announces "Updated at …". Every new `loading` text is announced, so it stays the same while the read runs: never put the seconds in it (Tuning's Full analysis passes "Running every Server view once, about 10 to 20 s in all. It only reads." and `slowText` "Longer than the usual 10 to 20 s."). |
+| `writeFailure(error)` | A write's exception: an HTTP 4xx reply is a failure in the server's words; anything else (no reply, a lost connection, a 5xx, a time limit) is "Outcome unknown", and the write is never sent again. |
+
+Rules:
+
+- A status line never moves the control that started it: put it under or
+  beside the control. A first load started from an empty state shows its
+  progress under its button (`keepLine`), and the line under the toolbar is
+  for later reads (Users and roles).
+- The result stays visible until the next action: what changed ("Headlines
+  updated.", "Exported “Checkout slowdown” as Checkout-slowdown.json.", "1
+  connection removed."), or the error in plain words with Try again. A failure
+  never reads like success, and "Nothing was sent" appears only where the code
+  knows nothing was sent (a review that was still being prepared, a refusal
+  before sending).
+- Stop, Try again and Dismiss go away when clicked; focus then moves to the
+  view's Refresh or the action beside the line (`restoreFocus`), or to the
+  line itself (`tabIndex=-1`), never to the page.
+- A guard that must hold before React renders the busy state uses a ref set in
+  the click handler (Refresh news reads start in an effect, so its click checks
+  `reading.current` as well as `loading`).
+- Refresh all becomes Stop in the same spot. Stop takes clicks only after
+  `STOP_ARM_MS` (600 ms), so a double click on Refresh all does not stop the
+  run it started; its status names the views being read ("Refreshing 4 of 17 ·
+  Waits, I/O…") with the seconds, and announces only the start and the end.
+- Kill sessions…: the review is prepared with "Preparing review…" and Stop
+  waiting (nothing is sent); the send reports Done, The server refused, Could
+  not end it, or Nothing was sent from `kill-bulk-1.0`'s counts; closing the
+  sheet before the reply leaves "Waiting for the reply." in Processlist until
+  the outcome replaces it, and a Kill sessions dialog opened meanwhile says
+  the earlier request has not answered and sends nothing (one bulk KILL at a
+  time). That late outcome never closes a dialog opened since: it shows in it
+  ("The earlier Kill sessions request on … answered: Done. …") and reaches
+  Processlist when that dialog closes; the owner's `onSuccess` records the
+  note, and the dialog closes itself (`onClose`). A dialog its owner closes
+  while its send waits (the connection in use changed, or was made read-only
+  elsewhere) is treated as if its sheet had been closed: Processlist says it
+  waits, and the outcome, a refusal included, arrives the same way.
+- A successful Kill note (`KillResultNote`, shared by Locks and Processlist)
+  starts with "Done." before the server's message, using `killStatusWord` as
+  Kill sessions does. A Kill note names the connection the KILL was sent on
+  ("Sent on Prod (app@db1:3306), not the connection in use.") when another
+  connection is in use (`currentKey`, the view's `reads.key`), and then offers
+  no Refresh, which would read the connection in use. Without `currentKey` only
+  a late note (its sheet was closed) is named. Locks' waiting line names the
+  connection too once another one is in use.
+- Try again repeats the failed action on what it acted on (Investigations
+  keeps the investigation an Open all or Export failed for, even after another
+  one is selected).
+- Reviewed SQL actions (Indexes, Tables, Instruments): preparing the review
+  can be abandoned with Stop waiting (nothing was sent); a confirmed send that
+  gets a 4xx reply is a failure, and only a send with no reply is an unknown
+  outcome that is checked, never resent.
+- Motion is subtle: spinners stop under `prefers-reduced-motion` (the
+  present-tense label and the seconds still say that it works); a busy icon
+  button keeps full color and turns its glyph (`.is-busy[aria-busy="true"]`).
 
 ### Tables and indexes: browse and export
 

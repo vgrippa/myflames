@@ -470,7 +470,8 @@ export function HealthView({
       otherConnection={stale ? memory.label : null}
       inspector={inspector}
       inspectorEmpty={<p>Select a diagnostic or a tile to see what it measures, its rule and its numbers.</p>}
-      status={<ViewStatus loading={reads.loading} error={error} />}
+      status={<ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={error ? () => void load() : undefined}
+        doneAt={reads.doneAt} slowAfter={(interval + 20) * 1000} />}
     >
       <div ref={root}>
         {!report && !loading && !error && (

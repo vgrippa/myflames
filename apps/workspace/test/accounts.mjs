@@ -440,7 +440,7 @@ try {
   }
 
   // Accounts reads once when opened, never while retained off screen. An
-  // unsuccessful first read stops until the explicit Retry action.
+  // unsuccessful first read stops until the explicit Try again action.
   assert.equal(state.seen.length, 0, "Accounts has not read off screen");
   state.queue.push({ status: 400, body: { error: "Cannot read account metadata in this session." } });
   await click("Toggle Accounts visibility");
@@ -448,9 +448,9 @@ try {
   assert.equal(state.seen.length, 1, "opening attempts one read");
   await page.waitForFunction(() => !document.querySelector(".accounts-view .capture-status"));
   assert.match(await h.text(".accounts-view [role=alert]"), /Cannot read account metadata/);
-  await click("Retry");
+  await click("Try again");
   await page.waitForSelector(".accounts-view tbody tr");
-  assert.equal(state.seen.length, 2, "Retry starts a fresh read");
+  assert.equal(state.seen.length, 2, "Try again starts a fresh read");
   await click("Toggle Accounts visibility");
   await click("Toggle Accounts visibility");
   assert.equal(state.seen.length, 2, "reopening keeps the current report");

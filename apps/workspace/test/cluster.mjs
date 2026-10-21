@@ -226,8 +226,8 @@ try {
   await page.click("dialog.action-review[open] .sheet-actions button:last-child");
   await page.waitForFunction(() => /Sent\. Waiting for the server's answer/.test(document.querySelector("dialog.action-review[open] .action-phase")?.textContent || ""));
   const applying = await page.$eval("dialog.action-review[open]", (d) => ({ confirm: d.querySelector(".sheet-actions button:last-child").textContent,
-    disabled: d.querySelector(".sheet-actions button:last-child").disabled, steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state) }));
-  assert.deepEqual(applying, { confirm: "Applying…", disabled: true, steps: ["sent"] });
+    ariaDisabled: d.querySelector(".sheet-actions button:last-child").getAttribute("aria-disabled"), steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state) }));
+  assert.deepEqual(applying, { confirm: "Applying…", ariaDisabled: "true", steps: ["sent"] });
   await page.waitForSelector("dialog.action-review[open] .action-outcome");
   const answered = await page.$eval("dialog.action-review[open]", (d) => ({ outcome: d.querySelector(".action-outcome").textContent,
     steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state),

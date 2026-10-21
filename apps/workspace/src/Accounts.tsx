@@ -7,7 +7,7 @@ import { useWritePolicy } from "./Connections";
 import { useOpenRead } from "./viewOnScreen";
 import { CopySql, engineLabel } from "./PerfShared";
 import { VisiblePrivilegeGate } from "./Locks";
-import { Checkbox, ConfirmSheet, CountBadge, DataTable, Disclosure, EmptyState, Fields, InspectorSection,
+import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, CountBadge, DataTable, Disclosure, EmptyState, Fields, InspectorSection, useSince,
   SearchField, Segmented, Select, StatusDot, SummaryLine, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection } from "./kit";
 import { PrivilegeGate, privilegeButtonProps, privilegeResult, usePrivilege, usePrivileges, type PrivilegeGateResult } from "./privileges";
@@ -84,6 +84,9 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   const [form, setForm] = useState<Form | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [busy, setBusy] = useState("");
+  // The review sheet was closed while Apply had no reply yet: the line under
+  // the toolbar keeps "Applying account changes…" and the result follows.
+  const [reviewLeft, setReviewLeft] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<Bound<AccountGroupResult[]> | null>(null);
   const [editorRevision, setEditorRevision] = useState(0);
@@ -120,9 +123,15 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   useEffect(() => { setForm(null); setGenerated(null); setError(""); }, [reads.key]);
   useEffect(() => { setPending([]); setNextSelection(null); }, [reads.key]);
 
+  const loadingSince = useSince(!!reads.loading);
   const load = useCallback(async () => {
     if (disabled || operation.current) return;
     await reads.run("accounts", "Reading users and roles…", listAccounts, onReport);
+    // Load users and roles goes away with the empty state: keep focus in the view.
+    window.requestAnimationFrame(() => {
+      if (document.activeElement && document.activeElement !== document.body) return;
+      document.querySelector<HTMLElement>('.server-view[data-view="accounts"] [data-action=refresh]')?.focus({ preventScroll: true });
+    });
   }, [disabled, reads.run, onReport]);
   useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled && !review && !busy,
     busy: !!reads.loading || reads.running(), read: () => { void load(); } });
@@ -153,7 +162,7 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
       const groups = await planAccountGroups(via.connection, target, edits, password);
       if (!mounted.current || reads.currentKey() !== key) { void declineAccountGroups(via.connection, groups); return; }
       if (groups.some(g => g.plan?.privileges?.state === "denied")) void privileges?.accountChanged();
-      setForm(null); reviewRef.current = { via, groups }; setReview(reviewRef.current);
+      setForm(null); reviewRef.current = { via, groups }; setReviewLeft(false); setReview(reviewRef.current);
     } catch (e) {
       if (mounted.current && reads.currentKey() === key) setError((e as Error).message);
     } finally {
@@ -218,7 +227,7 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     } finally {
       password = undefined;
       reviewRef.current = null;
-      if (mounted.current) { setReview(null); setEditorRevision(n => n + 1); setBusy(""); }
+      if (mounted.current) { setReview(null); setReviewLeft(false); setEditorRevision(n => n + 1); setBusy(""); }
       operation.current = false;
     }
   }
@@ -259,13 +268,21 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
       <AccountGate action="create_role" blocked={createBlocked}
         onClick={() => setForm({ operation: "create", target: { name: "", host: engine === "mariadb" ? "" : "%", role: true } })}>New role</AccountGate></>}
     status={<>
-      <ViewStatus loading={busy || reads.loading} error={error || reads.error} />
+      {/* A first load shows its progress under its button in the empty state
+          (nothing moves under the pointer); later reads use this line. */}
+      <ViewStatus loading={busy || (report ? reads.loading : "")} error={error || reads.error}
+        onStop={reads.loading && !busy ? reads.stop : undefined} onRetry={reads.error && !error ? () => void load() : undefined} doneAt={reads.doneAt} />
       {result && result.key === reads.key && <BatchResult results={result.report} onDismiss={() => setResult(null)} />}
       {generated && generated.key === reads.key && <GeneratedPassword password={generated.password} onDismiss={() => setGenerated(null)} />}
     </>} inspector={inspector}
     inspectorEmpty="Select an account to view its grants, account settings and roles.">
     {createNote && <p className="account-note account-create-note" role="note">{createNote}</p>}
-    {!report ? <EmptyState icon="server" title="Users and roles" action={reads.error && <button className="button primary" disabled={disabled || !!reads.loading} onClick={() => void load()}>Retry</button>}>Read accounts from the connection in use.</EmptyState> : <>
+    {!report ? <EmptyState icon="server" title="Users and roles" action={<>
+      <ActionButton primary busy={!!reads.loading} busyLabel="Loading…"
+        disabled={!reads.loading && disabled} onClick={() => void load()}>Load users and roles</ActionButton>
+      <ActionStatus keepLine state={{ phase: reads.loading ? "pending" : "idle", message: reads.loading, startedAt: loadingSince }}
+        onStop={reads.stop} />
+    </>}>Read accounts from the connection in use.</EmptyState> : <>
       <SummaryLine tone={metadataUnreadable ? "unknown" : "info"} toneLabel={metadataUnreadable ? "Not judged" : "Accounts read"} notes={report.warnings}>
         {metadataUnreadable ? report.warnings[0] || "Account metadata could not be read." : `${(report.accounts.length - roles).toLocaleString()} ${report.accounts.length - roles === 1 ? "user" : "users"} · ${roles.toLocaleString()} ${roles === 1 ? "role" : "roles"}`}
       </SummaryLine>
@@ -290,8 +307,8 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     {form && <AccountForm key={`${reads.key}:${form.operation}:${accountKey(form.target)}`} form={form} engine={engine}
       randomAvailable={engine === "mariadb" || engine === "mysql"} blocked={blocked} busy={!!busy} error={error}
       onCancel={() => setForm(null)} onPrepare={prepare} />}
-    {review && <ReviewSheet review={review} busy={!!busy} blocked={reads.key !== review.via.key ? "The connection changed. Cancel and review again on the connection in use." : blocked}
-      error={error} onCancel={cancelReview} onApply={apply} onRemove={removeGroup} />}
+    {review && !reviewLeft && <ReviewSheet review={review} busy={!!busy} blocked={reads.key !== review.via.key ? "The connection changed. Cancel and review again on the connection in use." : blocked}
+      error={error} onCancel={cancelReview} onApply={apply} onRemove={removeGroup} onLeave={() => setReviewLeft(true)} />}
   </ViewLayout>;
 }
 
@@ -611,7 +628,8 @@ function AccountForm({ form, engine, randomAvailable, blocked, busy, error, onCa
   const valid = (form.operation === "password" || !!name) && (form.target.role && engine === "mariadb" || !!host) && (!needsPassword || random || hasPassword);
   function clear() { if (password.current) password.current.value = ""; setHasPassword(false); }
   return <ConfirmSheet eyebrow={form.target.role ? "Role" : "User"} title={form.operation === "create" ? `New ${form.target.role ? "role" : "user"}` : `${OP_LABEL[form.operation]} for ${accountLabel(form.target)}`}
-    busy={busy} confirmLabel="Review statements" confirmTone="primary" confirmDisabled={!!blocked || !valid}
+    busy={busy} busyLabel="Preparing review…" progress="Nothing is sent yet"
+    confirmLabel="Review statements" confirmTone="primary" confirmDisabled={!!blocked || !valid}
     onCancel={() => { clear(); onCancel(); }} onConfirm={() => {
       const secret = needsPassword && !random ? password.current?.value : undefined;
       clear();
@@ -629,9 +647,11 @@ function AccountForm({ form, engine, randomAvailable, blocked, busy, error, onCa
   </ConfirmSheet>;
 }
 
-function ReviewSheet({ review: { groups, via }, busy, blocked, error, onCancel, onApply, onRemove }: {
+function ReviewSheet({ review: { groups, via }, busy, blocked, error, onCancel, onApply, onRemove, onLeave }: {
   review: Review; busy: boolean; blocked: string; error: string; onCancel: () => void;
   onApply: (typedNames: Record<string, string>, password?: string) => Promise<void>; onRemove: (index: number) => void;
+  /** Close the sheet while Apply has no reply yet (offered when slow). */
+  onLeave: () => void;
 }) {
   const [typed, setTyped] = useState<Record<string, string>>({}); const nameId = useId();
   const password = useRef<HTMLInputElement>(null);
@@ -647,7 +667,9 @@ function ReviewSheet({ review: { groups, via }, busy, blocked, error, onCancel, 
     : `Apply ${groups.length} changes to ${accountLabel(groups[0].target)}?`;
   return <ConfirmSheet className="account-review" eyebrow="Review changes" title={title}
     description={groups.length > 1 ? "Groups run in the order shown. Each is checked again before sending. The batch stops at the first refusal or failure; earlier changes remain applied." : plans[0]?.policy.text}
-    busy={busy} confirmLabel={`Apply ${statements} ${statements === 1 ? "statement" : "statements"}`}
+    busy={busy} busyLabel="Applying…" progress="Re-reading each account, then sending"
+    onLeave={onLeave} leaveText="The changes may still be applying. Close does not stop them; the result shows in Users and roles."
+    confirmLabel={`Apply ${statements} ${statements === 1 ? "statement" : "statements"}`}
     confirmDisabled={!!blocked || invalid || guards.some(([key, name]) => typed[key] !== name) || needsPassword && !hasPassword}
     onCancel={() => { clearPassword(); onCancel(); }} onConfirm={() => {
       const secret = needsPassword ? password.current?.value : undefined;

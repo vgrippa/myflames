@@ -65,6 +65,8 @@ import {
   StatusPill,
   TONE_TEXT,
   ToolbarButton,
+  useElapsed,
+  ACTION_ELAPSED_AFTER_MS,
   storeInspectorWidth,
   storedInspectorWidth,
   type ColumnPrefs,
@@ -182,6 +184,8 @@ type RefreshItem = {
   /** A replaced read's answer: when the view shows it anyway (a joined read), it counts as refreshed. */
   result?: unknown;
 };
+/** Stop, which replaces Refresh all in the same spot, takes clicks only after this long. */
+const STOP_ARM_MS = 600;
 /** One Refresh all: the connection it ran on and each view's outcome. */
 type RefreshRun = {
   id: number;
@@ -844,6 +848,10 @@ export function Server({
   const [refresh, setRefresh] = useState<RefreshRun | null>(null);
   const refreshControl = useRef<{ id: number; controller: AbortController } | null>(null);
   const refreshSeq = useRef(0);
+  // Refresh all turns into Stop in the same spot: Stop takes clicks only after
+  // STOP_ARM_MS, so a double click on Refresh all does not stop the run it started.
+  const stopArmedAt = useRef(0);
+  const [stopArmed, setStopArmed] = useState(true);
   const [clock, setClock] = useState(0);
   /** The report object each view shows now (identity, never compared by value). */
   const reportOf = (view: ServerKind): unknown =>
@@ -1003,6 +1011,9 @@ export function Server({
     const id = ++refreshSeq.current;
     const controller = new AbortController();
     refreshControl.current = { id, controller };
+    stopArmedAt.current = Date.now() + STOP_ARM_MS;
+    setStopArmed(false);
+    window.setTimeout(() => setStopArmed(true), STOP_ARM_MS);
     setRefresh({
       id,
       key,
@@ -1258,13 +1269,24 @@ export function Server({
     (refreshDiagramDatabase(diagram, diagramDatabase, activeKey) ? 1 : 0);
   const refreshDone = refreshHere ? refreshHere.views.filter((v) => outcome(v) === "ok").length : 0;
   const refreshFailed = refreshHere ? refreshHere.views.filter((v) => v.state === "failed") : [];
+  // While it runs: how far it got and the views being read now (a slow view is
+  // named, not hidden behind a count); then what it refreshed and what failed.
+  const refreshReading = refreshHere && running ? refreshHere.views.filter((v) => v.state === "loading").map((v) => v.label) : [];
   const refreshText = !refreshHere
     ? ""
     : running
-      ? `Refreshing ${Math.min(refreshDone + 1, refreshHere.views.length)} of ${refreshHere.views.length}…`
+      ? `Refreshing ${Math.min(refreshDone + 1, refreshHere.views.length)} of ${refreshHere.views.length}` +
+        (refreshReading.length
+          ? ` · ${refreshReading.slice(0, 3).join(", ")}${refreshReading.length > 3 ? ` and ${refreshReading.length - 3} more` : ""}`
+          : "") + "…"
       : `${refreshDone} of ${refreshHere.views.length} ${refreshHere.views.length === 1 ? "view" : "views"} refreshed` +
         (refreshFailed.length ? `; ${refreshFailed.map((v) => v.label).join(", ")} failed` : "") +
         (refreshHere.state === "stopped" && refreshDone + refreshFailed.length < refreshHere.views.length ? "; stopped" : "");
+  // Announced once at the start and once at the end, never per view.
+  const refreshAnnounce = !refreshHere ? "" : running
+    ? `Refreshing ${refreshHere.views.length} ${refreshHere.views.length === 1 ? "view" : "views"} on ${refreshHere.label}…`
+    : refreshText + ".";
+  const refreshSeconds = useElapsed(running && refreshHere ? Date.parse(refreshHere.started) : null);
   const viewFailure = staleNow(refreshOf(kind)) ? refreshOf(kind) : undefined;
   const listLabel = place === "workload" ? "Workload views" : "Server views";
   /** The floating list of views, opened from the view's title (ViewLayout
@@ -1633,7 +1655,13 @@ export function Server({
             {picker}
             <div className="refresh-all" role="group" aria-label="Refresh all">
               {running ? (
-                <ToolbarButton className="refresh-all-stop" onClick={() => stopRefresh()} title="Stop refreshing (Escape)">
+                <ToolbarButton
+                  className="refresh-all-stop"
+                  aria-busy="true"
+                  aria-disabled={!stopArmed || undefined}
+                  onClick={() => { if (Date.now() >= stopArmedAt.current) stopRefresh(); }}
+                  title="Stop refreshing (Escape)"
+                >
                   <span className="spinner" aria-hidden="true" />
                   Stop
                 </ToolbarButton>
@@ -1648,14 +1676,21 @@ export function Server({
                   Refresh all
                 </ToolbarButton>
               )}
-              <span className="visually-hidden" role="status">{refreshHere ? refreshText : ""}</span>
+              <span className="visually-hidden" role="status">{refreshAnnounce}</span>
               {refreshHere && (
                 <Popover
                   label="Refresh all: each view"
                   wide
                   className="refresh-all-anchor"
                   buttonClassName={`text-button refresh-all-status${refreshFailed.length ? " has-failures" : ""}`}
-                  trigger={<span>{refreshText}</span>}
+                  trigger={
+                    <span>
+                      {refreshText}
+                      {running && refreshSeconds * 1000 >= ACTION_ELAPSED_AFTER_MS && (
+                        <span className="action-elapsed" aria-hidden="true">{refreshSeconds} s so far</span>
+                      )}
+                    </span>
+                  }
                 >
                   <h3 className="popover-title">Refresh all on {refreshHere.label}</h3>
                   <ul className="refresh-all-list">

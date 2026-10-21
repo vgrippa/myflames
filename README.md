@@ -331,6 +331,8 @@ Instruments lets you filter and select individual instruments or consumers and a
 
 Tables and Indexes include complete scoped inventories with pagination. Indexes checks partitioning only for candidate tables: partitioned or unresolved candidates appear under No data, with DROP and visibility SQL withheld. Export the filtered results as CSV, HTML or PDF through the system print dialog. Tables can filter measured reusable-space percentage; this is not an index fragmentation estimate.
 
+Successful Kill results in Locks, Processlist and Kill sessions begin with **Done.**, followed by the server's explanation.
+
 Workspace views read when opened; Refresh retries. Changing the connection keeps
 the previous report greyed until Refresh or reopening the view. Users and roles
 asks before discarding staged grants. The session password is committed on blur

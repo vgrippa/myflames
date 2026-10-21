@@ -16,7 +16,8 @@ import {
   type EditorStatement,
 } from "./api";
 import { Icon } from "./components";
-import { DataTable, Popover, StatusPill, closePopovers, useFocusScope, type Column, type Tone } from "./kit";
+import { ACTION_ELAPSED_AFTER_MS, ActionButton, ActionStatus, DataTable, Popover, StatusPill, closePopovers, useElapsed, useFocusScope, useSince,
+  type Column, type Tone } from "./kit";
 
 const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
 const PLAIN = /^(-?)(\d*)(?:\.(\d*))?$/;
@@ -298,8 +299,10 @@ function ExportMenu({
   const [schema, setSchema] = useState("");
   const [guard, setGuard] = useState(false);
   const [busy, setBusy] = useState("");
+  const busySince = useSince(!!busy);
   const hexColumns = result.columns.map((c, j) => [c, j] as const).filter(([c]) => c.hex);
   async function run(format: "csv" | "json" | "sql" | "markdown" | "tsv") {
+    if (busy) return;
     setBusy(format);
     try {
       const reply = await api<EditorExport>("editor/export", {
@@ -343,21 +346,23 @@ function ExportMenu({
       <p className="hint">
         {rowsText(result.rows.length)} as loaded. NULL is an empty CSV field and JSON null; an empty string is "".
       </p>
+      {/* The clicked format shows that it works (and keeps focus); the others wait. */}
       <div className="export-actions">
-        <button type="button" className="button small" disabled={!!busy} onClick={() => void run("csv")}>
+        <ActionButton small busy={busy === "csv"} busyLabel="Exporting…" aria-disabled={(!!busy && busy !== "csv") || undefined} onClick={() => void run("csv")}>
           CSV
-        </button>
-        <button type="button" className="button small" disabled={!!busy} onClick={() => void run("json")}>
+        </ActionButton>
+        <ActionButton small busy={busy === "json"} busyLabel="Exporting…" aria-disabled={(!!busy && busy !== "json") || undefined} onClick={() => void run("json")}>
           JSON
-        </button>
-        <button type="button" className="button small" disabled={!!busy} onClick={() => void run("markdown")}>
+        </ActionButton>
+        <ActionButton small busy={busy === "markdown"} busyLabel="Exporting…" aria-disabled={(!!busy && busy !== "markdown") || undefined} onClick={() => void run("markdown")}>
           Markdown
-        </button>
-        <button type="button" className="button small" disabled={!!busy} onClick={() => void run("tsv")}>
-          <Icon name="copy" size={14} />
+        </ActionButton>
+        <ActionButton small icon="copy" busy={busy === "tsv"} busyLabel="Copying…" aria-disabled={(!!busy && busy !== "tsv") || undefined} onClick={() => void run("tsv")}>
           Copy as TSV
-        </button>
+        </ActionButton>
       </div>
+      <ActionStatus className="export-status" state={{ phase: busy ? "pending" : "idle", startedAt: busySince,
+        message: busy === "tsv" ? `Copying result ${n}…` : `Exporting result ${n} as ${busy === "markdown" ? "Markdown" : busy.toUpperCase()}…` }} />
       <label className="checkbox export-guard">
         <input type="checkbox" checked={guard} onChange={(e) => setGuard(e.target.checked)} />
         <span>CSV: prefix values that start with = + - @ with ' (spreadsheet formulas)</span>
@@ -372,9 +377,10 @@ function ExportMenu({
           Schema (optional)
           <input value={schema} onChange={(e) => setSchema(e.target.value)} />
         </label>
-        <button type="button" className="button small" disabled={!!busy || !table.trim()} onClick={() => void run("sql")}>
+        <ActionButton small busy={busy === "sql"} busyLabel="Exporting…" disabled={busy !== "sql" && !table.trim()}
+          aria-disabled={(!!busy && busy !== "sql") || undefined} onClick={() => void run("sql")}>
           Download SQL
-        </button>
+        </ActionButton>
       </fieldset>
       {hexColumns.length > 0 && (
         <fieldset className="export-binary">
@@ -492,8 +498,37 @@ export type ResultsPaneProps = {
 };
 
 /** The results area: result tabs, Messages, and the plan tab. */
+/** What a finished run is announced as. */
+function runSummary(run: EditorRun) {
+  const c = run.counts;
+  if (c.errors) return `Run finished with ${c.errors} ${c.errors === 1 ? "error" : "errors"}.`;
+  if (run.state === "stopped") return "Run stopped.";
+  return `Run finished: ${c.run} ${c.run === 1 ? "statement" : "statements"}, ${c.rows.toLocaleString()} ${c.rows === 1 ? "row" : "rows"}.`;
+}
+
 export function ResultsPane(props: ResultsPaneProps) {
   const { run, running, selected, onSelect, plan } = props;
+  // A run reacts at once, also the first one in a tab (which has no results
+  // tabs yet): a spinner, "Running…" and its seconds in the results area.
+  // One polite region, mounted in both layouts, announces the start and the end.
+  const since = useSince(running);
+  const seconds = useElapsed(running ? since : null);
+  const [announce, setAnnounce] = useState("");
+  const wasRunning = useRef(running);
+  // The run shown when this run started: a run that ends without a new one
+  // (a request refused with an error) announces nothing, never the old run's
+  // counts (its error is announced by the editor's alert).
+  const runAtStart = useRef<EditorRun | null>(null);
+  useEffect(() => {
+    if (running && !wasRunning.current) {
+      runAtStart.current = run;
+      setAnnounce("Running…");
+    } else if (!running && wasRunning.current) setAnnounce(run && run !== runAtStart.current ? runSummary(run) : "");
+    wasRunning.current = running;
+  }, [running, run]);
+  const live = <span className="visually-hidden" role="status" aria-live="polite">{announce}</span>;
+  const elapsed = running && seconds * 1000 >= ACTION_ELAPSED_AFTER_MS
+    ? <span className="action-elapsed" aria-hidden="true">{seconds} s so far</span> : null;
   // While a run is out its rows are not sent yet: Messages shows its progress.
   const rows = running ? [] : rowResults(run);
   const errors = run ? run.results.filter((r) => r.type === "error" && !r.interrupted).length : 0;
@@ -516,14 +551,20 @@ export function ResultsPane(props: ResultsPaneProps) {
   }
   if (!keys.length)
     return (
-      <div className="results-pane is-empty" aria-label="Results">
-        {props.empty}
+      <div className="results-pane is-empty" aria-label="Results" aria-busy={running || undefined}>
+        {live}
+        {running ? (
+          <p className="results-running results-first-run">
+            <span className="spinner" aria-hidden="true" /> Running…{elapsed}
+          </p>
+        ) : props.empty}
       </div>
     );
   const index = active.startsWith("result:") ? Number(active.slice(7)) : -1;
   const result = index >= 0 ? rows[index] : null;
   return (
-    <div className="results-pane">
+    <div className="results-pane" aria-busy={running || undefined}>
+      {live}
       <div className="results-tabs" role="tablist" aria-label="Results" ref={list}>
         {keys.map((k, i) => (
           <button
@@ -543,8 +584,8 @@ export function ResultsPane(props: ResultsPaneProps) {
           </button>
         ))}
         {running && (
-          <span className="results-running" role="status">
-            <span className="spinner" /> Running…
+          <span className="results-running">
+            <span className="spinner" aria-hidden="true" /> Running…{elapsed}
           </span>
         )}
       </div>

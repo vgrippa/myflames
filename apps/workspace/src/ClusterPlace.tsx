@@ -332,7 +332,8 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         <p>Opening it reads; nothing changes. A member's inspector offers the changes that do what they say on that server: make a secondary the primary, stop or start Group Replication on the connected member, and on MariaDB Galera desync, resync or bootstrap a Primary component on the connected node. Each one shows the exact statement, asks first, and is recorded in the Audit log.</p>
       </>}
       status={<>
-        <ViewStatus loading={reads.loading || (actions.planning ? "Reading the member for review…" : undefined)} error={failed || actions.error} />
+        <ViewStatus loading={reads.loading || (actions.planning ? "Reading the member for review…" : undefined)} error={failed || actions.error}
+          onStop={reads.loading ? reads.stop : undefined} onRetry={failed && !actions.error ? () => { void load(true); } : undefined} doneAt={reads.doneAt} />
         {actions.result && <ActionResult shown={actions.result} onClose={actions.clearResult} />}
       </>}>
       {report ? <>

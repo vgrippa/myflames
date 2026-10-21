@@ -670,7 +670,9 @@ try {
   const save = await held("/api/profiles/save");
   await pause(300);
   assert.equal(calls("/api/profiles/save").length, saves + 1, "one save for two clicks");
-  assert.equal(await page.$eval(".connection-panel .button.primary", (e) => e.disabled), true, "Save waits while saving");
+  // Busy, Save keeps focus (aria-disabled, not disabled) and says what it does.
+  assert.deepEqual(await page.$eval(".connection-panel .button.primary", (e) => [e.getAttribute("aria-disabled"), e.getAttribute("aria-busy"), e.textContent]),
+    ["true", "true", "Saving…"], "Save waits while saving");
   answer(save);
   await page.waitForFunction(() => /Connection "Gamma" saved/.test(document.querySelector(".connections-status")?.textContent || ""));
   hold.delete("/api/profiles/save");

@@ -634,6 +634,317 @@ export function IconButton({
   );
 }
 
+// ---- Actions: immediate, honest feedback ----------------------------------------
+//
+// Every action reacts in the same frame as the click and says what is going on
+// and what happened (docs/DEVELOPER_REFERENCE.md, "Action feedback"):
+//   idle -> pending (spinner and a present-tense label on the button, aria-busy,
+//   a second click sends nothing, focus stays) -> done (what changed) or failed
+//   (the error in plain words, with Try again for reads) or unknown (a write
+//   that got no reply: it may have run and is never sent again).
+// One polite live region per action announces the start and the outcome; the
+// elapsed seconds are drawn but never announced.
+
+/** A pending action shows how long it has waited from this point on. */
+export const ACTION_ELAPSED_AFTER_MS = 1000;
+/** Without a reply for this long, a read offers Stop and a sheet may be closed
+ * while its request goes on. */
+export const ACTION_SLOW_AFTER_MS = 10_000;
+
+export type ActionPhase = "idle" | "pending" | "done" | "failed" | "unknown";
+export type ActionState = {
+  phase: ActionPhase;
+  /** What is happening ("Testing the connection…") or what happened. */
+  message: string;
+  /** Date.now() when the request was sent (pending only). */
+  startedAt: number | null;
+  /** Date.now() when it ended (done, failed, unknown). */
+  endedAt: number | null;
+};
+export const IDLE_ACTION: ActionState = { phase: "idle", message: "", startedAt: null, endedAt: null };
+
+function isAbort(error: unknown) {
+  return (error as { name?: string } | null)?.name === "AbortError";
+}
+/** The message of an error, never "[object Object]". */
+export function errorText(error: unknown): string {
+  const message = (error as { message?: unknown } | null)?.message;
+  return typeof message === "string" && message ? message : String(error || "Something went wrong.");
+}
+/** A write that failed: the server refused it with an error (4xx, "failed":
+ * its words say what was done), or its outcome is unknown (no reply, or the
+ * request broke on the way: it may have run, and it is never sent again).
+ * The message never repeats the word the caller shows ("Outcome unknown."). */
+export function writeFailure(error: unknown, options: { audited?: boolean } = {}): { phase: "failed" | "unknown"; message: string } {
+  const status = (error as { status?: unknown } | null)?.status;
+  if (typeof status === "number" && status >= 400 && status < 500) return { phase: "failed", message: errorText(error) };
+  const why = errorText(error);
+  return {
+    phase: "unknown",
+    message: (typeof status === "number" ? `The request failed (${why}).` : `No reply arrived (${why}).`) +
+      " It may have run, so it is not sent again." + (options.audited ? " Its record is in the Audit log." : ""),
+  };
+}
+
+/** The time *active* last became true (Date.now()), or null while it is false. */
+export function useSince(active: boolean): number | null {
+  const since = useRef<number | null>(null);
+  if (active && since.current === null) since.current = Date.now();
+  if (!active) since.current = null;
+  return since.current;
+}
+/** Whole seconds since *since*, ticking once a second; 0 without a start. */
+export function useElapsed(since: number | null | undefined): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (since == null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [since]);
+  return since == null ? 0 : Math.max(0, Math.floor((now - since) / 1000));
+}
+
+/** A message from a caller's formatter, or *fallback* when it throws (the
+ * error is logged): an action always ends with words, never stuck pending. */
+function format(make: () => string, fallback: string): string {
+  try {
+    return make();
+  } catch (error) {
+    console.error("Action message failed:", error);
+    return fallback;
+  }
+}
+
+export type ActionResult<R> =
+  | { ok: true; value: R }
+  | { ok: false; reason: "busy" | "cancelled" | "failed" | "unknown"; error?: unknown };
+export type ActionText<R> = {
+  /** Present tense, shown and announced at once: "Testing the connection…". */
+  pending: string;
+  /** What happened; "" (or nothing) leaves no line behind. */
+  done?: string | ((value: R) => string);
+  /** A write: an error without the server's answer means outcome unknown. */
+  write?: boolean;
+  /** A write recorded in the Audit log (named in the unknown message). */
+  audited?: boolean;
+  failed?: (error: unknown) => string;
+};
+
+/**
+ * One action's lifecycle. `run(work, text)` does nothing while the same action
+ * runs (single flight), shows *pending* at once, then the outcome. A request
+ * ended by `cancel()`, a new *scope* (the connection or the form it belongs
+ * to) or unmounting ends quietly: its answer is never applied (the result is
+ * `{ ok: false, reason: "cancelled" }`). Writes should not pass a scope: their
+ * outcome is always reported.
+ */
+export function useAction(scope = "") {
+  const [state, setState] = useState<ActionState>(IDLE_ACTION);
+  const ticket = useRef<{ id: number; controller: AbortController } | null>(null);
+  const seq = useRef(0);
+  const cancel = useCallback(() => {
+    const t = ticket.current;
+    ticket.current = null;
+    t?.controller.abort();
+    setState(IDLE_ACTION);
+  }, []);
+  useEffect(() => () => {
+    ticket.current?.controller.abort();
+    ticket.current = null;
+  }, []);
+  const lastScope = useRef(scope);
+  useEffect(() => {
+    if (lastScope.current === scope) return;
+    lastScope.current = scope;
+    cancel();
+  }, [scope, cancel]);
+  const run = useCallback(async <R,>(work: (signal: AbortSignal) => Promise<R>, text: ActionText<R>): Promise<ActionResult<R>> => {
+    if (ticket.current) return { ok: false, reason: "busy" };
+    const t = { id: ++seq.current, controller: new AbortController() };
+    ticket.current = t;
+    setState({ phase: "pending", message: text.pending, startedAt: Date.now(), endedAt: null });
+    let value: R;
+    try {
+      value = await work(t.controller.signal);
+    } catch (error) {
+      if (ticket.current !== t) return { ok: false, reason: "cancelled", error };
+      ticket.current = null;
+      if (isAbort(error) && !text.write) {
+        setState(IDLE_ACTION);
+        return { ok: false, reason: "cancelled", error };
+      }
+      const written = text.write ? writeFailure(error, { audited: text.audited }) : null;
+      const failure = written
+        ? { phase: written.phase, message: written.phase === "unknown" ? `Outcome unknown. ${written.message}` : written.message }
+        : { phase: "failed" as const, message: format(() => (text.failed ? text.failed(error) : errorText(error)), errorText(error)) };
+      setState({ ...failure, startedAt: null, endedAt: Date.now() });
+      return { ok: false, reason: failure.phase, error };
+    }
+    if (ticket.current !== t) return { ok: false, reason: "cancelled" };
+    // The work is done whatever its summary says: a summary that throws
+    // leaves a plain "Done.", never a spinner that never ends.
+    const message = format(() => (typeof text.done === "function" ? text.done(value) : text.done || ""), "Done.");
+    ticket.current = null;
+    setState({ phase: message ? "done" : "idle", message, startedAt: null, endedAt: Date.now() });
+    return { ok: true, value };
+  }, []);
+  /** Show an outcome decided elsewhere (a reply whose status says it failed). */
+  const show = useCallback((phase: Exclude<ActionPhase, "pending">, message: string) => {
+    if (ticket.current) return;
+    setState(phase === "idle" ? IDLE_ACTION : { phase, message, startedAt: null, endedAt: Date.now() });
+  }, []);
+  const reset = useCallback(() => { if (!ticket.current) setState(IDLE_ACTION); }, []);
+  return { ...state, pending: state.phase === "pending", run, cancel, show, reset };
+}
+export type Action = ReturnType<typeof useAction>;
+
+/**
+ * A button that runs an action. While *busy* it shows a spinner and
+ * *busyLabel* (present tense: "Testing…"), sets aria-busy, ignores clicks
+ * (so a double click sends one request) and stays focusable (aria-disabled),
+ * so focus never falls to the page. Its width never changes: the other label
+ * is reserved, invisible, in the same cell.
+ */
+export function ActionButton({
+  busy = false,
+  busyLabel,
+  icon,
+  primary,
+  danger,
+  small,
+  className = "",
+  children,
+  onClick,
+  labelClassName = "",
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  busy?: boolean; busyLabel?: string; icon?: IconName; primary?: boolean; danger?: boolean; small?: boolean;
+  /** Extra class on the label (Refresh hides its label below 650 px). */
+  labelClassName?: string;
+}) {
+  const idle = typeof children === "string" ? children : undefined;
+  const reserve = busy ? idle : busyLabel;
+  const kind = primary ? " primary" : danger ? " danger" : "";
+  return (
+    <button
+      type="button"
+      {...rest}
+      className={`button action-button${kind}${small ? " small" : ""}${busy ? " is-pending" : ""}${icon ? " has-icon" : ""} ${className}`.trim()}
+      aria-busy={busy || undefined}
+      aria-disabled={busy || rest["aria-disabled"] || undefined}
+      onClick={(e) => {
+        if (busy || rest["aria-disabled"] === true || rest["aria-disabled"] === "true") {
+          e.preventDefault();
+          return;
+        }
+        onClick?.(e);
+      }}
+    >
+      {icon && (
+        <span className="action-button-icon" aria-hidden="true">
+          {busy ? <span className="spinner" /> : <Icon name={icon} size={15} />}
+        </span>
+      )}
+      <span className={`action-button-label${busy ? " is-busy" : ""} ${labelClassName}`.trim()} data-reserve={reserve || undefined}>
+        <span>
+          {!icon && busy && <span className="spinner" aria-hidden="true" />}
+          {busy && busyLabel ? busyLabel : children}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The line beside or under an action: a spinner, what is happening and the
+ * seconds waited (after 1 s, never announced); then what happened, or the
+ * error with Try again. Always mounted, so its polite live region announces
+ * the start and the outcome. Idle, it takes no room.
+ */
+export function ActionStatus({
+  state,
+  onRetry,
+  retryLabel = "Try again",
+  onStop,
+  stopLabel = "Stop",
+  onDismiss,
+  slowAfter = ACTION_SLOW_AFTER_MS,
+  slowText = "Still waiting for the server.",
+  className = "",
+  keepLine = false,
+  children,
+}: {
+  state: Pick<ActionState, "phase" | "message" | "startedAt">;
+  /** Keep its line while idle (an empty, invisible line), so the start of an
+   * action never moves the control that started it (a load button in an
+   * empty state, centered in its box). */
+  keepLine?: boolean;
+  onRetry?: () => void;
+  retryLabel?: string;
+  /** Stop waiting (offered once the action is slow). */
+  onStop?: () => void;
+  stopLabel?: string;
+  onDismiss?: () => void;
+  slowAfter?: number;
+  slowText?: string;
+  className?: string;
+  /** Extra content after the message (a link to the result). */
+  children?: ReactNode;
+}) {
+  const pending = state.phase === "pending";
+  const since = useSince(pending);
+  const elapsed = useElapsed(pending ? state.startedAt ?? since : null);
+  const slow = pending && elapsed * 1000 >= slowAfter;
+  const bad = state.phase === "failed" || state.phase === "unknown";
+  const root = useRef<HTMLDivElement>(null);
+  /** Run *fn*, then keep keyboard focus: the clicked Stop, Try again or
+   * Dismiss goes away, so focus moves to the action beside this line (or to
+   * the line itself), never to the page. */
+  const keepFocus = (fn: () => void) => () => {
+    fn();
+    window.requestAnimationFrame(() => restoreFocus(root.current, ".action-button:not(:disabled)"));
+  };
+  return (
+    <div ref={root} tabIndex={-1} className={`action-status${keepLine ? " keeps-line" : ""} ${className}`.trim()} data-phase={state.phase}>
+      <span className="action-status-text" role="status" aria-live="polite" aria-atomic="true">
+        {pending && <span className="spinner" aria-hidden="true" />}
+        {state.phase === "done" && <span className="action-status-icon"><Icon name="check" size={12} /></span>}
+        {bad && <span className="action-status-icon"><Icon name="warning" size={12} /></span>}
+        {state.phase !== "idle" && <span className="action-status-message">{state.message}</span>}
+        {slow && <span className="action-status-slow"> {slowText}</span>}
+      </span>
+      {pending && elapsed * 1000 >= ACTION_ELAPSED_AFTER_MS && (
+        <span className="action-elapsed" aria-hidden="true">{elapsed} s so far</span>
+      )}
+      {state.phase !== "idle" && children}
+      {slow && onStop && <button type="button" className="text-button" onClick={keepFocus(onStop)}>{stopLabel}</button>}
+      {bad && onRetry && <button type="button" className="text-button" onClick={keepFocus(onRetry)}>{retryLabel}</button>}
+      {!pending && state.phase !== "idle" && onDismiss && (
+        <button type="button" className="text-button" onClick={keepFocus(onDismiss)}>Dismiss</button>
+      )}
+    </div>
+  );
+}
+
+/** After a control inside *line* went away (Stop, Try again, Dismiss): when
+ * focus fell to the page, put it on the nearest control matching *near*
+ * around the line, else on the line (tabIndex -1). */
+function restoreFocus(line: HTMLElement | null, near: string) {
+  if (!line || !line.isConnected) return;
+  const active = document.activeElement;
+  if (active && active !== document.body && active.isConnected) return;
+  let scope: HTMLElement | null = line.parentElement;
+  for (let depth = 0; scope && depth < 3; depth++, scope = scope.parentElement) {
+    const target = scope.querySelector<HTMLElement>(near);
+    if (target && target.getClientRects().length) {
+      target.focus({ preventScroll: true });
+      return;
+    }
+  }
+  line.focus({ preventScroll: true });
+}
+
 // ---- Compound controls ----------------------------------------------------
 
 /** Two adjacent buttons: the primary action and independently named options.
@@ -876,7 +1187,8 @@ export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string;
     {ran && <span data-status="last-run">Last run {ran}</span>}
     {knownNumber(value.durationMs) && <span data-status="duration">{value.durationMs.toLocaleString()} ms</span>}
     {knownNumber(value.rows) && <span data-status="rows">{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
-    {value.refreshing && <span data-status="refreshing" role="status">Refreshing…</span>}
+    {/* Drawn, not announced: the view's own status line announces its read. */}
+    {value.refreshing && <span data-status="refreshing">Refreshing…</span>}
     {refreshed && <span className="window-statusbar-refresh" data-status="refreshed">Refreshed {refreshed}</span>}
   </footer>;
 }
@@ -2401,12 +2713,20 @@ export function Disclosure({
 // ---- Confirmation sheet ---------------------------------------------------------
 
 /** A modal confirmation for a consequential action: what happens, Cancel
- * focused first, Escape cancels. */
+ * focused first, Escape cancels. While *busy* the confirm button shows a
+ * spinner and *busyLabel* and keeps focus (aria-disabled), the action row
+ * counts the seconds, and Cancel and Escape send nothing more. With
+ * *onLeave*, after ACTION_SLOW_AFTER_MS without a reply Cancel becomes Close:
+ * the sheet closes and the request goes on (the owner shows its outcome). */
 export function ConfirmSheet({
   eyebrow,
   title,
   description,
   busy,
+  busyLabel,
+  progress,
+  onLeave,
+  leaveText = "It may still be running on the server. Close does not stop it; the outcome shows in the view.",
   confirmLabel,
   confirmTone = "danger",
   confirmDisabled = false,
@@ -2421,6 +2741,13 @@ export function ConfirmSheet({
   title: ReactNode;
   description?: ReactNode;
   busy?: boolean;
+  /** The confirm button's label while busy, present tense ("Sending…", "Deleting…"). */
+  busyLabel?: string;
+  /** What the action row says while busy (default "Waiting for the reply"). */
+  progress?: string;
+  /** Close the sheet while the request goes on (offered when it is slow). */
+  onLeave?: () => void;
+  leaveText?: string;
   confirmLabel: ReactNode;
   confirmTone?: "danger" | "primary";
   /** Keeps the confirm button off until the request is ready (a form inside the sheet). */
@@ -2440,10 +2767,20 @@ export function ConfirmSheet({
   const done = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const descId = useId();
-  useFocusScope(dialog, { open: true, onClose: () => { if (!busy) onCancel(); }, initialFocus: () => cancel.current });
+  const leaveId = useId();
+  const since = useSince(!!busy);
+  const elapsed = useElapsed(since);
+  const canLeave = !!busy && !!onLeave && elapsed * 1000 >= ACTION_SLOW_AFTER_MS;
+  const dismiss = () => {
+    if (!busy) onCancel();
+    else if (canLeave) onLeave?.();
+  };
+  useFocusScope(dialog, { open: true, onClose: dismiss, initialFocus: () => cancel.current });
   const answered = !!doneLabel;
   // Cancel leaves with the answer: focus moves to the button that closes.
   useEffect(() => { if (answered) done.current?.focus(); }, [answered]);
+  const busyText = busyLabel || (typeof confirmLabel === "string" ? confirmLabel : "");
+  const reserve = busy ? (typeof confirmLabel === "string" ? confirmLabel : undefined) : busyLabel;
   // Retained list views can be hidden while their selected detail is open.
   // Keep consequential reviews outside those layout ancestors so the native
   // dialog remains visible and Cancel can receive focus.
@@ -2457,8 +2794,9 @@ export function ConfirmSheet({
       aria-describedby={description ? descId : undefined}
       onCancel={(e) => {
         e.preventDefault();
-        if (!busy) onCancel();
+        dismiss();
       }}
+      aria-busy={busy || undefined}
     >
       <div className="dialog-heading">
         <div>
@@ -2475,40 +2813,68 @@ export function ConfirmSheet({
           </p>
         )}
         {children}
+        {/* Slow: what Close does, at the end of the body, never in the action row. */}
+        {canLeave && <p className="sheet-leave-note" id={leaveId}>{leaveText}</p>}
       </div>
       <div className="dialog-actions sheet-actions">
-        {answered ? (
-          <>
-            {secondary && (
-              <button type="button" className="button" onClick={secondary.onClick}>
-                {secondary.label}
+        {/* Always mounted: announces the send at once (the busy label, read
+            aloud only), then after 1 s a short line (what it waits for, then
+            "No reply yet") with the seconds, drawn but never announced. It
+            stays one line, so the buttons never move. */}
+        <span className="sheet-progress" role="status" aria-live="polite" data-busy={busy || undefined}>
+          {busy && elapsed * 1000 < ACTION_ELAPSED_AFTER_MS && busyText && (
+            <span className="visually-hidden">{busyText}</span>
+          )}
+          {busy && elapsed * 1000 >= ACTION_ELAPSED_AFTER_MS && (
+            <>
+              <span className="sheet-progress-text">{canLeave ? "No reply yet" : progress || "Waiting for the server"}</span>
+              <span className="action-elapsed" aria-hidden="true">{elapsed} s so far</span>
+              {canLeave && <span className="visually-hidden">. {leaveText}</span>}
+            </>
+          )}
+        </span>
+        {/* The buttons share one box (display: contents), so the first is Cancel and the last confirms. */}
+        <div className="sheet-buttons">
+          {answered ? (
+            <>
+              {secondary && (
+                <button type="button" className="button" onClick={secondary.onClick}>
+                  {secondary.label}
+                </button>
+              )}
+              <button ref={done} type="button" className="button primary" onClick={onCancel}>
+                {doneLabel}
               </button>
-            )}
-            <button ref={done} type="button" className="button primary" onClick={onCancel}>
-              {doneLabel}
-            </button>
-          </>
-        ) : (
-          <>
-            <button ref={cancel} type="button" className="button" disabled={busy} onClick={onCancel}>
-              Cancel
-            </button>
-            {secondary && (
-              <button type="button" className="button" disabled={busy} onClick={secondary.onClick}>
-                {secondary.label}
+            </>
+          ) : (
+            <>
+              <button ref={cancel} type="button" className="button" disabled={busy && !canLeave} onClick={dismiss}
+                aria-describedby={canLeave ? leaveId : undefined}>
+                {canLeave ? "Close" : "Cancel"}
               </button>
-            )}
-            <button
-              type="button"
-              className={`button ${confirmTone === "danger" ? "danger-solid" : "primary"}`}
-              disabled={busy || confirmDisabled}
-              aria-busy={busy || undefined}
-              onClick={onConfirm}
-            >
-              {confirmLabel}
-            </button>
-          </>
-        )}
+              {secondary && (
+                <button type="button" className="button" disabled={busy} onClick={secondary.onClick}>
+                  {secondary.label}
+                </button>
+              )}
+              <button
+                type="button"
+                className={`button action-button ${confirmTone === "danger" ? "danger-solid" : "primary"}${busy ? " is-pending" : ""}`}
+                disabled={!busy && confirmDisabled}
+                aria-disabled={busy || undefined}
+                aria-busy={busy || undefined}
+                onClick={() => { if (!busy && !confirmDisabled) onConfirm(); }}
+              >
+                <span className={`action-button-label${busy ? " is-busy" : ""}`} data-reserve={reserve || undefined}>
+                  <span>
+                    {busy && <span className="spinner" aria-hidden="true" />}
+                    {busy && busyText ? busyText : confirmLabel}
+                  </span>
+                </span>
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </dialog>, document.body
   );
@@ -2816,16 +3182,21 @@ export function ViewLayout({
         <div className="toolbar-controls" hidden={detailOpen}>{controls}</div>
         <div className="toolbar-end">
           {onRefresh && (
-            <ToolbarButton
+            // While it reads: a spinner and "Refreshing…", aria-busy, clicks
+            // ignored, and focus stays on it (aria-disabled, not disabled).
+            <ActionButton
               className="toolbar-refresh"
+              labelClassName="toolbar-refresh-label"
               aria-label="Refresh"
               data-action="refresh"
-              disabled={refreshDisabled || loading}
+              icon="refresh"
+              busy={!!loading}
+              busyLabel="Refreshing…"
+              disabled={!loading && !!refreshDisabled}
               onClick={onRefresh}
             >
-              {loading ? <span className="spinner" aria-hidden="true" /> : <Icon name="refresh" size={15} />}
-              <span className="toolbar-refresh-label">Refresh</span>
-            </ToolbarButton>
+              Refresh
+            </ActionButton>
           )}
           {shared && !shared.sheet && !detailBackLabel && (
             <IconButton
@@ -2888,21 +3259,102 @@ export function ViewLayout({
   );
 }
 
-/** Loading line and error for a view (under the toolbar). */
-export function ViewStatus({ loading, error, children }: { loading?: string; error?: string; children?: ReactNode }) {
-  if (!loading && !error) return null;
+/** Loading line and error for a view (under the toolbar). The loading line
+ * counts the seconds after 1 s (never announced); a slow read says so and
+ * offers *onStop*; an error offers *onRetry* ("Try again", only for a read's
+ * error). A polite live region, always mounted, announces the start of a
+ * read and, with *doneAt* (reads.doneAt), that it was updated. Every new
+ * *loading* text is announced, so it must not change while a read runs (no
+ * counts of seconds in it: this line counts them). */
+export function ViewStatus({
+  loading,
+  error,
+  children,
+  onStop,
+  onRetry,
+  doneAt,
+  startedAt,
+  elapsed: countSeconds = true,
+  slowAfter = 20_000,
+  slowText = "Still waiting for the server.",
+}: {
+  /** What the read does, the same text from its start to its end. */
+  loading?: string;
+  error?: string;
+  children?: ReactNode;
+  /** Stop waiting for the read (reads.stop), offered once it is slow. */
+  onStop?: () => void;
+  /** Read again after a failed read. */
+  onRetry?: () => void;
+  /** When the last read was shown (reads.doneAt): announced as "Updated at …". */
+  doneAt?: number;
+  /** The read owner's start time, preserved while this view is unmounted. */
+  startedAt?: number;
+  /** false to hide elapsed seconds while retaining slow-read feedback. */
+  elapsed?: boolean;
+  /** A read is slow after this long (sampling views add their window). */
+  slowAfter?: number;
+  /** Said once the read is slow (drawn, not announced). */
+  slowText?: string;
+}) {
+  const since = useSince(!!loading);
+  const seconds = useElapsed(loading ? startedAt ?? since : null);
+  const slow = !!loading && seconds * 1000 >= slowAfter;
+  const root = useRef<HTMLDivElement>(null);
+  // Stop and Try again go away when clicked: focus moves to the view's Refresh.
+  const refocus = () => window.requestAnimationFrame(() =>
+    restoreFocus(root.current, "[data-action=refresh]:not(:disabled)"));
+  const [announce, setAnnounce] = useState("");
+  const previous = useRef({ loading, doneAt });
+  const stopped = useRef(false);
+  useEffect(() => {
+    const was = previous.current;
+    previous.current = { loading, doneAt };
+    if (loading && loading !== was.loading) {
+      stopped.current = false;
+      setAnnounce(loading);
+    } else if (doneAt && doneAt !== was.doneAt) setAnnounce(`Updated at ${new Date(doneAt).toLocaleTimeString()}.`);
+    else if (!loading && was.loading && !stopped.current) setAnnounce("");
+  }, [loading, doneAt]);
   return (
-    <div className="view-status">
+    <div ref={root} tabIndex={-1} className={`view-status${!loading && !error ? " is-idle" : ""}`}>
+      <span className="visually-hidden" role="status" aria-live="polite">{announce}</span>
       {loading && (
-        <p role="status" className="capture-status">
-          <span className="spinner" /> {loading}
+        <p className="capture-status">
+          <span className="spinner" aria-hidden="true" /> {loading}
+          {countSeconds && seconds * 1000 >= ACTION_ELAPSED_AFTER_MS && (
+            <span className="action-elapsed" aria-hidden="true">{seconds} s so far</span>
+          )}
+          {slow && <span className="hint">{slowText}</span>}
+          {slow && onStop && (
+            <button
+              type="button"
+              className="text-button view-status-stop"
+              onClick={() => {
+                stopped.current = true;
+                setAnnounce("Stopped waiting. The view keeps what it showed before.");
+                onStop();
+                refocus();
+              }}
+            >
+              Stop
+            </button>
+          )}
         </p>
       )}
       {error && (
-        <p role="alert" className="error">
-          {error}
-          {children}
-        </p>
+        // The alert holds the error alone; Try again sits beside it in the same box.
+        <div className={`error view-status-error${onRetry ? " has-retry" : ""}`}>
+          <p role="alert">
+            {error}
+            {children}
+          </p>
+          {onRetry && (
+            <button type="button" className="text-button view-status-retry" onClick={() => { onRetry(); refocus(); }}>
+              Try again
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

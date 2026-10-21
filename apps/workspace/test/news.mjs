@@ -90,7 +90,8 @@ try {
   assert.equal(rows[5].meta, "MariaDB Foundation", "no date, no relative time");
   assert.equal(rows[1].time, items[1].published);
   assert.equal(rows[0].tooltip, items[0].summary);
-  assert.equal(await page.$(".home-news .news-state"), null, "no state line with fresh headlines");
+  // The state line stays mounted (a polite live region) and is empty with fresh headlines.
+  assert.equal(await page.$eval(".home-news .news-state", (e) => e.textContent), "", "no state line with fresh headlines");
   const about = await h.popover("About News");
   assert.match(about, /Planet MySQL/);
   assert.match(about, /MariaDB Foundation/);
@@ -108,7 +109,8 @@ try {
   await refresh(report({ items: [] }), "No news right now.");
   assert.equal(await page.$(".home-news .news-item"), null);
   await refresh({ status: 500, body: { error: "Something failed" } }, "News could not be loaded.");
-  await refresh(report(), "");
+  // A Refresh that brings fresh headlines says so, until the next read.
+  await refresh(report(), "Headlines updated.");
   assert.equal(await page.$$eval(".home-news .news-item", (l) => l.length), 6);
   // Refresh stays focusable while reading (aria-disabled), and a second
   // Enter meanwhile asks nothing.
@@ -127,7 +129,9 @@ try {
     return { busy: b.getAttribute("aria-disabled"), disabled: b.disabled, focused: document.activeElement === b,
       opacity: getComputedStyle(b).opacity };
   });
-  assert.deepEqual(reading, { busy: "true", disabled: false, focused: true, opacity: "0.5" }, "Refresh keeps focus while reading, dimmed");
+  assert.deepEqual(reading, { busy: "true", disabled: false, focused: true, opacity: "1" }, "Refresh keeps focus while reading, at full color");
+  assert.equal(await page.$eval('.home-news button[aria-label="Refresh news"]', (b) => b.getAttribute("aria-busy")), "true", "its arrows turn while it reads");
+  assert.equal(await page.$eval(".home-news .news-state", (e) => e.textContent), "Refreshing news…", "the state line says what it does");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => !document.querySelector('.home-news[aria-busy="true"]'), { timeout: 10000 });
   state.delay = 0;
@@ -194,7 +198,7 @@ try {
   state.delay = 1500;
   await h.button("Home", ".main-nav ");
   await page.waitForSelector(".home-news .news-item", { timeout: 1000 });
-  assert.equal(await page.$(".home-news .news-state"), null, "no loading line over the last headlines");
+  assert.equal(await page.$eval(".home-news .news-state", (e) => e.textContent), "", "no loading line over the last headlines");
   for (let i = 0; i < 100 && state.seen.length === seen + 1; i++) await pause(20);
   assert.deepEqual(state.seen.slice(seen + 1), [{ refresh: false }]);
   state.delay = 0;

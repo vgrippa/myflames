@@ -5,8 +5,8 @@ import {
 } from "./api";
 import { Icon, ImportDialog } from "./components";
 import {
-  ConfirmSheet, EmptyState, GroupedList, GroupedRow, Pill,
-  SearchField, SummaryLine, moveRowFocus,
+  ActionButton, ActionStatus, ConfirmSheet, EmptyState, GroupedList, GroupedRow, Pill,
+  SearchField, SummaryLine, errorText, moveRowFocus, useAction, useSince,
 } from "./kit";
 import { relativeTime } from "./session";
 
@@ -32,12 +32,24 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
   const moreRead = useRef(false);
   const firstRead = useRef(true);
   const latest = useRef({ items: [] as InvestigationSummary[], nextCursor: null as InvestigationCursor | null, search: "" });
-  const [busy, setBusy] = useState(false);
+  // Open all, Export and Delete: one at a time, each saying what it does and
+  // what happened (the line at the top of the details).
+  const act = useAction();
+  const [actKind, setActKind] = useState<"" | "open" | "export" | "delete">("");
+  // What Open all or Export acted on: Try again repeats it on that one, even
+  // after another investigation was selected.
+  const [actItem, setActItem] = useState<InvestigationSummary | Bundle | null>(null);
+  const busy = act.pending;
   const [deleting, setDeleting] = useState<InvestigationSummary | null>(null);
+  // The Delete sheet was closed while the deletion had no reply yet.
+  const [deleteLeft, setDeleteLeft] = useState(false);
   const [importing, setImporting] = useState(false);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [comparing, setComparing] = useState(false);
+  const comparingSince = useSince(comparing);
   const actionLock = useRef(false);
+  const importingRef = useRef(false);
+  importingRef.current = importing;
   const comparisonRead = useRef<AbortController | null>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
   const rows = useRef<HTMLDivElement>(null);
@@ -108,11 +120,28 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
   async function open(bundle: InvestigationSummary | Bundle) {
     if (actionLock.current) return;
     actionLock.current = true;
-    setBusy(true);
+    setActKind("open");
+    setActItem(bundle);
     setError("");
-    try { await onOpen(await getInvestigation(bundle)); }
-    catch (e) { setError((e as Error).message); }
-    finally { actionLock.current = false; setBusy(false); }
+    // An imported file can be anything: read its fields defensively, and the
+    // lock is released however the open ends.
+    const count = Array.isArray(bundle?.plans) ? bundle.plans.length : 0;
+    const name = typeof bundle?.name === "string" && bundle.name ? bundle.name : "the investigation";
+    let r: Awaited<ReturnType<typeof act.run>>;
+    try {
+      r = await act.run(async () => { await onOpen(await getInvestigation(bundle)); }, {
+        pending: count ? `Opening ${count} ${count === 1 ? "plan" : "plans"} of “${name}”…` : `Opening “${name}”…`,
+        done: "",
+        failed: (e) => `Could not open “${name}”: ${errorText(e)}`,
+      });
+    } finally {
+      actionLock.current = false;
+    }
+    // An import shows its error inside the Import dialog.
+    if (!r.ok && r.reason === "failed" && importingRef.current) {
+      setError(errorText(r.error));
+      act.reset();
+    }
   }
   async function importPlan(raw: string, name: string) {
     try {
@@ -152,14 +181,23 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
   async function exportBundle(item: InvestigationSummary) {
     if (actionLock.current) return;
     actionLock.current = true;
-    setBusy(true);
+    setActKind("export");
+    setActItem(item);
     setError("");
     try {
-      const bundle = await getInvestigation(item);
-      download(JSON.stringify(bundle, null, 2),
-        `${bundle.name.replace(/[^a-z0-9_-]/gi, "-") || "investigation"}.json`, "application/json");
-    } catch (e) { setError((e as Error).message); }
-    finally { actionLock.current = false; setBusy(false); }
+      await act.run(async () => {
+        const bundle = await getInvestigation(item);
+        const file = `${bundle.name.replace(/[^a-z0-9_-]/gi, "-") || "investigation"}.json`;
+        download(JSON.stringify(bundle, null, 2), file, "application/json");
+        return file;
+      }, {
+        pending: `Preparing the export of “${item.name}”…`,
+        done: (file) => `Exported “${item.name}” as ${file}.`,
+        failed: (e) => `Could not export “${item.name}”: ${errorText(e)}`,
+      });
+    } finally {
+      actionLock.current = false;
+    }
   }
   function cancelDelete() {
     setDeleting(null);
@@ -168,25 +206,48 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
   async function remove() {
     if (!deleting || actionLock.current) return;
     const id = deleting.id;
+    const name = deleting.name;
     actionLock.current = true;
-    setBusy(true);
+    setActKind("delete");
+    setDeleteLeft(false);
     setError("");
+    let r: Awaited<ReturnType<typeof act.run>>;
     try {
-      await api("investigations/delete", { id });
-      // A page loaded while the delete was pending stays: filter the current rows.
-      setItems((current) => current.filter((b) => b.id !== id));
-      const now = latest.current;
-      if (!now.search.trim() && !now.nextCursor && now.items.every((b) => b.id === id)) setAnySaved(false);
-      setDeleting(null);
-      // The removed row's detail vanishes; return focus to the surviving list.
-      window.requestAnimationFrame(() => {
-        const next = rows.current?.querySelector<HTMLButtonElement>("button") ||
-          rows.current?.closest(".library")?.querySelector<HTMLInputElement>('input[type="search"]');
-        next?.focus();
+      r = await act.run(async () => {
+        await api("investigations/delete", { id });
+        // A page loaded while the delete was pending stays: filter the current rows.
+        setItems((current) => current.filter((b) => b.id !== id));
+        const now = latest.current;
+        if (!now.search.trim() && !now.nextCursor && now.items.every((b) => b.id === id)) setAnySaved(false);
+        setDeleting(null);
+        // The removed row's detail vanishes; return focus to the surviving list.
+        window.requestAnimationFrame(() => {
+          const next = rows.current?.querySelector<HTMLButtonElement>("button") ||
+            rows.current?.closest(".library")?.querySelector<HTMLInputElement>('input[type="search"]');
+          next?.focus();
+        });
+      }, {
+        pending: `Deleting “${name}”…`,
+        done: `Deleted “${name}” from this computer.`,
+        failed: (e) => `Could not delete “${name}”: ${errorText(e)}`,
       });
-    } catch (e) { setError((e as Error).message); }
-    finally { actionLock.current = false; setBusy(false); }
+    } finally {
+      actionLock.current = false;
+    }
+    if (!r.ok && r.reason === "failed") {
+      // The sheet is still open: the error shows in it, where Delete can be
+      // tried again. A closed sheet stays closed: the line above says why.
+      if (deletingRef.current) {
+        setError(errorText(r.error));
+        act.reset();
+      } else setDeleting(null);
+    }
+    setDeleteLeft(false);
   }
+  const deletingRef = useRef<InvestigationSummary | null>(null);
+  deletingRef.current = deleteLeft ? null : deleting;
+  const retry = actKind === "export" && actItem ? () => void exportBundle(actItem as InvestigationSummary)
+    : actKind === "open" && actItem ? () => void open(actItem) : undefined;
   return (
     <section className="library" aria-labelledby="investigations-title">
       <h1 id="investigations-title" className="visually-hidden">Investigations</h1>
@@ -230,18 +291,26 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
           </div>
         </aside>
         <section className="library-detail" id="investigation-detail" aria-label="Investigation details" aria-busy={busy}>
+          {/* With nothing left to select (the last one was deleted), the outcome shows here. */}
+          {!selected && act.phase !== "idle" && <ActionStatus className="library-status library-status-empty" state={act} onDismiss={act.reset} />}
           {selected ? <>
             <header className="library-detail-head">
               <h2>{selected.name}</h2>
               {selected.updated_at && <p className="library-updated">Updated {relativeTime(selected.updated_at)}</p>}
               <div className="library-actions" role="group" aria-label="Investigation actions">
-                <button className="button primary" disabled={busy} onClick={() => void open(selected)}>{busy ? "Opening…" : "Open all"}</button>
-                <button className="button" disabled={busy || comparing || !baseline || !target}
+                {/* Only the clicked action shows that it works; the others wait. */}
+                <ActionButton primary busy={busy && actKind === "open"} busyLabel="Opening…" disabled={busy && actKind !== "open"}
+                  onClick={() => void open(selected)}>Open all</ActionButton>
+                <ActionButton busy={comparing} busyLabel="Comparing…" disabled={!comparing && (busy || !baseline || !target)}
                   title={!baseline ? "This investigation has no baseline." : !target ? "Add a second plan to compare." : `Compare ${target.name} to ${baseline.name}`}
-                  onClick={() => void compare()}>{comparing ? "Comparing…" : "Compare to baseline"}</button>
-                <button className="button" disabled={busy} onClick={() => void exportBundle(selected)}>Export</button>
+                  onClick={() => void compare()}>Compare to baseline</ActionButton>
+                <ActionButton busy={busy && actKind === "export"} busyLabel="Exporting…" disabled={busy && actKind !== "export"}
+                  onClick={() => void exportBundle(selected)}>Export</ActionButton>
                 <button className="text-button" ref={deleteButton} disabled={busy} onClick={() => { setError(""); setDeleting(selected); }}>Delete</button>
               </div>
+              {/* Under the buttons, so its line never moves them: what Open all,
+                  Export or Delete is doing and what it did. */}
+              <ActionStatus className="library-status" state={act} onRetry={retry} onDismiss={act.reset} />
             </header>
             <section className="library-notes" aria-labelledby="investigation-notes-title">
               <h3 className="section-label" id="investigation-notes-title">Notes</h3>
@@ -260,7 +329,9 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
                   selection={baseline?.id !== p.id && baseline && selected.plans.length > 1 ? { key: target?.id || "", select: setTargetId } : undefined} />)}
               </GroupedList>
             </div>
-            {comparing && <p className="empty-small" role="status">Comparing saved plans…</p>}
+            <ActionStatus className="library-compare-status" state={{ phase: comparing ? "pending" : "idle",
+              message: `Comparing ${target?.name || "the plan"} to the baseline…`, startedAt: comparingSince }}
+              onStop={() => { comparisonRead.current?.abort(); setComparing(false); }} stopLabel="Stop" />
             {comparison && <section className="library-comparison" aria-label="Baseline comparison">
               <div className="library-comparison-head"><h3>{baseline?.name} compared to {target?.name}</h3>
                 <button className="text-button" onClick={() => setComparison(null)}>Close comparison</button></div>
@@ -272,8 +343,11 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
           </EmptyState> : !loading && anySaved !== false ? <EmptyState icon="investigation" title="Select an investigation" /> : null}
         </section>
       </div>
-      {deleting && <ConfirmSheet title={`Delete “${deleting.name}”?`} description="This removes the saved collection from this computer."
-        confirmLabel="Delete permanently" busy={busy} onCancel={cancelDelete} onConfirm={() => void remove()}>
+      {deleting && !deleteLeft && <ConfirmSheet title={`Delete “${deleting.name}”?`} description="This removes the saved collection from this computer."
+        confirmLabel="Delete permanently" busy={busy && actKind === "delete"} busyLabel="Deleting…"
+        progress="Removing it from this computer" onLeave={() => setDeleteLeft(true)}
+        leaveText="Still deleting. Close does not stop it; the outcome shows in Investigations."
+        onCancel={cancelDelete} onConfirm={() => void remove()}>
         {error && <p role="alert" className="error">{error}</p>}
       </ConfirmSheet>}
       {importing && <ImportDialog busy={busy} error={error} onClose={() => { setImporting(false); setError(""); }}

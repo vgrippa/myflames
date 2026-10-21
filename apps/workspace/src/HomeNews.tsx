@@ -21,9 +21,14 @@ export function HomeNews() {
   const [report, setReport] = useState<NewsReport | null>(lastReport);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  // What the last Refresh news click did: shown (and announced) until the next read.
+  const [refreshed, setRefreshed] = useState<"" | "pending" | "done">("");
   // Each read asks the backend; only a Refresh asks it to read the feeds again.
   const [reads, setReads] = useState(0);
   const refresh = useRef(false);
+  // True from the start of a read to its end, answered at once (the busy
+  // state arrives one render later): a click meanwhile asks nothing more.
+  const reading = useRef(false);
   useEffect(() => {
     if (enabled !== true) return;
     const controller = new AbortController();
@@ -31,20 +36,24 @@ export function HomeNews() {
     refresh.current = false;
     setLoading(true);
     setFailed(false);
+    setRefreshed(again ? "pending" : "");
+    reading.current = true;
     readNews(again, controller.signal)
-      .then((r) => { if (!controller.signal.aborted) setReport((lastReport = r)); })
-      .catch(() => { if (!controller.signal.aborted) setFailed(true); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+      .then((r) => { if (!controller.signal.aborted) { setReport((lastReport = r)); if (again) setRefreshed("done"); } })
+      .catch(() => { if (!controller.signal.aborted) { setFailed(true); setRefreshed(""); } })
+      .finally(() => { if (!controller.signal.aborted) { reading.current = false; setLoading(false); } });
     return () => controller.abort();
   }, [enabled, reads]);
   if (enabled !== true || report?.enabled === false) return null;
   const items = report?.items ?? [];
   let state = "";
-  if (failed) state = "News could not be loaded.";
+  if (loading && refreshed === "pending") state = "Refreshing news…";
+  else if (failed) state = "News could not be loaded.";
   else if (!report) state = loading ? "Loading news…" : "";
   else if (report.stale)
     state = `${report.error || "News is unavailable offline."}${report.fetched_at ? ` Last updated ${ago(report.fetched_at)}.` : ""}`;
   else if (!items.length) state = "No news right now.";
+  else if (refreshed === "done") state = "Headlines updated.";
   return (
     <section className="home-pane home-news" aria-labelledby="news-title" aria-busy={loading}>
       <div className="pane-head">
@@ -53,11 +62,16 @@ export function HomeNews() {
           <p>Headlines from Planet MySQL (posts by the MySQL team) and the MariaDB Foundation. myflames reads these two feeds over HTTPS while Home is open, reusing a successful read for six hours (a failed read is tried again after ten minutes), and sends nothing about you or your connections.</p>
           <p>Turn news off in Settings.</p>
         </InfoPopover>
-        {/* Stays focusable while reading (aria-disabled), so focus is not lost. */}
+        {/* Stays focusable while reading (aria-disabled), so focus is not lost;
+            its arrows turn while it reads (aria-busy). */}
         <IconButton icon="refresh" label="Refresh news" className={`pane-action${loading ? " is-busy" : ""}`} aria-disabled={loading || undefined}
-          onClick={() => { if (loading) return; refresh.current = true; setReads((n) => n + 1); }} />
+          aria-busy={loading || undefined}
+          // refresh.current answers at once: a second click before the read
+          // starts (and sets loading) asks nothing more.
+          onClick={() => { if (loading || reading.current || refresh.current) return; refresh.current = true; setReads((n) => n + 1); }} />
       </div>
-      {state && <p className="empty-small news-state" role="status">{state}</p>}
+      {/* Always mounted, so a refresh and its outcome are announced. */}
+      <p className={`empty-small news-state${state ? "" : " is-empty"}`} role="status">{state}</p>
       {!!items.length && (
         <ul className="news-list" aria-label="MySQL and MariaDB news">
           {items.map((item) => (

@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { api, type Connection, type ConnectionType, type Profile, type SecretStore } from "./api";
 import { Icon } from "./components";
 import { connectionKey } from "./binding";
-import { Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
+import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
   SearchField, Segmented, Select, ViewLayout, useFocusScope, type Column } from "./kit";
 import { actionLabel, privilegeResult, usePrivileges } from "./privileges";
 import { defaultConnection, relativeTime, SSL_MODES, type SessionConnection } from "./session";
@@ -248,7 +248,9 @@ export function Connections({
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [testing, setTesting] = useState(false);
+  const [testSince, setTestSince] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [forgetting, setForgetting] = useState(false);
   // One save at a time (the ref answers before React re-renders).
   const savingRef = useRef(false);
   // formGen changes when the form opens or closes; draftGen also when a field
@@ -278,6 +280,8 @@ export function Connections({
   const [offerSave, setOfferSave] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<ConnectionRow[] | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // The Delete sheet was closed while the deletion had no reply yet.
+  const [deleteLeft, setDeleteLeft] = useState(false);
   const deletingRef = useRef(false);
   const [deletedIds, setDeletedIds] = useState<string[]>([]);
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
@@ -452,7 +456,10 @@ export function Connections({
     const seq = ++testSeq.current;
     const tested = { editing: editingId, password: draft.password };
     setTesting(true);
+    setTestSince(Date.now());
     setError("");
+    // The result line belongs to this test from now on.
+    if (statusFromTest.current) { statusFromTest.current = false; setStatus(""); }
     try {
       const r = await api<ConnectionTestResult & { schemas: string[] }>(
         "connection/test",
@@ -471,14 +478,26 @@ export function Connections({
       if (testSeq.current === seq) setTesting(false);
     }
   }
+  /** Stop waiting for the test: its answer is dropped (the server ends the
+   * attempt at its own connect timeout). */
+  function stopTest() {
+    testSeq.current++;
+    setTesting(false);
+    setStatus("Stopped waiting for the test. Nothing was saved or changed.");
+    statusFromTest.current = true;
+  }
   async function forget(id: string) {
+    if (forgetting) return;
     setError("");
+    setForgetting(true);
     try {
       await api("profiles/forget-password", { id });
       await refresh();
       setStatus("Saved password forgotten. Enter the password to connect.");
     } catch (e) {
-      setError((e as Error).message);
+      setError(`Could not forget the saved password: ${(e as Error).message}`);
+    } finally {
+      setForgetting(false);
     }
   }
   function askDelete(rows: ConnectionRow[]) {
@@ -522,6 +541,7 @@ export function Connections({
       deletingRef.current = false;
       setDeleting(false);
       setConfirmDelete(null);
+      setDeleteLeft(false);
       // Wait for both the confirmation and any deleted row's form to close.
       // Failed deletions remain in the table and can receive focus again.
       window.setTimeout(() => {
@@ -717,9 +737,11 @@ export function Connections({
                   <button
                     className="text-button"
                     disabled={busy}
-                    onClick={() => editingId && forget(editingId)}
+                    aria-busy={forgetting || undefined}
+                    aria-disabled={forgetting || undefined}
+                    onClick={() => { if (editingId && !forgetting) void forget(editingId); }}
                   >
-                    Forget saved password
+                    {forgetting ? "Forgetting…" : "Forget saved password"}
                   </button>
                 </div>
               )}
@@ -793,20 +815,25 @@ export function Connections({
             </div>
           </details>
           <div className="button-row">
-            <button
-              className="button"
-              disabled={testing || busy || deleting || saving}
-              onClick={testForm}
+            {/* Busy buttons keep focus (aria-disabled): a spinner, a
+                present-tense label, and a second click sends nothing. */}
+            <ActionButton
+              busy={testing}
+              busyLabel="Testing…"
+              disabled={!testing && (busy || deleting || saving)}
+              onClick={() => void testForm()}
             >
-              {testing ? "Connecting…" : "Test connection"}
-            </button>
-            <button
-              className="button primary"
-              disabled={busy || !!savePrompt || saving || deleting}
+              Test connection
+            </ActionButton>
+            <ActionButton
+              primary
+              busy={saving}
+              busyLabel="Saving…"
+              disabled={!saving && (busy || !!savePrompt || deleting)}
               onClick={startSave}
             >
-              {saving ? "Saving…" : "Save connection"}
-            </button>
+              Save connection
+            </ActionButton>
             <button
               className="button"
               onClick={() =>
@@ -927,12 +954,27 @@ export function Connections({
               Delete connection
             </button>
           )}
-          {status && <p role="status" className="notice connections-status">{status}</p>}
+          {/* A test running from the form: the seconds, and Stop waiting when slow. */}
+          <ActionStatus
+            className="connections-progress"
+            state={{ phase: testing ? "pending" : "idle", message: `Testing the connection to ${connectionTarget({ user: draft.user || "", host: draft.host || "", port: draft.port || 3306 })}…`, startedAt: testSince }}
+            onStop={stopTest}
+            stopLabel="Stop waiting"
+          />
+          {/* Always mounted: what Test, Save and Forget password did is announced. */}
+          <div className="connections-live" role="status" aria-live="polite">
+            {status && <p className="notice connections-status">{status}</p>}
+            {editingId && rowTests[editingId] && rowTests[editingId].identity === connectionKey(formConnection) && rowTests[editingId].state !== "failed" && (
+              <p className="row-test">
+                {rowTests[editingId].state === "testing"
+                  ? <><span className="spinner" aria-hidden="true" /> Testing the connection…</>
+                  : (rowTests[editingId] as { text: string }).text}
+              </p>
+            )}
+          </div>
           {error && <p role="alert" className="error">{error}</p>}
-          {editingId && rowTests[editingId] && rowTests[editingId].identity === connectionKey(formConnection) && (
-            <p className="row-test" role={rowTests[editingId].state === "failed" ? "alert" : "status"}>
-              {rowTests[editingId].state === "testing" ? "Connecting…" : (rowTests[editingId] as { text: string }).text}
-            </p>
+          {editingId && rowTests[editingId] && rowTests[editingId].identity === connectionKey(formConnection) && rowTests[editingId].state === "failed" && (
+            <p className="row-test" role="alert">{(rowTests[editingId] as { text: string }).text}</p>
           )}
           <p className="hint">
             Connections store server settings. {storeSentence} Requires a local
@@ -979,13 +1021,21 @@ export function Connections({
         {Object.entries(deleteErrors).map(([id, message]) => <p key={id} role="alert" className="error connection-delete-error">
           {profiles.find(p => p.id === id)?.name || id}: {message}
         </p>)}
-        {editingId === null && status && <p role="status" className="notice connections-status">{status}</p>}
+        {/* Always mounted: what a deletion (or Use) did is announced. */}
+        <ActionStatus className="connections-progress" state={{ phase: deleting && deleteLeft ? "pending" : "idle",
+          message: "Deleting the chosen connections…", startedAt: null }} />
+        <div className="connections-live" role="status" aria-live="polite">
+          {editingId === null && status && <p className="notice connections-status">{status}</p>}
+        </div>
         {editingId === null && error && <p role="alert" className="error connections-status">{error}</p>}
       </ViewLayout>
-      {confirmDelete && <ConfirmSheet title={confirmDelete.every(row => !row.profile) ? "Remove connection?"
+      {confirmDelete && !deleteLeft && <ConfirmSheet title={confirmDelete.every(row => !row.profile) ? "Remove connection?"
         : confirmDelete.length === 1 ? "Delete connection?" : `Delete ${confirmDelete.length} connections?`}
         description="Remove these settings from this computer. Existing editor sessions are not closed."
-        busy={deleting} confirmLabel={confirmDelete.every(row => !row.profile) ? "Remove connection" : confirmDelete.length === 1 ? "Delete connection" : "Delete connections"}
+        busy={deleting} busyLabel={confirmDelete.every(row => !row.profile) ? "Removing…" : "Deleting…"}
+        progress="Removing from this computer"
+        onLeave={() => setDeleteLeft(true)} leaveText="Still deleting. Close does not stop it; the list updates when it ends."
+        confirmLabel={confirmDelete.every(row => !row.profile) ? "Remove connection" : confirmDelete.length === 1 ? "Delete connection" : "Delete connections"}
         onCancel={() => setConfirmDelete(null)} onConfirm={() => void remove()}>
         <ul className="connection-delete-list">{confirmDelete.map(row => <li key={row.key}>
           <strong>{row.fields.name || connectionTarget(row.fields)}</strong>

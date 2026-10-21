@@ -2407,3 +2407,275 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   outline: none;
 }
 .export-menu-items [role="menuitem"]:disabled { color: var(--ink-faint); }
+
+/* ---- Action feedback (ActionButton, ActionStatus, ConfirmSheet busy) ----
+   A click changes the button in the same frame: pressed, then a spinner and
+   a present-tense label while the request is out. The label cell reserves
+   the other label (data-reserve, invisible), so the button never changes
+   width. Busy buttons keep full color (they are working, not unavailable)
+   and stay focusable through aria-disabled. */
+.action-button {
+  position: relative;
+}
+.action-button:active:not(:disabled):not([aria-disabled="true"]) {
+  filter: brightness(0.94);
+  transition: none;
+}
+.action-button.is-pending,
+.action-button.is-pending:hover {
+  cursor: progress;
+}
+.action-button-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+}
+.action-button-label {
+  display: inline-grid;
+  justify-items: center;
+  align-items: center;
+}
+.action-button-label > span,
+.action-button-label::after {
+  grid-area: 1 / 1;
+}
+.action-button-label > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+/* Beside an icon the label starts at the icon; the reserved room trails. */
+.action-button.has-icon .action-button-label {
+  justify-items: start;
+}
+/* The label the button is not showing, kept for its width only. */
+.action-button-label::after {
+  content: attr(data-reserve);
+  visibility: hidden;
+  pointer-events: none;
+}
+/* Without an icon the busy label carries the spinner: reserve its room too. */
+.action-button:not(.has-icon) .action-button-label:not(.is-busy)[data-reserve]::after {
+  padding-inline-start: calc(13px + var(--space-1-5));
+}
+.action-button .spinner,
+.action-status .spinner,
+.sheet-progress .spinner {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-width: 2px;
+}
+.button.primary .spinner,
+.button.danger-solid .spinner {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: var(--accent-ink);
+}
+/* Seconds waited: drawn after 1 s, never announced (aria-hidden). */
+.action-elapsed {
+  margin-inline-start: var(--space-1-5);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.action-elapsed::before {
+  content: "· ";
+}
+/* The line beside or under an action. Idle, it is an empty live region that
+   takes no room. */
+.action-status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.action-status[data-phase="idle"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* A status line takes focus only when the control in it went away (Stop,
+   Try again, Dismiss) and nothing better was near: show where focus is. */
+.action-status:focus-visible,
+.view-status:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.action-status:focus:not(:focus-visible),
+.view-status:focus:not(:focus-visible) {
+  outline: none;
+}
+/* An idle status that keeps its (empty) line: nothing moves when it starts. */
+.action-status.keeps-line[data-phase="idle"] {
+  position: static;
+  width: auto;
+  height: auto;
+  min-height: var(--leading-sm);
+  overflow: visible;
+  clip-path: none;
+}
+.action-status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.action-status-message {
+  overflow-wrap: anywhere;
+}
+.action-status-icon {
+  display: inline-flex;
+  flex: none;
+}
+.action-status[data-phase="done"] {
+  color: var(--ok-text);
+}
+.action-status[data-phase="failed"] {
+  color: var(--danger-text);
+}
+.action-status[data-phase="unknown"] {
+  color: var(--warn-text);
+}
+.action-status[data-phase="done"] .action-status-message,
+.action-status:is([data-phase="failed"], [data-phase="unknown"]) .action-status-message {
+  color: var(--ink);
+}
+.action-status .text-button {
+  padding-block: 0;
+}
+.action-status-slow {
+  color: var(--ink-muted);
+}
+/* A view's loading line: spinner, what it reads, seconds, Stop when slow. */
+.view-status.is-idle {
+  padding: 0;
+}
+.view-status .capture-status .hint {
+  margin-inline-start: var(--space-1-5);
+}
+.view-status .capture-status .view-status-stop {
+  padding-block: 0;
+  margin-inline-start: var(--space-2);
+}
+.view-status-error.has-retry {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+.view-status-error > p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.view-status .view-status-retry {
+  flex: none;
+  padding-block: 0;
+}
+/* A sheet's action row while its request is out: what it waits for and the
+   seconds, at the leading edge; Cancel turns into Close when it is slow. */
+.sheet-buttons {
+  display: contents;
+}
+.sheet-progress {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  margin-inline-end: auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.sheet-progress-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* What Close does when a sheet's request is slow, under its content. */
+.sheet-leave-note {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.sheet-progress:empty {
+  margin: 0;
+}
+@media (max-width: 650px) {
+  .sheet-progress {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+}
+/* An icon button working on its request (Refresh news, Reload schemas): full
+   color with its glyph turning, still focusable (aria-disabled). The dimmed
+   look above is for controls that wait without saying so. */
+:is(.icon-button, .button).is-busy[aria-busy="true"] {
+  opacity: 1;
+  cursor: progress;
+}
+.icon-button.is-busy[aria-busy="true"] svg {
+  animation: spin 1s linear infinite;
+}
+/* The first run of a Query editor tab: the results area says it runs. */
+.results-first-run {
+  justify-content: center;
+  margin: 0;
+  padding: var(--space-5);
+}
+/* Status lines of actions inside panes and dialogs. */
+.library-status:not([data-phase="idle"]),
+.library-compare-status:not([data-phase="idle"]) {
+  display: flex;
+  padding: var(--space-2) 0;
+}
+.library-status-empty:not([data-phase="idle"]) {
+  padding: var(--space-4) var(--space-5) 0;
+}
+.export-status:not([data-phase="idle"]),
+.connections-progress:not([data-phase="idle"]),
+.table-data-step:not([data-phase="idle"]) {
+  display: flex;
+  margin-top: var(--space-2);
+}
+.import-dialog .dialog-actions .action-status:not([data-phase="idle"]) {
+  margin-inline-end: auto;
+}
+.mass-kill-footer .action-status:not([data-phase="idle"]) {
+  max-width: 50%;
+}
+/* Kill sessions: its notes (an earlier send, an error, read-only) are
+   compact callouts under the presets, not body text. */
+.mass-kill-dialog > .note {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.mass-kill-dialog > .note.danger {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.reviewed-sql-status .action-status:not([data-phase="idle"]) {
+  display: flex;
+}
+/* Reduced motion: the spinners stand still (style.css stops every animation);
+   the present-tense label and the seconds still say that it is working. */
