@@ -54,6 +54,18 @@ test('Home news links open in the default browser, never in the app window', () 
   assert.match(main, /on\('will-navigate', \(event, url\) => \{ if \(!sameOrigin\(url, origin\)\) event\.preventDefault\(\); \}\)/);
   assert.match(main, /on\('will-redirect', \(event, url\) => \{ if \(!sameOrigin\(url, origin\)\) event\.preventDefault\(\); \}\)/);
 });
+test('Safe updates documentation links open in the default browser', () => {
+  // The ⓘ next to Safe updates in the Query editor (SafeUpdatesInfo.tsx).
+  const links = ['https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_sql_safe_updates',
+    'https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#sql_safe_updates'];
+  for (const value of links) assert.equal(externalLink(value), value);
+  // Every link in the source is one of them, so a changed URL cannot be
+  // silently refused by the allowlist.
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', '..', 'workspace', 'src', 'SafeUpdatesInfo.tsx'), 'utf8');
+  assert.deepEqual([...source.matchAll(/https:\/\/[^"'\s`]+/g)].map((m) => m[0]).sort(), [...links].sort());
+  for (const value of ['http://mariadb.com/docs/server/', 'https://mariadb.com.evil.test/docs/', 'https://docs.mariadb.com/', 'https://mariadb.com:8443/docs/'])
+    assert.equal(externalLink(value), null);
+});
 test('backend environment isolates HOME and strips injected paths and credentials', () => {
   const env = backendEnvironment('/desktop', { HOME: '/real', USERPROFILE: '/real', PATH: '/tools', PYTHONPATH: '/evil', MYSQL_PWD: 'secret', MYFLAMES_VAULT_PASSPHRASE: 'secret', MYFLAMES_SECRET_BACKEND: 'keychain' });
   assert.equal(env.HOME, path.join('/desktop', 'backend-home')); assert.equal(env.USERPROFILE, env.HOME);

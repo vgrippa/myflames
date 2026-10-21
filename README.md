@@ -168,7 +168,9 @@ The workspace includes a SQL editor built on dedicated server sessions:
 
 - Session affinity retains session variables, temporary tables, and transaction states across executions.
 - Multi-statement execution with statement splitting and cursor-sensitive execution.
-- Safe updates enabled by default for Production connections.
+- Query tabs with a menu (right-click or Shift+F10): Rename…, Duplicate, Close, Close others; names survive a restart.
+- **Format SQL** (toolbar, Shift+Option+F, or the command palette) lays out the selection or the whole tab as one undo step, never runs anything, and refuses when the result would read differently (it changes only white space and keyword case; DELIMITER blocks, stored programs and executable comments stay as written).
+- Safe updates enabled by default for Production connections; the ⓘ next to it in Run options says what `sql_safe_updates` refuses and links to the MySQL and MariaDB documentation.
 - Transaction controls with visual indicators for open transactions, commit, and rollback.
 - Statement cancellation using `KILL QUERY` without dropping the underlying connection.
 - Export results to CSV, JSON, TSV, Markdown, or SQL INSERT statements.

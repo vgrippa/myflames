@@ -78,7 +78,9 @@ export type IconName =
   | "minus"
   | "block"
   | "clean"
-  | "undo";
+  | "undo"
+  // Query editor: Format SQL.
+  | "format";
 // Glyphs are Hugeicons (free Stroke Rounded set, MIT) vendored into
 // icons.generated.ts by scripts/vendor-hugeicons.mjs, drawn on a 24 px grid and
 // scaled to 16 px (rows, navigation) or 12 px (disclosures, inline status).

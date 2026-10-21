@@ -249,7 +249,19 @@ MySQL 8.4 on `127.0.0.1:3406` with the `testdb` tables (users, orders,
 order_items, products, categories, reviews) and prints credentials for a
 read-only `demo` user.
 
-Use query tabs to keep drafts and name each query. Every tab has its own close button (shown on the active tab, on hover, and always on touch screens); a middle-click closes a tab, the tab on the left takes over, and the last tab stays. Parameters are typed
+Use query tabs to keep drafts and name each query. Every tab has its own close button (shown on the active tab, on hover, and always on touch screens); a middle-click closes a tab, the tab on the left takes over, and the last tab stays.
+Right-click a tab (or focus it and press Shift+F10 or the context-menu key)
+for its menu: **Rename…** (also a double-click or F2 on the tab, and **Rename
+query tab** in the command palette), **Duplicate** (a copy right after it with
+the same SQL, parameters and row limit; the copy opens its own session when it
+runs), **Close**, and **Close others**. A name is trimmed, may not be empty
+(Enter on an empty name keeps the field open and says why; leaving the field
+keeps the old name) and holds at most 64 characters (a longer name is cut
+without splitting an emoji); Escape cancels. Names are
+saved with the workspace session, so they come back after a restart. Close
+others closes the other tabs one at a time and stops at a tab whose
+transaction is open, or may be, to ask how to close it; a tab with a running
+statement is kept and named in the message. Parameters are typed
 values in a JSON object, referenced as `:name` outside SQL literals/comments:
 
 ```sql
@@ -308,6 +320,52 @@ included when you save an investigation. At most two captures run concurrently. 
 kept in server memory for up to one hour, with a maximum of 50 jobs.
 
 Explain and Run analysis can prepare a reviewed SELECT projection from supported DML. Conversion creates a new editor tab and keeps the original SQL unchanged. It does not start a capture: read the warning and select Explain or Run analysis again. Ordinary Run still executes the original statement under the existing write policy and confirmation rules.
+
+## Format SQL
+
+**Format SQL** (the toolbar button with the indent icon, Shift+Option+F on
+macOS or Shift+Alt+F elsewhere, or **Format SQL** in the command palette) lays
+out the selection, or the whole tab when nothing is selected: one clause per
+line, two-space indent, keywords in upper case, one blank line between
+statements. It uses sql-formatter (MIT) with the MySQL dialect, or the MariaDB
+dialect when the tab's session is on MariaDB, loaded the first time you use
+it. Formatting never runs SQL and is one undo step (⌘Z or Ctrl+Z); a selection
+stays selected on the formatted text, and without one the caret keeps its
+place.
+
+It changes only white space and the case of keywords. Names keep their case
+(a table or alias can be case sensitive on the server): only words reserved
+in both MySQL and MariaDB, each statement's first word, and the keywords of a
+statement opening such as SHOW FULL PROCESSLIST or START TRANSACTION are put
+in upper case. Before the text is replaced, the result is compared with the
+original token by token, under both backslash modes and with MariaDB's
+`[name]` (sql_mode=MSSQL) read as one quoted name; strings, quoted names,
+numbers, variables, executable comments (`/*!80000 ... */`, `/*M!...*/`) and
+optimizer hints must stay byte for byte, a line comment must still end its
+line, and the space between a built-in function such as `COUNT` and its
+parenthesis must stay (without IGNORE_SPACE, `COUNT (*)` and `COUNT(*)` are
+read differently). Any other difference refuses the format, nothing changes,
+and the message names the line, for example "Format SQL changed nothing:
+formatting would have changed “count (*)” to “count(*)” on line 2, which the
+server can read differently."
+
+Left exactly as written, and named in the message: statements inside a
+DELIMITER block, stored program bodies (CREATE PROCEDURE, FUNCTION, TRIGGER
+or EVENT, `BEGIN NOT ATOMIC` and other compound statements), a statement with
+a client command (`\G`), an unclosed quote or comment, a name in square
+brackets (MariaDB under sql_mode=MSSQL), an executable comment or optimizer
+hint the formatter would change, and a statement the formatter cannot read.
+Comments between statements stay where they are. A selection inside a
+DELIMITER block is left alone; a selection that starts inside a
+statement keeps its first word's case. A selection must start and end between
+words, outside strings, quoted names and comments (otherwise nothing changes
+and the message says where), and the whole tab, not only the selection, is
+compared after the change. A word next to an executable comment keeps its case
+when the comment holds the dot of a qualified name, and a statement that
+starts with one has no opening keywords to change. The first Format SQL
+loads the formatter; if you select other text or clear the selection while it
+loads, nothing changes and the message says so (a caret moved without
+selecting is kept where you put it).
 
 ## SQL completion and table data
 
@@ -442,10 +500,23 @@ back** appear, the tab shows a dot, and closing the tab asks **Commit and
 close**, **Roll back and close**, or Cancel. When the connection in use is not
 the one the tab's session runs on, runs wait until you **Close session**.
 
-**Safe updates** sets `sql_safe_updates` for the tab's session: on by default
-for Production connections, off for Development. The server then refuses an
-UPDATE or DELETE without a key in WHERE or a LIMIT. Turning it off on a
-Production connection asks first and is audited.
+**Safe updates** (in Run options, the arrow beside Run) sets `sql_safe_updates`
+for the tab's session: on by default for Production connections, off for
+Development. The server then refuses, with error 1175 and before any row
+changes, an UPDATE or DELETE whose WHERE cannot use an index unless it has a
+LIMIT; a multiple-table UPDATE or DELETE is refused when it would scan a whole
+table it changes (on MariaDB, any table of the join). MariaDB also refuses a
+DELETE without a WHERE (or with a constant one), even with a LIMIT, and a
+multiple-table DELETE without a WHERE even under EXPLAIN. SELECT is not
+limited: the `mysql` client's `--safe-updates` option also sets
+`sql_select_limit` and `max_join_size`, which myflames does not. Turning it
+off on a Production connection asks first and is audited; a read-only
+connection refuses. The ⓘ beside the box explains this in short and links to
+the
+[MySQL](https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_sql_safe_updates)
+and [MariaDB](https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#sql_safe_updates)
+documentation, which the desktop app opens in your browser. It opens over Run
+options without closing it; Escape closes the explanation first.
 
 Statements that change the server follow the connection's write policy
 ([Write safety](../README.md#4-write-safety-model-and-audit-trail)): a Production connection asks before

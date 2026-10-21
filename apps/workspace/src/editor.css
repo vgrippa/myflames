@@ -126,6 +126,18 @@
   min-height: var(--control-h);
   font-size: var(--text-sm);
 }
+/* Enter on an empty name: the field stays open and says so. */
+.query-tab-name[aria-invalid="true"] {
+  border-color: var(--danger);
+  outline-color: var(--danger);
+}
+/* A long name ends in an ellipsis; the tab's tooltip has all of it. */
+.query-tab-label {
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .editor-connection {
   min-width: 0;
   flex: 0 1 auto;
@@ -219,8 +231,28 @@
 .editor-options-popover .run-settings .inline-field {
   justify-content: space-between;
 }
+/* Safe updates and its ⓘ on one line: the explanation sits beside the box. */
+.editor-options-popover .safe-updates-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.popover .popover-links a {
+  white-space: nowrap;
+}
+/* A popover opened inside Run options is fixed to the window; the panel's
+   entrance transform would make the panel its containing block and shift it,
+   so the entrance ends as soon as a nested popover opens. */
+.editor-options-popover:has(.popover) {
+  animation: none;
+}
 .editor-toolbar .pane-toggles {
   gap: 0;
+}
+/* Format SQL: an editing tool, set apart from the run and capture groups. */
+.editor-toolbar .format-tools {
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--line);
 }
 .icon-button[aria-pressed="true"] {
   background: var(--accent-soft);
@@ -1179,7 +1211,8 @@
     text-overflow: ellipsis;
   }
   .editor-toolbar .editor-actions,
-  .editor-toolbar .tx-group {
+  .editor-toolbar .tx-group,
+  .editor-toolbar .format-tools {
     padding-left: 0;
     border-left: 0;
   }

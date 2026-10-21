@@ -54,6 +54,8 @@ import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults } from "./ResultsPane";
 import { SchemaBrowser } from "./SchemaBrowser";
 import { HistoryPanel } from "./HistoryPanel";
+import { SafeUpdatesInfo } from "./SafeUpdatesInfo";
+import { QueryTabMenu, MAX_TAB_NAME, clipName, copyName } from "./QueryTabMenu";
 import { editorPrivilegeGate, isPrivilegeDenial, privilegeButtonProps, usePrivilege, usePrivileges, type EditorPrivilegePreview } from "./privileges";
 import { lazyComponent } from "./lazy";
 import "./editor.css";
@@ -66,6 +68,8 @@ const MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
 /** Visible shortcut text: "⌘Return" on macOS, "Ctrl+Enter" elsewhere. */
+/** Format SQL: ⇧⌥F on macOS, Shift+Alt+F elsewhere (VS Code's binding). */
+const FORMAT_KEYS = MAC ? "⇧⌥F" : "Shift+Alt+F";
 function keys(shift: boolean, key: "Enter" | "E" = "Enter") {
   if (key === "E") return MAC ? `${shift ? "⇧" : ""}⌘E` : `Ctrl+${shift ? "Shift+" : ""}E`;
   return MAC ? `${shift ? "⇧" : ""}⌘Return` : `Ctrl+${shift ? "Shift+" : ""}Enter`;
@@ -104,6 +108,10 @@ export type QueryLabHandle = {
   openSql: (sql: string, options?: { append?: boolean }) => void;
   /** Request closing a query tab, verifying uncommitted transactions first. */
   closeTab: (id: string) => void;
+  /** Start renaming the current tab (the palette's Rename query tab). */
+  renameTab: () => void;
+  /** Format the selection, or the whole tab (the palette's Format SQL). */
+  formatSql: () => void;
 };
 function parseParameters(text: string): unknown {
   try {
@@ -325,7 +333,13 @@ function EditorSplitButton({ action, label, open, onOpen, children }: {
     if (!open) return;
     window.dispatchEvent(new CustomEvent("myflames-popover", { detail: id }));
     const other = (e: Event) => {
-      if ((e as CustomEvent).detail !== id) onOpen(false);
+      const detail = (e as CustomEvent).detail;
+      if (detail === id) return;
+      // A popover opened inside this panel (the ⓘ next to Safe updates)
+      // keeps the panel open; any other popover closes it.
+      const opened = typeof detail === "string" && detail ? document.getElementById(detail) : null;
+      if (opened && panel.current?.contains(opened)) return;
+      onOpen(false);
     };
     const outside = (e: MouseEvent) => {
       const target = e.target as Node;
@@ -333,6 +347,9 @@ function EditorSplitButton({ action, label, open, onOpen, children }: {
     };
     const key = (e: globalThis.KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // Escape closes a popover open inside this panel first (its own focus
+      // scope returns focus to its ⓘ); the next Escape closes the panel.
+      if (panel.current?.querySelector(".popover")) return;
       e.preventDefault();
       e.stopPropagation();
       onOpen(false);
@@ -418,6 +435,9 @@ export const QueryLab = forwardRef<
   const [tabs, setTabs] = useState<Tab[]>(start.tabs);
   const [tabId, setTabId] = useState(start.tab_id);
   const tab = tabs.find((t) => t.id === tabId) || tabs[0];
+  // The tab on screen, for work that finishes after an await (Format SQL).
+  const tabRef = useRef(tab.id);
+  tabRef.current = tab.id;
   const [timeout, setTimeoutSeconds] = useState(start.timeout);
   const [repeat, setRepeat] = useState(start.repeat);
   const [trace, setTrace] = useState(start.trace);
@@ -429,6 +449,12 @@ export const QueryLab = forwardRef<
   // a note or a wrapped toolbar moves the editor) and on resize.
   const tabPanel = useRef<HTMLDivElement>(null);
   const [editorRoom, setEditorRoom] = useState(0);
+  // The last room measured: an unchanged room is not set again. A no-op
+  // update queued from this layout effect on every commit kept re-rendering
+  // the editor while a lower-priority update (the caret from selectionchange)
+  // waited, until React stopped with "Maximum update depth exceeded" (seen
+  // when Format SQL replaced the text).
+  const measuredRoom = useRef(0);
   const measureEditorRoom = useCallback(() => {
     const panel = tabPanel.current;
     const wrap = panel?.querySelector<HTMLElement>(".sql-editor-wrap");
@@ -438,7 +464,9 @@ export const QueryLab = forwardRef<
     const feedback = panel.querySelector<HTMLElement>(".editor-feedback");
     const room = Math.floor(panel.getBoundingClientRect().bottom - wrap.getBoundingClientRect().top
       - (splitter?.offsetHeight || 0) - (feedback?.offsetHeight || 0));
-    setEditorRoom((r) => (r === room ? r : room));
+    if (room === measuredRoom.current) return;
+    measuredRoom.current = room;
+    setEditorRoom(room);
   }, []);
   useLayoutEffect(measureEditorRoom);
   useEffect(() => {
@@ -491,13 +519,83 @@ export const QueryLab = forwardRef<
   const [parametersOpen, setParametersOpen] = useState(false);
   const [analysisOptionsOpen, setAnalysisOptionsOpen] = useState(false);
   const [runOptionsOpen, setRunOptionsOpen] = useState(false);
-  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; name: string; invalid?: boolean } | null>(null);
+  /** End a rename. Enter saves the trimmed name; an empty one keeps the field
+   * open and says why. Escape cancels. Leaving the field saves a name and
+   * keeps the old one when the field is empty. */
   function finishRename(save: boolean, restoreFocus = true) {
     if (!renaming) return;
-    if (save && renaming.name.trim()) changeTab({ name: renaming.name.trim() }, renaming.id);
+    const name = clipName(renaming.name.trim()).trimEnd();
+    const old = tabs.find((t) => t.id === renaming.id)?.name ?? "";
+    if (save && !name && restoreFocus) {
+      setRenaming({ ...renaming, invalid: true });
+      note(tab.id, `Type a name for the tab, or press Escape to keep “${old}”.`, true);
+      return;
+    }
+    if (save && name && name !== old) changeTab({ name }, renaming.id);
+    if (save && !name) note(tab.id, `Kept the name “${old}”: a tab name cannot be empty.`);
+    else if (renaming.invalid) note(tab.id, "");
     const id = renaming.id;
     setRenaming(null);
-    if (restoreFocus) window.setTimeout(() => document.getElementById(`query-tab-${tabs.findIndex((t) => t.id === id)}`)?.focus());
+    if (restoreFocus) window.setTimeout(() => focusTab(id));
+  }
+  /** Put focus on a tab's button (after a rename, a duplicate or a close). */
+  function focusTab(id: string) {
+    tabList.current?.querySelector<HTMLElement>(`[role=tab][data-tab-id="${CSS.escape(id)}"]`)?.focus();
+  }
+  // ---- The tab menu: Rename…, Duplicate, Close, Close others ---------------
+  const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number; opener: HTMLElement } | null>(null);
+  const closeTabMenu = useCallback(() => setTabMenu(null), []);
+  function startRename(id: string) {
+    const t = tabs.find((x) => x.id === id);
+    if (!t) return;
+    setRenaming({ id, name: t.name });
+  }
+  /** A copy of a tab right after it, with its SQL, parameters and row limit;
+   * it opens its own session when it runs. */
+  function duplicateTab(id: string) {
+    const source = tabs.find((t) => t.id === id);
+    if (!source) return;
+    const copy: Tab = { ...source, id: crypto.randomUUID(), name: copyName(source.name, tabs.map((t) => t.name)) };
+    delete copy.result_tab;
+    setTabs((ts) => {
+      const at = ts.findIndex((t) => t.id === id);
+      const next = [...ts];
+      next.splice(at < 0 ? next.length : at + 1, 0, copy);
+      return next;
+    });
+    setTabId(copy.id);
+    note(copy.id, `Duplicated “${source.name}” as “${copy.name}”. The copy runs in its own session.`);
+    window.setTimeout(() => focusTab(copy.id));
+  }
+  /** Close every tab but *keep*, one at a time. A tab with a running
+   * statement stays; one with a transaction that is open, or may be, stops
+   * here and asks how to close it. */
+  async function closeOthers(keep: string) {
+    setTabId(keep);
+    const others = tabs.filter((t) => t.id !== keep);
+    let closed = 0;
+    const running: string[] = [];
+    let asking = "";
+    for (const t of others) {
+      if (runtimeRef.current[t.id]?.running) {
+        running.push(t.name);
+        continue;
+      }
+      const result = await requestClose(t.id);
+      if (result === "closed") closed++;
+      else {
+        if (result === "asks") asking = t.name;
+        break;
+      }
+    }
+    // Closing the tab that was current picks a neighbour; the kept tab stays current.
+    setTabId(keep);
+    const parts = [`Closed ${closed === 1 ? "1 other tab" : `${closed} other tabs`}`];
+    if (running.length) parts.push(`${running.join(", ")} kept: a statement is running`);
+    if (asking) parts.push(`${asking} has a transaction open: choose how to close it`);
+    note(keep, `${parts.join("; ")}.`);
+    if (!asking) window.setTimeout(() => focusTab(keep));
   }
   const showAnalysisOptions = analysisOptionsOpen || parametersOpen;
   const toggleAnalysisOptions = useCallback((open: boolean) => {
@@ -565,7 +663,19 @@ export const QueryLab = forwardRef<
     closeTab: (id: string) => {
       void requestClose(id);
     },
+    renameTab: () => startRename(tab.id),
+    // The palette runs this as the Query editor comes on screen: the text
+    // area must be visible to take focus and keep the browser's undo.
+    // Hidden behind table data, nothing changes.
+    formatSql: () => {
+      whenShown(() => void formatSql());
+    },
   }));
+  /** Run *action* once the editor is on screen; never on a hidden editor. */
+  function whenShown(action: () => void, frames = 30) {
+    if (tabPanel.current?.offsetParent && editor.current?.offsetParent) action();
+    else if (frames > 0) window.requestAnimationFrame(() => whenShown(action, frames - 1));
+  }
   /** A new tab after the others; *focus* puts the cursor in the editor. */
   function addTab(focus = false) {
     const id = crypto.randomUUID();
@@ -1503,11 +1613,11 @@ export const QueryLab = forwardRef<
   }
   /** Close a tab (or only its session): a transaction that is open, or may
    * be, asks Commit, Roll back or Cancel first. */
-  async function requestClose(id: string, keepTab = false) {
+  async function requestClose(id: string, keepTab = false): Promise<"closed" | "asks" | "running" | "error"> {
     const now = runtimeRef.current[id];
     if (now?.running) {
       setError("A statement is running in this tab. Stop it before closing.");
-      return;
+      return "running";
     }
     try {
       const reply = await api<EditorClose>("editor/close", { tab_id: id, connection: sessionConnectionOf(id) || connectionRef.current });
@@ -1516,12 +1626,14 @@ export const QueryLab = forwardRef<
           patchRuntime(id, { session: null, sessionKey: "", sessionConnection: null });
           note(id, "Session closed. The next run opens a new one on the connection in use.");
         } else removeTab(id);
-        return;
+        return "closed";
       }
       if (reply.session) adoptSession(id, reply.session, {});
       setClosing({ tabId: id, known: reply.reason === "transaction_open", keepTab });
+      return "asks";
     } catch (e) {
       setError((e as Error).message);
+      return "error";
     }
   }
   async function closeDiscarding() {
@@ -1635,6 +1747,87 @@ export const QueryLab = forwardRef<
     for (let i = 0; i < at; i++) if (tab.sql[i] === "\n") line++;
     el.scrollTop = Math.max(0, (line - 3) * 20);
     syncCursor();
+  }
+
+  // ---- Format SQL ------------------------------------------------------------
+
+  const [formatting, setFormatting] = useState(false);
+  const formatBusy = useRef(false);
+  /**
+   * Format the selection, or the whole tab when nothing is selected, as one
+   * undo step (sqlFormat.ts, loaded on first use). Nothing runs on the server.
+   * The selection stays on the formatted text; without one the caret keeps
+   * its place among the statement's characters (where it is when the
+   * formatter is ready: the first use waits for its chunk).
+   */
+  async function formatSql() {
+    const el = editor.current;
+    if (!el || formatBusy.current) return;
+    const id = tab.id;
+    const sql = el.value;
+    const whole = el.selectionStart === el.selectionEnd;
+    const from = whole ? 0 : el.selectionStart;
+    const to = whole ? sql.length : el.selectionEnd;
+    formatBusy.current = true;
+    setFormatting(true);
+    note(id, whole ? "Formatting the tab…" : "Formatting the selection…");
+    try {
+      const { formatEditorText, describeKept, mapOffset } = await import("./sqlFormat");
+      if (el.value !== sql || tabRef.current !== id) {
+        note(id, "The text changed while Format SQL was starting, so nothing was changed. Try again.", true);
+        return;
+      }
+      // Hidden meanwhile (Query digest, table data, another place): a hidden
+      // field cannot take the edit as one undo step, so nothing changes.
+      if (!el.offsetParent) {
+        note(id, "The editor was hidden while Format SQL was starting, so nothing was changed. Try again.", true);
+        return;
+      }
+      // A selection made, changed or cleared meanwhile changes what to
+      // format: nothing changes. A caret moved without selecting is kept.
+      const caret = el.selectionStart;
+      if ((caret === el.selectionEnd) !== whole || (!whole && (caret !== from || el.selectionEnd !== to))) {
+        note(id, "The selection changed while Format SQL was starting, so nothing was changed. Try again.", true);
+        return;
+      }
+      const session = runtimeRef.current[id]?.session;
+      // The selection, or the whole text; the result is checked against the
+      // whole text (sqlFormat.formatEditorText).
+      const outcome = formatEditorText(sql, whole ? 0 : from, whole ? 0 : to, {
+        dialect: session?.engine === "mariadb" ? "mariadb" : "mysql",
+        backslash: session?.backslash_escapes ?? true,
+      });
+      if (outcome.status !== "formatted") {
+        note(id, outcome.message, outcome.status === "refused");
+        return;
+      }
+      const next = sql.slice(0, from) + outcome.text + sql.slice(to);
+      el.focus();
+      el.setSelectionRange(from, to);
+      // One edit through the browser keeps it a single undo step; an edit the
+      // browser refuses is not replaced by one that cannot be undone.
+      if (!document.execCommand("insertText", false, outcome.text)) {
+        note(id, "Format SQL changed nothing: the browser did not accept the edit.", true);
+        return;
+      }
+      if (el.value !== next) changeTab({ sql: next }, id);
+      const place = () => {
+        if (whole) {
+          const at = mapOffset(sql, outcome.text, caret);
+          el.setSelectionRange(at, at);
+        } else el.setSelectionRange(from, from + outcome.text.length);
+        syncCursor();
+      };
+      if (el.value === next) place();
+      else window.requestAnimationFrame(place);
+      const count = outcome.formatted === 1 ? "1 statement" : `${outcome.formatted} statements`;
+      note(id, `${whole ? `Formatted ${count}` : "Formatted the selection"}${outcome.kept.length ? `; ${describeKept(outcome.kept)}` : ""}. ${MAC ? "⌘Z" : "Ctrl+Z"} undoes it.`);
+    } catch (e) {
+      note(id, `Format SQL could not start: ${(e as Error).message}`, true);
+    } finally {
+      formatBusy.current = false;
+      setFormatting(false);
+    }
   }
 
   // ---- Layout: splitter and panes -------------------------------------------
@@ -1752,8 +1945,11 @@ export const QueryLab = forwardRef<
                     <div className="query-tab" key={t.id}>
                       {renaming?.id === t.id && (
                         <input className="query-tab-name" aria-label="Query name" value={renaming.name}
+                          maxLength={MAX_TAB_NAME} spellCheck={false} autoComplete="off"
+                          aria-invalid={renaming.invalid || undefined}
+                          title={`Up to ${MAX_TAB_NAME} characters. Enter saves, Escape cancels.`}
                           autoFocus onFocus={(e) => e.currentTarget.select()}
-                          onChange={(e) => setRenaming({ id: t.id, name: e.target.value })}
+                          onChange={(e) => setRenaming({ id: t.id, name: e.target.value, invalid: renaming.invalid && !e.target.value.trim() })}
                           onBlur={() => finishRename(true, false)}
                           onKeyDown={(e) => {
                             if (e.nativeEvent.isComposing) return;
@@ -1771,9 +1967,15 @@ export const QueryLab = forwardRef<
                         aria-controls="query-tab-panel"
                         tabIndex={t.id === tab.id ? 0 : -1}
                         hidden={renaming?.id === t.id}
-                        title="Double-click or press F2 to rename"
+                        data-tab-id={t.id}
+                        aria-haspopup="menu"
+                        title={`${t.name}\nDouble-click or F2 to rename; right-click for more`}
                         onDoubleClick={() => setRenaming({ id: t.id, name: t.name })}
                         onClick={() => setTabId(t.id)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setTabMenu({ id: t.id, x: e.clientX, y: e.clientY, opener: e.currentTarget });
+                        }}
                         // Middle-click closes, like browser and editor tabs.
                         onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
                         onAuxClick={(e) => {
@@ -1785,6 +1987,13 @@ export const QueryLab = forwardRef<
                           if (e.key === "F2") {
                             e.preventDefault();
                             setRenaming({ id: t.id, name: t.name });
+                            return;
+                          }
+                          // The tab's menu from the keyboard, under the tab.
+                          if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+                            e.preventDefault();
+                            const box = e.currentTarget.getBoundingClientRect();
+                            setTabMenu({ id: t.id, x: box.left, y: box.bottom + 2, opener: e.currentTarget });
                             return;
                           }
                           // Roving focus: arrows move between tabs (and open them), Home and End jump to the ends.
@@ -1806,7 +2015,7 @@ export const QueryLab = forwardRef<
                             ?.focus();
                         }}
                       >
-                        {t.name}
+                        <span className="query-tab-label">{t.name}</span>
                         {runtime[t.id]?.session?.in_transaction === true && !runtime[t.id]?.session?.ended && (
                           <span className="tab-transaction" aria-label="Transaction open" title="Transaction open">TX</span>
                         )}
@@ -1828,6 +2037,35 @@ export const QueryLab = forwardRef<
                 >
                   +
                 </button>
+                {tabMenu && tabs.some((t) => t.id === tabMenu.id) && (
+                  <QueryTabMenu
+                    x={tabMenu.x}
+                    y={tabMenu.y}
+                    opener={tabMenu.opener}
+                    name={tabs.find((t) => t.id === tabMenu.id)?.name || ""}
+                    single={tabs.length < 2}
+                    onDismiss={closeTabMenu}
+                    onRename={() => {
+                      setTabMenu(null);
+                      startRename(tabMenu.id);
+                    }}
+                    onDuplicate={() => {
+                      setTabMenu(null);
+                      duplicateTab(tabMenu.id);
+                    }}
+                    onClose={() => {
+                      const id = tabMenu.id;
+                      setTabMenu(null);
+                      void requestClose(id).then((result) => {
+                        if (result === "closed") window.setTimeout(() => tabList.current?.querySelector<HTMLElement>("[role=tab][aria-selected=true]")?.focus());
+                      });
+                    }}
+                    onCloseOthers={() => {
+                      setTabMenu(null);
+                      void closeOthers(tabMenu.id);
+                    }}
+                  />
+                )}
             <div className="editor-connection">{picker}</div>
           </div>
           <div
@@ -1841,6 +2079,11 @@ export const QueryLab = forwardRef<
               if (e.key === "Escape" && !e.nativeEvent.isComposing && e.keyCode !== 229 && rt.running && !pending && !closing) {
                 e.preventDefault();
                 void stop();
+              }
+              // Format SQL: Shift+Option+F (the key, whatever character Option makes).
+              if (e.code === "KeyF" && e.shiftKey && e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void formatSql();
               }
             }}
           >
@@ -1893,15 +2136,18 @@ export const QueryLab = forwardRef<
                         }}
                       />
                     </label>
-                    <Checkbox
-                      className="safe-updates"
-                      checked={!!safeChecked}
-                      disabled={running}
-                      onChange={setSafeUpdates}
-                      title="sql_safe_updates for this tab's session: the server refuses UPDATE or DELETE without a key in WHERE or a LIMIT. Turning it off on a Production connection asks first."
-                    >
-                      Safe updates
-                    </Checkbox>
+                    <div className="safe-updates-row">
+                      <Checkbox
+                        className="safe-updates"
+                        checked={!!safeChecked}
+                        disabled={running}
+                        onChange={setSafeUpdates}
+                        title="sql_safe_updates for this tab's session"
+                      >
+                        Safe updates
+                      </Checkbox>
+                      <SafeUpdatesInfo />
+                    </div>
                   </div>
                 </EditorSplitButton>
                 <ToolbarButton
@@ -2032,6 +2278,19 @@ export const QueryLab = forwardRef<
                   </>
                 )}
               </div>
+              <div className="toolbar-group format-tools">
+                <IconButton
+                  icon="format"
+                  label="Format SQL"
+                  title={`Format SQL: ${selecting ? "the selection" : "the whole tab"} (${FORMAT_KEYS}). Changes only spaces, line breaks and keyword case; nothing runs.`}
+                  aria-keyshortcuts="Shift+Alt+F"
+                  aria-busy={formatting || undefined}
+                  aria-disabled={formatting || undefined}
+                  className={formatting ? "is-busy" : undefined}
+                  data-action="format"
+                  onClick={() => void formatSql()}
+                />
+              </div>
               <div className="toolbar-group pane-toggles">
                 <IconButton
                   icon="browser"
@@ -2050,7 +2309,9 @@ export const QueryLab = forwardRef<
                     {keys(false)} runs the selection or the statement at the cursor; {keys(true)} runs every
                     statement. {keys(false, "E")} explains; {keys(true, "E")} runs analysis. Escape stops a run.
                     Ctrl+Space opens SQL suggestions; Ctrl+Shift+Space also works when the system reserves Ctrl+Space.
+                    {" "}{FORMAT_KEYS} formats the selection or the whole tab.
                   </p>
+                  <p>Right-click a tab, or press Shift+F10 on it, to rename, duplicate or close it.</p>
                   <p>Each tab keeps one session, so SET SESSION, temporary tables and transactions last until the tab closes.</p>
                 </InfoPopover>
               </div>

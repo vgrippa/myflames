@@ -450,7 +450,10 @@ workspace did not load." with Reload):
   own place, still drawn by Server), Users and roles), preloaded in idle time once the place has mounted. Health,
   Error log, Top statements, Locks, Instruments, Maintenance and Replication
   share helpers with `Server.tsx` and come with its chunk.
-- `QueryLab.tsx`: Table data. Mermaid keeps its own chunks (Database diagram).
+- `QueryLab.tsx`: Table data, and Format SQL (`import("./sqlFormat")` on
+  first use: sql-formatter 15.9.0, pinned in `package.json` and
+  `package-lock.json`, with only its MySQL and MariaDB dialects and nearley,
+  about 90 KB). Mermaid keeps its own chunks (Database diagram).
 
 Rules for code that splits:
 
@@ -1134,6 +1137,98 @@ planner, write gate and session engine from the CLI.
   `limit`, `selection`, `result_tab`, and `query_lab.editor_layout` (height,
   browser and width, history, run time limit), reported only once changed
   from the defaults. Browser suite `test/editor.mjs` (`npm run test:editor`).
+- Safe updates explanation: `SafeUpdatesInfo.tsx` is the standard `InfoPopover`
+  (ⓘ, "About safe updates") beside the Safe updates checkbox in Run options
+  (`.safe-updates-row`). Its wording follows the server source, not the
+  manuals: MySQL refuses (1175, before any row changes) a single-table UPDATE
+  or DELETE with no index usable for its WHERE (`quick_keys` empty) and no
+  LIMIT, and a multiple-table one that scans a table it changes
+  (`CheckSqlSafeUpdate`); MariaDB refuses the same and also a DELETE whose
+  WHERE is missing or constant even with a LIMIT (`const_cond` in
+  sql_delete.cc), a multiple-table one with a full scan of any joined table
+  (`error_if_full_join`), and a multiple-table DELETE without a WHERE even
+  under EXPLAIN (`multi_delete_precheck`); MySQL never refuses EXPLAIN; the
+  server variable does
+  not limit SELECT (the client's `--safe-updates` adds `sql_select_limit` and
+  `max_join_size`, which myflames never sets). Its two documentation links
+  (`SAFE_UPDATES_DOCS`) open with `target="_blank"` and must pass the desktop
+  `externalLink` allowlist (`dev.mysql.com`, `mariadb.com`; checked by
+  `apps/desktop/test/backend.test.cjs` against the source and by the browser
+  suite against the rendered page). `EditorSplitButton` keeps its panel open
+  when a popover inside it opens (the `myflames-popover` event names an
+  element inside the panel) and leaves Escape to that popover first;
+  `.editor-options-popover:has(.popover)` drops the panel's entrance
+  transform, which would otherwise be the nested popover's containing block.
+  Browser suite `test/safe-updates-info.mjs` (`npm run test:safe-updates-info`;
+  `SAFE_UPDATES_SHOTS=<dir>` writes screenshots at 1440x900 and 720x520, light
+  and dark).
+- Query tab menu (`QueryTabMenu.tsx`, the shared `.context-menu` with
+  `useFocusScope({ menu: true })`): right-click, Shift+F10 or the ContextMenu
+  key on a tab (`aria-haspopup="menu"`, the tab's `data-tab-id`) opens
+  Rename… (F2), Duplicate, Close and Close others for that tab; Escape or a
+  click elsewhere closes it and focus returns to the tab. Rename keeps the
+  inline field (double-click, F2, the menu, and the palette's **Rename query
+  tab** through `QueryLabHandle.renameTab`): trimmed, at most `MAX_TAB_NAME`
+  (64) characters (`maxLength`; the session normalizer allows 200; a longer
+  name is cut by `clipName`, which never splits a surrogate pair), Enter on
+  an empty name keeps the field open with `aria-invalid` and a message in
+  `.editor-feedback`, blur keeps the old name, Escape cancels. Duplicate copies
+  the tab (SQL, parameters, limit, source and target binding, not the results
+  tab) right after it as "NAME copy" (`copyName`). Close others calls
+  `requestClose` (now returning `closed`, `asks`, `running` or `error`) tab by
+  tab, skips running tabs and stops at the first one that asks Commit or Roll
+  back. Labels end in an ellipsis past 240 px (`.query-tab-label`); the tab's
+  tooltip has the whole name.
+- Format SQL: `formatSql` in `QueryLab.tsx` (toolbar `IconButton`
+  `data-action="format"`, icon `format`, Shift+Alt+F on the tab panel by
+  `e.code === "KeyF"`, and the palette through `QueryLabHandle.formatSql`,
+  which switches the Query editor to its Editor view and waits for the text
+  area to be on screen, never formatting a hidden editor). It reads the
+  textarea, loads `sqlFormat.ts` with `import()`, calls `formatEditorText`
+  (a selection that starts or ends inside a token of the whole text, under
+  every reading, is refused; the whole text after the change goes through
+  `compareSql`, since a fragment alone cannot show it sat inside a string),
+  and replaces the selection (or all the text) with one
+  `execCommand("insertText")` (text changed, a selection made, changed or
+  cleared, or the editor hidden while the chunk loaded, or an edit the
+  browser refuses, changes nothing and says so), so the browser's undo
+  restores it in one step; a selection stays on the formatted text, otherwise
+  `mapOffset` keeps the caret, read after the chunk loaded, next to the same
+  character. `sqlFormat.formatSql` splits
+  with `splitStatements` and formats statement by statement with
+  `formatDialect` (`mysql`, or `mariadb` when the tab's session is MariaDB;
+  `tabWidth: 2`, `keywordCase: "preserve"`, `paramTypes` `?` and `:name`),
+  keeps DELIMITER blocks, stored programs and compound statements, client
+  commands, unclosed quotes or comments, names in square brackets, statements
+  the formatter cannot read and statements whose executable comments or hints
+  it would change exactly as written, and joins statements with one blank line (other gaps stay as
+  written). `sqlFormatCheck.ts` holds the guarantee: `tokenize` (the server's
+  lexical rules: `-- ` needs white space, `X'..'` `B'..'` `N'..'` are one
+  token, `@var`, `:name`), `caseSafe` (words reserved in both servers, each
+  statement's first word and the keywords of a statement opening, never next
+  to a `.`, including a dot at the edge of an executable comment beside the
+  word; an executable comment is code and ends a statement's opening, while
+  plain comments and `/*+` hints are skipped), `upperKeywords` and
+  `compareSql`, which runs under every reading in `READINGS` (with and
+  without backslash escapes, and with `[name]` as one quoted name, as MariaDB
+  10.4.5+ reads it under sql_mode=MSSQL, MDEV-19142) and refuses any change beyond white space, plain comment white space,
+  line comment trailing space and safe keyword case, or a change of the space
+  between an IGNORE_SPACE function and its parenthesis. `RESERVED` and
+  `IGNORE_SPACE_FUNCTIONS` were computed from the server sources (MySQL
+  `sql/lex.h` symbols not declared `%token<lexer.keyword>` in `sql_yacc.yy`,
+  as `gen_keyword_list.cc` does, intersected with MariaDB `lex.h` symbols in no
+  `keyword_*` rule; MySQL `SYM_FN` and MariaDB `sql_functions[]`). A refusal,
+  a kept statement or "Already formatted" is said in `.editor-feedback`
+  (`is-error` for a refusal); nothing is sent to the server. Unit tests
+  `test/sql-format.mjs` (`npm run test:sql-format`, no build: the modules are
+  compiled by `test/sql-format-load.mjs`); browser suite `test/editor-tools.mjs`
+  (`npm run test:editor-tools`; `EDITOR_TOOLS_SHOTS=<dir>` writes screenshots at
+  1440x900 and 720x520, light and dark).
+- The editor's room (`measureEditorRoom`) is set only when the measured value
+  changes (`measuredRoom`): a no-op update from its every-commit layout effect
+  kept re-rendering while a lower-priority caret update waited, and React
+  stopped with "Maximum update depth exceeded" when Format SQL replaced the
+  text.
 - Schema browser endpoint: `POST /api/live/catalog` (`ui._CATALOG_PATHS`,
   read-only, saved password filled like the views) answers
   `schema_browser.catalog_report`: `catalog-1.0` tables of one schema

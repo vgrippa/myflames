@@ -772,7 +772,9 @@ color: gray is for the sidebar and side panes only.
 The command palette (⌘K or **Search…** in the top bar) lists the places in the
 sidebar's order, then what belongs to one of them (Full analysis under Tuning,
 **Compare** under Plans), the Server and Workload views, and actions such as
-Import plan and the Audit log. When you type, commands whose name contains
+Import plan, the Audit log, and the Query editor's **Rename query tab** and
+**Format SQL** (they open the Query editor and act on its current tab).
+When you type, commands whose name contains
 every word come first, then those that match only a keyword or their group,
 each in that same order: **innodb** opens the InnoDB view, not the Cluster
 place, and **health** opens the Health view, not Tuning.
@@ -1155,7 +1157,17 @@ asking. Results, Messages, export (CSV, JSON, SQL INSERT, Markdown, the
 clipboard), the schema browser and the run history are described in
 [Run SQL in the Query editor](QUERY_WORKSPACE.md#run-sql-in-the-query-editor).
 Results stay in page memory: session restore keeps the tab's text, caret,
-row limit and pane sizes, never results.
+row limit and pane sizes, never results. Run options (the arrow beside Run)
+holds Rows, Time limit and **Safe updates**; the ⓘ beside Safe updates says in
+plain words what `sql_safe_updates` refuses, its default per connection type,
+how to turn it off for the tab, and links to the MySQL and MariaDB
+documentation (opened in your browser). A tab's menu (right-click, or Shift+F10
+or the context-menu key on the tab) has **Rename…**, **Duplicate**, **Close**
+and **Close others**; double-click or F2 renames too. **Format SQL** (the
+indent button in the toolbar, Shift+Option+F) lays out the selection or the
+whole tab as one undo step, changes only white space and keyword case, never
+runs anything, and refuses when the result would read differently; see
+[Format SQL](QUERY_WORKSPACE.md#format-sql).
 Connections store settings (the API and CLI call them profiles). When you save
 one with a typed password, myflames asks whether to save the password too; it is saved only if you choose
 **Save with password**, and then in the operating system's credential store or

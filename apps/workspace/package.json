@@ -47,6 +47,9 @@
     "test:report": "npm run build && node test/report.mjs",
     "test:audit": "npm run build && node test/audit.mjs",
     "test:editor": "npm run build && node test/editor.mjs",
+    "test:safe-updates-info": "npm run build && node test/safe-updates-info.mjs",
+    "test:sql-format": "node test/sql-format.mjs",
+    "test:editor-tools": "npm run build && node test/editor-tools.mjs",
     "test:replication": "npm run build && node test/replication.mjs",
     "test:replication-source-version": "npm run build && node test/replication-source-version.mjs",
     "test:cluster": "npm run build && node test/cluster.mjs",
@@ -81,7 +84,8 @@
   "dependencies": {
     "mermaid": "11.17.2",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "sql-formatter": "15.9.0"
   },
   "devDependencies": {
     "@types/react": "18.3.12",
