@@ -59,7 +59,21 @@
     "local_proposed": 40,
     "local_rollback": 0
    },
-   "communication_stack": "MySQL"
+   "communication_stack": "MySQL",
+   "actions": [
+    {
+     "id": "stop_member",
+     "label": "Stop Group Replication…",
+     "danger": true,
+     "description": "This member leaves the group and becomes read-only (super_read_only ON)."
+    },
+    {
+     "id": "switch_to_single_primary",
+     "label": "Switch the group to single-primary…",
+     "danger": true,
+     "description": "The group elects one primary; the others become read-only."
+    }
+   ]
   },
   {
    "key": "member:22222222-2222-11f0-8a00-0242ac130003",
@@ -87,7 +101,8 @@
     "local_proposed": 40,
     "local_rollback": 0
    },
-   "communication_stack": "MySQL"
+   "communication_stack": "MySQL",
+   "actions": []
   },
   {
    "key": "member:33333333-3333-11f0-8a00-0242ac130004",
@@ -115,7 +130,8 @@
     "local_proposed": 40,
     "local_rollback": 0
    },
-   "communication_stack": "MySQL"
+   "communication_stack": "MySQL",
+   "actions": []
   }
  ],
  "galera": null,

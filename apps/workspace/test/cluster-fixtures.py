@@ -1,6 +1,7 @@
 """Write the cluster-1.0 reports the Cluster browser suite replays (cluster.mjs).
 
-Every file is computed by the real backend (myflames/cluster.py) over the
+Every file is computed by the real backend (myflames/cluster.py, with the
+member actions the workspace endpoint adds: cluster.with_actions) over the
 answers in test/_cluster_fixtures.py: the live recordings of
 test/fixtures/cluster (MariaDB 11.8.9 Galera, Percona XtraDB Cluster 8.4.11,
 MySQL 8.4.11 InnoDB Cluster, 2026-10-20), the states derived from them, and
@@ -19,6 +20,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "test"))
 
 import _cluster_fixtures as F  # noqa: E402
+from myflames.cluster import with_actions  # noqa: E402
 
 NAMES = ("galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two-of-three", "galera-11.8-non-primary",
          "pxc-8.4-healthy", "pxc-8.4-donor", "pxc-8.4-member-donor", "ic-8.4-healthy", "ic-8.4-degraded",
@@ -31,13 +33,27 @@ OUT = os.path.join(ROOT, "apps", "workspace", "test", "fixtures")
 
 def main():
     for name in NAMES:
-        report = F.report(name)
+        report = with_actions(F.report(name))
         report["captured_at"] = "2026-10-20T14:40:00+00:00"
         path = os.path.join(OUT, "cluster-%s.json" % name)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(report, handle, indent=1, ensure_ascii=False)
             handle.write("\n")
         print(path, report["kind"], report["status"])
+    # One reviewed plan, as /api/live/cluster/plan answers it (policy and a fixed token).
+    from myflames import dbops, reviewed_writes
+    from myflames.cluster import plan_action
+    report = F.report("ic-8.4-healthy")
+    target = next(m for m in report["members"] if m["role"] == "SECONDARY" and m["state"] == "ONLINE")
+    plan = plan_action(report, "switchover", target["key"])
+    decision = dbops.decide(reviewed_writes.worst_kind(plan["statements"]), "production", False, "Node A")
+    plan["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text", "connection_type", "read_only")}
+    plan["review_token"] = "fixture-token-switchover"
+    path = os.path.join(OUT, "cluster-plan-switchover.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(plan, handle, indent=1, ensure_ascii=False)
+        handle.write("\n")
+    print(path)
 
 
 if __name__ == "__main__":

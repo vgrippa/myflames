@@ -11,13 +11,14 @@ import { Checkbox, useFocusScope } from "./kit";
 import { NewsSetting } from "./HomeNews";
 import type { SaveStatus } from "./session";
 
-export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "tuning" | "query" | "plans" | "investigations" | "learn";
+export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "query" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "server", label: "Server", icon: "server" },
   { key: "workload", label: "Workload", icon: "statements" },
   { key: "replication", label: "Replication", icon: "replication" },
   { key: "cluster", label: "Cluster", icon: "cluster" },
+  { key: "proxysql", label: "ProxySQL", icon: "proxy" },
   { key: "tuning", label: "Tuning", icon: "tuning" },
   { key: "query", label: "Query editor", icon: "query" },
   { key: "plans", label: "Plans", icon: "plan" },

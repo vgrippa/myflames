@@ -31,6 +31,7 @@ import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import type { ReplicationReport, SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
+import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
 import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { PLACES, Sidebar, type Place } from "./Sidebar";
@@ -82,6 +83,7 @@ void QueryLab.preload().catch(() => {});
 const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
+const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
 const Library = lazyComponent(() => import("./Library").then((m) => m.Library));
 const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
 const PlanChart = lazyComponent(() => import("./PlanChart").then((m) => m.PlanChart));
@@ -104,8 +106,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "server" | "workload" | "replication" | "cluster" | "tuning" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "workload", "replication", "cluster", "tuning", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "workload", "replication", "cluster", "proxysql", "tuning", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -128,6 +130,7 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   workload: "workload",
   replication: "replication",
   cluster: "cluster",
+  proxysql: "proxysql",
   tuning: "tuning",
   investigations: "library",
   learn: "teach",
@@ -292,6 +295,20 @@ function App() {
   );
   const failCluster = useCallback(
     (key: string, message: string) => setClusterShared((s) => {
+      const report = s.reset === resetKeyRef.current ? s.report : null;
+      return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
+    }),
+    [],
+  );
+  const [proxyShared, setProxyShared] = useState<{ reset: number; report: Bound<ProxySqlReport> | null; failure?: ProxySqlFailure }>({ reset: 0, report: null });
+  const proxyReport = proxyShared.reset === resetKey ? proxyShared.report : null;
+  const proxyFailure = proxyShared.reset === resetKey ? proxyShared.failure || null : null;
+  const shareProxySql = useCallback(
+    (report: Bound<ProxySqlReport>) => setProxyShared({ reset: resetKeyRef.current, report }),
+    [],
+  );
+  const failProxySql = useCallback(
+    (key: string, message: string) => setProxyShared((s) => {
       const report = s.reset === resetKeyRef.current ? s.report : null;
       return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
     }),
@@ -1339,6 +1356,9 @@ function App() {
   // the first read it looks like any other place.
   const clusterState = clusterNav(clusterReport, connectionKey(request));
   const clusterMuted = clusterState.state === "none";
+  // ProxySQL looks disabled (and stays focusable) only once a read of the
+  // connection in use said it is not a ProxySQL Admin interface.
+  const proxyMuted = proxySqlNav(proxyReport, connectionKey(request)) === "none";
   // The word stays visible beside the shape (a triangle for Problem, cluster place shapes), never "● 1" alone.
   const clusterBadge = clusterState.state !== "cluster" ? null
     : clusterState.status === "problem" && clusterState.problems > 0
@@ -1347,7 +1367,7 @@ function App() {
       : <NavMarker tone={clusterState.status === "unknown" ? undefined : clusterState.status} text={clusterState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
-  const connectionPlace = mode === "query" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "tuning";
+  const connectionPlace = mode === "query" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
   // Server renders Server, Workload and Tuning. While another place is on
   // screen it keeps the one shown last, so leaving it never swaps (and
   // mounts) a different view in the hidden place.
@@ -1360,12 +1380,14 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
   if (ready && mode === "cluster") visited.current.cluster = true;
+  if (ready && mode === "proxysql") visited.current.proxysql = true;
   const mountCluster = visited.current.cluster;
+  const mountProxySql = visited.current.proxysql;
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
@@ -1373,7 +1395,7 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, PlanChart, ContextPanel]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, PlanChart, ContextPanel]);
   }, [ready]);
   // Replication's "How to turn it on" opens Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -1499,7 +1521,7 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -1551,6 +1573,7 @@ function App() {
     { id: "place-workload", label: "Workload", group: "Places", icon: "statements", keywords: "queries top processes waits io", run: () => go("workload") },
     { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
     { id: "place-cluster", label: "Cluster", group: "Places", icon: "cluster", keywords: "galera percona xtradb pxc innodb cluster group replication wsrep members quorum router", run: () => go("cluster") },
+    { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },
     { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
     { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
     { id: "place-plans", label: "Plans", group: "Places", icon: "plan", keywords: "explain analyze flame graph visual explain", run: () => go("plans") },
@@ -1605,7 +1628,10 @@ function App() {
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
         placeBadges={{ replication: replicationBadge, cluster: clusterBadge }}
-        placeMuted={clusterMuted ? { cluster: NOT_A_CLUSTER } : undefined}
+        placeMuted={clusterMuted || proxyMuted ? {
+          ...(clusterMuted ? { cluster: NOT_A_CLUSTER } : {}),
+          ...(proxyMuted ? { proxysql: NOT_A_PROXYSQL } : {}),
+        } : undefined}
       />
       <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
@@ -1618,7 +1644,7 @@ function App() {
                 document in the plan header. Replication and Tuning are one
                 view whose header already says the place name, so it stays
                 here for assistive technology only. */}
-            <strong className={mode === "replication" || mode === "cluster" || mode === "tuning" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
           {ready && (mode === "inspect" || mode === "compare") && (
             <div className={`plans-bar${mode === "inspect" && active ? " has-active-plan" : ""}`}>
@@ -1697,6 +1723,7 @@ function App() {
             mode === "workload" ||
             mode === "replication" ||
             mode === "cluster" ||
+            mode === "proxysql" ||
             mode === "tuning" ||
             mode === "query" ||
             mode === "audit" ||
@@ -1967,12 +1994,26 @@ function App() {
           )}
           {ready && mountCluster && (
             <div hidden={mode !== "cluster"}>
+              <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "cluster"}>
               <ColumnStoreContext.Provider value={columnStore}>
                 <ClusterPlace connection={request} disabled={labBusy} report={clusterReport} onReport={shareCluster}
                   failure={clusterFailure} onFailure={failCluster} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
+              </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountProxySql && (
+            <div hidden={mode !== "proxysql"}>
+              <WritePolicyContext.Provider value={writePolicy}>
+              <ViewOnScreenContext.Provider value={mode === "proxysql"}>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <ProxySqlPlace connection={request} disabled={labBusy} report={proxyReport} onReport={shareProxySql}
+                  failure={proxyFailure} onFailure={failProxySql} />
+              </ColumnStoreContext.Provider>
+              </ViewOnScreenContext.Provider>
+              </WritePolicyContext.Provider>
             </div>
           )}
           {ready && mode === "library" && <Library onOpen={openBundle} />}

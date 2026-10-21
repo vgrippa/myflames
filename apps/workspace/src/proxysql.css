@@ -1,0 +1,44 @@
+/* ProxySQL place: the Cluster place's summary, tiles, findings and state
+   shapes (cluster.css), the shared table and inspector (kit.css), and three
+   local pieces: the configuration line and code text in cells. The change
+   buttons and the review sheet are shared (ops.css .review-actions). Tokens only (style.css). */
+
+.proxysql-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.proxysql-config-text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.proxysql-config .button {
+  padding: 0 10px;
+  font-size: var(--text-sm);
+}
+.proxysql-config .button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.proxysql-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proxysql-note {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.proxysql-findings + .cluster-tiles {
+  margin-top: var(--space-3);
+}

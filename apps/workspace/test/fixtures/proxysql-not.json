@@ -1,0 +1,42 @@
+{
+ "schema_version": "proxysql-1.0",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "available": false,
+ "is_proxysql": false,
+ "version": null,
+ "uptime_s": null,
+ "message": "This connection is not a ProxySQL Admin interface: the server has no ProxySQL admin variables (Table 'app.global_variables' doesn't exist). ProxySQL Admin listens on port 6032 unless admin-mysql_ifaces says otherwise.",
+ "status": "unknown",
+ "status_why": [
+  "This connection is not a ProxySQL Admin interface: the server has no ProxySQL admin variables (Table 'app.global_variables' doesn't exist). ProxySQL Admin listens on port 6032 unless admin-mysql_ifaces says otherwise."
+ ],
+ "config_readable": false,
+ "servers": [],
+ "hostgroups": [],
+ "monitors": [],
+ "query_rules": [],
+ "query_digests": [],
+ "pending": {
+  "servers": {
+   "runtime": null,
+   "disk": null
+  },
+  "query_rules": {
+   "runtime": null,
+   "disk": null
+  }
+ },
+ "fingerprints": {},
+ "metrics": {},
+ "summary": {
+  "backends": 0,
+  "ONLINE": 0,
+  "SHUNNED": 0,
+  "OFFLINE_SOFT": 0,
+  "OFFLINE_HARD": 0,
+  "not_in_runtime": 0
+ },
+ "actions": [],
+ "notes": [],
+ "statements": []
+}

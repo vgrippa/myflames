@@ -75,7 +75,15 @@
     "local_index": 0,
     "cluster_conf_id": 6,
     "cluster_weight": 2
-   }
+   },
+   "actions": [
+    {
+     "id": "desync_node",
+     "label": "Desync this node…",
+     "danger": false,
+     "description": "Takes this node out of flow control (wsrep_desync = ON), for example for a backup."
+    }
+   ]
   },
   {
    "key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
@@ -93,7 +101,8 @@
    "status_why": [
     "In the component as this node sees it. A node's state and queues are read on that node: connect to it to inspect them."
    ],
-   "metrics": {}
+   "metrics": {},
+   "actions": []
   }
  ],
  "galera": {

@@ -158,12 +158,13 @@ try {
   const last = (pathname) => seen[pathname].at(-1);
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
-  // 1. Places: ten, in order (Cluster right after Replication), each with its own icon.
-  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "Tuning", "Query editor", "Plans", "Investigations", "Learn"];
+  // 1. Places: eleven, in order (Cluster right after Replication, then
+  // ProxySQL), each with its own icon.
+  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning", "Query editor", "Plans", "Investigations", "Learn"];
   assert.deepEqual(await texts(".main-nav button"), places);
   const icons = await page.$$eval(".main-nav button svg", (els) => els.map((e) => e.innerHTML));
-  assert.equal(icons.length, 10);
-  assert.equal(new Set(icons).size, 10, "every place has a distinct icon");
+  assert.equal(icons.length, 11);
+  assert.equal(new Set(icons).size, 11, "every place has a distinct icon");
   assert.equal(await page.$eval(".brand", (e) => e.getAttribute("aria-label")), "myflames Home");
   assert.equal(await page.title(), "myflames · Performance workspace");
 
@@ -193,6 +194,7 @@ try {
     Workload: ".server-place",
     Replication: ".replication-place",
     Cluster: ".cluster-place",
+    ProxySQL: ".proxysql-place",
     Tuning: ".server-place.is-tuning-place .server-view[data-view=tuning]",
     Investigations: '[aria-label="Search investigations"]',
     Learn: ".teach-workspace",
@@ -475,7 +477,7 @@ try {
   assert.equal(await page.$('[data-status="safety"]'), null, "no safety state on Home");
   assert.equal(await page.$(".safety-strip"), null, "no strip under the top bar");
   const safety = '.window-statusbar[aria-label="Workspace status"] > [data-status="safety"]:first-child';
-  for (const label of ["Query editor", "Server", "Workload", "Replication", "Cluster", "Tuning"]) {
+  for (const label of ["Query editor", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning"]) {
     await go(label);
     await page.waitForSelector(`${safety}.is-production`);
     assert.equal(await text(`${safety} strong`), "Production");
@@ -934,8 +936,8 @@ try {
   await page.keyboard.press("ArrowUp");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Plans");
   await page.keyboard.press("Home");
-  // Query editor is the seventh place (after Replication, Cluster and Tuning).
-  for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowDown");
+  // Query editor is the eighth place (after Replication, Cluster, ProxySQL and Tuning).
+  for (let i = 0; i < 7; i++) await page.keyboard.press("ArrowDown");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Query editor");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Query editor");

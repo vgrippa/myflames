@@ -3,19 +3,19 @@
 #
 # Bring up three 3-node clusters in Docker for building and testing cluster
 # views: MariaDB Galera, Percona XtraDB Cluster and MySQL InnoDB Cluster (with
-# MySQL Router), seed accounts and a small testdb, and create saved myflames
-# connections to every node in an ISOLATED home (never the real ~/.myflames).
-# For development only: the servers are throwaway and mf_admin has ALL
-# PRIVILEGES.
+# MySQL Router), plus a ProxySQL in front of Galera and InnoDB Cluster, seed
+# accounts and a small testdb, and create saved myflames connections to every
+# node in an ISOLATED home (never the real ~/.myflames). For development only:
+# the servers are throwaway and mf_admin has ALL PRIVILEGES.
 #
 # Usage:
-#   scripts/cluster-matrix.sh up [galera|pxc|ic|all]     start, form, seed, wait healthy (idempotent)
-#   scripts/cluster-matrix.sh down [galera|pxc|ic|all]   remove containers, data volumes and networks
+#   scripts/cluster-matrix.sh up [galera|pxc|ic|proxysql|all]    start, form, seed, wait healthy (idempotent)
+#   scripts/cluster-matrix.sh down [galera|pxc|ic|proxysql|all]  remove containers, data volumes and networks
 #   scripts/cluster-matrix.sh status                     one line per node with its cluster state
 #   scripts/cluster-matrix.sh check [CLUSTER...]         health gate per cluster (exit 1 when unhealthy)
 #   scripts/cluster-matrix.sh profiles [--home DIR]      saved connections with passwords in DIR
 #   scripts/cluster-matrix.sh env                        print the matrix as JSON
-#   scripts/cluster-matrix.sh fail NAME                  docker stop one node (galera-2, ic-1, ...)
+#   scripts/cluster-matrix.sh fail NAME                  docker stop one node (galera-2, ic-1, proxysql, ...)
 #   scripts/cluster-matrix.sh recover NAME               start the node again and rejoin it
 #   scripts/cluster-matrix.sh fixtures STATE [CLUSTER...] [--out DIR]
 #                                                        record cluster outputs as JSON fixtures
@@ -39,6 +39,29 @@
 #           mysql:8.4 with mysql-router-community from the mysql-tools
 #           repository the image already configures; without either, the
 #           router is skipped with a warning.
+#   proxysql  proxysql/proxysql:3.0.11 (ProxySQL 3.0.11, arm64 and amd64)  mf-proxysql
+#           Admin interface 36032, MySQL interface 36033; attached to
+#           mf-galera-net and mf-ic-net, so it starts after galera and ic (up all
+#           does that; up proxysql needs both taking writes). Admin users: the
+#           default admin, which ProxySQL only lets in from inside the container,
+#           and radmin for remote logins. The monitor logs in as mf_monitor,
+#           created once on each cluster (Galera: no privilege, since @@wsrep_*
+#           and INFORMATION_SCHEMA.GLOBAL_STATUS need none on MariaDB; InnoDB
+#           Cluster: REPLICATION CLIENT and SELECT on
+#           performance_schema.replication_group_members and
+#           replication_group_member_stats). Hostgroups: mysql_galera_hostgroups
+#           writer 10, backup writer 11, reader 12, offline 19 (one writer,
+#           backup writers also read); mysql_group_replication_hostgroups writer
+#           30, backup writer 31, reader 32, offline 39 (the primary writes, the
+#           secondaries read; use_ssl=1, since caching_sha2_password needs TLS
+#           for a first login). Frontend user mf_admin, default hostgroup 30.
+#           Query rules: 10 sends statements tagged /* galera */ to 10, 20 sends
+#           SELECT ... FOR UPDATE to 30, 30 sends other SELECTs to 32; the rest
+#           goes to 30. up writes the servers, hostgroups and rules once (on a
+#           new data volume) and refreshes the passwords every time, so changes
+#           made through Admin survive; down proxysql starts over. Each up then
+#           sends a few reads through the MySQL interface, so
+#           stats_mysql_connection_pool and stats_mysql_query_digest have rows.
 #
 # Galera and PXC nodes are recreated on their data volume whenever they start,
 # so the bootstrap flag is never left on a node that rejoins (a restarted node
@@ -57,11 +80,19 @@
 # CREDS_FILE (chmod 600), and reach servers through the container environment
 # or stdin, never a command line.
 #
+# ProxySQL's passwords (PROXYSQL_ADMIN_PASSWORD for radmin,
+# PROXYSQL_MONITOR_PASSWORD for mf_monitor) are added to the same file by the
+# first up proxysql.
+#
 # Saved connections (profiles): cluster-galera-1..3, cluster-pxc-1..3,
 # cluster-ic-1..3 and cluster-ic-router-rw, user mf_admin, type development,
-# ssl_mode PREFERRED, password remembered (vault backend). profiles refuses a
-# home that is, contains, or stores into your real home or ~/.myflames, then
-# smokes each one with `myflames health --profile NAME --interval 1`.
+# ssl_mode PREFERRED, password remembered (vault backend), and, while
+# mf-proxysql runs, proxysql-admin (127.0.0.1:36032, user radmin, same
+# settings). profiles refuses a home that is, contains, or stores into your real
+# home or ~/.myflames, then smokes each one with
+# `myflames health --profile NAME --interval 1` (proxysql-admin: the read the
+# workspace's ProxySQL place makes, /api/live/proxysql, since ProxySQL Admin
+# answers neither the server views nor `myflames sql`).
 # Use them with:
 #   HOME=DIR MYFLAMES_SECRET_BACKEND=vault python3 -m myflames health --profile cluster-ic-1
 #
@@ -79,7 +110,8 @@
 #   MYFLAMES_HOME   isolated HOME for profiles (default $CLUSTER_LAB/home; --home wins)
 #   MYFLAMES_SRC    myflames checkout used for profiles and the smoke (default this checkout)
 #
-# Requirements: Docker, openssl, python3. Memory: about 6 GB for all three.
+# Requirements: Docker, openssl, python3. Memory: about 6 GB for all three
+# clusters (ProxySQL adds about 100 MB).
 
 set -euo pipefail
 
@@ -95,16 +127,20 @@ PXC_IMAGE="percona/percona-xtradb-cluster:8.4"
 IC_IMAGE="mysql:8.4"
 ROUTER_OFFICIAL="mysql/mysql-router:8.4"
 ROUTER_LOCAL="mf-mysql-router:8.4"
+PROXYSQL_IMAGE="proxysql/proxysql:3.0.11"
+PROXYSQL_ADMIN_USER="radmin"
+PROXYSQL_MONITOR_USER="mf_monitor"
 CLUSTERS="galera pxc ic"
-ALL_NODES="galera-1 galera-2 galera-3 pxc-1 pxc-2 pxc-3 ic-1 ic-2 ic-3 ic-router"
+ALL_GROUPS="galera pxc ic proxysql"
+ALL_NODES="galera-1 galera-2 galera-3 pxc-1 pxc-2 pxc-3 ic-1 ic-2 ic-3 ic-router proxysql"
 
 log() { echo "[cluster-matrix] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
 # --- names ---------------------------------------------------------------
-cluster_of() { case "$1" in galera-[123]) echo galera ;; pxc-[123]) echo pxc ;; ic-[123]|ic-router) echo ic ;; *) return 1 ;; esac; }
+cluster_of() { case "$1" in galera-[123]) echo galera ;; pxc-[123]) echo pxc ;; ic-[123]|ic-router) echo ic ;; proxysql) echo proxysql ;; *) return 1 ;; esac; }
 valid_node() { cluster_of "$1" > /dev/null 2>&1 || die "unknown node '$1' (known: $ALL_NODES)"; }
-valid_cluster() { case "$1" in galera|pxc|ic) ;; *) die "unknown cluster '$1' (known: $CLUSTERS all)" ;; esac; }
+valid_cluster() { case "$1" in galera|pxc|ic|proxysql) ;; *) die "unknown cluster '$1' (known: $ALL_GROUPS all)" ;; esac; }
 cname() { echo "mf-$1"; }
 volume() { echo "mf-$1-data"; }
 network() { echo "mf-$1-net"; }
@@ -116,9 +152,11 @@ port() {
     pxc-*) echo $((34200 + $(idx "$1"))) ;;
     ic-router) echo 34306 ;;
     ic-*) echo $((34300 + $(idx "$1"))) ;;
+    proxysql) echo 36032 ;;   # Admin; the MySQL interface is 36033
   esac
 }
-image_of() { case "$(cluster_of "$1")" in galera) echo "$GALERA_IMAGE" ;; pxc) echo "$PXC_IMAGE" ;; ic) echo "$IC_IMAGE" ;; esac; }
+image_of() { case "$(cluster_of "$1")" in galera) echo "$GALERA_IMAGE" ;; pxc) echo "$PXC_IMAGE" ;; ic) echo "$IC_IMAGE" ;; proxysql) echo "$PROXYSQL_IMAGE" ;; esac; }
+group_image() { case "$1" in proxysql) echo "$PROXYSQL_IMAGE" ;; *) image_of "$1-1" ;; esac; }
 client() { [ "$(cluster_of "$1")" = galera ] && echo mariadb || echo mysql; }
 is_up() { docker ps --format '{{.Names}}' | grep -Fxq "$(cname "$1")"; }
 exists() { docker ps -a --format '{{.Names}}' | grep -Fxq "$(cname "$1")"; }
@@ -130,7 +168,7 @@ ensure_network() {
 }
 has_volume() { docker volume inspect "$(volume "$1")" > /dev/null 2>&1; }
 selected_clusters() {
-  if [ "$#" -eq 0 ] || [ "$1" = all ]; then echo "$CLUSTERS"; return 0; fi
+  if [ "$#" -eq 0 ] || [ "$1" = all ]; then echo "$ALL_GROUPS"; return 0; fi
   local c; for c in "$@"; do valid_cluster "$c"; done; echo "$*"
 }
 
@@ -570,6 +608,258 @@ SELECT n, 1 + MOD(n * 13, 200), 1 + MOD(n * 7, 50), 1 + MOD(n, 5),
 SQL
 }
 
+# --- ProxySQL --------------------------------------------------------------
+ensure_proxysql_creds() {   # adds the ProxySQL passwords to the credentials file once
+  local k added=0
+  for k in PROXYSQL_ADMIN_PASSWORD PROXYSQL_MONITOR_PASSWORD; do
+    grep -q "^$k=" "$CREDS_FILE" && continue
+    ( umask 077; printf '%s=%s\n' "$k" "$(openssl rand -hex 12)" >> "$CREDS_FILE" )
+    added=1
+  done
+  chmod 600 "$CREDS_FILE"
+  # shellcheck disable=SC1090
+  [ "$added" = 0 ] || . "$CREDS_FILE"
+}
+
+# pxsql USER PASSWORD HOST PORT [client args]: SQL on stdin to ProxySQL, with the
+# MariaDB client its image ships; the password travels in the container
+# environment, never on a command line.
+pxsql() {
+  local user="$1" pw="$2" host="$3" p="$4"; shift 4
+  ( export MYSQL_PWD="$pw"; docker exec -i -e MYSQL_PWD "$(cname proxysql)" mysql --skip-ssl-verify-server-cert \
+      -u"$user" -h"$host" -P"$p" --protocol=TCP "$@" )
+}
+# Admin as ProxySQL's default admin user, which it only lets in over loopback.
+pxadmin() { pxsql admin admin 127.0.0.1 6032 "$@"; }
+# pxq SQL: one Admin query as the remote admin user, through the container's
+# network address (a remote login, as from the host); tab-separated rows.
+pxq() {
+  pxsql "$PROXYSQL_ADMIN_USER" "${PROXYSQL_ADMIN_PASSWORD:-}" "$(cname proxysql)" 6032 --batch --skip-column-names \
+    -e "$*" < /dev/null 2> /dev/null
+}
+# pxfront: SQL on stdin through the MySQL interface as mf_admin. --comments keeps
+# the /* galera */ tag query rule 10 routes on (the client strips comments by default).
+pxfront() { pxsql mf_admin "$MF_ADMIN_PASSWORD" 127.0.0.1 6033 --comments --batch --skip-column-names "$@"; }
+
+# px_greeting PORT: the server version in the MySQL protocol greeting that
+# 127.0.0.1:PORT sends the host (the published port works), or fails.
+px_greeting() {
+  python3 - "$1" <<'PY'
+import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+    s.settimeout(5)
+    data = b""
+    while len(data) < 4 or len(data) < 4 + int.from_bytes(data[:3], "little"):
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+except OSError:
+    sys.exit(1)
+if len(data) < 6 or data[4] != 10:   # protocol version 10
+    sys.exit(1)
+print(data[5:].split(b"\0", 1)[0].decode("ascii", "replace"))
+PY
+}
+
+wait_proxysql() {   # wait_proxysql SECONDS: Admin answers inside the container
+  local limit="${1:-60}" i
+  for i in $(seq 1 "$limit"); do
+    if is_up proxysql && [ "$(pxadmin --batch --skip-column-names -e "SELECT 1" < /dev/null 2> /dev/null)" = 1 ]; then
+      log "proxysql: Admin answers (${i}s)"; return 0
+    fi
+    sleep 1
+  done
+  log "proxysql: Admin did not answer within ${limit}s:"; docker logs --tail 30 "$(cname proxysql)" >&2 2>&1 || true
+  return 1
+}
+
+px_attach() {   # connect mf-proxysql to the Galera and InnoDB Cluster networks it is missing
+  local c attached
+  attached=" $(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$(cname proxysql)") "
+  for c in galera ic; do
+    case "$attached" in *" $(network "$c") "*) ;; *) docker network connect "$(network "$c")" "$(cname proxysql)"; log "proxysql: attached to $(network "$c")" ;; esac
+  done
+}
+
+run_proxysql() {
+  local cn; cn="$(cname proxysql)"
+  if exists proxysql; then
+    is_up proxysql || docker start "$cn" > /dev/null
+  else
+    docker volume create "$(volume proxysql)" > /dev/null
+    log "proxysql: starting $PROXYSQL_IMAGE"
+    # --no-version-check: the lab stays offline (ProxySQL asks its website for
+    # the latest version on start otherwise).
+    docker run -d --name "$cn" --hostname "$cn" --network "$(network galera)" \
+      -p 127.0.0.1:36032:6032 -p 127.0.0.1:36033:6033 -v "$(volume proxysql):/var/lib/proxysql" \
+      --restart unless-stopped --label myflames-cluster=proxysql "$PROXYSQL_IMAGE" \
+      proxysql -f --idle-threads --no-version-check -D /var/lib/proxysql > /dev/null
+  fi
+  px_attach
+}
+
+# create_monitor CLUSTER: the account ProxySQL's monitor logs in with, created
+# once on the node that takes writes and replicated by the cluster. Galera
+# (MariaDB): the health check reads @@read_only, @@wsrep_* and
+# INFORMATION_SCHEMA.GLOBAL_STATUS, which need no privilege. InnoDB Cluster:
+# the check reads performance_schema.replication_group_members and
+# replication_group_member_stats (SELECT on each); REPLICATION CLIENT for
+# replica status.
+create_monitor() {
+  local c="$1" n
+  n="$(primary_of "$c")"
+  case "$c" in
+    galera) rootsql "$n" > /dev/null <<SQL
+CREATE USER IF NOT EXISTS '$PROXYSQL_MONITOR_USER'@'%' IDENTIFIED BY '$PROXYSQL_MONITOR_PASSWORD';
+SQL
+      ;;
+    ic) rootsql "$n" > /dev/null <<SQL
+CREATE USER IF NOT EXISTS '$PROXYSQL_MONITOR_USER'@'%' IDENTIFIED BY '$PROXYSQL_MONITOR_PASSWORD';
+GRANT REPLICATION CLIENT ON *.* TO '$PROXYSQL_MONITOR_USER'@'%';
+GRANT SELECT ON performance_schema.replication_group_members TO '$PROXYSQL_MONITOR_USER'@'%';
+GRANT SELECT ON performance_schema.replication_group_member_stats TO '$PROXYSQL_MONITOR_USER'@'%';
+SQL
+      ;;
+  esac
+  log "proxysql: monitor account $PROXYSQL_MONITOR_USER on $c (through $n)"
+}
+
+# px_configure: the credentials every time (the admin, monitor and mf_admin
+# passwords from CREDS_FILE); the servers, hostgroups and query rules only when
+# the lab's hostgroups are missing (a new data volume), so later changes made
+# through Admin are kept. Galera nodes are recreated whenever they start, so
+# their addresses can change: the DNS cache refreshes every 10 s, not 60 s.
+px_configure() {
+  pxadmin > /dev/null <<SQL
+UPDATE global_variables SET variable_value = 'admin:admin;$PROXYSQL_ADMIN_USER:$PROXYSQL_ADMIN_PASSWORD' WHERE variable_name = 'admin-admin_credentials';
+LOAD ADMIN VARIABLES TO RUNTIME;
+SAVE ADMIN VARIABLES TO DISK;
+UPDATE global_variables SET variable_value = '$PROXYSQL_MONITOR_USER' WHERE variable_name = 'mysql-monitor_username';
+UPDATE global_variables SET variable_value = '$PROXYSQL_MONITOR_PASSWORD' WHERE variable_name = 'mysql-monitor_password';
+UPDATE global_variables SET variable_value = '10000' WHERE variable_name = 'mysql-monitor_local_dns_cache_refresh_interval';
+LOAD MYSQL VARIABLES TO RUNTIME;
+SAVE MYSQL VARIABLES TO DISK;
+REPLACE INTO mysql_users (username, password, default_hostgroup, transaction_persistent, active, comment)
+  VALUES ('mf_admin', '$MF_ADMIN_PASSWORD', 30, 1, 1, 'cluster-matrix: same account and password on both clusters');
+LOAD MYSQL USERS TO RUNTIME;
+SAVE MYSQL USERS TO DISK;
+SQL
+  local have
+  have="$(pxadmin --batch --skip-column-names -e "SELECT (SELECT COUNT(*) FROM mysql_galera_hostgroups WHERE writer_hostgroup = 10) + (SELECT COUNT(*) FROM mysql_group_replication_hostgroups WHERE writer_hostgroup = 30)" < /dev/null)"
+  if [ "$have" = 2 ]; then log "proxysql: servers, hostgroups and query rules kept"; return 0; fi
+  log "proxysql: writing servers, hostgroups and query rules"
+  # Every node starts in its writer hostgroup; the Galera and Group Replication
+  # checks then move each to the writer, backup writer, reader or offline
+  # hostgroup in runtime. The highest weight makes mf-galera-1 the Galera writer.
+  pxadmin > /dev/null <<'SQL'
+DELETE FROM mysql_servers WHERE hostgroup_id IN (10, 11, 12, 19, 30, 31, 32, 39);
+INSERT INTO mysql_servers (hostgroup_id, hostname, port, weight, use_ssl, comment) VALUES
+  (10, 'mf-galera-1', 3306, 1000, 0, 'galera-1'),
+  (10, 'mf-galera-2', 3306, 100, 0, 'galera-2'),
+  (10, 'mf-galera-3', 3306, 100, 0, 'galera-3'),
+  (30, 'mf-ic-1', 3306, 100, 1, 'ic-1'),
+  (30, 'mf-ic-2', 3306, 100, 1, 'ic-2'),
+  (30, 'mf-ic-3', 3306, 100, 1, 'ic-3');
+DELETE FROM mysql_galera_hostgroups WHERE writer_hostgroup = 10;
+INSERT INTO mysql_galera_hostgroups (writer_hostgroup, backup_writer_hostgroup, reader_hostgroup, offline_hostgroup,
+  active, max_writers, writer_is_also_reader, max_transactions_behind, comment)
+  VALUES (10, 11, 12, 19, 1, 1, 2, 100, 'mf_galera: one writer; the backup writers also read');
+DELETE FROM mysql_group_replication_hostgroups WHERE writer_hostgroup = 30;
+INSERT INTO mysql_group_replication_hostgroups (writer_hostgroup, backup_writer_hostgroup, reader_hostgroup,
+  offline_hostgroup, active, max_writers, writer_is_also_reader, max_transactions_behind, comment)
+  VALUES (30, 31, 32, 39, 1, 1, 0, 100, 'mfcluster: the primary writes; the secondaries read');
+DELETE FROM mysql_query_rules WHERE rule_id IN (10, 20, 30);
+INSERT INTO mysql_query_rules (rule_id, active, match_pattern, destination_hostgroup, apply, comment)
+  VALUES (10, 1, '^/\* galera \*/', 10, 1, 'statements tagged /* galera */ go to the Galera writer');
+INSERT INTO mysql_query_rules (rule_id, active, match_digest, destination_hostgroup, apply, comment)
+  VALUES (20, 1, '^SELECT .* FOR UPDATE', 30, 1, 'locking reads go to the InnoDB Cluster primary'),
+         (30, 1, '^SELECT', 32, 1, 'other reads go to the InnoDB Cluster secondaries');
+LOAD MYSQL SERVERS TO RUNTIME;
+SAVE MYSQL SERVERS TO DISK;
+LOAD MYSQL QUERY RULES TO RUNTIME;
+SAVE MYSQL QUERY RULES TO DISK;
+SQL
+}
+
+# px_traffic: a few reads through the MySQL interface, one per query rule and
+# the default route, so stats_mysql_connection_pool, stats_mysql_query_rules and
+# stats_mysql_query_digest have rows. Nothing is written: the locking reads are
+# rolled back.
+px_traffic() {
+  local i sql=""
+  for i in $(seq 1 20); do
+    sql="${sql}SELECT COUNT(*) FROM testdb.orders WHERE status = 'paid' AND customer_id = $i;
+SELECT name, country FROM testdb.customers WHERE id = $i;
+"
+  done
+  for i in $(seq 1 5); do
+    sql="${sql}START TRANSACTION;
+SELECT id, status FROM testdb.orders WHERE id = $i FOR UPDATE;
+ROLLBACK;
+/* galera */ SELECT COUNT(*) FROM testdb.orders WHERE product_id = $i;
+SHOW GLOBAL STATUS LIKE 'Uptime';
+"
+  done
+  printf '%s' "$sql" | pxfront > /dev/null
+  log "proxysql: sent $((20 * 2 + 5 * 5)) statements through the MySQL interface"
+}
+
+# px_wait_hostgroups SECONDS: until the checks put one ONLINE writer and at
+# least one ONLINE reader in runtime for each cluster.
+px_wait_hostgroups() {
+  local limit="${1:-60}" i
+  for i in $(seq 1 "$limit"); do
+    px_hostgroups_ok && { log "proxysql: writers and readers ONLINE (${i}s)"; return 0; }
+    sleep 1
+  done
+  log "proxysql: hostgroups not ready within ${limit}s:"
+  pxq "SELECT hostgroup_id, hostname, port, status FROM runtime_mysql_servers ORDER BY hostgroup_id, hostname" >&2 || true
+  return 1
+}
+px_online() {   # px_online HOSTGROUP: ONLINE runtime servers in it, one host name per line
+  pxq "SELECT hostname FROM runtime_mysql_servers WHERE hostgroup_id = $1 AND status = 'ONLINE' ORDER BY hostname" || true
+}
+px_count() { [ -n "$1" ] && echo "$1" | wc -l | tr -d ' ' || echo 0; }
+px_hostgroups_ok() {
+  [ "$(px_count "$(px_online 10)")" = 1 ] && [ "$(px_count "$(px_online 30)")" = 1 ] &&
+    [ "$(px_count "$(px_online 12)")" -ge 1 ] && [ "$(px_count "$(px_online 32)")" -ge 1 ]
+}
+
+proxysql_up() {
+  local c n
+  for c in galera ic; do
+    n="$(primary_of "$c" 2> /dev/null || true)"
+    if [ -z "$n" ] || ! is_up "$n" || [ "$(rq "$n" "SELECT 1")" != 1 ]; then
+      die "proxysql: $c has no running node that takes writes (bring it up first: $0 up galera ic)"
+    fi
+  done
+  ensure_proxysql_creds
+  create_monitor galera
+  create_monitor ic
+  run_proxysql
+  wait_proxysql 60 || die "proxysql: Admin did not start"
+  px_configure
+  px_wait_hostgroups 60 || die "proxysql: hostgroups not ready"
+  px_traffic
+}
+
+proxysql_down() {
+  docker rm -fv "$(cname proxysql)" > /dev/null 2>&1 && log "removed $(cname proxysql)" || true
+  docker volume rm "$(volume proxysql)" > /dev/null 2>&1 || true
+  rm -f "$STATE/proxysql".*
+}
+
+# px_version: ProxySQL's version (admin-version; stats_mysql_global has none).
+px_version() { pxq "SELECT variable_value FROM global_variables WHERE variable_name = 'admin-version'"; }
+px_summary() {   # one line: ONLINE/total per runtime hostgroup
+  local s
+  s="$(pxq "SELECT 'HG' || hostgroup_id || ' ' || SUM(status = 'ONLINE') || '/' || COUNT(*) FROM runtime_mysql_servers GROUP BY hostgroup_id ORDER BY hostgroup_id" | tr '\n' ' ')"
+  [ -n "$s" ] && echo "${s}ONLINE; MySQL 36033" || echo "Admin does not answer as $PROXYSQL_ADMIN_USER"
+}
+
 # --- health ----------------------------------------------------------------
 check_cluster() {   # prints one line per node; returns 1 when the cluster is not healthy
   local c="$1" n ok=0 line
@@ -608,6 +898,29 @@ JS
       else
         echo "ic ic-router: down"; ok=1
       fi ;;
+    proxysql)
+      if ! is_up proxysql; then echo "proxysql: down"; return 1; fi
+      local p v rows got want
+      for p in 36032 36033; do
+        v="$(px_greeting "$p" || true)"
+        if [ -n "$v" ]; then echo "proxysql 127.0.0.1:$p: MySQL protocol greeting, server version $v"
+        else echo "proxysql 127.0.0.1:$p: no MySQL protocol greeting"; ok=1; fi
+      done
+      rows="$(pxq "SELECT hostgroup_id, hostname, port, status FROM runtime_mysql_servers ORDER BY hostgroup_id, hostname" || true)"
+      if [ -z "$rows" ]; then echo "proxysql Admin as $PROXYSQL_ADMIN_USER: no answer or no runtime servers"; return 1; fi
+      echo "$rows" | while read -r hg host p st; do echo "proxysql runtime_mysql_servers HG$hg $host:$p $st"; done
+      px_hostgroups_ok || { echo "proxysql: want one ONLINE writer in HG10 and HG30 and an ONLINE reader in HG12 and HG32"; ok=1; }
+      # Routing through the MySQL interface: rule 30 (a SELECT reaches an
+      # InnoDB Cluster secondary), rule 10 (/* galera */ reaches the Galera
+      # writer) and the default hostgroup 30 (a SHOW reaches the primary).
+      for want in "32 SELECT @@hostname" "10 /* galera */ SELECT @@hostname" "30 SHOW GLOBAL VARIABLES LIKE 'hostname'"; do
+        got="$(printf '%s;\n' "${want#* }" | pxfront 2> /dev/null | awk '{print $NF}' | tail -1 || true)"
+        if [ -n "$got" ] && px_online "${want%% *}" | grep -Fxq "$got"; then
+          echo "proxysql route \"${want#* }\" -> $got (HG${want%% *})"
+        else
+          echo "proxysql route \"${want#* }\" -> ${got:-no answer}, want an ONLINE server of HG${want%% *}"; ok=1
+        fi
+      done ;;
   esac
   return "$ok"
 }
@@ -615,20 +928,14 @@ JS
 # --- commands --------------------------------------------------------------
 cluster_up_one() {
   local c="$1"
-  case "$c" in galera|pxc) wsrep_up "$c" ;; ic) ic_up ;; esac
+  case "$c" in galera|pxc) wsrep_up "$c" ;; ic) ic_up ;; proxysql) proxysql_up ;; esac
   check_cluster "$c"
 }
 
-cmd_up() {
-  command -v docker > /dev/null || die "docker is required"
-  mkdir -p "$STATE" "$LOGS"; load_creds
-  local cs c image; cs="$(selected_clusters "$@")"
-  for c in $cs; do
-    image="$(image_of "$c-1")"
-    docker image inspect "$image" > /dev/null 2>&1 || { log "pulling $image"; docker pull -q "$image" > /dev/null; }
-  done
-  local pids="" p rc failed=0
-  for c in $cs; do
+UP_FAILED=0
+up_groups() {   # up_groups GROUP...: bring the groups up in parallel, counting failures in UP_FAILED
+  local c pids="" p rc
+  for c in "$@"; do
     rm -f "$STATE/$c.ready" "$STATE/$c.fail"
     # Not inside && or ||: there bash ignores set -e in every function called.
     ( cluster_up_one "$c"; touch "$STATE/$c.ready" ) > "$LOGS/$c.log" 2>&1 &
@@ -638,22 +945,42 @@ cmd_up() {
   for p in $pids; do
     rc=0; wait "${p%%:*}" || rc=$?
     if [ "$rc" -ne 0 ]; then
-      failed=$((failed + 1)); echo "see $LOGS/${p##*:}.log" > "$STATE/${p##*:}.fail"
+      UP_FAILED=$((UP_FAILED + 1)); echo "see $LOGS/${p##*:}.log" > "$STATE/${p##*:}.fail"
       log "FAILED ${p##*:}: $(tail -5 "$LOGS/${p##*:}.log")"
     else log "${p##*:}: healthy"; fi
   done
+}
+
+cmd_up() {
+  command -v docker > /dev/null || die "docker is required"
+  mkdir -p "$STATE" "$LOGS"; load_creds
+  local cs c image clusters="" proxy=""; cs="$(selected_clusters "$@")"
+  for c in $cs; do
+    image="$(group_image "$c")"
+    docker image inspect "$image" > /dev/null 2>&1 || { log "pulling $image"; docker pull -q "$image" > /dev/null; }
+    if [ "$c" = proxysql ]; then proxy=proxysql; else clusters="$clusters $c"; fi
+  done
+  # shellcheck disable=SC2086
+  if [ -n "$clusters" ]; then up_groups $clusters; fi
+  # ProxySQL fronts Galera and InnoDB Cluster, so it starts after them.
+  if [ -n "$proxy" ]; then up_groups proxysql; fi
   cmd_status
-  [ "$failed" -eq 0 ] || { log "$failed cluster(s) failed; the rest are usable."; return 1; }
+  [ "$UP_FAILED" -eq 0 ] || { log "$UP_FAILED cluster(s) failed; the rest are usable."; return 1; }
 }
 
 cmd_down() {
   local cs c n; cs="$(selected_clusters "$@")"
+  # ProxySQL first: it is attached to the Galera and InnoDB Cluster networks.
+  case " $cs " in *" proxysql "*) proxysql_down ;; esac
   for c in $cs; do
+    [ "$c" = proxysql ] && continue
     for n in $(nodes "$c") $( [ "$c" = ic ] && echo ic-router ); do
       docker rm -fv "$(cname "$n")" > /dev/null 2>&1 && log "removed $(cname "$n")" || true
       docker volume rm "$(volume "$n")" > /dev/null 2>&1 || true
     done
     [ "$c" = pxc ] && docker volume rm mf-pxc-certs mf-pxc-conf > /dev/null 2>&1 || true
+    # A ProxySQL that stays leaves the network (up proxysql attaches it again).
+    if exists proxysql; then docker network disconnect -f "$(network "$c")" "$(cname proxysql)" > /dev/null 2>&1 || true; fi
     docker network rm "$(network "$c")" > /dev/null 2>&1 || true
     rm -f "$STATE/$c".*
   done
@@ -668,6 +995,8 @@ cmd_status() {
     if ! is_up "$n"; then printf '%-10s %-14s %-8s %-6s %-26s %s\n' "$n" "$(cname "$n")" down "$(port "$n")" - -; continue; fi
     case "$n" in
       ic-router) v="mysqlrouter"; detail="RW -> $(router_route RW || echo none), RO -> $(router_route RO || echo none)" ;;
+      proxysql) v="$(px_version || true)"
+        v="ProxySQL ${v%%-*}"; detail="$(px_summary)" ;;
       ic-*) v="$(rq "$n" "SELECT VERSION()" || true)"; detail="$(ic_member_line "$n")" ;;
       *) v="$(rq "$n" "SELECT VERSION()" || true)"; detail="size/status/state $(wsrep_line "$n")" ;;
     esac
@@ -694,6 +1023,13 @@ cmd_recover() {
   is_up "$n" && { log "$n already running"; return 0; }
   c="$(cluster_of "$n")"
   case "$c" in
+    proxysql)
+      docker start "$(cname proxysql)" > /dev/null
+      wait_proxysql 60 || die "proxysql did not start"
+      px_attach
+      # A restart empties the stats tables.
+      px_wait_hostgroups 60 || die "proxysql: hostgroups not ready"
+      px_traffic ;;
     galera|pxc)
       for o in $(nodes "$c"); do [ "$o" != "$n" ] && is_up "$o" && peer="$o"; done
       if [ -z "$peer" ]; then log "$c: no node is running; bringing the cluster up instead"; wsrep_up "$c"; return; fi
@@ -732,8 +1068,9 @@ cmd_fixtures() {
   load_creds; mkdir -p "$out"
   local c n
   # shellcheck disable=SC2086
-  cs="$(selected_clusters $cs)"
+  if [ -z "$cs" ]; then cs="$CLUSTERS"; else cs="$(selected_clusters $cs)"; fi
   for c in $cs; do
+    case "$c" in proxysql) log "fixtures: proxysql is not recorded here (skipped)"; continue ;; esac
     for n in $(nodes "$c"); do
       if ! is_up "$n"; then log "fixtures: $n is down (not captured)"; continue; fi
       capture_node "$n" "$state" "$out"
@@ -1012,28 +1349,72 @@ parse_home() {   # --home DIR overrides MYFLAMES_HOME
   done
 }
 
-cmd_profiles() {
-  parse_home "$@"
-  check_myflames_home
-  load_creds; mkdir -p "$MYFLAMES_HOME" "$STATE"; chmod 700 "$MYFLAMES_HOME"
-  local p n port save_fails=0
-  while read -r p n port; do
-    if ( export PW="$MF_ADMIN_PASSWORD"; cd "$MYFLAMES_SRC" && HOME="$MYFLAMES_HOME" MYFLAMES_SECRET_BACKEND=vault PYTHONPATH="$MYFLAMES_SRC" \
-      python3 - "$p" "$port" <<'PY'
+# save_profile NAME PORT USER: a development connection to 127.0.0.1:PORT with
+# the password in $PW remembered.
+save_profile() {
+  ( cd "$MYFLAMES_SRC" && HOME="$MYFLAMES_HOME" MYFLAMES_SECRET_BACKEND=vault PYTHONPATH="$MYFLAMES_SRC" \
+    python3 - "$1" "$2" "$3" <<'PY'
 import os, sys
 from myflames.workspace_store import WorkspaceStore
-name, port = sys.argv[1:3]
+name, port, user = sys.argv[1:4]
 store = WorkspaceStore()
 existing = [p for p in store.list('profile') if p['name'] == name]
 # ssl_mode is saved explicitly: a saved password is only released to the
 # exact TLS settings it was saved with, and the workspace sends PREFERRED.
-store.save('profile', {'name': name, 'host': '127.0.0.1', 'port': int(port), 'user': 'mf_admin',
+store.save('profile', {'name': name, 'host': '127.0.0.1', 'port': int(port), 'user': user,
                        'ssl_mode': 'PREFERRED', 'ssl_ca': '', 'type': 'development', 'read_only': False},
            key=existing[0]['id'] if existing else None, password=os.environ['PW'], remember=True)
 PY
-    ); then log "profile $p saved (127.0.0.1:$port, mf_admin, password remembered)"
+  )
+}
+
+# px_smoke PROFILE OUT: the workspace's ProxySQL read (/api/live/proxysql) with
+# the saved profile; writes the report to OUT and fails unless it is ProxySQL
+# with servers.
+px_smoke() {
+  ( cd "$MYFLAMES_SRC" && HOME="$MYFLAMES_HOME" MYFLAMES_SECRET_BACKEND=vault PYTHONPATH="$MYFLAMES_SRC" \
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+from myflames import ui
+from myflames.workspace_store import WorkspaceStore
+name, out = sys.argv[1:3]
+
+
+class Workspace(object):
+    store = WorkspaceStore()
+
+
+profile = [p for p in Workspace.store.list('profile') if p['name'] == name][0]
+connection = dict((k, profile.get(k)) for k in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'type', 'read_only'))
+connection['profile_id'] = profile['id']
+report = ui.api_response('/api/live/proxysql', {'connection': connection}, Workspace())
+with open(out, 'w') as f:
+    json.dump(report, f, indent=1)
+if not (report.get('is_proxysql') and report.get('servers')):
+    sys.exit('not a ProxySQL Admin with servers: %s' % report.get('message'))
+PY
+  )
+}
+
+cmd_profiles() {
+  parse_home "$@"
+  check_myflames_home
+  load_creds; mkdir -p "$MYFLAMES_HOME" "$STATE"; chmod 700 "$MYFLAMES_HOME"
+  local p n port save_fails=0 proxy=0
+  while read -r p n port; do
+    if ( export PW="$MF_ADMIN_PASSWORD"; save_profile "$p" "$port" mf_admin ); then
+      log "profile $p saved (127.0.0.1:$port, mf_admin, password remembered)"
     else log "profile $p NOT saved"; save_fails=$((save_fails + 1)); fi
   done < <(profile_rows)
+  # ProxySQL Admin, while mf-proxysql runs.
+  if is_up proxysql; then
+    if [ -z "${PROXYSQL_ADMIN_PASSWORD:-}" ]; then
+      log "profile proxysql-admin NOT saved: no PROXYSQL_ADMIN_PASSWORD in $CREDS_FILE (run: $0 up proxysql)"
+      save_fails=$((save_fails + 1))
+    elif ( export PW="$PROXYSQL_ADMIN_PASSWORD"; save_profile proxysql-admin 36032 "$PROXYSQL_ADMIN_USER" ); then
+      log "profile proxysql-admin saved (127.0.0.1:36032, $PROXYSQL_ADMIN_USER, password remembered)"; proxy=1
+    else log "profile proxysql-admin NOT saved"; save_fails=$((save_fails + 1)); fi
+  fi
   # Smoke: a read-only command per profile, in parallel.
   mkdir -p "$STATE/smoke"
   rm -f "$STATE"/smoke/*
@@ -1043,6 +1424,14 @@ PY
       ( mf health --profile "$p" --interval 1 --json -q -o "$STATE/smoke/$p.json" > "$STATE/smoke/$p.out" 2>&1 \
           && echo pass > "$STATE/smoke/$p.result" || echo "fail ($(tail -1 "$STATE/smoke/$p.out"))" > "$STATE/smoke/$p.result" ) &
     done
+    # ProxySQL Admin answers neither the server views nor the Query editor
+    # (its SQLite dialect rejects @@ variables): read what the ProxySQL place
+    # reads, through the workspace endpoint.
+    if [ "$proxy" = 1 ]; then
+      p=proxysql-admin
+      ( px_smoke "$p" "$STATE/smoke/$p.json" > "$STATE/smoke/$p.out" 2>&1 \
+          && echo pass > "$STATE/smoke/$p.result" || echo "fail ($(tail -1 "$STATE/smoke/$p.out"))" > "$STATE/smoke/$p.result" ) &
+    fi
     wait
   }
   local fails=0 r
@@ -1068,13 +1457,33 @@ cmd_env() {
   done <<EOF
 $(profile_rows)
 EOF
-  ROWS="$rows" HOMEDIR="$MYFLAMES_HOME" CREDS="$CREDS_FILE" STATEDIR="$STATE" \
+  local pxv=""
+  is_up proxysql && pxv="$(px_version || true)"
+  ROWS="$rows" HOMEDIR="$MYFLAMES_HOME" CREDS="$CREDS_FILE" STATEDIR="$STATE" PX_VERSION="$pxv" \
+  PX_UP="$(is_up proxysql && echo 1 || echo 0)" PX_IMAGE="$PROXYSQL_IMAGE" PX_ADMIN="$PROXYSQL_ADMIN_USER" \
+  PX_MONITOR="$PROXYSQL_MONITOR_USER" \
   IMAGES="galera=$GALERA_IMAGE pxc=$PXC_IMAGE ic=$IC_IMAGE" python3 - <<'PY'
 import json, os
 images = dict(kv.split("=", 1) for kv in os.environ["IMAGES"].split())
 names = {"galera": "mf_galera", "pxc": "mf_pxc", "ic": "mfcluster"}
 out = {"env": {"HOME": os.environ["HOMEDIR"], "MYFLAMES_SECRET_BACKEND": "vault"},
        "credentials_env": os.environ["CREDS"], "clusters": {}}
+smoke = os.path.join(os.environ["STATEDIR"], "smoke", "proxysql-admin.result")
+out["proxysql"] = {
+    "image": os.environ["PX_IMAGE"], "container": "mf-proxysql", "networks": ["mf-galera-net", "mf-ic-net"],
+    "host": "127.0.0.1", "ports": {"admin": 36032, "mysql": 36033}, "admin_user": os.environ["PX_ADMIN"],
+    "monitor_user": os.environ["PX_MONITOR"], "frontend_user": "mf_admin", "default_hostgroup": 30,
+    "profile": "proxysql-admin", "up": os.environ["PX_UP"] == "1", "version": os.environ["PX_VERSION"] or None,
+    "hostgroups": {
+        "galera": {"table": "mysql_galera_hostgroups", "writer": 10, "backup_writer": 11, "reader": 12, "offline": 19},
+        "ic": {"table": "mysql_group_replication_hostgroups", "writer": 30, "backup_writer": 31, "reader": 32,
+               "offline": 39}},
+    "query_rules": [
+        {"rule_id": 10, "match_pattern": r"^/\* galera \*/", "destination_hostgroup": 10},
+        {"rule_id": 20, "match_digest": "^SELECT .* FOR UPDATE", "destination_hostgroup": 30},
+        {"rule_id": 30, "match_digest": "^SELECT", "destination_hostgroup": 32}],
+    "smoke": open(smoke).read().strip() if os.path.exists(smoke) else "not run",
+}
 for line in os.environ["ROWS"].splitlines():
     node, cluster, container, port, profile, version = (line.split("\t") + [""] * 6)[:6]
     c = out["clusters"].setdefault(cluster, {"image": images[cluster], "cluster_name": names[cluster],
@@ -1102,7 +1511,7 @@ main() {
     fail) [ "$#" -eq 1 ] || die "usage: fail NAME"; cmd_fail "$1" ;;
     recover) [ "$#" -eq 1 ] || die "usage: recover NAME"; cmd_recover "$1" ;;
     fixtures) cmd_fixtures "$@" ;;
-    *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
+    *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
   esac
 }
 main "$@"

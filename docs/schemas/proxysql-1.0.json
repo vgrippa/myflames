@@ -1,0 +1,892 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/proxysql-1.0.json",
+  "title": "myflames ProxySQL Admin report (proxysql-1.0)",
+  "description": "What the ProxySQL place reads from ProxySQL's Admin interface (myflames/proxysql.py read_status): backends as ProxySQL runs them with their connection pool and configuration row, hostgroups and the monitors that manage them, query rules, the top query digests, and the differences between memory, runtime and disk. Read-only; the changes each row offers are listed in its actions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "captured_at",
+    "available",
+    "is_proxysql",
+    "version",
+    "uptime_s",
+    "message",
+    "status",
+    "status_why",
+    "config_readable",
+    "servers",
+    "hostgroups",
+    "monitors",
+    "query_rules",
+    "query_digests",
+    "pending",
+    "metrics",
+    "summary",
+    "actions",
+    "notes",
+    "statements",
+    "fingerprints"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "proxysql-1.0"
+    },
+    "captured_at": {
+      "type": "string"
+    },
+    "available": {
+      "type": "boolean"
+    },
+    "is_proxysql": {
+      "type": "boolean",
+      "description": "admin-version exists in global_variables and SELECT @@version echoes it."
+    },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "uptime_s": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "watch",
+        "problem",
+        "unknown"
+      ]
+    },
+    "status_why": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "config_readable": {
+      "type": "boolean",
+      "description": "main.mysql_servers and main.mysql_query_rules were readable; without them no change is offered."
+    },
+    "servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "hostgroup_id",
+          "hostname",
+          "port",
+          "runtime_status",
+          "status_detail",
+          "settings",
+          "pool",
+          "config",
+          "config_key",
+          "config_note",
+          "monitor",
+          "role",
+          "tone",
+          "why",
+          "actions"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "rt|hostgroup|host|port for a runtime row, cfg|... for a configuration row not in runtime."
+          },
+          "hostgroup_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "runtime_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What ProxySQL runs (the pool's status word, e.g. SHUNNED_REPLICATION_LAG); null when only configured."
+          },
+          "status_detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settings": {
+            "type": "object"
+          },
+          "pool": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "description": "stats_mysql_connection_pool for this runtime row; a column this ProxySQL lacks is absent.",
+            "properties": {
+              "conn_used": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "conn_free": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "conn_ok": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "conn_err": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_conn_used": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "queries": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "bytes_sent": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "bytes_recv": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "latency_us": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "config": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "description": "A row of main.mysql_servers (the configuration in memory).",
+            "properties": {
+              "hostgroup_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "hostname": {
+                "type": "string"
+              },
+              "port": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "weight": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_connections": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_replication_lag": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "use_ssl": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_latency_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "compression": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "gtid_port": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "comment": {
+                "type": "string"
+              }
+            }
+          },
+          "config_key": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "config_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "monitor": {
+            "enum": [
+              "galera",
+              "group_replication",
+              "replication",
+              "aws_aurora",
+              null
+            ]
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tone": {
+            "enum": [
+              "ok",
+              "watch",
+              "problem",
+              "unknown"
+            ]
+          },
+          "why": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/action"
+            }
+          },
+          "action_notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "hostgroups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "monitor",
+          "role",
+          "servers",
+          "status",
+          "standby",
+          "queries",
+          "conn_used",
+          "conn_free",
+          "conn_err",
+          "tone",
+          "why"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "monitor": {
+            "enum": [
+              "galera",
+              "group_replication",
+              "replication",
+              "aws_aurora",
+              null
+            ]
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "servers": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ONLINE": {
+                "type": "integer"
+              },
+              "SHUNNED": {
+                "type": "integer"
+              },
+              "OFFLINE_SOFT": {
+                "type": "integer"
+              },
+              "OFFLINE_HARD": {
+                "type": "integer"
+              }
+            }
+          },
+          "standby": {
+            "type": "integer"
+          },
+          "queries": {
+            "type": "integer"
+          },
+          "conn_used": {
+            "type": "integer"
+          },
+          "conn_free": {
+            "type": "integer"
+          },
+          "conn_err": {
+            "type": "integer"
+          },
+          "tone": {
+            "enum": [
+              "ok",
+              "watch",
+              "problem",
+              "unknown"
+            ]
+          },
+          "why": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "monitors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "source",
+          "active"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "galera",
+              "group_replication",
+              "replication",
+              "aws_aurora"
+            ]
+          },
+          "source": {
+            "enum": [
+              "runtime",
+              "memory"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "writer_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "backup_writer_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reader_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offline_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_writers": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "writer_is_also_reader": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_transactions_behind": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "query_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule_id",
+          "active",
+          "destination_hostgroup",
+          "apply",
+          "hits",
+          "runtime_active",
+          "fields",
+          "actions"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "integer"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schemaname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "match_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "match_pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "negate_match_pattern": {
+            "type": "boolean"
+          },
+          "destination_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "apply": {
+            "type": "boolean"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "hits": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "runtime_active": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/action"
+            }
+          }
+        }
+      }
+    },
+    "query_digests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "schemaname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "digest_text": {
+            "type": "string"
+          },
+          "count_star": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sum_time_us": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "min_time_us": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_time_us": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "avg_time_us": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "first_seen": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_seen": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows_sent": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows_affected": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "maxItems": 100
+    },
+    "pending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "servers",
+        "query_rules"
+      ],
+      "properties": {
+        "servers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime",
+            "disk"
+          ],
+          "properties": {
+            "runtime": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Differences between the configuration in memory and runtime; null when a copy could not be read."
+            },
+            "disk": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Differences between memory and disk."
+            }
+          }
+        },
+        "query_rules": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime",
+            "disk"
+          ],
+          "properties": {
+            "runtime": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Differences between the configuration in memory and runtime; null when a copy could not be read."
+            },
+            "disk": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Differences between memory and disk."
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backends": {
+          "type": "integer"
+        },
+        "ONLINE": {
+          "type": "integer"
+        },
+        "SHUNNED": {
+          "type": "integer"
+        },
+        "OFFLINE_SOFT": {
+          "type": "integer"
+        },
+        "OFFLINE_HARD": {
+          "type": "integer"
+        },
+        "not_in_runtime": {
+          "type": "integer"
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/action"
+      },
+      "description": "Load and Save for the servers and query rules modules."
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "statements": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fingerprints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "description": "SHA-256 of every row of each module copy (servers_memory, servers_runtime, servers_disk, query_rules_memory, ...); null when a table could not be read. A reviewed change binds the ones its statements depend on."
+    }
+  },
+  "$defs": {
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "danger",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "danger": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "value": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "min",
+            "max",
+            "current"
+          ],
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "min": {
+              "type": "integer"
+            },
+            "max": {
+              "type": "integer"
+            },
+            "current": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

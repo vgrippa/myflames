@@ -63,7 +63,15 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-1:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-1:3306"
+   "endpoint": "mf-ic-1:3306",
+   "actions": [
+    {
+     "id": "stop_member",
+     "label": "Stop Group Replication…",
+     "danger": true,
+     "description": "This member leaves the group and becomes read-only (super_read_only ON)."
+    }
+   ]
   },
   {
    "key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
@@ -94,7 +102,8 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-2:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-2:3306"
+   "endpoint": "mf-ic-2:3306",
+   "actions": []
   },
   {
    "key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
@@ -125,7 +134,8 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-3:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-3:3306"
+   "endpoint": "mf-ic-3:3306",
+   "actions": []
   }
  ],
  "galera": null,

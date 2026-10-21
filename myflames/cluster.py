@@ -1,6 +1,8 @@
 """Cluster status for the connection in use: MariaDB Galera, Galera Cluster for
 MySQL, Percona XtraDB Cluster, MySQL InnoDB Cluster and Group Replication.
-Read-only.
+:func:`read_status` only reads; the reviewed changes the workspace's Cluster
+place offers (switchover, Group Replication stop and start, MariaDB Galera
+desync, resync and pc.bootstrap) are at the end of this module.
 
 :func:`read_status` returns the ``cluster-1.0`` report (schema in
 ``docs/schemas/cluster-1.0.json``): the kind of cluster this server belongs
@@ -1721,3 +1723,423 @@ def check_in_text(router):
     if router.get("from_local_copy"):
         text += ", from this member's metadata copy, possibly out of date"
     return text
+
+
+# ---- reviewed actions ------------------------------------------------------------------
+#
+# Changes the Cluster place offers (db-operations contract; the send half is
+# myflames.reviewed_writes). Each one is offered only where the statement does
+# what its label says, verified against the server source (mysql-server 9.7
+# "M/", mariadb-server 13.0 trunk and the 10.11.16, 11.4.9 and 12.3.1 tags
+# "Ma/", mysql-shell "Sh/"):
+#
+# * Group Replication (MySQL 8.0.13+, the UDFs' first release):
+#   - switchover: SELECT group_replication_set_as_primary('<uuid>') takes the
+#     member's MEMBER_ID (a UUID: the UDF validates it, M/plugin/
+#     group_replication/src/udf/udf_single_primary.cc:171-181, udf_utils.cc:
+#     169-171). It runs on any ONLINE member of the majority, refuses while a
+#     member is RECOVERING or UNREACHABLE (:153-169, 209-215) and while the
+#     current primary runs a replica channel (primary_election_validation_
+#     handler.cc:184-193: an InnoDB ClusterSet replica cluster, where MySQL
+#     Shell's setPrimaryInstance stops that channel first).
+#   - mode switches, plain Group Replication only: group_replication_switch_
+#     to_multi_primary_mode() and group_replication_switch_to_single_primary_
+#     mode() (udf_multi_primary.cc:64-123, udf_single_primary.cc:237-293),
+#     persisted by the plugin (multi_primary_migration_action.cc:340-357,
+#     primary_election_action.cc:739-752). Not offered for InnoDB Cluster:
+#     MySQL Shell's switchToMultiPrimaryMode also sets auto_increment on
+#     every member and the metadata's primary_mode (Sh/modules/adminapi/
+#     cluster/switch_to_multi_primary_mode.cc:49-80), which the UDF does not.
+#   - STOP GROUP_REPLICATION on the connected member: it leaves the group and
+#     turns super_read_only ON (M/plugin/group_replication/src/plugin.cc:
+#     1371-1379); on the primary the group elects another; on the last
+#     member the group ends.
+#   - START GROUP_REPLICATION on the connected member while OFFLINE only: a
+#     member in ERROR still has the plugin running, so START fails with
+#     ER_GROUP_REPLICATION_RUNNING (plugin.cc:574-576, 891, 1363). Refused
+#     while group_replication_bootstrap_group is ON (START would create a
+#     second group, plugin.cc:2628-2631). Recovery may clone the server
+#     (remote_clone_handler.cc:285-296).
+#   - START, STOP and the UDFs need SUPER or GROUP_REPLICATION_ADMIN
+#     (M/sql/sql_parse.cc:3560-3564, 3653-3657; udf_utils.cc:66-102).
+# * MariaDB Galera (Ma/; not Percona XtraDB Cluster or Galera for MySQL,
+#   whose sources were not checked):
+#   - desync and resync: SET GLOBAL wsrep_desync = ON takes the node out of
+#     flow control and OFF puts it back, waiting until it caught up
+#     (Ma/sql/wsrep_var.cc:846-863; sys_vars.cc:6659-6665;
+#     mysql-test/suite/galera/t/galera_var_desync_on.test). A node that is
+#     Donor/Desynced with wsrep_desync OFF is serving a state transfer or
+#     holds a backup lock or an RSU change; neither action applies then
+#     (SET to the current value only warns, wsrep_var.cc:832-844).
+#   - pc.bootstrap: SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES'
+#     makes this node and the nodes it reaches a Primary component
+#     (mysql-test/suite/galera_3nodes/t/galera_pc_bootstrap.test:30-66).
+#     Offered only on a connected, non-joining node whose component is
+#     non-Primary, with a typed name: if another component is Primary, or a
+#     second node is bootstrapped, two components take writes.
+#   - SET GLOBAL wsrep_on is not offered: it stops replicating writes from
+#     sessions opened later only (Ma/sql/wsrep_var.cc:112-215), which
+#     silently diverges the data.
+
+ACTION_SCHEMA_VERSION = "cluster-action-1.0"
+CLUSTER_ACTION_TAG = "/*myflames:cluster_op*/ "
+GR_UDF_MIN = (8, 0, 13)
+#: START GROUP_REPLICATION and the UDFs wait for the group (a join, the old
+#: primary's transactions), so a send waits longer than a read.
+ACTION_TIMEOUT = 120
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_GR_PRIVILEGE = "SUPER or GROUP_REPLICATION_ADMIN"
+
+
+def _version_of(report):
+    return tuple(int(p) for p in re.findall(r"\d+", report.get("server_version") or "")[:3])
+
+
+def _members(report):
+    return report.get("members") or []
+
+
+def _local_member(report):
+    return next((m for m in _members(report) if m.get("local")), None)
+
+
+def _group_members(report):
+    return [m for m in _members(report) if m.get("state_source") == "replication_group_members"]
+
+
+def _identity(member):
+    if not member:
+        return None
+    return {"key": member.get("key"), "uuid": member.get("uuid"), "name": member.get("name"),
+            "role": member.get("role"), "state": member.get("state")}
+
+
+def _gr_usable(report):
+    """(True, None) when the Group Replication actions can run here."""
+    if report.get("kind") not in ("innodb_cluster", "group_replication") or report.get("engine") != "mysql":
+        return False, "Not a Group Replication member."
+    if _version_of(report) < GR_UDF_MIN:
+        return False, "Needs MySQL 8.0.13 or later."
+    return True, None
+
+
+def _group_ready(report):
+    """Why a group-wide change cannot run now, or None: the connected member
+    ONLINE with quorum, and no member joining or unreachable."""
+    local = _local_member(report)
+    if not local or local.get("state") != "ONLINE":
+        return "The connected member is not ONLINE."
+    if report.get("cluster", {}).get("quorum") is not True:
+        return "The group has no quorum here."
+    busy = [m["name"] for m in _group_members(report) if m.get("state") in ("RECOVERING", "UNREACHABLE")]
+    if busy:
+        return "%s %s recovering or unreachable." % (", ".join(busy), "is" if len(busy) == 1 else "are")
+    return None
+
+
+def _action(aid, label, danger, description):
+    return {"id": aid, "label": label, "danger": danger, "description": description}
+
+
+def available_actions(report, member_key=None, checks=None):
+    """The reviewed changes offered on the member *member_key* (group-wide
+    changes are offered on the connected member). Empty for a report that
+    is not available, not a cluster, or a member this server cannot act on."""
+    if not report or not report.get("available") or report.get("kind") in (None, "none"):
+        return []
+    member = next((m for m in _members(report) if m.get("key") == member_key), None)
+    if member is None:
+        return []
+    kind = report.get("kind")
+    out = []
+    if kind in ("innodb_cluster", "group_replication"):
+        usable, _ = _gr_usable(report)
+        if not usable or member.get("state_source") != "replication_group_members":
+            return []
+        topology = report.get("cluster", {}).get("topology")
+        if (topology == "single_primary" and member.get("role") == "SECONDARY" and member.get("state") == "ONLINE"
+                and _UUID.match(member.get("uuid") or "") and _group_ready(report) is None):
+            out.append(_action("switchover", "Make primary…", True,
+                               "Makes %s the primary; the current primary becomes a read-only secondary once its "
+                               "running transactions finish." % member.get("name")))
+        if member.get("local"):
+            if member.get("state") in ("ONLINE", "RECOVERING", "ERROR"):
+                out.append(_action("stop_member", "Stop Group Replication…", True,
+                                   "This member leaves the group and becomes read-only (super_read_only ON)."))
+            if member.get("state") == "OFFLINE":
+                out.append(_action("start_member", "Start Group Replication…", False,
+                                   "Joins this member to the group. Recovery may replace its data with a clone."))
+            if kind == "group_replication" and _group_ready(report) is None:
+                if topology == "single_primary":
+                    out.append(_action("switch_to_multi_primary", "Switch the group to multi-primary…", True,
+                                       "Every member accepts writes, and the mode is persisted."))
+                elif topology == "multi_primary":
+                    out.append(_action("switch_to_single_primary", "Switch the group to single-primary…", True,
+                                       "The group elects one primary; the others become read-only."))
+    elif kind == "galera" and report.get("engine") == "mariadb" and member.get("local"):
+        galera = report.get("galera") or {}
+        metrics = galera.get("metrics") or {}
+        comment = (metrics.get("local_state_comment") or "").strip()
+        wsrep_on = (galera.get("wsrep_on") or "").upper()
+        desync = (galera.get("desync") or "").upper()
+        if wsrep_on != "ON":
+            return []
+        if desync == "OFF" and comment == "Synced":
+            out.append(_action("desync_node", "Desync this node…", False,
+                               "Takes this node out of flow control (wsrep_desync = ON), for example for a backup."))
+        elif desync == "ON":
+            out.append(_action("resync_node", "Resync this node…", False,
+                               "Puts this node back in flow control (wsrep_desync = OFF)."))
+        component = report.get("cluster", {}).get("component")
+        if component == "non-Primary" and metrics.get("connected") is True and not _joining(metrics):
+            out.append(_action("bootstrap_pc", "Bootstrap a Primary component…", True,
+                               "Makes this node, and the nodes it reaches, a Primary component that accepts writes."))
+    return out
+
+
+def with_actions(report):
+    """*report* with each member's ``actions`` (the workspace's Cluster place
+    reads it this way; the CLI and MCP report has no actions)."""
+    for member in report.get("members") or ():
+        member["actions"] = available_actions(report, member.get("key"))
+    return report
+
+
+def action_checks(conn, report, action):
+    """Extra reads one action needs at plan and send time (a dict)."""
+    out = {}
+    if action == "start_member":
+        reader = Reader(conn, CLUSTER_TAG)
+        try:
+            rows = reader.rows("SELECT @@global.group_replication_bootstrap_group")
+            out["bootstrap_group"] = _text(rows[0][0]) if rows and rows[0] else None
+        except ConnectorError:
+            out["bootstrap_group"] = None
+    return out
+
+
+def _server_identity(report):
+    return {"engine": report.get("engine"), "server_version": report.get("server_version"),
+            "server": dict(report.get("server") or {}), "kind": report.get("kind")}
+
+
+def _connected_text(report, local):
+    server = report.get("server") or {}
+    where = join_address(server.get("hostname"), server.get("port")) if server.get("hostname") else None
+    return "%s%s" % (local.get("name") if local else "This server", " (%s)" % where if where and local and
+                     where != local.get("name") else "")
+
+
+def plan_action(report, action, member_key=None, checks=None):
+    """The reviewed plan for *action* on *member_key* from *report* (a fresh
+    read) and *checks* (:func:`action_checks`). Raises ValueError when the action is
+    not offered for that member now."""
+    if not report or not report.get("available") or report.get("kind") in (None, "none"):
+        raise ValueError("No cluster was read on this connection.")
+    if not isinstance(action, str) or not isinstance(member_key, str):
+        raise ValueError("Choose a member and an action.")
+    if action not in [a["id"] for a in available_actions(report, member_key, checks)]:
+        raise ValueError("That change is not offered for this member now. Refresh and try again.")
+    checks = checks or {}
+    member = next(m for m in _members(report) if m.get("key") == member_key)
+    local = _local_member(report)
+    cluster = report.get("cluster") or {}
+    expect = dict(_server_identity(report), member=_identity(member), local=_identity(local),
+                  component=cluster.get("component"), quorum=cluster.get("quorum"), topology=cluster.get("topology"))
+    plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "member_key": member_key, "typed_guard": None,
+            "warnings": [], "next": None, "verified": ["server identity", "member state and role"],
+            "facts": [["Runs on", _connected_text(report, local)],
+                      ["Server", "%s %s" % ("MariaDB" if report.get("engine") == "mariadb" else "MySQL",
+                                            report.get("server_version") or "")],
+                      ["Cluster", "%s%s" % (kind_label(report), " %s" % cluster["name"] if cluster.get("name") else "")]]}
+    kind = report.get("kind")
+    if kind in ("innodb_cluster", "group_replication"):
+        expect["members"] = [[m.get("key"), m.get("state"), m.get("role")] for m in _group_members(report)]
+        plan["facts"].append(["Privilege", "Needs %s" % _GR_PRIVILEGE])
+        _plan_group(report, plan, action, member, local, checks, expect)
+    else:
+        galera = report.get("galera") or {}
+        expect.update(desync=galera.get("desync"), wsrep_on=galera.get("wsrep_on"),
+                      local_state=(galera.get("metrics") or {}).get("local_state_comment"))
+        plan["facts"].append(["Privilege", "Needs SUPER"])
+        _plan_galera(report, plan, action, member, expect)
+    plan["expect"] = expect
+    plan["statements"] = [CLUSTER_ACTION_TAG + s for s in plan["statements"]]
+    return plan
+
+
+def _plan_group(report, plan, action, member, local, checks, expect):
+    name = member.get("name")
+    primary = next((m for m in _group_members(report) if m.get("role") == "PRIMARY"), None)
+    online = [m for m in _group_members(report) if m.get("state") == "ONLINE"]
+    if action == "switchover":
+        uuid = member.get("uuid") or ""
+        plan.update(eyebrow="SELECT group_replication_set_as_primary", title="Make %s the primary?" % name,
+                    confirm_label="Make %s primary" % name, target_text=name,
+                    description="The current primary becomes a read-only secondary once its running transactions "
+                                "finish. Clients that write must reach the new primary (MySQL Router follows it).")
+        plan["statements"] = ["SELECT group_replication_set_as_primary('%s');" % uuid]
+        plan["facts"] += [["New primary", "%s (%s)" % (name, uuid)],
+                          ["Current primary", primary.get("name") if primary else "None"]]
+        if report.get("kind") == "innodb_cluster":
+            plan["warnings"].append("In an InnoDB ClusterSet replica cluster the server refuses while the primary "
+                                    "replicates from the primary cluster; use MySQL Shell's setPrimaryInstance there.")
+        undo = primary.get("uuid") if primary and _UUID.match(primary.get("uuid") or "") else None
+        plan["undo"] = ("SELECT group_replication_set_as_primary('%s'); makes %s the primary again." %
+                        (undo, primary.get("name"))) if undo else "Make the previous primary the primary again."
+    elif action == "stop_member":
+        plan.update(eyebrow="STOP GROUP_REPLICATION", title="Stop Group Replication on %s?" % name,
+                    confirm_label="Stop Group Replication", target_text=name,
+                    description="This member leaves the group and becomes read-only (super_read_only ON).")
+        plan["statements"] = ["STOP GROUP_REPLICATION;"]
+        last = member.get("state") == "ONLINE" and len(online) == 1
+        if member.get("role") == "PRIMARY" and not last:
+            plan["warnings"].append("%s is the primary: the group elects another primary, and writes sent here "
+                                    "fail." % name)
+        if last:
+            plan["warnings"].append("%s is the last ONLINE member: the group stops, and starting it again needs a "
+                                    "bootstrap." % name)
+        if member.get("state") == "ERROR":
+            plan["warnings"].append("In ERROR, the plugin is still running: stop it, fix the cause in the error log, "
+                                    "then start it.")
+        if member.get("role") == "PRIMARY" or last:
+            plan["typed_guard"] = name
+        plan["undo"] = "START GROUP_REPLICATION;" + (" Not enough after the last member: the group must be "
+                                                     "bootstrapped again." if last else "")
+    elif action == "start_member":
+        bootstrap = (checks.get("bootstrap_group") or "").upper()
+        if bootstrap not in ("0", "OFF"):
+            raise ValueError("group_replication_bootstrap_group is %s, so START GROUP_REPLICATION would %s. Nothing "
+                             "is offered." % (bootstrap or "not readable",
+                                              "create a new group instead of joining" if bootstrap in ("1", "ON")
+                                              else "do something myflames cannot verify"))
+        expect["bootstrap_group"] = bootstrap
+        plan["verified"].append("group_replication_bootstrap_group OFF")
+        plan.update(eyebrow="START GROUP_REPLICATION", title="Start Group Replication on %s?" % name,
+                    confirm_label="Start Group Replication", target_text=name,
+                    description="This member joins the group and catches up from a donor. When too many "
+                                "transactions are missing, or the donors purged them, recovery replaces this "
+                                "server's data with a clone and restarts it.")
+        plan["statements"] = ["START GROUP_REPLICATION;"]
+        plan["facts"].append(["group_replication_bootstrap_group", "OFF"])
+        plan["undo"] = "STOP GROUP_REPLICATION;"
+    else:
+        multi = action == "switch_to_multi_primary"
+        plan.update(eyebrow="SELECT group_replication_switch_to_%s_mode" % ("multi_primary" if multi else
+                                                                             "single_primary"),
+                    title="Switch the group to %s mode?" % ("multi-primary" if multi else "single-primary"),
+                    confirm_label="Switch to %s" % ("multi-primary" if multi else "single-primary"),
+                    target_text="the group (%d members)" % len(_group_members(report)),
+                    description=("Every member accepts writes. From now on SERIALIZABLE transactions and writes to "
+                                 "tables with cascading foreign keys are refused, and conflicting writes on "
+                                 "different members roll back. The mode is persisted." if multi else
+                                 "The group elects one primary; the other members become read-only. The mode is "
+                                 "persisted."))
+        plan["statements"] = ["SELECT group_replication_switch_to_multi_primary_mode();" if multi else
+                              "SELECT group_replication_switch_to_single_primary_mode();"]
+        if multi:
+            plan["warnings"].append("Set auto_increment_increment and auto_increment_offset per member first: the "
+                                    "switch does not change them, so inserts on different members can collide.")
+        plan["typed_guard"] = local.get("name") if local else None
+        plan["undo"] = ("SELECT group_replication_switch_to_single_primary_mode();" if multi else
+                        "SELECT group_replication_switch_to_multi_primary_mode();")
+
+
+def _plan_galera(report, plan, action, member, expect):
+    name = member.get("name")
+    metrics = (report.get("galera") or {}).get("metrics") or {}
+    if action == "desync_node":
+        plan.update(eyebrow="SET GLOBAL", title="Desync %s?" % name, confirm_label="Desync this node",
+                    target_text=name,
+                    description="Takes this node out of flow control, so the cluster keeps committing when it falls "
+                                "behind (for example during a backup). It keeps receiving and applying writes, "
+                                "reports Donor/Desynced, and its reads can be stale.")
+        plan["statements"] = ["SET GLOBAL wsrep_desync = ON;"]
+        plan["warnings"].append("A proxy that routes by node state takes a Donor/Desynced node out of traffic until "
+                                "it is Synced again (ProxySQL's Galera monitor moved it to its offline hostgroup, "
+                                "seen live on 3.0.11).")
+        plan["undo"] = "SET GLOBAL wsrep_desync = OFF; (Resync this node)"
+        plan["next"] = None
+    elif action == "resync_node":
+        plan.update(eyebrow="SET GLOBAL", title="Resync %s?" % name, confirm_label="Resync this node",
+                    target_text=name,
+                    description="Puts this node back in flow control. The statement waits until the node has "
+                                "caught up.")
+        plan["statements"] = ["SET GLOBAL wsrep_desync = OFF;"]
+        plan["undo"] = "SET GLOBAL wsrep_desync = ON; (Desync this node)"
+    else:
+        cluster = report.get("cluster") or {}
+        expect["last_committed"] = metrics.get("last_committed")
+        # The component as this node sees it: another node joining or leaving
+        # (even while it stays non-Primary) needs another review.
+        expect["component_view"] = {
+            "cluster_uuid": cluster.get("uuid"), "conf_id": metrics.get("cluster_conf_id"), "size": cluster.get("size"),
+            "members": sorted([m.get("key"), m.get("address")] for m in _members(report)),
+        }
+        plan.update(eyebrow="SET GLOBAL", title="Bootstrap a Primary component on %s?" % name,
+                    confirm_label="Bootstrap the Primary component", target_text=name,
+                    description="Makes this node, and only the nodes it can reach, a new Primary component that "
+                                "accepts writes. Run it on one node only, after making sure no other node is in a "
+                                "Primary component and that this node has the highest wsrep_last_committed of all "
+                                "nodes. Otherwise two components take writes (split brain) and one side's writes "
+                                "are lost.")
+        plan["statements"] = ["SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';"]
+        plan["facts"] += [["wsrep_cluster_status", cluster.get("component") or "Not reported"],
+                          ["Nodes this node sees", str(cluster.get("size")) if cluster.get("size") is not None
+                           else "Not reported"],
+                          ["wsrep_last_committed here", str(metrics.get("last_committed"))
+                           if metrics.get("last_committed") is not None else "Not reported"]]
+        plan["warnings"].append("Compare wsrep_last_committed on every node first: bootstrap the node with the "
+                                "highest value.")
+        plan["typed_guard"] = name
+        plan["undo"] = "Cannot be undone."
+
+
+def _after(report, plan):
+    member = next((m for m in _members(report) if m.get("key") == plan.get("member_key")), None)
+    local = _local_member(report)
+    primary = next((m for m in _group_members(report) if m.get("role") == "PRIMARY"), None)
+    galera = report.get("galera") or {}
+    return {"member": _identity(member), "local": _identity(local), "primary": _identity(primary),
+            "component": (report.get("cluster") or {}).get("component"),
+            "topology": (report.get("cluster") or {}).get("topology"),
+            "desync": galera.get("desync"), "local_state": (galera.get("metrics") or {}).get("local_state_comment")}
+
+
+def _done_text(plan, after):
+    member = (after or {}).get("member") or {}
+    local = (after or {}).get("local") or {}
+    action = plan["action"]
+    if action == "switchover":
+        primary = ((after or {}).get("primary") or {}).get("name")
+        return "Sent. The primary is now %s." % primary if primary else "Sent."
+    if action in ("stop_member", "start_member"):
+        return "Sent. %s is %s now." % (local.get("name") or "This member", local.get("state") or "not readable")
+    if action in ("desync_node", "resync_node"):
+        return "Sent. wsrep_desync is %s; %s is %s." % ((after or {}).get("desync") or "not readable",
+                                                       local.get("name") or "this node",
+                                                       (after or {}).get("local_state") or "not readable")
+    if action == "bootstrap_pc":
+        return "Sent. The component is %s." % ((after or {}).get("component") or "not readable")
+    return "Sent. The group is %s." % ((after or {}).get("topology") or "not readable").replace("_", "-")
+
+
+def execute_action(conn, reviewed, audit=None, typed=None, before_send=None):
+    """Send a reviewed plan: read the cluster again, refuse with nothing sent
+    when the member, the server or the group changed, then send it."""
+    from . import reviewed_writes
+    reviewed = reviewed_writes.check_reviewed(reviewed)
+    expect = reviewed.get("expect") or {}
+    if audit is not None:
+        audit.server(expect.get("engine"), expect.get("server_version"))
+
+    def fresh():
+        report = read_status(conn)
+        if _server_identity(report) != {k: expect.get(k) for k in ("engine", "server_version", "server", "kind")}:
+            raise ValueError("This connection now reaches another server or cluster.")
+        return plan_action(report, reviewed["action"], reviewed.get("member_key"),
+                           action_checks(conn, report, reviewed["action"]))
+
+    return reviewed_writes.execute(conn, reviewed, fresh, ACTION_SCHEMA_VERSION, audit=audit, typed=typed,
+                                   before_send=before_send, read_after=lambda: _after(read_status(conn), reviewed),
+                                   timeout=ACTION_TIMEOUT, done_text=_done_text)

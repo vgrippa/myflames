@@ -62,7 +62,15 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-1:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-1:3306"
+   "endpoint": "mf-ic-1:3306",
+   "actions": [
+    {
+     "id": "stop_member",
+     "label": "Stop Group Replication…",
+     "danger": true,
+     "description": "This member leaves the group and becomes read-only (super_read_only ON)."
+    }
+   ]
   },
   {
    "key": "member:22222222-2222-11f0-8a00-0242ac130003",
@@ -93,7 +101,15 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-2:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-2:3306"
+   "endpoint": "mf-ic-2:3306",
+   "actions": [
+    {
+     "id": "switchover",
+     "label": "Make primary…",
+     "danger": true,
+     "description": "Makes mf-ic-2:3306 the primary; the current primary becomes a read-only secondary once its running transactions finish."
+    }
+   ]
   },
   {
    "key": "member:33333333-3333-11f0-8a00-0242ac130004",
@@ -124,7 +140,15 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-3:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-3:3306"
+   "endpoint": "mf-ic-3:3306",
+   "actions": [
+    {
+     "id": "switchover",
+     "label": "Make primary…",
+     "danger": true,
+     "description": "Makes mf-ic-3:3306 the primary; the current primary becomes a read-only secondary once its running transactions finish."
+    }
+   ]
   },
   {
    "key": "member:44444444-4444-11f0-8a00-0242ac130005",
@@ -144,7 +168,8 @@
    ],
    "metrics": {},
    "in_metadata": true,
-   "instance_type": "read-replica"
+   "instance_type": "read-replica",
+   "actions": []
   }
  ],
  "galera": null,

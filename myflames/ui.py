@@ -65,7 +65,8 @@ def _discover_response(path, payload):
     elif path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # A server-wide information_schema.STATISTICS read is slow on MariaDB.
         options["query_timeout"] = 60
-    elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster"):
+    elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster",
+                  "/api/live/proxysql"):
         options["query_timeout"] = 30
     if path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # schemas: a list (the picker), or the older single schema; none means
@@ -105,8 +106,11 @@ def _discover_response(path, payload):
                 from .error_log import DEFAULT_LIMIT, error_log_report
                 return error_log_report(conn, limit=payload.get("limit", DEFAULT_LIMIT), levels=payload.get("levels"))
             if path == "/api/live/cluster":
-                from .cluster import read_status
-                return read_status(conn)
+                from .cluster import read_status, with_actions
+                return with_actions(read_status(conn))
+            if path == "/api/live/proxysql":
+                from .proxysql import read_status as proxysql_status
+                return proxysql_status(conn)
             if path == "/api/live/locks":
                 from .locks import lock_report
                 return lock_report(conn, payload.get("limit", 500),
@@ -451,11 +455,20 @@ def _declined_response(payload, store):
     connection = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
     safety = dbops.connection_safety(_request_profile(connection, store), connection)
     password = connection.get("password") if isinstance(connection.get("password"), str) else None
-    audit_id = dbops.record_outcome(store, operation, statements, "ui", "declined", outcome="declined",
-                                    message="Cancelled in the confirmation; nothing was sent.",
+    # A confirmed sheet the workspace itself stopped before sending (its check
+    # of the saved connections failed or found another policy) is a refusal.
+    reason = payload.get("reason")
+    refusals = {"policy_changed": "The connection or its write policy changed after the review; nothing was sent.",
+                "policy_unknown": "The saved connections could not be read before sending; nothing was sent."}
+    if reason is not None and reason not in refusals:
+        raise ValueError("reason must be policy_changed or policy_unknown.")
+    status = "refused" if reason else "declined"
+    audit_id = dbops.record_outcome(store, operation, statements, "ui", status, outcome=reason or "declined",
+                                    message=refusals[reason] if reason else
+                                    "Cancelled in the confirmation; nothing was sent.",
                                     connection={k: connection.get(k) for k in ("host", "port", "user")},
                                     safety=safety, target=target, password=password)
-    return {"audit_id": audit_id, "status": "declined"}
+    return {"audit_id": audit_id, "status": status}
 
 
 def _audit_response(path, payload, store):
@@ -1032,7 +1045,7 @@ _SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-queries", "/api/live/runn
                       "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/health",
                       "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
                       "/api/live/io", "/api/live/config", "/api/live/instruments",
-                      "/api/live/report", "/api/live/explain-connection")
+                      "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql")
 #: /api/live/kill is the one write: a confirmed KILL of one session (locks.kill_session).
 #: It fills the saved password itself, after the connection's write policy.
 #: The Query editor's run and commit (editor_session.py) are writes too: the
@@ -1099,6 +1112,19 @@ from .accounts_api import READ_PATHS as _ACCOUNT_READ_PATHS, WRITE_PATHS as _ACC
 _ACCOUNT_PATHS = _ACCOUNT_READ_PATHS + _ACCOUNT_WRITE_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _ACCOUNT_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
+#: Reviewed Cluster and ProxySQL changes (cluster.py, proxysql.py and
+#: reviewed_writes.py, answered by _action_response). Plan reads the target
+#: and returns the exact statements with a review token: it gets the saved
+#: password like the views. Action is a write: the policy runs first, the
+#: token must match the plan as reviewed, then the saved password is filled,
+#: the target is read and planned again, and every attempt is audited.
+_ACTION_KINDS = {"/api/live/cluster/plan": "cluster", "/api/live/cluster/action": "cluster",
+                 "/api/live/proxysql/plan": "proxysql", "/api/live/proxysql/action": "proxysql"}
+_ACTION_WRITE_PATHS = ("/api/live/cluster/action", "/api/live/proxysql/action")
+_ACTION_PATHS = tuple(_ACTION_KINDS)
+_WRITE_PATHS = _WRITE_PATHS + _ACTION_WRITE_PATHS
+_CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
+
 #: Application updates (app_update.py). Check reads GitHub only when the
 #: workspace asks (the Check for updates button) and keeps the outcome in the
 #: workspace store; status reads that stored outcome and never the network.
@@ -1240,6 +1266,107 @@ def _variable_apply(payload, workspace):
             return variables.apply_change(conn, request, expect, decision=decision, confirmed=True, audit=audit)
     except (ValueError, ConnectorError) as exc:
         audit.fail(exc, [variables.TAG + expect["statement"]])
+        _reraise_redacted(exc, password)
+
+
+_ACTION_OPERATION = {"cluster": "cluster_action", "proxysql": "proxysql_action"}
+
+
+def _action_module(kind):
+    if kind == "cluster":
+        from . import cluster as module
+    else:
+        from . import proxysql as module
+    return module
+
+
+def _action_plan(kind, module, conn, payload):
+    """A plan from a fresh read of *conn* for the request's inputs."""
+    if kind == "cluster":
+        report = module.read_status(conn)
+        action = payload.get("action")
+        return module.plan_action(report, action, payload.get("member_key"), module.action_checks(conn, report, action))
+    report = module.read_status(conn)
+    return module.plan_action(report, payload.get("action"), payload.get("target"), payload.get("value"))
+
+
+def _action_response(path, payload, workspace):
+    """Plan (read, review token) and Action (the write) for the Cluster and
+    ProxySQL places. Action refuses before opening any connection on a
+    read-only connection or without confirmation; a missing, expired or
+    changed review is refused too. Refusals and every send are audited
+    (dbops.AuditTrail); the envelope is cluster-action-1.0 or
+    proxysql-action-1.0 (reviewed_writes.py)."""
+    from . import dbops, reviewed_writes
+    from .live import connection_options
+    from .connector import MySQLConnection
+    kind = _ACTION_KINDS[path]
+    module = _action_module(kind)
+    connection = payload.get("connection")
+    plain = connection if isinstance(connection, dict) else {}
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    identity = dbops.connection_identity(plain, safety)
+    if path.endswith("/plan"):
+        options = connection_options(connection)
+        try:
+            with MySQLConnection(**options) as conn:
+                plan = _action_plan(kind, module, conn, payload)
+        except (ValueError, ConnectorError) as exc:
+            _reraise_redacted(exc, options.get("password"))
+        decision = dbops.decide(reviewed_writes.worst_kind(plan["statements"]), safety["type"], safety["read_only"],
+                                safety.get("profile_name"))
+        plan["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text", "connection_type",
+                                                       "read_only")}
+        plan["review_token"] = _review_tokens(workspace).issue(_ACTION_OPERATION[kind], identity,
+                                                               reviewed_writes.review_details(plan))
+        return plan
+    reviewed = reviewed_writes.check_reviewed(payload.get("plan"))
+    statements = list(reviewed["statements"])
+    decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
+                            safety.get("profile_name"))
+    audit = dbops.AuditTrail(workspace.store, _ACTION_OPERATION[kind], "ui",
+                             connection={k: plain.get(k) for k in ("host", "port", "user")}, safety=safety,
+                             password=plain.get("password") if isinstance(plain.get("password"), str) else None,
+                             policy=dbops.policy_summary(decision))
+    out = reviewed_writes.result(module.ACTION_SCHEMA_VERSION, reviewed)
+    out["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text")}
+    blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
+    if blocked:
+        return reviewed_writes.refused(out, blocked[1], "read_only" if blocked[0] == "refused" else blocked[0],
+                                       audit, reviewed.get("expect"))
+    try:
+        consume = _review_tokens(workspace).consumer(payload.get("review_token"), _ACTION_OPERATION[kind], identity,
+                                                     reviewed_writes.review_details(reviewed))
+    except ValueError as exc:
+        return reviewed_writes.refused(out, str(exc), "review", audit, reviewed.get("expect"))
+    typed = payload.get("typed")
+    typed = typed if isinstance(typed, str) else None
+
+    def before_send():
+        # The saved policy is read again right before sending: a profile made
+        # Read-only (or changed) while the target was read sends nothing.
+        now = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+        if dbops.connection_identity(plain, now) != identity or dbops.gate(dbops.decide(
+                reviewed_writes.worst_kind(statements), now["type"], now["read_only"], now.get("profile_name")),
+                confirmed=True):
+            raise reviewed_writes.Refusal("The connection's write policy changed after the review, so nothing was "
+                                          "sent. Review the change again.", "policy_changed")
+        consume()
+    password = audit.password
+    try:
+        filled = _with_saved_password(payload, workspace)
+        options = connection_options(filled.get("connection"))
+        password = audit.password = options.get("password")
+        audit.connection = {k: options.get(k) for k in ("host", "port", "user")}
+        with MySQLConnection(**options) as conn:
+            result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send)
+        result["policy"] = out["policy"]
+        return result
+    except KeyboardInterrupt as exc:
+        audit.fail(exc, statements)
+        raise
+    except (ValueError, ConnectorError) as exc:
+        audit.fail(exc, statements)
         _reraise_redacted(exc, password)
 
 
@@ -1433,6 +1560,8 @@ def api_response(path, payload, workspace=None):
             return _catalog_response(payload)
         if path in _VARIABLE_PATHS:
             return _variable_response(path, payload, workspace)
+        if path in _ACTION_PATHS:
+            return _action_response(path, payload, workspace)
         if path in _SERVER_VIEW_PATHS:
             return _discover_response(path, payload)
         raise ValueError("Unknown workspace operation.")
@@ -1920,7 +2049,8 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/profiles/forget-password",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
                              "/api/live/top", "/api/live/slow-queries", "/api/live/running", "/api/live/sessions",
-                             "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/kill", "/api/live/kill/prepare",
+                             "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/proxysql",
+                             "/api/live/kill", "/api/live/kill/prepare",
                              "/api/live/kill/bulk", "/api/live/kill/bulk/prepare",
                              "/api/live/table-columns",
                              "/api/live/health", "/api/live/waits", "/api/live/indexes",
@@ -1937,7 +2067,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/open", "/api/editor/run", "/api/editor/status", "/api/editor/preview",
                              "/api/editor/stop", "/api/editor/commit", "/api/editor/rollback",
                              "/api/editor/close", "/api/editor/history", "/api/editor/export", "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
-                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _APP_UPDATE_PATHS \
+                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _APP_UPDATE_PATHS \
                 + _NEWS_PATHS:
             self._send(404, {"error": "Not found."})
             return

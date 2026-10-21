@@ -1,0 +1,103 @@
+{
+ "schema_version": "cluster-action-1.0",
+ "action": "switchover",
+ "member_key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+ "typed_guard": null,
+ "warnings": [
+  "In an InnoDB ClusterSet replica cluster the server refuses while the primary replicates from the primary cluster; use MySQL Shell's setPrimaryInstance there."
+ ],
+ "next": null,
+ "verified": [
+  "server identity",
+  "member state and role"
+ ],
+ "facts": [
+  [
+   "Runs on",
+   "mf-ic-1:3306"
+  ],
+  [
+   "Server",
+   "MySQL 8.4.11"
+  ],
+  [
+   "Cluster",
+   "MySQL InnoDB Cluster mfcluster"
+  ],
+  [
+   "Privilege",
+   "Needs SUPER or GROUP_REPLICATION_ADMIN"
+  ],
+  [
+   "New primary",
+   "mf-ic-1:3306 (1062e681-cc92-11f1-83dd-b6daec340a27)"
+  ],
+  [
+   "Current primary",
+   "mf-ic-2:3306"
+  ]
+ ],
+ "eyebrow": "SELECT group_replication_set_as_primary",
+ "title": "Make mf-ic-1:3306 the primary?",
+ "confirm_label": "Make mf-ic-1:3306 primary",
+ "target_text": "mf-ic-1:3306",
+ "description": "The current primary becomes a read-only secondary once its running transactions finish. Clients that write must reach the new primary (MySQL Router follows it).",
+ "statements": [
+  "/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('1062e681-cc92-11f1-83dd-b6daec340a27');"
+ ],
+ "undo": "SELECT group_replication_set_as_primary('10a527c5-cc92-11f1-956e-2a01c1402350'); makes mf-ic-2:3306 the primary again.",
+ "expect": {
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "server": {
+   "hostname": "mf-ic-1",
+   "port": 3306,
+   "report_host": "mf-ic-1",
+   "server_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27"
+  },
+  "kind": "innodb_cluster",
+  "member": {
+   "key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+   "uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+   "name": "mf-ic-1:3306",
+   "role": "SECONDARY",
+   "state": "ONLINE"
+  },
+  "local": {
+   "key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+   "uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+   "name": "mf-ic-1:3306",
+   "role": "SECONDARY",
+   "state": "ONLINE"
+  },
+  "component": null,
+  "quorum": true,
+  "topology": "single_primary",
+  "members": [
+   [
+    "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+    "ONLINE",
+    "SECONDARY"
+   ],
+   [
+    "member:10a527c5-cc92-11f1-956e-2a01c1402350",
+    "ONLINE",
+    "PRIMARY"
+   ],
+   [
+    "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+    "ONLINE",
+    "SECONDARY"
+   ]
+  ]
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Production connection",
+  "text": "Connection Node A is a Production connection, so myflames asks before every write.",
+  "connection_type": "production",
+  "read_only": false
+ },
+ "review_token": "fixture-token-switchover"
+}

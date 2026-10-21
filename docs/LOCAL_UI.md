@@ -61,7 +61,8 @@ The sidebar separates where you go from what you have open:
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables, Database diagram), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
 | **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O) |
 | **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation |
-| **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers. Read-only. Greyed in the sidebar once the connection is known not to be part of a cluster |
+| **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers, with a member's changes (Make primary, Stop or Start Group Replication, Desync, Resync, Bootstrap a Primary component) in its inspector, each after its own confirmation. Greyed in the sidebar once the connection is known not to be part of a cluster |
+| **ProxySQL** | The ProxySQL Admin interface the connection in use reaches: backends as ProxySQL runs them with their connection pool, hostgroups, query rules and query digests, with a server's or rule's changes in its inspector and Load and Save to disk on the Configuration line, each after its own confirmation. Greyed in the sidebar once the connection is known not to be a ProxySQL Admin interface |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
 | **Investigations** | Saved investigations: search, open, delete |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
@@ -405,10 +406,10 @@ the [Audit log](#audit-log).
 the connection in use belongs to: a MariaDB Galera Cluster, a Galera Cluster
 for MySQL, a Percona XtraDB Cluster, a MySQL InnoDB Cluster (also when you
 connect to one of its read replicas), or Group Replication without InnoDB
-Cluster metadata. It only reads, in this release: nothing on it changes
-membership, the primary or a setting. It reads when it is opened on screen,
+Cluster metadata. Opening it only reads. It reads when it is opened on screen,
 once per connection; **Refresh** reads again, and the Server place's
-**Refresh all** reads it too.
+**Refresh all** reads it too. A member's inspector offers the changes that do
+what they say on that server (see [Cluster changes](#cluster-changes)).
 
 One scale for every kind: **OK** with quorum and every expected member present
 and healthy; **Watch** while quorum holds but a member is missing (a Galera
@@ -471,7 +472,106 @@ read keeps the last report greyed with the time it was read and one sentence
 saying why; either way its member is marked **Read here**, never **This
 connection**. Terms such as Primary component, flow control, failures
 tolerated, queues and the router ports explain themselves on hover. The command
-line twin is `myflames cluster`.
+line twin is `myflames cluster` (it only reads).
+
+#### Cluster changes
+
+A member's inspector shows the changes it offers as buttons, and only these:
+
+- **Make primary…** on an ONLINE secondary of a single-primary group, while no
+  member is recovering or unreachable: `group_replication_set_as_primary` with
+  the member's UUID. The current primary becomes a read-only secondary once its
+  running transactions finish. In an InnoDB ClusterSet replica cluster the
+  server refuses; use MySQL Shell's `setPrimaryInstance` there.
+- **Stop Group Replication…** on the member you are connected to: it leaves the
+  group and becomes read-only. You type its name when it is the primary (the
+  group elects another) or the last ONLINE member (the group stops and needs a
+  bootstrap).
+- **Start Group Replication…** on the member you are connected to, only while it
+  is OFFLINE and `group_replication_bootstrap_group` is OFF. Recovery may
+  replace its data with a clone; the review says so. A member in ERROR is
+  offered Stop first: fix the cause in the error log, then start it.
+- **Switch the group to multi-primary…** or **single-primary…** for Group
+  Replication without InnoDB Cluster metadata, with the member's name typed.
+  For InnoDB Cluster use MySQL Shell, which also sets `auto_increment` and the
+  metadata.
+- On MariaDB Galera, on the node you are connected to: **Desync this node…**
+  (`wsrep_desync = ON`: out of flow control, for example for a backup; it keeps
+  applying writes and its reads can be stale) and **Resync this node…**
+  (`OFF`, which waits until it caught up), and **Bootstrap a Primary
+  component…** only when its component is non-Primary and it is connected and
+  not joining. Bootstrap makes this node and the nodes it reaches a Primary
+  component: run it on one node only, the one with the highest
+  `wsrep_last_committed`, or two components take writes. You type the node's
+  name.
+
+Percona XtraDB Cluster and Galera Cluster for MySQL offer no change yet, and
+`SET GLOBAL wsrep_on` is never offered. Every change works like ProxySQL's
+(below): the review, the policy, the typed name, the check right before
+sending, the result panel and the Audit log.
+
+**ProxySQL** (a place of its own, right after Cluster) reads the ProxySQL
+Admin interface the connection in use reaches (port 6032 by default; save a
+connection to it like any other, with an admin account: ProxySQL's default
+`admin` user can only log in from the ProxySQL host itself). It reads when it is
+opened on screen, once per connection; **Refresh** reads again. The summary
+line names the version, the uptime, the backends and hostgroups and how many
+backends are ONLINE; problems come first (a hostgroup in use with no ONLINE
+server, an active rule ProxySQL runs that sends to a hostgroup with no server;
+when what runs cannot be read the status is unknown, with the reason), then
+tiles and four tabs:
+
+- **Servers**: each backend as ProxySQL runs it (runtime), with its hostgroup,
+  its role in a Galera, Group Replication, replication or Aurora monitor's
+  hostgroups, status, weight, connections in use and free, connection errors
+  since ProxySQL started, queries and ping. A writer the Galera monitor keeps
+  above `max_writers` reads **SHUNNED (standby writer)**: it is ONLINE in the
+  backup writer hostgroup. The inspector shows the runtime row, the connection
+  pool, the configuration row it comes from (a monitor may run it in another of
+  its hostgroups) and the monitor.
+- **Hostgroups**: each hostgroup in runtime with its role and how many servers
+  are in each status.
+- **Query rules**: each rule with what it matches, its destination hostgroup,
+  Apply and its hits; the inspector lists every column set.
+- **Query digests**: the 100 statement digests with the most total time; the
+  inspector shows the full text.
+
+ProxySQL keeps three copies of its configuration: memory (what Admin edits),
+runtime (what it uses) and disk (what it loads at its next start). The
+**Configuration** line above Servers and Query rules says whether memory
+matches runtime and disk, with **Load … to runtime…** and **Save … to disk…**.
+When a copy of a table could not be read (anything but a table this ProxySQL
+version does not have), what loading or saving would change is unknown, so
+that module offers no change; the notes name the table.
+A server's inspector offers **Set ONLINE…**, **Set OFFLINE_SOFT…** (no new
+traffic; running queries and transactions finish), **Set OFFLINE_HARD…**
+(ProxySQL stops using it at once), **Change weight…** and, for a server in no
+monitor's hostgroups, **Move to hostgroup…** (a number first, then the
+review: a server moved out of a monitor's hostgroups stays in them in
+runtime); a rule's inspector offers
+**Enable rule…** or **Disable rule…**. Each one changes the configuration in
+memory and loads it to runtime in one step, and is refused while other changes
+wait in memory (load or undo them first). It is not saved to disk: the result
+offers **Save servers to disk…** (or query rules) as a separate change, which
+lists every difference between memory and disk before you confirm. OFFLINE_SOFT
+is not offered for a server the Galera monitor manages, because the monitor puts
+it back in traffic within seconds; use OFFLINE_HARD or weight 0.
+
+Every change shows its review first: the statement verb, a question naming the
+target, the connection with its address and type, what changes, the undo (or
+that it cannot be undone), warnings, and the statements exactly as they will be
+sent. Production and Development connections both ask (these are risky
+changes); a Read-only connection refuses and opens no review. A destructive
+change also needs the target's name typed (OFFLINE_HARD, the last ONLINE server
+of a hostgroup, stopping the primary or the last member, a mode switch,
+bootstrapping a Primary component). Right before sending, myflames reads the
+target again and sends nothing if it changed. The result is a panel under the
+toolbar: **Done** with what runs now, **Failed**, **Partly applied** (which
+statements ran), or **Outcome unknown** when no reply arrived or the client
+ended without the server's answer, which is never sent again. Cancel and Escape are recorded as declined, and every attempt is in
+the [Audit log](#audit-log). Another connection's report is greyed and offers no
+change. Once a read says the connection is not a ProxySQL Admin interface, the
+sidebar item looks disabled for that connection only.
 
 **Maintenance** (Setup, last) has five tasks in a segmented control. **Tools**
 (**Detect tools**) lists the MySQL and MariaDB tools on this computer

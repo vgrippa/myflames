@@ -727,6 +727,13 @@
             "null"
           ],
           "description": "Percona XtraDB Cluster: gmcast segment from pxc_cluster_view."
+        },
+        "actions": {
+          "type": "array",
+          "description": "Reviewed changes this member offers (cluster.available_actions). Added only by the workspace's POST /api/live/cluster (cluster.with_actions); myflames cluster and the MCP tool cluster_status leave it out.",
+          "items": {
+            "$ref": "#/$defs/action"
+          }
         }
       }
     },
@@ -848,6 +855,39 @@
         "member": {
           "type": "string",
           "description": "key of the member the finding is about."
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "danger",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "switchover",
+            "stop_member",
+            "start_member",
+            "switch_to_multi_primary",
+            "switch_to_single_primary",
+            "desync_node",
+            "resync_node",
+            "bootstrap_pc"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "danger": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
         }
       }
     }

@@ -148,9 +148,9 @@ export type SlowState = {
 };
 /** One table's column layout: widths in px by column key, hidden keys. */
 export type ColumnLayout = { widths?: Record<string, number>; hidden?: string[] };
-/** The tables that keep a column layout (DataTable id): Server's views and
- * the Cluster place (Nodes on Galera and PXC, Members on Group Replication,
- * Routers), each with its own. */
+/** The tables that keep a column layout (DataTable id): Server's views, the
+ * Cluster place (Nodes on Galera and PXC, Members on Group Replication,
+ * Routers) and the ProxySQL place, each with its own. */
 export const TABLE_IDS = [
   "errorlog.entries",
   "errorlog.codes",
@@ -160,6 +160,10 @@ export const TABLE_IDS = [
   "cluster.members",
   "cluster.nodes",
   "cluster.routers",
+  "proxysql.servers",
+  "proxysql.hostgroups",
+  "proxysql.rules",
+  "proxysql.digests",
   "waits.events",
   "waits.classes",
   "io.tables",

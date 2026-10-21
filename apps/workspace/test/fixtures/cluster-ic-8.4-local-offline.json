@@ -50,7 +50,8 @@
     "Listed in the InnoDB Cluster metadata. The connected member (mf-ic-3:3306) is OFFLINE and cannot see the group, so this instance's state is not visible here: connect to an ONLINE member."
    ],
    "metrics": {},
-   "in_metadata": true
+   "in_metadata": true,
+   "actions": []
   },
   {
    "key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
@@ -69,7 +70,8 @@
     "Listed in the InnoDB Cluster metadata. The connected member (mf-ic-3:3306) is OFFLINE and cannot see the group, so this instance's state is not visible here: connect to an ONLINE member."
    ],
    "metrics": {},
-   "in_metadata": true
+   "in_metadata": true,
+   "actions": []
   },
   {
    "key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
@@ -100,7 +102,15 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-3:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-3:3306"
+   "endpoint": "mf-ic-3:3306",
+   "actions": [
+    {
+     "id": "start_member",
+     "label": "Start Group Replication…",
+     "danger": false,
+     "description": "Joins this member to the group. Recovery may replace its data with a clone."
+    }
+   ]
   }
  ],
  "galera": null,

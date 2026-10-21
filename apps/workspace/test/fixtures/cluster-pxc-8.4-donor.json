@@ -77,7 +77,8 @@
     "cluster_weight": 3
    },
    "pxc_status": "DONOR",
-   "segment": 0
+   "segment": 0,
+   "actions": []
   },
   {
    "key": "node:fd611f54-cc94-11f1-88ba-437fb5ee3fb9",
@@ -97,7 +98,8 @@
    ],
    "metrics": {},
    "pxc_status": "SYNCED",
-   "segment": 0
+   "segment": 0,
+   "actions": []
   },
   {
    "key": "node:09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
@@ -117,7 +119,8 @@
    ],
    "metrics": {},
    "pxc_status": "SYNCED",
-   "segment": 0
+   "segment": 0,
+   "actions": []
   }
  ],
  "galera": {

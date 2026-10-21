@@ -1,6 +1,8 @@
 // The Cluster place: the cluster the connection in use belongs to (MariaDB
 // Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster, MySQL
-// InnoDB Cluster, Group Replication), read-only in this release. Summary
+// InnoDB Cluster, Group Replication). Opening it reads; the changes a member
+// offers (cluster.py "reviewed actions") sit in its inspector, one home, and
+// go through the reviewed flow (ActionReview.tsx). Summary
 // line, then (when the cluster is not OK) the findings as one compact line
 // each, the metric tiles, then Topology (ClusterTopology), Members (Nodes on
 // Galera) and, for InnoDB Cluster, Routers, with an inspector per member or
@@ -9,9 +11,11 @@
 // cluster. A report that is not the connection in use's current one (from
 // another connection, or kept after a failed read) is greyed and never marks
 // a member "This connection".
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import type { Connection } from "./api";
 import { useConnectionReads, type Bound } from "./binding";
+import { useWritePolicy } from "./Connections";
+import { ActionResult, useReviewedActions } from "./ActionReview";
 import {
   DataTable, EmptyState, Fields, InspectorContext, InspectorSection, MetricTile, PrerequisiteGate, Segmented,
   SummaryLine, TileGrid, ToolbarButton, ViewLayout, ViewStatus,
@@ -21,8 +25,8 @@ import { useOpenRead } from "./viewOnScreen";
 import { engineName, plural } from "./OpsShared";
 import {
   ageText, blindMember, checkInText, failureText, flowPercent, isGalera, isReadReplica, kindLabel, memberNoun, readCluster,
-  stateWord, utcText,
-  type ClusterFailure, type ClusterFinding, type ClusterMember, type ClusterReport, type ClusterRouter,
+  stateWord, utcText, planClusterAction, sendClusterAction,
+  type ClusterAction, type ClusterFailure, type ClusterFinding, type ClusterMember, type ClusterReport, type ClusterRouter,
 } from "./clusterApi";
 import {
   ClusterMark, ClusterTopology, GLOSSARY, memberAddress, memberEngine, memberEngineFull, memberFlow, memberKey, routerKey,
@@ -213,10 +217,14 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   const marker: LocalMarker = stale
     ? { word: "Read here", title: `This report was read on ${bound?.label || "another connection"}${report ? `, ${readAt(report)}` : ""}` }
     : { word: "This connection" };
-  async function load() {
+  async function load(force = false) {
     if (disabled) return;
-    await reads.run("cluster", "Reading the cluster…", readCluster, onReport, { onError: (message) => onFailure?.(reads.key, message) });
+    await reads.run("cluster", "Reading the cluster…", readCluster, onReport, { force, onError: (message) => onFailure?.(reads.key, message) });
   }
+  const policy = useWritePolicy();
+  const actions = useReviewedActions({
+    connection, operation: "cluster_action", send: sendClusterAction, onSent: () => { void load(true); },
+  });
   // Reads when the place opens on screen, once per connection (viewOnScreen.ts).
   useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!reads.loading || reads.running(), read: () => { void load(); } });
 
@@ -231,7 +239,27 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   const galera = !!report && isGalera(report);
   const noun = report ? memberNoun(report) : "Member";
 
-  const content: InspectorContent | null = report && chosenMember ? memberInspector(report, chosenMember, stale ? bound?.label || "" : null)
+  // Changes only on the current report of the connection in use, with its
+  // write policy known and not read-only.
+  const changeBlock = stale ? (other ? `This report was read on ${other}. Refresh to read the connection in use.` : "The last read failed. Refresh first.")
+    : disabled ? "Reads are paused." : policy?.blocked ? policy.blocked
+      : connection.read_only ? "This connection is read-only in myflames, so changes are refused." : "";
+  function start(a: ClusterAction, m: ClusterMember) {
+    if (changeBlock || actions.busy) return;
+    void actions.review(a.id, (c) => planClusterAction(c, a.id, m.key));
+  }
+  const memberActions = (m: ClusterMember): ReactNode => (m.actions || []).length ? (
+    <div className="review-actions" role="group" aria-label={`Changes for ${m.name}`}>
+      {(m.actions || []).map((a) => (
+        <button key={a.id} type="button" className={`button${a.danger ? " danger" : ""}`} title={changeBlock || a.description}
+          aria-disabled={!!changeBlock || actions.busy} onClick={() => start(a, m)}>
+          {actions.planning === a.id ? "Reading…" : a.label}
+        </button>
+      ))}
+      {changeBlock && <p className="hint">{changeBlock}</p>}
+    </div>
+  ) : undefined;
+  const content: InspectorContent | null = report && chosenMember ? memberInspector(report, chosenMember, stale ? bound?.label || "" : null, memberActions(chosenMember))
     : report && chosenRouter ? routerInspector(chosenRouter, routerKey(chosenRouter, routerIndex)) : null;
 
   const memberColumns: Column<ClusterMember>[] = [
@@ -301,9 +329,12 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         <p>The cluster the connection in use belongs to: MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster, MySQL InnoDB Cluster or Group Replication. Members are shown as this server sees them.</p>
         <p>Galera exposes only the connected node's own state, so the other nodes are listed in the component without a verdict: connect to a node to inspect it. Percona XtraDB Cluster names every node's state.</p>
         <p>OK: quorum, and every expected member present and healthy. Watch: quorum holds but a member is missing or in transition, or one more failure would stop the cluster. Problem: no quorum, a member in error, or the connected member cannot see the group.</p>
-        <p>Read-only in this release: myflames reads status and never changes membership, the primary or any setting here.</p>
+        <p>Opening it reads; nothing changes. A member's inspector offers the changes that do what they say on that server: make a secondary the primary, stop or start Group Replication on the connected member, and on MariaDB Galera desync, resync or bootstrap a Primary component on the connected node. Each one shows the exact statement, asks first, and is recorded in the Audit log.</p>
       </>}
-      status={<ViewStatus loading={reads.loading} error={failed} />}>
+      status={<>
+        <ViewStatus loading={reads.loading || (actions.planning ? "Reading the member for review…" : undefined)} error={failed || actions.error} />
+        {actions.result && <ActionResult shown={actions.result} onClose={actions.clearResult} />}
+      </>}>
       {report ? <>
         {failedOver && (
           <div className="gate other-connection cluster-stale" role="note">
@@ -342,9 +373,10 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         </EmptyState>
       ) : (
         <EmptyState icon="cluster" title="Read the cluster" action={<ToolbarButton primary disabled={disabled} onClick={() => { void load(); }}>Load</ToolbarButton>}>
-          The cluster the connection in use belongs to, its members and their state. It only reads.
+          The cluster the connection in use belongs to, its members and their state. Reading changes nothing.
         </EmptyState>
       )}
+      {actions.sheet}
     </ViewLayout>
   );
 }
@@ -452,7 +484,7 @@ function clusterTiles(report: ClusterReport, stale: boolean) {
   );
 }
 
-function memberInspector(report: ClusterReport, m: ClusterMember, readOn: string | null): InspectorContent {
+function memberInspector(report: ClusterReport, m: ClusterMember, readOn: string | null, actions?: ReactNode): InspectorContent {
   const metrics = Object.entries(m.metrics || {}).filter(([k]) => k in METRIC_LABELS && k !== "local_state_comment");
   const g = report.galera;
   const galera = isGalera(report);
@@ -461,6 +493,7 @@ function memberInspector(report: ClusterReport, m: ClusterMember, readOn: string
     key: m.key,
     title: m.name,
     meta: <ClusterMark tone={m.status as Tone} label={stateWord(m)} />,
+    actions,
     body: <>
       <InspectorSection title={memberNoun(report)}>
         <Fields rows={[

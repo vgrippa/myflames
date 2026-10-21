@@ -1,0 +1,82 @@
+{
+ "schema_version": "proxysql-action-1.0",
+ "action": "rule_disable",
+ "target": {
+  "rule_id": 30
+ },
+ "value": null,
+ "facts": [
+  [
+   "ProxySQL",
+   "3.0.11-797-g7c91137"
+  ],
+  [
+   "Rule",
+   "30: ^SELECT"
+  ],
+  [
+   "Destination hostgroup",
+   "32"
+  ],
+  [
+   "Hits",
+   "41"
+  ],
+  [
+   "Active",
+   "Yes → No"
+  ]
+ ],
+ "warnings": [
+  "Applied to runtime only. Save query rules to disk afterwards, or ProxySQL loads the previous rules at its next start."
+ ],
+ "typed_guard": null,
+ "undo": "UPDATE mysql_query_rules SET active = 1 WHERE rule_id = 30; then LOAD MYSQL QUERY RULES TO RUNTIME;",
+ "next": {
+  "action": "query_rules_save",
+  "label": "Save query rules to disk…"
+ },
+ "verified": [
+  "ProxySQL Admin identity (admin-version)",
+  "rule 30 unchanged since review"
+ ],
+ "eyebrow": "UPDATE",
+ "title": "Disable query rule 30?",
+ "confirm_label": "Disable rule 30",
+ "target_text": "Query rule 30",
+ "description": "Queries rule 30 matched go to the next matching rule, or to the user's default hostgroup.",
+ "statements": [
+  "/*myflames:proxysql_op*/ UPDATE mysql_query_rules SET active = 0 WHERE rule_id = 30;",
+  "LOAD MYSQL QUERY RULES TO RUNTIME;"
+ ],
+ "expect": {
+  "proxysql_version": "3.0.11-797-g7c91137",
+  "fingerprints": {
+   "query_rules_memory": "f51bcc7d928482dc95d0eca4fb7a24b4ecd43ca21a913a0e41944bcfa20dfbed",
+   "query_rules_runtime": "f51bcc7d928482dc95d0eca4fb7a24b4ecd43ca21a913a0e41944bcfa20dfbed"
+  },
+  "rule": {
+   "rule_id": "30",
+   "active": "1",
+   "username": null,
+   "schemaname": null,
+   "flagIN": "0",
+   "match_digest": "^SELECT",
+   "match_pattern": null,
+   "negate_match_pattern": "0",
+   "destination_hostgroup": "32",
+   "apply": "1",
+   "comment": "reads"
+  },
+  "pending_runtime": []
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection ProxySQL lab is a Development connection. myflames asks only before risky writes, and these 2 statements include one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-rule_disable"
+}

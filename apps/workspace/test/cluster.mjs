@@ -23,11 +23,18 @@ for (const name of ["galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two
   "pxc-8.4-donor", "pxc-8.4-member-donor", "ic-8.4-healthy", "ic-8.4-degraded", "ic-8.4-unreachable", "ic-8.4-no-quorum",
   "ic-8.4-member-offline", "ic-8.4-local-offline", "gr-8.4-multi-primary", "gr-8.4-denied", "mysql-8.4-standalone",
   "mariadb-11.8-standalone", "pxc-8.4-two-of-three", "galera-11.8-two-nodes", "galera-11.8-partial-seeds", "galera-mysql-8.4-healthy",
-  "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local"]) R[name] = await load(`cluster-${name}.json`);
+  "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local", "plan-switchover"]) R[name] = await load(`cluster-${name}.json`);
 
 const view = '.server-view[data-view="cluster"]';
 const nav = '.main-nav button[data-place="cluster"]';
-const h = await open("/api/live/cluster", "cluster");
+const plans = [];
+const sends = [];
+const declined = [];
+const h = await open("/api/live/cluster", "cluster", {
+  "/api/live/cluster/plan": (body) => { plans.push(body); return { status: 200, body: R["plan-switchover"] }; },
+  "/api/live/cluster/action": (body) => { sends.push(body); return { status: 500, body: { error: "not in this suite" } }; },
+  "/api/audit/declined": (body) => { declined.push(body); return { status: 200, body: { audit_id: "x", status: "declined" } }; },
+});
 const { page, state } = h;
 const api = (route, body) =>
   page.evaluate(async (r, b) => {
@@ -111,7 +118,8 @@ try {
   }).length);
   assert.equal(animated, 0, "no animation in the topology");
   const info = await h.popover("About Cluster");
-  assert.match(info, /Read-only in this release/);
+  assert.match(info, /Opening it reads; nothing changes/);
+  assert.match(info, /asks first, and is recorded in the Audit log/);
   assert.match(info, /MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster, MySQL InnoDB Cluster/);
   assert.match(info, /OK: quorum, and every expected member present and healthy/);
   // The healthy summary reads like Watch and Problem: a shape and the word, inline.
@@ -183,6 +191,34 @@ try {
   await h.select(`${view} tr[data-row-key^="router:"]`);
   assert.match(await h.inspector(), /MySQL Router writes its check-in time periodically.*It is shown, not judged/);
   await backToList();
+
+  // Changes live in the member's inspector, one home: Make primary on an
+  // ONLINE secondary. The review shows the exact statement with the
+  // member's UUID; Escape records a declined attempt and sends nothing.
+  await tab("Members");
+  const secondary = R["ic-8.4-healthy"].members.find((m) => m.key === R["plan-switchover"].member_key);
+  await h.select(`${view} tr[data-row-key="${secondary.key}"]`);
+  const memberButtons = await page.$$eval(".view-inspector .review-actions button", (els) => els.map((e) => e.textContent.trim()));
+  assert.deepEqual(memberButtons, secondary.actions.map((a) => a.label));
+  assert.ok(memberButtons.includes("Make primary…"), memberButtons.join());
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === "Make primary…").click());
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.deepEqual({ action: plans[0].action, member: plans[0].member_key }, { action: "switchover", member: secondary.key });
+  const sheet = await page.$eval("dialog.action-review[open]", (d) => ({ eyebrow: d.querySelector(".eyebrow").textContent,
+    sql: d.querySelector(".ops-pre code").textContent, confirm: d.querySelector(".sheet-actions button:last-child").textContent }));
+  assert.equal(sheet.eyebrow, "SELECT group_replication_set_as_primary");
+  assert.equal(sheet.sql, `/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('${secondary.uuid}');`);
+  assert.equal(sheet.confirm, `Make ${secondary.name} primary`);
+  await pause(400);
+  await shot("cluster-review.png");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+  for (let i = 0; i < 50 && !declined.length; i++) await pause(20);
+  assert.deepEqual({ op: declined[0]?.operation, statements: declined[0]?.statements }, { op: "cluster_action", statements: R["plan-switchover"].statements });
+  assert.equal(sends.length, 0, "nothing sent on Escape");
+  await backToList();
+  // No Management tab: the sections stay the cluster's.
+  assert.deepEqual(await visible(`${view} .segmented button`), ["Topology", "Members", "Routers1"]);
   await tab("Topology");
 
   // A degraded group: the unreachable member is drawn apart (dashed edge,
@@ -441,6 +477,17 @@ try {
   assert.deepEqual(stale.chips, ["Read here"]);
   assert.equal(await page.$(`${nav} .status-dot`), null, "no marker from another connection");
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
+  // Another connection's report offers no change.
+  const galeraLocal = R["galera-11.8-healthy"].members.find((m) => m.local);
+  await page.click(`${view} .cluster-card[data-row-key="${galeraLocal.key}"]`);
+  await page.waitForSelector(".view-inspector .review-actions button");
+  assert.equal(await page.$eval(".view-inspector .review-actions button", (b) => b.getAttribute("aria-disabled")), "true");
+  const plansBefore = plans.length;
+  await page.click(".view-inspector .review-actions button");
+  await pause(300);
+  assert.equal(plans.length, plansBefore, "nothing is planned on another connection's report");
+  await backToList();
+  await page.keyboard.press("Escape");
   await pause(300);
   assert.equal(state.seen.length, before, "switching while on screen keeps the old report until Refresh");
   await refreshTo(R["mysql-8.4-standalone"]);
@@ -462,7 +509,8 @@ try {
   assert.equal(state.seen.at(-1).connection.host, "solo.test");
 
   // Until now the Cluster place read nothing but /api/live/cluster.
-  assert.deepEqual(state.other.filter((o) => o.path.startsWith("/api/live/")).map((o) => o.path), [], "no other view read");
+  assert.deepEqual(state.other.filter((o) => o.path.startsWith("/api/live/") && !o.path.startsWith("/api/live/cluster/")).map((o) => o.path), [],
+    "no other view read (the review above planned one change)");
   // Server's Refresh all reads the cluster once, and the place shows that answer.
   await answer(R["mysql-8.4-standalone"]);
   const beforeAll = state.seen.length;

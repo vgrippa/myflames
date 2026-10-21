@@ -44,6 +44,7 @@ export type IconName =
   | "instruments"
   | "replication"
   | "cluster"
+  | "proxy"
   | "maintenance"
   | "info"
   | "refresh"

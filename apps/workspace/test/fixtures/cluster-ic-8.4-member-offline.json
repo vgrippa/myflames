@@ -63,7 +63,15 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-1:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-1:3306"
+   "endpoint": "mf-ic-1:3306",
+   "actions": [
+    {
+     "id": "stop_member",
+     "label": "Stop Group Replication…",
+     "danger": true,
+     "description": "This member leaves the group and becomes read-only (super_read_only ON)."
+    }
+   ]
   },
   {
    "key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
@@ -94,7 +102,15 @@
    "communication_stack": "MySQL",
    "label": "mf-ic-2:3306",
    "in_metadata": true,
-   "endpoint": "mf-ic-2:3306"
+   "endpoint": "mf-ic-2:3306",
+   "actions": [
+    {
+     "id": "switchover",
+     "label": "Make primary…",
+     "danger": true,
+     "description": "Makes mf-ic-2:3306 the primary; the current primary becomes a read-only secondary once its running transactions finish."
+    }
+   ]
   },
   {
    "key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
@@ -113,7 +129,8 @@
     "Listed in the InnoDB Cluster metadata but not in the group: it may be stopped, or Group Replication is not running on it."
    ],
    "metrics": {},
-   "in_metadata": true
+   "in_metadata": true,
+   "actions": []
   }
  ],
  "galera": null,

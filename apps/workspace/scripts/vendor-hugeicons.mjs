@@ -24,7 +24,7 @@ const MAP = {
   browser: "SidebarLeft", view: "View", baseline: "Flag01", branches: "GitBranch",
   edit: "Edit02", trash: "Delete02", globe: "Globe", optimize: "Flash", shield: "ShieldCheck",
   minus: "MinusSign", block: "CancelCircle", clean: "BrushCleaning", undo: "Undo02",
-  cluster: "Network",
+  cluster: "Network", proxy: "Split",
 };
 
 const pkg = process.argv[2];

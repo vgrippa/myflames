@@ -3,6 +3,7 @@
 // it to name the place's state in the sidebar without loading the place.
 import { api, type Connection } from "./api";
 import type { Bound } from "./binding";
+import type { ReviewedPlan, ReviewedResult } from "./ActionReview";
 
 export type ClusterStatus = "ok" | "watch" | "problem" | "unknown";
 export type ClusterKind = "galera" | "pxc" | "innodb_cluster" | "group_replication" | "none";
@@ -29,6 +30,8 @@ export type ClusterMember = {
   communication_stack?: string | null;
   pxc_status?: string | null;
   segment?: number | null;
+  /** Reviewed changes offered on this member (the workspace endpoint adds them). */
+  actions?: ClusterAction[];
 };
 
 export type ClusterRouter = {
@@ -241,3 +244,12 @@ export function failureText(error: string): string {
   const line = raw.split("\n")[0];
   return line.length > 180 ? `${line.slice(0, 177)}…` : line || "The read failed.";
 }
+
+/** A reviewed change a member offers (cluster.py available_actions). */
+export type ClusterAction = { id: string; label: string; danger: boolean; description: string };
+
+export const planClusterAction = (connection: Connection, action: string, memberKey: string) =>
+  api<ReviewedPlan>("live/cluster/plan", { connection, action, member_key: memberKey });
+
+export const sendClusterAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string) =>
+  api<ReviewedResult>("live/cluster/action", { connection, plan, review_token: token, typed, confirmed: true });

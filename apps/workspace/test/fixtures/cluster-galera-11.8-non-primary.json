@@ -75,7 +75,15 @@
     "local_index": 0,
     "cluster_conf_id": -1,
     "cluster_weight": 0
-   }
+   },
+   "actions": [
+    {
+     "id": "bootstrap_pc",
+     "label": "Bootstrap a Primary component…",
+     "danger": true,
+     "description": "Makes this node, and the nodes it reaches, a Primary component that accepts writes."
+    }
+   ]
   }
  ],
  "galera": {

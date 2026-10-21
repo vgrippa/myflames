@@ -148,3 +148,33 @@
 .ops-dump-options[open] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
 .ops-dump-options > summary { grid-column: 1 / -1; }
 .ops-dump-options .ops-field label { display: flex; flex-direction: column; gap: var(--space-1); }
+
+/* Reviewed changes (ActionReview.tsx): the change buttons in an inspector's
+   action bar, the result under the toolbar, the typed name in the sheet. */
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.review-actions .button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.review-actions .hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.action-result p { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.action-result .ops-result-head > strong {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.action-review .action-typed input {
+  font-family: var(--font-mono);
+}
+.action-review details > summary { font-size: var(--text-sm); }

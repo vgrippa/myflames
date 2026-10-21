@@ -50,7 +50,8 @@
     "In the InnoDB Cluster metadata (this read replica's replicated copy). A read replica is not in the group, so it cannot see the members' states: connect to a group member to judge them."
    ],
    "metrics": {},
-   "in_metadata": true
+   "in_metadata": true,
+   "actions": []
   },
   {
    "key": "member:22222222-2222-11f0-8a00-0242ac130003",
@@ -69,7 +70,8 @@
     "In the InnoDB Cluster metadata (this read replica's replicated copy). A read replica is not in the group, so it cannot see the members' states: connect to a group member to judge them."
    ],
    "metrics": {},
-   "in_metadata": true
+   "in_metadata": true,
+   "actions": []
   },
   {
    "key": "member:33333333-3333-11f0-8a00-0242ac130004",
@@ -88,7 +90,8 @@
     "In the InnoDB Cluster metadata (this read replica's replicated copy). A read replica is not in the group, so it cannot see the members' states: connect to a group member to judge them."
    ],
    "metrics": {},
-   "in_metadata": true
+   "in_metadata": true,
+   "actions": []
   },
   {
    "key": "member:44444444-4444-11f0-8a00-0242ac130005",
@@ -112,7 +115,8 @@
     "last_error_number": 0
    },
    "in_metadata": true,
-   "instance_type": "read-replica"
+   "instance_type": "read-replica",
+   "actions": []
   }
  ],
  "galera": null,

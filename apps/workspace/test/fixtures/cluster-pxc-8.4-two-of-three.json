@@ -78,7 +78,8 @@
     "cluster_weight": 2
    },
    "pxc_status": "SYNCED",
-   "segment": 0
+   "segment": 0,
+   "actions": []
   },
   {
    "key": "node:09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
@@ -98,7 +99,8 @@
    ],
    "metrics": {},
    "pxc_status": "SYNCED",
-   "segment": 0
+   "segment": 0,
+   "actions": []
   }
  ],
  "galera": {
