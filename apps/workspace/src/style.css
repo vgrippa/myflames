@@ -67,6 +67,13 @@
   --danger-text: #c4261d;
   --danger-fill: #d93025;
   --danger-soft: rgba(255, 59, 48, 0.12);
+  /* Connection type: their own hues, never the status colors (Problem is red, OK green). */
+  --env-prod: #af52de;
+  --env-prod-text: #8338b0;
+  --env-prod-soft: rgba(175, 82, 222, 0.12);
+  --env-dev: #1594a8;
+  --env-dev-text: #0b7489;
+  --env-dev-soft: rgba(48, 176, 199, 0.13);
   --danger-line: rgba(255, 59, 48, 0.25);
   --danger-ink: #ffffff;
   --info: #0071e3;
@@ -203,6 +210,13 @@
   --danger-text: #c4261d;
   --danger-fill: #d93025;
   --danger-soft: rgba(255, 59, 48, 0.12);
+  /* Connection type: their own hues, never the status colors (Problem is red, OK green). */
+  --env-prod: #af52de;
+  --env-prod-text: #8338b0;
+  --env-prod-soft: rgba(175, 82, 222, 0.12);
+  --env-dev: #1594a8;
+  --env-dev-text: #0b7489;
+  --env-dev-soft: rgba(48, 176, 199, 0.13);
   --danger-line: rgba(255, 59, 48, 0.25);
   --danger-ink: #ffffff;
   --info: #0071e3;
@@ -260,6 +274,13 @@
     --danger-text: #ff8378;
     --danger-fill: #d93025;
     --danger-soft: rgba(255, 107, 94, 0.16);
+    /* Connection type: their own hues, never the status colors (Problem is red, OK green). */
+    --env-prod: #bf5af2;
+    --env-prod-text: #d39cf5;
+    --env-prod-soft: rgba(191, 90, 242, 0.18);
+    --env-dev: #40c8e0;
+    --env-dev-text: #6fd6e8;
+    --env-dev-soft: rgba(64, 200, 224, 0.16);
     --danger-line: rgba(255, 107, 94, 0.4);
     --danger-ink: #ffffff;
     --info: #63b3ff;
@@ -324,6 +345,13 @@
   --danger-text: #ff8378;
   --danger-fill: #d93025;
   --danger-soft: rgba(255, 107, 94, 0.16);
+  /* Connection type: their own hues, never the status colors (Problem is red, OK green). */
+  --env-prod: #bf5af2;
+  --env-prod-text: #d39cf5;
+  --env-prod-soft: rgba(191, 90, 242, 0.18);
+  --env-dev: #40c8e0;
+  --env-dev-text: #6fd6e8;
+  --env-dev-soft: rgba(64, 200, 224, 0.16);
   --danger-line: rgba(255, 107, 94, 0.4);
   --danger-ink: #ffffff;
   --info: #63b3ff;
@@ -2976,7 +3004,8 @@ main:has(> .library) { padding: 0; max-width: none; }
 
 /* Write safety (db-operations): the safety state in the window footer, the
    type dot in the picker, and the type in connection rows. Production is the
-   danger color, Development the ok color, Read-only neutral (an outline). */
+   purple, Development teal (their own hues, so neither reads as a status:
+   Problem stays red and OK green), Read-only neutral (an outline). */
 .type-dot {
   flex: none;
   width: 8px;
@@ -2984,10 +3013,10 @@ main:has(> .library) { padding: 0; max-width: none; }
   border-radius: 100%;
 }
 .type-dot.is-production {
-  background: var(--danger);
+  background: var(--env-prod);
 }
 .type-dot.is-development {
-  background: var(--ok);
+  background: var(--env-dev);
 }
 .type-dot.is-read-only {
   border: 1.5px solid var(--ink-muted);
@@ -3009,12 +3038,12 @@ main:has(> .library) { padding: 0; max-width: none; }
   color: var(--ink);
 }
 .type-tag.is-production {
-  background: var(--danger-soft);
-  color: var(--danger-text);
+  background: var(--env-prod-soft);
+  color: var(--env-prod-text);
 }
 .type-tag.is-development {
-  background: var(--ok-soft);
-  color: var(--ok-text);
+  background: var(--env-dev-soft);
+  color: var(--env-dev-text);
 }
 .connection-safety {
   display: flex;
@@ -3920,19 +3949,19 @@ button, .plan-item, .main-nav button {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--danger);
+  background: var(--env-prod);
 }
 .safety-status.is-development .safety-status-dot {
-  background: var(--ok);
+  background: var(--env-dev);
 }
 .safety-status.is-read-only .safety-status-dot {
   background: none;
   border: 1.5px solid var(--ink-muted);
 }
-/* Production assumed: the settings are not known yet, so a hollow red dot. */
+/* Production assumed: the settings are not known yet, so a hollow Production dot. */
 .safety-status.is-unknown .safety-status-dot {
   background: none;
-  border: 1.5px solid var(--danger);
+  border: 1.5px solid var(--env-prod);
 }
 .safety-retry {
   min-height: 24px;

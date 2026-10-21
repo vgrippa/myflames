@@ -181,9 +181,9 @@ host, port, user or TLS setting counts as Production; the form warns when you
 change them on a Development connection, and saves it as Production unless you
 choose Development again. The window footer of the Query editor, Server,
 Workload, Replication, Cluster and Tuning starts with the connection's write safety: a
-red dot and "Production · changes ask first" (accessible name "Production:
+purple dot and "Production · changes ask first" (accessible name "Production:
 every change on NAME asks first"), "Read-only · changes refused" with an
-outlined dot, or "Development · risky changes ask first" with a green dot; the
+outlined dot, or "Development · risky changes ask first" with a teal dot; the
 connection picker shows a dot of the same color. Every write
 attempt, including declined and refused ones, is recorded in the local audit
 trail: **Settings > Audit log** in the workspace, or `myflames audit`.

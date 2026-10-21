@@ -387,16 +387,20 @@ try {
   // The state shows only where changes are sent (strip() returns to Home).
   assert.equal(await page.$(safety), null, "no safety state on Home");
   await place("Query editor");
+  assert.notEqual(await page.$eval(`${safety} .safety-status-dot`, (e) => getComputedStyle(e).backgroundColor),
+    await page.evaluate(() => { const p = document.createElement("div"); p.style.background = "var(--danger)"; document.body.append(p); const c = getComputedStyle(p).backgroundColor; p.remove(); return c; }),
+    "Production never uses the Problem color");
   assert.deepEqual(await page.$eval(safety, (e) => ({
     text: e.textContent,
     dot: getComputedStyle(e.querySelector(".safety-status-dot")).backgroundColor,
     bold: Number(getComputedStyle(e.querySelector("strong")).fontWeight) >= 600,
   })), {
-    // Words, not color alone: a danger dot plus "Production".
+    // Words, not color alone: the Production dot (its own hue, never the
+    // Problem red) plus "Production".
     text: "Production · changes ask first",
     dot: await page.evaluate(() => {
       const probe = document.createElement("div");
-      probe.style.background = "var(--danger)";
+      probe.style.background = "var(--env-prod)";
       document.body.append(probe);
       const out = getComputedStyle(probe).backgroundColor;
       probe.remove();

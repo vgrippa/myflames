@@ -100,7 +100,7 @@ function TypeInfo() {
     </InfoPopover>
   );
 }
-/** The small dot that names a connection's type (red for Production). */
+/** The small dot that names a connection's type (purple for Production, teal for Development). */
 export function TypeDot({ type, readOnly }: { type: ConnectionType; readOnly?: boolean }) {
   const label = readOnly ? `${TYPE_LABEL[type]}, read-only` : TYPE_LABEL[type];
   return <span className={`type-dot is-${readOnly ? "read-only" : type}`} role="img" aria-label={label} title={label} />;

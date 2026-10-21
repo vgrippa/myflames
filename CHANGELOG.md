@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Home in narrow windows (the 720x520 minimum included): the three starts stay on one short row (icon and title), so Connections begins near the top, and the compact Connections table keeps each connection's type in words beside its dot (Prod, Dev, Read-only), never its color alone.
 - The Full analysis's Galera check (`checks.wsrep`, also in `myflames report` and the MCP `server_report`) now uses the Cluster place's rules. A Primary component of one or two nodes is Watch (it cannot survive another failure), and so are `pxc_maint_mode` other than DISABLED and fewer nodes than `wsrep_cluster_address` names (when this node is identified there). A MariaDB node whose global `wsrep_on` is OFF while it stays in the component is now a Problem; 3.1.0 left the check out. `report --fail-on watch` (or `--fail-on problem` for `wsrep_on` OFF) can therefore fail on servers that passed in 3.1.0.
 - The command palette lists commands whose name contains every typed word first, then those found only by a keyword or their group, each in the usual order: typing innodb opens the InnoDB view, not the Cluster place, and health opens the Health view, not Tuning.
+- Production connections are purple and Development connections teal (tags, the picker dot and the window footer), so a Production connection never reads as a problem: red now only means Problem and green only OK.
 
 ### Fixed
 

@@ -853,10 +853,10 @@ shows Production, and saves as Production unless you choose Development again.
 **Use** with such edits, before saving, is Production too.
 
 The window footer of the Query editor, Server, Workload, Replication, Cluster
-and Tuning starts with the write safety of the connection in use: a red dot and
+and Tuning starts with the write safety of the connection in use: a purple dot and
 "Production · changes ask first" (the full sentence, "Production: every change
 on NAME asks first", is its tooltip and accessible name), an outlined dot and
-"Read-only · changes refused", or a green dot and "Development · risky changes
+"Read-only · changes refused", or a teal dot and "Development · risky changes
 ask first". Nothing is drawn under the top bar, so the top bar and view
 headers stay clear. The picker has a dot of the same color (red Production,
 green Development, an outline when read-only) and the PRODUCTION tag. The
