@@ -13,25 +13,49 @@
 // Save to disk, a lost reply shown as Outcome unknown and never retried, the
 // sidebar muted only for the connection that was read, another connection's
 // report greyed with its changes off, and the 720x520 window.
+// After Confirm the sheet follows the send: Applying… on a button that cannot
+// be clicked twice, each statement Sent (never Done) until the server
+// answers, then the outcome, what changed, the Audit log record and, for an
+// unknown outcome, what to check. Query digests reads on its own only when the
+// tab is on screen: the five orders, Top N, hostgroup, schema, user and text
+// filters, a digest or rule filter shown as a chip, the rules' destination
+// next to the hostgroup a digest ran on with a mismatch flagged, and jumps
+// between a rule and its digests.
 import assert from "node:assert/strict";
 import path from "node:path";
 import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
+import { reviewedActionsUnit } from "./reviewed-actions-unit.mjs";
+
+await reviewedActionsUnit();
+// Useful where loopback listeners and browser suites are unavailable.
+if (process.argv.includes("--unit")) process.exit(0);
 
 const R = {};
 for (const name of ["lab", "pending", "problem", "not", "plan-offline-soft", "plan-offline-hard", "plan-weight", "plan-rule-disable",
-  "plan-read-only", "result-done", "plan-save"]) R[name] = await load(`proxysql-${name}.json`);
+  "plan-read-only", "result-done", "plan-save", "digests-time", "digests-slowest", "digests-rate", "digests-hg10", "digests-digest",
+  "digests-rule-30", "digests-mismatch", "progress-checking", "progress-sending", "progress-finished-unknown",
+  "rules-pending", "collisions", "digests-collisions"]) R[name] = await load(`proxysql-${name}.json`);
 
 const view = '.server-view[data-view="proxysql"]';
 const nav = '.main-nav button[data-place="proxysql"]';
 const plans = [];
 const sends = [];
 const declined = [];
+const digestReads = [];
+const progressReads = [];
 let planAnswer = () => ({ status: 200, body: R["plan-offline-soft"] });
 let sendAnswer = () => ({ status: 200, body: R["result-done"] });
+let progressAnswer = () => ({ status: 200, body: R["progress-sending"] });
+let digestOverride = null;
+const digestAnswer = (b) => ({ status: 200, body: digestOverride || (b.rule_id === 30 ? R["digests-rule-30"] : b.digest ? R["digests-digest"]
+  : b.hostgroup === 10 ? R["digests-hg10"] : b.order === "slowest" ? R["digests-slowest"] : b.order === "rate" ? R["digests-rate"]
+    : b.order === "frequent" ? R["digests-mismatch"] : R["digests-time"]) });
 const h = await open("/api/live/proxysql", "proxysql", {
   "/api/live/proxysql/plan": (body) => { plans.push(body); return planAnswer(body); },
   "/api/live/proxysql/action": (body) => { sends.push(body); return sendAnswer(body); },
+  "/api/live/proxysql/digests": (body) => { digestReads.push(body); return digestAnswer(body); },
+  "/api/live/action/progress": (body) => { progressReads.push(body); return progressAnswer(body); },
   "/api/audit/declined": (body) => { declined.push(body); return { status: 200, body: { audit_id: "x", status: "declined" } }; },
 });
 const { page, state } = h;
@@ -62,9 +86,13 @@ async function backToList() {
 }
 async function selectRow(key) {
   await backToList();
-  await page.click(`${view} tbody tr[data-row-key="${key}"]`);
+  await page.click(rowSelector(key));
   await page.waitForSelector(".view-inspector .inspector-title");
 }
+// JSON keys contain quotes and backslashes: escape the CSS attribute too.
+const rowSelector = (key) => `${view} tbody tr[data-row-key=${JSON.stringify(key)}]`;
+const digestKey = (hg, hash, schema = "information_schema", user = "mf_admin", client = "") =>
+  `dg${JSON.stringify([hg, schema, user, client, hash])}`;
 const inspectorButtons = () => page.$$eval(".view-inspector .review-actions button", (els) => els.map((e) => e.textContent.trim()));
 async function clickAction(label) {
   await page.evaluate((label) => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === label).click(), label);
@@ -72,6 +100,24 @@ async function clickAction(label) {
 const sheet = "dialog.action-review[open]";
 async function waitSheet() { await page.waitForSelector(sheet, { visible: true }); }
 async function noSheet() { await page.waitForFunction((s) => !document.querySelector(s), {}, sheet); }
+/** The sheet after Confirm: wait for the server's answer, then Close. */
+async function answered() {
+  await page.waitForSelector(`${sheet} .action-outcome`);
+  return page.$eval(sheet, (d) => ({
+    outcome: d.querySelector(".action-outcome")?.textContent.replace(/\s+/g, " ").trim(),
+    steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state),
+    effect: [...d.querySelectorAll(".action-effect tbody tr")].map((tr) => [...tr.children].map((c) => c.textContent)),
+    text: d.textContent,
+    buttons: [...d.querySelectorAll(".sheet-actions button")].map((b) => b.textContent.trim()),
+    focused: document.activeElement?.textContent?.trim(),
+  }));
+}
+async function closeSheet() {
+  await page.evaluate((s) => [...document.querySelectorAll(`${s} .sheet-actions button`)].find((b) => b.textContent.trim() === "Close").click(), sheet);
+  await noSheet();
+}
+const resultButton = (label) => page.evaluate((sel, label) => [...document.querySelectorAll(`${sel} .action-result .ops-result-head .text-button`)]
+  .find((b) => b.textContent.trim() === label).click(), view, label);
 
 try {
   await api("/api/profiles/save", { value: { name: "ProxySQL lab", host: "127.0.0.1", port: 6032, user: "radmin", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development" } });
@@ -103,7 +149,7 @@ try {
   assert.equal(state.seen.at(-1).connection.port, 6032);
   assert.equal(state.seen.at(-1).connection.type, "development");
   assert.match((await visible(`${view} .summary-line`))[0], /ProxySQL 3\.0\.11-797-g7c91137 · up 2 d 4 h · 10 backends in 5 hostgroups · 8 ONLINE, 2 SHUNNED/);
-  assert.deepEqual(await visible(`${view} .segmented button`), ["Servers10", "Hostgroups5", "Query rules3", "Query digests1"]);
+  assert.deepEqual(await visible(`${view} .segmented button`), ["Servers10", "Hostgroups5", "Query rules3", "Query digests"]);
   assert.deepEqual(await visible(`${view} .tile-label`), ["Backends ONLINE", "Hostgroups", "Query rules active", "Client connections"]);
   assert.match((await visible(`${view} .proxysql-config`))[0], /Configuration of servers: memory matches runtime · saved to disk/);
   const info = await h.popover("About ProxySQL");
@@ -169,13 +215,48 @@ try {
   for (let i = 0; i < 50 && declined.length < 2; i++) await pause(20);
   assert.equal(declined.length, 2, "Cancel records a declined attempt");
 
-  // Confirm: the reviewed plan and its token are sent once; the result panel
+  // Confirm: the sheet follows the send. While the server works on it the
+  // button reads Applying… and cannot be clicked twice, Cancel and Escape do
+  // nothing, and each statement is Sent, never Done; then the outcome, what
+  // changed and the Audit log record. Close leaves the result panel, which
   // offers the separate Save to disk.
   await clickAction("Set OFFLINE_SOFT…");
   await waitSheet();
   const readsBefore = state.seen.length;
+  progressAnswer = () => ({ status: 200, body: R["progress-checking"] });
+  sendAnswer = () => ({ status: 200, body: R["result-done"], delay: 2200 });
   await page.click(`${sheet} .sheet-actions button:last-child`);
-  await noSheet();
+  await page.waitForFunction((s) => /Reading the target again/.test(document.querySelector(`${s} .action-phase`)?.textContent || ""), {}, sheet);
+  const checking = await page.$eval(sheet, (d) => ({
+    confirm: d.querySelector(".sheet-actions button:last-child").textContent, disabled: d.querySelector(".sheet-actions button:last-child").disabled,
+    cancel: d.querySelector(".sheet-actions button:first-child").disabled, steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state) }));
+  assert.deepEqual(checking, { confirm: "Applying…", disabled: true, cancel: true, steps: ["waiting", "waiting"] });
+  progressAnswer = () => ({ status: 200, body: R["progress-sending"] });
+  await page.waitForFunction((s) => /Sent\. Waiting for the server's answer/.test(document.querySelector(`${s} .action-phase`)?.textContent || ""), {}, sheet);
+  const sending = await page.$eval(sheet, (d) => ({ steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state),
+    words: [...d.querySelectorAll(".action-steps .status-pill")].map((e) => e.textContent), phase: d.querySelector(".action-phase").textContent }));
+  assert.deepEqual(sending.steps, ["sent", "sent"], "with the server: sent, never done before it answers");
+  assert.deepEqual(sending.words, ["Sent", "Sent"]);
+  assert.match(sending.phase, /of at most 60 s/);
+  await page.keyboard.press("Escape");
+  await page.click(`${sheet} .sheet-actions button:last-child`).catch(() => null);
+  await pause(300);
+  assert.ok(await page.$(sheet), "Escape does not close a send in flight");
+  await pause(200);
+  await shot("proxysql-applying-1440.png");
+  const done = await answered();
+  assert.equal(sends.length, 1, "sent once, however often it was clicked");
+  assert.ok(progressReads.length >= 2 && progressReads.every((p) => p.progress_id === sends[0].progress_id), "progress is read by the send's id");
+  assert.match(sends[0].progress_id, /^[0-9a-f]{32}$/);
+  assert.match(done.outcome, /^Done/);
+  assert.deepEqual(done.steps, ["done", "done"]);
+  assert.deepEqual(done.effect[0], ["Status in memory", "ONLINE", "OFFLINE_SOFT"]);
+  assert.match(done.text, /Recorded in the Audit log|The Audit log has the attempt/);
+  assert.deepEqual(done.buttons, ["Save servers to disk…", "Close"], "no Cancel once answered; the next step is its own review");
+  assert.equal(done.focused, "Close");
+  await shot("proxysql-done-1440.png");
+  await closeSheet();
+  sendAnswer = () => ({ status: 200, body: R["result-done"] });
   await page.waitForSelector(`${view} .action-result`);
   assert.equal(sends.length, 1);
   assert.equal(sends[0].review_token, R["plan-offline-soft"].review_token);
@@ -256,7 +337,13 @@ try {
   const declinedAtPolicy = declined.length;
   await api("/api/profiles/save", { id: lab.id, value: { ...lab, type: "production" } });
   await page.click(`${sheet} .sheet-actions button:last-child`);
-  await noSheet();
+  // Either the sheet's own check refused it (its result says Nothing sent),
+  // or the app saw the new policy first and closed the review.
+  await page.waitForFunction((s) => !document.querySelector(s) || document.querySelector(`${s} .action-outcome`), {}, sheet);
+  if (await page.$(`${sheet} .action-outcome`)) {
+    assert.match((await answered()).outcome, /Nothing sent/);
+    await closeSheet();
+  }
   for (let i = 0; i < 50 && declined.length === declinedAtPolicy; i++) await pause(20);
   assert.equal(sends.length, sendsAtPolicy, "nothing sent after a policy change");
   assert.ok(declined.slice(declinedAtPolicy).some((d) => d.reason === "policy_changed" || d.reason === undefined),
@@ -273,18 +360,34 @@ try {
 
   // A lost reply: Outcome unknown, nothing sent again.
   planAnswer = () => ({ status: 200, body: R["plan-offline-soft"] });
-  sendAnswer = () => ({ status: 500, body: { error: "connection lost while waiting for a reply" } });
+  sendAnswer = () => ({ status: 500, body: { error: "connection lost while waiting for a reply" }, delay: 1500 });
+  progressAnswer = () => ({ status: 200, body: R["progress-finished-unknown"] });
   const sendsBefore = sends.length;
   await clickAction("Set OFFLINE_SOFT…");
   await waitSheet();
   await page.click(`${sheet} .sheet-actions button:last-child`);
-  await noSheet();
+  // Finished without an answer never reads as answered.
+  await page.waitForFunction((s) => /No answer arrived from the server/.test(document.querySelector(`${s} .action-phase`)?.textContent || ""), {}, sheet);
+  const lost = await answered();
+  assert.match(lost.outcome, /^Outcome unknown/);
+  assert.deepEqual(lost.steps, ["unknown", "unknown"]);
+  assert.match(lost.text, /What to check/);
+  assert.match(lost.text, /Refresh this place\. Servers shows mf-ic-2:3306/);
+  assert.match(lost.text, /Undo, after checking/);
+  assert.deepEqual(lost.buttons, ["Close"]);
+  await shot("proxysql-unknown-sheet-1440.png");
+  await closeSheet();
   await page.waitForFunction((sel) => /Outcome unknown/.test(document.querySelector(`${sel} .action-result`)?.textContent || ""), {}, view);
   await pause(300);
   assert.equal(sends.length, sendsBefore + 1, "never retried");
   assert.match(await page.$eval(`${view} .action-result`, (e) => e.textContent), /whether it ran is unknown/);
   await shot("proxysql-unknown-1440.png");
-  await page.click(`${view} .action-result .ops-result-head .text-button`);
+  // The result's Audit log button opens the Audit log; the place keeps its result.
+  await resultButton("Audit log");
+  await page.waitForSelector("#audit-title", { visible: true });
+  await page.click(nav);
+  await page.waitForSelector(`${view} .action-result`, { visible: true });
+  await resultButton("Close");
   sendAnswer = () => ({ status: 200, body: R["result-done"] });
 
   // Query rules and digests.
@@ -299,15 +402,138 @@ try {
   assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), R["plan-rule-disable"].statements.join("\n"));
   await page.keyboard.press("Escape");
   await noSheet();
+  // Rules show their hits and the digests they apply to (evaluated here).
   await backToList();
+  assert.match((await visible(`${view} tbody tr[data-row-key="rule:30"] td[data-col="digests"]`))[0], /^5$/);
+  assert.match((await visible(`${view} tbody tr[data-row-key="rule:10"] td[data-col="digests"]`))[0], /^0 \+2 maybe$/);
+  await selectRow("rule:30");
+  assert.match(await h.inspector(), /Digests it applies to/);
+  assert.match(await h.inspector(), /SELECT COUNT\(\*\) FROM testdb\.orders WHERE status = \? AND customer_id = \?/);
+
+  // Query digests reads only once its tab is on screen, in the default order.
+  await backToList();
+  assert.equal(digestReads.length, 0, "no digests read before the tab is open");
   await tab("Query digests");
-  await page.click(`${view} tbody tr[data-row-key]`);
-  await page.waitForSelector(".view-inspector .perf-sql");
-  assert.match(await h.inspector(), /SELECT COUNT\(\*\) FROM orders WHERE status = \?/);
+  await page.waitForSelector(`${view} .proxysql-digest-summary`);
+  assert.equal(digestReads.length, 1);
+  assert.deepEqual({ order: digestReads[0].order, limit: digestReads[0].limit, hostgroup: digestReads[0].hostgroup },
+    { order: "time", limit: 10, hostgroup: null });
+  assert.deepEqual(await visible(`${view} .proxysql-digest-tools .segmented button`), ["Slowest", "Most time", "Most frequent", "Highest rate", "Most rows sent"]);
+  assert.match((await visible(`${view} .proxysql-digest-summary`))[0], /Top 10 by total time · 10 digests listed/);
+  const route = (key) => page.$eval(`${rowSelector(key)} td[data-col="route"]`, (e) => e.textContent);
+  assert.equal(await route(digestKey(32, "0xA8027DF9CE26E2FF")), "32 · rule 30");
+  assert.equal(await route(digestKey(10, "0xA8027DF9CE26E2FF")), "Maybe rule 10");
+  assert.equal(await route(digestKey(30, "0x48BE884F70034786")), "30 · default");
+  await shot("proxysql-digests-1440.png");
+  // Each order is its own bounded read; the table sorts by that order's column.
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .proxysql-digest-tools .segmented button`)].find((b) => b.textContent === "Slowest").click(), view);
+  for (let i = 0; i < 50 && digestReads.length < 2; i++) await pause(20);
+  assert.equal(digestReads.at(-1).order, "slowest");
+  await page.waitForFunction((sel) => /Top 10 by average time/.test(document.querySelector(`${sel} .proxysql-digest-summary`)?.textContent || ""), {}, view);
+  assert.equal(await page.$eval(`${view} th[aria-sort="descending"]`, (e) => e.textContent.trim()), "Average", "sorted by the order's column");
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .proxysql-digest-tools .segmented button`)].find((b) => b.textContent === "Highest rate").click(), view);
+  for (let i = 0; i < 50 && digestReads.at(-1).order !== "rate"; i++) await pause(20);
+  await page.waitForFunction((sel) => /by executions per second/.test(document.querySelector(`${sel} .proxysql-digest-summary`)?.textContent || ""), {}, view);
+  assert.match((await visible(`${view} tbody tr[data-row-key] td[data-col="rate"]`))[0], /20\/s/);
+  // Top N and the hostgroup filter.
+  await page.select(`${view} .proxysql-digest-tools label:not(.proxysql-order-select) select`, "25");
+  for (let i = 0; i < 50 && digestReads.at(-1).limit !== 25; i++) await pause(20);
+  assert.equal(digestReads.at(-1).limit, 25);
+  await page.select(`${view} .proxysql-digest-filters label:nth-of-type(2) select`, "10");
+  for (let i = 0; i < 50 && digestReads.at(-1).hostgroup !== 10; i++) await pause(20);
+  assert.equal(digestReads.at(-1).hostgroup, 10);
+  await page.waitForFunction((sel) => document.querySelectorAll(`${sel} tbody tr[data-row-key]`).length === 2, {}, view);
+  await page.select(`${view} .proxysql-digest-filters label:nth-of-type(2) select`, "");
+  // Typing waits for a pause, then reads once with the text.
+  const typedBefore = digestReads.length;
+  await page.type(`${view} .proxysql-digest-filters input[type="search"]`, "orders");
+  await pause(900);
+  const withText = digestReads.slice(typedBefore).filter((b) => b.text);
+  assert.equal(withText.length, 1, `one read after the pause: ${JSON.stringify(digestReads.slice(typedBefore))}`);
+  assert.equal(withText[0].text, "orders");
+  // An order chosen while typing is kept when the pause ends.
+  await page.type(`${view} .proxysql-digest-filters input[type="search"]`, "x");
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .proxysql-digest-tools .segmented button`)].find((b) => b.textContent === "Slowest").click(), view);
+  await pause(900);
+  assert.deepEqual({ order: digestReads.at(-1).order, text: digestReads.at(-1).text }, { order: "slowest", text: "ordersx" });
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .proxysql-digest-tools .segmented button`)].find((b) => b.textContent === "Highest rate").click(), view);
+  await page.$eval(`${view} .proxysql-digest-filters input[type="search"]`, (i) => { i.select(); });
+  await page.keyboard.press("Backspace");
+  await pause(700);
+  // A mismatch is flagged next to the hostgroup it ran on.
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .proxysql-digest-tools .segmented button`)].find((b) => b.textContent === "Most frequent").click(), view);
+  await page.waitForFunction((sel) => document.querySelector(`${sel} tbody tr.proxysql-mismatch`), {}, view);
+  assert.equal(await route(digestKey(30, "0xC54E85FD66BA43DA")), "Mismatch: 32 (rule 30)");
+  assert.match((await visible(`${view} .proxysql-digest-summary`))[0], /1 on another hostgroup than the rules send to/);
+  await selectRow(digestKey(30, "0xC54E85FD66BA43DA"));
+  const routing = await h.inspector();
+  assert.match(routing, /Rule 30 sends it to hostgroup 32, but it ran on hostgroup 30\./);
+  assert.match(routing, /transaction_persistent is 1 for mf_admin/);
   assert.deepEqual(await inspectorButtons(), [], "digests offer no change");
+  await shot("proxysql-mismatch-1440.png");
+  // Digest to rule: the rule opens in Query rules.
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .proxysql-link")].find((b) => b.textContent === "Rule 30").click());
+  await page.waitForFunction((sel) => document.querySelector(`${sel} tbody tr[data-row-key="rule:30"].is-selected`), {}, view);
+  assert.match(await h.inspector(), /Query rule 30/);
+  // Rule to its digests: Query digests filtered by the rule, shown as a chip.
+  const ruleRead = digestReads.length;
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .proxysql-jump button")][0].click());
+  for (let i = 0; i < 50 && digestReads.length === ruleRead; i++) await pause(20);
+  assert.equal(digestReads.at(-1).rule_id, 30);
+  await page.waitForSelector(`${view} .proxysql-chip`);
+  assert.match((await visible(`${view} .proxysql-chip`))[0], /Rule 30 applies, evaluated here/);
+  await page.waitForFunction((sel) => /rule 30 applies to these of the 10 read/.test(document.querySelector(`${sel} .proxysql-digest-summary`)?.textContent || ""), {}, view);
+  await page.click(`${view} .proxysql-chip .text-button`);
+  for (let i = 0; i < 50 && digestReads.at(-1).rule_id !== null; i++) await pause(20);
+  assert.equal(digestReads.at(-1).rule_id, null);
+  // Rule to one digest: Query digests filtered by it, with it selected.
   await backToList();
+  await tab("Query rules");
+  await selectRow("rule:30");
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .proxysql-links .proxysql-link")][0].click());
+  for (let i = 0; i < 50 && !digestReads.at(-1).digest; i++) await pause(20);
+  assert.match(digestReads.at(-1).digest, /^0x[0-9A-F]+$/);
+  await page.waitForSelector(".view-inspector .perf-sql");
+  assert.match(await h.inspector(), /Routing/);
+  await backToList();
+  await page.click(`${view} .proxysql-chip .text-button`);
+  await pause(300);
   await tab("Hostgroups");
   assert.match((await visible(`${view} tbody tr[data-row-key="hg:32"] td[data-col="role"]`))[0], /Group Replication reader/);
+
+  // A rule disabled in memory but not loaded still routes in runtime: the
+  // inspector keeps the digests it applies to.
+  await tab("Query rules");
+  await refreshTo(R["rules-pending"]);
+  await selectRow("rule:30");
+  const pendingRule = await h.inspector();
+  assert.match(pendingRule, /Not active \(runtime: active\)/);
+  assert.doesNotMatch(pendingRule, /applies to no query/);
+  assert.match(pendingRule, /SELECT COUNT\(\*\) FROM testdb\.orders WHERE status = \? AND customer_id = \?/);
+  await backToList();
+  await tab("Servers");
+
+  // Delimiters in schema/user names must not alias row selection or links.
+  await refreshTo(R.collisions);
+  digestOverride = R["digests-collisions"];
+  await tab("Query rules");
+  for (const [schema, user, text] of [["a|b", "c", "SELECT collision_one"], ["a", "b|c", "SELECT collision_two"]]) {
+    await selectRow("rule:30");
+    await page.evaluate((text) => [...document.querySelectorAll(".view-inspector .proxysql-links .proxysql-link")]
+      .find((b) => b.textContent === text).click(), text);
+    const key = digestKey(32, "0xE1", schema, user);
+    await page.waitForFunction((sel, key) => [...document.querySelectorAll(`${sel} tbody tr[data-row-key]`)]
+      .some((tr) => tr.dataset.rowKey === key && tr.classList.contains("is-selected")), {}, view, key);
+    assert.equal(await page.$eval(".view-inspector .perf-sql code", (e) => e.textContent), text);
+    await selectRow(key);
+    assert.equal(await page.$eval(".view-inspector .perf-sql code", (e) => e.textContent), text);
+    await backToList();
+    await tab("Query rules");
+  }
+  digestOverride = null;
+  await backToList();
+  await tab("Servers");
+  await refreshTo(R.lab);
 
   // Problems lead: a hostgroup without an ONLINE server.
   await tab("Servers");
@@ -351,6 +577,21 @@ try {
   assert.ok(narrow.overflow <= 0, `horizontal page scroll at 720 px: ${narrow.overflow}`);
   assert.ok(narrow.top < narrow.fold, `the table starts above the fold: ${JSON.stringify(narrow)}`);
   await shot("proxysql-720.png");
+  await tab("Query digests");
+  await page.waitForSelector(`${view} .proxysql-digest-summary`);
+  const narrowDigests = await page.evaluate((sel) => ({
+    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    tools: document.querySelector(`${sel} .proxysql-digest-tools`).getBoundingClientRect().right,
+    width: document.documentElement.clientWidth,
+  }), view);
+  assert.ok(narrowDigests.overflow <= 0 && narrowDigests.tools <= narrowDigests.width, `digests fit at 720 px: ${JSON.stringify(narrowDigests)}`);
+  // Too narrow for five segments: the order is a menu, the same choice.
+  assert.equal(await page.$eval(`${view} .proxysql-order-segments`, (e) => getComputedStyle(e).display), "none");
+  await page.select(`${view} .proxysql-order-select select`, "slowest");
+  for (let i = 0; i < 50 && digestReads.at(-1).order !== "slowest"; i++) await pause(20);
+  assert.equal(digestReads.at(-1).order, "slowest");
+  await shot("proxysql-digests-720.png");
+  await tab("Servers");
   await page.setViewport({ width: 1440, height: 1000 });
   await pause(200);
 

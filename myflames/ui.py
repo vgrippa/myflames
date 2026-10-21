@@ -66,7 +66,7 @@ def _discover_response(path, payload):
         # A server-wide information_schema.STATISTICS read is slow on MariaDB.
         options["query_timeout"] = 60
     elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster",
-                  "/api/live/proxysql"):
+                  "/api/live/proxysql", "/api/live/proxysql/digests"):
         options["query_timeout"] = 30
     if path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # schemas: a list (the picker), or the older single schema; none means
@@ -111,6 +111,12 @@ def _discover_response(path, payload):
             if path == "/api/live/proxysql":
                 from .proxysql import read_status as proxysql_status
                 return proxysql_status(conn)
+            if path == "/api/live/proxysql/digests":
+                from .proxysql_digests import read_digests
+                return read_digests(conn, order=payload.get("order"), limit=payload.get("limit"),
+                                    hostgroup=payload.get("hostgroup"), schema=payload.get("schema"),
+                                    user=payload.get("user"), text=payload.get("text"),
+                                    digest=payload.get("digest"), rule_id=payload.get("rule_id"))
             if path == "/api/live/locks":
                 from .locks import lock_report
                 return lock_report(conn, payload.get("limit", 500),
@@ -1045,7 +1051,8 @@ _SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-queries", "/api/live/runn
                       "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/health",
                       "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
                       "/api/live/io", "/api/live/config", "/api/live/instruments",
-                      "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql")
+                      "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql",
+                      "/api/live/proxysql/digests")
 #: /api/live/kill is the one write: a confirmed KILL of one session (locks.kill_session).
 #: It fills the saved password itself, after the connection's write policy.
 #: The Query editor's run and commit (editor_session.py) are writes too: the
@@ -1124,6 +1131,20 @@ _ACTION_WRITE_PATHS = ("/api/live/cluster/action", "/api/live/proxysql/action")
 _ACTION_PATHS = tuple(_ACTION_KINDS)
 _WRITE_PATHS = _WRITE_PATHS + _ACTION_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
+#: The progress of a send the review sheet is waiting for
+#: (reviewed_writes.Progress by the action request's progress_id). No
+#: connection, no SQL, no credentials: phases and statement states only.
+_ACTION_PROGRESS_PATH = "/api/live/action/progress"
+_ACTION_PROGRESS_LOCK = threading.Lock()
+
+
+def _action_progress(workspace):
+    from .reviewed_writes import ProgressRegistry
+    with _ACTION_PROGRESS_LOCK:
+        registry = getattr(workspace, "action_progress", None)
+        if registry is None:
+            registry = workspace.action_progress = ProgressRegistry()
+        return registry
 
 #: Application updates (app_update.py). Check reads GitHub only when the
 #: workspace asks (the Check for updates button) and keeps the outcome in the
@@ -1322,6 +1343,7 @@ def _action_response(path, payload, workspace):
         return plan
     reviewed = reviewed_writes.check_reviewed(payload.get("plan"))
     statements = list(reviewed["statements"])
+    progress = _action_progress(workspace).start(payload.get("progress_id"), len(statements), module.ACTION_TIMEOUT)
     decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
                             safety.get("profile_name"))
     audit = dbops.AuditTrail(workspace.store, _ACTION_OPERATION[kind], "ui",
@@ -1333,12 +1355,12 @@ def _action_response(path, payload, workspace):
     blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
     if blocked:
         return reviewed_writes.refused(out, blocked[1], "read_only" if blocked[0] == "refused" else blocked[0],
-                                       audit, reviewed.get("expect"))
+                                       audit, reviewed.get("expect"), progress)
     try:
         consume = _review_tokens(workspace).consumer(payload.get("review_token"), _ACTION_OPERATION[kind], identity,
                                                      reviewed_writes.review_details(reviewed))
     except ValueError as exc:
-        return reviewed_writes.refused(out, str(exc), "review", audit, reviewed.get("expect"))
+        return reviewed_writes.refused(out, str(exc), "review", audit, reviewed.get("expect"), progress)
     typed = payload.get("typed")
     typed = typed if isinstance(typed, str) else None
 
@@ -1359,13 +1381,18 @@ def _action_response(path, payload, workspace):
         password = audit.password = options.get("password")
         audit.connection = {k: options.get(k) for k in ("host", "port", "user")}
         with MySQLConnection(**options) as conn:
-            result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send)
+            result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send,
+                                           progress=progress)
         result["policy"] = out["policy"]
         return result
     except KeyboardInterrupt as exc:
+        if progress is not None:
+            progress.fail()
         audit.fail(exc, statements)
         raise
     except (ValueError, ConnectorError) as exc:
+        if progress is not None:
+            progress.fail()
         audit.fail(exc, statements)
         _reraise_redacted(exc, password)
 
@@ -1568,6 +1595,8 @@ def api_response(path, payload, workspace=None):
             return _variable_response(path, payload, workspace)
         if path in _ACTION_PATHS:
             return _action_response(path, payload, workspace)
+        if path == _ACTION_PROGRESS_PATH:
+            return _action_progress(workspace).get(payload.get("progress_id"))
         if path in _SERVER_VIEW_PATHS:
             return _discover_response(path, payload)
         raise ValueError("Unknown workspace operation.")
@@ -2074,7 +2103,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/stop", "/api/editor/commit", "/api/editor/rollback",
                              "/api/editor/close", "/api/editor/history", "/api/editor/export", "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
                 + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _APP_UPDATE_PATHS \
-                + _NEWS_PATHS:
+                + _NEWS_PATHS + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests"):
             self._send(404, {"error": "Not found."})
             return
         if self.headers.get_content_type() != "application/json":

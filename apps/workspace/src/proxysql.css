@@ -42,3 +42,100 @@
 .proxysql-findings + .cluster-tiles {
   margin-top: var(--space-3);
 }
+
+/* Query digests: the order and filters row, the chips of a digest or rule
+   filter, the summary line; and the cross-check in both inspectors. */
+.proxysql-digest-tools { padding-top: var(--space-3); }
+.proxysql-digest-filters { padding-top: 0; }
+.proxysql-digest-filters .toolbar-search { flex: 1 1 220px; min-width: 180px; max-width: 420px; }
+.proxysql-digest-filters .toolbar-search input { width: 100%; max-width: none; }
+.proxysql-digest-filters .select { max-width: 240px; }
+.proxysql-digest-tools .proxysql-order-select { display: none; }
+/* Five segments need about 440 px: a narrower window chooses from a menu. */
+@media (max-width: 1000px) {
+  .proxysql-digest-tools .proxysql-order-segments { display: none; }
+  .proxysql-digest-tools .proxysql-order-select { display: flex; }
+  .proxysql-digest-filters .select { max-width: 150px; }
+  .proxysql-digest-filters .toolbar-search { flex-basis: 100%; max-width: none; }
+}
+.proxysql-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+.proxysql-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-family: var(--font-mono);
+}
+.proxysql-chip .text-button { font-family: var(--font-sans); }
+.proxysql-digest-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.proxysql-digest-summary > span:first-child { min-width: 0; }
+.proxysql-nohits {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.proxysql-links {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+}
+.proxysql-links li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-1) 0;
+  min-width: 0;
+}
+.proxysql-links li + li { border-top: 1px solid var(--line); }
+.proxysql-link {
+  max-width: 100%;
+  text-align: start;
+  justify-content: flex-start;
+}
+.proxysql-link code {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.proxysql-links .hint { font-size: var(--text-sm); color: var(--ink-muted); overflow-wrap: anywhere; }
+.proxysql-jump { margin-top: var(--space-2); }
+.proxysql-route {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.proxysql-route-text { margin: var(--space-2) 0; font-size: var(--text-sm); line-height: var(--leading-sm); }
+.proxysql-why {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-4);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}

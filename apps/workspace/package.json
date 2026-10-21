@@ -51,6 +51,7 @@
     "test:replication-source-version": "npm run build && node test/replication-source-version.mjs",
     "test:cluster": "npm run build && node test/cluster.mjs",
     "test:proxysql": "npm run build && node test/proxysql.mjs",
+    "test:reviewed-actions-unit": "node test/reviewed-actions-unit.mjs",
     "test:startup-reads": "npm run build && node test/startup-reads.mjs",
     "test:maintenance-convenience": "npm run build && node test/maintenance-convenience.mjs",
     "test:maintenance": "npm run build && node test/maintenance.mjs",

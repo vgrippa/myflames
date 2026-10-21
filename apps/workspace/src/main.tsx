@@ -1439,11 +1439,22 @@ function App() {
   /** The Audit log (Settings menu): a screen of its own, not a place. */
   function openAuditLog() {
     setMode("audit");
+    setAuditFocus("");
     setError("");
     setNotice("");
     setRestored(null);
     setConfirmFresh(false);
   }
+  // A reviewed change's result opens the Audit log at its record
+  // (ActionReview.tsx openAuditLog sends "myflames-open-audit" with the id).
+  const [auditFocus, setAuditFocus] = useState("");
+  const openAuditRef = useRef(openAuditLog);
+  openAuditRef.current = openAuditLog;
+  useEffect(() => {
+    const open = (e: Event) => { openAuditRef.current(); setAuditFocus(String((e as CustomEvent).detail || "")); };
+    window.addEventListener("myflames-open-audit", open);
+    return () => window.removeEventListener("myflames-open-audit", open);
+  }, []);
   // The write safety of the connection in use, first in the window footer of
   // the places that send to it (Query editor, Server, Workload, Replication, Cluster,
   // Tuning). Unknown (not loaded, or the read failed) is Production assumed.
@@ -2065,7 +2076,7 @@ function App() {
             </div>
           )}
           {ready && mode === "library" && <Library onOpen={openBundle} />}
-          {ready && mode === "audit" && <AuditLog profiles={profiles} />}
+          {ready && mode === "audit" && <AuditLog key={auditFocus} profiles={profiles} focusId={auditFocus} />}
           <Teach
             key={resetKey}
             active={ready && mode === "teach"}

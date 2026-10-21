@@ -569,9 +569,46 @@ tiles and four tabs:
 - **Hostgroups**: each hostgroup in runtime with its role and how many servers
   are in each status.
 - **Query rules**: each rule with what it matches, its destination hostgroup,
-  Apply and its hits; the inspector lists every column set.
-- **Query digests**: the 100 statement digests with the most total time; the
-  inspector shows the full text.
+  Apply, its hits (**No hits** when no query matched it since the rules were
+  last loaded to runtime) and **Digests**: how many of the 100 digests with the
+  most total time it applies to, plus those it may apply to. The inspector lists
+  those digests (each opens in Query digests), **Show its digests in Query
+  digests**, and every column set.
+- **Query digests**: reads on its own while the tab is on screen, one bounded
+  statement in Admin per choice. Choose the order (**Slowest**: average time;
+  **Most time**: total time; **Most frequent**: executions; **Highest rate**:
+  executions per second between a digest's first and last execution, at least
+  one second; **Most rows sent**, ProxySQL 2.0.7 and later), **Top** 10, 25, 50
+  or 100, and filter by hostgroup, schema, user or digest text (typing waits for
+  a pause before it reads). A narrow window offers the order as a menu. A
+  digest or rule filter shows as a chip with **Remove**. The line above the
+  table says what is listed, out of how many digests and executions, since
+  the first execution recorded. Each digest shows **Ran on** (the hostgroup it
+  ran on) and **Rules send to** (where the rules send it): the hostgroup and the
+  rule, fast routing or the user's default hostgroup when they agree;
+  **Mismatch** when it ran elsewhere; **Maybe rule N** when it ran on the
+  hostgroup of a rule that tests what a digest does not keep; **Query cache**
+  (hostgroup -1); **Answered by ProxySQL** for statements ProxySQL replies to
+  itself, such as `select @@version_comment limit 1`. The inspector's
+  **Routing** explains it, names the rules on the way (each opens in Query
+  rules) and, for a mismatch, the reasons ProxySQL can choose another hostgroup.
+
+Routing is evaluated by myflames, not by ProxySQL: the active rules of
+`runtime_mysql_query_rules` in rule_id order, following flagIN, flagOUT and
+apply (and `mysql-query_processor_iterations`), then
+`mysql_query_rules_fast_routing`, then the frontend user's default hostgroup.
+Patterns are tested with Python's `re`, while ProxySQL uses PCRE or RE2
+(`mysql-query_processor_regex`), so a pattern can match differently;
+`match_pattern` tests the query text, which a digest does not keep (comments
+are removed and values are `?`), so it is tested on the digest text and marked
+approximate; a rule on proxy_addr, proxy_port or a client address the digest
+did not record is unknown. Patterns are tested in a separate process, two
+seconds at most each, so a pattern that never finishes leaves that rule unknown
+instead of holding up the app. When the rules can go on further than myflames
+follows (many restarts or flagOUT choices), or fast routing could not be read,
+a different hostgroup is not judged. The ⓘ beside Routing says the same.
+
+When a runtime variable needed by the rule walk cannot be read, affected digests show **Not judged** and name the variable. Digest hash filters accept lowercase and mixed-case hexadecimal digits. Schema, user and client names containing separators keep distinct row selections and rule links. If you change connections while a reviewed Cluster or ProxySQL action runs, its sheet closes when it finishes; the Audit log keeps the attempt, and no follow-up change is offered on the replacement connection.
 
 ProxySQL keeps three copies of its configuration: memory (what Admin edits),
 runtime (what it uses) and disk (what it loads at its next start). The
@@ -602,10 +639,21 @@ changes); a Read-only connection refuses and opens no review. A destructive
 change also needs the target's name typed (OFFLINE_HARD, the last ONLINE server
 of a hostgroup, stopping the primary or the last member, a mode switch,
 bootstrapping a Primary component). Right before sending, myflames reads the
-target again and sends nothing if it changed. The result is a panel under the
-toolbar: **Done** with what runs now, **Failed**, **Partly applied** (which
-statements ran), or **Outcome unknown** when no reply arrived or the client
-ended without the server's answer, which is never sent again. Cancel and Escape are recorded as declined, and every attempt is in
+target again and sends nothing if it changed. After you confirm, the same sheet
+follows the send: the button reads **Applying…** and cannot be pressed twice,
+Cancel and Escape wait, a line names the step (reading the target again; sent
+and waiting for the server's answer, with the seconds waited and the limit;
+reading the result back), and each statement shows **Waiting**, **Sent**,
+**Done**, **Failed**, **Not run**, **Not sent** or **Outcome unknown**; a
+statement is Done only once the server answered. Then the sheet shows the
+outcome, **What changed** (before and now, read again after the write), that
+the attempt is recorded with **Open the Audit log** (which opens it at the
+record), the undo when it partly ran or its outcome is unknown, **What to check**
+for an unknown outcome, and the next change it offers (Save … to disk…) beside
+**Close**. Close leaves the result as a panel under the toolbar: **Done** with
+what runs now, **Failed**, **Partly applied** (which statements ran), or
+**Outcome unknown** when no reply arrived or the client ended without the
+server's answer, which is never sent again. Cancel and Escape are recorded as declined, and every attempt is in
 the [Audit log](#audit-log). Another connection's report is greyed and offers no
 change. Once a read says the connection is not a ProxySQL Admin interface, the
 sidebar item looks disabled for that connection only.

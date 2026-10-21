@@ -6,33 +6,57 @@
 // per connection; Refresh reads again. A report from another connection, or
 // kept after a failed read, is greyed and offers no change.
 //
+// Query digests reads on its own (proxysql-digests-1.0,
+// myflames/proxysql_digests.py) while it is on screen: one order (Slowest,
+// Most time, Most frequent, Highest rate, Most rows sent), the top 10, 25, 50
+// or 100, and filters by hostgroup, schema, user, digest text, one digest or
+// the rule that applies, all bounded in Admin. Rules and digests are cross
+// checked here: each digest shows where the active rules send it, evaluated
+// here, next to the hostgroup it ran on, with a mismatch flagged; each rule
+// shows its hits and the digests it applies to. Selecting one jumps to the
+// other.
+//
 // Changes are reviewed (ActionReview.tsx): a server's status, weight or
 // hostgroup, or a rule's active flag, is changed in memory and loaded to
 // runtime in one unit; saving to disk is a separate change, offered after it
 // and in the Configuration line. Nothing is persisted without its own review.
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection } from "./api";
 import { useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
 import {
-  DataTable, EmptyState, Fields, InspectorContext, InspectorSection, MetricTile, PrerequisiteGate, Segmented,
-  StatusPill, SummaryLine, TileGrid, ToolbarButton, ViewLayout, ViewStatus,
+  DataTable, EmptyState, Fields, InfoPopover, InspectorContext, InspectorSection, MetricTile, Pill, PrerequisiteGate,
+  SearchField, Segmented, StatusPill, SummaryLine, TileGrid, ToolbarButton, ToolbarSelect, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type InspectorShared, type Selection, type Tone,
 } from "./kit";
-import { useOpenRead } from "./viewOnScreen";
-import { bytes, CompactNumber, CopySql, ms } from "./PerfShared";
+import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
+import { bytes, CompactNumber, CopySql, count, ms } from "./PerfShared";
 import { plural } from "./OpsShared";
 import { ClusterMark } from "./ClusterTopology";
 import { ActionResult, useReviewedActions } from "./ActionReview";
 import {
-  planProxySqlAction, readProxySql, sendProxySqlAction,
-  type ProxySqlAction, type ProxySqlDigest, type ProxySqlFailure, type ProxySqlHostgroup, type ProxySqlQueryRule,
-  type ProxySqlReport, type ProxySqlServer, type ProxySqlTarget,
+  planProxySqlAction, readProxySql, readProxySqlDigests, sendProxySqlAction,
+  type DigestFilters, type DigestOrder, type ProxySqlAction, type ProxySqlDigest, type ProxySqlDigestsReport,
+  type ProxySqlFailure, type ProxySqlHostgroup, type ProxySqlQueryRule, type ProxySqlReport, type ProxySqlRouting,
+  type ProxySqlServer, type ProxySqlTarget,
 } from "./proxysqlApi";
 import "./cluster.css";
 import "./proxysql.css";
 
 export type ProxySqlTab = "servers" | "hostgroups" | "rules" | "digests";
+export const DEFAULT_DIGEST_FILTERS: DigestFilters = {
+  order: "time", limit: 10, hostgroup: null, schema: null, user: null, text: null, digest: null, rule_id: null,
+};
+/** The orders of Query digests: the column each one sorts, and its words. */
+const ORDERS: { value: DigestOrder; label: string; title: string; column: string; word: string }[] = [
+  { value: "slowest", label: "Slowest", title: "Highest average time per execution (sum_time / count_star)", column: "avg", word: "average time" },
+  { value: "time", label: "Most time", title: "Most total time (sum_time)", column: "total", word: "total time" },
+  { value: "frequent", label: "Most frequent", title: "Most executions (count_star)", column: "count", word: "executions" },
+  { value: "rate", label: "Highest rate", title: "Most executions per second between a digest's first and last execution (at least one second)", column: "rate", word: "executions per second" },
+  { value: "rows", label: "Most rows sent", title: "Most rows sent to clients (sum_rows_sent, ProxySQL 2.0.7 and later)", column: "rows", word: "rows sent" },
+];
+/** Moves between tabs: a rule, a digest (filtered to it), a rule's digests. */
+type Go = { rule: (id: number) => void; digest: (d: ProxySqlDigest) => void; ruleDigests: (id: number) => void };
 const MONITOR_WORD: Record<string, string> = {
   galera: "Galera", group_replication: "Group Replication", replication: "Replication", aws_aurora: "Aurora",
 };
@@ -88,6 +112,18 @@ export function ProxySqlPlace({ connection, disabled = false, report, onReport, 
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(360);
   const [tab, setTab] = useState<ProxySqlTab>("servers");
+  const [filters, setFilters] = useState<DigestFilters>(DEFAULT_DIGEST_FILTERS);
+  const go: Go = {
+    rule: (id) => { setTab("rules"); setSelectedKey(`rule:${id}`); setInspectorOpen(true); },
+    digest: (d) => {
+      setFilters((f) => ({ ...DEFAULT_DIGEST_FILTERS, order: f.order, limit: f.limit, digest: d.digest }));
+      setTab("digests"); setSelectedKey(d.key); setInspectorOpen(true);
+    },
+    ruleDigests: (id) => {
+      setFilters((f) => ({ ...f, rule_id: id, digest: null }));
+      setTab("digests"); setSelectedKey("");
+    },
+  };
   const selection: Selection = {
     key: selectedKey,
     select: (key: string, open?: boolean) => {
@@ -104,18 +140,21 @@ export function ProxySqlPlace({ connection, disabled = false, report, onReport, 
       <div className="cluster-place proxysql-place">
         <ProxySqlView connection={connection} disabled={disabled} report={report} onReport={onReport}
           failure={failure} onFailure={onFailure} selection={selection} tab={tab}
-          onTab={(t) => { setTab(t); setSelectedKey(""); }} />
+          onTab={(t) => { setTab(t); setSelectedKey(""); }} filters={filters} onFilters={setFilters} go={go} />
       </div>
     </InspectorContext.Provider>
   );
 }
 
-function ProxySqlView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab }: {
+function ProxySqlView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, filters, onFilters, go }: {
   connection: Connection; disabled: boolean; report: Bound<ProxySqlReport> | null;
   onReport: (report: Bound<ProxySqlReport>) => void; failure: ProxySqlFailure | null; onFailure?: (key: string, message: string) => void;
   selection: Selection; tab: ProxySqlTab; onTab: (tab: ProxySqlTab) => void;
+  filters: DigestFilters; onFilters: (filters: DigestFilters) => void; go: Go;
 }) {
   const reads = useConnectionReads(connection);
+  const digestReads = useConnectionReads(connection);
+  const onScreen = useViewOnScreen();
   const policy = useWritePolicy();
   const report = bound?.report || null;
   const other = bound && bound.key !== reads.key ? bound.label : null;
@@ -129,11 +168,31 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   }
   // Reads when the place opens on screen, once per connection (viewOnScreen.ts).
   useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!reads.loading || reads.running(), read: () => { void load(); } });
+  const [startModuleRef] = useState<{ current: (id: string) => void }>(() => ({ current: () => undefined }));
   const actions = useReviewedActions({
     connection, operation: "proxysql_action", send: sendProxySqlAction, onSent: () => { void load(true); },
+    onNext: (id) => window.setTimeout(() => startModuleRef.current(id), 0),
   });
 
   const isProxy = !!report && report.is_proxysql;
+  // Query digests: its own bounded read, only while that tab is on screen,
+  // for the report of the connection in use; a filter change reads again.
+  const [digestsBound, setDigestsBound] = useState<{ bound: Bound<ProxySqlDigestsReport>; filters: string } | null>(null);
+  const filtersKey = JSON.stringify(filters);
+  async function loadDigests(force = false) {
+    if (disabled) return;
+    const wanted = filtersKey;
+    const asked = filters;
+    await digestReads.run(`proxysql-digests:${wanted}`, "Reading query digests…",
+      (c, signal) => readProxySqlDigests(c, asked, signal), (b) => setDigestsBound({ bound: b, filters: wanted }), { force });
+  }
+  const digestsCurrent = !!digestsBound && digestsBound.bound.key === reads.key && digestsBound.filters === filtersKey;
+  useEffect(() => {
+    if (tab !== "digests" || !onScreen || disabled || !isProxy || stale || digestsCurrent) return;
+    void loadDigests();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, onScreen, disabled, isProxy, stale, reads.key, filtersKey, digestsCurrent]);
+  const digestsReport = digestsBound && digestsBound.bound.key === reads.key ? digestsBound.bound.report : null;
   // Changes only on the current report of the connection in use, with its
   // write policy known and not read-only.
   const changeBlock = !isProxy ? "Not a ProxySQL Admin interface."
@@ -154,6 +213,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
     const action = report?.actions.find((a) => a.id === id);
     if (action) start(action, null, "ProxySQL");
   }
+  startModuleRef.current = startModule;
   const buttons = (list: ProxySqlAction[], target: ProxySqlTarget, subject: string) => list.length ? (
     <div className="review-actions" role="group" aria-label={`Changes for ${subject}`}>
       {list.map((a) => (
@@ -169,17 +229,18 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   const servers = isProxy ? report!.servers : [];
   const hostgroups = isProxy ? report!.hostgroups : [];
   const rules = isProxy ? report!.query_rules : [];
-  const digests = isProxy ? report!.query_digests : [];
+  const digests = digestsReport?.digests || [];
   const chosenServer = tab === "servers" ? servers.find((s) => s.key === selection.key) : undefined;
   const chosenGroup = tab === "hostgroups" ? hostgroups.find((h) => `hg:${h.id}` === selection.key) : undefined;
   const chosenRule = tab === "rules" ? rules.find((r) => `rule:${r.rule_id}` === selection.key) : undefined;
-  const digestKeys = digestKeyList(digests);
-  const chosenDigest = tab === "digests" ? digests.find((_, i) => digestKeys[i] === selection.key) : undefined;
+  // A digest opened from a rule shows at once from the report while its own read runs.
+  const chosenDigest = tab === "digests" ? digests.find((d) => d.key === selection.key)
+    || (isProxy ? report!.query_digests.find((d) => d.key === selection.key) : undefined) : undefined;
   const content: InspectorContent | null = !report ? null
     : chosenServer ? serverInspector(chosenServer, report, buttons(chosenServer.actions || [], chosenServer.config_key ? { config: chosenServer.config_key } : null, addr(chosenServer)))
       : chosenGroup ? hostgroupInspector(chosenGroup, report)
-        : chosenRule ? ruleInspector(chosenRule, buttons(chosenRule.actions || [], { rule_id: chosenRule.rule_id }, `rule ${chosenRule.rule_id}`))
-          : chosenDigest ? digestInspector(chosenDigest, digestKeys[digests.indexOf(chosenDigest)]) : null;
+        : chosenRule ? ruleInspector(chosenRule, report, go, buttons(chosenRule.actions || [], { rule_id: chosenRule.rule_id }, `rule ${chosenRule.rule_id}`))
+          : chosenDigest ? digestInspector(chosenDigest, report, go) : null;
 
   const serverColumns: Column<ProxySqlServer>[] = [
     { key: "server", label: "Server", primary: true, flex: true, width: 170, minWidth: 140, sort: (s) => addr(s), render: (s) => addr(s) },
@@ -213,21 +274,29 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
     { key: "match", label: "Matches", primary: true, flex: true, sort: (r) => matchText(r), render: (r) => <code className="proxysql-code">{matchText(r)}</code> },
     { key: "dest", label: "Destination hostgroup", num: true, sort: (r) => r.destination_hostgroup, render: (r) => r.destination_hostgroup ?? "—" },
     { key: "apply", label: "Apply", sort: (r) => (r.apply ? 1 : 0), render: (r) => (r.apply ? "Yes" : "No") },
-    { key: "hits", label: "Hits", num: true, title: "stats_mysql_query_rules: queries this rule matched since the rules were last loaded", sort: (r) => r.hits, render: (r) => numCell(r.hits) },
+    { key: "hits", label: "Hits", num: true, title: "stats_mysql_query_rules: queries this rule matched since the rules were last loaded to runtime", sort: (r) => r.hits, render: (r) => (
+      r.hits === 0 ? <span className="proxysql-nohits"><Pill title="No query matched it since the rules were last loaded to runtime">No hits</Pill>0</span> : numCell(r.hits)) },
+    { key: "digests", label: "Digests", num: true, title: "Of the 100 digests with the most total time, the ones this rule applies to (evaluated here)", sort: (r) => r.digest_count ?? null, render: (r) => (
+      r.digest_count === null || r.digest_count === undefined ? "—"
+        : `${r.digest_count.toLocaleString()}${r.possible_digests?.length ? ` +${r.possible_digests.length} maybe` : ""}`) },
     { key: "comment", label: "Comment", sort: (r) => r.comment, render: (r) => r.comment || "—" },
   ];
   const digestColumns: Column<ProxySqlDigest>[] = [
     { key: "text", label: "Statement", primary: true, flex: true, sort: (d) => d.digest_text, render: (d) => <code className="proxysql-code">{d.digest_text}</code> },
-    { key: "hg", label: "Hostgroup", num: true, sort: (d) => d.hostgroup, render: (d) => d.hostgroup ?? "—" },
-    { key: "schema", label: "Schema", sort: (d) => d.schemaname || "", render: (d) => d.schemaname || "—" },
-    { key: "user", label: "User", sort: (d) => d.username || "", render: (d) => d.username || "—" },
+    { key: "hg", label: "Ran on", num: true, title: "The hostgroup it ran on (-1: the query cache)", sort: (d) => d.hostgroup, render: (d) => d.hostgroup ?? "—" },
+    { key: "route", label: "Rules send to", minWidth: 150, title: "Where the active query rules send it, evaluated here; a different hostgroup is flagged", sort: (d) => routeSort(d.routing), render: (d) => routeMark(d.routing) },
     { key: "count", label: "Executions", num: true, sort: (d) => d.count_star, render: (d) => numCell(d.count_star) },
+    { key: "rate", label: "Per second", num: true, title: "Executions per second between its first and last execution (at least one second)", sort: (d) => d.rate_qps ?? null, render: (d) => rateText(d.rate_qps) },
     { key: "total", label: "Total time", num: true, sort: (d) => d.sum_time_us, render: (d) => latency(d.sum_time_us) },
     { key: "avg", label: "Average", num: true, sort: (d) => d.avg_time_us, render: (d) => latency(d.avg_time_us) },
-    { key: "max", label: "Slowest", num: true, sort: (d) => d.max_time_us, render: (d) => latency(d.max_time_us) },
+    { key: "max", label: "Slowest", num: true, title: "The slowest execution (max_time)", sort: (d) => d.max_time_us, render: (d) => latency(d.max_time_us) },
+    { key: "rows", label: "Rows sent", num: true, title: "sum_rows_sent (ProxySQL 2.0.7 and later)", sort: (d) => d.rows_sent, render: (d) => numCell(d.rows_sent) },
+    { key: "schema", label: "Schema", sort: (d) => d.schemaname || "", render: (d) => d.schemaname || "—" },
+    { key: "user", label: "User", sort: (d) => d.username || "", render: (d) => d.username || "—" },
   ];
 
   const failed = current ? current.message.split("\n")[0] : reads.error && !onFailure ? reads.error : "";
+  const order = ORDERS.find((o) => o.value === filters.order) || ORDERS[1];
   const tone: Tone | undefined = !report ? undefined : !report.is_proxysql ? "unknown" : (report.status as Tone);
   const configLine = isProxy && (tab === "servers" || tab === "rules")
     ? <ConfigLine report={report!} module={tab === "servers" ? "servers" : "query_rules"} block={changeBlock}
@@ -235,8 +304,8 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   const shownResult = actions.result;
   return (
     <ViewLayout id="proxysql" title="ProxySQL" className={`cluster-view proxysql-view${failedOver ? " is-stale" : ""}`}
-      onRefresh={() => { void load(true); }} refreshDisabled={disabled}
-      loading={!!reads.loading} otherConnection={other} inspector={content}
+      onRefresh={() => { void load(true); if (tab === "digests" && isProxy && !stale) void loadDigests(true); }} refreshDisabled={disabled}
+      loading={!!reads.loading || !!digestReads.loading} otherConnection={other} inspector={content}
       detailBackLabel={`Back to ${tab === "servers" ? "servers" : tab === "hostgroups" ? "hostgroups" : tab === "rules" ? "query rules" : "query digests"}`}
       inspectorEmpty={<p>Select a row to see its details{tab === "servers" || tab === "rules" ? " and the changes it offers" : ""}.</p>}
       controls={isProxy ? (
@@ -248,7 +317,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
             { value: "servers", label: "Servers", title: "Each backend as ProxySQL runs it, with its connection pool", count: servers.length },
             { value: "hostgroups", label: "Hostgroups", title: "Hostgroups in runtime and the monitors that manage them", count: hostgroups.filter((h) => h.servers).length },
             { value: "rules", label: "Query rules", title: "mysql_query_rules: where ProxySQL routes each query", count: rules.length },
-            { value: "digests", label: "Query digests", title: "The 100 statement digests with the most total time", count: digests.length },
+            { value: "digests", label: "Query digests", title: "stats_mysql_query_digest: the top digests in the order you choose, with where the rules send each one" },
           ]}
         />
       ) : undefined}
@@ -256,9 +325,10 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
         <p>The ProxySQL Admin interface the connection in use reaches (port 6032 unless admin-mysql_ifaces says otherwise): its backends as ProxySQL runs them, hostgroups, query rules and query digests. Opening it reads; nothing changes.</p>
         <p>ProxySQL keeps three copies of its configuration: memory (what Admin edits), runtime (what it uses) and disk (what it loads at its next start). A change here edits memory and loads it to runtime; Save to disk is a separate change. Each one shows the exact statements, asks first, and is recorded in the Audit log.</p>
         <p>Galera and Group Replication monitors move servers between their hostgroups by health, so a backend can run in another hostgroup than its configuration row.</p>
+        <p>Query digests lists the top digests in one order (slowest, most time, most frequent, highest rate, most rows sent) with filters, read with ORDER BY and LIMIT in Admin. Each one shows where the active query rules send it, evaluated here, next to the hostgroup it ran on.</p>
       </>}
       status={<>
-        <ViewStatus loading={reads.loading || (actions.planning ? "Reading the target for review…" : undefined)} error={failed || actions.error} />
+        <ViewStatus loading={reads.loading || digestReads.loading || (actions.planning ? "Reading the target for review…" : undefined)} error={failed || actions.error} />
         {shownResult && <ActionResult shown={shownResult} onClose={actions.clearResult}
           onNext={(id) => { actions.clearResult(); startModule(id); }}
           extra={<AfterLines after={shownResult.value.after} />} />}
@@ -285,7 +355,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
               ))}
             </ul>
           )}
-          {proxyTiles(report)}
+          {tab !== "digests" && proxyTiles(report)}
           {!report.config_readable && <PrerequisiteGate>This account cannot read ProxySQL's configuration tables (a stats-only account reads the stats schema only), so servers show what runs and no change is offered. Connect with an admin account to change anything.</PrerequisiteGate>}
           {configLine}
           {tab === "servers" ? (
@@ -296,11 +366,22 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
           ) : tab === "rules" ? (
             <DataTable key="proxysql.rules" id="proxysql.rules" label="ProxySQL query rules" columns={ruleColumns} rows={rules} rowKey={(r) => `rule:${r.rule_id}`} selection={selection}
               empty={<EmptyState icon="proxy" title="No query rules">Every query goes to its user's default hostgroup.</EmptyState>} />
-          ) : (
-            <DataTable key="proxysql.digests" id="proxysql.digests" label="ProxySQL query digests" columns={digestColumns} rows={digests} rowKey={(d) => digestKeys[digests.indexOf(d)]} selection={selection}
-              defaultSort={{ key: "total", dir: "desc" }}
-              empty={<EmptyState icon="proxy" title="No digests">stats_mysql_query_digest is empty: no traffic since it was last reset, or query digests are off (mysql-query_digests).</EmptyState>} />
-          )}
+          ) : <>
+            <DigestTools filters={filters} onFilters={onFilters} report={digestsReport || null} proxy={report!} disabled={stale || disabled} />
+            <DigestSummary report={digestsReport} order={order.word} filters={filters} error={digestReads.error} proxy={report!} />
+            {digestReads.error && !digestsCurrent ? (
+              <EmptyState icon="proxy" title="Could not read the query digests" action={<ToolbarButton primary disabled={disabled || stale} onClick={() => { void loadDigests(true); }}>Retry</ToolbarButton>}>
+                {digestReads.error}
+              </EmptyState>
+            ) : (
+              <DataTable key={`proxysql.digests.${filters.order}`} id="proxysql.digests" label="ProxySQL query digests" columns={digestColumns} rows={digests}
+                rowKey={(d) => d.key} selection={selection} defaultSort={{ key: order.column, dir: "desc" }}
+                rowClass={(d) => (d.routing.verdict === "mismatch" ? "proxysql-mismatch" : "")}
+                empty={digestReads.loading ? <p className="hint">Reading query digests…</p> : filtered(filters)
+                  ? <EmptyState icon="proxy" title="No digest matches">Clear a filter to see more digests.</EmptyState>
+                  : <EmptyState icon="proxy" title="No digests">stats_mysql_query_digest is empty: no traffic since it was last reset, or query digests are off (mysql-query_digests).</EmptyState>} />
+            )}
+          </>}
         </>}
       </> : reads.loading ? null : failed ? (
         <EmptyState icon="proxy" title="Could not read ProxySQL" action={<ToolbarButton primary disabled={disabled} onClick={() => { void load(true); }}>Retry</ToolbarButton>}>
@@ -357,16 +438,6 @@ function matchText(r: ProxySqlQueryRule): string {
   const parts = [r.match_digest ? `digest ${r.match_digest}` : "", r.match_pattern ? `${r.negate_match_pattern ? "not " : ""}${r.match_pattern}` : "",
     r.username ? `user ${r.username}` : "", r.schemaname ? `schema ${r.schemaname}` : ""].filter(Boolean);
   return parts.join(" · ") || "Every query";
-}
-
-function digestKeyList(digests: ProxySqlDigest[]): string[] {
-  const seen = new Map<string, number>();
-  return digests.map((d) => {
-    const base = `digest:${d.hostgroup}:${d.schemaname}:${d.username}:${d.digest}`;
-    const n = seen.get(base) || 0;
-    seen.set(base, n + 1);
-    return n ? `${base}#${n}` : base;
-  });
 }
 
 function proxyTiles(report: ProxySqlReport) {
@@ -469,8 +540,13 @@ function hostgroupInspector(h: ProxySqlHostgroup, report: ProxySqlReport): Inspe
   };
 }
 
-function ruleInspector(r: ProxySqlQueryRule, actions: ReactNode): InspectorContent {
+function ruleInspector(r: ProxySqlQueryRule, report: ProxySqlReport, go: Go, actions: ReactNode): InspectorContent {
   const shown = Object.entries(r.fields).filter(([, v]) => v !== null && v !== "");
+  const byKey = new Map(report.query_digests.map((d) => [d.key, d]));
+  const applies = (r.digests || []).map((k) => byKey.get(k)).filter((d): d is ProxySqlDigest => !!d);
+  const maybe = (r.possible_digests || []).map((k) => byKey.get(k)).filter((d): d is ProxySqlDigest => !!d);
+  // Routing is what runs: a rule disabled in memory but not loaded still routes.
+  const evaluated = r.digests !== null && r.digests !== undefined;
   return {
     key: `rule:${r.rule_id}`,
     title: `Query rule ${r.rule_id}`,
@@ -479,7 +555,21 @@ function ruleInspector(r: ProxySqlQueryRule, actions: ReactNode): InspectorConte
     body: <>
       <InspectorSection title="Rule">
         <Fields rows={[["Matches", matchText(r)], ["Destination hostgroup", r.destination_hostgroup === null ? "None" : String(r.destination_hostgroup)],
-          ["Apply", r.apply ? "Yes: no later rule is checked" : "No: later rules are checked too"], ["Hits", r.hits === null ? "Not read" : r.hits.toLocaleString()]]} />
+          ["Apply", r.apply ? "Yes: no later rule is checked" : "No: later rules are checked too"],
+          ["Hits", r.hits === null ? "Not read" : r.hits === 0 ? "0: no query matched it since the rules were last loaded to runtime" : r.hits.toLocaleString()]]} />
+      </InspectorSection>
+      <InspectorSection title="Digests it applies to" info={<RoutingInfo report={report} />}>
+        {r.runtime_active === false ? <p className="hint">Not active in runtime, so it applies to no query.</p>
+          : !evaluated ? <p className="hint">Not evaluated: {report.routing?.note || "the rules ProxySQL runs could not be read."}</p>
+            : <>
+              {applies.length ? <DigestLinks digests={applies} go={go} />
+                : <p className="hint">None of the {report.query_digests.length.toLocaleString()} digests with the most total time, evaluated here.</p>}
+              {maybe.length > 0 && <>
+                <p className="hint">May apply to these, which ran on hostgroup {r.destination_hostgroup}: it tests what a digest does not keep{r.match_pattern ? " (match_pattern checks the query text)" : ""}.</p>
+                <DigestLinks digests={maybe} go={go} />
+              </>}
+              <div className="proxysql-jump"><button type="button" className="button" onClick={() => go.ruleDigests(r.rule_id)}>Show its digests in Query digests</button></div>
+            </>}
       </InspectorSection>
       <InspectorSection title="Every column set">
         <Fields rows={shown.map(([k, v]): [string, string] => [k, String(v)])} />
@@ -488,21 +578,217 @@ function ruleInspector(r: ProxySqlQueryRule, actions: ReactNode): InspectorConte
   };
 }
 
-function digestInspector(d: ProxySqlDigest, key: string): InspectorContent {
+function DigestLinks({ digests, go }: { digests: ProxySqlDigest[]; go: Go }) {
+  const shown = digests.slice(0, 8);
+  return (
+    <ul className="proxysql-links">
+      {shown.map((d) => (
+        <li key={d.key}>
+          <button type="button" className="text-button proxysql-link" onClick={() => go.digest(d)} title="Open this digest in Query digests">
+            <code>{d.digest_text}</code>
+          </button>
+          <span className="hint">hostgroup {d.hostgroup ?? "—"} · {plural(d.count_star || 0, "execution")} · {routeWord(d.routing)}</span>
+        </li>
+      ))}
+      {digests.length > shown.length && <li className="hint">{`and ${(digests.length - shown.length).toLocaleString()} more`}</li>}
+    </ul>
+  );
+}
+
+/** How routing is evaluated here (the ⓘ beside Routing and Digests it applies to). */
+function RoutingInfo({ report }: { report: Pick<ProxySqlReport, "routing"> }) {
+  const ctx = report.routing;
+  const engine = ctx?.regex_engine ? `${ctx.regex_engine} (mysql-query_processor_regex = ${ctx.regex_variable})` : "PCRE or RE2 (mysql-query_processor_regex)";
+  return <>
+    <p>Evaluated here, not by ProxySQL: the active rules of runtime_mysql_query_rules in rule_id order, following flagIN, flagOUT and apply{ctx?.iterations ? ` (mysql-query_processor_iterations = ${ctx.iterations})` : ""}, then mysql_query_rules_fast_routing, then the user&apos;s default hostgroup.</p>
+    <p>Patterns are tested with Python&apos;s re; ProxySQL uses {engine}, so a pattern can match differently. match_pattern tests the query text, which a digest does not keep (comments are removed and values are ?), so it is tested on the digest text and marked approximate.</p>
+    <p>A different hostgroup can come from a transaction kept on one hostgroup (transaction_persistent), a /* hostgroup=N */ comment, a connection locked to a hostgroup, or rules loaded after these executions.</p>
+  </>;
+}
+
+function digestInspector(d: ProxySqlDigest, report: ProxySqlReport, go: Go): InspectorContent {
+  const r = d.routing;
+  const role = (id: number | null) => {
+    if (id === null) return "—";
+    if (id === -1) return "-1 (the query cache)";
+    const hg = report.hostgroups.find((h) => h.id === id);
+    const words = hg ? roleText(hg.role, hg.monitor) : "";
+    return `${id}${words ? ` (${words})` : ""}`;
+  };
+  const rules = new Map(report.query_rules.map((x) => [x.rule_id, x]));
+  const ruleButton = (id: number, note?: string) => {
+    const rule = rules.get(id);
+    return (
+      <li key={`${id}${note || ""}`}>
+        <button type="button" className="text-button proxysql-link" onClick={() => go.rule(id)} title="Open this rule in Query rules">{`Rule ${id}`}</button>
+        <span className="hint">{rule ? `${matchText(rule)} → ${rule.destination_hostgroup ?? "no hostgroup"}${rule.apply ? ", apply" : ""}` : ""}{note ? ` · ${note}` : ""}</span>
+      </li>
+    );
+  };
   return {
-    key,
+    key: d.key,
     title: "Query digest",
     meta: <span className="hint">{d.digest || ""}</span>,
     body: <>
       <CopySql sql={d.digest_text} label="Digest text" />
+      <InspectorSection title="Routing" info={<RoutingInfo report={report} />}>
+        <div className="proxysql-route" data-verdict={r.verdict}>{routeMark(r)}<span>{r.approximate ? "Approximate, evaluated here" : "Evaluated here"}</span></div>
+        <Fields rows={[["Ran on", role(r.observed)], ["Rules send it to", r.expected === null ? "Unknown" : `${role(r.expected)}${sourceWord(r) ? `, ${sourceWord(r)}` : ""}`]]} />
+        <p className="proxysql-route-text">{r.text}</p>
+        {r.why.length > 0 && <ul className="proxysql-why">{r.why.map((w, i) => <li key={i}>{w}</li>)}</ul>}
+        {(r.rules.length > 0 || r.possible.length > 0) && (
+          <ul className="proxysql-links" aria-label="Rules">
+            {r.rules.map((id) => ruleButton(id, id === r.decisive ? "sets the hostgroup" : "applies"))}
+            {r.possible.map((id) => ruleButton(id, "may apply"))}
+          </ul>
+        )}
+      </InspectorSection>
       <InspectorSection title="Executions">
-        <Fields rows={[["Executions", numText(d.count_star)], ["Total time", latency(d.sum_time_us)], ["Average", latency(d.avg_time_us)],
-          ["Fastest", latency(d.min_time_us)], ["Slowest", latency(d.max_time_us)], ["Rows sent", numText(d.rows_sent)], ["Rows affected", numText(d.rows_affected)]]} />
+        <Fields rows={[["Executions", numText(d.count_star)], ["Per second", rateText(d.rate_qps)], ["Total time", latency(d.sum_time_us)], ["Average", latency(d.avg_time_us)],
+          ["Fastest", latency(d.min_time_us)], ["Slowest", latency(d.max_time_us)], ["Rows sent", numText(d.rows_sent)], ["Rows affected", numText(d.rows_affected)],
+          ["First seen", seenText(d.first_seen)], ["Last seen", seenText(d.last_seen)]]} />
       </InspectorSection>
       <InspectorSection title="Where">
         <Fields rows={[["Hostgroup", d.hostgroup === null ? "—" : String(d.hostgroup)], ["Schema", d.schemaname || "—"], ["User", d.username || "—"],
-          ["Client", d.client_address || "—"]]} />
+          ["Client", d.client_address || "Not recorded (mysql-query_digests_track_hostname)"]]} />
       </InspectorSection>
     </>,
   };
+}
+
+function sourceWord(r: ProxySqlRouting): string {
+  return r.source === "rule" ? `by rule ${r.decisive}` : r.source === "fast_routing" ? "by fast routing" : r.source === "default" ? "the user's default hostgroup" : "";
+}
+/** The Rules send to cell: the evaluated hostgroup, and a flag when it differs. */
+function routeMark(r: ProxySqlRouting) {
+  const by = r.source === "rule" ? `rule ${r.decisive}` : r.source === "fast_routing" ? "fast routing" : "default";
+  switch (r.verdict) {
+    case "match": return <ClusterMark tone="ok" label={`${r.expected} · ${by}`} title={r.text} />;
+    case "mismatch": return <ClusterMark tone="watch" label={`Mismatch: ${r.expected} (${by})`} title={r.text} />;
+    case "possible": return <ClusterMark tone="unknown" label={`Maybe rule ${r.possible[0]}`} title={r.text} />;
+    case "local": return <ClusterMark tone="info" label="Answered by ProxySQL" title={r.text} />;
+    case "cache": return <ClusterMark tone="info" label="Query cache" title={r.text} />;
+    default: return <ClusterMark tone="unknown" label="Not evaluated" title={r.text} />;
+  }
+}
+function routeWord(r: ProxySqlRouting): string {
+  return r.verdict === "match" ? `ran where the rules send it (${r.expected})` : r.verdict === "mismatch" ? `mismatch: rules send it to ${r.expected}`
+    : r.verdict === "possible" ? "may be another rule's" : r.verdict === "cache" ? "from the query cache"
+      : r.verdict === "local" ? "answered by ProxySQL" : "routing not evaluated";
+}
+function routeSort(r: ProxySqlRouting): number {
+  return { mismatch: 0, possible: 1, unknown: 2, local: 3, cache: 4, match: 5 }[r.verdict] ?? 6;
+}
+/** Executions per second: two significant digits below 10, so a digest
+ * seen 5 times in 1.6 hours reads 0.00087/s, never 0.00/s. */
+function rateText(v: number | null | undefined) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  if (v === 0) return "0/s";
+  return v >= 10 ? `${count(Math.round(v))}/s` : `${Number(v.toPrecision(2)).toLocaleString(undefined, { maximumSignificantDigits: 2 })}/s`;
+}
+function seenText(epoch: number | null) {
+  return epoch === null ? "—" : new Date(epoch * 1000).toLocaleString();
+}
+function filtered(f: DigestFilters) {
+  return f.hostgroup !== null || !!f.schema || !!f.user || !!f.text || !!f.digest || f.rule_id !== null;
+}
+
+/** The orders, Top N and filters of Query digests (each change reads again). */
+function DigestTools({ filters, onFilters, report, proxy, disabled }: {
+  filters: DigestFilters; onFilters: (f: DigestFilters) => void; report: ProxySqlDigestsReport | null; proxy: ProxySqlReport; disabled: boolean;
+}) {
+  const [text, setText] = useState(filters.text || "");
+  // The filters as they are when the pause ends: another choice made while
+  // typing (an order, a hostgroup) is kept, never replaced by an older copy.
+  const latest = useRef(filters);
+  latest.current = filters;
+  useEffect(() => { setText(filters.text || ""); }, [filters.text]);
+  // Typing waits for a pause before it reads (one bounded read per pause).
+  useEffect(() => {
+    const next = text.trim() || null;
+    if (next === latest.current.text) return;
+    const timer = window.setTimeout(() => {
+      if (next !== latest.current.text) onFilters({ ...latest.current, text: next });
+    }, 450);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text]);
+  const facets = report?.facets;
+  const unavailable = new Map((report?.orders || []).filter((o) => !o.available).map((o) => [o.id, o.why || ""]));
+  const groupWord = (id: number) => {
+    const hg = proxy.hostgroups.find((h) => h.id === id);
+    const words = hg ? roleText(hg.role, hg.monitor) : "";
+    return id === -1 ? "-1 (query cache)" : `${id}${words ? ` (${words})` : ""}`;
+  };
+  const choices = <V,>(list: V[], current: V | null, label: (v: V) => string): [string, string][] => {
+    const values = list.map(String);
+    const out: [string, string][] = list.map((v) => [String(v), label(v)]);
+    if (current !== null && current !== undefined && !values.includes(String(current))) out.push([String(current), label(current)]);
+    return out;
+  };
+  const hostgroups = (facets?.hostgroups || []).map((f) => f.value as number);
+  const schemas = (facets?.schemas || []).map((f) => String(f.value ?? ""));
+  const users = (facets?.users || []).map((f) => String(f.value ?? ""));
+  const set = (patch: Partial<DigestFilters>) => { if (!disabled) onFilters({ ...filters, ...patch }); };
+  return <>
+    <div className="report-table-tools proxysql-digest-tools" role="group" aria-label="Query digest order">
+      <Segmented<DigestOrder> label="Order digests by" className="proxysql-order-segments" value={filters.order} onChange={(order) => set({ order })}
+        options={ORDERS.map((o) => ({ value: o.value, label: o.label, title: unavailable.get(o.value) || o.title, disabled: unavailable.has(o.value) }))} />
+      {/* The same choice as a menu where the window is too narrow for five segments. */}
+      <ToolbarSelect label="Order" className="proxysql-order-select" value={filters.order} disabled={disabled}
+        onChange={(v) => set({ order: v as DigestOrder })}
+        options={ORDERS.filter((o) => !unavailable.has(o.value) || o.value === filters.order).map((o) => [o.value, o.label])} />
+      <ToolbarSelect label="Top" value={filters.limit} disabled={disabled} onChange={(v) => set({ limit: Number(v) as DigestFilters["limit"] })}
+        options={[10, 25, 50, 100].map((n) => [n, String(n)])} />
+    </div>
+    <div className="report-table-tools proxysql-digest-filters" role="group" aria-label="Query digest filters">
+      <SearchField label="Search digest text" placeholder="Search digest text" value={text} onChange={setText} />
+      <ToolbarSelect label="Hostgroup" value={filters.hostgroup === null ? "" : filters.hostgroup} disabled={disabled}
+        onChange={(v) => set({ hostgroup: v === "" ? null : Number(v) })}
+        options={[["", "All"], ...choices(hostgroups, filters.hostgroup, groupWord)]} />
+      <ToolbarSelect label="Schema" value={exactValue(filters.schema)} disabled={disabled} onChange={(v) => set({ schema: exactChoice(v) })}
+        options={[["", "All"], ...exactOptions(schemas, filters.schema)]} />
+      <ToolbarSelect label="User" value={exactValue(filters.user)} disabled={disabled} onChange={(v) => set({ user: exactChoice(v) })}
+        options={[["", "All"], ...exactOptions(users, filters.user)]} />
+    </div>
+    {(filters.digest || filters.rule_id !== null) && (
+      <div className="proxysql-chips" role="group" aria-label="Other filters">
+        {filters.digest && <span className="proxysql-chip">Digest {filters.digest}<button type="button" className="text-button" aria-label="Remove the digest filter" onClick={() => onFilters({ ...filters, digest: null })}>Remove</button></span>}
+        {filters.rule_id !== null && <span className="proxysql-chip">Rule {filters.rule_id} applies, evaluated here<button type="button" className="text-button" aria-label="Remove the rule filter" onClick={() => onFilters({ ...filters, rule_id: null })}>Remove</button></span>}
+      </div>
+    )}
+  </>;
+}
+
+/** Schema and user choices: "" is All; any other value is the JSON text of
+ * the exact name, so the empty name (no default schema) is a choice of its own. */
+const exactValue = (v: string | null) => (v === null ? "" : JSON.stringify(v));
+const exactChoice = (v: string): string | null => (v === "" ? null : String(JSON.parse(v)));
+function exactOptions(values: string[], current: string | null): [string, string][] {
+  const all = current !== null && !values.includes(current) ? [...values, current] : values;
+  return all.map((v) => [JSON.stringify(v), v === "" ? "(none)" : v]);
+}
+
+/** One line above the digests: what is listed, out of what, since when. */
+function DigestSummary({ report, order, filters, error, proxy }: {
+  report: ProxySqlDigestsReport | null; order: string; filters: DigestFilters; error: string; proxy: ProxySqlReport;
+}) {
+  if (!report) return null;
+  const shown = report.digests.length;
+  const parts = [`Top ${filters.limit} by ${order}`, `${plural(shown, "digest")} listed${report.more ? ", more match" : ""}`];
+  if (report.scanned !== null && report.scanned !== undefined) parts.push(`rule ${filters.rule_id} applies to these of the ${report.scanned.toLocaleString()} read in this order`);
+  if (report.totals) parts.push(`${plural(report.totals.digests, "digest")} and ${compactCount(report.totals.executions)} executions in all`);
+  if (report.window?.first_seen) parts.push(`since ${new Date(report.window.first_seen * 1000).toLocaleString()}`);
+  const mismatches = report.digests.filter((d) => d.routing.verdict === "mismatch").length;
+  return (
+    <div className="proxysql-digest-summary">
+      <span>{parts.join(" · ")}</span>
+      {mismatches > 0 && <StatusPill tone="watch" label={`${mismatches} on another hostgroup than the rules send to`} />}
+      {error && <span className="error">{error}</span>}
+      <InfoPopover label="How routing is evaluated"><RoutingInfo report={report.routing ? report : proxy} /></InfoPopover>
+    </div>
+  );
+}
+function compactCount(v: number) {
+  return v.toLocaleString();
 }

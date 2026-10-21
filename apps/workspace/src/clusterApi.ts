@@ -255,5 +255,5 @@ export type ClusterAction = { id: string; label: string; danger: boolean; descri
 export const planClusterAction = (connection: Connection, action: string, memberKey: string) =>
   api<ReviewedPlan>("live/cluster/plan", { connection, action, member_key: memberKey });
 
-export const sendClusterAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string) =>
-  api<ReviewedResult>("live/cluster/action", { connection, plan, review_token: token, typed, confirmed: true });
+export const sendClusterAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string, progressId: string) =>
+  api<ReviewedResult>("live/cluster/action", { connection, plan, review_token: token, typed, confirmed: true, progress_id: progressId });

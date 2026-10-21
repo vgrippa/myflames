@@ -33,7 +33,10 @@ HOSTGROUP_COLUMNS = ('writer_hostgroup INT PRIMARY KEY, backup_writer_hostgroup 
                      'max_transactions_behind INT, comment VARCHAR')
 RULE_COLUMNS = ('rule_id INT PRIMARY KEY, active INT, username VARCHAR, schemaname VARCHAR, flagIN INT, '
                 'match_digest VARCHAR, match_pattern VARCHAR, negate_match_pattern INT, destination_hostgroup INT, '
-                'apply INT, comment VARCHAR')
+                'apply INT, comment VARCHAR, re_modifiers VARCHAR DEFAULT \'CASELESS\', flagOUT INT')
+#: The columns the lab's rules set (re_modifiers and flagOUT keep their defaults).
+RULE_NAMES = ('rule_id, active, username, schemaname, flagIN, match_digest, match_pattern, negate_match_pattern, '
+              'destination_hostgroup, apply, comment')
 #: Tables of the servers module the lab leaves empty (3.0.11 has them all).
 EMPTY_TABLES = (
     ('mysql_aws_aurora_hostgroups', 'writer_hostgroup INT, reader_hostgroup INT, active INT, aurora_port INT, '
@@ -56,6 +59,25 @@ RULES = [
     (20, 1, None, None, 0, '^SELECT .* FOR UPDATE', None, 0, 30, 1, 'locking reads'),
     (30, 1, None, None, 0, '^SELECT', None, 0, 32, 1, 'reads'),
 ]
+#: stats_mysql_query_digest as the live lab had it (2026-10-21), by total time:
+#: SELECT @@hostname ran on 32 by rule 30 and on 10 when tagged /* galera */
+#: (rule 10 tests the query text, which the digest does not keep); SHOW and the
+#: transaction statements went to mf_admin's default hostgroup 30.
+DIGESTS = [
+    (30, 'information_schema', 'mf_admin', '', '0x48BE884F70034786', 'SHOW GLOBAL VARIABLES LIKE ?', 5, 1792537332, 1792543106, 16763, 787, 6343, 0, 5),
+    (32, 'information_schema', 'mf_admin', '', '0xA8027DF9CE26E2FF', 'SELECT @@hostname', 5, 1792537332, 1792543106, 13162, 192, 6686, 0, 5),
+    (32, 'information_schema', 'mf_admin', '', '0x9C012E222EE5AA4E', 'SELECT COUNT(*) FROM testdb.orders WHERE status = ? AND customer_id = ?', 20, 1792537331, 1792537331, 7706, 78, 5974, 0, 20),
+    (32, 'information_schema', 'mf_admin', '', '0xC54E85FD66BA43DA', 'SELECT name,country FROM testdb.customers WHERE id = ?', 20, 1792537331, 1792537331, 6889, 69, 5369, 0, 20),
+    (30, 'information_schema', 'mf_admin', '', '0xA64D4A3B64005014', 'START TRANSACTION', 5, 1792537331, 1792537331, 5194, 52, 4947, 0, 0),
+    (10, 'information_schema', 'mf_admin', '', '0xA8027DF9CE26E2FF', 'SELECT @@hostname', 5, 1792537332, 1792543106, 1888, 203, 650, 0, 5),
+    (30, 'information_schema', 'mf_admin', '', '0xABB02DE3FAD6872B', 'SHOW GLOBAL STATUS LIKE ?', 5, 1792537331, 1792537331, 1329, 198, 462, 0, 5),
+    (10, 'information_schema', 'mf_admin', '', '0x4A8BCC5DA1E63EFB', 'SELECT COUNT(*) FROM testdb.orders WHERE product_id = ?', 5, 1792537331, 1792537331, 1315, 136, 553, 0, 5),
+    (30, 'information_schema', 'mf_admin', '', '0x7499BD50A3EBE746', 'SELECT id,status FROM testdb.orders WHERE id = ? FOR UPDATE', 5, 1792537331, 1792537331, 505, 86, 141, 0, 5),
+    (30, 'information_schema', 'mf_admin', '', '0x49474B60312C20A7', 'ROLLBACK', 5, 1792537331, 1792537331, 362, 62, 86, 0, 0),
+]
+#: runtime_global_variables the routing evaluation reads (live 3.0.11 values).
+ADMIN_VARIABLES = [('mysql-query_processor_regex', '1'), ('mysql-query_processor_iterations', '0'),
+                   ('mysql-query_digests', 'true'), ('mysql-query_digests_track_hostname', 'false')]
 
 
 def place(config):
@@ -140,12 +162,19 @@ class FakeAdmin(object):
             self.db.execute('INSERT INTO %s.mysql_galera_hostgroups VALUES (?,?,?,?,?,?,?,?,?)' % schema, GALERA)
             self.db.execute('INSERT INTO %s.mysql_group_replication_hostgroups VALUES (?,?,?,?,?,?,?,?,?)'
                             % schema, GR)
-            self.db.executemany('INSERT INTO %s.mysql_query_rules VALUES (?,?,?,?,?,?,?,?,?,?,?)' % schema, RULES)
+            self.db.executemany('INSERT INTO %s.mysql_query_rules (%s) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+                                % (schema, RULE_NAMES), RULES)
         self.load('servers')
         self.load('query_rules')
         self.db.executemany('INSERT INTO stats.stats_mysql_query_rules VALUES (?, ?)', [(10, 6), (20, 5), (30, 41)])
-        self.db.execute("INSERT INTO stats.stats_mysql_query_digest VALUES (32, 'testdb', 'mf_admin', '', "
-                        "'0x9C01', 'SELECT COUNT(*) FROM orders WHERE status = ?', 20, 1, 2, 7706, 78, 5974, 0, 20)")
+        self.db.executemany('INSERT INTO stats.stats_mysql_query_digest VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', DIGESTS)
+        self.db.execute('CREATE TABLE main.runtime_global_variables (variable_name VARCHAR, variable_value VARCHAR)')
+        self.db.executemany('INSERT INTO main.runtime_global_variables VALUES (?, ?)', ADMIN_VARIABLES)
+        # runtime_mysql_users keeps a frontend and a backend row per user.
+        self.db.execute('CREATE TABLE main.runtime_mysql_users (username VARCHAR, password VARCHAR, active INT, '
+                        'default_hostgroup INT, transaction_persistent INT, frontend INT, backend INT)')
+        self.db.executemany('INSERT INTO main.runtime_mysql_users VALUES (?,?,?,?,?,?,?)',
+                            [('mf_admin', '*SECRET', 1, 30, 1, 1, 0), ('mf_admin', '*SECRET', 1, 30, 1, 0, 1)])
 
     # -- Admin behaviour ------------------------------------------------------------------
     def load(self, module):
@@ -326,7 +355,10 @@ class TestRead(Home):
         self.assertEqual(report['notes'], [])
         self.assertEqual([(r['rule_id'], r['hits'], r['runtime_active']) for r in report['query_rules']],
                          [(10, 6, True), (20, 5, True), (30, 41, True)])
-        self.assertEqual(report['query_digests'][0]['avg_time_us'], 385)
+        orders = next(d for d in report['query_digests'] if d['digest'] == '0x9C012E222EE5AA4E')
+        self.assertEqual((orders['avg_time_us'], orders['key']),
+                         (385, 'dg[32,"information_schema","mf_admin","","0x9C012E222EE5AA4E"]'))
+        self.assertEqual(report['query_digests'][0]['digest_text'], 'SHOW GLOBAL VARIABLES LIKE ?', 'by total time')
         self.assertFalse(conn.writes, 'reading sends no write')
         for sql in conn.calls:
             self.assertTrue(sql.startswith('SELECT'), sql)
@@ -422,7 +454,7 @@ class TestRead(Home):
     def test_hostgroup_without_online_server_and_rule_to_nowhere_are_problems(self):
         conn = FakeAdmin()
         conn.db.execute("UPDATE main.mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostname IN ('mf-ic-2', 'mf-ic-3')")
-        conn.db.execute("INSERT INTO main.mysql_query_rules VALUES (40, 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
+        conn.db.execute("INSERT INTO main.mysql_query_rules (%s) VALUES (40," % RULE_NAMES + " 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
         conn.load('servers')
         conn.load('query_rules')
         report = proxysql.read_status(conn)
@@ -434,7 +466,7 @@ class TestRead(Home):
     def test_routing_is_judged_by_the_rules_proxysql_runs(self):
         # Codex review: rule 40 routes to an empty hostgroup in runtime while memory already has it inactive.
         conn = FakeAdmin()
-        conn.db.execute("INSERT INTO main.mysql_query_rules VALUES (40, 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
+        conn.db.execute("INSERT INTO main.mysql_query_rules (%s) VALUES (40," % RULE_NAMES + " 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
         conn.load('query_rules')
         conn.db.execute("UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 40")
         report = proxysql.read_status(conn)
@@ -446,7 +478,7 @@ class TestRead(Home):
         self.assertEqual(proxysql.read_status(conn)['status'], 'problem')
         # Active in memory but not loaded yet: it routes nothing, the pending change says so.
         conn = FakeAdmin()
-        conn.db.execute("INSERT INTO main.mysql_query_rules VALUES (40, 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
+        conn.db.execute("INSERT INTO main.mysql_query_rules (%s) VALUES (40," % RULE_NAMES + " 1, NULL, NULL, 0, '^INSERT', NULL, 0, 99, 1, '')")
         report = proxysql.read_status(conn)
         self.assertEqual(report['status'], 'ok')
         self.assertEqual(len(report['pending']['query_rules']['runtime']), 1)
@@ -871,7 +903,7 @@ class Endpoints(Home):
 
     def test_load_binds_every_row_not_only_the_difference_lines(self):
         # Codex review: an added rule changed between review and send.
-        self.conn.db.execute("INSERT INTO main.mysql_query_rules VALUES (40, 1, NULL, NULL, 0, '^INSERT', NULL, 0, 10, 1, '')")
+        self.conn.db.execute("INSERT INTO main.mysql_query_rules (%s) VALUES (40," % RULE_NAMES + " 1, NULL, NULL, 0, '^INSERT', NULL, 0, 10, 1, '')")
         plan = self.plan('query_rules_load')
         self.assertEqual(plan['changes'], ['rule 40: in memory, not in runtime (active 1, match_digest ^INSERT, '
                                            'match_pattern NULL, destination_hostgroup 10, apply 1)'])

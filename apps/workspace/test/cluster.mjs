@@ -23,7 +23,8 @@ for (const name of ["galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two
   "pxc-8.4-donor", "pxc-8.4-member-donor", "ic-8.4-healthy", "ic-8.4-degraded", "ic-8.4-unreachable", "ic-8.4-no-quorum",
   "ic-8.4-member-offline", "ic-8.4-local-offline", "gr-8.4-multi-primary", "gr-8.4-denied", "mysql-8.4-standalone",
   "mariadb-11.8-standalone", "pxc-8.4-two-of-three", "galera-11.8-two-nodes", "galera-11.8-partial-seeds", "galera-mysql-8.4-healthy",
-  "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local", "plan-switchover"]) R[name] = await load(`cluster-${name}.json`);
+  "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local", "plan-switchover", "result-switchover",
+  "progress-sending"]) R[name] = await load(`cluster-${name}.json`);
 
 const view = '.server-view[data-view="cluster"]';
 const nav = '.main-nav button[data-place="cluster"]';
@@ -32,7 +33,8 @@ const sends = [];
 const declined = [];
 const h = await open("/api/live/cluster", "cluster", {
   "/api/live/cluster/plan": (body) => { plans.push(body); return { status: 200, body: R["plan-switchover"] }; },
-  "/api/live/cluster/action": (body) => { sends.push(body); return { status: 500, body: { error: "not in this suite" } }; },
+  "/api/live/cluster/action": (body) => { sends.push(body); return { status: 200, body: R["result-switchover"], delay: 1500 }; },
+  "/api/live/action/progress": () => ({ status: 200, body: R["progress-sending"] }),
   "/api/audit/declined": (body) => { declined.push(body); return { status: 200, body: { audit_id: "x", status: "declined" } }; },
 });
 const { page, state } = h;
@@ -216,6 +218,30 @@ try {
   for (let i = 0; i < 50 && !declined.length; i++) await pause(20);
   assert.deepEqual({ op: declined[0]?.operation, statements: declined[0]?.statements }, { op: "cluster_action", statements: R["plan-switchover"].statements });
   assert.equal(sends.length, 0, "nothing sent on Escape");
+  // Confirm: the same sheet follows the send (the shared review, ActionReview.tsx):
+  // Applying… on a button that cannot be clicked twice, the statement Sent
+  // until the server answers, then Done, what changed and Close.
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === "Make primary…").click());
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  await page.click("dialog.action-review[open] .sheet-actions button:last-child");
+  await page.waitForFunction(() => /Sent\. Waiting for the server's answer/.test(document.querySelector("dialog.action-review[open] .action-phase")?.textContent || ""));
+  const applying = await page.$eval("dialog.action-review[open]", (d) => ({ confirm: d.querySelector(".sheet-actions button:last-child").textContent,
+    disabled: d.querySelector(".sheet-actions button:last-child").disabled, steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state) }));
+  assert.deepEqual(applying, { confirm: "Applying…", disabled: true, steps: ["sent"] });
+  await page.waitForSelector("dialog.action-review[open] .action-outcome");
+  const answered = await page.$eval("dialog.action-review[open]", (d) => ({ outcome: d.querySelector(".action-outcome").textContent,
+    steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state),
+    effect: [...d.querySelectorAll(".action-effect tbody th")].map((e) => e.textContent) }));
+  assert.match(answered.outcome, /^Done/);
+  assert.deepEqual(answered.steps, ["done"]);
+  assert.deepEqual(answered.effect, ["Primary"]);
+  assert.equal(sends.length, 1);
+  assert.match(sends[0].progress_id, /^[0-9a-f]{32}$/);
+  await page.evaluate(() => [...document.querySelectorAll("dialog.action-review[open] .sheet-actions button")].find((b) => b.textContent.trim() === "Close").click());
+  await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+  await page.waitForSelector(`${view} .action-result`);
+  assert.match(await page.$eval(`${view} .action-result`, (e) => e.textContent), /Done/);
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .action-result .text-button`)].find((b) => b.textContent.trim() === "Close").click(), view);
   await backToList();
   // No Management tab: the sections stay the cluster's.
   assert.deepEqual(await visible(`${view} .segmented button`), ["Topology", "Members", "Routers1"]);
@@ -508,9 +534,10 @@ try {
   assert.equal(state.seen.length, reads + 1, "opening with a report from another connection reads once");
   assert.equal(state.seen.at(-1).connection.host, "solo.test");
 
-  // Until now the Cluster place read nothing but /api/live/cluster.
-  assert.deepEqual(state.other.filter((o) => o.path.startsWith("/api/live/") && !o.path.startsWith("/api/live/cluster/")).map((o) => o.path), [],
-    "no other view read (the review above planned one change)");
+  // Until now the Cluster place read nothing but /api/live/cluster (the review
+  // above planned and sent one change, whose progress it followed).
+  assert.deepEqual(state.other.filter((o) => o.path.startsWith("/api/live/") && !o.path.startsWith("/api/live/cluster/")
+    && o.path !== "/api/live/action/progress").map((o) => o.path), [], "no other view read");
   // Server's Refresh all reads the cluster once, and the place shows that answer.
   await answer(R["mysql-8.4-standalone"]);
   const beforeAll = state.seen.length;

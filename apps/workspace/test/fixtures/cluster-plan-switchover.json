@@ -91,6 +91,11 @@
    ]
   ]
  },
+ "timeout_s": 120,
+ "checks": [
+  "Refresh the Cluster place and see which member is PRIMARY now.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
  "policy": {
   "action": "confirm",
   "tone": "danger",

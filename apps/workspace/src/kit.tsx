@@ -2436,6 +2436,7 @@ export function ConfirmSheet({
   onCancel,
   onConfirm,
   secondary,
+  doneLabel,
   children,
   className = "",
 }: {
@@ -2451,14 +2452,21 @@ export function ConfirmSheet({
   onConfirm: () => void;
   /** A second way forward, between Cancel and the confirm button (Roll back and close). */
   secondary?: { label: ReactNode; onClick: () => void };
+  /** The request was answered: one button (this label) closes the sheet
+   * through onCancel, after the optional secondary; there is no Cancel. */
+  doneLabel?: ReactNode;
   children?: ReactNode;
   className?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  const done = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const descId = useId();
   useFocusScope(dialog, { open: true, onClose: () => { if (!busy) onCancel(); }, initialFocus: () => cancel.current });
+  const answered = !!doneLabel;
+  // Cancel leaves with the answer: focus moves to the button that closes.
+  useEffect(() => { if (answered) done.current?.focus(); }, [answered]);
   // Retained list views can be hidden while their selected detail is open.
   // Keep consequential reviews outside those layout ancestors so the native
   // dialog remains visible and Cancel can receive focus.
@@ -2492,22 +2500,38 @@ export function ConfirmSheet({
         {children}
       </div>
       <div className="dialog-actions sheet-actions">
-        <button ref={cancel} type="button" className="button" disabled={busy} onClick={onCancel}>
-          Cancel
-        </button>
-        {secondary && (
-          <button type="button" className="button" disabled={busy} onClick={secondary.onClick}>
-            {secondary.label}
-          </button>
+        {answered ? (
+          <>
+            {secondary && (
+              <button type="button" className="button" onClick={secondary.onClick}>
+                {secondary.label}
+              </button>
+            )}
+            <button ref={done} type="button" className="button primary" onClick={onCancel}>
+              {doneLabel}
+            </button>
+          </>
+        ) : (
+          <>
+            <button ref={cancel} type="button" className="button" disabled={busy} onClick={onCancel}>
+              Cancel
+            </button>
+            {secondary && (
+              <button type="button" className="button" disabled={busy} onClick={secondary.onClick}>
+                {secondary.label}
+              </button>
+            )}
+            <button
+              type="button"
+              className={`button ${confirmTone === "danger" ? "danger-solid" : "primary"}`}
+              disabled={busy || confirmDisabled}
+              aria-busy={busy || undefined}
+              onClick={onConfirm}
+            >
+              {confirmLabel}
+            </button>
+          </>
         )}
-        <button
-          type="button"
-          className={`button ${confirmTone === "danger" ? "danger-solid" : "primary"}`}
-          disabled={busy || confirmDisabled}
-          onClick={onConfirm}
-        >
-          {confirmLabel}
-        </button>
       </div>
     </dialog>, document.body
   );

@@ -1,5 +1,6 @@
 // The ProxySQL place's wire types (proxysql-1.0 and proxysql-action-1.0,
-// myflames/proxysql.py; docs/schemas/proxysql-1.0.json) and its API calls.
+// myflames/proxysql.py; proxysql-digests-1.0, myflames/proxysql_digests.py;
+// docs/schemas/proxysql-1.0.json and proxysql-digests-1.0.json) and its API calls.
 import { api, type Connection } from "./api";
 import type { Bound } from "./binding";
 import type { ReviewedPlan, ReviewedResult } from "./ActionReview";
@@ -84,6 +85,37 @@ export type ProxySqlQueryRule = {
   runtime_active: boolean | null;
   fields: Record<string, string | null>;
   actions: ProxySqlAction[];
+  /** Keys of the report's digests this rule applies to, evaluated here (null: not evaluated). */
+  digests?: string[] | null;
+  digest_count?: number | null;
+  /** Digests that ran on its destination while a condition could not be tested here. */
+  possible_digests?: string[] | null;
+};
+/** Where the active rules send a digest, evaluated here (proxysql_digests.Routing). */
+export type ProxySqlRouting = {
+  observed: number | null;
+  expected: number | null;
+  source: "rule" | "fast_routing" | "default" | null;
+  rules: number[];
+  decisive: number | null;
+  approximate: boolean;
+  possible: number[];
+  unknown_rules: { rule_id: number; why: string }[];
+  default_hostgroup: number | null;
+  verdict: "match" | "mismatch" | "possible" | "local" | "cache" | "unknown";
+  text: string;
+  why: string[];
+};
+export type ProxySqlRoutingContext = {
+  evaluated: boolean;
+  regex_engine: "PCRE" | "RE2" | null;
+  regex_variable?: string | null;
+  iterations: number;
+  fast_routing_read?: boolean;
+  users_read?: boolean;
+  track_hostname?: boolean;
+  active_rules?: number;
+  note: string | null;
 };
 export type ProxySqlDigest = {
   hostgroup: number | null;
@@ -101,6 +133,11 @@ export type ProxySqlDigest = {
   last_seen: number | null;
   rows_sent: number | null;
   rows_affected: number | null;
+  key: string;
+  seen_span_s?: number | null;
+  /** Executions per second between the first and the last execution (at least one second). */
+  rate_qps?: number | null;
+  routing: ProxySqlRouting;
 };
 export type ProxySqlPending = { runtime: string[] | null; disk: string[] | null };
 export type ProxySqlReport = {
@@ -125,6 +162,42 @@ export type ProxySqlReport = {
   actions: ProxySqlAction[];
   notes: string[];
   statements: string[];
+  routing?: ProxySqlRoutingContext | null;
+};
+export type DigestOrder = "slowest" | "time" | "frequent" | "rate" | "rows";
+export type DigestFilters = {
+  order: DigestOrder;
+  limit: 10 | 25 | 50 | 100;
+  hostgroup: number | null;
+  schema: string | null;
+  user: string | null;
+  text: string | null;
+  digest: string | null;
+  rule_id: number | null;
+};
+export type DigestFacet = { value: number | string | null; digests: number; executions: number };
+/** The Query digests tab (proxysql-digests-1.0). */
+export type ProxySqlDigestsReport = {
+  schema_version: "proxysql-digests-1.0";
+  captured_at: string;
+  available: boolean;
+  is_proxysql: boolean;
+  version: string | null;
+  message: string | null;
+  filters: DigestFilters;
+  orders: { id: DigestOrder; label: string; available: boolean; why: string | null }[];
+  limits: number[];
+  digests: ProxySqlDigest[];
+  more: boolean;
+  scanned?: number | null;
+  facets: { hostgroups: DigestFacet[]; schemas: DigestFacet[]; users: DigestFacet[]; complete: boolean } | null;
+  totals: { digests: number; executions: number; sum_time_us: number } | null;
+  window: { first_seen: number | null; last_seen: number | null } | null;
+  rules: { rule_id: number; destination_hostgroup: number | null; apply: boolean; match_digest: string | null; match_pattern: string | null; comment: string }[];
+  rule_hits: Record<string, number | null> | null;
+  routing: ProxySqlRoutingContext | null;
+  notes: string[];
+  statements: string[];
 };
 export type ProxySqlFailure = { key: string; message: string; over: Bound<ProxySqlReport> | null };
 /** The target of a change: a configuration row, a query rule, or none (Load and Save). */
@@ -138,8 +211,12 @@ export const readProxySql = (connection: Connection, signal?: AbortSignal) =>
 export const planProxySqlAction = (connection: Connection, action: string, target: ProxySqlTarget, value?: number) =>
   api<ReviewedPlan>("live/proxysql/plan", { connection, action, target, ...(value === undefined ? {} : { value }) });
 
-export const sendProxySqlAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string) =>
-  api<ReviewedResult>("live/proxysql/action", { connection, plan, review_token: token, typed, confirmed: true });
+export const sendProxySqlAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string, progressId: string) =>
+  api<ReviewedResult>("live/proxysql/action", { connection, plan, review_token: token, typed, confirmed: true, progress_id: progressId });
+
+/** One bounded read of the Query digests tab (ORDER BY and LIMIT run in Admin). */
+export const readProxySqlDigests = (connection: Connection, filters: Partial<DigestFilters>, signal?: AbortSignal) =>
+  api<ProxySqlDigestsReport>("live/proxysql/digests", { connection, ...filters }, signal);
 
 /** The sidebar's state for ProxySQL: unread until the connection in use is
  * read, "none" when that read said it is not ProxySQL Admin. */

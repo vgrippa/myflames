@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/vgrippa/myflames/docs/schemas/proxysql-1.0.json",
   "title": "myflames ProxySQL Admin report (proxysql-1.0)",
-  "description": "What the ProxySQL place reads from ProxySQL's Admin interface (myflames/proxysql.py read_status): backends as ProxySQL runs them with their connection pool and configuration row, hostgroups and the monitors that manage them, query rules, the top query digests, and the differences between memory, runtime and disk. Read-only; the changes each row offers are listed in its actions.",
+  "description": "What the ProxySQL place reads from ProxySQL's Admin interface (myflames/proxysql.py read_status): backends as ProxySQL runs them with their connection pool and configuration row, hostgroups and the monitors that manage them, query rules, the top query digests, and the differences between memory, runtime and disk. Read-only; the changes each row offers are listed in its actions. Each digest carries where the rules send it, evaluated here, and each rule the digests it applies to.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -602,6 +602,32 @@
             "items": {
               "$ref": "#/$defs/action"
             }
+          },
+          "digests": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Keys of the query digests listed here that this rule applies to, evaluated here; null when routing is not evaluated."
+          },
+          "digest_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "possible_digests": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Keys of digests that ran on this rule's destination hostgroup while a condition of the rule (match_pattern on the query text, or what a digest does not record) could not be tested here: it may apply to them."
           }
         }
       }
@@ -609,97 +635,7 @@
     "query_digests": {
       "type": "array",
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "hostgroup": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "schemaname": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "username": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "client_address": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "digest": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "digest_text": {
-            "type": "string"
-          },
-          "count_star": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "sum_time_us": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "min_time_us": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "max_time_us": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "avg_time_us": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "first_seen": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "last_seen": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "rows_sent": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "rows_affected": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        }
+        "$ref": "#/$defs/digest"
       },
       "maxItems": 100
     },
@@ -834,6 +770,9 @@
         ]
       },
       "description": "SHA-256 of every row of each module copy (servers_memory, servers_runtime, servers_disk, query_rules_memory, ...); null when a table could not be read. A reviewed change binds the ones its statements depend on."
+    },
+    "routing": {
+      "$ref": "#/$defs/routing_context"
     }
   },
   "$defs": {
@@ -887,6 +826,295 @@
           }
         }
       }
+    },
+    "routing": {
+      "type": "object",
+      "description": "Where the active runtime query rules send this digest, evaluated here with Python's re (proxysql_digests.Routing): ProxySQL uses PCRE or RE2 (mysql-query_processor_regex), and match_pattern is tested on the digest text, not the query text.",
+      "additionalProperties": false,
+      "required": [
+        "observed",
+        "expected",
+        "source",
+        "rules",
+        "decisive",
+        "approximate",
+        "possible",
+        "unknown_rules",
+        "default_hostgroup",
+        "verdict",
+        "text",
+        "why"
+      ],
+      "properties": {
+        "observed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The hostgroup the digest ran on; -1 is the query cache."
+        },
+        "expected": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The hostgroup the rules, fast routing or the user's default hostgroup give it here."
+        },
+        "source": {
+          "enum": [
+            "rule",
+            "fast_routing",
+            "default",
+            null
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "The rules that apply to it, in order."
+        },
+        "decisive": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The rule that set the destination hostgroup."
+        },
+        "approximate": {
+          "type": "boolean",
+          "description": "A rule on the way matched by match_pattern, tested on the digest text."
+        },
+        "possible": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Rules passed over (match_pattern or a condition a digest does not record) that send to the observed hostgroup."
+        },
+        "unknown_rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "rule_id",
+              "why"
+            ],
+            "properties": {
+              "rule_id": {
+                "type": "integer"
+              },
+              "why": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "default_hostgroup": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "verdict": {
+          "enum": [
+            "match",
+            "mismatch",
+            "possible",
+            "local",
+            "cache",
+            "unknown"
+          ],
+          "description": "match: it ran where the rules send it; mismatch: on another hostgroup; possible: on the hostgroup of a rule that could not be tested here; local: a statement ProxySQL answers itself; cache: the query cache; unknown: not evaluated."
+        },
+        "text": {
+          "type": "string"
+        },
+        "why": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "routing_context": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "How routing was evaluated here: the regex engine ProxySQL uses, query processor iterations, and what could not be read.",
+      "additionalProperties": false,
+      "required": [
+        "evaluated",
+        "regex_engine",
+        "iterations",
+        "note"
+      ],
+      "properties": {
+        "evaluated": {
+          "type": "boolean"
+        },
+        "regex_engine": {
+          "enum": [
+            "PCRE",
+            "RE2",
+            null
+          ]
+        },
+        "regex_variable": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "iterations": {
+          "type": "integer"
+        },
+        "fast_routing_read": {
+          "type": "boolean"
+        },
+        "users_read": {
+          "type": "boolean"
+        },
+        "track_hostname": {
+          "type": "boolean"
+        },
+        "active_rules": {
+          "type": "integer"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hostgroup": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "schemaname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "username": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "digest_text": {
+          "type": "string"
+        },
+        "count_star": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sum_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "avg_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "first_seen": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last_seen": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rows_sent": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rows_affected": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "description": "The row's primary key (hostgroup, schemaname, username, client_address, digest) as one string."
+        },
+        "seen_span_s": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "last_seen minus first_seen, in seconds."
+        },
+        "rate_qps": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Executions per second between the first and the last execution (at least one second)."
+        },
+        "routing": {
+          "$ref": "#/$defs/routing"
+        }
+      },
+      "description": "One stats_mysql_query_digest row (times in microseconds, seen times in Unix seconds; a column this ProxySQL lacks is null) with where the query rules send it, evaluated here.",
+      "required": [
+        "key",
+        "hostgroup",
+        "digest_text",
+        "count_star",
+        "sum_time_us",
+        "routing"
+      ]
     }
   }
 }

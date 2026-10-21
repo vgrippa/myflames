@@ -20,6 +20,7 @@
  "verified": [
   "ProxySQL Admin identity (admin-version)"
  ],
+ "timeout_s": 60,
  "eyebrow": "SAVE",
  "title": "Save the servers configuration to disk?",
  "confirm_label": "Save servers to disk",
@@ -41,6 +42,10 @@
  },
  "statements": [
   "SAVE MYSQL SERVERS TO DISK;"
+ ],
+ "checks": [
+  "Refresh this place: the Configuration line says whether memory matches disk now.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
  ],
  "policy": {
   "action": "confirm",

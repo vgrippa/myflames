@@ -183,7 +183,8 @@ function ObjectFields({ label, value, checks = false }: { label: string; value: 
   return <Fields label={label} rows={Object.entries(value as Record<string, unknown>).map(([k, v]) => [mappedLabel(FIELD_LABELS, k), <Value key={k} value={v} />])} />;
 }
 
-export function AuditLog({ profiles }: { profiles: Profile[] }) {
+/** *focusId*: a record to select and open (a reviewed change's result links here). */
+export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focusId?: string }) {
   const [report, setReport] = useState<AuditReport | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -191,7 +192,7 @@ export function AuditLog({ profiles }: { profiles: Profile[] }) {
   const [server, setServer] = useState("");
   const [since, setSince] = useState("");
   const [status, setStatus] = useState("");
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState(focusId);
   const [exporting, setExporting] = useState("");
   const [exported, setExported] = useState("");
   const [exportError, setExportError] = useState("");
@@ -265,7 +266,7 @@ export function AuditLog({ profiles }: { profiles: Profile[] }) {
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(!!focusId);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
   const sheet = width > 0 && width < SHEET_WIDTH;
   const inspector: InspectorShared = useMemo(

@@ -46,5 +46,36 @@
   "action": "servers_save",
   "label": "Save servers to disk…"
  },
- "audit_id": null
+ "audit_id": null,
+ "states": [
+  "done",
+  "done"
+ ],
+ "effect": [
+  [
+   "Status in memory",
+   "ONLINE",
+   "OFFLINE_SOFT"
+  ],
+  [
+   "Runtime",
+   "hostgroup 32 ONLINE, weight 100",
+   "hostgroup 32 OFFLINE_SOFT, weight 100"
+  ],
+  [
+   "Memory versus runtime",
+   "Match",
+   "Match"
+  ],
+  [
+   "Memory versus disk",
+   "Match",
+   "1 difference"
+  ]
+ ],
+ "checks": [
+  "Refresh this place. Servers shows mf-ic-2:3306 as ProxySQL runs it, and its inspector shows the configuration row in memory.",
+  "If memory changed and runtime did not, the UPDATE ran and LOAD MYSQL SERVERS TO RUNTIME did not: the Configuration line then says a change is not loaded to runtime. Load servers to runtime, or undo.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ]
 }

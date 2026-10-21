@@ -226,3 +226,91 @@
   font-family: var(--font-mono);
 }
 .action-review details > summary { font-size: var(--text-sm); }
+/* The sheet after Confirm: the step it is on, each statement and its state,
+   then the outcome, what changed, what to check and the Audit log record. */
+.action-review .action-phase {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+.action-review .action-phase .spinner { width: 13px; height: 13px; flex: none; }
+.action-review .action-outcome {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+}
+.action-review .action-outcome p { margin: 0; max-width: 70ch; }
+.action-steps {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+}
+.action-steps li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  min-width: 0;
+}
+.action-steps li + li { border-top: 1px solid var(--line); }
+.action-steps code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.action-step-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  white-space: nowrap;
+}
+.action-step-state .spinner { width: 11px; height: 11px; }
+.action-effect {
+  width: 100%;
+  margin: 0 0 var(--space-3);
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+}
+.action-effect caption {
+  text-align: start;
+  font-weight: 600;
+  padding-bottom: var(--space-1);
+}
+.action-effect th,
+.action-effect td {
+  text-align: start;
+  vertical-align: top;
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.action-effect thead th { color: var(--ink-muted); font-weight: 500; }
+.action-effect tbody th { font-weight: 500; color: var(--ink-muted); }
+.action-effect tr[data-changed="true"] td:last-child { font-weight: 600; }
+.action-checks { margin: 0 0 var(--space-3); }
+.action-checks h3 { margin: 0 0 var(--space-1); font-size: var(--text-sm); font-weight: 600; }
+.action-checks ol { margin: 0; padding-left: var(--space-4); }
+.action-review .action-audit { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1); }
+/* In the sheet the outcome and each statement's state keep their mark and
+   color, OK included: this is the answer the person waited for. */
+.action-review .action-outcome .status-pill { font-size: var(--text-md); line-height: var(--leading-md); font-weight: 600; }
+.action-review :is(.action-outcome, .action-steps) .status-pill.is-ok { color: var(--ok-text); font-weight: 600; }
+.action-review :is(.action-outcome, .action-steps) .status-pill:is(.is-ok, .is-info) > .status-dot { display: inline-block; }
+.action-review .action-steps .status-pill.is-info { color: var(--info-text); }
+/* A statement with the server: the spinner is its mark. */
+.action-review .action-steps li[data-state="sent"] .status-pill > .status-dot { display: none; }

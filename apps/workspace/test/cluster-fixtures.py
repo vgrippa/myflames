@@ -54,6 +54,26 @@ def main():
         json.dump(plan, handle, indent=1, ensure_ascii=False)
         handle.write("\n")
     print(path)
+    # The send of that plan, answered (cluster.execute_action over the
+    # recording; the write goes to a recorder) and its progress while the
+    # server works on it (reviewed_writes.Progress).
+    import tempfile
+    from myflames import cluster
+    from test_cluster_actions import Writes
+    reviewed = dict(plan)
+    reviewed.pop("review_token")
+    with tempfile.TemporaryDirectory() as home:
+        os.environ["HOME"] = os.environ["USERPROFILE"] = home
+        done = cluster.execute_action(Writes(F.conn("ic-8.4-healthy")), reviewed)
+    progress = reviewed_writes.Progress(len(plan["statements"]), cluster.ACTION_TIMEOUT)
+    progress.set("sending", ["sent"] * len(plan["statements"]))
+    sending = dict(progress.snapshot(), elapsed_s=1.0, waiting_s=0.3)
+    for name, value in (("result-switchover", done), ("progress-sending", sending)):
+        path = os.path.join(OUT, "cluster-%s.json" % name)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=1, ensure_ascii=False)
+            handle.write("\n")
+        print(path)
 
 
 if __name__ == "__main__":

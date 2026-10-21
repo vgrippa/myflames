@@ -40,6 +40,7 @@
   "ProxySQL Admin identity (admin-version)",
   "rule 30 unchanged since review"
  ],
+ "timeout_s": 60,
  "eyebrow": "UPDATE",
  "title": "Disable query rule 30?",
  "confirm_label": "Disable rule 30",
@@ -52,8 +53,8 @@
  "expect": {
   "proxysql_version": "3.0.11-797-g7c91137",
   "fingerprints": {
-   "query_rules_memory": "f51bcc7d928482dc95d0eca4fb7a24b4ecd43ca21a913a0e41944bcfa20dfbed",
-   "query_rules_runtime": "f51bcc7d928482dc95d0eca4fb7a24b4ecd43ca21a913a0e41944bcfa20dfbed"
+   "query_rules_memory": "09c589ac5433a5f263aa629e0e08e27863b11b106b8cafab9739323c152a210f",
+   "query_rules_runtime": "09c589ac5433a5f263aa629e0e08e27863b11b106b8cafab9739323c152a210f"
   },
   "rule": {
    "rule_id": "30",
@@ -66,10 +67,17 @@
    "negate_match_pattern": "0",
    "destination_hostgroup": "32",
    "apply": "1",
-   "comment": "reads"
+   "comment": "reads",
+   "re_modifiers": "CASELESS",
+   "flagOUT": null
   },
   "pending_runtime": []
  },
+ "checks": [
+  "Refresh this place. Query rules shows rule 30 as active or not in memory, and its inspector says whether runtime runs it.",
+  "If memory changed and runtime did not, the UPDATE ran and LOAD MYSQL QUERY RULES TO RUNTIME did not: the Configuration line then says a change is not loaded to runtime. Load query rules to runtime, or undo.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
  "policy": {
   "action": "confirm",
   "tone": "danger",

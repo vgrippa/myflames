@@ -342,12 +342,29 @@ class Endpoints(Home):
         self.assertEqual(result['status'], 'refused')
         self.assertEqual(conn.writes, [])
 
+    def test_result_carries_states_effect_checks_and_progress(self):
+        conn = Writes(F.conn('galera-11.8-healthy'))
+        report = F.report('galera-11.8-healthy')
+        plan = self.plan(conn, 'desync_node', local(report)['key'])
+        self.assertEqual(plan['timeout_s'], m.ACTION_TIMEOUT)
+        self.assertIn('wsrep_desync', plan['checks'][0])
+        plan = dict(plan)
+        token = plan.pop('review_token')
+        result = self.api('/api/live/cluster/action', {'connection': self.connection, 'plan': plan,
+                                                        'review_token': token, 'confirmed': True,
+                                                        'progress_id': 'c' * 24}, conn)
+        self.assertEqual((result['status'], result['states']), ('done', ['done']))
+        self.assertEqual([row[0] for row in result['effect']], ['wsrep_desync', 'State'])
+        self.assertEqual(result['checks'], plan['checks'])
+        progress = ui.api_response('/api/live/action/progress', {'progress_id': 'c' * 24}, self.workspace)
+        self.assertEqual((progress['phase'], progress['states'], progress['status']), ('finished', ['done'], 'done'))
+
     def test_lost_reply_is_unknown(self):
         report = F.report('ic-8.4-healthy')
         conn = Writes(F.conn('ic-8.4-healthy'), fail=ConnectorError('Query timed out after 120s; the outcome is unknown.'))
         plan = self.plan(conn, 'stop_member', local(report)['key'])
         result = self.send(conn, plan, typed=plan['typed_guard'])
-        self.assertEqual(result['status'], 'unknown')
+        self.assertEqual((result['status'], result['states'], result['effect']), ('unknown', ['unknown'], None))
         (record,) = self.audit()
         self.assertEqual(record['status'], 'unknown')
 

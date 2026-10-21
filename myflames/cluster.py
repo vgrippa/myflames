@@ -1967,7 +1967,55 @@ def plan_action(report, action, member_key=None, checks=None):
         _plan_galera(report, plan, action, member, expect)
     plan["expect"] = expect
     plan["statements"] = [CLUSTER_ACTION_TAG + s for s in plan["statements"]]
+    plan["timeout_s"] = ACTION_TIMEOUT
+    plan["checks"] = _checks(action, member, local)
     return plan
+
+
+def _checks(action, member, local):
+    """What to look at when a send got no answer (shown with Outcome unknown)."""
+    name = (member or {}).get("name") or "the member"
+    here = (local or {}).get("name") or "this node"
+    first = {
+        "switchover": "Refresh the Cluster place and see which member is PRIMARY now.",
+        "stop_member": "Refresh the Cluster place and look at %s's member state." % here,
+        "start_member": "Refresh the Cluster place and look at %s's member state." % here,
+        "switch_to_single_primary": "Refresh the Cluster place: the group mode says single-primary or "
+                                    "multi-primary.",
+        "switch_to_multi_primary": "Refresh the Cluster place: the group mode says single-primary or "
+                                   "multi-primary.",
+        "desync_node": "Refresh the Cluster place: %s's wsrep_desync and state." % here,
+        "resync_node": "Refresh the Cluster place: %s's wsrep_desync and state." % here,
+        "bootstrap_pc": "Refresh the Cluster place: whether %s's component is Primary." % here,
+    }.get(action, "Refresh the Cluster place and look at %s." % name)
+    return [first, "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."]
+
+
+def _effect(plan, before, after):
+    """What changed: (what, before, now) rows from the reads before and after
+    the send."""
+    def word(value):
+        return "Not readable" if value in (None, "") else str(value).replace("_", "-")
+
+    def name(side, key):
+        return ((side or {}).get(key) or {}).get("name")
+
+    def state(side, key):
+        item = (side or {}).get(key) or {}
+        return " ".join(x for x in (item.get("state"), item.get("role")) if x) or None
+
+    action = plan["action"]
+    if action == "switchover":
+        return [["Primary", word(name(before, "primary")), word(name(after, "primary"))]]
+    if action in ("stop_member", "start_member"):
+        return [[name(after, "local") or name(before, "local") or "This member", word(state(before, "local")),
+                 word(state(after, "local"))]]
+    if action in ("desync_node", "resync_node"):
+        return [["wsrep_desync", word(before.get("desync")), word(after.get("desync"))],
+                ["State", word(before.get("local_state")), word(after.get("local_state"))]]
+    if action == "bootstrap_pc":
+        return [["Component", word(before.get("component")), word(after.get("component"))]]
+    return [["Group mode", word(before.get("topology")), word(after.get("topology"))]]
 
 
 def _plan_group(report, plan, action, member, local, checks, expect):
@@ -2126,22 +2174,27 @@ def _done_text(plan, after):
     return "Sent. The group is %s." % ((after or {}).get("topology") or "not readable").replace("_", "-")
 
 
-def execute_action(conn, reviewed, audit=None, typed=None, before_send=None):
+def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None):
     """Send a reviewed plan: read the cluster again, refuse with nothing sent
-    when the member, the server or the group changed, then send it."""
+    when the member, the server or the group changed, then send it.
+    *progress* follows the steps for the sheet (reviewed_writes.Progress)."""
     from . import reviewed_writes
     reviewed = reviewed_writes.check_reviewed(reviewed)
     expect = reviewed.get("expect") or {}
     if audit is not None:
         audit.server(expect.get("engine"), expect.get("server_version"))
+    state = {}
 
     def fresh():
         report = read_status(conn)
         if _server_identity(report) != {k: expect.get(k) for k in ("engine", "server_version", "server", "kind")}:
             raise ValueError("This connection now reaches another server or cluster.")
-        return plan_action(report, reviewed["action"], reviewed.get("member_key"),
+        plan = plan_action(report, reviewed["action"], reviewed.get("member_key"),
                            action_checks(conn, report, reviewed["action"]))
+        state["before"] = _after(report, reviewed)
+        return plan
 
     return reviewed_writes.execute(conn, reviewed, fresh, ACTION_SCHEMA_VERSION, audit=audit, typed=typed,
                                    before_send=before_send, read_after=lambda: _after(read_status(conn), reviewed),
-                                   timeout=ACTION_TIMEOUT, done_text=_done_text)
+                                   timeout=ACTION_TIMEOUT, done_text=_done_text, progress=progress,
+                                   effect=lambda plan, after: _effect(plan, state.get("before") or {}, after))

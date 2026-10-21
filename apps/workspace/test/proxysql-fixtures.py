@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(ROOT, "test"))
 os.environ.setdefault("MYFLAMES_SECRET_BACKEND", "vault")
 
 from test_proxysql import FakeAdmin, NotProxy  # noqa: E402
-from myflames import dbops, proxysql, reviewed_writes  # noqa: E402
+from myflames import dbops, proxysql, proxysql_digests, reviewed_writes  # noqa: E402
 
 OUT = os.path.join(ROOT, "apps", "workspace", "test", "fixtures")
 AT = "2026-10-20T14:40:00+00:00"
@@ -49,8 +49,55 @@ def plan(conn, action, target=None, value=None, ctype="development", read_only=F
     return value
 
 
+def digests(conn, **filters):
+    value = proxysql_digests.read_digests(conn, **filters)
+    value["captured_at"] = AT
+    return value
+
+
+def progress(phase, states, status=None):
+    """A reviewed_writes.Progress snapshot with fixed times."""
+    item = reviewed_writes.Progress(len(states), proxysql.ACTION_TIMEOUT)
+    item.set(phase, states, status)
+    value = item.snapshot()
+    value.update(elapsed_s=1.2, waiting_s=0.4 if phase == "sending" else None)
+    return value
+
+
 def main():
     write("lab", report(FakeAdmin()))
+    # The Query digests tab: the default order, the other orders, filters, a
+    # digest and a rule (proxysql_digests.read_digests over the lab).
+    write("digests-time", digests(FakeAdmin()))
+    write("digests-slowest", digests(FakeAdmin(), order="slowest"))
+    write("digests-rate", digests(FakeAdmin(), order="rate", limit=25))
+    write("digests-hg10", digests(FakeAdmin(), hostgroup=10))
+    write("digests-digest", digests(FakeAdmin(), digest="0xA8027DF9CE26E2FF"))
+    write("digests-rule-30", digests(FakeAdmin(), rule_id=30))
+    # Two primary keys that collided with a pipe-joined identity. Both the
+    # rule's links and the digest read must select their own inspector row.
+    collisions = FakeAdmin()
+    collisions.db.executemany('INSERT INTO stats.stats_mysql_query_digest VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                             [(32, schema, user, '', '0xE1', text, 1, 1792537331, 1792537331,
+                               50000, 50000, 50000, 0, 1)
+                              for schema, user, text in [('a|b', 'c', 'SELECT collision_one'),
+                                                         ('a', 'b|c', 'SELECT collision_two')]])
+    write("collisions", report(collisions))
+    write("digests-collisions", digests(collisions, digest='0xE1'))
+    # A read that ran on the writer although rule 30 sends reads to 32 (in a
+    # transaction, say): the mismatch the tab flags.
+    mismatch = FakeAdmin()
+    mismatch.db.execute("INSERT INTO stats.stats_mysql_query_digest VALUES (30, 'information_schema', 'mf_admin', '', "
+                        "'0xC54E85FD66BA43DA', 'SELECT name,country FROM testdb.customers WHERE id = ?', 3, "
+                        "1792537331, 1792537340, 900, 200, 400, 0, 3)")
+    write("digests-mismatch", digests(mismatch))
+    write("progress-checking", progress("checking", ["waiting", "waiting"]))
+    write("progress-sending", progress("sending", ["sent", "sent"]))
+    write("progress-finished-unknown", progress("finished", ["unknown", "unknown"], "unknown"))
+    # Rule 30 disabled in memory, not loaded: runtime still routes by it.
+    rules_pending = FakeAdmin()
+    rules_pending.db.execute("UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30")
+    write("rules-pending", report(rules_pending))
     pending = FakeAdmin()
     pending.db.execute("UPDATE main.mysql_servers SET weight = 7 WHERE hostname = 'mf-ic-3'")
     write("pending", report(pending))

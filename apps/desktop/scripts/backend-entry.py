@@ -48,5 +48,12 @@ def _stop_with_desktop_parent():
 
 
 if __name__ == '__main__':
+    if sys.argv[1:2] == ['__myflames_regex_worker']:
+        # The ProxySQL place tests query rule patterns in a child process, so a
+        # pattern that backtracks without end never holds up the backend
+        # (myflames/proxysql_digests.py test_patterns).
+        from myflames.proxysql_digests import regex_worker
+        regex_worker()
+        sys.exit(0)
     _stop_with_desktop_parent()
     main()

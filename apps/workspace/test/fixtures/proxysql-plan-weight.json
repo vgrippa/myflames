@@ -44,6 +44,7 @@
   "ProxySQL Admin identity (admin-version)",
   "configuration row mf-ic-2:3306 unchanged since review"
  ],
+ "timeout_s": 60,
  "eyebrow": "UPDATE",
  "title": "Change the weight of mf-ic-2:3306 to 50?",
  "confirm_label": "Set weight 50",
@@ -74,6 +75,11 @@
   },
   "pending_runtime": []
  },
+ "checks": [
+  "Refresh this place. Servers shows mf-ic-2:3306 as ProxySQL runs it, and its inspector shows the configuration row in memory.",
+  "If memory changed and runtime did not, the UPDATE ran and LOAD MYSQL SERVERS TO RUNTIME did not: the Configuration line then says a change is not loaded to runtime. Load servers to runtime, or undo.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
  "policy": {
   "action": "confirm",
   "tone": "danger",

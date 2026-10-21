@@ -242,7 +242,7 @@ def _not_proxysql(message, version=None):
         "version": version, "uptime_s": None, "message": message, "status": "unknown", "status_why": [message],
         "config_readable": False, "servers": [], "hostgroups": [], "monitors": [], "query_rules": [],
         "query_digests": [], "pending": _empty_pending(), "fingerprints": {}, "metrics": {}, "summary": _summary([]),
-        "actions": [], "notes": [], "statements": [],
+        "actions": [], "notes": [], "statements": [], "routing": None,
     }
 
 
@@ -291,6 +291,18 @@ def read_status(conn):
     hits = reads.table("SELECT * FROM stats_mysql_query_rules", "stats_mysql_query_rules")
     digests = reads.table("SELECT * FROM stats_mysql_query_digest ORDER BY sum_time DESC LIMIT %d" % DIGEST_LIMIT,
                           "stats_mysql_query_digest")
+    # The cross-check of rules and digests (proxysql_digests.Routing): the
+    # runtime rules and fast routing read above, the users' default hostgroups
+    # (named columns, never the password) and the Admin variables it needs.
+    from . import proxysql_digests
+    variables = reads.table("SELECT variable_name, variable_value FROM runtime_global_variables WHERE "
+                            "variable_name IN (%s)" % ", ".join("'%s'" % v for v in proxysql_digests.VARIABLES),
+                            "runtime_global_variables")
+    users = reads.table("SELECT username, active, default_hostgroup, transaction_persistent, frontend FROM "
+                        "runtime_mysql_users", "runtime_mysql_users")
+    routing = proxysql_digests.Routing(runtime.get("mysql_query_rules"), runtime.get("mysql_query_rules_fast_routing"),
+                                       users, dict((r.get("variable_name"), r.get("variable_value"))
+                                                   for r in variables or ()))
 
     monitors = _monitors(runtime, config)
     report["monitors"] = monitors
@@ -299,6 +311,8 @@ def read_status(conn):
     report["hostgroups"] = _hostgroups(report["servers"], monitors)
     report["query_rules"] = _rules(config.get("mysql_query_rules"), runtime.get("mysql_query_rules"), hits)
     report["query_digests"] = _digests(digests)
+    proxysql_digests.cross_check(report["query_digests"], report["query_rules"], routing)
+    report["routing"] = routing.context()
     skipped = []
     # A table this ProxySQL does not have: every copy answered "no such
     # table". Any other failure, or a copy that did read, leaves what LOAD or
@@ -560,18 +574,8 @@ def _rules(config_rows, runtime_rows, hits_rows):
 
 
 def _digests(rows):
-    out = []
-    for r in rows or ():
-        count = _int(r.get("count_star"))
-        total = _int(r.get("sum_time"))
-        out.append({"hostgroup": _int(r.get("hostgroup")), "schemaname": r.get("schemaname"),
-                    "username": r.get("username"), "client_address": r.get("client_address"),
-                    "digest": r.get("digest"), "digest_text": r.get("digest_text") or "", "count_star": count,
-                    "sum_time_us": total, "min_time_us": _int(r.get("min_time")), "max_time_us": _int(r.get("max_time")),
-                    "avg_time_us": (total // count) if total is not None and count else None,
-                    "first_seen": _int(r.get("first_seen")), "last_seen": _int(r.get("last_seen")),
-                    "rows_sent": _int(r.get("sum_rows_sent")), "rows_affected": _int(r.get("sum_rows_affected"))})
-    return out
+    from .proxysql_digests import digest_row
+    return [digest_row(r) for r in rows or ()]
 
 
 def _describe_row(table, key, row):
@@ -955,12 +959,39 @@ def plan_action(report, action, target=None, value=None):
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "target": target,
             "value": value if action in ("server_weight", "server_hostgroup") else None,
             "facts": [["ProxySQL", report.get("version") or "Unknown"]], "warnings": [], "typed_guard": None,
-            "undo": None, "next": None, "verified": ["ProxySQL Admin identity (admin-version)"]}
+            "undo": None, "next": None, "verified": ["ProxySQL Admin identity (admin-version)"],
+            "timeout_s": ACTION_TIMEOUT}
     if action.endswith("_load") or action.endswith("_save"):
-        return _plan_module(report, plan, action)
+        plan = _plan_module(report, plan, action)
+    elif action.startswith("rule_"):
+        plan = _plan_rule(report, plan, action, target)
+    else:
+        plan = _plan_server(report, plan, action, target, value)
+    plan["checks"] = _checks(plan)
+    return plan
+
+
+def _checks(plan):
+    """What to look at when a send got no answer (shown with Outcome unknown)."""
+    action = plan["action"]
+    audit = "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+    if action.endswith("_save"):
+        return ["Refresh this place: the Configuration line says whether memory matches disk now.", audit]
+    module = "query rules" if action.startswith(("rule_", "query_rules")) else "servers"
+    load = LOAD["query_rules" if module == "query rules" else "servers"][:-1]
+    if action.endswith("_load"):
+        return ["Refresh this place: the Configuration line says whether memory matches runtime now.", audit]
     if action.startswith("rule_"):
-        return _plan_rule(report, plan, action, target)
-    return _plan_server(report, plan, action, target, value)
+        what = "Query rules shows rule %d as active or not in memory, and its inspector says whether runtime " \
+               "runs it." % plan["target"]["rule_id"]
+    else:
+        cfg = plan["expect"]["config"]
+        what = "Servers shows %s:%s as ProxySQL runs it, and its inspector shows the configuration row in " \
+               "memory." % (cfg["hostname"], cfg["port"])
+    return ["Refresh this place. %s" % what,
+            "If memory changed and runtime did not, the UPDATE ran and %s did not: the Configuration line then "
+            "says a change is not loaded to runtime. Load %s to runtime, or undo." % (load, module),
+            audit]
 
 
 def _plan_module(report, plan, action):
@@ -1188,21 +1219,71 @@ def _partial_text(ran, failed, error):
             % (ran[0][len(ACTION_TAG):] if ran and ran[0].startswith(ACTION_TAG) else "; ".join(ran), failed, error))
 
 
-def execute_action(conn, reviewed, audit=None, typed=None, before_send=None):
+def _runtime_words(rows):
+    if rows is None:
+        return "Not read"
+    if not rows:
+        return "No row"
+    return "; ".join("hostgroup %s %s%s" % (r["hostgroup_id"], r["status"], "" if r.get("weight") is None
+                                            else ", weight %s" % r["weight"]) for r in rows)
+
+
+def _count_words(lines, none, word):
+    if lines is None:
+        return "Not compared"
+    return none if not lines else "%d %s" % (len(lines), word if len(lines) == 1 else word + "s")
+
+
+def _effect(plan, before, after):
+    """What changed: (what, before, now) rows from the reads before and after
+    the send (plan["expect"] holds the reviewed configuration row or rule)."""
+    action = plan["action"]
+    rows = []
+    if action.startswith("server_"):
+        cfg = plan["expect"]["config"]
+        now_cfg = after.get("config")
+        name, label = {"server_weight": ("weight", "Weight in memory"),
+                       "server_hostgroup": ("hostgroup_id", "Hostgroup in memory")}.get(action,
+                                                                                    ("status", "Status in memory"))
+        rows.append([label, _shown(cfg.get(name)), "Row not found" if now_cfg is None else _shown(now_cfg.get(name))])
+        rows.append(["Runtime", _runtime_words(before.get("runtime")), _runtime_words(after.get("runtime"))])
+    elif action.startswith("rule_"):
+        rid = plan["target"]["rule_id"]
+        b, a = before.get("rule") or {}, after.get("rule") or {}
+
+        def yes(value):
+            return "Not read" if value is None else ("Active" if value else "Not active")
+        rows.append(["Rule %d in memory" % rid, yes(b.get("active")), yes(a.get("active"))])
+        rows.append(["Rule %d in runtime" % rid, yes(b.get("runtime_active")), yes(a.get("runtime_active"))])
+    if not action.endswith("_save"):
+        rows.append(["Memory versus runtime", _count_words(before.get("pending_runtime"), "Match", "change"),
+                     _count_words(after.get("pending_runtime"), "Match", "change")])
+    rows.append(["Memory versus disk", _count_words(before.get("pending_disk"), "Match", "difference"),
+                 _count_words(after.get("pending_disk"), "Match", "difference")])
+    return rows
+
+
+def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None):
     """Send a reviewed plan (see :mod:`myflames.reviewed_writes`): read the
     target again, refuse with nothing sent when it changed, then send the
-    statements as one unit and read the result back."""
+    statements as one unit and read the result back. *progress* follows the
+    steps for the sheet (reviewed_writes.Progress)."""
     from . import reviewed_writes
     reviewed = reviewed_writes.check_reviewed(reviewed)
     if audit is not None:
         audit.server("proxysql", (reviewed.get("expect") or {}).get("proxysql_version"))
+    state = {}
 
     def fresh():
         report = read_status(conn)
         if not report.get("is_proxysql"):
             raise ValueError("This connection is no longer a ProxySQL Admin interface.")
-        return plan_action(report, reviewed["action"], reviewed.get("target"), reviewed.get("value"))
+        plan = plan_action(report, reviewed["action"], reviewed.get("target"), reviewed.get("value"))
+        state["before"] = _after(report, reviewed)
+        return plan
 
     return reviewed_writes.execute(conn, reviewed, fresh, ACTION_SCHEMA_VERSION, audit=audit, typed=typed,
                                    before_send=before_send, read_after=lambda: _after(read_status(conn), reviewed),
-                                   timeout=ACTION_TIMEOUT, partial_text=_partial_text, done_text=_done_text)
+                                   timeout=ACTION_TIMEOUT, partial_text=_partial_text, done_text=_done_text,
+                                   progress=progress,
+                                   effect=lambda plan, after: _effect(plan, state.get("before") or {}, after))
