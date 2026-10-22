@@ -420,7 +420,7 @@ def _bulk_kill_response(payload, workspace):
                     for row, res, audit in accepted:
                         row["after"] = _after_view(snapshot.get(row["connection_id"])) if snapshot is not None else None
                         row["message"] = _kill_message(mode, row["connection_id"], res.get("target"),
-                                                       row["after"] or {"present": True})
+                                                       row["after"])
             finally:
                 # An interrupted after-read cannot turn an accepted KILL into a failed send.
                 for row, _res, audit in accepted:
@@ -1610,7 +1610,7 @@ def api_response(path, payload, workspace=None):
                 with MySQLConnection(**options) as conn:
                     from .server_info import product_identity
                     version = conn.server_version()
-                    comment = "" if conn.is_mariadb() else conn.server_version_comment()
+                    comment = conn.server_version_comment()
                     identity = product_identity(version, comment)
                     return {"version": version, "engine": identity["engine"], "flavor": identity["flavor"],
                             "product": identity["product"],

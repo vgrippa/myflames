@@ -2561,6 +2561,12 @@ def _after_view(session):
 
 
 def _kill_message(mode, cid, target, after):
+    # Acknowledging KILL is not evidence of completion. None means the
+    # verification read was unavailable; {"present": False} means it succeeded.
+    if after is None:
+        statement = "KILL QUERY" if mode == "query" else "KILL CONNECTION"
+        return ("Sent; could not verify completion of %s %d. Refresh the session list to check."
+                % (statement, cid))
     rows = ((target or {}).get("trx") or {}).get("rows_modified")
     if mode == "query":
         if after.get("present") and _running(_after_session(after)) and \
@@ -2753,7 +2759,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     result["status"] = "killed"
     if _defer_after:
         # The batch owner completes the pending audit after its shared snapshot.
-        result["message"] = _kill_message(mode, connection_id, target, {"present": True})
+        result["message"] = _kill_message(mode, connection_id, target, None)
         return result
     try:
         if settle_s:
@@ -2769,7 +2775,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
             audit.complete("ok", outcome="killed", message="Sent %s; interrupted before checking the session again."
                            % statement)
         raise
-    result["message"] = _kill_message(mode, connection_id, target, result["after"] or {"present": True})
+    result["message"] = _kill_message(mode, connection_id, target, result["after"])
     if audit is not None:
         audit.complete("ok", outcome="killed", message=result["message"], after=result["after"])
     return result

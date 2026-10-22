@@ -62,6 +62,11 @@ class TestBulkKillReview(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        env = mock.patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                           'MYFLAMES_SECRET_BACKEND': 'vault'})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
         self.store = WorkspaceStore(os.path.join(self.temp.name, 'workspace.db'))
         self.workspace = SimpleNamespace(store=self.store, review_tokens=ReviewTokens())
         self.connection = {'host': 'localhost', 'port': 3306, 'user': 'app', 'password': 'test-secret'}
@@ -185,16 +190,22 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual(len(self.records()), 2)
 
     def test_bulk_after_read_failure_stays_unknown_and_remaining_query_is_reported(self):
-        for after_error in (False, True):
-            with self.subTest(after_error=after_error):
-                conn = BatchConnection(remaining=True, after_error=after_error)
-                with mock.patch('myflames.connector.MySQLConnection', return_value=conn), mock.patch('myflames.locks.time.sleep'):
-                    result = ui._bulk_kill_response(self.payload(1), self.workspace)
-                after = result['results'][0]['after']
-                self.assertEqual(after is None, after_error)
-                if after is not None:
-                    self.assertTrue(after['present'])
-                    self.assertEqual(after['statement'], 'SELECT 1')
+        for mode in ('query', 'connection'):
+            for after_error in (False, True):
+                with self.subTest(mode=mode, after_error=after_error):
+                    conn = BatchConnection(remaining=True, after_error=after_error)
+                    with mock.patch('myflames.connector.MySQLConnection', return_value=conn):
+                        result = ui._bulk_kill_response(self.payload(1, mode=mode), self.workspace)
+                    [row] = result['results']
+                    after = row['after']
+                    self.assertEqual(after is None, after_error)
+                    if after is None:
+                        self.assertTrue(row['message'].startswith('Sent; could not verify'), row['message'])
+                    else:
+                        self.assertTrue(after['present'])
+                        self.assertEqual(after['statement'], 'SELECT 1')
+                        self.assertIn('still stopping' if mode == 'query' else 'still listed', row['message'])
+                    self.assertEqual(self.records()[0]['message'], row['message'])
 
     def test_group_replication_bulk_refusal_is_audited(self):
         conn = BatchConnection(protected=1)
@@ -203,6 +214,58 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertEqual(conn.killed, set())
         self.assertEqual(result['results'][0]['message'], GR_REASON)
         self.assertEqual(self.records()[0]['status'], 'refused')
+
+    def test_bulk_query_unavailable_snapshot_reports_accepted_not_stopped(self):
+        conn = BatchConnection(after_error=True)
+        body = self.payload(2, mode='query')
+        with mock.patch('myflames.connector.MySQLConnection', return_value=conn):
+            result = ui._bulk_kill_response(body, self.workspace)
+            sends = [sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)]
+            self.assertEqual(sends, [locks.KILL_TAG + 'KILL QUERY 1', locks.KILL_TAG + 'KILL QUERY 2'])
+            # A failed verification never makes a consumed review reusable.
+            with self.assertRaisesRegex(ValueError, 'review expired'):
+                ui._bulk_kill_response(body, self.workspace)
+            self.assertEqual([sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)], sends)
+        self.assertEqual(result['killed'], 2)  # Existing count means accepted sends.
+        records = {record['id']: record for record in self.records()}
+        for row in result['results']:
+            self.assertEqual(row['status'], 'killed')
+            self.assertIsNone(row['after'])
+            self.assertTrue(row['message'].startswith('Sent; could not verify'), row['message'])
+            self.assertNotIn('Stopped the running statement', row['message'])
+            record = records[row['audit_id']]
+            self.assertEqual(record['status'], 'ok')
+            self.assertEqual(record['message'], row['message'])
+            self.assertIsNone(record['after'])
+
+    def test_interrupted_bulk_query_verification_does_not_audit_completion(self):
+        conn = BatchConnection()
+        with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                mock.patch('myflames.locks._kill_batch_after', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                ui._bulk_kill_response(self.payload(1, mode='query'), self.workspace)
+        [record] = self.records()
+        self.assertEqual(record['status'], 'ok')
+        self.assertIsNone(record['after'])
+        self.assertTrue(record['message'].startswith('Sent; could not verify'), record['message'])
+        self.assertEqual([sql for sql in conn.calls if sql.startswith(locks.KILL_TAG)],
+                         [locks.KILL_TAG + 'KILL QUERY 1'])
+
+    def test_single_kill_unavailable_after_read_does_not_claim_completion(self):
+        for mode in ('query', 'connection'):
+            with self.subTest(mode=mode):
+                target = list(K_TARGET)
+                target[5], target[8] = 'Query', 'SELECT 1'
+                scenario = KillScenario(target=target, after=ConnectorError('ERROR 1142: command denied'))
+                audit = dbops.AuditTrail(self.store, 'kill_query' if mode == 'query' else 'kill', 'ui')
+                result = locks.kill_session(scenario.conn, 41, mode, bound_kill_expect(scenario.conn),
+                                            settle_s=0, audit=audit, confirmed=True)
+                self.assertEqual(result['status'], 'killed')
+                self.assertIsNone(result['after'])
+                self.assertTrue(result['message'].startswith('Sent; could not verify'), result['message'])
+                self.assertEqual(self.records()[0]['message'], result['message'])
+                self.assertIsNone(self.records()[0]['after'])
+                self.assertEqual(scenario.kills(), [locks.KILL_TAG + 'KILL ' + mode.upper() + ' 41'])
 
 
 class TestGroupReplicationKill(unittest.TestCase):

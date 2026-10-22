@@ -15,18 +15,29 @@ const body = generator[1]
   .replace('(str: string, len: number)', '(str, len)')
   .replace('(value: number | null)', '(value)')
   .replace('(total: number)', '(total)');
+// Keep the real product formatter: Percona uses engine=mysql, so the
+// server_product argument must reach the exported report's header.
+const opsTree = sourceTree('OpsShared.tsx');
+const engineNameDeclaration = findNode(opsTree, node => ts.isFunctionDeclaration(node) && node.name?.text === 'engineName');
+assert.ok(engineNameDeclaration, 'shared product formatter exists');
+const engineName = new Function(ts.transpileModule(engineNameDeclaration.getText(opsTree).replace(/^export\s+/, ''), {
+  compilerOptions: { target: ts.ScriptTarget.ES2020 },
+}).outputText + '\nreturn engineName;')();
 const generate = new Function('statements', 'aggregates', 'serverMeta', 'bound', 'filter',
-  'time', 'number', 'shortDigest', 'formatRatio', 'digestQuery', body);
-function exported(rows) {
+  'time', 'number', 'shortDigest', 'formatRatio', 'digestQuery', 'engineName', body);
+function exported(rows, serverMeta = { engine: 'mysql', version: '8.4', filter: 'time' }) {
   const sum = key => rows.reduce((n, row) => n + (row[key] || 0), 0);
   return generate(rows, { totalWorkloadMs: sum('total_ms'), totalCalls: sum('count'),
     totalExamined: sum('rows_examined'), totalSent: sum('rows_sent'), totalLockMs: sum('lock_time_ms') },
-    { engine: 'mysql', version: '8.4', filter: 'time' }, { label: 'Alice@db:3306' }, 'time',
-    x => `${x}ms`, String, String, () => ({ text: '1:1' }), row => ({ text: row.digest_text }));
+    serverMeta, { label: 'Alice@db:3306' }, 'time',
+    x => `${x}ms`, String, String, () => ({ text: '1:1' }), row => ({ text: row.digest_text }), engineName);
 }
 const row = { digest_text: 'SELECT 1', count: 100, total_ms: 100, avg_ms: 1, max_ms: 1,
   rows_sent: 100, rows_examined: 200, lock_time_ms: 50, tmp_disk_tables: 0 };
 const text = exported([row, { ...row, count: 1, avg_ms: 100, max_ms: 100 }]);
+assert.match(text, /^# Server: MySQL 8\.4$/m);
+assert.match(exported([row], { engine: 'mysql', version: '8.4.11-11', server_product: 'Percona Server', filter: 'time' }),
+  /^# Server: Percona Server 8\.4\.11-11$/m, 'Percona report header keeps the product and release suffix');
 const attributes = label => text.split('\n').find(line => line.startsWith(`# ${label}`)).trim().split(/\s+/).slice(3);
 assert.deepEqual(attributes('Exec time').slice(0, 3), ['200ms', 'unknown', '100ms']);
 assert.equal(attributes('Exec time')[4], 'unknown', 'execution p95 cannot be recovered from averages');

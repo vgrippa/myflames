@@ -485,6 +485,9 @@ function App() {
     recordConnectionUse(id);
     patchLab({ profile_id: id, connection: fields });
     setActivePassword(password);
+    // Use connection is an explicit credential choice, including when Home
+    // supplies a new password for the same endpoint. Reconnect is not.
+    setPasswordRevision(value => value + 1);
     setConnectionNote("");
   }
   function switchConnection(id: string) {
@@ -904,6 +907,7 @@ function App() {
     setLabState(defaultLab());
     setColumnLayouts({});
     setActivePassword("");
+    setPasswordRevision(value => value + 1);
     setConnectionNote("");
     setTeachLesson("");
     setResetKey((k) => k + 1);
@@ -1100,6 +1104,7 @@ function App() {
     setLabState(lab);
     setColumnLayouts(lab.slow?.columns_v1 || {});
     setActivePassword("");
+    setPasswordRevision(value => value + 1);
     setConnectionNote("");
     setResetKey((k) => k + 1);
     setServerNavigation(undefined);

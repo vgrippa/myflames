@@ -483,6 +483,7 @@ export type TopReport = {
   schema_version: "top-1.0";
   engine: string;
   server_version: string;
+  server_product?: string | null;
   order: string;
   notes: string[];
   statements: TopStatement[];
@@ -498,6 +499,7 @@ export type SlowQueriesReport = {
   schema_version: "slow-queries-1.0";
   engine: string;
   server_version: string;
+  server_product?: string | null;
   source: string;
   min_seconds?: number;
   statements: TopStatement[];

@@ -21,9 +21,12 @@ export function PrivilegesProvider({ connection, connected = true, connectRevisi
   passwordRevision?: number;
 }>) {
   const key = connectionKey(connection);
-  const committed = useRef({ key, connectRevision, passwordRevision, password: connection.password });
-  if (committed.current.key !== key || committed.current.connectRevision !== connectRevision || committed.current.passwordRevision !== passwordRevision)
-    committed.current = { key, connectRevision, passwordRevision, password: connection.password };
+  // A late reconnect acknowledges the credentials it sent, not the picker's
+  // current draft. Only an explicit password commit (or a new identity) may
+  // adopt that value; connectRevision still refreshes status in the effect.
+  const committed = useRef({ key, passwordRevision, password: connection.password });
+  if (committed.current.key !== key || committed.current.passwordRevision !== passwordRevision)
+    committed.current = { key, passwordRevision, password: connection.password };
   const passwordCommitted = committed.current.password === connection.password;
   const latest = useRef({ connection, key, connected, passwordCommitted });
   latest.current = { connection, key, connected, passwordCommitted };

@@ -868,6 +868,38 @@ export const SCENARIOS = [
     error: async (run) => unmountedSend(run, 400),
   },
   {
+    name: "kill-sessions-policy", label: "Kill sessions: policy refusal after Close", paths: ["/api/profiles/list"],
+    sheet: true, modes: ["hang"],
+    setup: async ({ page }) => {
+      await goView(page, "workload", "sessions");
+      await chooseConnection(page, "p-lab");
+      await readSessionsHere(page);
+      await page.click("[data-action=kill-sessions]");
+      await page.waitForSelector("dialog.mass-kill-dialog[open]");
+      await click(page, "Runaway queries (> 30s)"); await pause(250);
+      await page.click(".mass-kill-footer-actions .action-button");
+      await page.waitForSelector("dialog.mass-kill-confirm[open]");
+    },
+    target: confirmButton("dialog.mass-kill-confirm[open]"),
+    hang: async ({ page, ctx }) => finishBulkPolicyCheck(page, ctx, false),
+  },
+  {
+    name: "kill-sessions-policy-error", label: "Kill sessions: policy read failure after Close", paths: ["/api/profiles/list"],
+    sheet: true, modes: ["hang"],
+    setup: async ({ page }) => {
+      await goView(page, "workload", "sessions");
+      await chooseConnection(page, "p-lab");
+      await readSessionsHere(page);
+      await page.click("[data-action=kill-sessions]");
+      await page.waitForSelector("dialog.mass-kill-dialog[open]");
+      await click(page, "Runaway queries (> 30s)"); await pause(250);
+      await page.click(".mass-kill-footer-actions .action-button");
+      await page.waitForSelector("dialog.mass-kill-confirm[open]");
+    },
+    target: confirmButton("dialog.mass-kill-confirm[open]"),
+    hang: async ({ page, ctx }) => finishBulkPolicyCheck(page, ctx, true),
+  },
+  {
     name: "reviewed-sql-prepare", label: "Set invisible… (prepares the SQL review)", paths: ["/api/editor/run"],
     busy: '.server-view[data-view="indexes"] [data-reviewed-status]', mocks: { "/api/editor/run": reviewedRun }, double: false,
     setup: async ({ page }) => {
@@ -958,6 +990,25 @@ async function unmountedSend({ page, ctx }, status) {
   await click(page, "Cancel", ".mass-kill-footer-actions");
   await page.waitForFunction(() => !document.querySelector("dialog.mass-kill-dialog"));
   await waitText(page, ".server-view[data-view=sessions] .kill-result", new RegExp(`^${outcome.source}`));
+}
+
+/** A slow policy read has not reached the KILL endpoint, even after Confirm. */
+async function finishBulkPolicyCheck(page, ctx, failed) {
+  await waitText(page, "dialog.mass-kill-confirm[open] .sheet-progress", /^No reply yet/);
+  await click(page, "Close", "dialog.mass-kill-confirm[open]");
+  await page.waitForFunction(() => !document.querySelector("dialog.mass-kill-dialog"));
+  const result = ".server-view[data-view=sessions] .kill-result";
+  await waitText(page, result, /^Waiting for the reply\./);
+  ctx.hold.delete("/api/profiles/list");
+  const held = ctx.held.filter(h => h.path === "/api/profiles/list");
+  ctx.held = ctx.held.filter(h => h.path !== "/api/profiles/list");
+  assert.equal(held.length, 1, "exactly one policy check waits");
+  await respond(held[0].request, failed ? 503 : 200,
+    failed ? { error: "Policy unavailable" } : PROFILES_LAB_READ_ONLY());
+  await waitText(page, result, failed ? /Could not check.*Policy unavailable.*Nothing was sent\./ : /nothing was sent/i);
+  assert.equal(await page.$eval(result, e => e.getAttribute("aria-busy")), null);
+  assert.doesNotMatch(await page.$eval(result, e => e.textContent), /Outcome unknown|may have run|Audit log|Sent on /);
+  assert.equal(ctx.log.filter(e => e.path === "/api/live/kill/bulk").length, 0, "KILL was never requested");
 }
 
 // ---- One run --------------------------------------------------------------------------

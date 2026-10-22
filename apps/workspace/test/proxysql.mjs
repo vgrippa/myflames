@@ -541,6 +541,54 @@ try {
   ], "Empty hostgroups are neutral, not OK");
   assert.ok(hgStates.filter((h) => h.text === "OK").every((h) => h.ok && !h.neutral));
 
+  // Cached routing must be invalidated after a reviewed rule change. The
+  // side inspector stays open and the rules list stays mounted throughout.
+  await tab("Query digests");
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .proxysql-digest-tools .segmented button`)]
+    .find((b) => b.textContent === "Most time").click(), view);
+  await page.waitForFunction((sel) => /Top 25 by total time/.test(document.querySelector(`${sel} .proxysql-digest-summary`)?.textContent || ""), {}, view);
+  const changedKey = digestKey(32, "0xA8027DF9CE26E2FF");
+  assert.equal(await route(changedKey), "32 · rule 30");
+  await tab("Query rules");
+  await selectRow("rule:30");
+  const readsBeforeChange = digestReads.length;
+  const sendsBeforeChange = sends.length;
+  const disabledRule = structuredClone(R.lab);
+  const rule = disabledRule.query_rules.find((r) => r.rule_id === 30);
+  Object.assign(rule, { active: false, runtime_active: false, actions: [], digests: [], digest_count: 0 });
+  rule.fields.active = "0";
+  const freshDigests = structuredClone(R["digests-time"]);
+  const changedDigest = freshDigests.digests.find((d) => d.key === changedKey);
+  // Transport fixtures deliberately supply changed routing; the backend's
+  // rule evaluator is covered separately by the ProxySQL Python tests.
+  Object.assign(changedDigest.routing, { expected: 30, source: "default", rules: [], decisive: null,
+    verdict: "mismatch", text: "The user's default sends it to hostgroup 30; it previously ran on 32." });
+  planAnswer = () => ({ status: 200, body: R["plan-rule-disable"] });
+  sendAnswer = () => {
+    state.fallback = { status: 200, body: disabledRule };
+    digestOverride = freshDigests;
+    return { status: 200, body: { ...R["result-done"], action: "rule_disable",
+      statements: R["plan-rule-disable"].statements, sent: R["plan-rule-disable"].statements,
+      message: "Rule 30 disabled and loaded to runtime.", after: {}, effect: [["Active", "Yes", "No"]],
+      undo: R["plan-rule-disable"].undo, next: null, checks: [] } };
+  };
+  await clickAction("Disable rule…");
+  await waitSheet();
+  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), R["plan-rule-disable"].statements.join("\n"));
+  await page.click(`${sheet} .sheet-actions button:last-child`);
+  assert.match((await answered()).outcome, /^Done/);
+  await closeSheet();
+  await page.waitForFunction(() => /Not active/.test(document.querySelector(".view-inspector")?.textContent || ""));
+  assert.equal(digestReads.length, readsBeforeChange, "reviewed change defers hidden digest reads");
+  assert.equal(await page.$eval(rowSelector("rule:30"), (e) => !!e.offsetParent), true);
+  await tab("Query digests");
+  await page.waitForFunction((sel) => document.querySelector(`${sel} td[data-col="route"]`)?.textContent.includes("Mismatch: 30"), {}, rowSelector(changedKey));
+  assert.equal(digestReads.length, readsBeforeChange + 1, "reopening with unchanged filters rereads routing");
+  assert.equal(sends.length, sendsBeforeChange + 1, "cache invalidation sends no further write");
+  digestOverride = null;
+  sendAnswer = () => ({ status: 200, body: R["result-done"] });
+  await resultButton("Close");
+
   // A rule disabled in memory but not loaded still routes in runtime: the
   // inspector keeps the digests it applies to.
   await tab("Query rules");

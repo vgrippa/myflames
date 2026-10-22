@@ -39,6 +39,12 @@ of a stalled diagram import. Browser regression scenarios cover delayed replies,
 errors and missing replies; see the action-feedback suite in the UI checklist.
 Cluster and ProxySQL keep pending reviewed changes visible under the toolbar
 after Close, including while the selected member or server inspector is open.
+Bulk Kill also resolves late policy refusals and failed policy reads after its
+dialog closes, without reporting an unsent write as an unknown execution.
+Query digest preserves product names in its footer and text export.
+Retained tables remeasure refreshed rows when details close at the same window
+width. ProxySQL reviewed changes invalidate cached and pending digest routing,
+with fresh reads deferred until Query digests is visible.
 
 Security boundaries now include launch bootstrap with cookie and origin proof,
 isolated database clients, recipient TLS checks for saved clone credentials,
@@ -51,6 +57,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
 ## Shipped
 
 - Backend review fixes: explicit TCP targeting, audited and faster bulk Kill with Group Replication protection (including truncated process-list command names), accurate slow-query notes and unknown counters, bounded session and lifecycle reads, version-aware error logs and analysis, editor flavor detection, and bounded update downloads with release-page fallback.
+- Final review fixes: accepted Kill requests with an unavailable verification read report "Sent; could not verify" in results and audit; connection tests preserve MariaDB identity from the version comment.
 
 - **3.1.0 (first 3.x release; 3.0.0 was never published)**: the macOS desktop
   app as the only way to run the workspace (browser launch deprecated); the
@@ -214,5 +221,8 @@ reads, consistent on-open reads, retained account drafts, escaped table/index
 statements, measured context menus, cancelled resize cleanup, and analysis
 progress across view remounts. Browser verification at 1440x900 and 720x520 in
 light and dark remains part of the release gate.
+Late account Apply results and generated passwords now stay with their original
+connection until dismissed, across connection and view switches. Reconnect
+completion refreshes status without committing a password still being typed.
 
 Completed workspace feedback: Plans sample opening, HTML/JSON export and investigation Save, Maintenance reads and jobs, and Cluster/ProxySQL confirmed sends share progress and outcome feedback. A slow sent request can close its sheet while remaining single flight. Browser cases live in `test/action-feedback-batch-c.mjs`; the socket-free reviewed-action unit cases also cover late replies after Close and connection changes.

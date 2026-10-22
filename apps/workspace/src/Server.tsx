@@ -713,11 +713,11 @@ export function Server({
   // shell, so Refresh all and the loop banner below still cover it.
   const [keptViews, setKeptViews] = useState<ServerKind[]>(() => {
     const list: ServerKind[] = [];
-    if (initial?.kind && ["maintenance", "tables", "instruments"].includes(initial.kind)) list.push(initial.kind);
+    if (initial?.kind && ["maintenance", "tables", "instruments", "accounts"].includes(initial.kind)) list.push(initial.kind);
     return list;
   });
   function keepMounted(view: ServerKind) {
-    if (["maintenance", "tables", "instruments"].includes(view))
+    if (["maintenance", "tables", "instruments", "accounts"].includes(view))
       setKeptViews((list) => (list.includes(view) ? list : [...list, view]));
   }
   /** A link from a report may read with that report's schema or table only
@@ -1543,8 +1543,6 @@ export function Server({
         );
       case "diagram":
         return <SchemaDiagramView {...common} selection={selection("diagram")} document={diagram} onDocument={setDiagram} selectedDatabase={diagramDatabase} onDatabaseChange={chooseDiagramDatabase} />;
-      case "accounts":
-        return <AccountsView {...common} selection={selection("accounts")} report={accounts} onReport={setAccounts} />;
       case "config":
         return <ConfigView {...common} selection={selection("config")} report={config} onReport={setConfig} onOpenSql={onOpenSql} />;
       // Operations views mount once and stay mounted, hidden, in
@@ -1556,6 +1554,7 @@ export function Server({
       case "maintenance":
       case "tables":
       case "instruments":
+      case "accounts":
         return null;
     }
   })();
@@ -1811,6 +1810,19 @@ export function Server({
                       onOpenView={openView}
                       onOpenSql={onOpenSql}
                     />
+                  </InspectorContext.Provider>
+                  </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
+                </div>
+              )}
+              {/* Account writes and one-time passwords must survive navigation
+                  until acknowledged, without saving secrets in the session. */}
+              {keptViews.includes("accounts") && (
+                <div className="server-keep" hidden={kind !== "accounts"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("accounts")}>
+                  <ViewOnScreenContext.Provider value={onScreen && kind === "accounts" && !(compact && showList)}>
+                  <InspectorContext.Provider value={{...inspector, open: inspector.open && kind === "accounts"}}>
+                    <AccountsView {...common} selection={selection("accounts")} report={accounts} onReport={setAccounts} />
                   </InspectorContext.Provider>
                   </ViewOnScreenContext.Provider>
                   </ViewSwitcherContext.Provider>

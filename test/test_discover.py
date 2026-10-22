@@ -1071,6 +1071,34 @@ class TestSlowQueries(unittest.TestCase):
                                'shop', 'SELECT * FROM orders WHERE id > 0']])
         return FakeConn(version, [server(version), ('FROM mysql.slow_log', response)])
 
+    def test_product_identity_survives_slow_log_pfs_and_auto_fallback(self):
+        cases = (
+            ('8.4.11', 'MySQL Community Server - GPL', 'mysql', 'mysql', 'MySQL'),
+            ('11.4.13-MariaDB', '', 'mariadb', 'mariadb', 'MariaDB'),
+            ('8.4.11-11', 'Percona Server (GPL), Release 11', 'mysql', 'percona', 'Percona Server'),
+            ('8.4.11-11.1', 'Percona XtraDB Cluster (GPL)', 'mysql', 'percona', 'Percona XtraDB Cluster'),
+        )
+        for version, comment, engine, flavor, product in cases:
+            for source in ('slow_log', 'pfs', 'auto'):
+                with self.subTest(product=product, source=source):
+                    if source == 'slow_log':
+                        conn = self.slow_log(version)
+                    else:
+                        conn = mysql_top(version, [], extra=[
+                            ('FROM mysql.slow_log', ConnectorError('ERROR 1142: SELECT denied'))])
+                    conn.server_version_comment = lambda: comment
+                    report = discover.slow_queries_report(conn, source=source)
+                    wire = json.loads(json.dumps(report, allow_nan=False))
+                    self.assertEqual(wire['engine'], engine)
+                    self.assertEqual(wire['flavor'], flavor)
+                    self.assertEqual(wire['server_product'], product)
+                    self.assertEqual(wire['server_version'], version)
+                    self.assertEqual(wire['schema_version'], 'slow-queries-1.0')
+                    self.assertEqual(wire['source'], 'mysql.slow_log' if source == 'slow_log'
+                                     else 'performance_schema')
+                    if source == 'auto':
+                        self.assertTrue(any('ERROR 1142' in note for note in wire['notes']))
+
     def test_slow_log_filters_and_orders_by_duration_before_limit_on_both_engines(self):
         for version in ('8.4.3', '11.4.3-MariaDB'):
             with self.subTest(version=version):

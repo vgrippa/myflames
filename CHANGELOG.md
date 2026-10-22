@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Keep replication recovery controls stationary and focused during preflight, focus Cancel when the review opens, and return focus to the initiating control when it closes.
-
-- Extend action feedback to Plans and Maintenance: busy controls retain focus, reads show elapsed progress with Stop waiting and retry, and exports name the saved file. Slow lifecycle starts and Cluster/ProxySQL confirmations can close their sheets while the request continues; late outcomes remain visible without resending. ProxySQL Refresh now offers Stop, retry and its completion time.
-
 ### Added
 
 - Support Percona Server for MySQL as a MySQL flavor. Percona Server and Percona XtraDB Cluster keep engine `mysql`, so every MySQL rule applies, and are named by their product everywhere a server is named: every view's summary line, the window footer, the connection test ("Connected · Percona Server 8.4.11-11"), Tuning, the Full analysis, Replication's source version (read from the relay log by Percona's release suffix), Cluster, Privileges, the CLI text and the version note. Reports carry `flavor` (`mysql`, `percona`, `mariadb`) and `server_product` (`report-1.0` and `cluster-1.0` schemas list both). What Percona adds is read from the server when it reports it: with `userstat=ON`, Indexes reads `INDEX_STATISTICS` beside Performance Schema and keeps an index Performance Schema shows unused when user statistics saw it read ("Keep: read per user statistics"), Tables shows rows changed per table (inserts, updates and deletes together) and names them for tables without a usable key, with partitioned tables' counts unknown because user statistics miss their range reads (Indexes on Percona puts their indexes under No data when user statistics are the source), and with Performance Schema off Indexes and I/O use user statistics as on MariaDB; Health shows the thread pool's threads, idle threads and (8.4) queued requests under `thread_handling=pool-of-threads`; the slow log check says when `log_slow_rate_limit` logs only a sample, including above a 10 s threshold, following Percona's rule (statements slower than `slow_query_log_always_write_time` are always logged, those `log_queries_not_using_indexes` or `log_query_errors` add are still sampled, and session sampling keeps whole connections); Parameters marks the variables Percona adds with a Percona tag (`vendor: "percona"`, `parameters-1.0` `flavor`). The GA matrix (`scripts/ga-matrix.sh`) adds Percona Server 8.0 and 8.4 and a Percona 8.4 replica with seeded data, workload and saved connections, and `scripts/record-perf-fixtures.py` records a live view read as a replay fixture.
@@ -30,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Maintenance > Dump lists the tables of the database you choose: picking exactly one database reads its tables (`/api/live/catalog` with `stats: true`, which adds each table's engine, the server's estimated rows and its size to `catalog-1.0`, 200 at a time with Load more tables) into a searchable list, All tables by default. A table dump sends exactly the ticked names; a reload that no longer lists one blocks the preflight, and the dump preflight adds a `tables` check that fails for a name the schema does not have. The free-text Tables field and the "Tables of one database" scope are gone: choose Databases, then one database.
 
 ### Changed
+
+- Keep replication recovery controls stationary and focused during preflight, focus Cancel when the review opens, and return focus to the initiating control when it closes.
+- Extend action feedback to Plans and Maintenance: busy controls retain focus, reads show elapsed progress with Stop waiting and retry, and exports name the saved file. Slow lifecycle starts and Cluster/ProxySQL confirmations can close their sheets while the request continues; late outcomes remain visible without resending. ProxySQL Refresh now offers Stop, retry and its completion time.
 
 - From 651 to 900 px, use a 48 px sidebar icon rail with tooltips and status dots; the toggle opens the full sidebar as an overlay, and Open plans (N) opens the plan list.
 - Show status as a dot plus a word, including OK in Health and InnoDB rows and Cluster cards; summary words are OK, Watch, Problem, Not judged and Unknown, with compact navigation markers using neutral counts and accessible state text.
@@ -80,6 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Report "Sent; could not verify" when a Kill is accepted but its verification read fails, including bulk Kill query and its audit record. An interrupted bulk verification keeps the same unverified message.
+- Preserve MariaDB identity in connection tests when only the server's version comment identifies MariaDB, including a plain `11.4.13` version.
+- Users and roles retains late account-change results and generated passwords on their original connection until dismissed, including after closing a slow Apply sheet, switching connections or leaving the view. Later writes preserve unacknowledged passwords; follow-up reads check the active connection after each wait.
+- A late Query editor reconnect no longer treats a password being typed in the connection picker as committed. Privilege reads wait for an explicit password commit on blur or Enter.
+
+- Resolve Processlist's pending Bulk Kill note when a late policy check refuses the request, including after Close or a connection change. Policy-read failures now say nothing was sent and do not claim an unknown execution or execution audit record; lost replies after sending remain unknown and are never retried.
+- Preserve Percona Server and Percona XtraDB Cluster names in the Query digest footer and text export for both statement digests and slow-query reports.
+- Target the Settings dialog itself when measuring its opening, so unrelated menus and popovers cannot satisfy the performance runner's readiness check.
+- Remeasure refreshed table rows when returning from full-width details, even at the same window width, so larger numbers fit their columns.
+- Invalidate cached and pending ProxySQL digest reads after reviewed changes, then reread when Query digests is visible so routing reflects the current rules and hostgroups.
 - Keep Cluster and ProxySQL pending changes visible after closing the review sheet while an inspector is open. Correct the action-feedback tests to honor HTTP 503 scenarios and to fail Refresh all reads without a scenario ReferenceError.
 - Processlist now keeps pending Kill progress visible after Close, shows connection-aware outcomes before rereading, and lets Kill sessions own its dialog lifetime and outcome focus. Parameters change/reset and batch reviews can close while awaiting replies; replication preflight, skip/start and loop Stop show named busy states and elapsed time. These views expose Stop and Try again for reads, and parameter/replication sends distinguish explicit refusals from unknown outcomes without retrying writes.
 - Show action progress in Top statements, Error log, Query editor and Database diagram. Keep busy editor controls focused, show Stop and session-operation elapsed time, distinguish unknown transaction outcomes, and allow a stalled diagram import to be closed without replacing the current diagram.

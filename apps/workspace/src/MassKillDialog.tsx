@@ -421,14 +421,19 @@ export function MassKillDialog({
       else onSuccess(late);
     };
     setBulkInFlight({ label: p.label, count: p.review.statements.length });
+    let attempted = false;
     try {
       // Re-read the type and read-only flag: they may have changed since the review.
       const active = policy ? await policy.check() : connection;
       if (connectionKey(active) !== connectionKey(connection)) {
         setPending(null);
-        setError("The connection's type or read-only setting changed after this review, so nothing was sent. Check it and try again.");
+        const message = "The connection or its type or read-only setting changed after this review, so nothing was sent. Check it and try again.";
+        if (left.current) deliver({ status: "refused", message, outcome: [], on, sent: false });
+        else setError(message);
         return;
       }
+      // Only failures after this boundary can describe an uncertain write.
+      attempted = true;
       const res = await killBulkSessions(connection, p.targets, p.review.review_token);
       setPending(null);
       // Ended at least one: "Done."; none, with an error: "Could not end it.";
@@ -437,6 +442,12 @@ export function MassKillDialog({
       deliver({ status, message: res.message, outcome: [], on });
     } catch (e) {
       setPending(null);
+      if (!attempted) {
+        const message = `Could not check the connection's write policy: ${errorText(e)} Nothing was sent.`;
+        if (left.current) deliver({ status: "error", message, outcome: [], on, sent: false });
+        else setError(message);
+        return;
+      }
       // The server answered with an error (the dialog stays, with it), or no
       // reply arrived: the KILLs may have run, and they are never sent again.
       const failure = writeFailure(e, { audited: true });

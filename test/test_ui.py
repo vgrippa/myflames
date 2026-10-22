@@ -826,6 +826,29 @@ class TestProfilePasswordAPI(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'true or false'):
             self.call('/api/profiles/save', {'value': self.settings, 'remember_password': 'yes'})
 
+    def test_connection_test_preserves_version_comment_product_identity(self):
+        """Use the real metadata cache; only client execution is doubled."""
+        cases = (
+            ('11.4.13', 'MariaDB Server', ('mariadb', 'mariadb', 'MariaDB')),
+            ('11.4.13-MariaDB', 'MariaDB Server', ('mariadb', 'mariadb', 'MariaDB')),
+            ('8.4.11', 'MySQL Community Server - GPL', ('mysql', 'mysql', 'MySQL')),
+            ('8.4.11-11', 'Percona Server (GPL)', ('mysql', 'percona', 'Percona Server')),
+            ('8.4.11-11.1', 'Percona XtraDB Cluster (GPL)', ('mysql', 'percona', 'Percona XtraDB Cluster')),
+        )
+        for version, comment, identity in cases:
+            with self.subTest(version=version, comment=comment):
+                answers = {'SELECT @@version': version + '\n',
+                           'SELECT @@version_comment': comment + '\n',
+                           'SHOW DATABASES': 'shop\n'}
+                with mock.patch('myflames.connector.MySQLConnection.run',
+                                side_effect=lambda sql, **kwargs: answers[sql]) as run:
+                    result = self.call('/api/connection/test', {'connection': self.settings})
+                self.assertEqual((result['engine'], result['flavor'], result['product']), identity)
+                self.assertEqual(result['version'], version)
+                self.assertEqual(result['schemas'], ['shop'])
+                self.assertEqual(sum(call[0][0] == 'SELECT @@version_comment'
+                                     for call in run.call_args_list), 1)
+
     def test_connection_endpoints_fill_the_saved_password(self):
         from unittest import mock
         from myflames import ui

@@ -284,6 +284,7 @@ const readDetail = user => {
   ]};
 };
 let latestPlan;
+let holdApply = false, releaseApply = null;
 let h;
 try {
   h = await open("/api/accounts/list", "accounts", {
@@ -303,7 +304,7 @@ try {
       if (grantMode && body.level === "database") latestPlan.statements = [`GRANT ${body.privileges.join(", ")} ON \`${body.database.replaceAll("_", "\\_")}\`.* TO \`${body.user}\`@\`${body.host}\``];
       return { status: 200, body: latestPlan, delay: planDelay };
     },
-    "/api/accounts/apply": body => {
+    "/api/accounts/apply": (body, request) => {
       applyCount++;
       assert.equal(body.confirmed, true); assert.equal(body.plan_id, latestPlan.plan_id); assert.equal(body.expect, latestPlan.expect);
       assert.equal(Object.hasOwn(body, "password"), ["create", "password"].includes(latestPlan.operation) && !latestPlan.generates_password && !latestPlan.role);
@@ -319,16 +320,23 @@ try {
         model.global_grantable = [...(model.static_grant_option ? model.global : []), ...model.dynamic];
       }
       grants = ["GRANT SELECT, INSERT, UPDATE ON *.* TO `app<probe>`@`%`" + (model.static_grant_option ? " WITH GRANT OPTION" : "")];
-      return { status: 200, body: { schema_version: "account-change-1.0", change_set_id: latestPlan.change_set_id, status: "applied", message: "Statements accepted.",
+      const response = { status: 200, body: { schema_version: "account-change-1.0", change_set_id: latestPlan.change_set_id, status: "applied", message: "Statements accepted.",
         before, after: readDetail(latestPlan.name), diff: { added: grants, removed: ["GRANT SELECT ON *.*"] },
         statements: [{ index: 0, statement: latestPlan.statements[0], status: "ok" }], warnings: [], audit_ids: ["audit-1"],
         ...(latestPlan.generates_password ? { generated_password: "shown-once-secret" } : {}) } };
+      if (holdApply) {
+        releaseApply = () => request.respond({ status: response.status, contentType: "application/json", body: JSON.stringify(response.body) });
+        return null;
+      }
+      return response;
     },
     "/api/audit/declined": { status: 200, body: { status: "declined", audit_id: "declined-1" } },
   });
   const { page, state } = h;
   state.fallback = { status: 200, body: list };
   const count = endpoint => state.other.filter(r => r.path === `/api/${endpoint}`).length;
+  const resultTexts = () => page.$$eval('[aria-label="Account change result"]', rows => rows.map(row => row.textContent));
+  const lastResultText = async () => (await resultTexts()).at(-1) || "";
   const click = async text => {
     const handle = await page.evaluateHandle(text => [...document.querySelectorAll("button")].find(b => b.textContent.trim() === text && b.getClientRects().length), text);
     assert.ok(await handle.asElement(), `button ${text}`); await handle.asElement().click(); await handle.dispose();
@@ -532,6 +540,8 @@ try {
   await page.waitForFunction(() => !document.querySelector(".account-review"));
   assert.equal(count("accounts/apply"), 1); assert.ok(privilegeReads > readsBeforeApply);
   assert.match(await h.text('[aria-label="Account change result"]'), /Added:.*GRANT SELECT, INSERT, UPDATE/s);
+  const resultsOnA = await resultTexts();
+  assert.equal(resultsOnA.length, 1);
   nextTyped = "";
 
   // Switching identity leaves the old list grey. A reviewed write on A
@@ -544,6 +554,7 @@ try {
   assert.equal(await page.$eval(".accounts-view", e => e.dataset.otherConnection), "true");
   assert.equal(state.seen.length, listsBeforeSwitch, "switching connections retains the grey report until Refresh");
   assert.equal(count("accounts/apply"), 1);
+  assert.deepEqual(await resultTexts(), [], "A's result is hidden on B");
   await h.refresh(); await inspect();
 
   // Directly denied administration greys the action, without hiding it.
@@ -590,6 +601,38 @@ try {
   assert.match(await h.text('[aria-label="Generated password"]'), /shown-once-secret/);
   await click("Dismiss password"); assert.ok(!(await page.content()).includes("shown-once-secret"));
 
+  // A slow password Apply on B may finish after Close and switching back to A.
+  // A still owns its earlier undismissed result; B's reply and secret must
+  // stay hidden until B is selected again, alongside B's earlier result.
+  const resultsOnB = await resultTexts();
+  assert.equal(resultsOnB.length, 1);
+  holdApply = true;
+  const beforeLate = applyCount, beforeDecline = count("audit/declined");
+  await page.click('.account-actions [data-privilege-action="set_password"]');
+  await page.click("dialog .checkbox input"); await click("Review statements");
+  await page.waitForSelector(".account-review"); await page.click(".account-review .danger-solid");
+  await page.waitForFunction(() => [...document.querySelectorAll('.account-review button')].some(b => b.textContent.trim() === "Close"), { timeout: 15000 });
+  assert.ok(releaseApply, "Apply reached the server before Close");
+  await click("Close"); await click("Switch connection");
+  await releaseApply(); holdApply = false; releaseApply = null;
+  await page.waitForFunction(() => !document.querySelector('.accounts-view')?.textContent.includes("Applying account changes"));
+  assert.equal(await page.$('[aria-label="Generated password"]'), null, "B's password is hidden on A");
+  assert.deepEqual(await resultTexts(), resultsOnA, "A keeps only its own outcome; B's outcomes are hidden");
+  await click("Switch connection");
+  await page.waitForSelector('[aria-label="Generated password"]', { visible: true });
+  assert.match(await h.text('[aria-label="Generated password"]'), /shown-once-secret/);
+  const returnedToB = await resultTexts();
+  assert.equal(returnedToB.length, resultsOnB.length + 1, "B keeps both its earlier and late outcomes");
+  assert.deepEqual(returnedToB.slice(0, -1), resultsOnB);
+  assert.match(await lastResultText(), /1 group applied/);
+  assert.equal(applyCount, beforeLate + 1, "switching never resends Apply");
+  assert.equal(count("audit/declined"), beforeDecline, "Close never declines a sent write");
+  await click("Toggle Accounts visibility"); await click("Toggle Accounts visibility");
+  assert.match(await h.text('[aria-label="Generated password"]'), /shown-once-secret/);
+  assert.equal(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }).includes("shown-once-secret")), false);
+  await click("Dismiss password");
+  await inspect();
+
   // Typed passwords must cross plan and apply separately: the adapter keeps
   // only a non-secret request. Both fields clear immediately after sending.
   await page.click('.account-actions [data-privilege-action="set_password"]');
@@ -631,7 +674,7 @@ try {
   await page.click(".account-review .danger-solid"); await page.waitForFunction(() => !document.querySelector(".account-review"));
   assert.equal(count("accounts/apply"), beforeBatch + 2);
   assert.equal(count("accounts/plan"), beforePlans + 4);
-  assert.match(await h.text('[aria-label="Account change result"]'), /2 groups applied, 0 failed, 0 not sent/);
+  assert.match(await lastResultText(), /2 groups applied, 0 failed, 0 not sent/);
   assert.equal(await page.$(".account-pending"), null);
   assert.equal(state.other.filter(r => r.path === "/api/accounts/plan").some(r => r.body?.operation === "changes"), false);
   nextTyped = "";
@@ -662,8 +705,8 @@ try {
   await page.locator("button ::-p-text(Review changes)").click(); await page.waitForSelector(".account-review");
   await page.click(".account-review .danger-solid"); await page.waitForFunction(() => !document.querySelector(".account-review"));
   assert.equal(count("accounts/apply"), beforePartial + 2);
-  assert.deepEqual(await page.$$eval("[data-group-status]", rows => rows.map(r => r.dataset.groupStatus)), ["applied", "failed", "not_sent"]);
-  assert.match(await h.text('[aria-label="Account change result"]'), /1 group applied, 1 failed, 1 not sent/);
+  assert.deepEqual(await page.$$eval('[aria-label="Account change result"]', results => [...results.at(-1).querySelectorAll("[data-group-status]")].map(r => r.dataset.groupStatus)), ["applied", "failed", "not_sent"]);
+  assert.match(await lastResultText(), /1 group applied, 1 failed, 1 not sent/);
   assert.equal(await page.$(".account-pending"), null); applyRefusalAt = -1;
 
   // Multiple refresh clicks join one request. Focus within 60s does not

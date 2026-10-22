@@ -589,8 +589,10 @@ export type KillNote = {
   /** The list is being read again after the KILL (the view's loading line
    * says so; the note marks it with data-refreshing). */
   refreshing?: boolean;
-  /** The connection the KILL was sent on (its key and label). */
+  /** The connection the KILL was reviewed for (its key and label). */
   on?: { key: string; label: string };
+  /** False only when the write endpoint was never called (policy check failed). */
+  sent?: boolean;
   /** It arrived after its sheet was closed, maybe after a switch: named even
    * when the owner cannot say which connection is in use (no currentKey). */
   late?: boolean;
@@ -648,7 +650,7 @@ export function KillResultNote({ note, onDismiss, noteRef, onRefresh, currentKey
       </p>
       {named && (
         <p className="hint kill-result-on">
-          Sent on {named}{differs ? ", not the connection in use" : ""}.
+          {note.sent === false ? "Reviewed on" : "Sent on"} {named}{differs ? ", not the connection in use" : ""}.
         </p>
       )}
       {note.refreshing && <p className="hint kill-result-rereading"><span className="spinner" aria-hidden="true" /> Reading the sessions again to show what changed…</p>}

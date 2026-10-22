@@ -866,6 +866,7 @@ def slow_queries_report(conn, min_seconds=1.0, limit=50, source="auto"):
         "schema_version": "slow-queries-1.0",
         "engine": engine,
         "server_version": version,
+        **conn_identity(conn, engine, version),
         "source": actual_source,
         "min_seconds": min_seconds,
         "notes": notes,

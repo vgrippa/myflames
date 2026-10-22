@@ -43,6 +43,7 @@ function AccountGate({ action, gate: targetGate, blocked = "", write = true, chi
 
 type Via = { key: string; label: string; connection: Connection };
 type Review = { via: Via; groups: AccountGroup[] };
+type Outcome<T> = Bound<T> & { id: number };
 type Form = { target: AccountName; operation: "create" | "password" | "rename" };
 type Pending = { id: string; label: string; edit: AccountEdit };
 type Prepare = (target: AccountName, edits: AccountEdit[], password?: string) => Promise<void>;
@@ -88,11 +89,15 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   // the toolbar keeps "Applying account changes…" and the result follows.
   const [reviewLeft, setReviewLeft] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<Bound<AccountGroupResult[]> | null>(null);
+  // A response belongs to the connection that sent it, even after switching.
+  // Keep each outcome until dismissed; a later write must not replace a
+  // one-time password. These queues live only in this mounted view's memory.
+  const [results, setResults] = useState<Outcome<AccountGroupResult[]>[]>([]);
   const [editorRevision, setEditorRevision] = useState(0);
   const [pending, setPending] = useState<Pending[]>([]);
   const [nextSelection, setNextSelection] = useState<{ key: string; open?: boolean } | null>(null);
-  const [generated, setGenerated] = useState<{ key: string; password: string } | null>(null);
+  const [generated, setGenerated] = useState<Outcome<{ password: string; account: string }>[]>([]);
+  const nextOutcome = useRef(0);
   const operation = useRef(false);
   const mounted = useRef(true);
   const reviewRef = useRef<Review | null>(null);
@@ -120,7 +125,7 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     mounted.current = true;
     return () => { mounted.current = false; const r = reviewRef.current; if (r && !operation.current) void declineAccountGroups(r.via.connection, r.groups); };
   }, []);
-  useEffect(() => { setForm(null); setGenerated(null); setError(""); }, [reads.key]);
+  useEffect(() => { setForm(null); setError(""); }, [reads.key]);
   useEffect(() => { setPending([]); setNextSelection(null); }, [reads.key]);
 
   const loadingSince = useSince(!!reads.loading);
@@ -201,19 +206,26 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
         if (checked.read_only) throw new Error("This connection is read-only.");
       }, password);
       password = undefined;
-      const generatedPassword = outcomes.find(o => o.result?.generated_password)?.result?.generated_password;
+      const generatedOutcome = outcomes.find(o => o.result?.generated_password);
+      const generatedPassword = generatedOutcome?.result?.generated_password;
       const safe = outcomes.map(o => {
         if (!o.result) return o;
         const { generated_password, ...result } = o.result;
         return { ...o, result };
       });
-      if (!mounted.current || reads.currentKey() !== r.via.key) return;
-      setResult({ key: r.via.key, label: r.via.label, report: safe });
-      setGenerated(generatedPassword ? { key: r.via.key, password: generatedPassword } : null);
+      if (!mounted.current) return;
+      const owner = { id: ++nextOutcome.current, key: r.via.key, label: r.via.label };
+      setResults(old => [...old, { ...owner, report: safe }]);
+      if (generatedPassword && generatedOutcome) setGenerated(old => [...old, { ...owner,
+        report: { password: generatedPassword, account: accountLabel(generatedOutcome.group.target) } }]);
+      // Retaining a write's reply is independent of refreshing the active
+      // connection. Check again after each awaited read before starting one.
+      if (reads.currentKey() !== r.via.key) return;
       // Discard old checkbox state even after partial or unknown outcomes.
       // The result retains every requested group and its dispatch status.
       setPending([]); setDetail(null);
       await privileges?.accountChanged();
+      if (!mounted.current || reads.currentKey() !== r.via.key) return;
       await reads.run("accounts", "Reading account changes…", listAccounts, onReport, { force: true });
       if (mounted.current && reads.currentKey() === r.via.key) {
         const after = outcomes.map(o => o.result?.after).reverse().find(a => a?.schema_version === "account-1.0");
@@ -272,8 +284,11 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
           (nothing moves under the pointer); later reads use this line. */}
       <ViewStatus loading={busy || (report ? reads.loading : "")} error={error || reads.error}
         onStop={reads.loading && !busy ? reads.stop : undefined} onRetry={reads.error && !error ? () => void load() : undefined} doneAt={reads.doneAt} />
-      {result && result.key === reads.key && <BatchResult results={result.report} onDismiss={() => setResult(null)} />}
-      {generated && generated.key === reads.key && <GeneratedPassword password={generated.password} onDismiss={() => setGenerated(null)} />}
+      {results.filter(result => result.key === reads.key).map(result => <BatchResult key={result.id} results={result.report}
+        onDismiss={() => setResults(old => old.filter(item => item.id !== result.id))} />)}
+      {generated.filter(secret => secret.key === reads.key).map(secret => <GeneratedPassword key={secret.id} password={secret.report.password}
+        account={secret.report.account} connection={secret.label}
+        onDismiss={() => setGenerated(old => old.filter(item => item.id !== secret.id))} />)}
     </>} inspector={inspector}
     inspectorEmpty="Select an account to view its grants, account settings and roles.">
     {createNote && <p className="account-note account-create-note" role="note">{createNote}</p>}
@@ -762,10 +777,10 @@ function ChangeResult({ result }: { result: AccountChange }) {
     {!!result.warnings.length && <ul>{result.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
   </section>;
 }
-function GeneratedPassword({ password, onDismiss }: { password: string; onDismiss: () => void }) {
+function GeneratedPassword({ password, account, connection, onDismiss }: { password: string; account: string; connection: string; onDismiss: () => void }) {
   const [copied, setCopied] = useState("");
   return <section className="account-result" aria-label="Generated password"><strong>Generated password</strong>
-    <p>Shown once. Copy it before dismissing this result.</p><code>{password}</code><div className="account-actions">
+    <p>{account} on {connection}. Copy it before dismissing this password.</p><code>{password}</code><div className="account-actions">
       <button className="button" onClick={() => void navigator.clipboard.writeText(password).then(() => setCopied("Copied."), () => setCopied("Copy failed. Select and copy the password."))}>Copy password</button>
       <button className="button" onClick={onDismiss}>Dismiss password</button></div><span role="status">{copied}</span>
   </section>;

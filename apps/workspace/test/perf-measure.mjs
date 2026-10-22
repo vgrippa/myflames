@@ -793,7 +793,7 @@ async function overlaysScenario(s) {
   await step(out, "command palette open (⌘K)", () => interact(s, "command palette open (⌘K)", async () => { await page.keyboard.down(meta); await page.keyboard.press("k"); await page.keyboard.up(meta); },
     `!!document.querySelector('dialog.command-palette[open]')`));
   await escape();
-  await step(out, "settings menu open", () => interact(s, "settings menu open", () => page.click(".settings-button"), `!!__perf.vis('[role=menu], .settings-menu, .popover')`));
+  await step(out, "settings menu open", () => interact(s, "settings menu open", () => page.click(".settings-button"), `!!__perf.vis('.settings-popover[role="dialog"]')`));
   await escape();
   await goView(s, "sessions");
   await step(out, "views list open", () => openViewList(s, true));

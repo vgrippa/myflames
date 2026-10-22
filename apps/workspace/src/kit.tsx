@@ -1797,6 +1797,7 @@ export function DataTable<T>({
   const wrap = useRef<HTMLDivElement>(null);
   const table = useRef<HTMLTableElement>(null);
   const [frame, setFrame] = useState(0);
+  const [measurable, setMeasurable] = useState(false);
   const [measured, setMeasured] = useState<{
     sig: string;
     natural: Record<string, number>;
@@ -1908,8 +1909,12 @@ export function DataTable<T>({
     const el = wrap.current;
     if (!el) return;
     // Full-width details keep this list mounted but hidden. Preserve its last
-    // usable measurements until it is visible again.
-    const update = () => { if (el.clientWidth > 0) setFrame(el.clientWidth); };
+    // usable measurements until it is visible again. Visibility needs its
+    // own state: restoring the same frame must retry a deferred measurement.
+    const update = () => {
+      setMeasurable(el.clientWidth > 0);
+      if (el.clientWidth > 0) setFrame(el.clientWidth);
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(el);
@@ -1950,7 +1955,7 @@ export function DataTable<T>({
   // Measure once the rows change: each column's max-content width (table
   // laid out automatically for a moment, before paint) and its header label.
   // A table that cannot be measured then (hidden behind full-width details or
-  // in another view) measures at its next render instead.
+  // in another view) measures when the observer sees it become visible again.
   const hiddenSig = [...hidden].join("\u0000");
   const measuredFor = useRef<{ rows: T[]; signature: string; hidden: string } | null>(null);
   const seenRows = useRef<WeakSet<object>>(new WeakSet());
@@ -2019,7 +2024,7 @@ export function DataTable<T>({
       if (typeof r === "object" && r !== null) seenRows.current.add(r as object);
     }
     if (changed) setMeasured({ sig: signature, natural: next, min: nextMin, flags: nextFlags });
-  }, [shown, signature, hiddenSig, frame > 0]);
+  }, [shown, signature, hiddenSig, measurable]);
   // Row and header heights, for the spacers of a long table.
   useLayoutEffect(() => {
     const t = table.current;
@@ -2028,7 +2033,7 @@ export function DataTable<T>({
     if (sample && sample.offsetHeight > 0 && Math.abs(sample.offsetHeight - rowHeight) > 0.5) setRowHeight(sample.offsetHeight);
     const head = t.tHead.offsetHeight;
     if (head && Math.abs(head - headHeight) > 0.5) setHeadHeight(head);
-  }, [sorted.length > 0, density, signature, frame > 0]);
+  }, [sorted.length > 0, density, signature, measurable]);
 
   // Keyboard: the next row may not be drawn yet in a long table; scroll it
   // into the window, then focus it once it is.

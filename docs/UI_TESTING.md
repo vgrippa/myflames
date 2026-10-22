@@ -350,6 +350,7 @@ npm run test:editor-fixes     # editor and table data editing fixes, static and 
 npm run test:table-data       # table data editing through the schema browser (synthetic API replies)
 npm run test:tuning           # Tuning: scorecard rules over real reports (test:tuning-rules), then the place in the browser (test:tuning-browser)
 npm run test:action-feedback  # every converted action: feedback within 150 ms, aria-busy, one request for a double click, focus kept, and the result, the error or (no reply) the seconds and Stop, Stop waiting or Close (mocked API, real server)
+npm run test:release-rf3      # no sockets: Bulk Kill policy/late outcomes, Settings readiness, Query digest product identity
 ```
 
 `node test/action-feedback-regressions.mjs` runs without a browser or sockets.
@@ -358,6 +359,16 @@ It executes the editor's Stop, Commit and Roll back error handlers with 4xx,
 Refresh all's error callback and checks that pending Cluster/ProxySQL feedback
 stays outside the hidden list. It runs before the browser checks in
 `npm run test:action-feedback`.
+
+`test/release-rf3-regressions.mjs` executes Bulk Kill's real handlers and unmount
+cleanup with deferred policy reads: refusal or read failure before sending,
+Close, a newer dialog, and an attempted write whose reply is lost. It also
+checks the performance runner's selector against Settings' rendered JSX root
+and excludes unrelated menus/popovers, and checks both Query digest projections,
+the footer and text export for MySQL, MariaDB and Percona products. Browser
+coverage lives in the `kill-sessions-policy` / `kill-sessions-policy-error`
+action-feedback scenarios and `percona.mjs`; socket-free checks do not establish
+layout, focus or actual timing.
 
 `action-feedback-operations.mjs` adds the Processlist, Parameters and Replication
 cases to the shared action-feedback runner. Their replies wait at least two

@@ -15,6 +15,7 @@ import { Icon } from "./components";
 import { EmptyState, useWindowStatus } from "./kit";
 import { csvCell } from "./reportTableExport";
 import { digestName, digestQuery, shortDigest } from "./placeholders";
+import { engineName } from "./OpsShared";
 import "./query-digest.css";
 
 export type DigestFilterMode =
@@ -58,6 +59,7 @@ type DigestReport = {
   statements: TopStatement[];
   engine: string;
   version: string;
+  server_product?: string | null;
   source?: string;
   filter: DigestFilterMode;
 };
@@ -98,6 +100,7 @@ export function QueryDigestView({
           statements: res.statements || [],
           engine: res.engine || "mysql",
           version: res.server_version || "",
+          server_product: res.server_product,
           source: "source" in res ? res.source : undefined,
           filter,
         };
@@ -118,7 +121,7 @@ export function QueryDigestView({
   const current = bound && bound.key === reads.key ? bound.report : null;
   useWindowStatus(`digest:${reads.key}`, {
     connectionState: connection.host ? connectionLabel(connection) : "No connection",
-    engineVersion: current?.version ? `${current.engine === "mariadb" ? "MariaDB" : "MySQL"} ${current.version}` : undefined,
+    engineVersion: current?.version ? engineName(current.engine, current.version, current.server_product) : undefined,
     refreshing: loading,
   });
   const choices = useRef(true);
@@ -186,7 +189,7 @@ export function QueryDigestView({
     lines.push("# ------------------------------------------------------------------------");
     lines.push("# pt-query-digest Report (myflames live query digest)");
     lines.push("# ------------------------------------------------------------------------");
-    lines.push(`# Server: ${serverMeta?.engine.toUpperCase() || "Unknown"} ${serverMeta?.version || ""}`);
+    lines.push(`# Server: ${serverMeta ? engineName(serverMeta.engine, serverMeta.version, serverMeta.server_product) : "Unknown"}`);
     lines.push(`# Connection: ${bound?.label || "Not loaded"}`);
     lines.push(`# Generated at: ${new Date().toISOString().replace("T", " ").substring(0, 19)} UTC`);
     lines.push(`# Filter mode: ${serverMeta?.filter || filter}`);

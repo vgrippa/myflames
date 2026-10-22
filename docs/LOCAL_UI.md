@@ -5,6 +5,8 @@ The same workspace can run inside the optional Electron development app in
 setup. Compact navigation, open query documents and the command palette (⌘K)
 are shared with the browser workspace. Server details use the full work area;
 Back returns to the list with its selection, filters and scroll retained.
+If Refresh changes the rows while details are open, Back fits the columns to
+the new values even at the same window width.
 
 The myflames Performance workspace is a local browser app for MySQL and MariaDB
 performance work: execution plans, live captures, and what the server is doing
@@ -175,10 +177,15 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   (Done, Already ended, The server refused, Outcome unknown, or Nothing was
   sent) while the list is read again. A successful result begins with **Done.**
   followed by the server's explanation; Kill sessions uses the same headline.
+  When the server accepted KILL but its verification read failed, the explanation
+  and Audit log say **Sent; could not verify**. Refresh the list to check completion.
   If a KILL has no reply after ten seconds, **Close** leaves it running and
   shows its progress above the list. Its eventual result names the original
   server when another connection is in use, and offers no Refresh for that
   other server. A late bulk reply never closes a newer Kill sessions dialog.
+  A policy refusal or failed policy read also replaces the waiting note after
+  Close. It says **Nothing was sent**, names the original target as **Reviewed
+  on** when needed, and does not claim an execution audit record.
   **Kill sessions…** in the Processlist toolbar opens the Kill sessions
   dialog: presets (Runaway queries, Idle sleeping, Lock waiters, All clients)
   and filters choose client sessions (system threads and your own connection
@@ -675,6 +682,10 @@ follows (many restarts or flagOUT choices), or fast routing could not be read,
 a different hostgroup is not judged. The ⓘ beside Routing says the same.
 
 When a runtime variable needed by the rule walk cannot be read, affected digests show **Not judged** and name the variable. Digest hash filters accept lowercase and mixed-case hexadecimal digits. Schema, user and client names containing separators keep distinct row selections and rule links. If you change connections while a reviewed Cluster or ProxySQL action runs, its sheet closes when it finishes; the Audit log keeps the attempt, and no follow-up change is offered on the replacement connection.
+
+After a reviewed change, Query digests drops its old routing and reads again
+when visible. A pending read from before the change cannot restore the old
+rules. An unknown write outcome stays unknown and is never sent again.
 
 ProxySQL keeps three copies of its configuration: memory (what Admin edits),
 runtime (what it uses) and disk (what it loads at its next start). The
@@ -1284,6 +1295,10 @@ Tables shows reusable InnoDB free space as information. **Optimize table** is an
 
 ## Query digest
 
+The footer and text export keep the report's product name, including Percona
+Server and Percona XtraDB Cluster, for both statement digests and slow queries.
+The footer shows a version only for a report from the connection in use.
+
 **Query digest**, right below the Query editor in the sidebar's SQL workspace
 group (and in the command palette), profiles the statement digests of the
 connection in use in the style of pt-query-digest. It reads when it is opened
@@ -1440,7 +1455,12 @@ separate from the connected account's authority to grant them.
 
 Typed passwords are cleared after planning and re-entered for Apply: the
 30-minute single-use plan handle stores no secrets. Generated passwords work on
-MySQL and MariaDB and appear once with Copy. Account reports, drafts, plans,
+MySQL and MariaDB and appear with Copy, labelled with their account and connection.
+Results and passwords stay on their original connection until individually
+dismissed, even if Apply finishes after closing its sheet or switching connections.
+Return to that connection's Users and roles view to see them. Leaving the view
+or making another change preserves them; reload and Start fresh clear them.
+Account reports, drafts, plans,
 passwords and results are never saved; restore keeps the selected view only.
 The shared privilege provider reads on connection changes and stale window focus.
 Accounts controls use its canonical action answers; other screens use the [privilege gating map](UI_TESTING.md#stage-b-gating-map).
@@ -1475,7 +1495,9 @@ This is not per-index fragmentation; Indexes does not invent such a metric.
 
 Typing the session password sends no privilege read. Leaving the password field
 or pressing Enter commits the password and reads privileges once; a successful
-connect also refreshes them. An unfinished password never reaches a focus refresh.
+connect also refreshes them. A reconnect response arriving while you type cannot
+commit the unfinished password. Privilege reads, including focus refreshes,
+wait for you to commit it.
 
 Parameters, Instruments and Users and roles read when opened. Changing the
 connection while a report stays on screen keeps that report greyed until Refresh.

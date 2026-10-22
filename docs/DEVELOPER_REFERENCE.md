@@ -524,8 +524,10 @@ Large tables: `DataTable` and `PaginatedReportTable` sort and measure only when
 their rows change. `useStableRows` (`kit.tsx`) keeps the previous array while
 it holds the same objects, so a view that filters its report on every render
 (Processlist, Indexes) neither sorts again nor measures its columns again on a
-selection or a keystroke elsewhere; a table that could not be measured while
-hidden measures at its next render. `sortRows` reads each row's value once.
+selection or a keystroke elsewhere. A hidden table retains its last nonzero
+frame width; its ResizeObserver tracks visibility separately and retries
+deferred row and height measurements when it becomes visible, including at
+the same width. Already measured rows keep their cache. `sortRows` reads each row's value once.
 `formatNumber` (`api.ts`) reuses one `Intl.NumberFormat` per options for
 `time`, `number`, `count` and `CompactNumber`: `toLocaleString` with options
 builds a new formatter on every call.
@@ -1448,8 +1450,12 @@ SELECT also returns the server identifier, so a routing change still refuses
 without another client invocation. Fresh user, host, thread, transaction and
 saved-policy checks remain at each send boundary. No per-target settle sleep or after-read is
 used; one bounded process-list snapshot fills additive `results[].after` and
-the audits. A failed snapshot leaves `after` null; transaction details are not
-re-read in this snapshot. Existing counts and per-target statuses remain.
+the audits. A failed snapshot leaves `after` null and the result and audit say
+"Sent; could not verify"; the deferred result uses this message too, so an
+interrupted snapshot cannot record completion. Single Kill uses the same rule.
+Transaction details are not re-read in this snapshot. Existing counts and
+per-target statuses remain: `killed` means the server accepted KILL; the message
+and `after` describe verification separately. No verification failure resends KILL.
 Group Replication's `Group Replication Data Stream subscription` command is
 always refused by the shared kill guard, for both connection and query mode,
 with guidance to stop Group Replication through Cluster. The refusal is audited.
@@ -1493,6 +1499,8 @@ note apply to this source too; the connector still bounds the full response.
 
 ### Server identity: Percona Server
 
+- Connection tests pass both `@@version` and `@@version_comment` to `product_identity`. With version `11.4.13` and comment `MariaDB Server`, they return `engine: mariadb`, `flavor: mariadb` and `product: MariaDB`.
+- Query digest keeps `server_product` from both `top-1.0` and `slow-queries-1.0`, including slow-log reads and their Performance Schema fallback. The latter carries the same additive `flavor` and `server_product` fields via `conn_identity`. Its footer uses only the active connection's report; both the footer and text export use `engineName`.
 - Two levels describe a server (`myflames/server_info.py`). The engine, `mysql` or `mariadb` (`detect_flavor`), decides rules, SQL and variable names. The flavor, `mysql`, `percona` or `mariadb`, and the product name, MySQL, Percona Server, Percona XtraDB Cluster or MariaDB (`product_identity(version, version_comment)`), decide only how the server is named and which Percona additions are read. Percona Server for MySQL and Percona XtraDB Cluster are engine `mysql`: every MySQL rule applies.
 - Percona names itself only in `@@version_comment` ("Percona Server (GPL), Release 11, Revision 57878ff8", "Percona XtraDB Cluster (GPL), Release rel11, ..."; read live on 8.0.46-37, 8.4.11-11 and PXC 8.4.11-11.1). Its `version_suffix` variable can change the `@@version` suffix, so the version never decides when the comment is known. Where only the version is known (a relay log's format event for Replication's source version, the Privileges read and the Query editor's hello, which read `VERSION()` alone), `identity_from_version` names Percona Server by its numeric release suffix (`8.4.11-11`); MySQL builds carry none.
 - Every view envelope carries `flavor` and `server_product` (`perf_common.base_report`, `Server.flavor` and `Server.product`; health, locks, top, running, replication, cluster, report and the single variable read add them too; `report-1.0` and `cluster-1.0` schemas list them; the Full analysis header's `server` has `flavor` and `product`; Replication's `source_version` has `flavor` and `product`; `/api/connection/test` returns `engine`, `flavor` and `product`). Text summaries use `server_info.product_name` / `server_label`, which fall back to MySQL or MariaDB for older reports; the workspace uses `engineLabel` (PerfShared) and `engineName(engine, version, product)` (OpsShared, which keeps Percona's release number: "Percona Server 8.4.11-11").
@@ -1647,6 +1655,13 @@ Reviewed changes in a member's inspector (`cluster.available_actions(report, mem
 Never offered: `SET GLOBAL wsrep_on` (sessions opened later stop replicating their writes: silent divergence), anything on Percona XtraDB Cluster or Galera Cluster for MySQL (sources not checked), InnoDB Cluster mode switches (MySQL Shell's commands also set `auto_increment_*` and the metadata), and START on a member in ERROR (the plugin still runs; START fails). `expect` binds the server identity (engine, version, `server`), the kind, the member and the connected member (key, UUID, name, role, state), component, quorum and topology, the group's members and states (Group Replication), `wsrep_desync`, `wsrep_on` and the local state (Galera), `wsrep_last_committed` (bootstrap) and `bootstrap_group` (start); any change refuses with nothing sent. Endpoints: `POST /api/live/cluster/plan` (`action`, `member_key`; `_CONNECTION_PATHS`, saved password like the views; returns the plan with `policy` and `review_token`) and `POST /api/live/cluster/action` (`plan` as reviewed without its token, `review_token`, `typed`, `confirmed: true`; `_WRITE_PATHS`), audited as `cluster_action`, envelope `cluster-action-1.0` (below). The send waits up to 120 s (START and the UDFs wait for the group). The workspace's `POST /api/live/cluster` returns `with_actions(read_status(conn))`: each member's `actions` ({id, label, danger, description}; optional in `docs/schemas/cluster-1.0.json`); `myflames cluster` and `cluster_status` do not carry them. Tests: `test/test_cluster_actions.py` (what each recorded and derived state offers, exact statements, refusals, typed names, `bootstrap_group`, endpoints with the audit trail, drift between review and send, unknown and server refusal), and `apps/workspace/test/cluster.mjs` (the inspector's buttons, the review with the UUID, Escape recorded as declined, another connection's report offering nothing).
 
 ### ProxySQL
+
+After a reviewed action completes (including an unknown outcome), the workspace
+stops pending digest reads and clears cached routing before refreshing the main
+report. A separate digest revision triggers a fresh read when Query digests is
+visible even if its cache was already empty; hidden tabs defer that read. The
+read hook rejects late replies from the cancelled request. This follow-up only
+reads; the reviewed action's result and no-retry rule remain in effect.
 
 Digest identity and completion ownership: keys are `dg` plus compact JSON of the primary-key tuple `[hostgroup, schemaname, username, client_address, digest]`, with names preserved and no delimiter splitting in the workspace. Digest hash filters normalize to `0x` plus uppercase hex before the hex-literal SQL comparison. A rule walk that needs an unread or invalid runtime variable returns `unknown` (Not judged), naming the variable; an unread restart budget must never become a known zero. `ActionReview` rechecks the captured connection scope when finishing every send, including refused or lost replies: a switch away, even followed by a switch back, drops the completed sheet and its follow-up actions. The server-side audit record is retained.
 
@@ -2086,6 +2101,10 @@ Rules:
   while its send waits (the connection in use changed, or was made read-only
   elsewhere) is treated as if its sheet had been closed: Processlist says it
   waits, and the outcome, a refusal included, arrives the same way.
+  Policy refusals and policy-read errors before `killBulkSessions` also use
+  that delivery path after Close or unmount. They say nothing was sent and
+  never call `writeFailure` or claim an execution audit record. Their notes
+  carry `sent: false` so the connection label reads "Reviewed on".
 - A successful Kill note (`KillResultNote`, shared by Locks and Processlist)
   starts with "Done." before the server's message, using `killStatusWord` as
   Kill sessions does. A Kill note names the connection the KILL was sent on
@@ -2173,13 +2192,26 @@ The Tables report is `schema-2.0`: `fragmentation[].free_pct` is a number or nul
 
 `PrivilegesProvider` refreshes after the connect revision or the session-password
 commit revision changes. Typing never increments either revision. The picker
-commits on blur or Enter, once per changed value; incidental privilege reads
-ignore an uncommitted password. `refreshProfiles` adopts only the newest request
+commits on blur or Enter, once per changed value. A connect revision refreshes
+status but cannot adopt draft credentials; only a password commit revision or
+a new connection identity updates the committed credential. Incidental privilege
+reads ignore an uncommitted password. `refreshProfiles` adopts only the newest request
 and makes older callers await that request, preserving current write policy.
+Explicit Use connection, Start fresh and workspace restore also advance the
+password commit revision when they choose or clear the session credential.
 
 `AccountsView` stores layout as `accounts.list`. Incomplete account metadata
 gets Not judged with the backend reason and a single Details column; account
 selection guards staged edits with Review changes, Discard and Cancel.
+Server keeps Users and roles mounted after its first visit. Apply outcomes and
+generated passwords remain in separate, connection-bound queues in that view's
+memory until individually dismissed; subsequent writes cannot replace them.
+Only the owning connection displays them. Closing a slow Apply sheet or changing
+connections does not discard its late reply or resend the write. Follow-up
+privilege, account-list and detail reads recheck the active identity after each
+wait. Reload and Start fresh clear these queues; no password enters session
+storage or the audit. Socket-free regressions: `npm run test:account-connection-races`;
+browser cases: `accounts.mjs`, `editor.mjs`, `server-nav.mjs`.
 `sqlIdent.ts` owns quoted identifiers, literals and shared index/table builders.
 `MassKillDialog` compiles the unmodified query pattern once per edit; invalid
 patterns match no rows.

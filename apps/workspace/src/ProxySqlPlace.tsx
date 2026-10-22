@@ -201,7 +201,14 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: !!reads.loading || reads.running(), read: () => { void load(); } });
   const [startModuleRef] = useState<{ current: (id: string) => void }>(() => ({ current: () => undefined }));
   const actions = useReviewedActions({
-    connection, operation: "proxysql_action", send: sendProxySqlAction, onSent: () => { void load(true); },
+    connection, operation: "proxysql_action", send: sendProxySqlAction, onSent: () => {
+      // Routing was evaluated with the old runtime rules and hostgroups.
+      // Drop even a pending read before it can repopulate the digest cache.
+      digestReads.stop();
+      setDigestsBound(null);
+      setDigestRevision((n) => n + 1);
+      void load(true);
+    },
     onNext: (id) => window.setTimeout(() => startModuleRef.current(id), 0),
   });
 
@@ -209,6 +216,9 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   // Query digests: its own bounded read, only while that tab is on screen,
   // for the report of the connection in use; a filter change reads again.
   const [digestsBound, setDigestsBound] = useState<{ bound: Bound<ProxySqlDigestsReport>; filters: string } | null>(null);
+  // A pending read has no current cache to clear. Still retry on invalidation
+  // while visible, and otherwise defer the read until Query digests opens.
+  const [digestRevision, setDigestRevision] = useState(0);
   const filtersKey = JSON.stringify(filters);
   async function loadDigests(force = false) {
     if (disabled) return;
@@ -222,7 +232,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
     if (tab !== "digests" || !onScreen || disabled || !isProxy || stale || digestsCurrent) return;
     void loadDigests();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, onScreen, disabled, isProxy, stale, reads.key, filtersKey, digestsCurrent]);
+  }, [tab, onScreen, disabled, isProxy, stale, reads.key, filtersKey, digestsCurrent, digestRevision]);
   const digestsReport = digestsBound && digestsBound.bound.key === reads.key ? digestsBound.bound.report : null;
   // Changes only on the current report of the connection in use, with its
   // write policy known and not read-only.

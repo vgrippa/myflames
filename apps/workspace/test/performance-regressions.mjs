@@ -34,6 +34,7 @@ function run(code, env) {
 // passive effects pending until requested. This exposes a pre-unload gap.
 function hooks() {
   let index = 0;
+  let dirty = false;
   const slots = [], pending = [];
   const register = phase => (body, deps) => {
     const i = index++, old = slots[i];
@@ -44,6 +45,19 @@ function hooks() {
   };
   const api = {
     useRef(value) { const i = index++; return slots[i] ||= { current: value }; },
+    useState(initial) {
+      const i = index++;
+      if (!(i in slots)) slots[i] = { value: typeof initial === 'function' ? initial() : initial };
+      return [slots[i].value, next => {
+        const value = typeof next === 'function' ? next(slots[i].value) : next;
+        if (!Object.is(value, slots[i].value)) { slots[i].value = value; dirty = true; }
+      }];
+    },
+    useCallback(body, deps) {
+      const i = index++, old = slots[i];
+      if (!old || deps.some((d, j) => !Object.is(d, old.deps[j]))) slots[i] = { value: body, deps };
+      return slots[i].value;
+    },
     useLayoutEffect: register('layout'), useEffect: register('passive'),
   };
   function commit(phase) {
@@ -54,7 +68,9 @@ function hooks() {
     }
   }
   return {
-    render(code, env) { index = 0; run(code, { ...env, ...api }); commit('layout'); },
+    api,
+    render(code, env) { index = 0; dirty = false; const result = run(code, { ...env, ...api }); commit('layout'); return result; },
+    dirty() { return dirty; },
     passive() { commit('passive'); },
     close() { for (const s of slots) s.cleanup?.(); },
   };
@@ -174,7 +190,12 @@ test('completion popup repositions when loading finishes or its note changes', (
 
 test('table measurement covers new pages/windows, every new row, and revealed columns', () => {
   const file = 'kit.tsx';
-  const code = declaration(file, 'measuredFor') + '\n' + declaration(file, 'seenRows') + '\n' + effect(file, 'measuredFor.current');
+  // Run the real ResizeObserver effect too. The frame deliberately stays at
+  // its last nonzero width while hidden, just as it does in the workspace.
+  const source = read(file);
+  const frameState = source.slice(source.indexOf('  const [frame, setFrame]'), source.indexOf('  const [measured, setMeasured]'));
+  const code = frameState + '\n' + effect(file, 'setFrame(el.clientWidth)') + '\n' +
+    declaration(file, 'measuredFor') + '\n' + declaration(file, 'seenRows') + '\n' + effect(file, 'measuredFor.current') + '\nreturn frame;';
   const h = hooks();
   const rows = Array.from({ length: 100 }, (_, id) => ({ id, width: id < 50 ? 60 : 180, pill: id === 99 ? 240 : 0 }));
   let shown = [], measures = 0, measured = { sig: '', natural: {}, min: {}, flags: {} };
@@ -183,12 +204,21 @@ test('table measurement covers new pages/windows, every new row, and revealed co
     tBodies: [{ querySelectorAll: () => shown.map(r => ({ querySelectorAll: () => r.pill ? [{ getBoundingClientRect: () => ({ width: r.pill }) }] : [], querySelector: () => null })) }] } };
   const wrap = { current: { clientWidth: 600, scrollLeft: 25 } };
   const columns = [{ key: 'n', num: true }];
+  let onResize, frame;
+  class ResizeObserver {
+    constructor(callback) { onResize = callback; }
+    observe() {} disconnect() { onResize = null; }
+  }
   const render = (page, hiddenSig = '', sorted = page, signature = 'n') => {
     shown = page;
-    h.render(code, { sorted, shown, sourceRows: rows, stableRows: sorted, signature, hiddenSig, frame: wrap.current.clientWidth,
+    let renders = 0;
+    do {
+      assert.ok(++renders < 10, 'width effects must settle');
+      frame = h.render(code, { rows, sorted, shown, sourceRows: rows, stableRows: sorted, signature, hiddenSig, ResizeObserver,
       table, wrap, columns, measured, setMeasured: m => { measured = m; }, CSS: { escape: s => s },
       COLUMN_MIN: 48, COLUMN_MAX: 1200, CELL_PAD: 16, SORT_MARK: 12, FLEX_MIN: 160, AUTO_MAX: 360,
       clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)) });
+    } while (h.dirty());
   };
   const first = rows.slice(0, 50), second = rows.slice(50);
   render(first); assert.equal(measured.min.n, 60);
@@ -204,11 +234,104 @@ test('table measurement covers new pages/windows, every new row, and revealed co
   render(first, '', windowRows);
   render([newcomer], '', windowRows); assert.equal(measures, count + 5, 'a new virtual window measures with the same sorted array');
   wrap.current.clientWidth = 0;
+  onResize();
   render([{ id: 101, width: 500, pill: 0 }]); assert.equal(measures, count + 5, 'hidden rows are not marked measured');
+  assert.equal(frame, 600, 'hidden list retains its last measured frame');
   wrap.current.clientWidth = 600;
+  onResize();
   render(shown); assert.equal(measured.min.n, 500, 'showing the table retries its deferred measurement');
+  assert.equal(frame, 600, 'the restored frame is unchanged');
+  const afterReveal = measures;
+  onResize(); render(shown);
+  wrap.current.clientWidth = 700; onResize(); render(shown);
+  assert.equal(measures, afterReveal, 'ordinary resize notifications do not remeasure cached rows');
+  wrap.current.clientWidth = 0; onResize(); render(shown);
+  wrap.current.clientWidth = 700; onResize(); render(shown);
+  assert.equal(measures, afterReveal, 'revealing unchanged rows keeps the measurement cache');
   assert.equal(wrap.current.scrollLeft, 25); h.close();
 });
+
+for (const pending of [false, true]) for (const visibility of ['rules', 'digests', 'offscreen']) {
+  test(`ProxySQL reviewed changes invalidate ${pending ? 'pending' : 'cached'} digests (${visibility})`, async () => {
+    const h = hooks(), exports = {}, requests = [];
+    // Exercise the real ticket/generation/abort handling, including a transport
+    // that ignores abort and delivers the obsolete reply after the new one.
+    run(read('binding.ts'), { exports, require: () => h.api, AbortController, DOMException });
+    const source = read('ProxySqlPlace.tsx');
+    const start = source.indexOf('  const reads = useConnectionReads(connection);');
+    const end = source.indexOf('  // Changes only on the current report', start);
+    assert.ok(start >= 0 && end > start);
+    const code = source.slice(start, end) + '\nreturn { actions, digestsCurrent, digestsReport };';
+    const connection = { host: 'proxy.test', port: 6032, user: 'admin' };
+    const filters = { order: 'time', limit: 10 };
+    let bound = { key: exports.connectionKey(connection), label: 'ProxySQL', report: { is_proxysql: true } };
+    let tab = 'digests', onScreen = true, result, mainReads = 0;
+    const render = () => {
+      let renders = 0;
+      do {
+        assert.ok(++renders < 15, 'read effects must settle');
+        result = h.render(code, {
+          ...exports, connection, filters, tab, disabled: false, bound, failure: null,
+          useViewOnScreen: () => onScreen, useWritePolicy: () => null, useOpenRead() {},
+          useReviewedActions: options => options,
+          sendProxySqlAction: () => assert.fail('invalidation must never send a write'),
+          onReport: b => { bound = b; }, readProxySql: async () => { mainReads++; return { is_proxysql: true }; },
+          readProxySqlDigests: (c, asked, signal) => new Promise((resolve, reject) => requests.push({ c, asked, signal, resolve, reject })),
+        });
+        h.passive();
+      } while (h.dirty());
+      return result;
+    };
+    const settle = async () => { await new Promise(setImmediate); return render(); };
+    try {
+      render();
+      assert.equal(requests.length, 1);
+      const old = requests[0];
+      if (!pending) {
+        old.resolve({ routing: 'old rule 30 -> hostgroup 32' });
+        await settle();
+        assert.equal(result.digestsCurrent, true);
+      }
+      tab = visibility === 'rules' ? 'rules' : 'digests';
+      onScreen = visibility !== 'offscreen';
+      render();
+      // ActionReview calls this after an answered send or an unknown outcome.
+      result.actions.onSent();
+      await settle();
+      assert.equal(mainReads, 1, 'the main report still refreshes once');
+      assert.equal(result.digestsReport, null, 'obsolete routing is removed immediately');
+      assert.equal(result.digestsCurrent, false);
+      if (pending) assert.equal(old.signal.aborted, true, 'a pending pre-change digest read is cancelled');
+      if (visibility !== 'digests') assert.equal(requests.length, 1, 'hidden digests wait until visible');
+      tab = 'digests'; onScreen = true; render();
+      assert.equal(requests.length, 2, 'visible digests get exactly one fresh read with unchanged filters');
+      assert.deepEqual(requests[1].asked, filters);
+      requests[1].resolve({ routing: 'default -> hostgroup 30' });
+      await settle();
+      assert.equal(result.digestsCurrent, true);
+      assert.equal(result.digestsReport.routing, 'default -> hostgroup 30');
+      if (pending) {
+        old.resolve({ routing: 'old rule 30 -> hostgroup 32' });
+        await settle();
+        assert.equal(result.digestsReport.routing, 'default -> hostgroup 30', 'late pre-change reply cannot restore stale routing');
+      }
+      tab = 'rules'; render(); tab = 'digests'; render();
+      assert.equal(requests.length, 2, 'ordinary tab switches still reuse current digests');
+
+      // Repeated invalidation while a read is pending must schedule a new read
+      // even though the cache was already empty (digestsCurrent stays false).
+      result.actions.onSent(); render();
+      const replaced = requests.at(-1);
+      result.actions.onSent(); render();
+      assert.equal(replaced.signal.aborted, true);
+      assert.equal(requests.length, 4);
+      requests.at(-1).reject(new Error('Digest read denied'));
+      await settle(); render();
+      assert.equal(result.digestsReport, null, 'a failed reread cannot show obsolete routing');
+      assert.equal(requests.length, 4, 'failed rereads are not retried automatically');
+    } finally { h.close(); }
+  });
+}
 
 test('parameter bounds keep fractions and reuse their cached formatting', () => {
   // Use the real cached formatter rather than a stub that could conceal rounding.

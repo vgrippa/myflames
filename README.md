@@ -160,6 +160,8 @@ Host-and-port connections use TCP, including `localhost`; Unix sockets require a
 
 Top statements opens selected SQL and its evidence across the available width. Supported UPDATE, DELETE and INSERT/REPLACE SELECT statements can be converted to a SELECT for review before analysis. This measures row selection or the SELECT source only; it does not reproduce write cost, assignment expressions, triggers or locking. Unsupported forms remain blocked.
 
+Returning from full-width table details fits refreshed values to their columns, even when the window width stays the same.
+
 Slow queries are filtered and ranked by duration before the result limit. Read errors and disabled instrumentation are reported in notes, and unavailable slow-log counters remain unknown. Session statement text is capped with a truncation indicator; MySQL versions before 8.0.22 receive Error log file-viewing guidance.
 
 ### 3. Query editor and persistent SQL sessions
@@ -204,6 +206,8 @@ myflames audit export --csv -o audit.csv
 Optional Optimize table and Apply instrumentation actions show their exact SQL and require confirmation, including on Development connections. Reusable InnoDB free space stays informational; it does not imply that maintenance is needed.
 
 HANDLER OPEN requires confirmation because it holds a metadata lock until CLOSE or session end. Kill protects Group Replication data-stream connections, including the truncated `Group Replicatio` command returned by MySQL process-list tables, and points to Cluster instead. Bulk Kill audits each target, including policy refusals and pre-send failures, and preserves per-target identity checks.
+
+When the server accepts a Kill but its verification read fails, the result and audit say "Sent; could not verify" and leave `after` null. Refresh the session list to check completion.
 
 All mutations are logged to a local SQLite database (`~/.myflames/workspace.sqlite3`) with passwords and sensitive credentials automatically redacted.
 
@@ -257,7 +261,7 @@ Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
 | `top` | `[--order {total,time,avg,examined,rows,count,exec_count,full_join,scan,scans,no_index,tmp_tables,locks}] [--table SCHEMA.TABLE] [--schema NAME] [--limit N] [--json] [-o PATH] [-q]` | Rank expensive statements from Performance Schema digests. |
 | `sessions` | `[--min-seconds N] [--kill ID [--yes]] [--explain ID]` | Inspect running queries, idle transactions, and thread states; Kill protects Group Replication streams even when their command name is truncated. |
 | `running` | `[--min-seconds N] [--explain ID] [--json] [-o PATH]` | Deprecated alias of `sessions`, retaining the `running-1.0` contract. |
-| `locks` | `[--waits-only \| --deadlock \| --kill ID [--yes]]` | Trace lock waits, metadata blockers, and deadlocks; Kill shares the Group Replication stream guard with Sessions. |
+| `locks` | `[--waits-only \| --deadlock \| --kill ID [--yes]]` | Trace lock waits, metadata blockers, and deadlocks; Kill shares the Group Replication stream guard with Sessions and reports when completion could not be verified. |
 | `health` | `[--interval N] [--fail-on {problem,watch}]` | Sample server status counters over time to detect health anomalies. |
 | `innodb` | `[--raw] [--fail-on {problem,watch}]` | Parse and summarize SHOW ENGINE INNODB STATUS output. |
 | `error-log` | `[--level LEVEL[,LEVEL...]] [--limit N] [--fail-on {problem,watch}]` | Read the server error log: `performance_schema.error_log` on MySQL; on MariaDB the log file, only when the server runs on this computer. |
@@ -325,6 +329,8 @@ ProxySQL is a place of its own, right after Cluster, for a connection to ProxySQ
 
 ProxySQL digest hash filters accept uppercase, lowercase and mixed-case hexadecimal digits. A routing variable that could not be read leaves affected digests **Not judged**, with the variable named. Schema, user and client names containing separators keep distinct selections and links.
 
+After a reviewed ProxySQL change, Query digests rereads its routing when visible.
+
 Plans shows progress while opening a sample or building an HTML export, names the saved HTML or JSON file, and keeps investigation Save errors in its sheet. Maintenance shows progress for tool detection, upgrade checks, preflights, starting jobs and cancellation. Reads offer Stop waiting and retry; closing a slow Start sheet keeps the request running and shows its outcome in the view.
 
 Every Cluster and ProxySQL change follows the write contract: the review shows the exact statements, the target and the connection with its type; Production and Development both ask first; Read-only refuses; destructive ones need the target's name typed; myflames reads the target again right before sending and sends nothing if it changed; a request without a reply, or a client that ended without the server's answer, is shown as Outcome unknown and never sent again; and every sent, refused or declined attempt is in the Audit log. After you confirm, the same sheet follows the send: the button reads **Sending…** and cannot be pressed twice, the step is named (reading the target again, sent and waiting for the server's answer with the seconds waited, reading the result back), and each statement shows Waiting, Sent, Done, Failed, Not run or Outcome unknown, Done only once the server answered. After ten seconds without a reply, **Close** lets you follow the pending request under the toolbar, including while an inspector is open; it does not cancel or resend it. It ends with the outcome, **What changed** (read again after the write), the Audit log record, and for an unknown outcome **What to check**.
@@ -338,9 +344,13 @@ Processlist, Parameters and Replication show progress and elapsed time for reads
 Tables and Indexes include complete scoped inventories with pagination. Indexes checks partitioning only for candidate tables: partitioned or unresolved candidates appear under No data, with DROP and visibility SQL withheld. Export the filtered results as CSV, HTML or PDF through the system print dialog. Tables can filter measured reusable-space percentage; this is not an index fragmentation estimate.
 
 Successful Kill results in Locks, Processlist and Kill sessions begin with **Done.**, followed by the server's explanation.
+Bulk Kill policy refusals and failed policy reads say **Nothing was sent**, including after Close or a connection change. Query digest keeps the server's product name, including Percona Server or Percona XtraDB Cluster, in its footer and text export.
 
 Workspace views read when opened; Refresh retries. Changing the connection keeps
 the previous report greyed until Refresh or reopening the view. Users and roles
-asks before discarding staged grants. The session password is committed on blur
-or Enter, so typing sends no privilege checks. See [workspace interactions](docs/LOCAL_UI.md#connection-and-table-interactions)
+asks before discarding staged grants. Account-change results and generated
+passwords remain available on their original connection until dismissed, across
+connection and view switches; reload clears them. The session password is
+committed on blur or Enter, so typing sends no privilege checks, including when
+a pending reconnect finishes. See [workspace interactions](docs/LOCAL_UI.md#connection-and-table-interactions)
 for row menus, reviewed statements and analysis progress.

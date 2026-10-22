@@ -398,6 +398,16 @@ try {
   await h.view("accounts");
   await page.waitForSelector("#server-nav-accounts .count-badge");
   assert.match(await text("#server-nav-accounts"), /1/);
+  // Account outcomes and one-time secrets live in component memory. Keeping
+  // this same instance across view navigation preserves them until dismissal.
+  await page.type('.accounts-view input[aria-label="Find an account"]', "nav-account");
+  await page.evaluate(() => { window.retainedAccountsView = document.querySelector('.accounts-view'); });
+  await h.view("config");
+  assert.equal(await page.evaluate(() => window.retainedAccountsView.isConnected), true, "Users and roles must stay mounted");
+  await h.view("accounts");
+  assert.equal(await page.evaluate(() => window.retainedAccountsView === document.querySelector('.accounts-view')), true);
+  assert.equal(await page.$eval('.accounts-view input[aria-label="Find an account"]', e => e.value), "nav-account");
+  await page.evaluate(() => { delete window.retainedAccountsView; });
   const savedAccounts = await h.savedSlow(s => s.kind === "accounts");
   assert.ok(!JSON.stringify(savedAccounts.state).includes("nav-account"));
   const readsBeforeReload = state.other.filter(r => r.path === "/api/accounts/list").length;

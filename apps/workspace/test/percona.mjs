@@ -34,11 +34,15 @@ const schemas = {
 };
 
 const live = { indexes, tables };
+const digestReport = { engine: "mysql", flavor: "percona", server_product: "Percona Server",
+  server_version: "8.4.11-11", statements: [] };
 const h = await open("/api/live/health", "percona", {
   "/api/live/indexes": () => ({ status: 200, body: live.indexes }),
   "/api/live/tables": () => ({ status: 200, body: live.tables }),
   "/api/live/config": { status: 200, body: config },
   "/api/live/schemas": { status: 200, body: schemas },
+  "/api/live/top": { status: 200, body: { ...digestReport, schema_version: "top-1.0" } },
+  "/api/live/slow-queries": { status: 200, body: { ...digestReport, schema_version: "slow-queries-1.0", source: "slow_log" } },
 }, { fallback: { status: 200, body: health }, list: "docked" });
 const { page, errors, text } = h;
 const footer = () => page.$$eval('[data-status="engine"]', (els) => els.filter((e) => e.getClientRects().length).map((e) => e.textContent));
@@ -150,6 +154,26 @@ try {
     "A variable Percona Server adds to MySQL");
   assert.deepEqual(await footer(), ["Percona Server 8.4.11-11"]);
   await shoot("parameters-tag");
+  // Query digest projects both report shapes; neither may discard the product.
+  await page.click('.main-nav button[data-place="digest"]');
+  for (const slow of [false, true]) {
+    if (slow) {
+      const response = page.waitForResponse(r => new URL(r.url()).pathname === '/api/live/slow-queries');
+      await page.click('.query-digest-pill-tabs [role="tab"]:last-child');
+      await response;
+    }
+    await page.waitForFunction(() => {
+      const refresh = document.querySelector('button[title="Refresh digest profile"]');
+      const label = [...document.querySelectorAll('[data-status="engine"]')].find(e => e.getClientRects().length)?.textContent;
+      return refresh && !refresh.disabled && label === 'Percona Server 8.4.11-11';
+    });
+    await page.click('button[title="Export a pt-query-digest style text report or CSV"]');
+    await page.waitForSelector('.query-digest-preview-pre');
+    assert.match(await text('.query-digest-preview-pre'), /^# Server: Percona Server 8\.4\.11-11$/m);
+    assert.match(await text('.query-digest-preview-pre'), slow ? /^# Filter mode: slow_queries$/m : /^# Filter mode: time$/m);
+    await page.click('.query-digest-modal-header button');
+    await page.waitForFunction(() => !document.querySelector('.query-digest-preview-pre'));
+  }
   assert.deepEqual(errors, []);
   console.log("percona: ok");
 } finally {

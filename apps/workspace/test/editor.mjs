@@ -120,6 +120,7 @@ const mock = {
   rollback: [],
   close: [],
   open: [],
+  holdOpen: false,
   history: { items: [] },
   holdStatus: false,
   holdRun: false,
@@ -158,6 +159,7 @@ function reply(p, body) {
     case "/api/editor/close":
       return mock.close.shift() || { closed: true, session: null };
     case "/api/editor/open":
+      if (mock.holdOpen) return null;
       return mock.open.shift() || { status: "idle", session: session() };
     case "/api/editor/history":
       return body.action === "clear" ? { cleared: mock.history.items.length } : mock.history;
@@ -1253,6 +1255,43 @@ try {
   const beforeReconnect = calls("/api/live/privileges").length;
   await page.locator('[data-banner="ended"] button ::-p-text(Reconnect)').click();
   await until(() => calls("/api/live/privileges").length > beforeReconnect, "reconnect did not refresh privileges");
+  await page.waitForFunction(() => !document.querySelector('[data-banner="ended"]'));
+  await idle();
+
+  // A successful late reconnect must not commit a password currently being
+  // edited in the picker. Release the actual editor/open reply while that
+  // input still owns focus; only Enter is allowed to adopt the new password.
+  mock.run.push({ status: "session_ended", session: session({ ended: true, ended_reason: "connection_lost", state: "ended" }),
+    run: run([statement(0, "SELECT 1", 0, { status: "session_ended" })], [], { state: "session_ended" }) });
+  // Reconnect took focus from the SQL editor. Run shortcuts belong to that
+  // input, so focus it again and verify that the queued reply was requested.
+  await page.focus(EDITOR);
+  const beforeLateReconnectRun = calls("/api/editor/run").length;
+  await chord("Enter"); await ran(beforeLateReconnectRun + 1);
+  await page.waitForSelector('[data-banner="ended"]');
+  mock.holdOpen = true;
+  await page.locator('[data-banner="ended"] button ::-p-text(Reconnect)').click();
+  const delayedOpen = await until(() => held.find(r => r.path === "/api/editor/open"), "reconnect did not reach editor/open");
+  await page.click('.window-toolbar .connection-pill');
+  await page.waitForSelector('.picker-panel', { visible: true });
+  if (!await page.$('.picker-password')) await page.locator('.picker-panel button ::-p-text(Use a different password)').click();
+  await page.waitForSelector('.picker-password', { visible: true });
+  await page.$eval('.picker-password', e => { e.focus(); e.select(); });
+  await page.keyboard.press("Backspace");
+  await page.type('.picker-password', "replacement-part");
+  const beforeDraftReply = calls("/api/live/privileges").length;
+  mock.holdOpen = false;
+  held.splice(held.indexOf(delayedOpen), 1);
+  await delayedOpen.request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "idle", session: session({ connection_id: 43 }) }) });
+  await page.waitForFunction(() => !document.querySelector('[data-banner="ended"]'));
+  await pause(100);
+  assert.equal(await page.$eval('.picker-password', e => e === document.activeElement), true);
+  assert.equal(calls("/api/live/privileges").length, beforeDraftReply, "late reconnect must not send the partial password");
+  await page.type('.picker-password', "-complete"); await page.keyboard.press("Enter");
+  await until(() => calls("/api/live/privileges").length === beforeDraftReply + 1, "password commit did not refresh privileges");
+  assert.equal(calls("/api/live/privileges").at(-1).connection.password, "replacement-part-complete");
+  await page.keyboard.press("Tab"); await pause(100);
+  assert.equal(calls("/api/live/privileges").length, beforeDraftReply + 1, "blur after Enter does not commit twice");
 
   assert.deepEqual(errors, []);
   console.log("Query editor checks passed. " + directory);
