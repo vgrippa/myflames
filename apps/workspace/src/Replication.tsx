@@ -4,6 +4,7 @@
 // connection's write policy and the audit record.
 import { useEffect, useRef, useState } from "react";
 import { durationText } from "./duration";
+import { Duration } from "./PerfShared";
 import { useViewOnScreen } from "./viewOnScreen";
 import type { ActionPrivilege } from "./accountsApi";
 import { privilegeResult, usePrivilege } from "./privileges";
@@ -36,7 +37,11 @@ export const PLAN_TTL_MS = 60_000;
 /** Loop status is read this often while a loop runs (no database connection). */
 const LOOP_POLL_MS = 2000;
 const COMMON_ERRORS: [number, string][] = [[1062, "Duplicate key"], [1032, "Row not found"], [1452, "Foreign key child row"]];
-const lag = (value: number | null | undefined) => (value === null || value === undefined ? "Not available" : `${value.toLocaleString()} s`);
+const lag = (value: number | null | undefined) => (value === null || value === undefined ? "Not available" : <Duration value={value} />);
+const lagCell = (channel: ReplicationChannel) => {
+  const note = channel.lag_notes.join(" ") || "Seconds behind the source alone does not show that the replica is caught up.";
+  return channel.lag_s === null ? <abbr title={note}>Unknown</abbr> : <Duration value={channel.lag_s} note={note} />;
+};
 const channelKey = (channel: ReplicationChannel) => `channel:${channel.name}`;
 /** Server-wide GTID facts named the way the server names them, so they read
  * unambiguously beside the channel's own positions. */
@@ -477,16 +482,16 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     { key: "source", label: "Source", sort: (r) => r.source.host, render: (r) => `${r.source.host || "Unknown"}:${r.source.port ?? "?"}` },
     { key: "io", label: "I/O", sort: (r) => r.io.running, render: (r) => <span title={r.io.state || undefined}>{r.io.running || "Unknown"}</span> },
     { key: "sql", label: "SQL", sort: (r) => r.sql.running, render: (r) => <span title={r.sql.state || undefined}>{r.sql.running || "Unknown"}</span> },
-    { key: "lag", label: "Lag (s)", num: true, title: "Seconds behind the source; see the inspector for the clock, receiver and delay caveats.", sort: (r) => r.lag_s, render: (r) => <abbr title={r.lag_notes.join(" ") || "Seconds behind the source alone does not show that the replica is caught up."}>{r.lag_s === null ? "Unknown" : r.lag_s.toLocaleString()}</abbr> },
+    { key: "lag", label: "Lag", num: true, title: "Seconds behind the source; see the inspector for the clock, receiver and delay caveats.", sort: (r) => r.lag_s, render: lagCell },
     { key: "error", label: "Error", num: true, sort: (r) => r.sql.error.errno || r.io.error.errno, render: (r) => r.sql.error.errno || r.io.error.errno || "None" },
   ];
   const lagColumns: Column<ReplicationChannel>[] = [
     { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
     { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
-    { key: "lag", label: "Lag", num: true, title: "How far behind the source the replica is", sort: (r) => r.lag_s, render: (r) => <abbr title={[r.lag_s === null ? "" : `${r.lag_s.toLocaleString()} seconds`, ...r.lag_notes].filter(Boolean).join(" ") || undefined}>{r.lag_s === null ? "Unknown" : durationText(r.lag_s)}</abbr> },
-    { key: "delay", label: "Configured delay", num: true, sort: (r) => r.sql.delay_s, render: (r) => r.sql.delay_s ? durationText(r.sql.delay_s) : "None" },
-    { key: "remaining_delay", label: "Remaining delay", num: true, sort: (r) => r.sql.remaining_delay_s, render: (r) => r.sql.remaining_delay_s ? durationText(r.sql.remaining_delay_s) : "None" },
-    { key: "signals", label: "Worker signals", render: (r) => Object.keys(r.lag_signals || {}).length ? Object.entries(r.lag_signals).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(", ") : "Normal" },
+    { key: "lag", label: "Lag", num: true, title: "How far behind the source the replica is", sort: (r) => r.lag_s, render: lagCell },
+    { key: "delay", label: "Configured delay", num: true, sort: (r) => r.sql.delay_s, render: (r) => r.sql.delay_s ? <Duration value={r.sql.delay_s} /> : "None" },
+    { key: "remaining_delay", label: "Remaining delay", num: true, sort: (r) => r.sql.remaining_delay_s, render: (r) => r.sql.remaining_delay_s ? <Duration value={r.sql.remaining_delay_s} /> : "None" },
+    { key: "signals", label: "Worker signals", render: (r) => Object.keys(r.lag_signals || {}).length ? factRows(r.lag_signals).slice(0, 2).map(([label, value], i) => <span key={label}>{i ? ", " : ""}{label}: {value}</span>) : "Normal" },
     { key: "notes", label: "Lag caveats", render: (r) => r.lag_notes?.length ? r.lag_notes.join("; ") : "No delay caveats" },
   ];
   const gtidColumns: Column<ReplicationChannel>[] = [
@@ -564,7 +569,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
             engineName(report.engine, report.server_version, report.server_product),
             plural(report.summary.channels, word),
             report.summary.failed ? `${report.summary.failed.toLocaleString()} failed` : "",
-            lagUnknown ? "lag unknown" : `max lag ${(report.summary.lag_max_s as number).toLocaleString()} s`,
+            lagUnknown ? "lag unknown" : `max lag ${durationText(report.summary.lag_max_s)}`,
           ].filter(Boolean).join(" · ")
     : "";
   const topologyReport = report && replicaProblem
@@ -636,10 +641,10 @@ export function ReplicationView({ connection, disabled, selection, report: bound
               <MetricTile rowKey="channels" label={engine === "mariadb" ? "Connections" : "Channels"} value={report.summary.channels.toLocaleString()}
                 trend={<span className="tile-hint">{`${report.summary.ok.toLocaleString()} OK`}</span>} />
               <MetricTile rowKey="lag" label="Max applier lag"
-                value={lagUnknown ? "Unknown" : (report.summary.lag_max_s as number).toLocaleString()} unit={lagUnknown ? undefined : "s"}
-                attrs={{ title: "Seconds behind the source; compare receiver and worker lag in the inspector." }}
+                value={lagUnknown ? "Unknown" : durationText(report.summary.lag_max_s)}
+                attrs={{ title: [lagUnknown ? "" : `${report.summary.lag_max_s} seconds.`, "Seconds behind the source; compare receiver and worker lag in the inspector."].filter(Boolean).join(" ") }}
                 trend={<span className="tile-hint">{[
-                  measuredLag && lagUnknown && report.summary.lag_max_s !== null ? `${measuredLag} measured (max ${report.summary.lag_max_s.toLocaleString()} s)` : `${measuredLag} measured`,
+                  measuredLag && lagUnknown && report.summary.lag_max_s !== null ? `${measuredLag} measured (max ${durationText(report.summary.lag_max_s)})` : `${measuredLag} measured`,
                   unknownLag ? `${unknownLag} unknown` : "",
                   unjudged ? `${unjudged} not judged` : "",
                 ].filter(Boolean).join(" · ")}</span>} />

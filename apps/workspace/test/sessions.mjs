@@ -171,6 +171,12 @@ try {
   assert.match(idle, /Last statement\s*SELECT \* FROM u WHERE id = 1/);
   assert.match(idle, /Rows locked\s*1/);
   assert.match(idle, /REPEATABLE READ/);
+  const durationFact = (label) => page.$$eval('.view-inspector .inspector-fields > div', (rows, name) => {
+    const value = rows.find((e) => e.querySelector('dt')?.textContent === name)?.querySelector('dd abbr');
+    return [value?.textContent, value?.title, value?.getAttribute('aria-label')];
+  }, label);
+  assert.deepEqual(await durationFact("Time in state"), ["20 min 50 s", "1,250 seconds", "1,250 seconds"]);
+  assert.deepEqual(await durationFact("Open for"), ["20 min 50 s", "1,250 seconds", "1,250 seconds"]);
   assert.match(idle, /Idle in transaction: a session idle \(Sleep\) inside an open InnoDB transaction keeps its row locks/);
   assert.equal(await page.$('.view-inspector [aria-label^="Show plan"]'), null, "an idle session has no plan");
   assert.equal(await page.$eval('.view-inspector [aria-label="Kill: connection 93"]', (e) => e.disabled), false);
@@ -212,6 +218,7 @@ try {
   await inspectorHas(/Connection 94/);
   assert.match(await h.inspector(), /Waiting \d+ min \d+ s for an InnoDB lock \(a row lock, or a table lock such as AUTO-INC\)/);
   assert.match(await h.inspector(), /UPDATE t SET v = 0 WHERE id = 10/);
+  assert.deepEqual(await durationFact("Lock wait"), ["20 min 49 s", "1,249 seconds", "1,249 seconds"]);
   await page.click(".detail-back");
   await page.waitForFunction(selector => document.activeElement?.matches(selector), {}, row(94));
   await page.keyboard.press("ArrowDown");

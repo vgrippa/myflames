@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Processlist shows the server's State in its own column, and durations read as words everywhere they appear ("36 s", "4 min 12 s", "18 d 12 h", with the exact seconds on hover) instead of an abbreviated number such as "1.6m" (1.6 million seconds); Locks' transaction age is "Open for" and its Wait column uses the same words.
+- Processlist shows the server's State in its own column. Ages and measured durations use words ("36 s", "4 min 12 s", "18 d 12 h"); Replication includes both lag tables, inspector signals, summary, lag tile and topology, and the Query editor's ALTER review includes transaction age. Exact seconds, including decimals, are on hover in duration table cells, Processlist's Time in state/Open for/Lock wait facts, Locks' Longest wait/Oldest transaction summary facts and Transactions Idle duration, and Replication's lag/delay/signal facts, lag tile and topology labels. Replication keeps numeric lag sorting, unknown states and hover caveats. Other summary sentences, Locks badges and narrative text, and the ALTER review age use words without an exact-seconds hover guarantee. Settings, sampling windows, thresholds, budgets and progress counters keep their units. Locks' transaction age is "Open for" and its Wait column uses the same words.
 
 ## [3.1.1] - 2026-10-22
 

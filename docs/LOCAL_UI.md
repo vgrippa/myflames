@@ -166,9 +166,17 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   as Sleep), Rows sent and Schema in Top statements, and Lock structs and
   Isolation in Locks transactions.
   Durations read the same everywhere, as the CLI writes them: "36 s",
-  "4 min 12 s", "4 h 5 min", "18 d 12 h", with the exact seconds on hover
-  (Processlist Time and details, the Kill sessions preview, Locks' Open for,
-  Wait and summary, and Replication's lag and delays).
+  "4 min 12 s", "4 h 5 min", "18 d 12 h". Exact seconds, including decimals,
+  are on hover in table duration cells and these facts: Processlist's Time in
+  state, Open for and Lock wait; Locks' Longest wait and Oldest transaction
+  summary facts; and Replication's Lag, Configured delay and lag signals.
+  Locks' Idle duration in the Transactions table also has exact seconds on
+  hover, as do the Kill sessions preview's duration cells, Replication's lag
+  tile and topology labels. Replication's Channels and Lag tables sort on raw
+  seconds and retain lag caveats on hover. Summary sentences, other Locks
+  badges and narrative text, and the Query editor's ALTER review transaction
+  age use words without promising exact seconds on hover. Sampling windows,
+  thresholds, budgets, input controls and progress counters keep their units.
   Processlist shows State (what the session is doing now) beside Time (how
   long it has been in that state).
   Statement text in Processlist is capped at 4,096 characters with a truncation

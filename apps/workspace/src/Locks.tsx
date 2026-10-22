@@ -82,7 +82,6 @@ export function VisiblePrivilegeConfirmLabel(props: ComponentProps<typeof Privil
   </>;
 }
 
-/** Seconds as a short duration: 45 s, 3 m 05 s, 2 h 10 m. */
 /** A duration in words, the same everywhere (see duration.ts). */
 export function seconds(value: number | null | undefined) {
   return durationText(value);
@@ -1323,7 +1322,7 @@ export function LocksView({
     {
       key: "session",
       label: "Session",
-      render: (t) => (t.idle_in_transaction ? <Pill tone="warn">Idle {seconds(t.time_s)}</Pill> : t.command || "—"),
+      render: (t) => (t.idle_in_transaction ? <Pill tone="warn">Idle <Duration value={t.time_s} /></Pill> : t.command || "—"),
     },
     { key: "locked", label: "Rows locked", title: "Row locks the transaction holds (trx_rows_locked, approximate)", num: true, sort: (t) => t.rows_locked, render: (t) => <CompactNumber value={t.rows_locked} /> },
     { key: "structs", label: "Lock structs", title: "Lock structures the transaction holds (trx_lock_structs); one can cover many rows of a page", num: true, sort: (t) => t.lock_structs, render: (t) => <CompactNumber value={t.lock_structs} /> },
@@ -1467,9 +1466,9 @@ export function LocksView({
             facts={[
               ["Blocked sessions", String(s.blocked_sessions)],
               ["Root blockers", String(s.root_blockers)],
-              ["Longest wait", seconds(s.longest_wait_s)],
+              ["Longest wait", <Duration value={s.longest_wait_s} />],
               ["Open transactions", String(s.transactions)],
-              ["Oldest transaction", seconds(s.oldest_transaction_s)],
+              ["Oldest transaction", <Duration value={s.oldest_transaction_s} />],
               ["Read", `${engineName} at ${new Date(report.captured_at).toLocaleTimeString()}`],
             ]}
           />

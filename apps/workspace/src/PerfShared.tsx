@@ -101,11 +101,12 @@ export function percent(share: number | null | undefined) {
  * "4 min 12 s"), and the exact seconds ("1,598,400 seconds") are the tooltip
  * and the accessible name. Sort on the raw value. *approx* marks a value read
  * from the running statement rather than the wait itself ("~"). */
-export function Duration({ value, approx = false }: { value: number | null | undefined; approx?: boolean }) {
+export function Duration({ value, approx = false, note }: { value: number | null | undefined; approx?: boolean; note?: string }) {
   if (value === null || value === undefined || !Number.isFinite(value)) return <>—</>;
-  const exact = `${approx ? "~" : ""}${formatNumber(value, { maximumFractionDigits: 3 })} seconds`;
+  const exact = `${approx ? "~" : ""}${formatNumber(value, { maximumFractionDigits: 20 })} seconds`;
+  const description = [exact, note].filter(Boolean).join(" ");
   return (
-    <abbr className="compact-number" title={exact} aria-label={exact}>
+    <abbr className="compact-number" title={description} aria-label={description}>
       {approx ? "~" : ""}
       {durationText(value)}
     </abbr>

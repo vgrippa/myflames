@@ -18,6 +18,8 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import type { Connection } from "./api";
 import { Icon } from "./components";
+import { durationText } from "./duration";
+import { Duration } from "./PerfShared";
 import { channelCell, engineName } from "./OpsShared";
 import type { ReplicationChannel, ReplicationReport, SourceVersion } from "./opsApi";
 import type { Selection } from "./kit";
@@ -46,7 +48,7 @@ export function linkState(c: ReplicationChannel): { kind: "running" | "stopped" 
 }
 
 export function lagText(lag: number | null | undefined): string {
-  return lag === null || lag === undefined ? "Lag unknown" : `${lag} s behind`;
+  return lag === null || lag === undefined ? "Lag unknown" : `${durationText(lag)} behind`;
 }
 
 /** A saved connection confirmed by its server ID alone (MariaDB reports no
@@ -201,7 +203,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
                         <span className="topology-dot" aria-hidden="true" />
                         {state.label}
                       </span>
-                      <span className="topology-link-lag">{lagText(c.lag_s)}</span>
+                      <span className="topology-link-lag" title={c.lag_s == null ? undefined : `${c.lag_s} seconds`}>{lagText(c.lag_s)}</span>
                     </span>
                   </button>
                     <span id={detailId} className={detailKey === key && dismissed !== key ? "topology-detail" : "visually-hidden"} role="tooltip">
@@ -209,7 +211,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
                         ? `${sourceVersionText(c.source_version)}, ${sourceVersionHow(c.source_version)}` : sourceVersionDetail(c.source_version)}</span></span> : null}
                       <span className="topology-detail-row"><span>IO thread</span><span>{c.io.running || "Unknown"}{c.io.state ? `, ${c.io.state}` : ""}</span></span>
                       <span className="topology-detail-row"><span>SQL thread</span><span>{c.sql.running || "Unknown"}{c.sql.state ? `, ${c.sql.state}` : ""}</span></span>
-                      {c.sql.delay_s ? <span className="topology-detail-row"><span>Configured delay</span><span>{c.sql.delay_s} s</span></span> : null}
+                      {c.sql.delay_s ? <span className="topology-detail-row"><span>Configured delay</span><span><Duration value={c.sql.delay_s} /></span></span> : null}
                       {read && <span className="topology-detail-row"><span>Read position</span><span>{read}</span></span>}
                       {exec && <span className="topology-detail-row"><span>Executed position</span><span>{exec}</span></span>}
                       {c.io.error.errno ? <span className="topology-detail-row is-error"><span>IO error {c.io.error.errno}</span><span>{c.io.error.message}</span></span> : null}
@@ -228,7 +230,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
                 Port {connection.port || 3306} · {engineName(report.engine, report.server_version || "", report.server_product)}
               </span>
               {gtid ? <span className="topology-meta">GTID mode {String(gtid)}</span> : null}
-              <span className={`topology-lag tone-${tone}`}>
+              <span className={`topology-lag tone-${tone}`} title={report.summary.lag_max_s == null ? undefined : `${report.summary.lag_max_s} seconds`}>
                 <span className="topology-dot" aria-hidden="true" />
                 {TONE_WORD[tone]} · {lagText(report.summary.lag_max_s)}
               </span>

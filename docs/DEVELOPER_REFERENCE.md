@@ -427,6 +427,17 @@ the window-open handler always denies a new app window. Tests:
 
 ### Shared view presentation
 
+Measured durations and ages use `durationText` (`duration.ts`). Duration table
+cells and the Processlist inspector, Locks summary facts and Replication lag
+facts use `Duration` (`PerfShared.tsx`) for exact seconds, including decimal
+precision, on hover and in the accessible name; optional lag caveats join that
+same tooltip. Keep sorting numeric and preserve unknown states. Replication's
+summary, lag tile and topology use the same readable words; the tile and map
+labels retain exact seconds on hover. The ALTER review transaction age uses
+words too. Narrative text and other Locks badges need not offer exact seconds;
+see `docs/LOCAL_UI.md` for the hover locations. Sampling windows, budgets,
+thresholds, input controls and progress counters keep their existing units.
+
 `NavMarker` (`kit.tsx`) keeps a state dot separate from a neutral count.
 Compact navigation rows put the state in their tooltip and accessible name;
 a caller that already provides hidden text uses `announce={false}` to avoid
