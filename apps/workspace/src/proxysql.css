@@ -24,9 +24,27 @@
   padding: 0 10px;
   font-size: var(--text-sm);
 }
+.proxysql-config .button.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+}
+.proxysql-config .button.ghost:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
 .proxysql-config .button[aria-disabled="true"] {
   opacity: 0.55;
   cursor: not-allowed;
+}
+.proxysql-view .cluster-mark.is-info {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+@media (min-width: 901px) {
+  .proxysql-view .inspector-fields:has(dt > code) {
+    grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  }
 }
 .proxysql-code {
   font-family: var(--font-mono);

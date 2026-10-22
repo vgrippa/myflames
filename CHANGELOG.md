@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Show the reported server version wherever a place has a window footer, and truncate flexible text before write-safety words.
 - Draw visible Esc hints as a keycap.
 - Open Replication channel and Parameters details in the side inspector while keeping their lists available.
+- Open ProxySQL server, hostgroup, query rule and digest details in the 320 px side inspector (a bottom sheet below 1100 px) while keeping the list mounted and the row selected; give Empty hostgroups a neutral dot, count all hostgroup rows on the Hostgroups tab and tile ("5 with servers · 8 in monitors"), show "connected now" under Client connections, and style Load to runtime and Save to disk as secondary buttons with a reason tooltip when memory matches runtime or disk.
 - Wrap long Replication GTID sets after commas.
 - Offer Save N open plans as an investigation… when plans are open and hide the Investigations empty list.
 - Keep unread Galera node state on one compact line and offer Use &lt;connection&gt; when a saved connection matches the node.

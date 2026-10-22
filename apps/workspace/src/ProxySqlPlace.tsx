@@ -44,6 +44,7 @@ import "./cluster.css";
 import "./proxysql.css";
 
 export type ProxySqlTab = "servers" | "hostgroups" | "rules" | "digests";
+const SHEET_WIDTH = 1100;
 export const DEFAULT_DIGEST_FILTERS: DigestFilters = {
   order: "time", limit: 10, hostgroup: null, schema: null, user: null, text: null, digest: null, rule_id: null,
 };
@@ -85,6 +86,12 @@ function statusWord(s: ProxySqlServer): string {
 function roleText(role: string | null, monitor: string | null) {
   return role && monitor ? `${MONITOR_WORD[monitor] || monitor} ${role}` : "";
 }
+function hostgroupTone(h: ProxySqlHostgroup): Tone {
+  return !h.servers && h.tone === "ok" ? "unknown" : (h.tone as Tone);
+}
+function hostgroupStateWord(h: ProxySqlHostgroup): string {
+  return h.tone === "problem" ? "No ONLINE server" : h.tone === "watch" ? "Watch" : h.servers ? "OK" : "Empty";
+}
 
 export function summaryText(report: ProxySqlReport): string {
   if (!report.is_proxysql) return "Not a ProxySQL Admin interface";
@@ -110,9 +117,27 @@ export function ProxySqlPlace({ connection, disabled = false, report, onReport, 
 }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [inspectorWidth, setInspectorWidth] = useState(360);
+  const [inspectorWidth, setInspectorWidth] = useState(320);
   const [tab, setTab] = useState<ProxySqlTab>("servers");
   const [filters, setFilters] = useState<DigestFilters>(DEFAULT_DIGEST_FILTERS);
+  const placeRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1440));
+  useEffect(() => {
+    const el = placeRef.current;
+    const measure = () => {
+      const w = el && el.clientWidth > 0 ? el.clientWidth : window.innerWidth;
+      if (w > 0) setWidth(w);
+    };
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" && el ? new ResizeObserver(measure) : null;
+    if (el && observer) observer.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+  const sheet = width > 0 && width < SHEET_WIDTH;
   const go: Go = {
     rule: (id) => { setTab("rules"); setSelectedKey(`rule:${id}`); setInspectorOpen(true); },
     digest: (d) => {
@@ -133,8 +158,8 @@ export function ProxySqlPlace({ connection, disabled = false, report, onReport, 
   };
   const inspector = useMemo<InspectorShared>(() => ({
     open: inspectorOpen && !!selectedKey, setOpen: setInspectorOpen,
-    width: inspectorWidth, setWidth: setInspectorWidth, sheet: false,
-  }), [inspectorOpen, selectedKey, inspectorWidth]);
+    width: inspectorWidth, setWidth: setInspectorWidth, sheet,
+  }), [inspectorOpen, selectedKey, inspectorWidth, sheet]);
   const key = connectionKey(connection);
   const current = report && report.key === key ? report.report : null;
   useWindowStatus(`proxysql:${key}`, {
@@ -143,7 +168,7 @@ export function ProxySqlPlace({ connection, disabled = false, report, onReport, 
   });
   return (
     <InspectorContext.Provider value={inspector}>
-      <div className="cluster-place proxysql-place">
+      <div ref={placeRef} className="cluster-place proxysql-place">
         <ProxySqlView connection={connection} disabled={disabled} report={report} onReport={onReport}
           failure={failure} onFailure={onFailure} selection={selection} tab={tab}
           onTab={(t) => { setTab(t); setSelectedKey(""); }} filters={filters} onFilters={setFilters} go={go} />
@@ -265,8 +290,8 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   const groupColumns: Column<ProxySqlHostgroup>[] = [
     { key: "id", label: "Hostgroup", num: true, primary: true, sort: (h) => h.id, render: (h) => h.id },
     { key: "role", label: "Role", flex: true, sort: (h) => roleText(h.role, h.monitor), render: (h) => roleText(h.role, h.monitor) || "—" },
-    { key: "state", label: "State", minWidth: 120, sort: (h) => h.tone, render: (h) => (
-      <ClusterMark tone={h.tone as Tone} label={h.tone === "problem" ? "No ONLINE server" : h.tone === "watch" ? "Watch" : h.servers ? "OK" : "Empty"} title={h.why.join(" ")} />) },
+    { key: "state", label: "State", minWidth: 120, sort: (h) => hostgroupTone(h), render: (h) => (
+      <ClusterMark tone={hostgroupTone(h)} label={hostgroupStateWord(h)} title={h.why.join(" ")} />) },
     { key: "servers", label: "Servers", num: true, sort: (h) => h.servers, render: (h) => h.servers },
     { key: "online", label: "ONLINE", num: true, sort: (h) => h.status.ONLINE, render: (h) => h.status.ONLINE },
     { key: "shunned", label: "SHUNNED", num: true, title: "SHUNNED, standby writers included", sort: (h) => h.status.SHUNNED, render: (h) => h.status.SHUNNED },
@@ -309,10 +334,9 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
       busy={actions.busy} planning={actions.planning} onAction={startModule} /> : null;
   const shownResult = actions.result;
   return (
-    <ViewLayout id="proxysql" title="ProxySQL" className={`cluster-view proxysql-view${failedOver ? " is-stale" : ""}`}
+    <ViewLayout id="proxysql" title="ProxySQL" detailBackLabel="" className={`cluster-view proxysql-view${failedOver ? " is-stale" : ""}`}
       onRefresh={() => { void load(true); if (tab === "digests" && isProxy && !stale) void loadDigests(true); }} refreshDisabled={disabled}
       loading={!!reads.loading || !!digestReads.loading} otherConnection={other} inspector={content}
-      detailBackLabel={`Back to ${tab === "servers" ? "servers" : tab === "hostgroups" ? "hostgroups" : tab === "rules" ? "query rules" : "query digests"}`}
       inspectorEmpty={<p>Select a row to see its details{tab === "servers" || tab === "rules" ? " and the changes it offers" : ""}.</p>}
       controls={isProxy ? (
         <Segmented<ProxySqlTab>
@@ -321,7 +345,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
           onChange={onTab}
           options={[
             { value: "servers", label: "Servers", title: "Each backend as ProxySQL runs it, with its connection pool", count: servers.length },
-            { value: "hostgroups", label: "Hostgroups", title: "Hostgroups in runtime and the monitors that manage them", count: hostgroups.filter((h) => h.servers).length },
+            { value: "hostgroups", label: "Hostgroups", title: "Hostgroups in runtime and the monitors that manage them", count: hostgroups.length },
             { value: "rules", label: "Query rules", title: "mysql_query_rules: where ProxySQL routes each query", count: rules.length },
             { value: "digests", label: "Query digests", title: "stats_mysql_query_digest: the top digests in the order you choose, with where the rules send each one" },
           ]}
@@ -412,6 +436,8 @@ function ConfigLine({ report, module, block, busy, planning, onAction }: {
 }) {
   const pending = report.pending[module];
   const word = module === "servers" ? "servers" : "query rules";
+  const runtimeMatches = pending.runtime !== null && pending.runtime.length === 0;
+  const diskMatches = pending.disk !== null && pending.disk.length === 0;
   const runtime = pending.runtime === null ? "runtime not compared" : pending.runtime.length ? `${plural(pending.runtime.length, "change")} not loaded to runtime` : "memory matches runtime";
   const disk = pending.disk === null ? "disk not compared" : pending.disk.length ? `${plural(pending.disk.length, "difference")} from disk` : "saved to disk";
   const tone: Tone | undefined = pending.runtime?.length || pending.disk?.length ? "watch" : pending.runtime === null || pending.disk === null ? "unknown" : undefined;
@@ -423,10 +449,15 @@ function ConfigLine({ report, module, block, busy, planning, onAction }: {
         {tone && <StatusPill tone={tone} quiet label={tone === "watch" ? "Not applied" : "Unknown"} />}
         <span>{`Configuration of ${word}: ${runtime} · ${disk}`}</span>
       </span>
-      {acts.map((a) => (
-        <button key={a.id} type="button" className="button" title={block || a.description} aria-disabled={!!block || busy}
-          onClick={() => { if (!block && !busy) onAction(a.id); }}>{planning === a.id ? "Reading…" : a.label}</button>
-      ))}
+      {acts.map((a) => {
+        const isLoad = a.id === `${module}_load`;
+        const matches = isLoad ? runtimeMatches : diskMatches;
+        const noOpTitle = isLoad ? "Nothing to load: memory matches runtime" : "Nothing to save: disk matches memory";
+        return (
+          <button key={a.id} type="button" className={`button${matches ? " ghost" : ""}`} title={block || (matches ? noOpTitle : a.description)} aria-disabled={!!block || busy}
+            onClick={() => { if (!block && !busy) onAction(a.id); }}>{planning === a.id ? "Reading…" : a.label}</button>
+        );
+      })}
     </div>
   );
 }
@@ -452,23 +483,28 @@ function matchText(r: ProxySqlQueryRule): string {
 function proxyTiles(report: ProxySqlReport) {
   const s = report.summary;
   const used = report.hostgroups.filter((h) => h.servers);
+  const monitored = report.hostgroups.filter((h) => h.monitor).length;
+  const monitorNames = report.monitors.filter((m) => m.active).map((m) => `${MONITOR_WORD[m.kind]} monitor`).join(" · ");
   const problems = used.filter((h) => h.tone === "problem").length;
   const activeRules = report.query_rules.filter((r) => r.active).length;
   const clients = report.metrics.Client_Connections_connected;
   const backendsTone: Tone | undefined = s.backends && !s.ONLINE ? "problem" : s.SHUNNED + s.OFFLINE_SOFT + s.OFFLINE_HARD > 0 ? "watch" : undefined;
   const standby = used.reduce((n, h) => n + h.standby, 0);
+  const hostgroupsHint = `${used.length} with servers · ${monitored ? `${monitored} in monitors` : `${report.hostgroups.length - used.length} empty`}`;
   return (
     <section className="cluster-tiles" aria-label="ProxySQL summary">
       <TileGrid label="ProxySQL summary">
         <MetricTile rowKey="backends" label="Backends ONLINE" value={s.ONLINE.toLocaleString()} unit={`of ${s.backends}`}
           tone={backendsTone && standby && standby >= s.SHUNNED && !s.OFFLINE_SOFT && !s.OFFLINE_HARD && s.ONLINE ? undefined : backendsTone}
           trend={<span className="tile-hint">{[standby ? `${standby} standby ${standby === 1 ? "writer" : "writers"}` : "", s.not_in_runtime ? `${s.not_in_runtime} only configured` : ""].filter(Boolean).join(" · ") || "Rows in runtime"}</span>} />
-        <MetricTile rowKey="hostgroups" label="Hostgroups" value={used.length.toLocaleString()}
+        <MetricTile rowKey="hostgroups" label="Hostgroups" value={report.hostgroups.length.toLocaleString()}
           tone={problems ? "problem" : undefined} toneLabel={problems ? `${problems} without ONLINE` : undefined}
-          trend={<span className="tile-hint">{report.monitors.filter((m) => m.active).map((m) => `${MONITOR_WORD[m.kind]} monitor`).join(" · ") || "No monitor"}</span>} />
+          attrs={monitorNames ? { title: monitorNames } : undefined}
+          trend={<span className="tile-hint">{hostgroupsHint}</span>} />
         <MetricTile rowKey="rules" label="Query rules active" value={activeRules.toLocaleString()} unit={`of ${report.query_rules.length}`} />
         <MetricTile rowKey="clients" label="Client connections" value={typeof clients === "number" ? clients.toLocaleString() : "Not read"}
-          trend={<span className="tile-hint">Client_Connections_connected</span>} />
+          attrs={{ title: "Client_Connections_connected: client connections open to ProxySQL now" }}
+          trend={<span className="tile-hint">connected now</span>} />
       </TileGrid>
     </section>
   );
@@ -535,7 +571,10 @@ function hostgroupInspector(h: ProxySqlHostgroup, report: ProxySqlReport): Inspe
   return {
     key: `hg:${h.id}`,
     title: `Hostgroup ${h.id}`,
-    meta: h.role ? <span className="hint">{roleText(h.role, h.monitor)}</span> : undefined,
+    meta: <>
+      <ClusterMark tone={hostgroupTone(h)} label={hostgroupStateWord(h)} />
+      {h.role && <span className="hint">{roleText(h.role, h.monitor)}</span>}
+    </>,
     body: <>
       <InspectorSection title="Servers in runtime">
         {members.length ? <Fields rows={members.map((s): [string, string] => [addr(s), statusWord(s)])} /> : <p className="hint">None.</p>}

@@ -81,8 +81,8 @@ async function tab(label) {
   await pause(200);
 }
 async function backToList() {
-  const back = await page.$(".view-inspector.is-detail .detail-back");
-  if (back) { await back.click(); await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail")); }
+  const close = await page.$(".view-inspector.is-detail .detail-back, .view-inspector.is-sheet .inspector-close");
+  if (close) { await close.click(); await page.waitForFunction(() => !document.querySelector(".view-inspector.is-detail, .view-inspector.is-sheet")); }
 }
 async function selectRow(key) {
   await backToList();
@@ -149,9 +149,26 @@ try {
   assert.equal(state.seen.at(-1).connection.port, 6032);
   assert.equal(state.seen.at(-1).connection.type, "development");
   assert.match((await visible(`${view} .summary-line`))[0], /ProxySQL 3\.0\.11-797-g7c91137 · up 2 d 4 h · 10 backends in 5 hostgroups · 8 ONLINE, 2 SHUNNED/);
-  assert.deepEqual(await visible(`${view} .segmented button`), ["Servers10", "Hostgroups5", "Query rules3", "Query digests"]);
-  assert.deepEqual(await visible(`${view} .tile-label`), ["Backends ONLINE", "Hostgroups", "Query rules active", "Client connections"]);
+  assert.deepEqual(await visible(`${view} .segmented button`), ["Servers10", "Hostgroups8", "Query rules3", "Query digests"]);
+  const tiles = await page.$$eval(`${view} .metric-tile`, (els) => els.map((e) => ({
+    label: e.querySelector(".tile-label")?.textContent?.trim() || "",
+    value: e.querySelector(".tile-value")?.textContent?.trim() || "",
+    hint: e.querySelector(".tile-hint")?.textContent?.trim() || "",
+  })));
+  assert.deepEqual(tiles.map((t) => t.label), ["Backends ONLINE", "Hostgroups", "Query rules active", "Client connections"]);
+  assert.deepEqual(tiles[1], { label: "Hostgroups", value: "8", hint: "5 with servers · 8 in monitors" });
+  assert.equal(tiles[3].hint, "connected now");
   assert.match((await visible(`${view} .proxysql-config`))[0], /Configuration of servers: memory matches runtime · saved to disk/);
+  const configButtons = await page.$$eval(`${view} .proxysql-config button`, (els) => els.map((b) => ({
+    text: b.textContent.trim(), ghost: b.classList.contains("ghost"), title: b.title,
+  })));
+  assert.deepEqual(configButtons, [
+    { text: "Load servers to runtime…", ghost: true, title: "Nothing to load: memory matches runtime" },
+    { text: "Save servers to disk…", ghost: true, title: "Nothing to save: disk matches memory" },
+  ]);
+  // d06: summary and server status marks use a dot plus a word.
+  assert.notEqual(await page.$eval(`${view} .summary-line .status-pill.is-ok .status-dot`, (d) => getComputedStyle(d).display), "none");
+  assert.equal(await page.$eval(`${view} .cluster-mark.is-ok .cluster-shape`, (d) => getComputedStyle(d).borderRadius), "50%");
   const info = await h.popover("About ProxySQL");
   assert.match(info, /memory \(what Admin edits\), runtime \(what it uses\) and disk/);
   assert.match(info, /Save to disk is a separate change/);
@@ -164,14 +181,22 @@ try {
   assert.notEqual(pool, "—", "the connection pool is read");
   await shot("proxysql-servers-1440.png");
 
-  // The inspector: runtime, pool, configuration row, monitor, and the changes.
+  // The inspector: right-hand 320 px pane at 1440 px, list stays mounted with
+  // the row selected, and Escape returns focus to the row.
   await selectRow("rt|32|mf-ic-2|3306");
+  assert.equal(await page.$eval(".view-inspector", (e) => e.classList.contains("is-detail")), false, "right-pane inspector at 1440 px");
+  assert.equal(await page.$eval(".view-inspector", (e) => Math.round(e.getBoundingClientRect().width)), 320, "inspector defaults to 320 px");
+  assert.equal(await page.$(".view-inspector .detail-back"), null, "no full-width Back button");
+  assert.equal(await page.$eval(rowSelector("rt|32|mf-ic-2|3306"), (e) => !!e.offsetParent && e.classList.contains("is-selected")), true, "server list stays mounted with row selected");
   const text = await h.inspector();
   assert.match(text, /Connection pool/);
   assert.match(text, /hostgroup 30, mf-ic-2:3306/);
   assert.match(text, /Group Replication monitor/);
   assert.deepEqual(await inspectorButtons(), ["Set OFFLINE_SOFT…", "Set OFFLINE_HARD…", "Change weight…"], "no move out of a monitor's hostgroups");
   assert.match(await h.inspector(), /Move to hostgroup is not offered: a row moved out of the Group Replication monitor's hostgroups stays/);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-row-key") === "rt|32|mf-ic-2|3306");
   await selectRow("rt|11|mf-galera-2|3306");
   assert.deepEqual(await inspectorButtons(), ["Set OFFLINE_HARD…", "Change weight…"], "no OFFLINE_SOFT under the Galera monitor");
   assert.match(await h.inspector(), /OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic/);
@@ -499,18 +524,37 @@ try {
   await page.click(`${view} .proxysql-chip .text-button`);
   await pause(300);
   await tab("Hostgroups");
+  assert.equal(await page.$$eval(`${view} tbody tr[data-row-key]`, (els) => els.length), 8, "Hostgroups table has 8 rows matching the tab count");
   assert.match((await visible(`${view} tbody tr[data-row-key="hg:32"] td[data-col="role"]`))[0], /Group Replication reader/);
+  const hgStates = await page.$$eval(`${view} tbody tr[data-row-key]`, (trs) => trs.map((tr) => ({
+    key: tr.dataset.rowKey,
+    text: tr.querySelector('td[data-col="state"] .cluster-mark')?.textContent?.trim(),
+    ok: tr.querySelector('td[data-col="state"] .cluster-mark')?.classList.contains("is-ok"),
+    neutral: tr.querySelector('td[data-col="state"] .cluster-mark')?.classList.contains("is-unknown"),
+    radius: getComputedStyle(tr.querySelector('td[data-col="state"] .cluster-shape')).borderRadius,
+  })));
+  assert.ok(hgStates.every((h) => h.radius === "50%"), "every hostgroup state shape is a dot/ring");
+  assert.deepEqual(hgStates.filter((h) => h.text === "Empty").map((h) => ({ key: h.key, ok: h.ok, neutral: h.neutral })), [
+    { key: "hg:19", ok: false, neutral: true },
+    { key: "hg:31", ok: false, neutral: true },
+    { key: "hg:39", ok: false, neutral: true },
+  ], "Empty hostgroups are neutral, not OK");
+  assert.ok(hgStates.filter((h) => h.text === "OK").every((h) => h.ok && !h.neutral));
 
   // A rule disabled in memory but not loaded still routes in runtime: the
   // inspector keeps the digests it applies to.
   await tab("Query rules");
   await refreshTo(R["rules-pending"]);
   await selectRow("rule:30");
+  assert.equal(await page.$eval(".view-inspector", (e) => e.classList.contains("is-detail")), false, "query rule inspector opens in right pane");
+  assert.equal(await page.$eval(rowSelector("rule:30"), (e) => !!e.offsetParent && e.classList.contains("is-selected")), true, "rules list stays mounted with row selected");
   const pendingRule = await h.inspector();
   assert.match(pendingRule, /Not active \(runtime: active\)/);
   assert.doesNotMatch(pendingRule, /applies to no query/);
   assert.match(pendingRule, /SELECT COUNT\(\*\) FROM testdb\.orders WHERE status = \? AND customer_id = \?/);
-  await backToList();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-row-key") === "rule:30");
   await tab("Servers");
 
   // Delimiters in schema/user names must not alias row selection or links.
@@ -542,6 +586,8 @@ try {
   // Pending changes in memory show on the configuration line.
   await refreshTo(R.pending);
   assert.match((await visible(`${view} .proxysql-config`))[0], /1 change not loaded to runtime · 1 difference from disk/);
+  assert.deepEqual(await page.$$eval(`${view} .proxysql-config button`, (els) => els.map((b) => b.classList.contains("ghost"))), [false, false],
+    "when changes wait in memory or disk, Load and Save are not ghost buttons");
 
   // Another connection's report: greyed, its changes off, nothing planned.
   await refreshTo(R.lab);
@@ -577,6 +623,13 @@ try {
   assert.ok(narrow.overflow <= 0, `horizontal page scroll at 720 px: ${narrow.overflow}`);
   assert.ok(narrow.top < narrow.fold, `the table starts above the fold: ${JSON.stringify(narrow)}`);
   await shot("proxysql-720.png");
+  // Below 1100 px the inspector opens as a bottom sheet, keeping the list mounted; Escape returns focus to the row.
+  await selectRow("rt|32|mf-ic-2|3306");
+  assert.equal(await page.$eval(".view-inspector", (e) => e.classList.contains("is-sheet")), true, "bottom sheet inspector at 720 px");
+  assert.equal(await page.$eval(rowSelector("rt|32|mf-ic-2|3306"), (e) => !!e.offsetParent && e.classList.contains("is-selected")), true);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-row-key") === "rt|32|mf-ic-2|3306");
   await tab("Query digests");
   await page.waitForSelector(`${view} .proxysql-digest-summary`);
   const narrowDigests = await page.evaluate((sel) => ({

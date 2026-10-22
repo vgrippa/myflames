@@ -619,14 +619,21 @@ tiles and four tabs:
 
 - **Servers**: each backend as ProxySQL runs it (runtime), with its hostgroup,
   its role in a Galera, Group Replication, replication or Aurora monitor's
-  hostgroups, status, weight, connections in use and free, connection errors
+  hostgroups, status (with the shared status dot), weight, connections in use and free, connection errors
   since ProxySQL started, queries and ping. A writer the Galera monitor keeps
   above `max_writers` reads **SHUNNED (standby writer)**: it is ONLINE in the
-  backup writer hostgroup. The inspector shows the runtime row, the connection
-  pool, the configuration row it comes from (a monitor may run it in another of
-  its hostgroups) and the monitor.
-- **Hostgroups**: each hostgroup in runtime with its role and how many servers
-  are in each status.
+  backup writer hostgroup. Selecting a server, hostgroup, query rule or digest
+  opens the side inspector while keeping the table on screen in a wide window
+  (a bottom sheet below 1,100 px), and Escape returns focus to the row. The
+  server inspector shows the runtime row, the connection pool, the configuration
+  row it comes from (a monitor may run it in another of its hostgroups) and the
+  monitor.
+- **Hostgroups**: each hostgroup in runtime or in a monitor with its role and
+  how many servers are in each status. The tab and the Hostgroups tile count
+  every listed hostgroup, and the tile sub-line says how many have servers and
+  how many are in monitors (for example "5 with servers · 8 in monitors"); an
+  **Empty** hostgroup has a neutral status dot rather than OK. The Client
+  connections tile sub-line reads "connected now".
 - **Query rules**: each rule with what it matches, its destination hostgroup,
   Apply, its hits (**No hits** when no query matched it since the rules were
   last loaded to runtime) and **Digests**: how many of the 100 digests with the
@@ -672,7 +679,10 @@ When a runtime variable needed by the rule walk cannot be read, affected digests
 ProxySQL keeps three copies of its configuration: memory (what Admin edits),
 runtime (what it uses) and disk (what it loads at its next start). The
 **Configuration** line above Servers and Query rules says whether memory
-matches runtime and disk, with **Load … to runtime…** and **Save … to disk…**.
+matches runtime and disk, with **Load … to runtime…** and **Save … to disk…**
+(when memory already matches runtime or disk, the matching button is a secondary
+ghost control with "Nothing to load: memory matches runtime" or "Nothing to
+save: disk matches memory" in its tooltip, while staying usable).
 When a copy of a table could not be read (anything but a table this ProxySQL
 version does not have), what loading or saving would change is unknown, so
 that module offers no change; the notes name the table.
