@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import contextlib
 import sqlite3
 import tempfile
 import unittest
@@ -47,7 +48,9 @@ class TestWorkspaceStore(unittest.TestCase):
                 self.store.set_app_update_last_check(bad)
         self.assertEqual(self.store.app_update_last_check(), newer)
         # A damaged value reads as never checked, not as an error.
-        with sqlite3.connect(str(self.path)) as conn:
+        # closing(): sqlite3's context manager commits but leaves the file open,
+        # and Windows cannot remove an open file when the temporary folder goes.
+        with contextlib.closing(sqlite3.connect(str(self.path))) as conn, conn:
             conn.execute("UPDATE settings SET value = 'not json' WHERE key = 'app_update_last_check'")
         self.assertIsNone(self.store.app_update_last_check())
 
