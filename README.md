@@ -40,7 +40,7 @@ The workspace ships as a macOS desktop app. The Python package provides the comm
 
 ### 1. Install the macOS app (workspace)
 
-1. Download `myflames-3.1.0-macos-arm64.zip` from the [GitHub release](https://github.com/vgrippa/myflames/releases) (Apple Silicon Macs).
+1. Download `myflames-3.1.1-macos-arm64.zip` from the [GitHub release](https://github.com/vgrippa/myflames/releases) (Apple Silicon Macs).
 2. Unzip it and move `myflames.app` to your Applications folder.
 3. Open it from Finder. No terminal, Node.js or separately installed Python is needed.
 

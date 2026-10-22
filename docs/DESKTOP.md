@@ -12,7 +12,7 @@ deferred.
 
 ## Install and first launch
 
-Download `myflames-3.1.0-macos-arm64.zip` from the GitHub release, unzip it and
+Download `myflames-3.1.1-macos-arm64.zip` from the GitHub release, unzip it and
 move `myflames.app` to Applications. Because the app has no Developer ID
 signature or notarization, macOS blocks the first launch. Control-click the app
 and choose Open, or use System Settings > Privacy & Security > Open Anyway, or

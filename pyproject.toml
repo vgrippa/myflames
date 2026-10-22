@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myflames"
-version = "3.1.0"
+version = "3.1.1"
 description = "MySQL and MariaDB performance workspace: EXPLAIN ANALYZE flame graphs and Visual Explain, an advisor, top and running queries, and lock views"
 readme = "README.md"
 requires-python = ">=3.7"
