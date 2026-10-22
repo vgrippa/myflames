@@ -1641,8 +1641,8 @@ def api_response(path, payload, workspace=None):
             return _discover_response(path, payload)
         raise ValueError("Unknown workspace operation.")
     if path.startswith("/api/teach/"):
-        from .teach import (LESSONS, CURRICULUM, LESSON_FAMILIES, _FAMILY_LABELS, lesson_views,
-                            render_lesson, render_lesson_3d)
+        from .teach import (LESSONS, CURRICULUM, LESSON_FAMILIES, _FAMILY_LABELS,
+                            render_lesson)
         if path == "/api/teach/catalog":
             track = [key for key in CURRICULUM if key in LESSONS]
             keys = track + [key for key in LESSONS if key not in track]
@@ -1652,17 +1652,16 @@ def api_response(path, payload, workspace=None):
                              for key in LESSON_FAMILIES],
                 "lessons": [{"key": key, "title": LESSONS[key]["title"],
                              "summary": LESSONS[key]["summary"],
-                             "family": LESSONS[key]["family"],
-                             "views": lesson_views(key)} for key in keys],
+                             "family": LESSONS[key]["family"]} for key in keys],
             }
         if path == "/api/teach/lesson":
             key = payload.get("lesson")
             if not isinstance(key, str) or key not in LESSONS:
                 raise ValueError("Choose a lesson from the Teach catalog.")
             view = payload.get("view", "2d")
-            if view not in lesson_views(key):
-                raise ValueError("This lesson has no {} view.".format(view if isinstance(view, str) else "such"))
-            return {"html": render_lesson_3d(key) if view == "3d" else render_lesson(key)}
+            if view != "2d":
+                raise ValueError("Only the 2D lesson view is available.")
+            return {"html": render_lesson(key)}
         raise ValueError("Unknown Teach endpoint.")
     if path == "/api/report/export":
         return _export_response(payload)

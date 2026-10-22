@@ -45,9 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep unread Galera node state on one compact line and offer Use &lt;connection&gt; when a saved connection matches the node.
 - Keep each action in one place in Tuning, Database diagram and I/O: Scorecard owns Run full analysis, the analysis and diagram use Refresh, and I/O keeps its controls in the view toolbar.
 - Draw execution tree self time on a common baseline under Self of total in the Python and TypeScript renderers.
-- Add click exploration to the optional 3D B+tree lesson: logarithmic rows, lazy page and record windows, verified byte fields, Selected details, a breadcrumb and a keyboard tree that also works without WebGL. Put narration above the canvas and share interiors with guided playback. Preserve camera travel distance, refresh instance bounds, use line revisions, remove duplicate read-page drawing and add renderer budget probes. The full renderer migration and browser approval remain pending; see `apps/teach-3d/HANDOFF.md`. Keep the 2D lesson and model numbers unchanged, and correct only the model overhead comment.
 - Server actions that open a statement in the Query editor (Show index, Show create table, Processlist's Open in Query editor) open it in a new tab, as Top statements already did; Parameters' Session change still goes to the current tab, because it changes that tab's session.
-- Redesign the optional 3D B+tree lesson with fitted camera travel, cursor zoom and view presets, bounded labels, page inspection and record trays, read-path lighting, light/dark themes and a stage that fits the window. Add an editable lookup id, rendering quality tiers, frame-sweep tests and the `teach-3d` project skill.
 - The Full analysis's version support check no longer applies MySQL's lifecycle dates to Percona Server: it is unknown there, with MySQL's date shown for reference. Its text names the product ("MySQL 8.0.46", not "mysql 8.0.46").
 
 - Server > Parameters' inspector is one compact section: a one-sentence description (on MySQL 8.0 and 8.4, which report none, the help text the variable is declared with in the MySQL source, as MySQL 9.0+ reports it; generated into `myflames/mysql_sysvar_help.py` by `scripts/gen_mysql_sysvars.py`), the Documentation link, and Current value (Value, Default, Source, Changes in words instead of Apply type and Scope, Allowed values, Persisted, and the checks that cover it); a Recommendation follows only when a check flags the parameter, with the most severe check's reason, the suggested statement and option file line, and its caveat in one line. The per-check "Explanation and recommendations" blocks, which repeated the description, are gone, and the actions moved to the bar under the parameter's name.
@@ -75,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The command palette lists commands whose name contains every typed word first, then those found only by a keyword or their group, each in the usual order: typing innodb opens the InnoDB view, not the Cluster place, and health opens the Health view, not Tuning.
 - Production connections are purple and Development connections teal (tags, the picker dot and the window footer), so a Production connection never reads as a problem: red now only means Problem and green only OK.
 
+### Removed
+
+- Remove the optional 3D view of the B+tree lesson and its 2D | 3D switch from Learn. The 2D lessons are unchanged; the 3D view continues as a separate project.
+
 ### Fixed
 
 - Keep Cluster and ProxySQL pending changes visible after closing the review sheet while an inspector is open. Correct the action-feedback tests to honor HTTP 503 scenarios and to fail Refresh all reads without a scenario ReferenceError.
@@ -87,8 +89,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Format Parameters Value and Default consistently.
 - Hide Learn's empty Phases panel.
 - Separate Database diagram relationship lines at crossings so they do not appear joined.
-- Make 3D B+tree byte fields readable with minimum widths and a not-to-scale note, fit pointer beats to the open interior, mark the chosen pointer and suppress overlapping stack and hover labels. Update the story smoke test to use Space, N and arrows for stepping.
-
 - Successful Kill results consistently begin with "Done." before the server's message in Locks, Processlist and Kill sessions. Browser expectations follow Try again for failed reads, focus-preserving busy buttons and Users and roles' automatic first read followed by Refresh.
 - Keep partitioned-table indexes out of Unused on MySQL, MariaDB and Percona Server. Check partitioning only for candidate tables in bounded batches; put partitioned or unresolved candidates under No data with a reason, and suppress DROP and visibility SQL across index lists and inspectors.
 

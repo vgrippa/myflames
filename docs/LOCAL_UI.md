@@ -1168,14 +1168,14 @@ grouped rows by family, ordered by the learning path, each with its summary and
 panel; lessons with phases keep their phase navigation.
 
 An open lesson has one compact toolbar (**All lessons**, **Previous lesson**,
-**Step n of 16**, **Next lesson**, **2D | 3D** when available, **Download
-lesson**) that stays under the top bar while the lesson scrolls, and fills
+**Step n of 16**, **Next lesson**, **Download lesson**) that stays under the
+top bar while the lesson scrolls, and fills
 the window edge to edge like every other place; the top bar shows the lesson title
 (lesson titles use a colon, such as "B+tree lookup: how InnoDB finds a row").
 The workspace adds `data-embedded="true"` to the lesson page, which hides its
 own header and footer. Topics outside the learning path can be opened directly
-from the catalog, and **Download lesson** saves the self-contained HTML for
-offline use.
+from the catalog, and **Download lesson** saves the self-contained HTML
+(for example, `btree.html`) for offline use.
 
 Lesson pages and the standalone catalog (`myflames teach --index`, which
 includes a lesson filter) use the workspace's light and dark tokens
@@ -1184,14 +1184,6 @@ URL parameters), restyled controls, and semantic `--svg-*` drawing colors
 resolved by `anim.cssVar` and `anim.palette`, so drawings redraw when the
 appearance changes and keep their meaning (descent path, arrival pulse, PK hop,
 build vs probe, hit, spill).
-
-Lessons with a 3D view (today the B+tree lesson) show a **2D | 3D** switch in
-the lesson toolbar. 2D is the default and is unchanged. The 3D view draws the
-index at its real size, one tile per page, in four chapters: the tree's shape,
-a primary key lookup, a secondary index lookup, and a range scan. Drag to turn
-the view; **Follow the query** brings the camera back to the animation. It
-needs WebGL; without it the narration and numbers still work. **Download
-lesson** saves whichever view is open (`btree-3d.html` for the 3D view).
 
 Switching between Learn and Plans keeps your imported plans in
 memory. Leaving a lesson stops its animation; reopening it resets its controls.
@@ -1351,7 +1343,7 @@ token. There is no CORS access. See the [authentication and limits contract](DEV
 | Endpoint | Request | Response |
 | --- | --- | --- |
 | `/api/teach/catalog` | Empty object | `lessons`, `families`, `curriculum` |
-| `/api/teach/lesson` | `lesson`: registered lesson key; optional `view`: `2d` (default) or `3d` when the catalog lists it | `html`: original self-contained lesson, or the prebuilt 3D page |
+| `/api/teach/lesson` | `lesson`: registered lesson key; omit `view` or use `2d`; other values return HTTP 400 | `html`: original self-contained lesson, or the prebuilt 3D page |
 | `/api/analyze` | `plan`: raw plan text | `analysis`, `operators`, `query`, `teach_hooks`, `chart_data` (`chart-data-2.0`, drawn in the page by the chart runtime). The SQL is sent once, in `query` and `analysis.query.raw`; teach hooks leave out `query_sql`, which Export JSON adds back |
 | `/api/investigations/list` | optional `limit` (1 to 50, default 25), `cursor`, `search` | `investigation-list-1.0`: `items` (summaries, newest first, no plans) and `next_cursor` (null on the last page) |
 | `/api/investigations/get` | `id` | the saved `investigation-1.0` bundle |
@@ -1377,9 +1369,11 @@ Workspace routing in `myflames/ui.py` (`api_response`) dispatches across dedicat
 
 Detailed schemas and request/response payloads are documented in [QUERY_WORKSPACE.md](QUERY_WORKSPACE.md#api-additions).
 
-The lesson catalog (`teach/catalog`) contains each lesson’s `key`, `title`, `summary`, `family`, and `views` (`["2d"]`, or `["2d", "3d"]` for lessons with a 3D view).
+The lesson catalog (`teach/catalog`) contains each lesson’s `key`, `title`, `summary`, and `family`.
 `curriculum` lists lesson keys in the existing learning order. Lesson rendering
-accepts registered keys only.
+accepts registered keys only. Omit `view` (or send `"2d"` for compatibility);
+other values return HTTP 400 with "Only the 2D lesson view is available."
+Session restore uses the lesson key and ignores obsolete view preferences.
 
 `analysis` uses the existing sidecar schemas without changing their fields.
 `operators` is a UI projection of canonical parser nodes: `node_id`, `label`,

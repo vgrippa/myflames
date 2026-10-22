@@ -305,25 +305,6 @@ def render_lesson(name: str) -> str:
     return render_fn()
 
 
-#: Lessons that also have a 3D view. Each is a prebuilt, self-contained page
-#: in myflames/assets/, built from apps/teach-3d (Python users need no Node.js).
-#: The 3D view is an extra option; the 2D lesson stays the default.
-LESSON_3D = {"btree": "teach3d-btree.html"}
-
-
-def lesson_views(name: str) -> List[str]:
-    """The views lesson *name* offers: always ``2d``, plus ``3d`` when it has one."""
-    return ["2d", "3d"] if name in LESSON_3D else ["2d"]
-
-
-def render_lesson_3d(name: str) -> str:
-    """Return the prebuilt 3D page for lesson *name*."""
-    if name not in LESSON_3D:
-        raise KeyError(f"lesson {name!r} has no 3D view")
-    path = Path(__file__).resolve().parent.parent / "assets" / LESSON_3D[name]
-    return path.read_text(encoding="utf-8")
-
-
 _FAMILY_LABELS = {
     "join_family": "Join family",
     "index_family": "Index access family",

@@ -413,25 +413,13 @@ the window-open handler always denies a new app window. Tests:
   `--no-restore` skips restore and autosave for one launch without deleting the
   session. Test with `test/test_session.py` and `npm run test:session`.
   Its Learn catalog and lesson player use the existing `LESSONS` registry
-  and `CURRICULUM` order. The Learn place uses a view toolbar (Search lessons, Family filter, Start learning), a one-line summary ("23 lessons, 16 in the learning path") and grouped rows by family, ordered by the learning path, each with its summary and "Step n of 16". An open lesson has one compact toolbar (All lessons, Previous lesson, Step n of 16, Next lesson, 2D/3D when available, Download lesson) and fills the remaining height; the top bar shows the lesson title. The workspace adds `data-embedded="true"` to the lesson page, which hides its own header and footer. Lesson pages and the standalone catalog (`myflames teach --index`, which includes a lesson filter) use the workspace's light and dark tokens (`prefers-color-scheme`, `data-theme` overrides, and `?theme=` / `?embedded=1` URL parameters), restyled controls, and semantic `--svg-*` drawing colors resolved by `anim.cssVar` and `anim.palette`, so drawings redraw when the appearance changes and keep their meaning (descent path, arrival pulse, PK hop, build vs probe, hit, spill). Lesson titles use a colon ("B+tree lookup: how InnoDB finds a row"). See `docs/LOCAL_UI.md` and `docs/QUERY_WORKSPACE.md`. Test with `test/test_ui.py` and the CLI suite.
-  **3D lesson views** are an extra option beside a 2D lesson (today `btree`).
-  `LESSON_3D` in `myflames/teach/__init__.py` maps a lesson to a prebuilt page in
-  `myflames/assets/` (`teach3d-btree.html`), served by `render_lesson_3d` when
-  `/api/teach/lesson` gets `"view": "3d"`; the catalog lists `views` per lesson
-  and `Teach.tsx` shows a 2D | 3D switch only when `3d` is listed. The page is
-  built from `apps/teach-3d` (plain TypeScript and three.js, no React): `npm ci
-  && npm run build` there runs `tsc`, a Vite IIFE build, and
-  `scripts/assemble.mjs`, which inlines the script and styles into one offline
-  file (it works under the workspace iframe CSP), keeps three.js's MIT notice,
-  and records a `myflames-sources-sha256` meta tag. Commit the rebuilt asset
-  with the source change; `test/test_teach.py` fails on a stale hash or a page
-  over its size budget. The numbers come from `innodb_index_shapes` and
-  `leaf_range_pages` in `myflames/teach/_cost_model.py`; `apps/teach-3d/src/model.ts`
-  mirrors them, `scripts/export-btree-shape.py` writes the parity fixture
-  (`apps/teach-3d/test/fixtures/btree-shape.json`; rerun it after a model
-  change), `npm test` checks the TypeScript against it, and `npm run test:smoke`
-  checks the built page in a browser (every chapter's numbers, playback, reduced
-  motion, the no-WebGL fallback, 390 px). The 2D lessons stay SVG only.
+  and `CURRICULUM` order. The Learn place uses a view toolbar (Search lessons, Family filter, Start learning), a one-line summary ("23 lessons, 16 in the learning path") and grouped rows by family, ordered by the learning path, each with its summary and "Step n of 16". An open lesson has one compact toolbar (All lessons, Previous lesson, Step n of 16, Next lesson, Download lesson) and fills the remaining height; the top bar shows the lesson title. The workspace adds `data-embedded="true"` to the lesson page, which hides its own header and footer. Lesson pages and the standalone catalog (`myflames teach --index`, which includes a lesson filter) use the workspace's light and dark tokens (`prefers-color-scheme`, `data-theme` overrides, and `?theme=` / `?embedded=1` URL parameters), restyled controls, and semantic `--svg-*` drawing colors resolved by `anim.cssVar` and `anim.palette`, so drawings redraw when the appearance changes and keep their meaning (descent path, arrival pulse, PK hop, build vs probe, hit, spill). Lesson titles use a colon ("B+tree lookup: how InnoDB finds a row"). See `docs/LOCAL_UI.md` and `docs/QUERY_WORKSPACE.md`. Test with `test/test_ui.py` and the CLI suite.
+  Lessons use SVG only. The catalog exposes each lesson's key, title, summary
+  and family; the workspace requests a lesson by key. The lesson API accepts
+  an omitted `view` or `"2d"` for older clients and rejects any other value with
+  HTTP 400. Session restore reads the lesson key and ignores obsolete view
+  preferences. The shape and range helpers in `_cost_model.py` remain covered
+  by the independent Python unit tests in `test/test_teach.py`.
   Keep the import dialog's native file control visually clipped but keyboard
   accessible; verify open/error states at desktop and narrow, short viewports.
   Use `docs/UI_TESTING.md` for the interaction matrix. Check contextual Learn

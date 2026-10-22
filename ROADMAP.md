@@ -110,7 +110,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
   inspection, statement statistics, and optimizer traces. Shared `capture` and
   `explore` CLI commands. The UI uses a simplified mark derived from the project logo, stable logo URLs across rebuilds, and a neutral/blue design.
 
-- **3D lesson views**: the B+tree lesson has an extra 3D view (Learn, **2D | 3D**) that draws the index at its real size and walks four chapters: shape, primary key lookup, secondary index, range scan. Built from `apps/teach-3d` with three.js into one offline page; inspired by PGSimCity. Candidates next, if the B+tree view earns it: the buffer pool's LRU with its young and old sublists, and a hash join's build and probe.
+- The 3D view of the B+tree lesson moved to a separate project.
 - **Local browser workspace**: `myflames ui` imports saved plans, displays four chart views and operator details, compares plans, and exports HTML/JSON. Session restore autosaves the open workspace (never passwords) and reopens it on the next launch; `--no-restore` starts one launch clean. The Learn section opens the interactive lessons with a view toolbar, family filter, grouped learning-path rows ("Step n of 16"), embedded lesson bar, light/dark tokens and downloads. React/TypeScript assets ship with the standard-library Python server.
 
 - **Four views**: flame graph, bar chart, execution tree, and unified Visual Explain. (The treemap was removed: area made relative cost hard to compare, and the bar chart answers the same question more precisely.) Diagram and Workbench share one renderer with larger Venn join symbols, operation colors, row-volume arrows, and smooth mouse/trackpad navigation. Existing `diagram` commands remain compatible.

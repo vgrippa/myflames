@@ -583,15 +583,19 @@ class TestWorkspaceHTTP(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/teach/lesson', {'lesson': 'missing'})[0], 400)
         self.assertEqual(self.request('POST', '/api/teach/catalog', {}, {'X-Myflames-Token': ''})[0], 403)
 
-    def test_teach_lesson_views_over_http(self):
-        status, body, _ = self.request('POST', '/api/teach/lesson', {'lesson': 'btree', 'view': '3d'})
-        self.assertEqual(status, 200)
-        self.assertIn('myflames-sources-sha256', json.loads(body)['html'])
-        for payload in ({'lesson': 'btree', 'view': '4d'}, {'lesson': 'full_scan', 'view': '3d'}):
+    def test_teach_lesson_rejects_unavailable_views_over_http(self):
+        for lesson in ('btree', 'full_scan'):
+            for view in ('3d', '4d', '3D', '', None, [], {}, 3):
+                with self.subTest(lesson=lesson, view=view):
+                    status, body, _ = self.request('POST', '/api/teach/lesson',
+                                                   {'lesson': lesson, 'view': view})
+                    self.assertEqual(status, 400)
+                    self.assertIn('Only the 2D lesson view is available.', json.loads(body)['error'])
+        for payload in ({'lesson': 'btree'}, {'lesson': 'btree', 'view': '2d'}):
             with self.subTest(payload=payload):
                 status, body, _ = self.request('POST', '/api/teach/lesson', payload)
-                self.assertEqual(status, 400)
-                self.assertIn('error', json.loads(body))
+                self.assertEqual(status, 200)
+                self.assertIn('btn-play', json.loads(body)['html'])
 
     def test_limits_content_type_and_paths(self):
         self.assertEqual(self.request('POST', '/api/analyze', {}, {'Content-Type': 'text/plain'})[0], 415)
@@ -630,22 +634,10 @@ class TestWorkspaceTeach(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'Teach catalog'):
                     api_response('/api/teach/lesson', {'lesson': key})
 
-    def test_catalog_lists_the_views_of_every_lesson(self):
-        from myflames.teach import LESSON_3D
-        lessons = {lesson['key']: lesson for lesson in api_response('/api/teach/catalog', {})['lessons']}
-        for key, lesson in lessons.items():
-            with self.subTest(lesson=key):
-                self.assertIn('views', lesson)
-                self.assertEqual(lesson['views'][0], '2d')
-                self.assertEqual(lesson['views'], ['2d', '3d'] if key in LESSON_3D else ['2d'])
-        self.assertEqual(lessons['btree']['views'], ['2d', '3d'])
-        self.assertEqual(lessons['full_scan']['views'], ['2d'])
-
-    def test_lesson_3d_view_returns_the_prebuilt_page(self):
-        from myflames.teach import render_lesson_3d
-        html = api_response('/api/teach/lesson', {'lesson': 'btree', 'view': '3d'})['html']
-        self.assertEqual(html, render_lesson_3d('btree'))
-        self.assertIn('myflames-sources-sha256', html)
+    def test_catalog_contains_only_lesson_metadata(self):
+        for lesson in api_response('/api/teach/catalog', {})['lessons']:
+            with self.subTest(lesson=lesson['key']):
+                self.assertEqual(set(lesson), {'key', 'title', 'summary', 'family'})
 
     def test_lesson_2d_view_is_the_default(self):
         from myflames.teach import render_lesson
@@ -656,12 +648,12 @@ class TestWorkspaceTeach(unittest.TestCase):
         self.assertEqual(api_response('/api/teach/lesson', {'lesson': 'full_scan', 'view': '2d'})['html'],
                          render_lesson('full_scan'))
 
-    def test_unknown_view_or_lesson_without_3d_is_rejected(self):
-        cases = [('btree', view) for view in ('4d', '3D', '', None, [], {}, 3)]
-        cases.append(('full_scan', '3d'))
+    def test_unavailable_views_are_rejected(self):
+        cases = [(key, view) for key in ('btree', 'full_scan')
+                 for view in ('3d', '4d', '3D', '', None, [], {}, 3)]
         for key, view in cases:
             with self.subTest(lesson=key, view=view):
-                with self.assertRaisesRegex(ValueError, 'no .* view'):
+                with self.assertRaisesRegex(ValueError, 'Only the 2D lesson view is available'):
                     api_response('/api/teach/lesson', {'lesson': key, 'view': view})
 
 

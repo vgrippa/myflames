@@ -10,11 +10,6 @@ Three concentric rings:
 """
 from __future__ import annotations
 
-import contextlib
-import hashlib
-import importlib.util
-import io
-import json
 import math
 import os
 import re
@@ -64,7 +59,7 @@ from myflames.teach._cost_model import (
     icp_cost,
     index_merge_cost,
 )
-from myflames.teach import LESSONS, LESSON_3D, lesson_views, render_lesson, render_lesson_3d
+from myflames.teach import LESSONS, render_lesson
 
 
 class TestExplainerFormatting(unittest.TestCase):
@@ -162,7 +157,7 @@ def _ceil_div(numerator, denominator):
 
 
 class TestInnoDBBTreeShape(unittest.TestCase):
-    """Pages per level of the clustered and secondary index (the 3D B+tree view).
+    """Pages per level of the clustered and secondary index.
 
     Hand-computed numbers use the 16 KiB default page: 16384 - 120 = 16264
     usable bytes. ``users`` defaults: 100 B of column data, 24 B email.
@@ -302,7 +297,7 @@ class TestInnoDBBTreeShape(unittest.TestCase):
                                                    shape["leaf_capacity"], shape["fan_out"])
 
     def test_height_agrees_with_innodb_tree_height(self):
-        """The 2D lesson's height model and the 3D shape agree on the
+        """The lesson's height model and the page-count shape agree on the
         published BIGINT-PK heights: 1M rows -> 3 levels, 1B rows -> 4."""
         fan_out = innodb_fanout(PK_BIGINT_BYTES)
         for rows, height in ((1_000_000, 3), (1_000_000_000, 4)):
@@ -335,208 +330,6 @@ class TestInnoDBBTreeShape(unittest.TestCase):
             with self.subTest(args=args):
                 with self.assertRaises(ValueError):
                     leaf_range_pages(*args)
-
-
-EXPORT_BTREE_SHAPE = os.path.join(REPO_DIR, "scripts", "export-btree-shape.py")
-BTREE_SHAPE_FIXTURE = os.path.join(REPO_DIR, "apps", "teach-3d", "test", "fixtures", "btree-shape.json")
-
-
-def _load_export_btree_shape():
-    """Import scripts/export-btree-shape.py (its file name is not importable)."""
-    saved_path = list(sys.path)
-    try:
-        spec = importlib.util.spec_from_file_location("export_btree_shape", EXPORT_BTREE_SHAPE)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = saved_path
-    return module
-
-
-class TestBTreeShapeFixture(unittest.TestCase):
-    """The 3D view's TypeScript is checked against this fixture; the fixture
-    must keep matching the Python model."""
-
-    @unittest.skipUnless(os.path.isfile(BTREE_SHAPE_FIXTURE), "the 3D view fixture is not in this checkout")
-    def test_committed_fixture_matches_the_python_model(self):
-        module = _load_export_btree_shape()
-        with open(BTREE_SHAPE_FIXTURE, encoding="utf-8") as handle:
-            committed = handle.read()
-        self.assertEqual(committed, module.render(module.build()),
-                         "apps/teach-3d/test/fixtures/btree-shape.json is stale: "
-                         "run python3 scripts/export-btree-shape.py")
-
-    @unittest.skipUnless(os.path.isfile(BTREE_SHAPE_FIXTURE), "the 3D view fixture is not in this checkout")
-    def test_fixture_covers_every_option_and_the_default_case(self):
-        with open(BTREE_SHAPE_FIXTURE, encoding="utf-8") as handle:
-            data = json.load(handle)
-        options = data["options"]
-        self.assertEqual(len(data["cases"]), len(options["rows"]) * len(options["row_bytes"])
-                         * len(options["email_bytes"]) * len(options["page_kib"]))
-        self.assertEqual(data["constants"], {
-            "page_overhead_bytes": 120, "child_pointer_bytes": 9, "record_header_bytes": 5,
-            "clustered_system_bytes": 13, "pk_bytes": 8, "clustered_leaf_reserve_divisor": 16,
-        })
-        self.assertEqual(data["range"], [42, 4000])
-        default = [case for case in data["cases"]
-                   if (case["rows"], case["row_bytes"], case["email_bytes"], case["page_size"])
-                   == (1_000_000, 100, 24, 16 * 1024)]
-        self.assertEqual(len(default), 1)
-        self.assertEqual(default[0]["clustered"]["levels"], [1, 9, 7752])
-        self.assertEqual(default[0]["secondary"]["levels"], [1, 6, 2278])
-        # id BETWEEN 42 AND 4000 at 129 rows per leaf: leaves 0..31.
-        self.assertEqual(default[0]["range_leaves"], 32)
-        # The range is capped at the row count: 100 rows, 31 per 4 KiB leaf.
-        small = [case for case in data["cases"]
-                 if (case["rows"], case["row_bytes"], case["page_size"]) == (100, 100, 4 * 1024)]
-        self.assertTrue(small)
-        for case in small:
-            self.assertEqual(case["range_leaves"], leaf_range_pages(42, 100, 31))
-
-    def test_check_flag_fails_on_a_stale_fixture(self):
-        module = _load_export_btree_shape()
-        with tempfile.TemporaryDirectory() as tmp:
-            module.FIXTURE = os.path.join(tmp, "btree-shape.json")
-            with open(module.FIXTURE, "w", encoding="utf-8") as handle:
-                handle.write(module.render(module.build()))
-            err = io.StringIO()
-            with contextlib.redirect_stderr(err):
-                self.assertEqual(module.main(["--check"]), 0)
-            self.assertEqual(err.getvalue(), "")
-            with open(module.FIXTURE, "a", encoding="utf-8") as handle:
-                handle.write("\n")
-            with contextlib.redirect_stderr(err):
-                self.assertEqual(module.main(["--check"]), 1)
-            self.assertIn("stale", err.getvalue())
-            self.assertIn("python3 scripts/export-btree-shape.py", err.getvalue())
-
-
-TEACH3D_APP = os.path.join(REPO_DIR, "apps", "teach-3d")
-TEACH3D_ASSET = os.path.join(REPO_DIR, "myflames", "assets", "teach3d-btree.html")
-#: three.js is most of the page (about 600 KiB of the first 615 KiB build).
-#: The budget leaves room for lesson code, not for a second library.
-TEACH3D_SIZE_BUDGET = 700 * 1024
-
-
-def teach3d_sources_sha():
-    """Same algorithm as apps/teach-3d/scripts/assemble.mjs:sourcesSha."""
-    paths = []
-    for directory, folders, files in os.walk(os.path.join(TEACH3D_APP, "src")):
-        folders[:] = [f for f in folders if not f.startswith(".")]
-        for name in files:
-            if not name.startswith("."):
-                rel = os.path.relpath(os.path.join(directory, name), TEACH3D_APP)
-                paths.append(rel.replace(os.sep, "/"))
-    paths.extend(["package.json", "vite.config.ts", "scripts/assemble.mjs"])
-    digest = hashlib.sha256()
-    for rel in sorted(paths):
-        with open(os.path.join(TEACH3D_APP, *rel.split("/")), encoding="utf-8", newline="") as handle:
-            text = handle.read().replace("\r\n", "\n")
-        digest.update(rel.encode("utf-8") + b"\0" + text.encode("utf-8") + b"\0")
-    return digest.hexdigest()
-
-
-class TestTeach3DView(unittest.TestCase):
-    """The prebuilt 3D B+tree page and how the teach package serves it."""
-
-    def _asset(self):
-        self.assertTrue(os.path.isfile(TEACH3D_ASSET),
-                        "myflames/assets/teach3d-btree.html is missing: run `npm run build` in apps/teach-3d")
-        with open(TEACH3D_ASSET, encoding="utf-8") as handle:
-            return handle.read()
-
-    def test_asset_is_a_complete_html_page(self):
-        text = self._asset()
-        self.assertTrue(text.lstrip().lower().startswith("<!doctype html>"))
-        self.assertTrue(text.rstrip().lower().endswith("</html>"))
-
-    def test_asset_loads_nothing_from_the_network(self):
-        """Works offline, from file://, and in the workspace's sandboxed
-        srcdoc frame (CSP default-src 'none')."""
-        lower = self._asset().lower()
-        self.assertNotIn("<link", lower)
-        self.assertIsNone(re.search(r"<script\b[^>]*\bsrc\s*=", lower), "no external <script src>")
-        self.assertNotIn('src="http', lower)
-        self.assertNotIn("src='http", lower)
-
-    def test_asset_respects_reduced_motion(self):
-        self.assertIn("prefers-reduced-motion", self._asset())
-
-    def test_inline_script_and_style_cannot_end_early(self):
-        text = self._asset()
-        lower = text.lower()
-        self.assertEqual(lower.count("</script"), 1, "only the real closing </script> tag")
-        self.assertEqual(lower.count("</style"), 1, "only the real closing </style> tag")
-        script = lower[lower.index("<script"):lower.index("</script")]
-        style = lower[lower.index("<style"):lower.index("</style")]
-        self.assertTrue(script)
-        self.assertTrue(style)
-        self.assertNotIn("<!--", script)
-        self.assertNotIn("<!--", style)
-
-    def test_asset_carries_three_js_license_and_credits(self):
-        text = self._asset()
-        self.assertIn("three.js", text)
-        self.assertIn("MIT License", text)
-        self.assertRegex(text, r"/\*! three\.js \d+\.\d+\.\d+ \| MIT License \| Copyright ")
-        self.assertIn("Inspired by Brendan Gregg&rsquo;s FlameGraph and "
-                      "Tanel Poder&rsquo;s SQL Plan FlameGraphs", text)
-        self.assertIn("PGSimCity", text)
-
-    def test_asset_size_budget(self):
-        self._asset()
-        size = os.path.getsize(TEACH3D_ASSET)
-        self.assertLess(size, TEACH3D_SIZE_BUDGET, "teach3d-btree.html is %d bytes" % size)
-
-    def test_asset_records_its_sources_sha(self):
-        self.assertRegex(self._asset(), r'<meta name="myflames-sources-sha256" content="[0-9a-f]{64}">')
-
-    @unittest.skipUnless(os.path.isdir(os.path.join(TEACH3D_APP, "src")),
-                         "the 3D view sources are not in this checkout")
-    def test_asset_matches_its_sources(self):
-        match = re.search(r'<meta name="myflames-sources-sha256" content="([0-9a-f]{64})">', self._asset())
-        self.assertIsNotNone(match)
-        self.assertEqual(match.group(1), teach3d_sources_sha(),
-                         "myflames/assets/teach3d-btree.html is stale: run `npm run build` in apps/teach-3d")
-
-    @unittest.skipUnless(os.path.isfile(os.path.join(TEACH3D_APP, "package.json")),
-                         "the 3D view sources are not in this checkout")
-    def test_license_banner_names_the_pinned_three_js(self):
-        with open(os.path.join(TEACH3D_APP, "package.json"), encoding="utf-8") as handle:
-            pinned = json.load(handle)["dependencies"]["three"].lstrip("^~")
-        match = re.search(r"/\*! three\.js (\S+) \| MIT License", self._asset())
-        self.assertIsNotNone(match)
-        self.assertEqual(match.group(1), pinned)
-
-    def test_render_lesson_3d_returns_the_packaged_page(self):
-        self.assertEqual(render_lesson_3d("btree"), self._asset())
-
-    def test_render_lesson_3d_rejects_lessons_without_a_3d_view(self):
-        for name in ("full_scan", "hash", "missing", ""):
-            with self.subTest(lesson=name):
-                with self.assertRaises(KeyError):
-                    render_lesson_3d(name)
-
-    def test_lesson_views(self):
-        self.assertEqual(lesson_views("btree"), ["2d", "3d"])
-        self.assertEqual(lesson_views("full_scan"), ["2d"])
-        for name in LESSONS:
-            with self.subTest(lesson=name):
-                views = lesson_views(name)
-                self.assertEqual(views[0], "2d", "2D stays the default view")
-                self.assertEqual("3d" in views, name in LESSON_3D)
-
-    def test_every_3d_view_belongs_to_a_registered_lesson(self):
-        self.assertTrue(LESSON_3D)
-        for name, filename in LESSON_3D.items():
-            with self.subTest(lesson=name):
-                self.assertIn(name, LESSONS)
-                self.assertTrue(os.path.isfile(os.path.join(REPO_DIR, "myflames", "assets", filename)))
-
-    def test_2d_btree_lesson_is_unchanged_by_the_3d_view(self):
-        two_d = render_lesson("btree")
-        self.assertNotEqual(two_d, render_lesson_3d("btree"))
-        self.assertNotIn("myflames-sources-sha256", two_d)
 
 
 class TestBNL(unittest.TestCase):

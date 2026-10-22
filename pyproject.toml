@@ -44,7 +44,6 @@ myflames = [
     "*.js",
     "assets/*.js",
     "assets/*.css",
-    "assets/*.html",
     "teach/*.js",
     "teach/*_family/*.js",
 ]

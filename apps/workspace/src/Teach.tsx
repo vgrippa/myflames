@@ -5,22 +5,17 @@ import { bindFrameAppearance, themeFrame } from "./charts/core/appearance";
 import {
   EmptyState,
   GroupedList,
-  Pill,
   SearchField,
-  Segmented,
   Select,
   SummaryLine,
   moveRowFocus,
 } from "./kit";
 
-type LessonView = "2d" | "3d";
 type Lesson = {
   key: string;
   title: string;
   summary: string;
   family: string;
-  /** "3d" when the lesson also has a 3D view (an extra option; 2D is the default). */
-  views?: LessonView[];
 };
 type Catalog = {
   lessons: Lesson[];
@@ -49,10 +44,9 @@ export function Teach({
   const [lessonKey, setLessonKey] = useState(initialLesson);
   const [search, setSearch] = useState("");
   const [family, setFamily] = useState("");
-  // The page and the lesson view it was loaded for, so a view switch never
-  // shows the previous view's page under the new one's title.
+  // Keep the page with its lesson key so navigation never shows the previous
+  // lesson under the new title.
   const [loaded, setLoaded] = useState({ key: "", html: "" });
-  const [view, setView] = useState<LessonView>("2d");
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const lessonFrame = useRef<HTMLIFrameElement>(null);
@@ -75,10 +69,6 @@ export function Teach({
   useEffect(() => {
     onLessonChange?.(lessonKey, lesson?.title);
   }, [active, lessonKey, lesson?.title]);
-  useEffect(() => {
-    // Only lessons that list a 3D view can show it.
-    if (lesson && view === "3d" && !lesson.views?.includes("3d")) setView("2d");
-  }, [lesson, view]);
 
   useEffect(() => {
     if (!active || catalog) return;
@@ -94,35 +84,30 @@ export function Teach({
     return () => controller.abort();
   }, [active, catalog, retry]);
 
-  // A lesson without a 3D view is always shown (and requested) in 2D, even
-  // for the render before `view` is reset.
-  const shown: LessonView = view === "3d" && lesson?.views?.includes("3d") ? "3d" : "2d";
-  const frameKey = `${lessonKey}:${shown}`;
-  const html = loaded.key === frameKey ? loaded.html : "";
+  const html = loaded.key === lessonKey ? loaded.html : "";
   useEffect(() => {
     if (lessonFrame.current) return bindFrameAppearance(lessonFrame.current);
-  }, [active, html, frameKey]);
+  }, [active, html, lessonKey]);
   useEffect(() => {
     if (!active || !lessonKey) return;
     const controller = new AbortController();
     setError("");
     api<{ html: string }>(
       "teach/lesson",
-      { lesson: lessonKey, view: shown },
+      { lesson: lessonKey },
       controller.signal,
     )
       .then((result) => {
-        if (!controller.signal.aborted) setLoaded({ key: `${lessonKey}:${shown}`, html: result.html });
+        if (!controller.signal.aborted) setLoaded({ key: lessonKey, html: result.html });
       })
       .catch((error) => {
         if (!controller.signal.aborted) setError(error.message);
       });
     return () => controller.abort();
-  }, [active, lessonKey, shown, retry]);
+  }, [active, lessonKey, retry]);
 
   function openLesson(key: string) {
     setError("");
-    setView("2d");
     setLessonKey(key);
     document.getElementById("main")?.scrollIntoView({ block: "start" });
   }
@@ -208,22 +193,6 @@ export function Teach({
               )}
             </div>
             <div className="view-toolbar-right">
-              {lesson.views?.includes("3d") && (
-                <Segmented<LessonView>
-                  label="Lesson view"
-                  value={shown}
-                  options={[
-                    { value: "2d", label: "2D", title: "The animated lesson" },
-                    {
-                      value: "3d",
-                      label: "3D",
-                      title:
-                        "The same lookups on the real shape of the tree, in 3D",
-                    },
-                  ]}
-                  onChange={setView}
-                />
-              )}
               <button
                 type="button"
                 className="button small"
@@ -231,7 +200,7 @@ export function Teach({
                 onClick={() =>
                   download(
                     html,
-                    `${lesson.key}${shown === "3d" ? "-3d" : ""}.html`,
+                    `${lesson.key}.html`,
                     "text/html",
                   )
                 }
@@ -262,8 +231,8 @@ export function Teach({
           {html && (
             <iframe
               ref={lessonFrame}
-              key={frameKey}
-              title={`Lesson: ${lesson.title}${shown === "3d" ? " (3D view)" : ""}`}
+              key={lessonKey}
+              title={`Lesson: ${lesson.title}`}
               className="lesson-frame"
               sandbox="allow-scripts allow-downloads allow-modals"
               srcDoc={safePreview(themeFrame(markEmbedded(html)))}
@@ -384,17 +353,12 @@ export function Teach({
                                   {item.summary}
                                 </span>
                               </span>
-                              {(step >= 0 || item.views?.includes("3d")) && (
+                              {step >= 0 && (
                                 <span className="row-value">
-                                  {item.views?.includes("3d") && (
-                                    <Pill tone="info">3D</Pill>
-                                  )}
-                                  {step >= 0 && (
-                                    <span className="row-secondary">
-                                      Step {step + 1} of{" "}
-                                      {catalog.curriculum.length}
-                                    </span>
-                                  )}
+                                  <span className="row-secondary">
+                                    Step {step + 1} of{" "}
+                                    {catalog.curriculum.length}
+                                  </span>
                                 </span>
                               )}
                               <Icon name="disclosure" size={14} />
