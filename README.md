@@ -1,356 +1,256 @@
 <p align="center">
-  <img src="docs/brand/myflames-icon-v2.png" alt="myflames logo" width="120">
+  <img src="docs/brand/myflames-icon-v3.png" alt="myflames" width="160">
 </p>
 
 # myflames
 
-myflames is a local performance workspace and operational workbench for MySQL and MariaDB. It pairs execution plan visualizations (flame graphs, Visual Explain, execution trees, and plan diffs) with full-spectrum server diagnostics, lock contention analysis, a persistent SQL editor, and guarded server operations.
+**myflames** is a macOS performance workspace for MySQL, MariaDB and Percona Server, plus a Python CLI with no third-party dependencies. It visualizes `EXPLAIN ANALYZE FORMAT=JSON` plans as Visual Explain diagrams, flame graphs, execution trees and bar charts, compares before and after plans, runs SQL in a multi-tab Query editor, inspects schemas and server health, and checks queries in CI or through an MCP server.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
-![Plan preview in Visual Explain](docs/screenshots/hero-diagram.svg)
+## Screenshots
 
----
+![myflames Home screen with saved connections, quick actions, and recent work](docs/screenshots/home.png)
+
+![Visual Explain plan diagram with operator measurements and join symbols in Plans](docs/screenshots/plan-visual-explain.png)
+
+![Query editor running a SELECT query with results and write-safety status](docs/screenshots/query-editor.png)
+
+![Server Health view showing diagnostics, throughput, connections, and InnoDB buffer pool metrics](docs/screenshots/server-health.png)
+
+Try a [MySQL plan demo](https://vgrippa.github.io/myflames/demos/live-mysql/live-mysql-derived-table-flamegraph.html) or a [MariaDB plan demo](https://vgrippa.github.io/myflames/demos/live-mariadb/live-mariadb-derived-table-flamegraph.html) in your browser.
 
 ## Highlights
 
-- **Plan Visualizations**: Four synchronized perspectives on the same query plan: Visual Explain, Flame Graph, Execution Tree, and Ranked Bar Chart.
-- **Plan Comparisons**: Pair before and after plans to pinpoint operator regressions, cost changes, and row volume drifts.
-- **Server Diagnostics**: Continuous health sampling, parsed InnoDB status, the server error log, table and file I/O statistics, wait event rankings, and full analysis reports.
-- **Contention and Lock Tracking**: Track metadata lock blockers, waiting transactions, and deadlocks with single-session kill actions.
-- **macOS app**: The workspace runs as an unsigned Apple Silicon desktop app with its own data, and the CLI stays available for scripts and CI.
-- **Tuning**: A health scorecard and Full analysis for MySQL and MariaDB, with remediation SQL you can copy or open in the Query editor.
-- **Query Editor**: SQL completion from the connected catalog, persistent tabs and sessions, transaction controls, cancellation, and schema browsing.
-- **Table data**: Browse a table, stage row changes, review exact SQL, and apply a batch with stale-row checks. Tables without a supported reliable key remain read-only.
-- **Guarded Operations**: Three-tier write-safety model (Production, Development, Read-only), shared CLI confirmation prompts, and an audited local trail.
-- **Replication and Maintenance**: Monitor replication lag and recovery loops, run upgrade readiness checks, create and verify checksummed dumps, and perform live instance cloning.
-- **Cluster**: See the MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection belongs to: members, roles, state, quorum, failures tolerated, flow control and queues, and InnoDB Cluster routers. Reviewed changes in a member's inspector: make a secondary the primary, stop or start Group Replication on the connected member, and on MariaDB Galera desync, resync or bootstrap a Primary component.
-- **ProxySQL**: Connect to ProxySQL's Admin interface (2.x and 3.x) to see each backend as ProxySQL runs it, with its connection pool and the configuration row it comes from, the hostgroups and the Galera or Group Replication monitors that manage them, query rules with their hits, and the query digests: the top 10, 25, 50 or 100 slowest, by total time, most frequent, at the highest rate or by rows sent, filtered by hostgroup, schema, user or text. Rules and digests are cross checked: each digest shows where the active rules send it (evaluated by myflames) next to the hostgroup it ran on, with a mismatch flagged, and each rule shows the digests it applies to. Reviewed changes set a server's status, weight or hostgroup, or a rule's active flag, and load it to runtime; saving to disk is a separate reviewed step.
-- **Database diagram**: Rebuild an ER diagram from the connected database and import or export SQL, Mermaid, editable JSON and SVG.
-- **Users and Roles**: Complete grant matrix supporting global, database, table, column, and routine scopes with batch review.
-- **Agent and CI Ready**: Native Model Context Protocol (MCP) server, token-efficient plan digests, and exit-code validation gates.
+- **Plans and plan comparison**: Inspect `EXPLAIN ANALYZE FORMAT=JSON` and `EXPLAIN FORMAT=JSON` plans as Visual Explain diagrams, flame graphs, execution trees or bar charts, with ranked findings, operator search and interactive algorithm lessons in Learn. Save captures into Investigations and compare before and after plans side by side in Compare.
+- **Query editor, Query digest and Database diagram**: Run SQL across multiple tabs with dedicated sessions, schema and column completion, SQL formatting, parameter binding, editable InnoDB table data and CSV, JSON, SQL or Markdown export. Summarize statement digests in Query digest and inspect or export entity-relationship diagrams in Database diagram.
+- **Server views and Tuning**: Check live metrics in Health, InnoDB, Error log, Waits, I/O, Indexes, Tables, Parameters (linked to official MySQL, MariaDB and Percona manuals) and Instruments, or refresh all views at once. Open Tuning for configuration checks and the Full analysis report.
+- **Processlist and Locks**: Inspect active connections, open transactions and running queries in Processlist, explain a live session's statement, or end runaway queries with single or bulk Kill. Trace blocking trees, waiting DDL, metadata locks, InnoDB row locks and the latest deadlock in Locks.
+- **Replication, Cluster and ProxySQL**: Monitor replica channels, GTID positions, applier workers and lag in Replication, and skip one failed transaction or run a bounded skip loop after review. Inspect MariaDB Galera, Percona XtraDB Cluster, MySQL InnoDB Cluster and Group Replication topology and member actions in Cluster, or inspect backend pools, query rules and digests in ProxySQL and review changes to backend server settings and rule activation.
+- **Users and roles**: List accounts and roles without exposing password hashes, inspect effective grants and privileges, and create, drop, rename, lock, expire passwords or change grants and roles after reviewing the exact SQL and before-and-after grant diff.
+- **Maintenance**: Detect local client tools (`mysqlsh`, `mysqldump`, `mariadb-dump` and others), run pre-upgrade checks, and run preflighted dumps, restores and MySQL `CLONE` jobs with progress, cancellation and manifest verification.
+- **Write safety and the audit log**: Every connection is Production (confirms every change), Development (confirms risky changes such as DDL, `KILL`, `SET GLOBAL`, replication skips and `CLONE`) or Read-only (refuses all changes before connecting). Every confirmed, refused or declined change is recorded in the local Audit log (`Settings > Audit log` or `myflames audit`) without passwords.
+- **CLI, CI gates and MCP for agents**: Generate standalone SVG or HTML reports, compare plans, emit compact text digests (`myflames digest`), gate pull requests on plan rules or server checks (`--fail-on`), or expose read-only analysis and live inspection tools to AI agents with `myflames-mcp`.
 
----
+## Install
 
-Try a [MySQL plan demo](https://vgrippa.github.io/myflames/demos/live-mysql/live-mysql-derived-table-flamegraph.html) or a [MariaDB plan demo](https://vgrippa.github.io/myflames/demos/live-mariadb/live-mariadb-derived-table-flamegraph.html).
+### macOS app
 
-## Quick start
+1. Download `myflames-3.1.1-macos-arm64.zip` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) (Apple Silicon), unzip it, and move `myflames.app` to `/Applications`.
+2. Because the app is currently unsigned, macOS Gatekeeper blocks the first normal double-click. Clear its quarantine attribute in Terminal with `xattr -dr com.apple.quarantine /Applications/myflames.app`. Alternatively, Control-click `myflames.app` in Finder and choose **Open**, or use **System Settings > Privacy & Security > Open Anyway**.
 
-The workspace ships as a macOS desktop app. The Python package provides the command-line tools. Install either or both.
+The packaged app keeps its data under `~/Library/Application Support/myflames-desktop`, unless overridden by `MYFLAMES_DESKTOP_DATA`. Its workspace database and audit records are in `backend-home/.myflames/workspace.sqlite3`; saved passwords use `credentials.vault` and `vault.key` in that same `.myflames` folder. Desktop and CLI data are separate; the CLI uses `~/.myflames`. You can check for newer releases on demand with **Check for updates** on Home or in **Settings > About myflames**.
 
-### 1. Install the macOS app (workspace)
+Live server features use a local `mysql` or `mariadb` client and optional `mysqlsh`, `mysqldump` or `mariadb-dump` binaries. The app discovers them automatically on `PATH` and in standard Homebrew, MacPorts and vendor folders (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`, `/usr/local/mysql/bin`).
 
-1. Download `myflames-3.1.1-macos-arm64.zip` from the [GitHub release](https://github.com/vgrippa/myflames/releases) (Apple Silicon Macs).
-2. Unzip it and move `myflames.app` to your Applications folder.
-3. Open it from Finder. No terminal, Node.js or separately installed Python is needed.
+While Home is open, the app fetches up to six headlines from Planet MySQL and the MariaDB Foundation over HTTPS and caches them for six hours. Turn this off in **Settings** with **Show MySQL and MariaDB news on Home**; nothing is fetched while it is off.
 
-The app is not signed with a Developer ID or notarized, so macOS blocks the first launch. Do one of the following once:
+### Python CLI
 
-- Control-click `myflames.app`, choose **Open**, then **Open** again in the dialog.
-- Or open **System Settings > Privacy & Security**, scroll to the message about myflames and choose **Open Anyway**.
-- Or, from a terminal, remove the quarantine flag: `xattr -dr com.apple.quarantine /Applications/myflames.app`
-
-Where it keeps its data: under `~/Library/Application Support/myflames-desktop`, separate from the CLI's `~/.myflames`. Connections and saved passwords added in the CLI do not appear in the app, and the reverse. The minimum window size is 720 by 520 pixels.
-
-How it finds database clients: the app does not bundle `mysql`, `mariadb`, MySQL Shell or dump tools. It looks in your PATH and in the standard macOS locations (Homebrew under `/opt/homebrew` and `/usr/local`, Oracle MySQL under `/usr/local/mysql/bin`, and MacPorts under `/opt/local/bin`), so Finder launches work without shell startup files. Install a client, for example `brew install mysql-client`, and use Maintenance > Detect tools to confirm it is found.
-
-News on Home: while Home is open, the app reads two public feeds over HTTPS, [Planet MySQL](https://planet.mysql.com/rss20.xml) (keeping only the MySQL team's posts on blogs.oracle.com) and the [MariaDB Foundation](https://mariadb.org/feed/), at most every six hours after a successful read (ten minutes after a failed read, or on **Refresh news**), and keeps the headlines in a local cache. The requests carry no cookies and nothing about you or your connections, and headlines open in your browser. To stop it, turn off **Show MySQL and MariaDB news on Home** in Settings; nothing is read while it is off.
-
-There is no browser version of the workspace. See [Desktop app](docs/DESKTOP.md) for building the app from source.
-
-### 2. Install the command-line tools
-
-Install via pipx:
+The CLI requires Python 3.7 or later and uses the Python standard library only.
 
 ```bash
 pipx install myflames
+# or: pip install myflames
 ```
 
-Or install with pip in any Python 3.7+ environment:
-
-```bash
-pip install myflames
-```
-
-The CLI works on its own. It is also the engine behind the app, and it keeps its own data in `~/.myflames`.
-
-### 3. `myflames ui` is deprecated
-
-`myflames ui` starts the old browser workspace. It is deprecated in favor of the macOS app, and prints a warning to stderr. The desktop app uses it internally as its backend launcher.
-
-```bash
-myflames ui
-```
-
-It prints a one-time local launch URL on `127.0.0.1`:
-
-```
-warning: 'myflames ui' (browser workspace) is deprecated; use the standalone desktop application (myflames.app).
-myflames UI: http://127.0.0.1:8765/#launch=<token>
-```
-
-- `--no-browser` runs without opening a browser window (used by backend launchers).
-- `--port 8765` selects a local port.
-- `--no-restore` starts without restoring saved sessions.
-
----
+From a source checkout, run `python3 myflames.py` or `python3 -m myflames` directly.
 
 ## Engine compatibility
 
-The core package requires Python 3.7+ and standard library modules only. Live database interactions require a local `mysql` or `mariadb` client binary in your PATH (the macOS app also searches the standard Homebrew, Oracle MySQL and MacPorts locations).
+| Capability | MySQL 8.0 | MySQL 8.4 and 9.x | MariaDB 10.11+ and 11.x | Percona Server 8.0 and 8.4 / PXC |
+| :--- | :--- | :--- | :--- | :--- |
+| **Offline plan files** | `EXPLAIN FORMAT=JSON` (cost estimates; no operator timing) | `EXPLAIN ANALYZE FORMAT=JSON` and `EXPLAIN FORMAT=JSON` | `ANALYZE FORMAT=JSON` and `EXPLAIN FORMAT=JSON` | 8.0: `EXPLAIN FORMAT=JSON`; 8.4: `EXPLAIN ANALYZE FORMAT=JSON` |
+| **Live plan capture (`capture`, `-e`, Explain)** | `EXPLAIN FORMAT=JSON` with `capture --mode explain`; root `-e` needs 8.4+ for JSON analysis | Estimated and timed plans, schema, statistics, variables and trace | Estimated and timed plans, schema, statistics, variables and trace | 8.0: `EXPLAIN FORMAT=JSON`; 8.4: `EXPLAIN ANALYZE FORMAT=JSON` |
+| **Query editor, Query digest, Database diagram** | SQL sessions, digest summaries and schema diagrams | SQL sessions, digest summaries and schema diagrams | SQL sessions, digest summaries and schema diagrams | SQL sessions, digest summaries and schema diagrams |
+| **Server views, Processlist, Locks, Tuning** | Server diagnostics; `performance_schema.error_log` requires 8.0.22+; older 8.0 gets file-viewing guidance | Server diagnostics | `userstat` fallbacks for index usage and table I/O when enabled; Waits requires Performance Schema. `metadata_lock_info` for MDL; verified local error log file or guidance | Server diagnostics plus Percona `userstat` index and table stats, thread-pool metrics, `log_slow_rate_limit` checks and Percona parameter links |
+| **Replication and Cluster** | Replication (`SHOW REPLICA STATUS` / `SHOW SLAVE STATUS`), InnoDB Cluster, Group Replication | Replication (`SHOW REPLICA STATUS`), InnoDB Cluster, Group Replication | Replication (`SHOW ALL SLAVES STATUS`, `gtid_slave_pos`), MariaDB Galera Cluster | MySQL Replication, Group Replication, Percona XtraDB Cluster (`wsrep_*`, `pxc_cluster_view`) |
+| **Users and roles** | Users, roles, default roles, partial revokes and dynamic privileges | Users, roles, default roles, partial revokes and dynamic privileges | Users, MariaDB roles, `SET DEFAULT ROLE` and `PUBLIC` | MySQL privilege and role model |
+| **Maintenance** | Upgrade check (`mysqlsh` or partial native subset), dump, restore, `CLONE` (8.0.17+) | Upgrade check, dump, restore, `CLONE` | Dump and restore (`mariadb-dump`); points to `mariadb-upgrade` and `mariadb-backup` for upgrades and physical copies | Upgrade check, dump, restore, `CLONE` (Percona Server) |
 
-| Database engine | Plan views and analysis | Server diagnostics and sessions | Guarded operations |
-| --- | --- | --- | --- |
-| **MySQL 8.0** | Estimated JSON plans. Timed JSON plans require format version 2 (available in 8.3+). | Health, InnoDB status, Error log (8.0.22+), Sessions, Locks, Top statements, Waits, I/O. | Write policies, audit logging, variable management, dumps, and user administration. |
-| **MySQL 8.4 & 9.x** | Estimated and timed JSON plans (`FORMAT=JSON` v2), optimizer traces, and cost breakdowns. | Complete Performance Schema coverage, session plans, and resource metrics. | Full suite: CLONE instance, replication skips, variable persistence (`SET PERSIST`), and upgrade checks. |
-| **MariaDB 10.11+** | Estimated JSON plans and measured `ANALYZE FORMAT=JSON` plans, normalized automatically. | Health, InnoDB status, Sessions, Waits (via User Statistics), Schema metrics, and the error log file when the server runs on the same computer. | Dumps and restores, replication skips, and role management. Option file guidance for server variables. |
-| **Percona Server for MySQL 8.0 & 8.4** (and Percona XtraDB Cluster) | Same as the MySQL version it is built on: Percona Server is a MySQL build, so every MySQL rule applies. | Everything MySQL has, named as Percona Server in every summary line, report and the window footer, plus what Percona adds when the server reports it: with `userstat=ON`, `INDEX_STATISTICS` keeps an index Performance Schema shows unused when it was read, and `TABLE_STATISTICS` shows the rows changed in tables without a primary key (unknown for partitioned tables, which user statistics do not count reliably); the thread pool's own numbers in Health when `thread_handling=pool-of-threads`; a sampled slow log (`log_slow_rate_limit`, following Percona's rule that statements slower than `slow_query_log_always_write_time` are always logged) in the slow log check; Percona variables marked in Parameters. MySQL's lifecycle dates are never applied to Percona. | Same as MySQL. |
+For manual MySQL JSON generation on 8.3+, select format version 2 with `SET SESSION explain_json_format_version=2` before EXPLAIN. This implementation requires MySQL 8.4+ for timed JSON analysis.
 
----
+ProxySQL 2.x and 3.x are supported in the ProxySQL place when connected to a ProxySQL Admin interface.
 
-## Key capabilities
+## CLI examples
 
-### 1. Analyze execution plans
+Live examples assume saved `prod` and `dev` profiles and an `orders` table. `before.json` and `after.json` are captures from before and after a change; `explain.json` below can be either capture or an exported plan.
 
-Inspect plans through four coordinated views:
-
-- **Visual Explain (`--type workbench`)**: Diagram showing data flow, join methods, table access paths, and row volumes.
-- **Flame Graph (`--type flamegraph`)**: Execution time distribution across nested query operations.
-- **Execution Tree (`--type tree`)**: Collapsible tree detailing operator costs, row counts, and engine conditions.
-- **Bar Chart (`--type bargraph`)**: Operators ranked by self time to isolate bottlenecks immediately.
-
-Capture plans directly from the command line:
+Capture a live plan with schema, table statistics and session variables, then render a self-contained HTML report:
 
 ```bash
-# Capture an estimated query plan
-myflames capture --profile prod -e 'SELECT * FROM orders WHERE id = 100' -o plan.json
-
-# Capture a measured execution plan with repeated runs and optimizer trace
-myflames capture --profile prod -e 'SELECT * FROM orders WHERE id = 100' \
-  --mode analyze --repeat 3 --timeout 30 --trace -o measured.json
-
-# Export an interactive HTML visualization
-myflames measured.json --type workbench -o plan.html
+myflames capture -p --profile prod -e "SELECT * FROM orders WHERE customer_id = 42" -o before.json
+myflames --type workbench before.json -o plan.html
 ```
 
-Compare two plans to evaluate optimizations or engine upgrades:
+Compare two plans in an HTML diff or a compact text diff:
 
 ```bash
-myflames compare before.json after.json -o comparison.html
-myflames compare before.json after.json --json
+myflames compare before.json after.json -o diff.html
+myflames compare before.json after.json --digest
 ```
 
-### 2. Server diagnostics and contention analysis
-
-Host-and-port connections use TCP, including `localhost`; Unix sockets require an explicit socket setting. Connect to a live server to identify system-wide bottlenecks:
-
-- **Full Analysis Report**: Run health checks across storage engines, buffer pool efficiency, indexing, and configuration settings:
-  ```bash
-  myflames report --profile prod --html -o server-report.html
-  ```
-- **Top Statements**: Rank statement digests from Performance Schema by total time, average latency, full scans, or examined rows:
-  ```bash
-  myflames top --profile prod --order avg --limit 10
-  ```
-- **Locks and Deadlocks**: Inspect blocking metadata locks, row lock waits, and recent InnoDB deadlocks:
-  ```bash
-  myflames locks --profile prod --waits-only
-  ```
-- **Database Diagrams**: Visualize schemas and foreign-key relationships from live metadata or imported SQL, Mermaid, or JSON files without executing queries.
-
-Top statements opens selected SQL and its evidence across the available width. Supported UPDATE, DELETE and INSERT/REPLACE SELECT statements can be converted to a SELECT for review before analysis. This measures row selection or the SELECT source only; it does not reproduce write cost, assignment expressions, triggers or locking. Unsupported forms remain blocked.
-
-Returning from full-width table details fits refreshed values to their columns, even when the window width stays the same.
-
-Slow queries are filtered and ranked by duration before the result limit. Read errors and disabled instrumentation are reported in notes, and unavailable slow-log counters remain unknown. Session statement text is capped with a truncation indicator; MySQL versions before 8.0.22 receive Error log file-viewing guidance.
-
-### 3. Query editor and persistent SQL sessions
-
-The workspace includes a SQL editor built on dedicated server sessions:
-
-- Session affinity retains session variables, temporary tables, and transaction states across executions.
-- Multi-statement execution with statement splitting and cursor-sensitive execution.
-- Query tabs with a menu (right-click or Shift+F10): Rename…, Duplicate, Close, Close others; names survive a restart.
-- **Format SQL** (toolbar, Shift+Option+F, or the command palette) lays out the selection or the whole tab as one undo step, never runs anything, and refuses when the result would read differently (it changes only white space and keyword case; DELIMITER blocks, stored programs and executable comments stay as written).
-- Safe updates enabled by default for Production connections; the ⓘ next to it in Run options says what `sql_safe_updates` refuses and links to the MySQL and MariaDB documentation.
-- Transaction controls with visual indicators for open transactions, commit, and rollback.
-- Statement cancellation using `KILL QUERY` without dropping the underlying connection.
-- Export results to CSV, JSON, TSV, Markdown, or SQL INSERT statements.
-
-Run SQL scripts from the command line using the same safety checks:
+Run a full server analysis report or list the heaviest statements from Performance Schema:
 
 ```bash
-myflames sql --profile prod -e 'SELECT * FROM shop.orders LIMIT 10'
-myflames sql --profile dev -f schema.sql --yes --format csv -o out.csv
-myflames sql --profile prod -e 'SELECT * FROM shop.orders' --format insert --insert-table orders -o dump.sql
+myflames report -p --profile prod --html -o server-report.html
+myflames top -p --profile prod --order total --limit 25
 ```
 
-### 4. Write-safety model and audit trail
-
-Every connection is assigned a safety policy:
-
-- **Production**: All write operations require explicit review and confirmation.
-- **Development**: DDL, administrative actions, and unbounded writes require confirmation; ordinary key-scoped writes proceed directly.
-- **Read-only**: All mutations, DDL, and administrative calls are strictly refused.
+Run SQL from the command line under the connection's write-safety policy:
 
 ```bash
-# Set connection policies
-myflames profiles set prod --read-only
-myflames profiles set staging --type development
-
-# Review the local audit trail
-myflames audit --since 7
-myflames audit export --csv -o audit.csv
+myflames sql -p --profile dev -e "SELECT id, status, total FROM orders ORDER BY id DESC LIMIT 10"
 ```
 
-Optional Optimize table and Apply instrumentation actions show their exact SQL and require confirmation, including on Development connections. Reusable InnoDB free space stays informational; it does not imply that maintenance is needed.
+Gate a CI pipeline on plan findings or server health checks (exits `1` when triggered):
 
-HANDLER OPEN requires confirmation because it holds a metadata lock until CLOSE or session end. Kill protects Group Replication data-stream connections, including the truncated `Group Replicatio` command returned by MySQL process-list tables, and points to Cluster instead. Bulk Kill audits each target, including policy refusals and pre-send failures, and preserves per-target identity checks.
+```bash
+myflames check after.json --fail-on full_scan,filesort,temp_table
+myflames health -p --profile prod --fail-on problem
+```
 
-When the server accepts a Kill but its verification read fails, the result and audit say "Sent; could not verify" and leave `after` null. Refresh the session list to check completion.
+Start the read-only stdio MCP server for Claude Code, Cursor or another MCP host:
 
-All mutations are logged to a local SQLite database (`~/.myflames/workspace.sqlite3`) with passwords and sensitive credentials automatically redacted.
+```bash
+pip install 'myflames[mcp]'
+myflames-mcp
+```
 
-### 5. Replication, lifecycle, and administration
-
-- **Replication Monitoring and Recovery**: Review channel status, each source's engine and version, GTID sets, and worker lag caveats. A server with no asynchronous channel is reported as not a replica; Group Replication's own channels are named apart (`group_replication_channels`), and a Galera node or Group Replication member that is not a replica gets `cluster_hint`, pointing to `myflames cluster`. The version comes from the replica's relay log; only when that has none does myflames open a saved connection with the source's host and port, once while it runs (again after you edit that connection, up to 1,024 attempts per run) and for a few seconds at most. For a source at 127.0.0.1, localhost or another loopback address it does so only when the replica itself runs on this computer, so a replica reached through an SSH tunnel never logs in to a server on your computer. Plan a single transaction skip or an error-capped skip loop (`myflames replication skip`).
-- **Cluster status**: Read the cluster the server belongs to: MariaDB Galera Cluster and Galera Cluster for MySQL (this node's state; the other nodes are listed in the component without a verdict, because Galera exposes only its own; the nodes `wsrep_cluster_address` names when this node is identified there, and failures tolerated assuming equal `pc.weight`), Percona XtraDB Cluster (also every node's state from `performance_schema.pxc_cluster_view`), MySQL Group Replication (every member's state and role, quorum and failures tolerated) and, with InnoDB Cluster metadata, the members listed there but missing from the group, the read replicas (also when you connect to one, which judges its own replication channel and reports the group's quorum and failures tolerated as unknown, since a read replica cannot see them) and the MySQL Routers registered in the metadata. One scale for every kind: OK with quorum and every expected member healthy, Watch when quorum holds but a member is missing or in transition or one more failure would stop the cluster, Problem without quorum, for a member in error, or when the connected member cannot see the group. Gate CI on it with `myflames cluster --fail-on problem` (or `watch`). It never changes membership or settings.
-- **Upgrade Checking**: Validate compatibility against target versions with MySQL Shell or native checks (`myflames upgrade-check`).
-- **Backup and Restore**: Generate checksummed dumps and perform verified restores (`myflames dump`, `myflames restore`). In Maintenance, choose one database to pick its tables from a searchable list (engine, estimated rows and size; All tables by default), choose a folder with the system dialog, and review the selected tool's options (Performance, Contents, SQL output, Compression) before starting. File encryption requires an encrypted destination or a separate tool.
-- **Local tools**: Open official download pages and check for newer releases with Detect tools or Refresh. Server client checks stay within the installed release series; MySQL Shell checks its latest GA release. Offline checks remain unknown.
-- **Instance Cloning**: Automate `CLONE INSTANCE` from a donor server with strict TLS verification on the recipient (`myflames clone`).
-- **Users and Roles**: Inspect effective account grants, edit privileges across scopes, manage roles, and review statement batches before applying (`myflames accounts`, `myflames privileges`).
-
-### 6. Automation, CI, and AI agents
-
-Integrate myflames into automation pipelines and AI tooling. CLI tool discovery stays offline; the workspace opts into vendor update checks. The `tables` and full-report commands treat reusable InnoDB free space as information, so it does not trigger a warning exit code by itself:
-
-- **CI Exit-Code Gates**: Fail builds on query anti-patterns or server warnings:
-  ```bash
-  myflames check explain.json --fail-on full_scan,filesort
-  myflames report --profile prod --fail-on problem -q
-  myflames cluster --profile node1 --fail-on problem -q
-  ```
-- **Compact Plan Digests**: Produce token-cheap plan summaries for LLMs:
-  ```bash
-  myflames digest explain.json
-  myflames digest explain.json --cost
-  ```
-- **Model Context Protocol (MCP)**: Run the native MCP server to provide read-only diagnostic tools (`analyze_plan`, `server_report`, `top_statements`, `locks_report`, `replication_status`, `cluster_status`) to AI agents over stdio:
-  ```bash
-  pip install 'myflames[mcp]'
-  myflames-mcp
-  ```
-
----
-
-The MCP `explain_query` tool reports the MySQL 8.4 requirement for JSON EXPLAIN ANALYZE on older servers without first sending an unsupported format-variable setting.
+```json
+{
+  "mcpServers": {
+    "myflames": {
+      "command": "myflames-mcp"
+    }
+  }
+}
+```
 
 ## CLI reference
 
-Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`.
+### Commands
+
+Invoke subcommands with `myflames <command>` or `python3 -m myflames <command>`. The root command renders a plan file or stdin; its flags are listed below.
 
 | Command | Primary options | Purpose |
 | --- | --- | --- |
 | `ui` | `[--port PORT] [--no-browser] [--no-restore]` | Deprecated: launch the browser performance workspace (use the macOS app, `myflames.app`). |
-| `sql` | `[-e SQL \| -f FILE] [--format FORMAT] [--insert-table NAME] [-o PATH] [--yes]` | Run SQL statements inside an editor session with safety policies. Results carry no column types, so JSON keeps numbers as strings, table quotes them and INSERT writes them as quoted text (NULL stays NULL). |
-| `capture` | `[-e SQL \| --statement-digest HASH] [--mode {explain,analyze}] [--trace] [-o PATH]` | Capture estimated or analyzed plans and metadata as JSON. |
+| `sql` | `[-e SQL \| -f FILE] [--format {table,tsv,csv,json,markdown,insert}] [--insert-table NAME] [--limit N] [-o PATH] [--yes]` | Run SQL in one editor session with safety policies. Results carry no column types: JSON keeps numbers as strings, table quotes them and INSERT writes them as quoted text. NULL and empty strings stay distinct: JSON uses `null` and `""`; CSV uses an unquoted empty field and `""`; table uses `NULL` and `""`; Markdown uses `*NULL*` and an empty cell. Interactive sessions are not supported. |
+| `capture` | `[-e SQL \| --statement-digest HASH] [--mode {explain,analyze}] [--trace] [-o PATH]` | Capture estimated plans by default, with schema, table statistics and session variables. `--mode analyze` executes a SELECT in a rolled-back read-only transaction; `--trace` adds optimizer trace. `--digest HASH` is a deprecated alias of `--statement-digest HASH`. |
 | `explore` | `PLAN [--type TYPE] [--metric METRIC] [--focus ID] [-o PATH]` | Export an interactive plan visualization HTML file. |
 | `compare` | `before.json after.json [--digest \| --json] [-o PATH]` | Compare two execution plans and report operator differences. |
 | `diff` | `before.json after.json [--digest \| --json] [-o PATH]` | Deprecated alias of `compare`. |
 | `top` | `[--order {total,time,avg,examined,rows,count,exec_count,full_join,scan,scans,no_index,tmp_tables,locks}] [--table SCHEMA.TABLE] [--schema NAME] [--limit N] [--json] [-o PATH] [-q]` | Rank expensive statements from Performance Schema digests. |
-| `sessions` | `[--min-seconds N] [--kill ID [--yes]] [--explain ID]` | Inspect running queries, idle transactions, and thread states; Kill protects Group Replication streams even when their command name is truncated. |
+| `sessions` | `[--all] [--min-seconds N] [--session-user USER] [--schema NAME] [--kill ID [--query] [--yes]] [--explain ID]` | The CLI for the **Processlist** view: inspect connections, running queries, idle transactions and thread states. Kill protects Group Replication streams even when their command name is truncated. |
 | `running` | `[--min-seconds N] [--explain ID] [--json] [-o PATH]` | Deprecated alias of `sessions`, retaining the `running-1.0` contract. |
-| `locks` | `[--waits-only \| --deadlock \| --kill ID [--yes]]` | Trace lock waits, metadata blockers, and deadlocks; Kill shares the Group Replication stream guard with Sessions and reports when completion could not be verified. |
+| `locks` | `[--waits-only \| --deadlock \| --kill ID [--query] [--yes]]` | Trace lock waits, metadata blockers and deadlocks. `--kill ID` ends the connection; `--query` stops only its query. Kill shares the Group Replication stream guard with Sessions and reports when completion could not be verified. |
 | `health` | `[--interval N] [--fail-on {problem,watch}]` | Sample server status counters over time to detect health anomalies. |
 | `innodb` | `[--raw] [--fail-on {problem,watch}]` | Parse and summarize SHOW ENGINE INNODB STATUS output. |
 | `error-log` | `[--level LEVEL[,LEVEL...]] [--limit N] [--fail-on {problem,watch}]` | Read the server error log: `performance_schema.error_log` on MySQL; on MariaDB the log file, only when the server runs on this computer. |
 | `waits` | `[--interval N] [--limit N]` | Rank wait events over a sampling window and since server boot. |
-| `indexes` | `[--schema NAME] [--all-schemas] [--limit N]` | Find unused, redundant, or missing indexes; partitioned or unknown candidates stay under No data. |
-| `tables` | `[--schema NAME] [--all-schemas] [--fresh]` | Inspect table fragmentation, missing primary keys, and engine distributions. |
+| `indexes` | `[--schema NAME] [--all-schemas] [--limit N]` | Find unused and redundant indexes and tables read mostly by full scans; partitioned or unknown candidates stay under No data. |
+| `tables` | `[--schema NAME] [--all-schemas] [--fresh]` | Find tables without a primary key or usable unique key, and report InnoDB reusable free space. Reusable allocation is informational and does not trigger a warning exit code on its own. |
 | `io` | `[--interval N] [--schema NAME] [--all-instances]` | Analyze file and table I/O throughput. |
-| `config` | `[--fail-on LEVEL]`; `set NAME VAL [--persist]`; `reset-persist NAME` | Review server settings or execute planned variable modifications. |
+| `config` | `[--fail-on LEVEL]`; `set NAME VALUE [--persist \| --persist-only \| --session] [--yes]`; `reset-persist NAME [--yes]` | Review server settings or change one variable after exact SQL review. No modifier on `set` means global. |
 | `instruments`| `[--preset {minimal,locks,waits,defaults}]` | Review Performance Schema instrumentation and generate setup SQL. |
-| `report` | `[--interval N] [--schema NAME] [--html \| --json \| --markdown]` | Generate a full server analysis report across all diagnostic modules. |
-| `replication`| `[--channel NAME]`; `skip [--yes]`; `skip-loop --errors CODES` | Monitor replica lag and source versions, and manage transaction skip recovery loops. |
+| `report` | `[--interval N] [--schema NAME] [--all-schemas] [--html \| --json \| --markdown] [-o PATH]` | Compose the Full analysis report from health, waits, I/O, configuration, InnoDB, sessions, instruments, server checks, tables and indexes. Error log and Locks are outside its coverage. |
+| `replication` | `[--channel NAME]`; `skip --channel NAME [--yes]`; `skip-loop --channel NAME --errors CODES [--max N] [--max-minutes M] [--yes]` | Monitor replica lag and source versions, skip one failed transaction, or run a bounded recovery loop. Both recovery commands require `--channel`; use an empty string for the default channel. |
 | `cluster` | `[--fail-on {problem,watch}] [--json] [-o PATH] [-q]` | Show the Galera, Percona XtraDB Cluster, InnoDB Cluster or Group Replication cluster the server belongs to (`cluster-1.0`); read-only. |
-| `accounts` | `list`, `show`, `create`, `drop`, `grant`, `revoke`, `role` | Inspect and manage users, roles, passwords, and privileges. |
+| `accounts` | `list`, `show`, `create`, `drop`, `rename`, `lock`, `unlock`, `expire`, `password`, `grant`, `revoke`, `role grant`, `role revoke`, `role default` | Inspect and manage users, roles, passwords and privileges. Writes require review and support `--yes` and `--json`. |
 | `privileges` | `[--json]` | Report effective permissions and per-action verification status. |
 | `upgrade-check`| `--target-version X.Y.Z [--no-shell]` | Run MySQL Shell upgrade checks or native compatibility checks. |
-| `dump` | `DIRECTORY [--schema NAME] [--threads N] [--yes]` | Create a consistent database dump with checksum manifests. |
-| `restore` | `DIRECTORY [--confirm-target TARGET] [--yes]` | Restore a validated dump and verify record counts. |
-| `clone` | `--donor-profile NAME [--confirm-target TARGET] [--yes]` | Clone a remote MySQL instance to the connected recipient. |
-| `profiles` | `list`, `set NAME [--type TYPE] [--read-only]`, `delete NAME` | Manage saved database connection profiles and safety settings. |
-| `audit` | `list [--since DAYS]`, `export [--csv]`, `purge [--older-than DAYS]` | Query and maintain the local server write audit trail. |
-| `check` | `PLAN [--fail-on LIST] [--ignore LIST]` | Validate plans against rule thresholds with automated exit codes. |
+| `dump` | `DIRECTORY [--schema NAME] [--table NAME] [--threads N] [--yes] [--preflight]` | Dump an instance, schemas or tables to a new or empty directory with preflight checks and checksum manifests. Repeat `--schema` or `--table` for several names. |
+| `restore` | `DIRECTORY [--confirm-target TARGET] [--yes] [--preflight]` | Restore a validated dump and verify objects and recorded row counts. Confirmation must match the complete target printed by the plan, including a schema or directory when present. |
+| `clone` | `--donor-profile NAME [--confirm-target TARGET] [--yes] [--preflight]` | Clone a MySQL donor to the connected recipient. Alternatively select the donor with `--donor-host HOST --donor-port PORT --donor-user USER --donor-password` (prompts for its password). Confirm the complete target printed by the plan. |
+| `profiles` | `list`, `set NAME [--type TYPE] [--read-only \| --read-write]`, `forget NAME`, `delete NAME` | Manage saved connections and safety settings; `forget` removes a saved password. |
+| `audit` | `list [--since DAYS] [--server NAME] [--limit N]`, `export [--json \| --csv]`, `purge [--older-than DAYS]` | Query, export and maintain the local server write audit trail. |
+| `check` | `PLAN [--fail-on LIST] [--ignore LIST]`; `--list-rules` | Gate plans on categories such as `full_scan`, `filesort`, `temp_table` and `misestimate`, severities, or `any`. Use `--list-rules` for the complete catalog. |
 | `advise` | `PLAN [--ignore LIST] [--json]` | Provide ranked optimization suggestions for an execution plan. |
 | `findings` | `PLAN [--ignore LIST] [--json] [-o PATH]` | Deprecated alias of `advise`. |
-| `digest` | `[PLAN] [--cost] [--tokenizer {heuristic,claude,gpt}]` | Output concise plan summaries and LLM token cost estimates. |
-| `tokens` | `PLAN [--cost] [--json] [--show] [-o PATH]` | Deprecated alias of `digest`, defaulting to `--cost`. |
-| `import-shell` | `BUNDLE [--query N] [--list] [-o PATH] [-q]` | Convert a MySQL Shell diagnostics ZIP into capture JSON. |
+| `digest` | `PLAN [--cost] [--tokenizer {heuristic,claude,gpt}] [--json]` | Emit a compact text digest. `--cost` compares token costs; `--json` emits that cost comparison, not the digest text. |
+| `tokens` | `PLAN [--cost] [--json] [--show-prompts] [-o PATH]` | Deprecated alias of `digest`, defaulting to `--cost`. |
+| `import-shell` | `BUNDLE [--query N] [--list] [-o PATH] [-q]` | Convert a diagnostics ZIP produced by MySQL Shell `util.debug.collectSlowQueryDiagnostics()` into capture JSON. |
 | `guide` | `[-o PATH] [-q]` | Show which visualization to choose for a use case. |
-| `teach` | `[{btree,bnl,hash,join,lru}] [--index \| --catalog] [--title TITLE] [-o PATH] [-q]` | Render interactive architectural and algorithmic database lessons. |
+| `teach` | `[LESSON] [--index \| --catalog] [--title TITLE] [-o PATH] [-q]` | Render a lesson such as `btree`, `bnl`, `hash`, `join` or `lru`, or use `--index` or `--catalog` for the catalog. Run `teach --help` for every lesson name. |
 
-| Connection option | Purpose |
-| --- | --- |
-| `--profile NAME_OR_ID` | Use a saved connection for live commands, including capture, sql, top, sessions, report, replication, cluster and lifecycle operations. |
-| `-h HOST`, `-P PORT`, `-u USER`, `-D DATABASE` | Set the server address, port, user and default database. |
-| `-p` | Prompt for a password without putting it on the command line. |
+### Agent and CI subcommands
 
-Connection parameters (`--profile NAME`, `-h HOST`, `-P PORT`, `-u USER`, `-p`, `-D DATABASE`, `--ssl-mode MODE`) are accepted across all live commands. Pass `-p` without a value to prompt securely for passwords.
+```bash
+# Compact text digest and token cost comparison
+myflames digest explain.json
+myflames digest explain.json --cost --tokenizer claude
 
----
+# Ranked findings as a JSON array
+myflames advise explain.json --json
+
+# Before/after plan comparison for pull requests or agents (compare-1.0)
+myflames compare before.json after.json --digest
+myflames compare before.json after.json --json
+
+# CI gate: exit 0 when clean, 1 when a listed rule category fires, 2 on bad input
+myflames check explain.json --fail-on full_scan,filesort,temp_table
+myflames check --list-rules
+```
+
+Read and analysis gates generally use `0` for success, `1` for a triggered gate and `2` for bad input or connection failure. Write commands also distinguish unsent refusals from sent failures: started lifecycle jobs and variable changes can return `1` for failure, cancellation or an unverifiable result without `--fail-on`. See each command's help.
+
+### Visualization options
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--type` | `flamegraph` | Output chart type: `flamegraph`, `bargraph`, `diagram`, `tree`, `workbench` (`treemap` is a deprecated alias for `bargraph`). |
+| `-o`, `--output PATH` | stdout | Write output to `PATH`. Use `.html` for a self-contained HTML report. |
+| `--width PX` | `1800` / `1200` | SVG width in pixels (`1800` for flame graphs, `1200` for other views). |
+| `--height PX` | `32` | Frame height in pixels for flame graphs. |
+| `--colors SCHEME` | `hot` | Flame graph palette: `hot`, `mem`, `io`, `red`, `green`, `blue`. |
+| `--title TEXT` | `MySQL Query Plan` | Custom chart title. |
+| `--inverted` | off | Render an icicle graph (root at top). |
+| `--no-enhance` | off | Disable detailed flame graph tooltips. |
+| `--query SQL` | none | Embed SQL query text in the output report. |
+| `--query-file PATH` | none | Embed SQL query text read from `PATH`. |
+| `--sidecar PATH` | auto with `-o` | Write the schema version `1.4` JSON sidecar to `PATH`. Both `plan.html` and `plan.svg` produce `plan.json` by default. |
+| `--no-sidecar` | off | Do not write the automatic JSON sidecar beside the output file. |
+| `--no-teach-bundle` | off | Do not emit the `teach/` lesson folder beside `.html` output. |
+| `--refresh-teach-bundle` | off | Regenerate the `teach/` folder beside `.html` output even if it exists. |
+| `-q`, `--quiet` | off | Suppress informational stderr messages while preserving stdout and exit codes. |
+
+### Connection options
+
+| Flag | Description |
+| :--- | :--- |
+| `--profile NAME_OR_ID` | Use a saved connection profile (and its saved password) for `-e` and live subcommands (`sql`, `capture`, `top`, `sessions`, `locks`, `innodb`, `error-log`, `health`, `waits`, `indexes`, `tables`, `io`, `config`, `instruments`, `report`, `replication`, `cluster`, `upgrade-check`, `dump`, `restore`, `clone`, `privileges`, `accounts`). Explicit flags override profile fields. |
+| `-h`, `--host HOST` | Server hostname or IP address (default `127.0.0.1`; host-and-port connections use TCP). |
+| `-P`, `--port PORT` | Server TCP port (default `3306`). |
+| `-u`, `--user USER` | Database username. |
+| `-p`, `--password [PASS]` | Prompt for a password on `/dev/tty` when passed without a value, or use an inline value (a warning is printed; prefer `-p` alone or `MYSQL_PWD`). |
+| `-D`, `--database DB` | Default database name. |
+| `--ssl-mode MODE` | TLS mode: `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`, `VERIFY_IDENTITY`. |
+| `--ssl-ca PATH` | CA certificate bundle path. |
+| `--ssl-cert PATH` | Client TLS certificate path for root live rendering, `capture` and the Server view commands; not `sql` or lifecycle commands. |
+| `--ssl-key PATH` | Client TLS private key path for root live rendering, `capture` and the Server view commands; not `sql` or lifecycle commands. |
+| `--mysql-binary PATH` | Path to the `mysql` or `mariadb` client binary for root live rendering, `capture` and the Server view commands; not `sql` or lifecycle commands. |
+| `-e`, `--execute SQL` | Run `EXPLAIN ANALYZE` on `SQL` against the live connection (or execute `SQL` in `myflames sql`). |
+| `--no-collect-schema` | Skip `SHOW CREATE TABLE` collection during root `-e` only. |
+| `--no-collect-stats` | Skip `information_schema.tables` collection during root `-e` only. |
+| `--no-collect-variables` | Skip `SHOW SESSION VARIABLES` collection during root `-e` only. |
 
 ## Documentation
 
-- [Workspace and Server Guide](docs/LOCAL_UI.md): In-depth guide to navigation, Server views, and security.
-- [Query Investigations and SQL Sessions](docs/QUERY_WORKSPACE.md): Captures, comparisons, and workbench workflows.
-- [Visual Explain Reference](docs/VISUAL_EXPLAIN_REFERENCE.md): Operator symbols, join types, and metrics.
-- [Developer Reference](docs/DEVELOPER_REFERENCE.md): Architecture, CLI contracts, APIs, and engine matrix.
-- [Changelog](CHANGELOG.md): History of features, fixes, and version releases.
-
----
+| Guide | Contents |
+| :--- | :--- |
+| [docs/LOCAL_UI.md](docs/LOCAL_UI.md) | Complete guide to the workspace places, Server views, Replication, Cluster, ProxySQL, Users and roles, Maintenance, connections, write safety and the Audit log. |
+| [docs/QUERY_WORKSPACE.md](docs/QUERY_WORKSPACE.md) | Query editor, SQL completion, table data editing, Query digest, Database diagram, live capture modes and saved credentials. |
+| [docs/VISUAL_EXPLAIN_REFERENCE.md](docs/VISUAL_EXPLAIN_REFERENCE.md) | Operator color key, metrics and advisor rules across the plan views (see also [docs/WORKBENCH_VIEW.md](docs/WORKBENCH_VIEW.md)). |
+| [docs/DEVELOPER_REFERENCE.md](docs/DEVELOPER_REFERENCE.md) | Architecture, JSON schemas, parser and advisor contracts, write-safety invariants and testing guide. |
+| [docs/DESKTOP.md](docs/DESKTOP.md) | macOS Electron desktop app packaging, process lifecycle, client discovery and storage layout. |
+| [CHANGELOG.md](CHANGELOG.md) | Release history and notable changes per version. |
+| [test/README.md](test/README.md) | Plan fixtures, live replay fixtures and test suite instructions. |
 
 ## License and credits
 
-myflames is licensed under the [Apache-2.0 License](LICENSE). Detailed attribution and licensing history are preserved in the [NOTICE](NOTICE) file.
+myflames is licensed under the [Apache License, Version 2.0](LICENSE) (see [NOTICE](NOTICE)). Releases up to 2.3.0 were distributed under CDDL 1.0; the flame graph renderers (`myflames/flamegraph.py` and `apps/workspace/src/charts/flamegraph.ts`) were rewritten clean-room from a functional specification for 2.4.0.
+
+Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
 Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs are the original inspiration for this work.
-
-### Workspace navigation and settings
-
-Top statements, Error log and Database diagram show read progress with Stop and Try again where applicable. The Query editor keeps busy controls focused and reports pending Stop and session operations. Uncertain transaction replies show Outcome unknown; the write is not retried. A stalled diagram import can be closed while preserving the current diagram.
-
-Home shows the installed version, a release link, and shortcuts to SQL, Server and database diagrams. **Check for updates** in Home's version footer (and in About myflames) asks GitHub for the latest release only when clicked (directly, without a proxy, for at most 10 seconds), then shows Up to date, the newer version with **Download…**, or why the check failed, with the time of the last check (kept across restarts; a result older than a day is shown as the last result). Query editor, Query digest (statement digests in the style of pt-query-digest, a place of its own, not an editor tab), Database diagram (a place of its own, no longer under Server) and Plans sit together under SQL workspace. Database diagram includes a Diagram | Mermaid switch that renders the Mermaid ER diagram beside its code. Refresh all reads every Server section, including unopened sections, with bounded concurrency; a view reads when opened on screen (once per connection, Top statements and Error log included, while Tables and Indexes keep their schema-size consent). Processlist rows have a context menu (right click or Shift+F10) with Copy query, **Kill query…** and **Kill connection…**, which open the same reviewed Kill confirmation and show its answer at once. Replication reads **Not a replica** for a server with no asynchronous channel (a Group Replication member or a Galera node points to Cluster), never Unknown.
-
-Cluster is a place of its own, right after Replication. It reads when opened (once per connection; Refresh and Refresh all read again) and shows a summary line, the findings first when something is wrong, tiles, and the Topology, Members (Nodes on Galera) and (for InnoDB Cluster) Routers tabs, with an inspector per member. Once read, a connection that is not part of a cluster greys the sidebar item (it stays clickable and explains why, and still looks disabled while open). A member's inspector offers the changes that do what they say on that server: **Make primary…** on an ONLINE secondary in single-primary mode (`group_replication_set_as_primary` with the member's UUID), **Stop Group Replication…** and **Start Group Replication…** on the connected member (Start only while it is OFFLINE and `group_replication_bootstrap_group` is OFF), switching a Group Replication group without InnoDB Cluster metadata between single- and multi-primary (for InnoDB Cluster, MySQL Shell's commands also update `auto_increment` and the metadata), and on MariaDB Galera **Desync this node…**, **Resync this node…** (`wsrep_desync`) and **Bootstrap a Primary component…** (only on a connected node whose component is non-Primary, with the node name typed). Percona XtraDB Cluster and Galera Cluster for MySQL get no change yet, and `SET GLOBAL wsrep_on` is never offered.
-
-ProxySQL is a place of its own, right after Cluster, for a connection to ProxySQL's Admin interface (port 6032 by default). It reads when opened on screen (once per connection; Refresh reads again): Servers (each backend as ProxySQL runs it, with its pool and its configuration row), Hostgroups, Query rules and Query digests, with an inspector per row, and the problems first (a hostgroup in use with no ONLINE server, an active rule ProxySQL runs that sends to a hostgroup with no server). Query digests reads on its own while it is on screen, bounded in Admin with ORDER BY and LIMIT: **Slowest** (average time), **Most time**, **Most frequent**, **Highest rate** (executions per second between a digest's first and last execution) or **Most rows sent**, the top 10, 25, 50 or 100, filtered by hostgroup, schema, user or digest text, or to the digests one rule applies to. Each digest shows **Ran on** (its hostgroup) and **Rules send to** (where the active rules, fast routing or the user's default hostgroup send it, evaluated here with Python's `re`, approximate for `match_pattern`, which tests the query text a digest does not keep), with a mismatch flagged and the reasons ProxySQL can choose another hostgroup; each rule shows its hits (a rule with none is marked) and the digests it applies to. Selecting a rule from a digest, or a digest from a rule, opens the other. ProxySQL keeps its configuration in memory, runtime and disk: a change edits memory and loads it to runtime in one reviewed step and refuses while other changes wait in memory; **Save servers to disk…** and **Save query rules to disk…** are separate reviewed steps that list every difference first. OFFLINE_SOFT is not offered for a server the Galera monitor manages, because the monitor puts it back in traffic within seconds. Once read, a connection that is not a ProxySQL Admin interface greys the sidebar item for that connection.
-
-ProxySQL digest hash filters accept uppercase, lowercase and mixed-case hexadecimal digits. A routing variable that could not be read leaves affected digests **Not judged**, with the variable named. Schema, user and client names containing separators keep distinct selections and links.
-
-After a reviewed ProxySQL change, Query digests rereads its routing when visible.
-
-Plans shows progress while opening a sample or building an HTML export, names the saved HTML or JSON file, and keeps investigation Save errors in its sheet. Maintenance shows progress for tool detection, upgrade checks, preflights, starting jobs and cancellation. Reads offer Stop waiting and retry; closing a slow Start sheet keeps the request running and shows its outcome in the view.
-
-Every Cluster and ProxySQL change follows the write contract: the review shows the exact statements, the target and the connection with its type; Production and Development both ask first; Read-only refuses; destructive ones need the target's name typed; myflames reads the target again right before sending and sends nothing if it changed; a request without a reply, or a client that ended without the server's answer, is shown as Outcome unknown and never sent again; and every sent, refused or declined attempt is in the Audit log. After you confirm, the same sheet follows the send: the button reads **Sending…** and cannot be pressed twice, the step is named (reading the target again, sent and waiting for the server's answer with the seconds waited, reading the result back), and each statement shows Waiting, Sent, Done, Failed, Not run or Outcome unknown, Done only once the server answered. After ten seconds without a reply, **Close** lets you follow the pending request under the toolbar, including while an inspector is open; it does not cancel or resend it. It ends with the outcome, **What changed** (read again after the write), the Audit log record, and for an unknown outcome **What to check**.
-
-Parameters (under Server > Setup) lists every global server parameter in one filterable table modelled on an AWS RDS parameter group. Edit turns supported dynamic and persistable static values into inline controls, Preview changes summarizes staged edits, and Review and apply plans and confirms up to 25 changes in one batch with per-row re-reads and audit records. The inspector keeps one compact section per parameter: a sentence about it, a **Documentation** link to its entry in the official manual (the MySQL Reference Manual for the server's version, MariaDB's documentation, or Percona's manuals for the variables Percona adds; it opens in your browser and nothing is fetched to build it), its current value, source and when a change applies, and a single Recommendation only when a check flags it. It also offers Reset to default, single-parameter Change… (including This session only, which opens the statement in the Query editor) and Reset persisted value…. Permission details appear inside the review dialog.
-
-Instruments lets you filter and select individual instruments or consumers and apply batched `UPDATE` statements through the reviewed SQL runner, with copy-only option file lines for restart persistence. Learn matches the workspace light and dark appearance, with a lesson toolbar, grouped family rows, and a compact embedded lesson bar.
-
-Processlist, Parameters and Replication show progress and elapsed time for reads and reviewed changes. Replication preflight keeps its initiating control in place and focused; its review focuses Cancel and returns to that control when dismissed. Slow reads offer Stop; failed reads offer Try again. After ten seconds without a write reply, Close leaves the request running and keeps its progress and outcome in the view. Parameter changes and replication skips whose replies are lost show **Outcome unknown** and are never sent again automatically. Replication checks show **Checking…** before opening a review; loop Stop shows **Stopping…** and warns after ten seconds that the loop may still be running.
-
-Tables and Indexes include complete scoped inventories with pagination. Indexes checks partitioning only for candidate tables: partitioned or unresolved candidates appear under No data, with DROP and visibility SQL withheld. Export the filtered results as CSV, HTML or PDF through the system print dialog. Tables can filter measured reusable-space percentage; this is not an index fragmentation estimate.
-
-Successful Kill results in Locks, Processlist and Kill sessions begin with **Done.**, followed by the server's explanation.
-Bulk Kill policy refusals and failed policy reads say **Nothing was sent**, including after Close or a connection change. Query digest keeps the server's product name, including Percona Server or Percona XtraDB Cluster, in its footer and text export.
-
-Workspace views read when opened; Refresh retries. Changing the connection keeps
-the previous report greyed until Refresh or reopening the view. Users and roles
-asks before discarding staged grants. Account-change results and generated
-passwords remain available on their original connection until dismissed, across
-connection and view switches; reload clears them. The session password is
-committed on blur or Enter, so typing sends no privilege checks, including when
-a pending reconnect finishes. See [workspace interactions](docs/LOCAL_UI.md#connection-and-table-interactions)
-for row menus, reviewed statements and analysis progress.

@@ -168,7 +168,7 @@ says "connection"; the API and CLI call a saved connection a profile.
 
 Each saved connection also has a type and a read-only setting that decide how
 myflames guards statements that change the server (today, ending a session
-from Locks; see [Write safety](../README.md#4-write-safety-model-and-audit-trail)). **Production**, the
+from Locks; see [Write safety](LOCAL_UI.md#production-development-read-only)). **Production**, the
 default for new and existing connections, asks before every write.
 **Development** asks only before risky writes, such as DDL, UPDATE or DELETE
 without a key in WHERE, KILL, SET GLOBAL, replication commands, and CLONE.
@@ -518,8 +518,7 @@ and [MariaDB](https://mariadb.com/docs/server/server-management/variables-and-mo
 documentation, which the desktop app opens in your browser. It opens over Run
 options without closing it; Escape closes the explanation first.
 
-Statements that change the server follow the connection's write policy
-([Write safety](../README.md#4-write-safety-model-and-audit-trail)): a Production connection asks before
+Statements that change the server follow the connection's write policy: a Production connection asks before
 every write, a Development connection only before risky ones, and a read-only
 connection refuses them. The confirmation shows the exact statements, the
 reason, the connection and its transaction state, and warns about statements
@@ -528,7 +527,9 @@ on Development. A confirmation is valid for five minutes and for those
 statements only; after that the run asks again. Cancel, or Escape, sends
 nothing and is recorded in the Audit log as declined; a decline never runs
 anything, also when the connection's type changed while the sheet was open. Reads (SELECT, SHOW,
-DESCRIBE, EXPLAIN) never ask.
+DESCRIBE, EXPLAIN) never ask. `HANDLER ... OPEN` is treated as risky and asks
+for confirmation because it holds a metadata lock until `HANDLER ... CLOSE` or
+the session ends; `HANDLER ... READ` and `HANDLER ... CLOSE` stay reads.
 
 Every DDL, including temporary-table DDL, needs a confirmation. A script with several DDL statements is refused before password lookup: select and run them one at a time. Multiple DML statements still share a review listing every statement. DROP DATABASE and DROP SCHEMA require the exact database name, including case and spaces; a token alone is insufficient. The server rechecks the saved connection policy after password lookup and immediately before execution. A policy change refuses the reviewed run.
 
@@ -673,6 +674,15 @@ instruments](#performance-schema-instruments) for Instruments.
   first-seen time, the overflow row, lost digests); one row per statement, sortable, with up to
   three flags. Select a row for the full statement (with **Copy**), latency,
   rows, access and sort counters, and the actions.
+
+  The separate one-off slow-query report validates duration thresholds and limits
+  before connecting. When it reads `mysql.slow_log`, it filters by `query_time`
+  before sorting by duration and applying the limit. Its notes retain source
+  errors, access hints and instrumentation guidance, including when it falls back
+  to Performance Schema digests. Unmeasured slow-log index-use, scan, join,
+  temporary-table and sort counters are unknown (`null`), rather than zero; the
+  rows-examined ratio does not establish an access method.
+
 - **Sessions** (it replaces Running queries) lists the connections with their
   open InnoDB transactions, from the process list: a counter strip (connected,
   limit, max seen, running, history list length), one summary line (active,
