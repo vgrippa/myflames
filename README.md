@@ -36,8 +36,8 @@ Try a [MySQL plan demo](https://vgrippa.github.io/myflames/demos/live-mysql/live
 
 ### macOS app
 
-1. Download `myflames-3.1.1-macos-arm64.zip` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) (Apple Silicon), unzip it, and move `myflames.app` to `/Applications`.
-2. Because the app is currently unsigned, macOS Gatekeeper blocks the first normal double-click. Clear its quarantine attribute in Terminal with `xattr -dr com.apple.quarantine /Applications/myflames.app`. Alternatively, Control-click `myflames.app` in Finder and choose **Open**, or use **System Settings > Privacy & Security > Open Anyway**.
+1. Download `myflames-3.2.0-macos-arm64.dmg` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) (Apple Silicon), open it, and drag `myflames.app` to `/Applications`.
+2. Double-click `myflames.app`. It is signed with a Developer ID and notarized by Apple, so macOS opens it without extra steps. Releases before 3.2.0 were unsigned zips: Control-click those in Finder and choose **Open** the first time.
 
 The packaged app keeps its data under `~/Library/Application Support/myflames-desktop`, unless overridden by `MYFLAMES_DESKTOP_DATA`. Its workspace database and audit records are in `backend-home/.myflames/workspace.sqlite3`; saved passwords use `credentials.vault` and `vault.key` in that same `.myflames` folder. Desktop and CLI data are separate; the CLI uses `~/.myflames`. You can check for newer releases on demand with **Check for updates** on Home or in **Settings > About myflames**.
 

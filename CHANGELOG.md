@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Rewrite the README around the macOS app, with screenshots; detailed behaviour moved to the guides.
+- The macOS app is signed with a Developer ID and notarized by Apple, and ships as `myflames-<version>-macos-arm64.dmg`, so it opens from Finder without Control-click or `xattr`. Check for updates in 3.1.1 finds and downloads the DMG. `npm --prefix apps/desktop run package:mac:release` (`apps/desktop/scripts/package-mac-release.sh`) builds it: the certificate and notary profile come from `MYFLAMES_MAC_IDENTITY` and `APPLE_KEYCHAIN_PROFILE`, every binary (the bundled Python backend included) is signed under the hardened runtime with only the JIT entitlement, the app and the DMG are notarized and stapled, and the script runs the packaged smoke, checks that Gatekeeper accepts the app, the DMG and the app inside it, refuses a DMG over the 150 MiB update download limit and writes its SHA-256. Local builds (`package:mac`) stay unsigned.
 
 ### Fixed
 

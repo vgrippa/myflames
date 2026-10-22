@@ -12,11 +12,12 @@ It stays a single project: pure-Python stdlib core, with heavy integrations behi
 
 ## Current workstation capabilities
 
-The workspace ships only as the macOS desktop app (3.1.0): an unsigned Apple
-Silicon `.app` that bundles Python and opens directly from Finder, attached to
-the GitHub release as `myflames-3.1.0-macos-arm64.zip`. The browser launch
-(`myflames ui`) is deprecated and the Python CLI remains for command-line use.
-Signing, notarization, automatic updates and other platforms remain release work.
+The workspace ships only as the macOS desktop app (3.2.0): an Apple Silicon
+`.app` that bundles Python and opens directly from Finder, signed with a
+Developer ID, notarized by Apple and attached to the GitHub release as
+`myflames-3.2.0-macos-arm64.dmg`. The browser launch (`myflames ui`) is
+deprecated and the Python CLI remains for command-line use. Automatic updates
+and other platforms remain release work.
 The app is Electron around the existing React/TypeScript workspace and Python
 engine. The
 working UI includes the new compact shell, command palette, full-width Server
@@ -136,7 +137,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
 
 ## Next
 
-- **Workspace follow-ups**: broader SQL editing conveniences, richer optimizer-trace summaries, and signed and notarized desktop builds with a verified update channel. Query capture, saved investigations, structural comparison, and contextual Teach are implemented.
+- **Workspace follow-ups**: broader SQL editing conveniences, richer optimizer-trace summaries, and a verified update channel for the signed desktop builds. Query capture, saved investigations, structural comparison, and contextual Teach are implemented.
   Import-dialog layout coverage includes open/error states and short windows;
   continue expanding interaction coverage as the workspace grows.
   Visual Explain zoom includes a live percentage, press feedback, and visible limits.
